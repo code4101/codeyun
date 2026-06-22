@@ -108,7 +108,7 @@
     </div>
 
     <div v-if="showFrontFilter" class="filter-section front-filter-section">
-      <NoteProgramBar
+      <AsyncNoteProgramBar
         v-model="viewProgram"
         title="前端筛选"
         :help-text="frontFilterHelp"
@@ -521,10 +521,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, toRaw, defineAsyncComponent } from 'vue';
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, toRaw, defineAsyncComponent, defineComponent, h } from 'vue';
 import { useRouter } from 'vue-router';
 import NoteSplitView from '@/components/NoteSplitView.vue';
-import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
   type NoteNode,
@@ -698,6 +697,28 @@ const measureCalendarPerf = async <T>(label: string, task: () => Promise<T>): Pr
     logCalendarPerf(label, startedAt);
   }
 };
+
+const NoteProgramBarPlaceholder = defineComponent({
+  name: 'NoteProgramBarPlaceholder',
+  setup() {
+    return () => h('div', {
+      class: 'note-program-bar-placeholder',
+      'aria-hidden': 'true',
+    });
+  },
+});
+
+const AsyncNoteProgramBar = defineAsyncComponent({
+  suspensible: false,
+  delay: 0,
+  loadingComponent: NoteProgramBarPlaceholder,
+  loader: async () => {
+    const startedAt = calendarPerfEnabled ? performance.now() : 0;
+    const component = await import('@/components/NoteProgramBar.vue');
+    logCalendarPerf('NoteProgramBar import', startedAt);
+    return component;
+  },
+});
 
 const CALENDAR_VOLUME_DEFINITIONS: CalendarVolumeDefinition[] = [
   { id: 'v1', label: '卷一 开辟鸿蒙~2008.7', start: [1992, 1, 1], endExclusive: [2008, 8, 1] },
@@ -3159,6 +3180,26 @@ watch(isActive, (active) => {
 
 .front-filter-section {
   margin-bottom: 16px;
+}
+
+.note-program-bar-placeholder {
+  min-height: 112px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(226, 232, 240, 0.52) 25%, rgba(241, 245, 249, 0.9) 37%, rgba(226, 232, 240, 0.52) 63%),
+    linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
+  background-size: 200% 100%, 100% 100%;
+  animation: note-program-bar-placeholder-shimmer 1.1s linear infinite;
+}
+
+@keyframes note-program-bar-placeholder-shimmer {
+  0% {
+    background-position: 100% 0, 0 0;
+  }
+  100% {
+    background-position: -100% 0, 0 0;
+  }
 }
 
 .calendar-workspace {

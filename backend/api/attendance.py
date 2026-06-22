@@ -2335,6 +2335,90 @@ def _normalize_attendance_order_id(value: Any) -> str:
     return str(value or "").lstrip("`'").strip()
 
 
+def _sum_successful_refund_detail_amount(rows: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for row in rows:
+        status = _normalize_order_history_text(row.get("refund_status"))
+        if status and "成功" not in status:
+            continue
+        amount = _coerce_order_history_number(row.get("refund_amount"))
+        if amount is not None:
+            total += amount
+    return round(total, 2)
+
+
+def _refund_guard_order_id(row: dict[str, Any]) -> str:
+    return (
+        _normalize_attendance_order_id(row.get("商户订单号"))
+        or _normalize_attendance_order_id(row.get("微信支付订单号"))
+    )
+
+
+def _verify_refund_execution_confirmed(
+    entry_snapshot: dict[str, Any],
+    execution_payload: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    rows = [dict(row) for row in list(result.get("rows") or []) if isinstance(row, dict)]
+    checked: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    login_users = list(execution_payload.get("login_users") or [])
+
+    for row in rows:
+        refund_amount = _coerce_order_history_number(row.get("退款额度")) or 0.0
+        result_text = _normalize_order_history_text(row.get("执行退款"))
+        if refund_amount <= 0 or "已退款" not in result_text:
+            continue
+
+        order_id = _refund_guard_order_id(row)
+        expected_total = _coerce_order_history_number(row.get("已返款"))
+        if not order_id or expected_total is None:
+            failures.append({
+                "student_name": _normalize_order_history_text(row.get("学员名称")),
+                "order_id": order_id,
+                "refund_amount": refund_amount,
+                "expected_refunded": expected_total,
+                "actual_refunded": None,
+                "reason": "缺少订单号或目标已返款金额，无法确认支付侧退款结果",
+            })
+            continue
+
+        detail = _execute_order_refund_details_on_entry(
+            entry_snapshot,
+            {
+                "order_id": order_id,
+                "query_type": "merchant_order" if not order_id.isdigit() else "pay_order",
+                "login_users": login_users,
+            },
+        )
+        actual_total = _sum_successful_refund_detail_amount(list(detail.get("rows") or []))
+        check = {
+            "student_name": _normalize_order_history_text(row.get("学员名称")),
+            "order_id": order_id,
+            "refund_amount": round(refund_amount, 2),
+            "expected_refunded": round(expected_total, 2),
+            "actual_refunded": actual_total,
+        }
+        checked.append(check)
+        if actual_total + 0.01 < expected_total:
+            failures.append({**check, "reason": "支付侧成功退款累计额未达到本次执行后的目标已返款金额"})
+
+    if failures:
+        detail_text = "；".join(
+            (
+                f"{item.get('student_name') or item.get('order_id')}: "
+                f"支付侧{item.get('actual_refunded')} / 目标{item.get('expected_refunded')}"
+            )
+            for item in failures[:5]
+        )
+        raise RuntimeError(
+            "退款执行后支付侧确认失败，已阻止写入退款历史和后续流程推进。"
+            f"{detail_text}"
+        )
+
+    return {"checked": checked, "failure_count": 0}
+
+
 def _normalize_attendance_order_result_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     normalized["微信支付订单号"] = _normalize_attendance_order_id(normalized.get("微信支付订单号"))
@@ -3308,19 +3392,33 @@ def _execute_order_refund_details_on_entry(entry_snapshot: dict[str, Any], execu
                 weipay_login_users=execution_payload.get("login_users"),
             )
 
-    response = _post_remote_attendance_json(
-        entry_snapshot,
-        path="/api/device-control/attendance/order/refund-details",
-        payload=execution_payload,
-        timeout=600,
+    def post_remote(payload: dict[str, Any]) -> dict[str, Any]:
+        response = _post_remote_attendance_json(
+            entry_snapshot,
+            path="/api/device-control/attendance/order/refund-details",
+            payload=payload,
+            timeout=600,
+        )
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail")
+            except Exception:
+                detail = response.text.strip()
+            raise RuntimeError(detail or f"远程执行失败，HTTP {response.status_code}")
+        return response.json()
+
+    result = post_remote(execution_payload)
+    if result.get("rows") or str(execution_payload.get("query_type") or "auto").strip().lower() != "auto":
+        return result
+
+    order_id = _normalize_attendance_order_id(execution_payload.get("order_id"))
+    if not order_id:
+        return result
+    precise_query_type = "pay_order" if order_id.isdigit() and order_id.startswith("42") else (
+        "refund_id" if order_id.isdigit() else "merchant_order"
     )
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail")
-        except Exception:
-            detail = response.text.strip()
-        raise RuntimeError(detail or f"远程执行失败，HTTP {response.status_code}")
-    return response.json()
+    retry_result = post_remote({**execution_payload, "order_id": order_id, "query_type": precise_query_type})
+    return retry_result if retry_result.get("rows") else result
 
 
 @router.get("/sheets/by-owner", response_model=AttendanceSheetDocumentResponse)
@@ -4773,15 +4871,21 @@ def execute_attendance_order(
     if order_operation_password:
         execution_payload["operation_password"] = order_operation_password
 
+    entry_snapshot = {
+        **serialize_user_device(entry),
+        "token": entry.token,
+    }
     try:
         result = _execute_order_on_entry(
-            {
-                **serialize_user_device(entry),
-                "token": entry.token,
-            },
+            entry_snapshot,
             execution_payload,
         )
         result = _normalize_attendance_order_execution_result(result)
+        refund_confirmation = (
+            _verify_refund_execution_confirmed(entry_snapshot, execution_payload, result)
+            if payload.action == "refund"
+            else None
+        )
     except OrderAutomationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -4807,6 +4911,7 @@ def execute_attendance_order(
 
     return {
         "execution_device_entry_id": entry.entry_id,
+        "refund_confirmation": refund_confirmation,
         **result,
     }
 

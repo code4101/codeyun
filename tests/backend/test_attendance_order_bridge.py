@@ -64,6 +64,9 @@ class _FakeTab:
     def get(self, _url):
         return None
 
+    def ele(self, *_args, **_kwargs):
+        return _FakeClickable()
+
     def find_ele_with_refresh(self, _locator):
         return _FakeClickable()
 
@@ -77,7 +80,110 @@ class _FakeTab:
 def test_attendance_order_bridge_reexports_shared_symbols():
     assert attendance_order.lookup_order is order_ops.lookup_order
     assert attendance_order.OrderAutomationError is order_ops.OrderAutomationError
-    assert attendance_order.execute_order_action is order_ops.execute_order_action
+    assert attendance_order._execute_order_action is order_ops.execute_order_action
+
+
+def test_query_order_refund_details_retries_auto_empty_with_precise_type(monkeypatch):
+    calls = []
+
+    def fake_query(order_id, *, query_type="auto", weipay=None, weipay_login_users=None):
+        calls.append((order_id, query_type, weipay, weipay_login_users))
+        if query_type == "merchant_order":
+            return {
+                "summary": {
+                    "order_id": order_id,
+                    "matched_order_id": order_id,
+                    "query_type": query_type,
+                    "row_count": 1,
+                    "refund_amount_total": 550,
+                },
+                "rows": [{"refund_amount": 550}],
+            }
+        return {
+            "summary": {
+                "order_id": order_id,
+                "matched_order_id": "TETVM2-OOZRE8O-17S8",
+                "query_type": query_type,
+                "row_count": 0,
+                "refund_amount_total": 0,
+            },
+            "rows": [],
+        }
+
+    monkeypatch.setattr(attendance_order, "_query_order_refund_details", fake_query)
+
+    result = attendance_order.query_order_refund_details(
+        "TETVM2-0OZRE8O-17S8",
+        query_type="auto",
+        weipay="weipay",
+        weipay_login_users=["考勤后台"],
+    )
+
+    assert result["summary"]["query_type"] == "merchant_order"
+    assert result["summary"]["refund_amount_total"] == 550
+    assert calls == [
+        ("TETVM2-0OZRE8O-17S8", "auto", "weipay", ["考勤后台"]),
+        ("TETVM2-0OZRE8O-17S8", "merchant_order", "weipay", ["考勤后台"]),
+    ]
+
+
+def test_execute_order_action_closes_owned_weipay_tabs(monkeypatch):
+    events = []
+    fake_weipay = object()
+
+    monkeypatch.setattr(
+        attendance_order,
+        "_ensure_managed_weipay",
+        lambda weipay=None, *, weipay_login_users=None: (fake_weipay, True),
+    )
+    monkeypatch.setattr(
+        attendance_order,
+        "_execute_order_action",
+        lambda **kwargs: events.append(("execute", kwargs)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        attendance_order,
+        "_close_extra_weipay_tabs",
+        lambda weipay, *, min_tabs_to_keep=1: events.append(("close", weipay, min_tabs_to_keep)),
+    )
+
+    result = attendance_order.execute_order_action(
+        action="inspect",
+        rows=[{"商户订单号": "MA2026"}],
+        weipay_login_users=["考勤后台"],
+        lookup_mode="browser_only",
+    )
+
+    assert result == {"ok": True}
+    assert events[0][0] == "execute"
+    assert events[0][1]["weipay"] is fake_weipay
+    assert events[-1] == ("close", fake_weipay, 1)
+
+
+def test_query_order_refund_details_closes_owned_weipay_tabs_on_error(monkeypatch):
+    events = []
+    fake_weipay = object()
+
+    monkeypatch.setattr(
+        attendance_order,
+        "_ensure_managed_weipay",
+        lambda weipay=None, *, weipay_login_users=None: (fake_weipay, True),
+    )
+
+    def raise_query(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(attendance_order, "_query_order_refund_details", raise_query)
+    monkeypatch.setattr(
+        attendance_order,
+        "_close_extra_weipay_tabs",
+        lambda weipay, *, min_tabs_to_keep=1: events.append(("close", weipay, min_tabs_to_keep)),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        attendance_order.query_order_refund_details("MA2026", weipay_login_users=["考勤后台"])
+
+    assert events == [("close", fake_weipay, 1)]
 
 
 def test_execute_order_action_inspect_updates_rows():
@@ -231,11 +337,18 @@ def test_weipay_single_refund_waits_for_completion():
     weipay = object.__new__(Weipay)
     weipay.tab = _FakeTab()
     weipay.填写密码与验证码 = lambda tab: events.append(("verify", tab))
-    weipay.wait_refund_completion = lambda timeout=300: events.append(("wait", timeout))
+    weipay.wait_refund_completion = lambda **kwargs: events.append(("wait", kwargs))
 
     weipay.request_single_refund("MA2026", 178.0, "视觉课退款")
 
     assert events == [
         ("verify", weipay.tab),
-        ("wait", 300),
+        (
+            "wait",
+            {
+                "voucher_id": "MA2026",
+                "expected_refund_amount": 178.0,
+                "baseline_refunded_amount": 0,
+            },
+        ),
     ]

@@ -6,6 +6,7 @@ import html
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import time
 from typing import Any, Callable
@@ -661,9 +662,8 @@ def _restore_changed_files(backups: dict[str, dict[str, Any]], changed_files: li
 
 def _run_test_command(command: str) -> dict[str, Any]:
     completed = run_quiet(
-        command,
+        shlex.split(command),
         cwd=ROOT_DIR,
-        shell=True,
         capture_output=True,
         text=True,
         encoding="utf-8",

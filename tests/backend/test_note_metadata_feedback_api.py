@@ -4,6 +4,7 @@ from unittest.mock import patch
 from sqlmodel import Session, select
 
 from backend.core.ai.chat import OllamaClientError
+from backend.core.notes import metadata_feedback as metadata_feedback_module
 from backend.core.notes.metadata_feedback import (
     NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS,
     create_note_metadata_feedback_optimization_run,
@@ -120,6 +121,28 @@ def test_ai_categorize_writes_metadata_feedback(client, session: Session, auth_u
     assert row.before_snapshot["primary_category"] == "general"
     assert row.after_snapshot["primary_category"] == "bug"
     assert row.after_snapshot["lifecycle_stage"] == "doing"
+
+
+def test_metadata_feedback_test_command_uses_argv_without_shell(monkeypatch):
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run_quiet(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return Completed()
+
+    monkeypatch.setattr(metadata_feedback_module, "run_quiet", fake_run_quiet)
+
+    result = metadata_feedback_module._run_test_command("uv run pytest tests/backend/test_note_metadata_feedback_api.py")
+
+    assert result["returncode"] == 0
+    assert captured["command"] == ["uv", "run", "pytest", "tests/backend/test_note_metadata_feedback_api.py"]
+    assert captured["kwargs"].get("shell") is None
 
 
 def test_feedback_optimizer_codex_failure_is_skipped_without_consuming(client, session: Session, auth_user, engine):
