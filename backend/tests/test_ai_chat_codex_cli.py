@@ -109,9 +109,10 @@ def test_codex_cli_command_resolution_uses_node_script_for_cmd(monkeypatch, tmp_
     assert command == [str(node), str(script), "-p", "myprofile", "--version"]
 
 
-def test_codex_cli_command_resolution_prefers_native_windows_exe(monkeypatch, tmp_path):
+def test_codex_cli_command_resolution_prefers_node_wrapper_over_native_exe(monkeypatch, tmp_path):
     shim = tmp_path / "node-bin" / "codex.cmd"
     script = shim.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    node = shim.parent / "node.exe"
     native = (
         shim.parent
         / "node_modules"
@@ -129,6 +130,7 @@ def test_codex_cli_command_resolution_prefers_native_windows_exe(monkeypatch, tm
     native.parent.mkdir(parents=True)
     shim.write_text("@echo off\nnode codex.js %*\n", encoding="utf-8")
     script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    node.write_text("", encoding="utf-8")
     native.write_text("", encoding="utf-8")
 
     monkeypatch.setattr("backend.core.ai.chat._get_preferred_codex_command_candidates", lambda: [shim])
@@ -136,7 +138,7 @@ def test_codex_cli_command_resolution_prefers_native_windows_exe(monkeypatch, tm
 
     command = _resolve_command_path(["codex", "--version"])
 
-    assert command == [str(native), "--version"]
+    assert command == [str(node), str(script), "--version"]
 
 
 def test_summarize_process_output_skips_trailing_node_version():

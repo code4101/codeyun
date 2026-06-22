@@ -1,13 +1,13 @@
 # AI Context: CodeYun
 
-> **Last Updated**: 2026-05-30
+> **Last Updated**: 2026-06-21
 > **Purpose**: 本文档旨在为AI提供CodeYun项目的全局上下文、架构设计与核心逻辑，以便快速理解代码并进行准确的修改。
 
 ## 1. 项目概览 (Project Overview)
 
 **CodeYun** 是一个**完全独立**的个人超级工具集成平台，与其他项目（如 `pyxllib`, `xlproject` 等）**无任何依赖关系**。
 
-> **CRITICAL**: 在进行代码搜索、分析或修改时，**严格限制在 `c:\home\chenkunze\slns\codeyun` 目录下**。严禁搜索或引用项目根目录之外的任何文件。
+> **CRITICAL**: 在进行代码搜索、分析或修改时，**严格限制在 `D:\home\chenkunze\slns\codeyun` 目录下**。严禁搜索或引用项目根目录之外的任何文件。
 
 
 *   **核心能力**:
@@ -21,7 +21,7 @@
 *   **技术栈**:
     *   **Backend**: Python 3.10+, FastAPI, Uvicorn, APScheduler (定时任务), psutil (进程管理)。
     *   **Frontend**: Vue 3, TypeScript, Vite, Element Plus, Pinia (Reactive Store)。
-    *   **Communication**: HTTP RESTful API (设备间直接通信或通过主节点代理)。
+    *   **Communication**: HTTP RESTful API 为主；任务、日志、笔记/表格资源更新保留有限 WebSocket 通知入口。
 
 ## 2. 核心架构 (Architecture)
 
@@ -31,30 +31,30 @@
 *   **交互模式**: 前端直接调用本地 Backend API；本地 Backend 充当 Proxy 转发请求到远程 Node，或前端直接请求远程 Node (需解决 CORS)。*当前实现主要倾向于后端代理或直连混合模式。*
 
 ### 2.2 数据流 (Data Flow)
-1.  **任务状态**: `psutil` 实时监控 -> `DeviceManager` 聚合 -> API 轮询/WebSocket (规划中) -> 前端 Store。
+1.  **任务状态**: `psutil` 实时监控 -> `DeviceManager` 聚合 -> API 轮询为主，部分任务/日志状态可通过 WebSocket 房间推送 -> 前端 Store。
 2.  **配置存储**: **SQLite 数据库**（默认位于仓库外的数据目录，例如 `D:\home\chenkunze\data\m2603codeyun\codepc_mf\codeyun.db`）。
     *   `Device`: 存储设备信息及 API Token。
     *   `Task`: 存储任务配置。
     *   `User`: 用户信息。
     *   *注：`tasks.json`, `devices.json` 为旧版或备份文件，核心数据已迁移至 SQLite。*
-3.  **日志流**: 实时读取本地日志文件 -> API 分页返回。
+3.  **日志流**: 实时读取本地日志文件 -> HTTP 日志接口分页/按行返回；任务日志 WebSocket 端点可用于订阅推送。
 
 ## 3. 目录映射 (Directory Map)
 
-### Backend (`c:\home\chenkunze\slns\codeyun\backend`)
+### Backend (`D:\home\chenkunze\slns\codeyun\backend`)
 | 路径 | 职责 | 关键文件/说明 |
 | :--- | :--- | :--- |
 | `app.py` | **入口** | FastAPI 应用实例，CORS 配置，路由挂载。 |
 | `api/` | **接口层** | `task_manager.py` (核心任务逻辑), `agent.py` (节点发现), `filesystem.py` (文件操作)。 |
 | `core/` | **业务逻辑** | `device.py`: 封装设备抽象 (Local/Remote) 和底层进程操作。 |
-| `data/` | **持久化** | **`codeyun.db` (SQLite 数据源)**。`config.json` 存储本机唯一ID和API Token。 |
-| `scripts/` | **工具脚本** | `get_machine_token.py`: **获取本机 API Token**。 |
-| `tests/` | **测试** | 单元测试和集成测试。 |
+| `CODEYUN_DATA_DIR` | **持久化** | 仓库外数据工作区，默认形如 `D:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，包含 `codeyun.db` 等运行数据。 |
+| `../scripts/` | **工具脚本** | 根目录脚本集合，包含验证、同步、修复、AI 任务空间等维护入口。 |
+| `../tests/` / `tests/` | **测试** | 根目录 `tests/` 是 pytest 默认收集目录；`backend/tests/` 存放后端专项测试。 |
 
-### Frontend (`c:\home\chenkunze\slns\codeyun\frontend`)
+### Frontend (`D:\home\chenkunze\slns\codeyun\frontend`)
 | 路径 | 职责 | 关键文件/说明 |
 | :--- | :--- | :--- |
-| `src/views/` | **页面** | `TaskManager.vue` (集群管理核心), `FileExplorer.vue`。 |
+| `src/standard/` / `src/views/` | **页面** | 新标准页面集中在 `src/standard/**/page.vue`；集群任务/日志页分别位于 `src/standard/cluster/tasks/page.vue` 和 `src/standard/cluster/logs/page.vue`，`src/views/` 仍保留部分旧入口如 `FileExplorer.vue`。 |
 | `src/store/` | **状态** | `taskStore.ts`: 简单的 Reactive 对象，管理任务列表和设备列表。 |
 | `src/api/` | **网络** | `index.ts`: Axios 封装。 |
 
@@ -84,18 +84,18 @@
 
 *   **端口**: Backend `:8000`, Frontend `:5173`。
 *   **路径**: 所有文件路径应使用绝对路径，或基于 `root_dir` 动态计算。
-*   **环境**: 优先使用项目内的 `.venv`，其次是系统 Python。
+*   **环境**: Python 命令优先通过 `uv run` 执行，不依赖全局 Python 或其他项目虚拟环境。
 *   **依赖管理**: 本项目使用 **uv** 进行依赖和虚拟环境管理。
     *   **添加依赖**: 使用 `uv add <package>`，严禁直接使用 `pip install`。
     *   **同步环境**: 使用 `uv sync` 确保环境与 `pyproject.toml` 一致。
-*   **启动**: 统一使用根目录 `dev.py` 启动双端。
-*   **测试**: 测试代码必须存放在 `backend/tests/`。禁止创建根目录临时脚本，测试应规范化并持久保留。
+*   **启动**: 统一使用 `uv run dev.py` 启动双端。
+*   **测试**: 正式测试主要位于 `tests/`（pytest 默认收集目录）和 `backend/tests/`（后端专项测试）。禁止创建根目录临时脚本，测试应规范化并持久保留。
 *   **UI展示**: 敏感信息（如 Token）在所有视图中均应完全隐藏。仅在编辑模式下提供“覆盖/重置”功能（即输入框默认为空，不回显旧值，输入新值则更新，留空则保持不变）。
 
 ## 6. 测试策略 (Testing Strategy)
 
 为保证代码质量和可维护性，所有验证性代码都应视为正式测试：
-*   **位置**: 统一存放在 `backend/tests/` 目录下。
+*   **位置**: 优先放入 `tests/` 下对应子目录；后端专项测试可放入 `backend/tests/` 并在验证命令中显式指定。
 *   **形式**: 编写为标准的 `unittest` 用例或独立的测试模块，避免随手写的 `print` 脚本。
 *   **持久性**: 测试脚本应作为项目资产保留，不应在验证完成后删除，以便通过 CI/CD 或手动运行进行回归测试。
 
@@ -107,25 +107,27 @@
 ## 7. 重要开发提示 (Crucial Development Notes)
 
 ### 7.3 实时通信架构 (Real-time Communication Architecture)
-为提升用户体验并降低轮询带来的资源浪费，CodeYun 已全面转向 **WebSocket** 架构：
+CodeYun 同时存在 WebSocket 通知能力和页面级轮询逻辑，修改任务/日志链路时不要假设所有页面都已经完全 WebSocket 化：
 
 *   **任务列表更新 (Task List Updates)**:
     *   **Endpoint**: `/ws/tasks`
-    *   **Behavior**: 后端定期（如 2s）广播所有任务的最新状态。前端 `TaskManager.vue` 连接此 WebSocket，实时接收并更新任务列表，不再使用轮询。
+    *   **Backend Behavior**: 后端保留 `task_list` 房间的 WebSocket 广播能力。
+    *   **Current Frontend**: 当前集群任务页位于 `frontend/src/standard/cluster/tasks/page.vue`，仍通过 `taskStore` 和接口调用定时刷新任务列表。
 *   **实时日志流 (Real-time Log Streaming)**:
     *   **Endpoint**: `/ws/logs/{task_id}`
-    *   **Behavior**: 后端通过 `LocalDevice` 的回调机制捕获子进程的标准输出 (stdout)，并通过 WebSocket 实时推送给前端 `TaskLogs.vue`。
+    *   **Backend Behavior**: 后端通过 `LocalDevice` 的回调机制捕获子进程的标准输出 (stdout)，并可通过 WebSocket 推送给订阅房间。
+    *   **Current Frontend**: 当前日志页位于 `frontend/src/standard/cluster/logs/page.vue`，仍保留任务和日志的 HTTP 拉取与轮询逻辑。
     *   **Fallback**: 同时保留 `/api/task/{id}/logs` HTTP 接口用于获取历史日志（默认最近 500 行）。
 *   **断线重连 (Reconnection Strategy)**:
-    *   前端必须实现自动重连机制（如每 3s 尝试重连），以应对后端服务重启或网络波动的情况，确保页面长期运行的稳定性。
+    *   新接入 WebSocket 的前端页面必须实现自动重连机制（如每 3s 尝试重连），以应对后端服务重启或网络波动；现有轮询页面则要保证轮询定时器随路由切换正确清理。
 
 ### 7.1 联动修改 (Linked Modifications)
 CodeYun 的功能模块往往涉及前后端及多个组件的联动，修改时需特别注意：
 *   **字段同步**: 在 `TaskConfig` (后端 Model) 中添加新字段（如 `schedule`）时，必须同步更新：
     *   **Frontend Interface**: `src/store/taskStore.ts` 中的 `Task` 接口。
-    *   **Create/Edit Forms**: `TaskManager.vue` (创建) 和 `TaskLogs.vue` (编辑) 中的表单。
-    *   **Details Display**: `TaskLogs.vue` 中的详情展示部分 (`el-descriptions`)，避免“只改了表单没改展示”的情况。
-    *   **List View**: `TaskManager.vue` 的列表项展示（如果适用）。
+    *   **Create/Edit Forms**: `frontend/src/standard/cluster/tasks/page.vue` (创建) 和 `frontend/src/standard/cluster/logs/page.vue` (编辑) 中的表单。
+    *   **Details Display**: `frontend/src/standard/cluster/logs/page.vue` 中的详情展示部分，避免“只改了表单没改展示”的情况。
+    *   **List View**: `frontend/src/standard/cluster/tasks/page.vue` 的列表项展示（如果适用）。
 *   **API Consistency**: 确保 `create_task` 和 `update_task` 的 API 行为一致，特别是在处理默认值和可选字段时。
 
 ### 7.2 文档维护 (Documentation Maintenance)

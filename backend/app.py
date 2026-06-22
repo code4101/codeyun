@@ -7,6 +7,10 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from backend.core.runtime.process_launcher import install_child_process_no_window_default
+
+install_child_process_no_window_default()
+
 from backend.api.admin_feature_access import router as admin_feature_access_router
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
