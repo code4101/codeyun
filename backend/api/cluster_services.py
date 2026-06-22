@@ -6,7 +6,6 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from backend.api.device import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.api.services import (
     ServiceTokenCreateRequest,
     ServiceTokenUpdateRequest,
@@ -21,6 +20,7 @@ from backend.api.services import (
 )
 from backend.core.access.auth import get_current_user_from_token
 from backend.core.access.feature_access_guard import ensure_feature_access
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.db import get_session
 from backend.models import User, UserDevice
 

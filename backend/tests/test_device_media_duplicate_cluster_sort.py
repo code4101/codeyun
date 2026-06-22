@@ -384,6 +384,34 @@ def test_list_supported_entries_does_not_prewarm_visual_hash_without_duplicate_c
     assert scheduled == []
 
 
+def test_list_supported_entries_reports_scan_index_response_progress(tmp_path, monkeypatch):
+    image_path = tmp_path / "progress.png"
+    Image.new("RGB", (12, 12), color=(40, 80, 120)).save(image_path)
+
+    events: list[dict] = []
+
+    monkeypatch.setattr(device_core, "get_device_id", lambda: "device-test")
+
+    result = filesystem_api._list_supported_entries(
+        absolute_path=str(tmp_path),
+        allowed_kinds={"image"},
+        response_key="media",
+        progress_callback=events.append,
+    )
+
+    assert result["total_count"] == 1
+    assert [event["stage"] for event in events] == ["scanning", "scanning", "indexing", "responding"]
+    assert events[0] == {
+        "stage": "scanning",
+        "message": "正在扫描媒体文件",
+        "progress_current": 0,
+        "progress_total": filesystem_api.DEFAULT_MEDIA_SCAN_LIMIT,
+    }
+    assert events[1]["progress_current"] == 1
+    assert events[2]["message"] == "正在整理 1 个媒体文件"
+    assert events[3]["message"] == "正在生成媒体列表，共 1 项"
+
+
 def test_list_media_entries_includes_pdf_documents(tmp_path):
     pdf_path = tmp_path / "manual.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n")

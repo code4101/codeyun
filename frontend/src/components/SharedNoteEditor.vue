@@ -1066,7 +1066,7 @@ const htmlToDiffText = (html: unknown) => {
   return normalizeDiffText(raw.replace(/<[^>]*>/g, ' '));
 };
 
-const truncateDiffText = (value: unknown, maxLength = 140) => {
+const truncateDiffText = (value: unknown, maxLength = 500) => {
   const text = normalizeDiffText(value);
   if (!text) return '空';
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
@@ -1134,8 +1134,8 @@ const buildDraftRestoreMessage = (
           ]),
           ...rows.slice(0, 6).map(row => h('div', { class: 'draft-diff-row' }, [
             h('span', { class: 'draft-diff-label' }, row.label),
-            h('span', { class: 'draft-diff-value' }, truncateDiffText(row.serverText)),
-            h('span', { class: 'draft-diff-value is-draft' }, truncateDiffText(row.draftText))
+            h('span', { class: 'draft-diff-value', title: normalizeDiffText(row.serverText) }, truncateDiffText(row.serverText)),
+            h('span', { class: 'draft-diff-value is-draft', title: normalizeDiffText(row.draftText) }, truncateDiffText(row.draftText))
           ])),
           rows.length > 6
             ? h('div', { class: 'draft-diff-more' }, `还有 ${rows.length - 6} 项差异`)
@@ -1383,6 +1383,7 @@ watch(() => props.modelValue, async newVal => {
       await ElMessageBox.confirm(buildDraftRestoreMessage(pendingDraft, serverSnapshot), '恢复本地草稿', {
         confirmButtonText: '恢复草稿',
         cancelButtonText: '使用服务器版本',
+        customClass: 'draft-restore-dialog',
         type: pendingDraft.hasConflict ? 'warning' : 'info'
       });
 
@@ -1777,16 +1778,19 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .source-html-preview :deep(img){max-width:100%;height:auto}
 .source-html-preview :deep(a){color:#2f7edb;cursor:pointer}
 .source-image-menu{position:fixed;z-index:2600;padding:4px;background:#fff;border:1px solid #dcdfe6;border-radius:4px;box-shadow:0 6px 18px rgba(31,41,51,.16)}
-:global(.draft-restore-message){min-width:520px;max-width:720px}
+:global(.draft-restore-dialog){width:min(920px, calc(100vw - 32px));max-width:calc(100vw - 32px)}
+:global(.draft-restore-dialog .el-message-box__content){align-items:flex-start}
+:global(.draft-restore-dialog .el-message-box__message){width:100%;min-width:0}
+:global(.draft-restore-message){width:100%;max-width:100%}
 :global(.draft-restore-summary){margin:0 0 10px;color:#606266;line-height:1.5}
-:global(.draft-diff-panel){overflow:hidden;border:1px solid #ebeef5;border-radius:4px;background:#fff}
-:global(.draft-diff-head),:global(.draft-diff-row){display:grid;grid-template-columns:82px minmax(0,1fr) minmax(0,1fr);gap:0;border-bottom:1px solid #f0f2f5}
+:global(.draft-diff-panel){max-width:100%;overflow:auto;border:1px solid #ebeef5;border-radius:4px;background:#fff}
+:global(.draft-diff-head),:global(.draft-diff-row){display:grid;min-width:720px;grid-template-columns:82px minmax(280px,1fr) minmax(280px,1fr);gap:0;border-bottom:1px solid #f0f2f5}
 :global(.draft-diff-head){background:#f8f9fb;color:#909399;font-size:12px;font-weight:600}
 :global(.draft-diff-head span),:global(.draft-diff-row span){padding:7px 9px;border-right:1px solid #f0f2f5}
 :global(.draft-diff-head span:last-child),:global(.draft-diff-row span:last-child){border-right:0}
 :global(.draft-diff-row:last-child){border-bottom:0}
 :global(.draft-diff-label){color:#606266;font-weight:600}
-:global(.draft-diff-value){max-height:64px;overflow:auto;color:#303133;line-height:1.45;word-break:break-word}
+:global(.draft-diff-value){max-height:128px;overflow:auto;color:#303133;line-height:1.45;white-space:pre-wrap;word-break:break-word}
 :global(.draft-diff-value.is-draft){background:#fdf6ec}
 :global(.draft-diff-more),:global(.draft-diff-empty){padding:8px 10px;color:#909399;font-size:12px}
 .shared-note-editor.is-readonly-presentation .editor-header{margin-bottom:8px;padding-bottom:0;border-bottom:none}

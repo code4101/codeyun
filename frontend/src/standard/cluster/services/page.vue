@@ -30,7 +30,6 @@
           </div>
           <div class="toolbar-actions">
             <el-button :icon="Document" @click="openDocs">使用文档</el-button>
-            <el-button :icon="Refresh" :loading="summaryLoading" @click="loadCurrentDevice">刷新</el-button>
           </div>
         </div>
         <div v-if="ocrService" class="metric-grid">

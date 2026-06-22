@@ -41,9 +41,11 @@ const serviceItems = computed(() => currentRuntimeItems.value.filter(item => ite
 const jobItems = computed(() => currentRuntimeItems.value.filter(item => item.kind === 'job'));
 const sortedJobItems = computed(() => [...jobItems.value].sort(compareRuntimeJobs));
 const queueSnapshot = computed(() => currentRuntimeStatus.value?.queue || null);
-const getDeviceTypeTagType = (deviceType?: string): 'success' | undefined => {
-  return deviceType === 'LocalDevice' ? undefined : 'success';
-};
+const viewportWidth = ref(typeof window === 'undefined' ? 1280 : window.innerWidth);
+const runtimeNameColumnWidth = computed(() => (viewportWidth.value < 960 ? 88 : 116));
+const runtimeCommandColumnMinWidth = computed(() => (viewportWidth.value < 960 ? 240 : 520));
+const runtimeNextColumnWidth = computed(() => (viewportWidth.value < 960 ? 96 : 130));
+const runtimeLoadIssue = ref('');
 const getDeviceEntryMeta = (device: Device) => {
   if (device.mode === 'local') {
     return '本地入口';
@@ -58,9 +60,16 @@ const getDeviceEntryMeta = (device: Device) => {
     return `远程 · ${device.server_url.replace(/^https?:\/\//, '')}`;
   }
 };
+const getLegacyCommandRuntimeKind = (task: Task): RuntimeKind => {
+  if (task.runtime_kind === 'job' || task.runtime_kind === 'service') return task.runtime_kind;
+  return task.schedule || task.schedule_policy ? 'job' : 'service';
+};
 const isLoopbackHost = (host: string) => {
   const normalized = host.trim().toLowerCase();
   return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]';
+};
+const updateViewportWidth = () => {
+  viewportWidth.value = typeof window === 'undefined' ? 1280 : window.innerWidth;
 };
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
@@ -259,6 +268,7 @@ const updateDeviceConfig = async () => {
 
 let taskPollTimer: number | null = null;
 const taskFetchInFlight = new Set<string>();
+const taskFetchVersions = new Map<string, number>();
 
 const stopTaskPolling = () => {
   if (taskPollTimer) {
@@ -387,7 +397,21 @@ const handleUpdateToken = async () => {
 const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     if (!deviceId) return;
     if (isPolling && taskFetchInFlight.has(deviceId)) return;
+    const requestVersion = (taskFetchVersions.get(deviceId) || 0) + 1;
+    taskFetchVersions.set(deviceId, requestVersion);
+    const isLatestTaskFetch = () => taskFetchVersions.get(deviceId) === requestVersion;
+    const isCurrentDeviceRequest = () => currentDeviceId.value === deviceId;
+    const cachedRuntime = runtimeStatuses.value[deviceId];
+    const hasVisibleRuntimeData = Boolean(
+      (cachedRuntime?.items?.length || 0)
+      || cachedRuntime?.queue?.running
+      || (cachedRuntime?.queue?.pending?.length || 0)
+      || (cachedRuntime?.queue?.recent?.length || 0)
+    );
     taskFetchInFlight.add(deviceId);
+    if (!isPolling && isCurrentDeviceRequest()) {
+        runtimeLoadIssue.value = '';
+    }
     
     // Check if we have cached tasks
     const hasCache = taskStore.tasks[deviceId] && taskStore.tasks[deviceId].length > 0;
@@ -418,25 +442,47 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
             status: item.status || { running: item.active },
             entry_id: deviceId,
           })) as Task[];
-        deviceError.value = false;
+        if (isCurrentDeviceRequest() && isLatestTaskFetch()) {
+          deviceError.value = false;
+          runtimeLoadIssue.value = '';
+        }
         
     } catch (err: any) {
         console.error('Failed to fetch tasks', err);
         if (err.response?.status === 404) {
-            await fetchLegacyTasks(deviceId, isPolling);
+            await fetchLegacyTasks(deviceId, isPolling, () => isCurrentDeviceRequest() && isLatestTaskFetch());
+            return;
+        }
+        if (!isCurrentDeviceRequest() || !isLatestTaskFetch()) {
+            return;
+        }
+        const shouldSurfaceLoadIssue = !hasVisibleRuntimeData;
+        if (err.code === 'ECONNABORTED') {
+            if (shouldSurfaceLoadIssue) {
+              runtimeLoadIssue.value = '运行状态读取超时，下方空表不代表远端没有服务或作业';
+            }
             return;
         }
         if (!isPolling) {
             if (err.response?.status === 401 || err.response?.status === 502 || err.code === 'ERR_NETWORK') {
                 deviceError.value = true;
+                if (shouldSurfaceLoadIssue) {
+                  runtimeLoadIssue.value = '无法通过平台代理读取运行状态，请检查后端地址或 Token';
+                }
                 if (!isPolling && !hasCache) {
                    ElMessage.error('无法通过平台代理连接设备，请检查后端地址或 Token');
                 }
             }
         } else {
              if (err.response?.status === 401 || err.response?.status === 502) {
-                 deviceError.value = true;
-             }
+                  deviceError.value = true;
+                 if (shouldSurfaceLoadIssue) {
+                   runtimeLoadIssue.value = '无法通过平台代理读取运行状态，请检查后端地址或 Token';
+                 }
+              }
+        }
+        if (!runtimeLoadIssue.value && shouldSurfaceLoadIssue) {
+            runtimeLoadIssue.value = '运行状态暂时不可用，请稍后再看当前入口的服务和作业';
         }
     } finally {
         taskFetchInFlight.delete(deviceId);
@@ -445,7 +491,11 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     }
 };
 
-const fetchLegacyTasks = async (deviceId: string, isPolling: boolean) => {
+const fetchLegacyTasks = async (
+  deviceId: string,
+  isPolling: boolean,
+  shouldApplyGlobalState: () => boolean = () => currentDeviceId.value === deviceId,
+) => {
   try {
     const response = await api.get(getDeviceEntryPath(deviceId, '/task/'));
     const tasks = response.data;
@@ -456,36 +506,50 @@ const fetchLegacyTasks = async (deviceId: string, isPolling: boolean) => {
     runtimeStatuses.value[deviceId] = {
       device_id: devices.value.find(d => d.id === deviceId)?.device_id || deviceId,
       device: {},
-      groups: [{ id: 'service:legacy', kind: 'service', title: '旧运行命令' }],
-      items: tasks.map((task: Task) => ({
-        id: `command:${task.id}`,
-        key: task.id,
-        kind: task.schedule ? 'job' : 'service',
-        source: 'command',
-        group_id: task.schedule ? 'job:legacy' : 'service:legacy',
-        group_title: task.schedule ? '旧命令调度' : '旧运行命令',
-        title: task.name,
-        description: task.description,
-        command: task.command,
-        cwd: task.cwd,
-        runtime_kind: task.runtime_kind || (task.schedule ? 'job' : 'service'),
-        schedule: task.schedule,
-        schedule_label: task.schedule || '',
-        timeout: task.timeout,
-        order: 0,
-        active: Boolean(task.status?.running),
-        status: task.status || { running: false },
-        actions: ['start', 'stop', 'logs', 'delete', 'reorder'],
-        raw: task as any,
-      })),
+      groups: [
+        { id: 'job:legacy', kind: 'job', title: '旧命令调度' },
+        { id: 'service:legacy', kind: 'service', title: '旧运行命令' },
+      ],
+      items: tasks.map((task: Task) => {
+        const kind = getLegacyCommandRuntimeKind(task);
+        return {
+          id: `command:${task.id}`,
+          key: task.id,
+          kind,
+          source: 'command',
+          group_id: kind === 'job' ? 'job:legacy' : 'service:legacy',
+          group_title: kind === 'job' ? '旧命令调度' : '旧运行命令',
+          title: task.name,
+          description: task.description,
+          command: task.command,
+          cwd: task.cwd,
+          runtime_kind: kind,
+          schedule: task.schedule,
+          schedule_policy: task.schedule_policy,
+          schedule_state: task.schedule_state,
+          schedule_status: task.schedule_status,
+          schedule_label: task.schedule || '',
+          next_run_at: task.next_run_at,
+          timeout: task.timeout,
+          order: 0,
+          active: Boolean(task.status?.running),
+          status: task.status || { running: false },
+          actions: ['start', 'stop', 'logs', 'delete', 'reorder'],
+          raw: task as any,
+        };
+      }),
       queue: null,
       runner_running: false,
       next_wake_at: null,
     };
-    deviceError.value = false;
+    if (shouldApplyGlobalState()) {
+      deviceError.value = false;
+      runtimeLoadIssue.value = '';
+    }
   } catch (err: any) {
-    if (!isPolling) {
+    if (!isPolling && shouldApplyGlobalState()) {
       deviceError.value = true;
+      runtimeLoadIssue.value = '无法读取运行列表，请检查当前入口连接状态';
       ElMessage.error(err.response?.data?.detail || '无法读取运行列表');
     }
   }
@@ -1172,7 +1236,7 @@ const getServiceStatusButtonTitle = (item: RuntimeItem) => {
 };
 
 function getRuntimeNextRunAt(item: RuntimeItem): string {
-  const value = item.next_run_at || item.status?.next_run_at || item.raw?.next_run_at || '';
+  const value = item.schedule_status?.next_run_at || item.next_run_at || item.status?.next_run_at || item.raw?.next_run_at || '';
   return typeof value === 'string' ? value : '';
 }
 
@@ -1380,6 +1444,8 @@ const initDeviceSortable = () => {
 
 onMounted(async () => {
   window.addEventListener('click', closeRuntimeContextMenu);
+  window.addEventListener('resize', updateViewportWidth);
+  updateViewportWidth();
   if (taskStore.devices.length > 0) {
     // Cache hit: trigger background refresh, don't wait
     fetchDevices();
@@ -1402,6 +1468,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('click', closeRuntimeContextMenu);
+  window.removeEventListener('resize', updateViewportWidth);
   stopTaskPolling();
   if (serviceSortableInstance) serviceSortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
@@ -1432,72 +1499,70 @@ onUnmounted(() => {
     </el-tabs>
 
     <!-- Device Info & Config -->
-    <div class="device-info-card" v-if="currentDevice">
-      <div class="card-header">
-        <div class="left">
-          <span class="device-title">{{ currentDevice.name || currentDevice.device_id }}</span>
-          <el-tag size="small" :type="getDeviceTypeTagType(currentDevice.type)">{{ currentDevice.type }}</el-tag>
-          <span v-if="currentDevice.mode === 'remote'" class="device-url">({{ currentDevice.server_url }})</span>
-        </div>
-        <div class="right">
-          <el-button 
-            type="info" 
-            link 
-            size="small" 
-            :icon="Delete" 
-            @click="handleDeleteDevice(currentDevice)"
-            style="margin-right: 10px; color: #909399;"
-          >移除设备</el-button>
-          <el-button v-if="deviceError" type="danger" size="small" :icon="Connection" @click="openTokenDialog">重连 / 更新 Token</el-button>
-          <el-button v-if="!isEditingDevice" :icon="Setting" size="small" @click="startEditingDevice">配置</el-button>
-          <div v-else>
-            <el-button size="small" @click="stopEditingDevice">取消</el-button>
-            <el-button type="primary" size="small" @click="updateDeviceConfig">保存</el-button>
-          </div>
-        </div>
-      </div>
-      
-      <div v-if="isEditingDevice" class="card-content">
-        <el-form :inline="true" label-width="100px" size="small">
-          <el-form-item label="设备名称">
-             <el-input 
-               v-model="currentDeviceConfig.new_name" 
-               placeholder="设备显示名称" 
-               style="width: 200px;"
-             />
-          </el-form-item>
-          <el-form-item v-if="currentDevice.mode === 'remote'" label="后端地址">
-             <el-input
-               v-model="currentDeviceConfig.server_url"
-               placeholder="例如 http://192.168.1.5:8000"
-               style="width: 280px;"
-             />
-          </el-form-item>
-          <el-form-item label="Token">
-             <div class="device-token-row">
-               <el-input
-                 :model-value="deviceTokenDisplayValue"
-                 class="device-token-input"
-                 :readonly="!isDeviceTokenVisible"
-                 :disabled="tokenRevealLoading"
-                 placeholder="点击右侧眼睛读取明文"
-                 @update:model-value="handleDeviceTokenInput"
-               />
-               <el-button
-                 circle
-                 :icon="isDeviceTokenVisible ? Hide : View"
-                 :loading="tokenRevealLoading"
-                 :title="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
-                 :aria-label="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
-                 @click="toggleDeviceTokenVisibility"
-               />
-             </div>
-          </el-form-item>
-        </el-form>
-      </div>
+    <div v-if="currentDevice" class="device-toolbar">
+      <el-button
+        type="info"
+        link
+        size="small"
+        :icon="Delete"
+        @click="handleDeleteDevice(currentDevice)"
+        style="color: #909399;"
+      >移除设备</el-button>
+      <el-button v-if="deviceError" type="danger" size="small" :icon="Connection" @click="openTokenDialog">重连 / 更新 Token</el-button>
+      <el-button v-if="!isEditingDevice" :icon="Setting" size="small" @click="startEditingDevice">配置</el-button>
+      <template v-else>
+        <el-button size="small" @click="stopEditingDevice">取消</el-button>
+        <el-button type="primary" size="small" @click="updateDeviceConfig">保存</el-button>
+      </template>
     </div>
 
-    <RuntimeSystemMetricsChart v-if="currentDeviceId" :entry-id="currentDeviceId" />
+    <div v-if="currentDevice && isEditingDevice" class="device-edit-panel">
+      <el-form :inline="true" label-width="100px" size="small">
+        <el-form-item label="设备名称">
+           <el-input
+             v-model="currentDeviceConfig.new_name"
+             placeholder="设备显示名称"
+             style="width: 200px;"
+           />
+        </el-form-item>
+        <el-form-item v-if="currentDevice.mode === 'remote'" label="后端地址">
+           <el-input
+             v-model="currentDeviceConfig.server_url"
+             placeholder="例如 http://192.168.1.5:8000"
+             style="width: 280px;"
+           />
+        </el-form-item>
+        <el-form-item label="Token">
+           <div class="device-token-row">
+             <el-input
+               :model-value="deviceTokenDisplayValue"
+               class="device-token-input"
+               :readonly="!isDeviceTokenVisible"
+               :disabled="tokenRevealLoading"
+               placeholder="点击右侧眼睛读取明文"
+               @update:model-value="handleDeviceTokenInput"
+             />
+             <el-button
+               circle
+               :icon="isDeviceTokenVisible ? Hide : View"
+               :loading="tokenRevealLoading"
+               :title="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
+               :aria-label="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
+               @click="toggleDeviceTokenVisibility"
+             />
+           </div>
+        </el-form-item>
+      </el-form>
+    </div>
+
+    <el-alert
+      v-if="runtimeLoadIssue"
+      :title="runtimeLoadIssue"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="runtime-load-alert"
+    />
 
     <section class="runtime-section">
       <div class="runtime-section-title">
@@ -1535,13 +1600,13 @@ onUnmounted(() => {
             <span v-else class="runtime-order-badge">{{ scope.$index + 1 }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="名称" width="116">
+        <el-table-column label="名称" :width="runtimeNameColumnWidth">
           <template #default="{ row }">
             <div class="task-name">{{ row.title }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="执行" min-width="520">
+        <el-table-column label="执行" :min-width="runtimeCommandColumnMinWidth">
           <template #default="{ row }">
             <div v-if="row.source === 'command'" class="command-cell" :title="row.command">{{ row.command }}</div>
             <div v-else class="muted command-cell" :title="[row.schedule_label, row.description].filter(Boolean).join(' · ')">
@@ -1568,7 +1633,7 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="下次触发" width="130" align="right">
+        <el-table-column label="下次触发" :width="runtimeNextColumnWidth" align="right">
           <template #default="{ row }">
             <div class="runtime-next-cell">
               <span
@@ -1611,13 +1676,13 @@ onUnmounted(() => {
             <span class="runtime-order-badge">{{ scope.$index + 1 }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="名称" width="116">
+        <el-table-column label="名称" :width="runtimeNameColumnWidth">
           <template #default="{ row }">
             <div class="task-name">{{ row.title }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="执行" min-width="520">
+        <el-table-column label="执行" :min-width="runtimeCommandColumnMinWidth">
           <template #default="{ row }">
             <div v-if="row.source === 'command'" class="command-cell" :title="row.command">{{ row.command }}</div>
             <div v-else class="muted command-cell" :title="row.description || row.title">
@@ -1645,7 +1710,7 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="下次触发" width="130" align="right">
+        <el-table-column label="下次触发" :width="runtimeNextColumnWidth" align="right">
           <template #default="{ row }">
             <div class="runtime-next-cell">
               <span
@@ -1724,6 +1789,8 @@ onUnmounted(() => {
         暂无作业队列记录
       </div>
     </div>
+
+    <RuntimeSystemMetricsChart v-if="currentDeviceId" :entry-id="currentDeviceId" />
 
     <!-- Create Runtime Command Dialog -->
     <el-dialog v-model="jobCatalogDialogVisible" title="添加作业" width="640px">
@@ -2065,6 +2132,10 @@ onUnmounted(() => {
   margin-top: 16px;
 }
 
+.runtime-load-alert {
+  margin-bottom: 12px;
+}
+
 .runtime-section-title {
   display: inline-flex;
   align-items: center;
@@ -2281,36 +2352,20 @@ onUnmounted(() => {
   margin-top: 3px;
 }
 
-.device-info-card {
+.device-toolbar {
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-edit-panel {
+  margin-bottom: 20px;
+  padding: 15px;
   border: 1px solid #e4e7ed;
   border-radius: 4px;
-  margin-bottom: 20px;
   background-color: #fff;
-}
-
-.card-header {
-  padding: 10px 15px;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background-color: #f5f7fa;
-}
-
-.device-title {
-  font-weight: bold;
-  font-size: 16px;
-  margin-right: 10px;
-}
-
-.device-url {
-  margin-left: 10px;
-  color: #888;
-  font-size: 12px;
-}
-
-.card-content {
-  padding: 15px;
 }
 
 .device-token-row {
@@ -2388,5 +2443,19 @@ onUnmounted(() => {
 }
 .add-device-btn:hover {
   color: #409EFF !important;
+}
+
+@media (max-width: 960px) {
+  .device-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .task-name {
+    max-width: 80px;
+  }
+
+  .command-cell {
+    max-width: 300px;
+  }
 }
 </style>

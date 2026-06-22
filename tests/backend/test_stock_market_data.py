@@ -591,14 +591,14 @@ def test_fetch_akshare_history_aggregates_quarterly_rows(monkeypatch) -> None:
                 },
             ]
 
-    def fake_stock_zh_a_hist(**kwargs):
+    def fake_fund_etf_hist_em(**kwargs):
         calls.update(kwargs)
         return FakeFrame()
 
     monkeypatch.setitem(
         sys.modules,
         "akshare",
-        SimpleNamespace(stock_zh_a_hist=fake_stock_zh_a_hist),
+        SimpleNamespace(fund_etf_hist_em=fake_fund_etf_hist_em),
     )
 
     history = fetch_akshare_stock_history(

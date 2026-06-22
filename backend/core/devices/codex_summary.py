@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from backend.core.devices import device as device_core
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.codex.sessions import (
     annotate_codex_daily_summary_source,
     cache_remote_codex_thread_detail,
@@ -22,7 +23,6 @@ from backend.models import CodexTextCacheTurn, UserDevice
 
 CODEX_REMOTE_READ_TIMEOUT_SECONDS = 120
 CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS = 180
-REMOTE_DEVICE_DIRECT_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
 
 
 def codex_summary_entry_label(entry: UserDevice | dict[str, Any]) -> str:

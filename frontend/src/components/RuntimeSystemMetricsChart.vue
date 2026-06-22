@@ -76,6 +76,11 @@ const memoryUsageLabel = computed(() => {
   return `${formatBytes(item.memory_used)} / ${formatBytes(item.memory_total)}`;
 });
 
+const displayErrorMessage = computed(() => {
+  if (!errorMessage.value) return '';
+  return samples.value.length ? '资源监控暂时失联，先保留最近采样' : '资源监控暂不可用';
+});
+
 const buildChartOption = (): ChartOption => {
   const cpuData = samples.value.map(sample => [sample.sampled_at * 1000, sample.cpu_percent]);
   const memoryData = samples.value.map(sample => [sample.sampled_at * 1000, sample.memory_percent]);
@@ -254,7 +259,7 @@ onUnmounted(() => {
     <div class="system-monitor-body" v-loading="loading">
       <div ref="chartRef" class="system-monitor-chart" />
       <div v-if="!loading && !samples.length" class="system-monitor-empty">暂无采样</div>
-      <div v-if="errorMessage" class="system-monitor-error">{{ errorMessage }}</div>
+      <div v-if="displayErrorMessage" class="system-monitor-error" :title="errorMessage">{{ displayErrorMessage }}</div>
     </div>
   </section>
 </template>

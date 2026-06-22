@@ -24,6 +24,7 @@ from starlette.background import BackgroundTask
 from backend.core.runtime.background_task_queue import background_task_queue
 from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
 from backend.core.access.feature_access_guard import ensure_feature_access
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User, UserDevice
@@ -34,7 +35,6 @@ DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 500
 WECHAT_ARCHIVE_SYNC_TASK_NAME = "wechat_archive_incremental_sync"
 _WECHAT_ARCHIVE_LAST_SYNC_RESULT: dict[str, Any] | None = None
-REMOTE_DEVICE_DIRECT_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
 REMOTE_WECHAT_DEVICE_PREFIX = "entry:"
 
 

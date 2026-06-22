@@ -11,7 +11,7 @@
 
     <section v-else class="browser-panel" v-loading="isLoadingListing">
       <section
-        v-if="directoryEntries.length || mediaItems.length || !isDeviceRootPath(normalizedPathInput)"
+        v-if="shouldShowBrowserWorkspace"
         class="waterfall-media-section"
       >
         <div class="media-actions">
@@ -366,6 +366,14 @@ import {
   type GalleryUrlVariant,
 } from '@/utils/imageGallery';
 import { monitorPolledTask } from '@/utils/longTask';
+import {
+  formatPathInput as formatSharedPathInput,
+  isAbsolutePath,
+  isDeviceRootPath as isSharedDeviceRootPath,
+  isSameOrSubPath,
+  normalizeComparablePath,
+  normalizePathInput as normalizeSharedPathInput,
+} from '../shared/pathConstraints';
 
 const props = withDefaults(defineProps<{
   fixedDeviceId?: string;
@@ -525,9 +533,7 @@ let directoryLoadVersion = 0;
 let mediaLoadVersion = 0;
 const pendingMediaRequests = new Map<string, Promise<void>>();
 
-const isAbsolutePath = (value: string) => /^(?:[a-zA-Z]:[\\/]|\\\\|\/|~(?:[\\/]|$))/.test((value || '').trim());
-
-const isDeviceRootPath = (value: string) => (value || '').trim() === DEVICE_ROOT_SENTINEL;
+const isDeviceRootPath = (value: string) => isSharedDeviceRootPath(value, DEVICE_ROOT_SENTINEL);
 
 const getPathStorageKey = (entryId: string) => `${DEVICE_PATH_STORAGE_PREFIX}:${entryId || 'default'}`;
 const getScanLimitStorageKey = (storageKey: string) => `${storageKey}${DEVICE_SCAN_LIMIT_STORAGE_SUFFIX}`;
@@ -662,30 +668,9 @@ const persistRecursiveDisplay = (storageKey: string, value: boolean) => {
   }
 };
 
-const formatPathInput = (value: string) => (isDeviceRootPath(value) ? DEVICE_ROOT_LABEL : value);
+const formatPathInput = (value: string) => formatSharedPathInput(value, DEVICE_ROOT_SENTINEL, DEVICE_ROOT_LABEL);
 
-const normalizePathInput = (value: string) => {
-  const trimmed = (value || '').trim();
-  if (!trimmed || trimmed === DEVICE_ROOT_LABEL || trimmed === DEVICE_ROOT_SENTINEL) {
-    return DEVICE_ROOT_SENTINEL;
-  }
-  return isAbsolutePath(trimmed) ? trimmed : '';
-};
-
-const normalizeComparablePath = (value: string) => {
-  let normalized = (value || '').trim().replace(/\//g, '\\').replace(/\\+/g, '\\');
-  if (/^[a-zA-Z]:\\?$/.test(normalized)) {
-    return `${normalized.slice(0, 2)}\\`.toLowerCase();
-  }
-  normalized = normalized.replace(/\\+$/, '');
-  return normalized.toLowerCase();
-};
-
-const isSameOrSubPath = (candidate: string, root: string) => {
-  const normalizedCandidate = normalizeComparablePath(candidate);
-  const normalizedRoot = normalizeComparablePath(root);
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}\\`);
-};
+const normalizePathInput = (value: string) => normalizeSharedPathInput(value, DEVICE_ROOT_SENTINEL, DEVICE_ROOT_LABEL);
 
 const normalizedFixedRootPath = computed(() => {
   const normalized = normalizePathInput(props.fixedRootPath);
@@ -803,6 +788,14 @@ const getAbsoluteParentPath = (value: string) => {
 
 const normalizedPathInput = computed(() => normalizePathInput(selectedPath.value));
 const canBrowse = computed(() => canBrowseFor(selectedEntryId.value, selectedPath.value));
+const shouldShowBrowserWorkspace = computed(() =>
+  isLoadingListing.value
+  || hasFixedRootBoundary.value
+  || canBrowse.value
+  || directoryEntries.value.length > 0
+  || mediaItems.value.length > 0
+  || !isDeviceRootPath(normalizedPathInput.value)
+);
 const isLockedDeviceMissing = computed(() =>
   isDeviceLocked.value && !lockedEntryId.value && devices.value.length > 0
 );
