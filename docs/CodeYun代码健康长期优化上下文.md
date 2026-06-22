@@ -11,6 +11,7 @@
 
 - 高复杂模块地图
 - 当前优先候选
+- 来自其他自动化的模型债务交接
 - 每个候选的证据、风险和验证命令
 - 已完成的小切片和可继续推进的下一步
 - 哪些扫描结果属于噪声或低价值候选
@@ -23,6 +24,14 @@
 
 本文件只保留可累积的结论和下一步任务。
 
+跨自动化交接队列位于：
+
+```text
+docs/CodeYun自动化协作交接.md
+```
+
+每轮代码健康优化开始时，应先检查其中 `open` 或 `accepted` 状态的条目。若条目来自 `CodeYun 前端设计巡检`，优先判断它是否揭示了 API、DTO、数据结构或业务建模不正交，而不是只把它当作前端样式问题。
+
 ## 自动化执行原则
 
 每轮触发时，只要后台队列空闲且没有硬阻塞，就必须推进一个具体、可验证的小切片。
@@ -33,6 +42,12 @@
 - `action`: 本轮要做的动作
 - `success_metric`: 可判断是否完成的指标
 - `verification`: 测试、性能 baseline、引用证据或机器可读报告
+
+如果本轮接手交接条目，还必须明确：
+
+- `handoff_id`: `docs/CodeYun自动化协作交接.md` 中的条目编号
+- `root_cause_level`: API/DTO 数据投影、后端状态模型、业务对象建模、或误报
+- `handoff_update`: 本轮结束后如何更新交接条目状态
 
 如果工作区已有未提交变更：
 
@@ -51,6 +66,38 @@
 | Runtime/后台任务 | `backend/core/runtime/`, `backend/api/task_manager.py` | 长驻任务、队列状态、重试和日志路径 |
 | 前端高复杂页面 | `frontend/src/standard/cluster/`, `frontend/src/standard/fanxiu/`, `frontend/src/components/ImageGalleryWorkspace.vue` | 状态重复、请求重复、组件过大 |
 | 数据/文件/扫描链路 | 文件系统扫描、Everything、图片/文档处理、缓存、序列化、数据库查询 | 慢接口、重复 IO、响应体过大 |
+
+## 前端巡检交接处理规则
+
+当 `docs/CodeYun自动化协作交接.md` 中存在 `open` 条目时，代码健康优化应把它视为候选来源之一。
+
+优先处理满足以下条件的条目：
+
+- 表层 UI 症状已经由真实页面、截图或报告证明。
+- 前端巡检已经说明它为什么不是单纯 CSS/文案问题。
+- 涉及对象能收敛到一个 API、DTO、状态投影、服务函数或业务对象。
+- 有可运行的验证命令，或能先建立只读审计报告。
+
+可自动接手的动作：
+
+- 只读模型审计：梳理规则、状态、命令、结果、展示投影是否混杂。
+- 状态投影收敛方案：建议或实现小范围只读 DTO/API projection，减少前端推断。
+- 小步重构：在测试覆盖足够且边界明确时，拆出更正交的 helper、schema 或 projection builder。
+- 验证命令设计：为后续安全重构补上最小测试或静态检查。
+
+不得自动接手的动作：
+
+- 需要重新定义业务流程。
+- 需要数据库大迁移或广泛兼容层。
+- 需要新增用户可见实体、权限语义或危险数据写入流程。
+- 需要一次性改完多条业务链路。
+
+接手后更新 `docs/CodeYun自动化协作交接.md`：
+
+- 开始处理：把状态改为 `accepted`，记录本轮报告路径。
+- 完成：改为 `fixed`，记录验证命令和结果摘要。
+- 判断不是债务：改为 `wontfix`，说明依据。
+- 需要用户判断：改为 `needs-human-decision`，写清唯一决策点。
 
 ## 当前主线：`backend/api/filesystem.py` 重复文件分析瘦身
 
@@ -662,6 +709,74 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 2. `backend/api/filesystem.py` `publish_partial` 闭包依赖评估：等当前 `filesystem.py` 改动提交边界清晰后再做，避免把新抽象和已有重复文件分析改动混在一起。
 3. `backend/api/filesystem.py` 重复文件分析 helper 群后续瘦身：仅在出现新的重复参数证据或测试覆盖需求时继续推进。
 4. 转向新的大文件候选函数级细化：`backend/api/note_sheets.py` 或 `backend/api/eastmoney.py`，先只读生成最大函数和验证命令。
+
+优先级 3A 已完成：
+
+- `object`: `backend/api/note_sheets.py` 大文件候选函数级细化
+- `action`: 已从大文件扫描进一步细化到 AST 函数/类/路由层级；当前文件约 17175 行，698 个函数或类，57 个路由，72 个 Pydantic/数据类；最大函数为 `detect_note_sheet_registration_user_id` 286 行，最大非路由 helper 为 `_apply_note_sheet_patch_ops` 272 行
+- `success_metric`: 产出区段排序和下一步验证命令，避免只停留在“大文件”候选
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_note_sheets_api.py -q --durations=10`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-082330-note_sheets_function_slimming_candidate_refinement.json`
+
+新的优先级 3B：
+
+- `object`: `backend/api/note_sheets.py` 报名/考勤 helper 区段
+- `action`: 先只读核验 `tests/backend/test_note_sheets_api.py` 对 `_sync_registration_rows_to_attendance_document`、`_update_registration_order_match_document`、`_run_registration_user_match_background` 等大 helper 的覆盖情况；选择一个已有测试覆盖的小 helper 簇，而不是直接拆 8200 行业务段
+- `success_metric`: 产出可执行小切片候选：目标 helper、引用点、测试命令、是否适合安全抽取
+- `risk`: low
+- `verification`: `rg -n "_sync_registration_rows_to_attendance_document|_update_registration_order_match_document|_run_registration_user_match_background|detect_note_sheet_registration_user_id" tests/backend/test_note_sheets_api.py backend/api/note_sheets.py`
+
+优先级 3B 已完成：
+
+- `object`: `backend/api/note_sheets.py` 报名/考勤 helper 区段测试覆盖核验
+- `action`: 已统计大 helper 覆盖情况：`_sync_registration_rows_to_attendance_document` 有 7 个直接 focused 测试和组合更新入口覆盖；`_update_registration_order_match_document` 有 1 个直接测试并被多个 endpoint/background 路径调用；`_run_registration_user_match_background` 主要通过后台 run API 间接覆盖；`detect_note_sheet_registration_user_id` 是 286 行路由编排函数，测试通过 endpoint 覆盖而非函数名直接引用
+- `success_metric`: 已产出候选排序，但最小验证暴露现有失败：`test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row` 期望 `repaired_count == 3`，当前实际为 `2`
+- `risk`: low read-only
+- `verification`: `uv run pytest tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row -q --durations=10` 稳定失败；3 个 focused sync 测试组合为 `1 failed, 2 passed`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-083830-note_sheets_registration_helper_coverage_refinement.json`
+
+新的优先级 3C：
+
+- `object`: `_sync_registration_rows_to_attendance_document` 的 `repaired_count` 语义
+- `action`: 先诊断 focused 测试中原本应计为 3 次 repair 的三处字段/样式修复，找出当前少计的 1 次是实现回归还是测试期望过期；在该失败清零前，不对该 helper 做代码瘦身
+- `success_metric`: 明确 `repaired_count` 少计来源，并给出修复/更新测试的最小验证命令
+- `risk`: medium-low
+- `verification`: `uv run pytest tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row -q --durations=10`
+
+优先级 3C 已完成：
+
+- `object`: `_sync_registration_rows_to_attendance_document` 的 `repaired_count` 语义
+- `action`: 已确认行为断言全部成立：报名日期/公式/订单金额/关联用户 ID 被修复，旧 `cell_meta` 与 `entity_cells` 样式也被清理；失败只来自计数期望。当前 summary 文案语义是“修复 N 行”，相邻测试也按受影响行数断言，因此将 focused 测试期望从 `3` 收敛为 `2`
+- `success_metric`: 失败清零；相关同步测试通过，后续可以在绿色 baseline 上继续只读寻找安全 helper 切片
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_allows_attendance_without_user_id tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_inserts_identified_row_without_user_id tests/backend/test_note_sheets_api.py::test_note_sheet_registration_attendance_sync_derives_order_amount_without_attendance_order_column -q --durations=10` 通过，`4 passed, 1 warning`；`uv run python -m py_compile backend/api/note_sheets.py` 通过
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-085400-note_sheets_repaired_count_semantics_fix.json`
+
+新的优先级 3D：
+
+- `object`: `_sync_registration_rows_to_attendance_document` 内部的行修复/样式修复分支
+- `action`: 只读寻找是否存在可抽取的纯 helper，例如“已有行匹配后构造 candidate + merge + meta repair 判定”的局部块；只有在能保持 `4 passed` focused baseline 时才做安全瘦身
+- `success_metric`: 产出接受/拒绝候选；若接受，修改后仍通过 3C 的 4 个 focused 测试
+- `risk`: medium-low
+- `verification`: 同 3C focused 测试命令
+
+优先级 3D 已完成：
+
+- `object`: `_sync_registration_rows_to_attendance_document` 内部的已有行修复分支
+- `action`: 已完成只读候选判断；`existing_index is not None` 分支中“构造 candidate row -> merge 默认值 -> 判定旧样式/空进度样式 -> 更新 attendance_rows -> 记录 repair_meta_targets”约 48 行，职责集中，适合后续提取为 `_repair_existing_attendance_row_from_registration` 之类的局部 helper
+- `success_metric`: 产出接受但暂缓的候选；当前工作区已有 3C 测试期望修正，不把中风险抽取混入同一小切片
+- `risk`: medium-low
+- `verification`: 3C 的 4 个 focused 测试仍通过，`4 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-090900-note_sheets_sync_existing_row_helper_candidate.json`
+
+新的优先级 3E：
+
+- `object`: `_sync_registration_rows_to_attendance_document` 已有行修复分支
+- `action`: 等 3C/3D 文档和测试变更有清晰提交边界后，执行安全小范围抽取：提取一个 helper 返回 `repaired_row/changed/needs_meta_repair/template_index` 或等价结构，保持外层计数和 `repair_meta_targets` 语义不变
+- `success_metric`: 主函数减少一个局部复杂分支；行为不变；3C 的 4 个 focused 测试和 `py_compile` 通过
+- `risk`: medium-low
+- `verification`: 3C focused 测试命令 + `uv run python -m py_compile backend/api/note_sheets.py`
 
 优先级 2：
 

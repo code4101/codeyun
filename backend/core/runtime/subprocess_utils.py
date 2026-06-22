@@ -66,14 +66,20 @@ def install_no_window_popen_default() -> bool:
 
     original_popen = subprocess.Popen
 
-    def codeyun_no_window_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
-        kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
-        if kwargs.get("startupinfo") is None:
-            kwargs["startupinfo"] = _windows_startupinfo_hidden()
-        return original_popen(*args, **kwargs)
+    class CodeYunNoWindowPopen(original_popen):  # type: ignore[misc, valid-type]
+        _codeyun_no_window_default = True
 
-    setattr(codeyun_no_window_popen, "_codeyun_no_window_default", True)
-    subprocess.Popen = codeyun_no_window_popen  # type: ignore[assignment]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
+            if kwargs.get("startupinfo") is None:
+                kwargs["startupinfo"] = _windows_startupinfo_hidden()
+            super().__init__(*args, **kwargs)
+
+    CodeYunNoWindowPopen.__name__ = getattr(original_popen, "__name__", "Popen")
+    CodeYunNoWindowPopen.__qualname__ = getattr(original_popen, "__qualname__", "Popen")
+    CodeYunNoWindowPopen.__module__ = getattr(original_popen, "__module__", "subprocess")
+
+    subprocess.Popen = CodeYunNoWindowPopen  # type: ignore[assignment]
     return True
 
 
@@ -182,8 +188,70 @@ def apply_node_windows_hide_env(env: dict[str, str], *, root_dir: str | Path | N
     return env
 
 
+def python_no_window_sitecustomize_dir(*, root_dir: str | Path | None = None) -> Path:
+    root = Path(root_dir).resolve(strict=False) if root_dir is not None else _repo_root_from_runtime()
+    return root / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+
+
+def apply_python_no_window_env(env: dict[str, str], *, root_dir: str | Path | None = None) -> dict[str, str]:
+    """Ensure CodeYun-managed Python services hide their own child processes.
+
+    The service process itself is already launched hidden by popen_background().
+    This env hook covers the next layer: external Python services that later
+    call subprocess.Popen/run for adb, git, tshark, etc.
+    """
+
+    if os.name != "nt":
+        return env
+    sitecustomize_dir = python_no_window_sitecustomize_dir(root_dir=root_dir).resolve(strict=False)
+    if not (sitecustomize_dir / "sitecustomize.py").is_file():
+        return env
+    current_paths = [part for part in str(env.get("PYTHONPATH") or "").split(os.pathsep) if part]
+    sitecustomize_path = os.fspath(sitecustomize_dir)
+    normalized = {os.path.normcase(os.path.abspath(part)) for part in current_paths}
+    if os.path.normcase(os.path.abspath(sitecustomize_path)) not in normalized:
+        current_paths.insert(0, sitecustomize_path)
+    env["PYTHONPATH"] = os.pathsep.join(current_paths)
+    env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] = "1"
+    return env
+
+
+def python_service_env(env: dict[str, str] | None = None, *, root_dir: str | Path | None = None) -> dict[str, str]:
+    service_env = dict(os.environ if env is None else env)
+    return apply_python_no_window_env(service_env, root_dir=root_dir)
+
+
+def _looks_like_python_command(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = Path(os.fspath(command[0])).name.lower()
+    return executable in {"python.exe", "pythonw.exe", "python", "pythonw", "py.exe", "py"}
+
+
+def _looks_like_node_command(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = Path(os.fspath(command[0])).name.lower()
+    return executable in {"node.exe", "node"}
+
+
+def _inject_python_service_env_for_command(command: list[str], kwargs: dict[str, Any]) -> None:
+    if os.name != "nt" or not _looks_like_python_command(command):
+        return
+    kwargs["env"] = python_service_env(kwargs.get("env"))
+
+
+def _inject_node_service_env_for_command(command: list[str], kwargs: dict[str, Any]) -> None:
+    if os.name != "nt" or not _looks_like_node_command(command):
+        return
+    env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+    kwargs["env"] = apply_node_windows_hide_env(env)
+
+
 def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     kwargs.setdefault("shell", False)
+    _inject_python_service_env_for_command(command, kwargs)
+    _inject_node_service_env_for_command(command, kwargs)
     kwargs.update(hidden_subprocess_kwargs())
     return subprocess.run(command, **kwargs)
 
@@ -193,6 +261,8 @@ def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]
     kwargs.setdefault("stdout", subprocess.DEVNULL)
     kwargs.setdefault("stderr", subprocess.DEVNULL)
     kwargs.setdefault("shell", False)
+    _inject_python_service_env_for_command(command, kwargs)
+    _inject_node_service_env_for_command(command, kwargs)
     kwargs.update(background_popen_kwargs(independent=True))
     return subprocess.Popen(command, **kwargs)
 
@@ -230,6 +300,7 @@ def popen_python_module_background(
     executable: str | Path | None = None,
     **kwargs: Any,
 ) -> subprocess.Popen[Any]:
+    kwargs["env"] = python_service_env(kwargs.get("env"))
     return popen_background(
         python_module_command(module, *args, preferred_root=preferred_root, executable=executable),
         **kwargs,
@@ -243,6 +314,7 @@ def popen_python_script_background(
     executable: str | Path | None = None,
     **kwargs: Any,
 ) -> subprocess.Popen[Any]:
+    kwargs["env"] = python_service_env(kwargs.get("env"))
     return popen_background(
         python_script_command(script_path, *args, preferred_root=preferred_root, executable=executable),
         **kwargs,

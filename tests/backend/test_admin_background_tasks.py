@@ -35,6 +35,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "ruanyf_weekly_note",
         "attendance_summary_monthly_templates",
         "media_sync_home_discovery",
+        "critical_command_services_check",
         "attendance_fanbei_evening_steps",
         "attendance_fanbei_morning_steps",
         "rime_config_sync",
@@ -43,7 +44,41 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "fanxiu_slimming",
     }.issubset(task_keys)
     assert tasks_by_key["auto_git_commit"]["title"] == "GitHub 项目自动提交"
+    assert tasks_by_key["critical_command_services_check"]["schedule_policy"]["trigger"]["minutes"] == 5
     assert "queue" in payload
+
+
+def test_admin_background_tasks_status_uses_runner_schedule_projection(client, monkeypatch):
+    monkeypatch.setattr(
+        "backend.api.admin.get_background_task_runner_snapshot",
+        lambda: {
+            "runner_running": False,
+            "next_wake_at": None,
+            "last_error": None,
+            "tasks": {
+                "auto_git_commit": {
+                    "next_run_at": None,
+                    "enabled": False,
+                    "schedule_policy": {"enabled": False, "trigger": {"type": "daily", "time": "00:15"}},
+                    "schedule_label": "每天 00:15",
+                    "retry_label": "失败后 30 分钟重试",
+                }
+            },
+        },
+    )
+
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/status")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    tasks_by_key = {item["key"]: item for item in response.json()["tasks"]}
+    auto_git = tasks_by_key["auto_git_commit"]
+    assert auto_git["enabled"] is False
+    assert auto_git["next_run_at"] is None
+    assert auto_git["schedule_policy"]["enabled"] is False
 
 
 def test_admin_background_tasks_can_trigger_storage_job(client):
@@ -88,6 +123,24 @@ def test_admin_background_tasks_can_trigger_fanbei_placeholder_job(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["task_key"] == "attendance_fanbei_evening_steps"
+    assert payload["queued"] is True
+    assert payload["queue_task_id"]
+
+
+def test_admin_background_tasks_can_trigger_critical_services_check(client, monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.runtime.background_task_runner._run_critical_command_services_check_job",
+        lambda: {"status": "ok", "started": [], "already_running": [], "errors": []},
+    )
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.post("/api/admin/background-tasks/critical_command_services_check/trigger")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_key"] == "critical_command_services_check"
     assert payload["queued"] is True
     assert payload["queue_task_id"]
 

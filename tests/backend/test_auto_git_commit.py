@@ -7,6 +7,8 @@ from backend.core.ai.git_commit import AiGitCommitError
 from backend.core.ai.git_repos import save_user_ai_git_repos
 from backend.core.ai.auto_git_commit import (
     AUTO_GIT_COMMIT_CRON,
+    AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
+    AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS,
     AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY,
     AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS,
     AutoGitCommitCandidate,
@@ -213,6 +215,38 @@ def test_auto_git_commit_marks_stale_running_run_failed(session):
     assert updated.finished_at == now_ts
 
 
+def test_auto_git_commit_marks_orphaned_queued_run_failed(session):
+    now_ts = 2_000_000.0
+    orphaned_ts = now_ts - AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS - 1
+    orphaned_run = AutoGitCommitRun(
+        status="pending",
+        trigger_reason="idle_maintenance",
+        run_date="2026-05-06",
+        stage="queued",
+        stage_label="已进入队列",
+        queue_task_id="missing-queue-task",
+        heartbeat_at=orphaned_ts,
+        created_at=orphaned_ts,
+        updated_at=orphaned_ts,
+    )
+    session.add(orphaned_run)
+    session.commit()
+
+    changed_count = mark_stale_auto_git_commit_runs(
+        session,
+        now_ts=now_ts,
+        queue_snapshot={"running": None, "pending": []},
+    )
+
+    assert changed_count == 1
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, orphaned_run.id)
+    assert updated.status == "failed"
+    assert updated.stage == "orphaned_queue"
+    assert updated.stage_label == "队列任务丢失"
+    assert "队列中没有对应 auto_git_commit 任务" in updated.error_message
+
+
 def test_auto_git_commit_due_scheduler_ignores_stale_active_run(session):
     now = _dt("2026-05-06T10:00:00+08:00")
     stale_ts = now.timestamp() - AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS - 1
@@ -266,6 +300,7 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     draft_calls = []
 
@@ -308,6 +343,55 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
+def test_auto_git_commit_worker_skips_dirty_repo_below_line_threshold(session, auth_user, tmp_path, monkeypatch):
+    dirty_repo = tmp_path / "small-dirty-repo"
+    _init_git_repo(dirty_repo)
+    (dirty_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    draft_calls = []
+
+    def fake_draft_generator(**kwargs):
+        draft_calls.append(kwargs)
+        return {
+            "subject": "不应生成",
+            "body": [],
+            "model": "fake-model",
+            "needs_split": False,
+            "reason": "",
+        }
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        draft_generator=fake_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    assert updated.status == "skipped"
+    assert updated.stage == "below_threshold"
+    assert updated.stage_label == "未达到自动提交阈值"
+    assert updated.changed_repo_count == 1
+    assert updated.committed_repo_count == 0
+    assert updated.skipped_repo_count == 1
+    assert draft_calls == []
+    repo_result = updated.result_json["repos"][0]
+    assert repo_result["status"] == "skipped"
+    assert repo_result["skip_reason"] == "below_line_threshold"
+    assert repo_result["auto_commit_line_threshold"] == AUTO_GIT_COMMIT_MIN_CHANGED_LINES
+    assert repo_result["estimated_changed_line_count"] < AUTO_GIT_COMMIT_MIN_CHANGED_LINES
+    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "init"
+    assert "feature.txt" in _run_git(dirty_repo, "status", "--short")
+
+
 def test_auto_git_commit_worker_uses_lightweight_ai_for_large_codeyun(session, auth_user, tmp_path, monkeypatch):
     dirty_repo = tmp_path / "large-codeyun-repo"
     _init_git_repo(dirty_repo)
@@ -326,6 +410,7 @@ def test_auto_git_commit_worker_uses_lightweight_ai_for_large_codeyun(session, a
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     draft_calls = []
 
@@ -386,6 +471,7 @@ def test_auto_git_commit_worker_records_summary_only_before_draft(session, auth_
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     events = []
 
@@ -439,6 +525,7 @@ def test_auto_git_commit_worker_auto_ignores_obvious_dot_tmp_directory(session, 
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     def fake_draft_generator(**kwargs):
         return {
@@ -488,6 +575,7 @@ def test_auto_git_commit_worker_marks_run_failed_when_any_repo_fails(session, au
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     def fake_draft_generator(**kwargs):
         if str(kwargs.get("cwd") or "") == str(failed_repo):
@@ -552,6 +640,7 @@ def test_auto_git_commit_worker_raises_for_queue_retry_when_repo_fails(session, 
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     def failing_draft_generator(**kwargs):
         raise AiGitCommitError("模型额度不足")
@@ -592,6 +681,7 @@ def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committin
         "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
 
     def failing_draft_generator(**kwargs):
         raise AiGitCommitError("模型额度不足")

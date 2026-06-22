@@ -6,11 +6,35 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, text
 
 from backend.api import task_manager as task_manager_module
+from backend.core.devices.device import TaskStatus
 from backend.migrations.manager import (
     run_startup_schema_repairs,
     v55_migrate_documentasset_primary_key_to_numeric,
 )
 from backend.models import Task
+from tests.task_manager_schedule_assertions import assert_schedule_next_run_synced
+
+
+class _RecordingScheduler:
+    timezone = None
+
+    def __init__(self, existing_jobs=None):
+        self.existing_jobs = set(existing_jobs or [])
+        self.added_jobs = []
+        self.removed_job_ids = []
+
+    def get_job(self, task_id):
+        return object() if task_id in self.existing_jobs else None
+
+    def add_job(self, func, trigger, **kwargs):
+        self.added_jobs.append({"func": func, "trigger": trigger, "kwargs": kwargs})
+
+    def remove_job(self, task_id):
+        self.removed_job_ids.append(task_id)
+        self.existing_jobs.discard(task_id)
+
+    def shutdown(self, wait=False):
+        return None
 
 
 def test_task_manager_constructor_defers_database_work(monkeypatch):
@@ -62,6 +86,93 @@ def test_task_manager_schedule_jobs_allow_startup_misfire_grace():
     finally:
         if hasattr(manager.scheduler, "shutdown"):
             manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_missing_task_update_schedule_installs_cron_job(engine, monkeypatch):
+    scheduler = _RecordingScheduler()
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = scheduler
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+
+        manager.update_schedule("missing-cron", "20,50 * * * *")
+
+        assert scheduler.added_jobs
+        assert scheduler.added_jobs[0]["kwargs"]["id"] == "missing-cron"
+        assert scheduler.added_jobs[0]["kwargs"]["misfire_grace_time"] == (
+            task_manager_module.SCHEDULED_TASK_MISFIRE_GRACE_SECONDS
+        )
+        assert scheduler.removed_job_ids == []
+    finally:
+        manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_missing_task_update_schedule_installs_policy_job(engine, monkeypatch):
+    scheduler = _RecordingScheduler()
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = scheduler
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+
+        manager.update_schedule(
+            "missing-policy",
+            schedule_policy={
+                "enabled": True,
+                "trigger": {"type": "daily", "time": "00:05"},
+                "action": {"type": "enqueue"},
+            },
+        )
+
+        assert scheduler.added_jobs
+        assert scheduler.added_jobs[0]["kwargs"]["id"] == "missing-policy"
+        assert scheduler.removed_job_ids == []
+    finally:
+        manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_missing_task_update_schedule_clears_existing_job(engine, monkeypatch):
+    scheduler = _RecordingScheduler(existing_jobs={"missing-clear"})
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = scheduler
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+
+        manager.update_schedule("missing-clear")
+
+        assert scheduler.added_jobs == []
+        assert scheduler.removed_job_ids == ["missing-clear"]
+    finally:
+        manager.scheduler.shutdown(wait=False)
+
+
+def test_task_status_projection_names_schedule_status():
+    task = Task(
+        id="task-schedule-projection",
+        name="schedule-projection",
+        command="python job.py",
+        device_id="local-device",
+        runtime_kind="job",
+        schedule_policy={
+            "enabled": True,
+            "trigger": {"type": "daily", "time": "00:00"},
+            "action": {"type": "enqueue"},
+        },
+        next_run_at="2099-05-10T06:00:00",
+        created_at=time.time(),
+    )
+    status = TaskStatus(id=task.id, running=False)
+
+    payload = task_manager_module._task_status_projection(task, status)
+
+    assert payload["next_run_at"] == "2099-05-10T06:00:00"
+    assert payload["schedule_status"] == {
+        "next_run_at": "2099-05-10T06:00:00",
+        "configured": True,
+    }
+    assert payload["status"]["running"] is False
 
 
 def test_task_manager_preserves_explicit_next_run_at(engine, session, monkeypatch):
@@ -156,8 +267,7 @@ def test_task_manager_advances_stale_next_run_at_on_schedule_restore(engine, ses
 
         session.expire_all()
         refreshed = session.get(Task, task.id)
-        assert refreshed.next_run_at == "2026-06-04T20:00:00+08:00"
-        assert refreshed.schedule_state["next_trigger_at"] == "2026-06-04T20:00:00+08:00"
+        assert_schedule_next_run_synced(refreshed, "2026-06-04T20:00:00+08:00")
         assert calls and calls[0]["kwargs"]["id"] == task.id
     finally:
         if hasattr(manager.scheduler, "shutdown"):
@@ -205,8 +315,7 @@ def test_task_manager_scheduled_result_can_override_next_run_at(engine, session,
 
         session.expire_all()
         refreshed = session.get(Task, task.id)
-        assert refreshed.next_run_at == "2026-05-22T08:00:00"
-        assert refreshed.schedule_state["next_trigger_at"] == "2026-05-22T08:00:00"
+        assert_schedule_next_run_synced(refreshed, "2026-05-22T08:00:00")
         assert calls and calls[0]["id"] == task.id
     finally:
         if hasattr(manager.scheduler, "shutdown"):
@@ -252,9 +361,9 @@ def test_startup_schema_repairs_add_runtime_columns_to_legacy_task_table():
 
 def test_task_manager_deep_scans_missing_services_only(engine, session, monkeypatch):
     service = Task(
-        id="service-codeyun",
-        name="codeyun",
-        command="python dev.py",
+        id="service-api",
+        name="api-service",
+        command="python api_service.py",
         device_id="local-device",
         runtime_kind="service",
         created_at=time.time(),
@@ -295,8 +404,56 @@ def test_task_manager_deep_scans_missing_services_only(engine, session, monkeypa
         manager.scan_running_tasks()
 
         assert fake_device.calls == [
-            (["service-codeyun", "job-weekly"], False),
-            (["service-codeyun"], True),
+            (["service-api", "job-weekly"], False),
+            (["service-api"], True),
+        ]
+    finally:
+        manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_scan_skips_legacy_codeyun_command(engine, session, monkeypatch):
+    legacy = Task(
+        id="legacy-codeyun-command",
+        name="codeyun",
+        command="uv run dev.py",
+        device_id="local-device",
+        runtime_kind="service",
+        created_at=time.time(),
+    )
+    normal = Task(
+        id="normal-service",
+        name="capture",
+        command="python capture.py",
+        device_id="local-device",
+        runtime_kind="service",
+        created_at=time.time(),
+    )
+    session.add(legacy)
+    session.add(normal)
+    session.commit()
+
+    class FakeDevice:
+        def __init__(self):
+            self.calls = []
+
+        def scan_running_tasks(self, tasks, *, deep_scan=False):
+            self.calls.append(([task.id for task in tasks], deep_scan))
+
+        def get_task_status(self, task_id):
+            return SimpleNamespace(running=False)
+
+    fake_device = FakeDevice()
+    manager = task_manager_module.TaskManager()
+    try:
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+        monkeypatch.setattr(manager, "_get_local_device_id", lambda: "local-device")
+        monkeypatch.setattr(task_manager_module.device_manager, "get_device", lambda device_id: fake_device)
+
+        manager.scan_running_tasks()
+
+        assert fake_device.calls == [
+            (["normal-service"], False),
+            (["normal-service"], True),
         ]
     finally:
         manager.scheduler.shutdown(wait=False)

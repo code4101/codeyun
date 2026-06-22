@@ -24,12 +24,35 @@ def test_select_idle_maintenance_prefers_auto_commit_when_any_managed_repo_dirty
     decision = idle_maintenance.select_idle_maintenance_task(
         repo_inspects=[
             {"name": "pyxllib", "has_changes": False},
-            {"name": "xlproject", "has_changes": True, "changed_file_count": 2},
+            {
+                "name": "xlproject",
+                "has_changes": True,
+                "changed_file_count": 2,
+                "auto_commit_eligible": True,
+            },
             {"name": "codeyun", "has_changes": False},
         ],
     )
 
     assert decision.selected_task_key == "auto_commit_dirty_worktree"
+
+
+def test_select_idle_maintenance_skips_read_only_scan_when_dirty_repo_below_commit_threshold():
+    decision = idle_maintenance.select_idle_maintenance_task(
+        repo_inspects=[
+            {
+                "name": "codeyun",
+                "has_changes": True,
+                "changed_file_count": 2,
+                "estimated_changed_line_count": 70,
+                "auto_commit_eligible": False,
+                "auto_commit_skip_reason": "below_line_threshold",
+            },
+        ],
+    )
+
+    assert decision.selected_task_key is None
+    assert "未达自动提交阈值" in decision.skipped_reason
 
 
 def test_select_idle_maintenance_uses_read_only_scan_when_worktree_clean():

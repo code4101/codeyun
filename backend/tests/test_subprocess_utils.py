@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 
 from backend.core.runtime import subprocess_utils
 
@@ -52,14 +54,11 @@ def test_install_no_window_popen_default_merges_creationflags(monkeypatch):
     calls = []
 
     class FakePopen:
-        pass
-
-    def fake_popen(command, **kwargs):
-        calls.append((command, kwargs))
-        return FakePopen()
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
 
     monkeypatch.setattr(subprocess_utils.os, "name", "nt")
-    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
 
     assert subprocess_utils.install_no_window_popen_default() is True
     proc = subprocess_utils.subprocess.Popen(["tool"], creationflags=0x20)
@@ -68,6 +67,22 @@ def test_install_no_window_popen_default_merges_creationflags(monkeypatch):
     assert calls[0][1]["creationflags"] & 0x20
     assert calls[0][1]["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
     assert calls[0][1]["startupinfo"].wShowWindow == subprocess.SW_HIDE
+
+
+def test_install_no_window_popen_default_keeps_popen_subclassable(monkeypatch):
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    assert subprocess_utils.install_no_window_popen_default() is True
+
+    class ChildPopen(subprocess_utils.subprocess.Popen):
+        pass
+
+    assert issubclass(ChildPopen, FakePopen)
 
 
 def test_resolve_pythonw_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
@@ -174,6 +189,156 @@ def test_popen_background_defaults_to_devnull_and_hidden(monkeypatch):
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
     assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+
+
+def test_apply_python_no_window_env_prepends_sitecustomize(monkeypatch, tmp_path):
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+    existing_path = str(tmp_path / "existing")
+    env = {"PYTHONPATH": existing_path}
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    result = subprocess_utils.apply_python_no_window_env(env, root_dir=tmp_path)
+
+    assert result is env
+    paths = env["PYTHONPATH"].split(subprocess_utils.os.pathsep)
+    assert paths[0] == str(sitecustomize_dir)
+    assert paths[1] == existing_path
+    assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+
+
+def test_apply_python_no_window_env_is_idempotent(monkeypatch, tmp_path):
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+    env = {"PYTHONPATH": str(sitecustomize_dir)}
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    subprocess_utils.apply_python_no_window_env(env, root_dir=tmp_path)
+
+    assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep).count(str(sitecustomize_dir)) == 1
+
+
+def test_popen_python_script_background_injects_python_env(monkeypatch, tmp_path):
+    calls = []
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils, "_repo_root_from_runtime", lambda: tmp_path)
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    subprocess_utils.popen_python_script_background(tmp_path / "worker.py", env={"PYTHONPATH": "external"})
+
+    env = calls[0][1]["env"]
+    assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep)[0] == str(sitecustomize_dir)
+    assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+
+
+def test_popen_background_injects_python_env_for_python_command(monkeypatch, tmp_path):
+    calls = []
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils, "_repo_root_from_runtime", lambda: tmp_path)
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    subprocess_utils.popen_background([str(pythonw), "worker.py"], env={"PYTHONPATH": "external"})
+
+    env = calls[0][1]["env"]
+    assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep)[0] == str(sitecustomize_dir)
+    assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+
+
+def test_run_hidden_injects_python_env_for_python_command(monkeypatch, tmp_path):
+    calls = []
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils, "_repo_root_from_runtime", lambda: tmp_path)
+    monkeypatch.setattr(subprocess_utils.subprocess, "run", fake_run)
+
+    subprocess_utils.run_hidden([str(python), "worker.py"], env={"PYTHONPATH": "external"})
+
+    env = calls[0][1]["env"]
+    assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep)[0] == str(sitecustomize_dir)
+    assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+
+
+def test_run_hidden_injects_node_env_for_node_command(monkeypatch, tmp_path):
+    calls = []
+    preload = tmp_path / "scripts" / "node_windows_hide_child_processes.cjs"
+    preload.parent.mkdir(parents=True)
+    preload.write_text("", encoding="utf-8")
+    node = tmp_path / "node.exe"
+    node.write_text("", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils, "_repo_root_from_runtime", lambda: tmp_path)
+    monkeypatch.setattr(subprocess_utils.subprocess, "run", fake_run)
+
+    subprocess_utils.run_hidden([str(node), "tool.js"], env={"NODE_OPTIONS": "--trace-warnings"})
+
+    env = calls[0][1]["env"]
+    assert f"--require={preload.as_posix()}" in env["NODE_OPTIONS"]
+    assert "--trace-warnings" in env["NODE_OPTIONS"]
+
+
+def test_python_service_env_patches_real_child_interpreter():
+    if subprocess_utils.os.name != "nt":
+        return
+
+    env = subprocess_utils.python_service_env()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, os, subprocess; "
+                "print(json.dumps({"
+                "'flag': os.getenv('CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT'), "
+                "'patched': bool(getattr(subprocess.Popen, '_codeyun_no_window_default', False))"
+                "}))"
+            ),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+        **subprocess_utils.hidden_subprocess_kwargs(),
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload == {"flag": "1", "patched": True}
 
 
 def test_apply_node_windows_hide_env_injects_node_options(monkeypatch, tmp_path):

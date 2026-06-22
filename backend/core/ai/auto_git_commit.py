@@ -28,6 +28,8 @@ AUTO_GIT_COMMIT_BRANCH_FACTOR = 10
 AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80
 AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = 2700
+AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS = 60
+AUTO_GIT_COMMIT_MIN_CHANGED_LINES = 1000
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
 
 auto_git_commit_scheduler = BackgroundScheduler()
@@ -336,6 +338,7 @@ def mark_stale_auto_git_commit_runs(
     current_ts = float(now_ts if now_ts is not None else time.time())
     stale_before = current_ts - AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS
     stale_minutes = int(AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS // 60)
+    orphaned_queue_before = current_ts - AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS
     runs = session.exec(
         select(AutoGitCommitRun)
         .where(AutoGitCommitRun.status.in_(["pending", "running"]))
@@ -344,15 +347,30 @@ def mark_stale_auto_git_commit_runs(
     changed_count = 0
     for run in runs:
         heartbeat = run.heartbeat_at or run.updated_at or run.started_at or run.created_at
-        if heartbeat is None or float(heartbeat) > stale_before:
+        is_orphaned_queued = (
+            run.status == "pending"
+            and run.stage == "queued"
+            and run.queue_task_id
+            and run.created_at is not None
+            and float(run.created_at) <= orphaned_queue_before
+        )
+        if not is_orphaned_queued and (heartbeat is None or float(heartbeat) > stale_before):
             continue
         run.status = "failed"
-        run.stage = "stale"
-        run.stage_label = "任务心跳超时"
-        run.error_message = (
-            f"后台任务心跳超过 {stale_minutes} 分钟未更新，且当前执行队列中没有对应任务；"
-            "通常是服务重启、进程中断或 AI 提交总结调用被外部终止。"
-        )
+        if is_orphaned_queued:
+            run.stage = "orphaned_queue"
+            run.stage_label = "队列任务丢失"
+            run.error_message = (
+                "自动提交任务仍处于 queued 状态，但当前执行队列中没有对应 auto_git_commit 任务；"
+                "通常是一次性本地入口、服务重启或进程退出导致的内存队列丢失。"
+            )
+        else:
+            run.stage = "stale"
+            run.stage_label = "任务心跳超时"
+            run.error_message = (
+                f"后台任务心跳超过 {stale_minutes} 分钟未更新，且当前执行队列中没有对应任务；"
+                "通常是服务重启、进程中断或 AI 提交总结调用被外部终止。"
+            )
         run.finished_at = current_ts
         run.heartbeat_at = current_ts
         run.updated_at = current_ts
@@ -449,6 +467,11 @@ def _changed_paths_from_inspect(inspect_payload: dict[str, Any]) -> list[str]:
 
 def _update_result_from_inspect(result: dict[str, Any], inspect_payload: dict[str, Any]) -> None:
     changed_files = list(inspect_payload.get("changed_files") or [])
+    added_line_count = int(inspect_payload.get("added_line_count") or 0)
+    deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
+    estimated_changed_line_count = int(
+        inspect_payload.get("estimated_changed_line_count") or (added_line_count + deleted_line_count)
+    )
     result.update(
         {
             "repo_root": str(inspect_payload.get("repo_root") or ""),
@@ -456,8 +479,26 @@ def _update_result_from_inspect(result: dict[str, Any], inspect_payload: dict[st
             "changed_file_count": len(changed_files),
             "changed_paths": _changed_paths_from_inspect(inspect_payload),
             "has_changes": not bool(inspect_payload.get("clean")),
+            "added_line_count": added_line_count,
+            "deleted_line_count": deleted_line_count,
+            "estimated_changed_line_count": estimated_changed_line_count,
         }
     )
+
+
+def _auto_git_commit_eligibility(inspect_payload: dict[str, Any]) -> tuple[bool, int, str]:
+    added_line_count = int(inspect_payload.get("added_line_count") or 0)
+    deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
+    changed_line_count = int(
+        inspect_payload.get("estimated_changed_line_count") or (added_line_count + deleted_line_count)
+    )
+    if changed_line_count < AUTO_GIT_COMMIT_MIN_CHANGED_LINES:
+        return (
+            False,
+            changed_line_count,
+            f"有效变更 {changed_line_count} 行，低于自动提交阈值 {AUTO_GIT_COMMIT_MIN_CHANGED_LINES} 行",
+        )
+    return True, changed_line_count, ""
 
 
 def _auto_git_summary_only_reason(candidate: AutoGitCommitCandidate) -> str:
@@ -736,7 +777,42 @@ def _run_one_repo(
         result["status"] = "clean"
         return result
 
+    eligible, changed_line_count, skip_reason = _auto_git_commit_eligibility(inspect_payload)
+    result.update(
+        {
+            "auto_commit_eligible": eligible,
+            "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
+        }
+    )
+    if not eligible:
+        result.update(
+            {
+                "status": "skipped",
+                "skip_reason": "below_line_threshold",
+                "error_message": skip_reason,
+                "estimated_changed_line_count": changed_line_count,
+            }
+        )
+        return result
+
     inspect_payload, precheck = _refresh_after_auto_gitignore(candidate, result, inspect_payload, inspect_func)
+    eligible, changed_line_count, skip_reason = _auto_git_commit_eligibility(inspect_payload)
+    result.update(
+        {
+            "auto_commit_eligible": eligible,
+            "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
+        }
+    )
+    if not eligible:
+        result.update(
+            {
+                "status": "skipped",
+                "skip_reason": "below_line_threshold",
+                "error_message": skip_reason,
+                "estimated_changed_line_count": changed_line_count,
+            }
+        )
+        return result
     if bool(precheck.get("has_blocking_issues")):
         result.update(
             {
@@ -911,6 +987,10 @@ def run_auto_git_commit_worker(
                 run.status = "skipped"
                 run.stage = "no_changes"
                 run.stage_label = "没有可提交变更"
+            elif not any(item.get("status") in {"committed", "failed"} for item in final_results):
+                run.status = "skipped"
+                run.stage = "below_threshold"
+                run.stage_label = "未达到自动提交阈值"
             else:
                 run.status = "failed" if run.failed_repo_count else "completed"
                 run.stage = "failed" if run.failed_repo_count else "completed"

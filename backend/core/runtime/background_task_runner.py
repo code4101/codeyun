@@ -57,6 +57,7 @@ MARKET_INTRADAY_PERSIST_RUN_TIME = "16:30"
 HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
 HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
+CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY = "critical_command_services_check"
 RUANYF_WEEKLY_START_TIME = "06:00"
 BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 7
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
@@ -74,6 +75,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
+    CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
 }
 
 
@@ -204,6 +206,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
+    if task_key == CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY:
+        return _job_schedule_policy({"type": "interval", "minutes": 5, "anchor": "last_finish"}, retry_minutes=1)
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
     if task_key == FANXIU_SLIMMING_TASK_KEY:
@@ -530,6 +534,35 @@ def _enqueue_wechat_archive_incremental_sync() -> str | None:
         raise
 
 
+def _run_critical_command_services_check_job() -> dict[str, Any]:
+    from backend.core.runtime.management import ensure_local_critical_command_services
+
+    result = ensure_local_critical_command_services()
+    started_names = [str(item.get("name") or item.get("id")) for item in result.get("started") or [] if isinstance(item, dict)]
+    running_names = [
+        str(item.get("name") or item.get("id"))
+        for item in result.get("already_running") or []
+        if isinstance(item, dict)
+    ]
+    error_names = [str(item.get("name") or item.get("id")) for item in result.get("errors") or [] if isinstance(item, dict)]
+    print(
+        "Critical command services check completed: "
+        f"status={result.get('status')} "
+        f"started={started_names or 'none'} "
+        f"running={running_names or 'none'} "
+        f"errors={error_names or 'none'}"
+    )
+    return result
+
+
+def _enqueue_critical_command_services_check() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
+        _run_critical_command_services_check_job,
+    )
+    return task_id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     BackgroundTaskSpec(
         key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
@@ -560,6 +593,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后 10 分钟重试",
         action=enqueue_idle_maintenance,
         manual_warning="默认任务较保守：扫描类任务只读生成报告；自动提交任务复用现有 GitHub 项目自动提交预检和提交逻辑。",
+    ),
+    BackgroundTaskSpec(
+        key=CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
+        title="常驻服务自检",
+        category="运维",
+        description="每 5 分钟检查本机 sync、frpc、nginx 等白名单常驻命令服务；发现关闭会按统一隐藏进程启动方式拉起，不会处理 capture 等非白名单任务。",
+        schedule_label="每 5 分钟检查",
+        retry_label="失败后 1 分钟重试",
+        action=_enqueue_critical_command_services_check,
+        manual_warning="会启动本机白名单常驻服务：sync/syncthing、frpc、nginx；不会停止用户应用，也不会重启 CodeYun。",
     ),
     BackgroundTaskSpec(
         key="note_metadata_feedback_optimization",
@@ -885,14 +928,7 @@ class BackgroundTaskRunner:
             if _is_task_deleted(spec.key):
                 continue
             enabled = bool(enabled_by_key.get(spec.key))
-            policy = _effective_background_task_schedule_policy(spec.key, enabled=enabled)
-            tasks[spec.key] = {
-                "next_run_at": _format_datetime(_find_task_next_run(node_states, spec.key)) if enabled else None,
-                "enabled": enabled,
-                "schedule_policy": policy,
-                "schedule_label": schedule_policy_label(policy) or spec.schedule_label,
-                "retry_label": spec.retry_label,
-            }
+            tasks[spec.key] = _background_task_schedule_status(spec, node_states, enabled=enabled)
 
         return {
             "runner_running": self.is_running(),
@@ -1023,6 +1059,22 @@ def _find_task_next_run(node_states: dict[str, Any], task_key: str) -> dt.dateti
         if parsed is not None:
             values.append(parsed)
     return min(values) if values else None
+
+
+def _background_task_schedule_status(
+    spec: BackgroundTaskSpec,
+    node_states: dict[str, Any],
+    *,
+    enabled: bool,
+) -> dict[str, Any]:
+    policy = _effective_background_task_schedule_policy(spec.key, enabled=enabled)
+    return {
+        "next_run_at": _format_datetime(_find_task_next_run(node_states, spec.key)) if enabled else None,
+        "enabled": enabled,
+        "schedule_policy": policy,
+        "schedule_label": schedule_policy_label(policy) or spec.schedule_label,
+        "retry_label": spec.retry_label,
+    }
 
 
 def _find_queue_task_by_id(queue: dict[str, Any], queue_task_id: str) -> dict[str, Any] | None:

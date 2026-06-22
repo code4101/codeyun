@@ -58,6 +58,17 @@ SCHEDULED_TASK_JOB_KWARGS = {
     "max_instances": 1,
 }
 
+
+def _task_status_projection(task: TaskModel, status: TaskStatus) -> Dict[str, Any]:
+    result = task.model_dump()
+    result["status"] = status.model_dump()
+    result["schedule_status"] = {
+        "next_run_at": task.next_run_at,
+        "configured": bool(task.schedule_policy or task.schedule),
+    }
+    return result
+
+
 async def start_task_manager_services():
     global _status_broadcaster_task
 
@@ -274,18 +285,29 @@ class TaskManager:
             if result is None:
                 next_run_at = self._ensure_policy_schedule_state(session, task, force=force)
             else:
-                task.schedule_state = apply_schedule_result(
-                    task.schedule_policy,
-                    task.schedule_state or {},
-                    result=result,
-                )
-                session.add(task)
-                session.commit()
-                next_run_at = (task.schedule_state or {}).get("next_trigger_at")
+                return self._apply_schedule_result_next_run_at(session, task, result)
             return self._format_next_run_at(next_run_at) if next_run_at else None
         if task.schedule:
             return self._compute_cron_next_run_at(task.schedule)
         return None
+
+    def _apply_schedule_result_next_run_at(
+        self,
+        session: Session,
+        task: TaskModel,
+        result: str,
+    ) -> Optional[str]:
+        if not task.schedule_policy:
+            return None
+        task.schedule_state = apply_schedule_result(
+            task.schedule_policy,
+            task.schedule_state or {},
+            result=result,
+        )
+        session.add(task)
+        session.commit()
+        next_run_at = (task.schedule_state or {}).get("next_trigger_at")
+        return self._format_next_run_at(next_run_at) if next_run_at else None
 
     def _set_task_next_run_at(
         self,
@@ -314,6 +336,24 @@ class TaskManager:
         self._install_next_run_job(task_id, formatted)
         return formatted
 
+    def _restore_missing_task_schedule(
+        self,
+        task_id: str,
+        cron_expression: Optional[str],
+        schedule_policy: Optional[Dict[str, Any]],
+    ) -> bool:
+        if schedule_policy:
+            computed = compute_next_trigger_at(schedule_policy)
+            next_run_at = self._format_next_run_at(computed) if computed else None
+            self._install_next_run_job(task_id, next_run_at)
+            return True
+        if cron_expression:
+            next_run_at = self._compute_cron_next_run_at(cron_expression)
+            self._install_next_run_job(task_id, next_run_at)
+            return True
+        self.clear_schedule(task_id)
+        return True
+
     def update_schedule(
         self,
         task_id: str,
@@ -326,17 +366,8 @@ class TaskManager:
             with Session(engine) as session:
                 task = session.get(TaskModel, task_id)
                 if not task:
-                    if schedule_policy:
-                        computed = compute_next_trigger_at(schedule_policy)
-                        next_run_at = self._format_next_run_at(computed) if computed else None
-                        self._install_next_run_job(task_id, next_run_at)
+                    if self._restore_missing_task_schedule(task_id, cron_expression, schedule_policy):
                         return
-                    if cron_expression:
-                        next_run_at = self._compute_cron_next_run_at(cron_expression)
-                        self._install_next_run_job(task_id, next_run_at)
-                        return
-                    self.clear_schedule(task_id)
-                    return
                 if schedule_policy is not None:
                     task.schedule_policy = schedule_policy
                 if cron_expression is not None:
@@ -413,15 +444,11 @@ class TaskManager:
             trigger_type = str(trigger.get("type") or "").strip().lower()
             if trigger_type != "interval":
                 return
-            task.schedule_state = apply_schedule_result(
-                task.schedule_policy,
-                task.schedule_state or {},
-                result=RESULT_SUCCESS,
-            )
+            next_run_at = self._apply_schedule_result_next_run_at(session, task, RESULT_SUCCESS)
             formatted = self._set_task_next_run_at(
                 session,
                 task,
-                (task.schedule_state or {}).get("next_trigger_at"),
+                next_run_at,
             )
         self._install_next_run_job(task_id, formatted)
 
@@ -548,9 +575,7 @@ class TaskManager:
         results = []
         for t in tasks:
             status = self.get_task_status(t.id)
-            t_dict = t.model_dump()
-            t_dict["status"] = status.model_dump()
-            results.append(t_dict)
+            results.append(_task_status_projection(t, status))
             
         await ws_manager.broadcast("task_list", results)
 
@@ -836,9 +861,7 @@ def list_tasks(
     results = []
     for t in tasks:
         status = task_manager.get_task_status(t.id)
-        t_dict = t.model_dump()
-        t_dict["status"] = status.model_dump()
-        results.append(t_dict)
+        results.append(_task_status_projection(t, status))
         
     return results
 
@@ -966,10 +989,7 @@ def get_task_details(task_id: str, token_device: BaseDevice = Depends(verify_api
         task = session.get(TaskModel, task_id)
         if task:
             status = task_manager.get_task_status(task_id)
-            return {
-                **task.model_dump(),
-                "status": status.model_dump()
-            }
+            return _task_status_projection(task, status)
     raise HTTPException(status_code=404, detail="Task not found")
 
 @router.get("/{task_id}/logs")

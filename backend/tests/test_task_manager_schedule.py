@@ -5,6 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from backend.api import task_manager as task_manager_module
 from backend.models import Task
+from tests.task_manager_schedule_assertions import assert_schedule_next_run_synced
 
 
 def _parse_time(value: str) -> dt.datetime:
@@ -49,7 +50,6 @@ def test_manual_interval_trigger_resets_next_run_at(monkeypatch):
     with Session(engine) as session:
         updated = session.get(Task, "publish-job")
         assert updated is not None
-        assert updated.next_run_at is not None
+        assert_schedule_next_run_synced(updated)
         delta = (_parse_time(updated.next_run_at) - now).total_seconds()
         assert 25 * 60 <= delta <= 35 * 60
-        assert updated.schedule_state["next_trigger_at"] == updated.next_run_at

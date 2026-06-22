@@ -121,6 +121,7 @@ def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
 
     monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
     monkeypatch.delenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", raising=False)
+    monkeypatch.delenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", raising=False)
     monkeypatch.setattr(
         runtime_management,
         "start_codeyun_watchdog",
@@ -131,12 +132,18 @@ def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
         "start_proxy_traffic_audit",
         lambda: calls.append("audit") or {"status": "started"},
     )
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_local_critical_command_services",
+        lambda: calls.append("critical") or {"status": "ok"},
+    )
 
     result = runtime_management.ensure_local_builtin_services_on_startup()
 
-    assert calls == ["watchdog", "audit"]
+    assert calls == ["watchdog", "audit", "critical"]
     assert result["codeyun-watchdog"]["status"] == "started"
     assert result["proxy-traffic-audit"]["status"] == "started"
+    assert result["critical-command-services"]["status"] == "ok"
 
 
 def test_local_builtin_services_autostart_can_be_disabled(monkeypatch):
@@ -144,8 +151,10 @@ def test_local_builtin_services_autostart_can_be_disabled(monkeypatch):
 
     monkeypatch.setenv("CODEYUN_WATCHDOG_AUTOSTART", "0")
     monkeypatch.setenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", "false")
+    monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "no")
     monkeypatch.setattr(runtime_management, "start_codeyun_watchdog", lambda: calls.append("watchdog"))
     monkeypatch.setattr(runtime_management, "start_proxy_traffic_audit", lambda: calls.append("audit"))
+    monkeypatch.setattr(runtime_management, "ensure_local_critical_command_services", lambda: calls.append("critical"))
 
     assert runtime_management.ensure_local_builtin_services_on_startup() == {}
     assert calls == []
@@ -157,6 +166,7 @@ def test_local_builtin_services_autostart_reports_errors(monkeypatch):
 
     monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
     monkeypatch.setenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", "0")
+    monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "0")
     monkeypatch.setattr(runtime_management, "start_codeyun_watchdog", fail_watchdog)
 
     result = runtime_management.ensure_local_builtin_services_on_startup()

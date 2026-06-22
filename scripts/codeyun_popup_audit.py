@@ -166,29 +166,178 @@ def _chain_text(event: dict[str, Any]) -> str:
             continue
         parts.append(str(proc.get("name") or ""))
         parts.extend(str(x) for x in (proc.get("cmdline") or []))
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        parts.append(str(proc.get("name") or ""))
+        parts.extend(str(x) for x in (proc.get("cmdline") or []))
+        parts.append(str(proc.get("cwd") or ""))
+        parent = proc.get("parent")
+        if isinstance(parent, dict):
+            parts.append(str(parent.get("name") or ""))
+            parts.extend(str(x) for x in (parent.get("cmdline") or []))
+            parts.append(str(parent.get("cwd") or ""))
     parts.append(str(event.get("title") or ""))
     return "\n".join(parts).lower().replace("\\", "/")
 
 
-def is_codeyun_event(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> bool:
-    text = _chain_text(event)
-    root = os.fspath(root_dir).lower().replace("\\", "/")
-    if root not in text:
-        return False
-    if "openai.codex_" in text and "app-server" in text and "pwsh.exe" in text:
-        return False
+def _proc_text(proc: dict[str, Any]) -> str:
+    parts = [str(proc.get("name") or "")]
+    parts.extend(str(x) for x in (proc.get("cmdline") or []))
+    parts.append(str(proc.get("cwd") or ""))
+    parent = proc.get("parent")
+    if isinstance(parent, dict):
+        parts.append(str(parent.get("name") or ""))
+        parts.extend(str(x) for x in (parent.get("cmdline") or []))
+        parts.append(str(parent.get("cwd") or ""))
+    return "\n".join(parts).lower().replace("\\", "/")
+
+
+def _is_external_codex_text(text: str) -> bool:
+    return "openai.codex_" in text and ("codex.exe" in text or "app-server" in text)
+
+
+def _has_codeyun_marker(text: str) -> bool:
     markers = (
         "dev.py",
         "backend.app:app",
         "backend.core.runtime.uvicorn_hidden",
+        "backend.services.ocr_daemon",
+        "backend.services.game_window_daemon",
         "frontend/node_modules/vite/bin/vite.js",
         "scripts/codeyun_watchdog.py",
-        "/.venv/scripts/python",
+        "scripts/fanxiu_bt.py",
+        "fanxiu_bt.py",
         " npm ",
         " npm.cmd",
         "net use",
     )
     return any(marker in text for marker in markers)
+
+
+def _has_codeyun_workspace_evidence(text: str) -> bool:
+    """Return whether a visible console has CodeYun workspace evidence worth investigating.
+
+    This is intentionally broader than `_has_codeyun_marker`: Git, cmd, or Codex
+    helper commands in the repo root are not always CodeYun service bugs, but they
+    are user-visible popups tied to this workspace and must not disappear into the
+    generic external bucket.
+    """
+
+    markers = (
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "git.exe",
+        " uv ",
+        "uv.exe",
+        "python.exe",
+        "pythonw.exe",
+        "scripts/fanxiu_bt.py",
+        "fanxiu_bt.py",
+        "backend.services.ocr_daemon",
+        "backend.services.game_window_daemon",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _event_direct_text(event: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("chain", "children"):
+        for proc in event.get(key) or []:
+            if not isinstance(proc, dict):
+                continue
+            parts.append(str(proc.get("name") or ""))
+            parts.extend(str(x) for x in (proc.get("cmdline") or []))
+            parts.append(str(proc.get("cwd") or ""))
+    parts.append(str(event.get("title") or ""))
+    return "\n".join(parts).lower().replace("\\", "/")
+
+
+def _title_executable_name(event: dict[str, Any]) -> str:
+    title = str(event.get("title") or "").strip().replace("\\", "/")
+    if not title:
+        return ""
+    name = title.rsplit("/", 1)[-1].lower()
+    return name if name.endswith(".exe") else ""
+
+
+def _has_external_codex_console_evidence(event: dict[str, Any]) -> bool:
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        text = _proc_text(proc)
+        if _is_external_codex_text(text) or "node_modules/@openai/codex" in text:
+            return True
+    return False
+
+
+def _is_uvicorn_multiprocessing_worker_text(text: str) -> bool:
+    return "from multiprocessing.spawn import spawn_main" in text and "backend.core.runtime.uvicorn_hidden" in text
+
+
+def is_codeyun_event(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> bool:
+    direct_text = _event_direct_text(event)
+    root = os.fspath(root_dir).lower().replace("\\", "/")
+    if root in direct_text and _has_codeyun_marker(direct_text) and not _is_external_codex_text(direct_text):
+        return True
+
+    title_exe = _title_executable_name(event)
+    if title_exe:
+        for proc in event.get("nearby_processes") or []:
+            if not isinstance(proc, dict):
+                continue
+            name = str(proc.get("name") or "").lower()
+            if name != title_exe:
+                continue
+            text = _proc_text(proc)
+            return root in text and _has_codeyun_marker(text) and not _is_external_codex_text(text)
+
+    if _has_external_codex_console_evidence(event):
+        return False
+
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        text = _proc_text(proc)
+        if _is_uvicorn_multiprocessing_worker_text(text):
+            continue
+        if root in text and _has_codeyun_marker(text) and not _is_external_codex_text(text):
+            return True
+    return False
+
+
+def is_codeyun_workspace_event(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> bool:
+    if is_codeyun_event(event, root_dir):
+        return False
+    root = os.fspath(root_dir).lower().replace("\\", "/")
+    direct_text = _event_direct_text(event)
+    if root in direct_text and _has_codeyun_workspace_evidence(direct_text) and not _is_external_codex_text(direct_text):
+        return True
+
+    title_exe = _title_executable_name(event)
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        text = _proc_text(proc)
+        if _is_uvicorn_multiprocessing_worker_text(text):
+            continue
+        if root not in text or not _has_codeyun_workspace_evidence(text):
+            continue
+        if title_exe:
+            name = str(proc.get("name") or "").lower()
+            if name != title_exe and name not in {"cmd.exe", "powershell.exe", "pwsh.exe", "git.exe"}:
+                continue
+        return True
+    return False
+
+
+def _event_classification(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> str:
+    if is_codeyun_event(event, root_dir):
+        return "codeyun_service"
+    if is_codeyun_workspace_event(event, root_dir):
+        return "codeyun_workspace"
+    return "external"
 
 
 def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -204,19 +353,41 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
                 "cwd": proc.get("cwd"),
             }
         )
+    nearby = []
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        nearby.append(
+            {
+                "pid": proc.get("pid"),
+                "ppid": proc.get("ppid"),
+                "name": proc.get("name"),
+                "cmdline": proc.get("cmdline"),
+                "cwd": proc.get("cwd"),
+                "age_seconds": proc.get("age_seconds"),
+                "parent": proc.get("parent"),
+            }
+        )
     return {
         "time": event.get("time"),
         "title": event.get("title"),
         "class": event.get("class"),
         "pid": event.get("pid"),
+        "classification": _event_classification(event),
         "chain": chain,
+        "nearby_processes": nearby[:20],
     }
 
 
 def audit_since(started_at: str, *, monitor_status: dict[str, Any] | None = None) -> dict[str, Any]:
     events = [event for event in _load_events() if _event_time(event) >= started_at]
     codeyun_events = [event for event in events if is_codeyun_event(event)]
-    external_events = [event for event in events if not is_codeyun_event(event)]
+    codeyun_workspace_events = [event for event in events if is_codeyun_workspace_event(event)]
+    external_events = [
+        event
+        for event in events
+        if not is_codeyun_event(event) and not is_codeyun_workspace_event(event)
+    ]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status = {
         "baseline_started_at": started_at,
@@ -225,8 +396,11 @@ def audit_since(started_at: str, *, monitor_status: dict[str, Any] | None = None
         "monitor": monitor_status or _load_monitor_status(),
         "total_events": len(events),
         "codeyun_events": len(codeyun_events),
+        "codeyun_workspace_events": len(codeyun_workspace_events),
+        "attention_events": len(codeyun_events) + len(codeyun_workspace_events),
         "external_events": len(external_events),
         "last_codeyun_events": [_summarize_event(event) for event in codeyun_events[-5:]],
+        "last_codeyun_workspace_events": [_summarize_event(event) for event in codeyun_workspace_events[-5:]],
         "last_external_events": [_summarize_event(event) for event in external_events[-5:]],
     }
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -101,6 +101,36 @@ def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monke
     assert tasks["attendance_summary_monthly_templates"]["enabled"] is True
 
 
+def test_background_task_schedule_status_hides_disabled_next_run(monkeypatch):
+    spec = BackgroundTaskSpec(
+        key="example_task",
+        title="示例任务",
+        category="测试",
+        description="",
+        schedule_label="每天 00:00",
+        retry_label="失败后 10 分钟重试",
+        action=lambda: None,
+    )
+    monkeypatch.setattr(
+        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
+        lambda task_key, enabled=None: {
+            "enabled": bool(enabled),
+            "trigger": {"type": "daily", "time": "00:00"},
+        },
+    )
+
+    status = background_tasks._background_task_schedule_status(
+        spec,
+        {"Root/MemorySelector/example_task": {"next_run_at": "2099-05-10 01:00:00"}},
+        enabled=False,
+    )
+
+    assert status["enabled"] is False
+    assert status["next_run_at"] is None
+    assert status["schedule_policy"]["enabled"] is False
+    assert status["schedule_label"] == "每天 00:00"
+
+
 def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypatch):
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     enabled_by_key = {key: False for key in task_keys}
