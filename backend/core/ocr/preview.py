@@ -16,6 +16,18 @@ from PIL import Image, UnidentifiedImageError
 from backend.core.settings import get_settings
 
 OcrShapeType = Literal["polygon", "rectangle"]
+_PADDLE_OCR_PREDICT_OPTION_KEYS = {
+    "use_doc_orientation_classify",
+    "use_doc_unwarping",
+    "use_textline_orientation",
+    "text_det_limit_side_len",
+    "text_det_limit_type",
+    "text_det_thresh",
+    "text_det_box_thresh",
+    "text_det_unclip_ratio",
+    "text_rec_score_thresh",
+    "return_word_box",
+}
 
 
 class OcrPreviewError(RuntimeError):
@@ -316,6 +328,19 @@ def _coerce_bool_option(value: Any, default: bool) -> bool:
     return default
 
 
+def _predict_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = options or {}
+    result: dict[str, Any] = {}
+    for key in _PADDLE_OCR_PREDICT_OPTION_KEYS:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if value is None:
+            continue
+        result[key] = value
+    return result
+
+
 def _build_runtime_config(options: dict[str, Any] | None = None) -> PaddleOcrRuntimeConfig:
     settings = get_settings()
     options = options or {}
@@ -597,7 +622,8 @@ class PaddleOcrServiceManager:
         config = _build_runtime_config(options)
         record = self._acquire(config)
         try:
-            results = record.instance.predict(str(image_path))
+            predict_kwargs = _predict_options(options)
+            results = record.instance.predict(str(image_path), **predict_kwargs)
         except Exception as exc:  # pragma: no cover - depends on runtime env
             message = f"OCR 识别失败：{exc}"
             with self._condition:
@@ -616,6 +642,7 @@ class PaddleOcrServiceManager:
             image_height=image_height,
             shape_type=shape_type,
         )
+        document.setdefault("flags", {})["paddleocr_payload"] = payload
         with self._condition:
             self._call_count += 1
             self._last_used_at = time.time()

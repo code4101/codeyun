@@ -124,6 +124,10 @@ from pyxllib.autogui import (
 )
 
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+DEFAULT_SCROLL_RATIO = 0.5
+DEFAULT_SCROLL_DURATION_SECONDS = 1.5
+DEFAULT_SCROLL_SETTLE_SECONDS = 1.0
+DEFAULT_SCROLL_UNCHANGED_THRESHOLD = 95.0
 _default_engine: Any | None = None
 _ACTION_TRACE_DEFAULT_MAX_FILES = 10000
 
@@ -630,6 +634,55 @@ class FanxiuRuntime(Runtime):
             label=label,
         ))
 
+    def wait_click_then_view(
+        self,
+        frame: View | int | str | None,
+        shape: Shape | str,
+        *target_views: View | int | str,
+        settle_seconds: float = 1.0,
+        timeout: float | None = None,
+        label: str | None = None,
+        **options: Any,
+    ) -> View:
+        source_view = self.resolve_view_selector(frame)
+        if source_view is None:
+            if frame is not None:
+                raise RuntimeError(f"无法解析帧选择器：{frame}")
+            current = self._current_view_from_frame()
+            if not isinstance(current, View):
+                raise RuntimeError("frame=None 时无法从当前上下文解析 view")
+            source_view = current
+        target_shape = self.resolve_shape_selector(source_view, shape)
+        target_ids: list[int] = []
+        for target_view in target_views:
+            if isinstance(target_view, View):
+                if target_view.id is None:
+                    raise RuntimeError(f"目标 view 缺少场景编号：{target_view.title}")
+                target_ids.append(int(target_view.id))
+            else:
+                target_ids.append(int(str(target_view).lstrip("#")))
+        if not target_ids:
+            tree = self.ctx.get("asset_tree")
+            target_ids = self.runner._scene_jump_target_ids(tree if isinstance(tree, list) else [], target_shape.raw)
+        if not target_ids:
+            raise RuntimeError(f"点击 #{source_view.id or '?'}「{self._shape_path(target_shape)}」后缺少目标场景；请显式传入目标或补 sceneJumpTarget")
+        yield from self.wait_click(source_view, target_shape, **options)
+        yield from self.wait_action_settle(settle_seconds)
+        wait_label = label or f"点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
+        try:
+            return (yield from self.wait_view(
+                *target_ids,
+                timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
+                label=wait_label,
+            ))
+        except TimeoutError as exc:
+            target_text = ",".join(f"#{target_id}" for target_id in target_ids)
+            jump_target = str(target_shape.raw.get("sceneJumpTarget") or "").strip() or "未声明"
+            raise TimeoutError(
+                f"{wait_label} 失败：源场景=#{source_view.id or '?'}，shape={self._shape_path(target_shape)}，"
+                f"期望目标={target_text}，sceneJumpTarget={jump_target}；{exc}"
+            ) from exc
+
     def wait_click_then_any(
         self,
         frame: View | int | str | None,
@@ -1107,10 +1160,25 @@ class FanxiuRuntime(Runtime):
         *,
         padding: int = 16,
         frame_data_url: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding)
+        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options)
+
+    def ocr_words_in_shapes(
+        self,
+        view: View | int | str | dict[str, Any],
+        shape_titles: Iterable[str],
+        *,
+        padding: int = 16,
+        frame_data_url: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        target_view = View(view) if isinstance(view, dict) else self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        ocr_options = {"return_word_box": True, **dict(options or {})}
+        return self.runner._ocr_words_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=ocr_options)
 
     def ocr_text_in_shapes(
         self,
@@ -1119,8 +1187,9 @@ class FanxiuRuntime(Runtime):
         *,
         padding: int = 16,
         frame_data_url: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> str:
-        lines = self.ocr_lines_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url)
+        lines = self.ocr_lines_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url, options=options)
         return self.runner._ocr_text(lines)
 
     def ocr_numbers_in_shapes(
@@ -1312,19 +1381,82 @@ class FanxiuRuntime(Runtime):
         view_or_shape: View | int | str | Shape,
         shape: Shape | str | None = None,
         *,
+        recognition_shape: Shape | str | None = None,
         direction: str | None = None,
-        ratio: float = 0.5,
-        duration: float = 1.5,
-        settle_seconds: float = 1.0,
-        unchanged_threshold: float = 95.0,
+        ratio: float = DEFAULT_SCROLL_RATIO,
+        duration: float = DEFAULT_SCROLL_DURATION_SECONDS,
+        settle_seconds: float = DEFAULT_SCROLL_SETTLE_SECONDS,
+        unchanged_threshold: float = DEFAULT_SCROLL_UNCHANGED_THRESHOLD,
     ) -> bool:
         target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
-        before_signature = self.image_signature_bytes_in_shape(target_shape)
+        signature_shape = target_shape
+        if recognition_shape is not None:
+            if isinstance(recognition_shape, Shape):
+                signature_shape = recognition_shape
+            else:
+                view = target_shape.parent_view
+                if not isinstance(view, View):
+                    raise RuntimeError("shape 缺少 parent_view，无法解析识别区")
+                signature_shape = self.resolve_shape_selector(view, recognition_shape)
+        before_signature = self.image_signature_bytes_in_shape(signature_shape)
         self.drag_shape_content(target_shape, direction=direction, ratio=ratio, duration=duration)
         yield from self.wait_action_settle(settle_seconds)
-        after_signature = self.image_signature_bytes_in_shape(target_shape)
+        after_signature = self.image_signature_bytes_in_shape(signature_shape)
         similarity = self.image_signature_similarity(before_signature, after_signature)
         return bool(after_signature and similarity < float(unchanged_threshold))
+
+    def nudge_shape_content_for_box(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape_or_box: Shape | str | Mapping[str, Any],
+        box: Mapping[str, Any] | None = None,
+        *,
+        edge_margin_ratio: float = 0.12,
+        nudge_ratio: float = 0.15,
+        duration: float = DEFAULT_SCROLL_DURATION_SECONDS,
+        settle_seconds: float = DEFAULT_SCROLL_SETTLE_SECONDS,
+    ) -> str | None:
+        shape: Shape | str | None
+        candidate_box: Mapping[str, Any]
+        if box is None:
+            shape = None
+            if not isinstance(shape_or_box, Mapping):
+                raise RuntimeError("缺少候选框，无法小幅复位内容")
+            candidate_box = shape_or_box
+        else:
+            shape = shape_or_box if not isinstance(shape_or_box, Mapping) else None
+            candidate_box = box
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
+        view = target_shape.parent_view
+        if not isinstance(view, View) or not isinstance(view.raw, dict):
+            raise RuntimeError("shape 缺少 parent_view，无法小幅复位内容")
+        target_box = self.runner._box(target_shape.raw, view.raw)
+        left = float(target_box.get("x") or 0)
+        top = float(target_box.get("y") or 0)
+        width = float(target_box.get("w") or 0)
+        height = float(target_box.get("h") or 0)
+        if width <= 0 or height <= 0:
+            return None
+        cx = float(candidate_box.get("x") or 0) + float(candidate_box.get("w") or 0) / 2
+        cy = float(candidate_box.get("y") or 0) + float(candidate_box.get("h") or 0) / 2
+        margin = max(0.0, min(0.45, float(edge_margin_ratio)))
+        content_direction = str(target_shape.content_direction or "down").strip().lower()
+        direction: str | None = None
+        if content_direction in {"left", "right"}:
+            if cx <= left + width * margin:
+                direction = "left"
+            elif cx >= left + width * (1.0 - margin):
+                direction = "right"
+        else:
+            if cy <= top + height * margin:
+                direction = "up"
+            elif cy >= top + height * (1.0 - margin):
+                direction = "down"
+        if direction is None:
+            return None
+        self.drag_shape_content(target_shape, direction=direction, ratio=nudge_ratio, duration=duration)
+        yield from self.wait_action_settle(settle_seconds)
+        return direction
 
     def _daily_entry_row_progress(
         self,
@@ -1585,10 +1717,10 @@ def sync_fanxiu_capture_paths(pcap_paths: list[str], *, max_streams: int = 4) ->
     return _sync_fanxiu_capture_paths(pcap_paths, max_streams=max_streams)
 
 
-def _recognize_data_annotation_ocr_frame(frame_data_url: str) -> dict[str, Any]:
+def _recognize_data_annotation_ocr_frame(frame_data_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
     from backend.core.fanxiu.game.macro_annotation import _recognize_data_annotation_ocr_frame as _recognize_frame
 
-    return _recognize_frame(frame_data_url)
+    return _recognize_frame(frame_data_url, options=options)
 
 
 def _screencap_game_window2_service() -> dict[str, Any]:
@@ -1993,8 +2125,8 @@ class DataAnnotationRuntimeRunner(
         stop_event: threading.Event,
         *,
         reverse: bool = False,
-        settle_seconds: float = 1.0,
-        unchanged_threshold: float = 95.0,
+        settle_seconds: float = DEFAULT_SCROLL_SETTLE_SECONDS,
+        unchanged_threshold: float = DEFAULT_SCROLL_UNCHANGED_THRESHOLD,
     ):
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
         runtime_shape = self._runtime_shape_for_legacy_shape(image, shape)
@@ -6371,12 +6503,36 @@ class DataAnnotationRuntimeRunner(
             return result
         return result
 
-    def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
+    def _ocr_options_cache_key(self, options: dict[str, Any] | None = None) -> str:
+        if not options:
+            return "{}"
+        try:
+            return json.dumps(options, ensure_ascii=False, sort_keys=True, default=str)
+        except TypeError:
+            return str(sorted((str(key), str(value)) for key, value in options.items()))
+
+    def _cached_ocr_result(self, ctx: dict[str, Any], frame_data_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         cache = ctx.setdefault("_ocr_lines_cache", {})
-        if isinstance(cache, dict) and cache.get("frame") == frame_data_url and isinstance(cache.get("lines"), list):
-            return cache["lines"]
-        lines = self._ocr_lines(frame_data_url)
-        ctx["_ocr_lines_cache"] = {"frame": frame_data_url, "lines": lines}
+        options_key = self._ocr_options_cache_key(options)
+        if (
+            isinstance(cache, dict)
+            and cache.get("frame") == frame_data_url
+            and cache.get("options_key") == options_key
+            and isinstance(cache.get("lines"), list)
+        ):
+            return cache
+        response = self._ocr_frame(frame_data_url, options=options)
+        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
+        words = response.get("words") if isinstance(response.get("words"), list) else []
+        cache = {"frame": frame_data_url, "options_key": options_key, "lines": lines, "words": words}
+        ctx["_ocr_lines_cache"] = cache
+        return cache
+
+    def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
+        result = self._cached_ocr_result(ctx, frame_data_url)
+        lines = result.get("lines")
+        if not isinstance(lines, list):
+            return []
         return lines
 
     def _has_cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> bool:
@@ -7077,13 +7233,21 @@ class DataAnnotationRuntimeRunner(
             runtime.clear_frame()
         return closed
 
-    def _ocr_lines(self, frame_data_url: str) -> list[dict[str, Any]]:
+    def _ocr_frame(self, frame_data_url: str, *, options: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            response = _recognize_data_annotation_ocr_frame(frame_data_url)
+            response = _recognize_data_annotation_ocr_frame(frame_data_url, options=options)
         except Exception as exc:
             self._log("detail", f"OCR 失败：{exc}")
-            return []
-        return [line.model_dump() for line in response.lines]
+            return {"lines": [], "words": []}
+        return {
+            "lines": [line.model_dump() for line in response.lines],
+            "words": [word.model_dump() for word in getattr(response, "words", [])],
+        }
+
+    def _ocr_lines(self, frame_data_url: str) -> list[dict[str, Any]]:
+        response = self._ocr_frame(frame_data_url)
+        lines = response.get("lines")
+        return lines if isinstance(lines, list) else []
 
     def _ocr_lines_in_shapes(
         self,
@@ -7092,16 +7256,40 @@ class DataAnnotationRuntimeRunner(
         shape_titles: tuple[str, ...] | list[str],
         *,
         padding: int = 16,
+        options: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding)
         if crop is None:
-            return self._ocr_lines(frame_data_url)
+            response = self._ocr_frame(frame_data_url, options=options)
+            return response.get("lines") if isinstance(response.get("lines"), list) else []
         crop_data_url, offset_x, offset_y = crop
-        lines = self._ocr_lines(crop_data_url)
+        response = self._ocr_frame(crop_data_url, options=options)
+        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
         for line in lines:
             line["x"] = float(line.get("x") or 0) + offset_x
             line["y"] = float(line.get("y") or 0) + offset_y
         return lines
+
+    def _ocr_words_in_shapes(
+        self,
+        frame_data_url: str,
+        image: dict[str, Any],
+        shape_titles: tuple[str, ...] | list[str],
+        *,
+        padding: int = 16,
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding)
+        if crop is None:
+            response = self._ocr_frame(frame_data_url, options=options)
+            return response.get("words") if isinstance(response.get("words"), list) else []
+        crop_data_url, offset_x, offset_y = crop
+        response = self._ocr_frame(crop_data_url, options=options)
+        words = response.get("words") if isinstance(response.get("words"), list) else []
+        for word in words:
+            word["x"] = float(word.get("x") or 0) + offset_x
+            word["y"] = float(word.get("y") or 0) + offset_y
+        return words
 
     def _crop_frame_data_url_for_shapes(
         self,

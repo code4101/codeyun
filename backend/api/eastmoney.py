@@ -192,6 +192,33 @@ def _read_qlib_source_history(
         rows=tuple_rows,
     )
 
+
+def _build_akshare_history_error_result(
+    *,
+    market: str,
+    symbol: str,
+    name: str,
+    period: str,
+    start_date: str,
+    end_date: str | None,
+    adjust: str,
+    error: Exception,
+) -> AkshareStockHistory:
+    market_code, normalized_symbol = resolve_akshare_market_symbol(format_market_symbol(market, symbol))
+    return AkshareStockHistory(
+        provider="akshare-error",
+        market=market_code,
+        symbol=normalized_symbol,
+        name=name,
+        period=normalize_ktype(period),
+        adjust=adjust,
+        start_date=akshare_date_to_iso(start_date),
+        end_date=akshare_date_to_iso(end_date) if end_date else "",
+        rows=(),
+        error=str(error),
+    )
+
+
 _hk_pool_backtest_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hk-pool-backtest-api")
 _hk_pool_backtest_lock = Lock()
 _hk_pool_backtest_jobs: dict[str, Future] = {}
@@ -2230,19 +2257,16 @@ def get_akshare_market_history(
         )
         if qlib_cached is not None and qlib_cached.rows:
             return serialize_akshare_stock_history(qlib_cached)
-        market_code, normalized_symbol = resolve_akshare_market_symbol(format_market_symbol(market, symbol))
         return serialize_akshare_stock_history(
-            AkshareStockHistory(
-                provider="akshare-error",
-                market=market_code,
-                symbol=normalized_symbol,
+            _build_akshare_history_error_result(
+                market=market,
+                symbol=symbol,
                 name=name,
-                period=normalize_ktype(period),
+                start_date=start_date,
+                end_date=end_date,
+                period=period,
                 adjust=adjust,
-                start_date=akshare_date_to_iso(start_date),
-                end_date=akshare_date_to_iso(end_date) if end_date else "",
-                rows=(),
-                error=str(exc),
+                error=exc,
             )
         )
 

@@ -375,13 +375,14 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     daily_tasks = [item for item in legacy_tasks if item["schedule_kind"] == "daily"]
     dynamic_tasks = [item for item in legacy_tasks if item["schedule_kind"] == "dynamic"]
     youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
+    baiye = next(item for item in tasks if item["id"] == "legacy-daily-baiye")
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
     signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
     gift = next(item for item in tasks if item["id"] == "gift-code-weekly")
 
     assert len(tasks) == 32
-    assert len(legacy_tasks) == 11
-    assert len(daily_tasks) == 10
+    assert len(legacy_tasks) == 10
+    assert len(daily_tasks) == 9
     assert len(dynamic_tasks) == 1
     assert youli["task_type"] == "daily_youli"
     assert youli["source"] == "data_annotation_runtime"
@@ -400,6 +401,9 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert yihuo["source"] == "data_annotation_runtime"
     assert yihuo["enabled"] is True
     assert yihuo["schedule_times"] == ["05:00"]
+    assert baiye["task_type"] == "daily_baiye"
+    assert baiye["source"] == "data_annotation_runtime"
+    assert baiye["payload"] == {"args": ["魔道"]}
     assert gift["schedule_kind"] == "manual"
     assert gift["payload"] == {"codes": []}
     assert not any(item["id"] == "daily-locate" for item in tasks)
@@ -2683,11 +2687,12 @@ def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(mon
 
 
 def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_support():
-    for task_type in ("daily_assistant", "daily_youli", "daily_yihuo", "daily_gongfeng", "daily_xianshi"):
+    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi"):
         fanxiu._DATA_ANNOTATION_MANUAL_JOB_REGISTRY.pop(task_type, None)
 
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_assistant"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_youli"}) is True
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_baiye"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_yihuo"}) is True
     assert runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo") is not None
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_gongfeng"}) is True
@@ -4932,6 +4937,70 @@ def test_open_daily_entry_from_daily_defaults_to_bidirectional_scan(monkeypatch)
     assert calls[0]["reverse_scrolls"] == 12
 
 
+def test_daily_youli_reward_recovery_exit_clicks_existing_exit_shape_without_scene_wait(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    calls: list[tuple[str, object, object]] = []
+    wait_any_results = ["daily_text", "world_text"]
+
+    class FakeRuntime:
+        def cur_frame(self, *, update=False):
+            calls.append(("cur_frame", update, None))
+            return "reward-frame"
+
+        def ocr_text(self, frame):
+            calls.append(("ocr_text", frame, None))
+            return "奖励找回 一键免费 一键全部 全部找回"
+
+        def click_shape_center(self, view, shape):
+            calls.append(("click_shape_center", view, shape))
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds, None))
+            if False:
+                yield None
+            return None
+
+        def wait_any(self, conditions, **kwargs):
+            calls.append(("wait_any", sorted(conditions), kwargs.get("label")))
+            if False:
+                yield None
+            return wait_any_results.pop(0)
+
+        def view_visible(self, view, **kwargs):
+            return ("view_visible", view, kwargs)
+
+        def ocr_matches(self, predicate, **kwargs):
+            return ("ocr_matches", predicate, kwargs)
+
+        def wait_click(self, view, shape, **kwargs):
+            calls.append(("wait_click", view, shape))
+            if False:
+                yield None
+            return None
+
+        def wait_view(self, view, **kwargs):
+            calls.append(("wait_view", view, kwargs.get("label")))
+            if False:
+                yield None
+            return (view, 100.0)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._return_daily_youli_reward_recovery_to_world(
+            {"asset_tree_path": Path("asset.json")},
+            fanxiu.threading.Event(),
+            task_label="日常_游历",
+        )
+    )
+
+    assert result["result"] == "skipped"
+    assert calls[0][0] == "cur_frame"
+    assert ("click_shape_center", 69, "退出") in calls
+    assert ("wait_click", 69, "退出") not in calls
+    assert calls.count(("click_shape_center", 69, "退出")) == 2
+
+
 def test_daily_boss_daily_list_uses_bidirectional_runtime_scan(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     calls: list[dict[str, object]] = []
@@ -6126,6 +6195,47 @@ def test_ocr_substring_center_targets_text_fragment_not_whole_line():
     assert youli == (pytest.approx(560.8333333333), 1492.0)
     assert daozu == (pytest.approx(668.5), 1492.0)
     assert youli != daozu
+
+
+def test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = {
+        "id": 265,
+        "title": "法则之主",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"title": "识别区", "x": 0.1, "y": 0.2, "w": 0.4, "h": 0.3}],
+    }
+    observed: list[dict[str, object] | None] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_crop_frame_data_url_for_shapes",
+        lambda *_args, **_kwargs: ("crop-frame", 90.0, 320.0),
+    )
+
+    def fake_ocr_frame(frame_data_url, *, options=None):
+        observed.append(options)
+        assert frame_data_url == "crop-frame"
+        return {
+            "lines": [{"text": "魔道仙弈", "x": 10.0, "y": 20.0, "w": 80.0, "h": 24.0}],
+            "words": [
+                {"text": "魔", "x": 12.0, "y": 20.0, "w": 16.0, "h": 24.0, "line_index": 0},
+                {"text": "道", "x": 30.0, "y": 20.0, "w": 16.0, "h": 24.0, "line_index": 0},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_ocr_frame", fake_ocr_frame)
+    ctx = {"images": {265: image}}
+    runtime = runner._fanxiu_runtime(ctx)
+
+    words = runtime.ocr_words_in_shapes(265, ["识别区"], frame_data_url="frame")
+
+    assert observed == [{"return_word_box": True}]
+    assert words == [
+        {"text": "魔", "x": 102.0, "y": 340.0, "w": 16.0, "h": 24.0, "line_index": 0},
+        {"text": "道", "x": 120.0, "y": 340.0, "w": 16.0, "h": 24.0, "line_index": 0},
+    ]
 
 
 def test_daily_youli_home_text_rejects_xiuxianzhuan_story_menu():

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "bf505b478a6237364bd598c2c2e0359b1c5c472c"
-last_audited_at: "2026-06-22T22:33:50.7198770+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-22-runtime-current-device-guard/report.md"
-last_frontend_commit_summary: "完整关闭 5b2845af..bf505b47：已继续收紧 cluster/tasks 顶部黄条的当前设备归属，真实多视口截图、typecheck 与 build 均通过。"
-audited_commit_count: 28
+last_audited_commit: "19a720628aad19a07a61eb117125a96af4600c35"
+last_audited_at: "2026-06-23T02:33:35.5165758+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md"
+last_frontend_commit_summary: "完整关闭 bf505b47..19a72062：4 个相关入口三视口实图、typecheck 与 build 已补齐，task-system 健康条减法得到真实页面复验。"
+audited_commit_count: 33
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-23
+
+- 完整范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35`
+- 覆盖提交：`d656704fa2d9f6c97e52fa5eeda3a6ff7c4b28eb`、`bd4d49f1a43940b0bc42892cb53f5e3fbb0e4596`、`62c00f967cf8ced2c7a23badca5aa113a5addf0c`、`0b8cd38cf4d76ba44faced3b53a0e7c4a0947075`、`19a720628aad19a07a61eb117125a96af4600c35`
+- 前端入口提交：`d656704fa2d9f6c97e52fa5eeda3a6ff7c4b28eb`、`bd4d49f1a43940b0bc42892cb53f5e3fbb0e4596`、`0b8cd38cf4d76ba44faced3b53a0e7c4a0947075`、`19a720628aad19a07a61eb117125a96af4600c35`
+- 入口如何牵引到旧问题：新增 `task-system` 页面把“任务空间健康 -> 当前该处理哪条任务”的一级闭环正式抬到前台，live DOM 立刻暴露出同页旧问题：内部自动化断言被原样当作禁用按钮投到首页，技术细节和可执行问题混在一级健康条里。`fanxiu runtime` 同轮提交又继续暴露出 `下次触发` 列混入解释型文案，说明同一批提交仍在牵引“状态投影是否回到基础模型”这条链路。
+- 本轮减法：仅收敛 `frontend/src/standard/notes/task-system/page.vue` 的健康条投影，不新增入口、不新增状态，只把已知自动化断言压成短标签 `自动化提示词未同步`，并把非任务跳转型问题从禁用按钮改回静态标签，删除错误 affordance。
+- 信息量保持：自动化健康细节仍保留在 `title`，任务跳转型问题仍保留按钮能力；减少的是技术断言直铺首屏和“不可点击却长得像按钮”的冗余概念。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；4 个相关入口已补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 12 张真实页面截图，见 `C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/`；其中 `task-system` 三视口实图都已显示 `自动化提示词未同步`。
+- 根因分层：`task-system` 首页问题属于前端状态投影；`fanxiu runtime` 的 `动态作业未记录下次时间` 属于后端数据投影 / 业务建模边界，已登记到 `docs/CodeYun自动化协作交接.md` 的 `UI-HANDOFF-20260623-001`。
+- 剩余风险：`cluster/runtime` 当前截图只覆盖空表首屏，没有新的服务 / 作业行样本；`fanxiu runtime` 的深层动态作业行没有在当前首屏截图中形成新的反证，因此后端状态投影 handoff 继续保留。
+- 处理结果：本轮补齐了上轮缺失的真实三视口截图并完成复验，因此完整关闭这段增量范围，把 `last_audited_commit` 推进到 `19a720628aad19a07a61eb117125a96af4600c35`。
 
 ### 2026-06-22
 

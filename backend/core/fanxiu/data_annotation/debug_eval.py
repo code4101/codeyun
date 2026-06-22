@@ -74,6 +74,26 @@ class DataAnnotationRuntimeDebugContext:
         self.check_stop()
         return self._runner._ocr_lines(frame or self.frame())
 
+    def ocr_words_in_shapes(
+        self,
+        scene: int | str,
+        shape_titles: list[str] | tuple[str, ...],
+        *,
+        frame: str | None = None,
+        frame_data_url: str | None = None,
+        padding: int = 0,
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        self.check_stop()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return runtime.ocr_words_in_shapes(
+            scene,
+            tuple(shape_titles),
+            frame_data_url=frame_data_url or frame or self.frame(),
+            padding=padding,
+            options=options,
+        )
+
     def image(self, scene: int | str) -> dict[str, Any] | None:
         images: dict[int, dict[str, Any]] = self._ctx.get("images") or {}
         if isinstance(scene, int):
@@ -91,6 +111,68 @@ class DataAnnotationRuntimeDebugContext:
     def shape(self, scene: int | str, title: str, *, contains: bool = False) -> dict[str, Any] | None:
         return self._runner._find_shape(self.image(scene), title, contains=contains)
 
+    def shape_score(self, scene: int | str, title: str, *, frame: str | None = None, contains: bool = False) -> float:
+        image = self.image(scene)
+        shape = self._runner._find_shape(image, title, contains=contains)
+        if not image or not shape:
+            raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
+        frame_data_url = frame or self.frame()
+        return float(self._runner._shape_score(self._ctx, image, shape, frame_data_url) or 0.0)
+
+    def shape_probe(
+        self,
+        scene: int | str,
+        title: str,
+        *,
+        frame: str | None = None,
+        contains: bool = False,
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        image = self.image(scene)
+        raw_shape = self._runner._find_shape(image, title, contains=contains)
+        if not image or not raw_shape:
+            raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
+        shape = dict(raw_shape)
+        if overrides:
+            shape.update(overrides)
+        frame_data_url = frame or self.frame()
+        condition_results: list[dict[str, Any]] = []
+        for condition in self._runner._shape_match_conditions(shape):
+            result = self._runner._match_shape(self._ctx, image, shape, frame_data_url, condition=condition)
+            condition_results.append({
+                "condition": condition,
+                "similarity": float(result.get("similarity") or 0.0),
+                "matched": bool(result.get("matched")),
+                "ocr_text": str(result.get("ocr_text") or "")[:80],
+            })
+        score = max((float(item["similarity"]) for item in condition_results), default=0.0)
+        keys = (
+            "title",
+            "x",
+            "y",
+            "w",
+            "h",
+            "sceneJumpTarget",
+            "imageMatchRole",
+            "ocrMatchRole",
+            "ocrEnabled",
+            "ocrText",
+            "ocrMatchMode",
+            "pixelTolerance",
+            "floating",
+            "jitterEnabled",
+            "jitterRadius",
+        )
+        return {
+            "scene": scene,
+            "shape": {key: shape.get(key) for key in keys if key in shape},
+            "score": score,
+            "scene_threshold": float(getattr(self._runner, "scene_threshold", 80.0) or 80.0),
+            "overlay_threshold": float(getattr(self._runner, "overlay_threshold", 55.0) or 55.0),
+            "matched": any(bool(item.get("matched")) for item in condition_results),
+            "conditions": condition_results,
+        }
+
     def _require_act(self) -> None:
         if self.readonly:
             raise RuntimeError("debug_eval 当前为 readonly，动作调用需要 payload.mode='act'")
@@ -107,6 +189,11 @@ class DataAnnotationRuntimeDebugContext:
         self._require_act()
         runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
         return (yield from runtime.wait_click(frame, shape, **options))
+
+    def wait_click_then_view(self, frame: int | str, shape: str, *targets: int | str, **options: Any):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.wait_click_then_view(frame, shape, *targets, **options))
 
     def tap(self, scene: int | str, x: float, y: float) -> None:
         self._require_act()

@@ -393,18 +393,26 @@ const automationHealthText = computed(() => {
 })
 const taskSpaceWriteBlocked = computed(() => pageStaleFromHealth.value)
 const visibleAutomationFailures = computed(() => automationHealth.value?.failures.slice(0, 3) ?? [])
+const summarizeHealthIssueText = (text: string) => {
+  if (text === 'automation prompt must exactly match build_automation_prompt()') {
+    return '自动化提示词未同步'
+  }
+  return text
+}
 const healthIssues = computed(() => [
   ...visibleAuditIssues.value.map((issue) => ({
     key: `audit-${issue.code}-${issue.taskId ?? issue.message}`,
-    text: issue.message,
+    text: summarizeHealthIssueText(issue.message),
     title: issue.message,
     taskId: issue.taskId,
+    interactive: Boolean(issue.taskId),
   })),
   ...visibleAutomationFailures.value.map((failure) => ({
     key: `automation-${failure.code}`,
-    text: failure.message,
+    text: summarizeHealthIssueText(failure.message),
     title: failure.message,
     taskId: null,
+    interactive: false,
   })),
 ].slice(0, 4))
 const latestPlannerOutcome = computed(() => {
@@ -1337,17 +1345,18 @@ watch(selectedTaskId, () => {
         载入最新
       </button>
       <div v-if="healthIssues.length" class="audit-issues">
-        <button
+        <component
           v-for="issue in healthIssues"
           :key="issue.key"
           class="audit-issue"
-          type="button"
+          :is="issue.interactive ? 'button' : 'span'"
+          :type="issue.interactive ? 'button' : undefined"
           :title="issue.title"
-          :disabled="!issue.taskId"
+          :disabled="issue.interactive ? !issue.taskId : undefined"
           @click="issue.taskId && selectTask(issue.taskId)"
         >
           {{ issue.text }}
-        </button>
+        </component>
       </div>
       <span v-else class="audit-ok">
         {{ latestPlannerOutcome }}
@@ -1814,6 +1823,8 @@ watch(selectedTaskId, () => {
 }
 
 .audit-issue {
+  display: inline-flex;
+  align-items: center;
   max-width: 360px;
   overflow: hidden;
   padding: 3px 8px;
@@ -1827,6 +1838,10 @@ watch(selectedTaskId, () => {
 }
 
 .audit-issue:disabled {
+  cursor: default;
+}
+
+.audit-issue:not(button) {
   cursor: default;
 }
 

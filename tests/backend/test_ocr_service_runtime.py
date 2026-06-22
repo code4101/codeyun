@@ -46,6 +46,22 @@ def test_ocr_service_status_rebinds_existing_http_daemon(monkeypatch):
     assert status["url"] == "http://127.0.0.1:8765"
 
 
+def test_ocr_service_status_skips_http_probe_when_process_and_port_are_both_absent(monkeypatch):
+    monkeypatch.setattr(ocr_runtime, "list_ocr_service_processes", lambda: [])
+    monkeypatch.setattr(ocr_runtime, "_is_tcp_port_open", lambda host, port, timeout=0.1: False)
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("requests.get should not run when OCR daemon is clearly offline")
+
+    monkeypatch.setattr(ocr_runtime.requests, "get", fail_get)
+
+    status = ocr_runtime.get_ocr_service_status()
+
+    assert status["running"] is False
+    assert status["state"] == "stopped"
+    assert status["process_count"] == 0
+
+
 def test_predict_via_ocr_service_posts_image_to_external_daemon(tmp_path: Path, monkeypatch):
     image_path = tmp_path / "ocr.png"
     image_path.write_bytes(b"png-bytes")
