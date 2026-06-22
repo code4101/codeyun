@@ -376,12 +376,12 @@ def _node_command_for_codex_script(command_path: Path) -> list[str] | None:
 
 
 def _resolved_codex_candidate_command(candidate: Path, args: list[str]) -> list[str]:
-    native_command = _native_codex_exe_for_command(candidate)
-    if native_command is not None:
-        return [os.fspath(native_command), *args]
     node_command = _node_command_for_codex_script(candidate)
     if node_command is not None:
         return [*node_command, *args]
+    native_command = _native_codex_exe_for_command(candidate)
+    if native_command is not None:
+        return [os.fspath(native_command), *args]
     return [os.fspath(candidate), *args]
 
 
