@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "19a720628aad19a07a61eb117125a96af4600c35"
-last_audited_at: "2026-06-23T02:33:35.5165758+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md"
-last_frontend_commit_summary: "完整关闭 bf505b47..19a72062：4 个相关入口三视口实图、typecheck 与 build 已补齐，task-system 健康条减法得到真实页面复验。"
-audited_commit_count: 33
+last_audited_commit: "c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a"
+last_audited_at: "2026-06-23T06:31:35.963091+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-task-system-c1a7cc90/report.md"
+last_frontend_commit_summary: "完整关闭 19a72062..c1a7cc90：task-system 健康条去掉内嵌告警 chip，三视口实图与前端构建验证已补齐。"
+audited_commit_count: 34
 pending_or_skipped_ranges: []
 ```
 
@@ -356,3 +356,14 @@ pending_or_skipped_ranges: []
 - 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-22-runtime/report.md`
 - 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；真实页面截图见 `runtime-wide-before.png` 与 `runtime-after.png`。
 - 剩余风险：Chrome / in-app Browser 截图链路会把窗口归一为固定渲染宽度，本轮未拿到真正不同宽度的三张实图；但本次修改只删除重复入口，不涉及 CSS 或布局算法，窄屏风险较低。
+
+- 完整范围：`19a720628aad19a07a61eb117125a96af4600c35..c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
+- 覆盖提交：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
+- 前端入口提交：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
+- 入口如何牵引到旧问题：本次提交继续落在 `notes/task-system` 同一条“任务空间健康 -> 自动化契约异常 -> 当前是否还能继续执行”链路上。commit 本身已经把英文告警压成 `自动化提示词未同步`，但真实页面立刻暴露出同页旧问题：健康条自己已经是容器，内部仍套一个橙色描边 chip，且只读系统告警和可跳转任务问题共用同一外观，首屏会把“状态事实”和“可执行动作”混成一个层级。
+- 本轮减法：不新增任何新控件，只把健康条收敛成唯一容器；被动系统告警改回文本级提示，只有带 `taskId` 的问题才保留为可点击文本链接；同时取消 issue 的强制截断，让同一条健康带承载完整事实，而不是“容器里再塞一个伪按钮”。
+- 信息量保持：自动化失败事实、任务审计问题、按任务跳转能力和顶部 stale reload 逻辑都保留；减少的是重复边框、错误动作暗示和被截断的重复投影，不是减少诊断能力。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-task-system-c1a7cc90/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，以本地 admin token 打开真实页面 `http://127.0.0.1:5173/notes/task-system`，在宽屏 / 普通桌面 / 窄屏三种视口下分别截图 `task-system-after-wide.png`、`task-system-after-desktop.png`、`task-system-after-narrow.png`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 剩余风险：本轮真实数据只复现了自动化只读告警，没有同时采到“可跳转任务问题 + 自动化告警”混合样本；但改动只收敛同一健康条内的投影层级，不改 API、写回和任务逻辑，风险较低。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`。

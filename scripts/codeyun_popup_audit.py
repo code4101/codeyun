@@ -124,7 +124,18 @@ def ensure_monitor_running(*, min_covered_until: datetime | None = None) -> dict
     status = _load_monitor_status()
     if status.get("alive"):
         expires_at = _parse_time(status.get("expires_at"))
-        if min_covered_until is None or (expires_at is not None and expires_at >= min_covered_until):
+        started_at = _parse_time(status.get("started_at"))
+        try:
+            monitor_script_mtime = datetime.fromtimestamp(MONITOR_SCRIPT.stat().st_mtime)
+        except OSError:
+            monitor_script_mtime = None
+        script_changed = (
+            started_at is not None
+            and monitor_script_mtime is not None
+            and monitor_script_mtime > started_at
+        )
+        coverage_ok = min_covered_until is None or (expires_at is not None and expires_at >= min_covered_until)
+        if coverage_ok and not script_changed:
             status["started_now"] = False
             return status
         _stop_monitor(int(status.get("pid") or 0))
@@ -444,7 +455,11 @@ def main() -> None:
     if args.reset_baseline:
         status = reset_baseline()
     else:
-        monitor_status = ensure_monitor_running() if args.ensure_monitor else _load_monitor_status()
+        monitor_status = (
+            ensure_monitor_running(min_covered_until=datetime.now() + timedelta(hours=2))
+            if args.ensure_monitor
+            else _load_monitor_status()
+        )
         baseline = _load_baseline()
         started_at = str(baseline.get("started_at") or "")
         if not started_at:

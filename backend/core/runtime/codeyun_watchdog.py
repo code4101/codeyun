@@ -121,8 +121,11 @@ def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
     current_pid = os.getpid()
     lock_pid = _read_lock_pid()
     items: list[CodeYunWatchdogProcess] = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
+    for proc in psutil.process_iter(["pid", "name"]):
         if int(proc.pid) == current_pid:
+            continue
+        proc_name = str((getattr(proc, "info", {}) or {}).get("name") or "").strip().lower()
+        if proc_name not in PYTHON_PROCESS_NAMES:
             continue
         if not _matches_watchdog_process(proc):
             continue

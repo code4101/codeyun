@@ -319,27 +319,31 @@ watch(currentDeviceId, async (newId, oldId) => {
 });
 
 const fetchDevices = async () => {
+  const previousDeviceId = currentDeviceId.value;
   // Try to use the store's action which now calls /api/devices
   try {
     await taskStore.fetchDevices();
-    
+    let nextDeviceId = '';
+
     // Auto-select first device if none selected
     if (taskStore.devices.length > 0) {
        if (!currentDeviceId.value) {
-           currentDeviceId.value = taskStore.devices[0].id;
+           nextDeviceId = taskStore.devices[0].id;
        } else {
-           const exists = taskStore.devices.find(d => d.id === currentDeviceId.value);
-           if (exists) {
-               currentDeviceId.value = exists.id;
-           } else {
-               const legacyDevice = taskStore.devices.find(d => d.device_id === currentDeviceId.value);
-               currentDeviceId.value = legacyDevice?.id || taskStore.devices[0].id;
-           }
+            const exists = taskStore.devices.find(d => d.id === currentDeviceId.value);
+            if (exists) {
+                nextDeviceId = exists.id;
+            } else {
+                const legacyDevice = taskStore.devices.find(d => d.device_id === currentDeviceId.value);
+                nextDeviceId = legacyDevice?.id || taskStore.devices[0].id;
+            }
        }
     } else {
         // No devices, clear selection
-        currentDeviceId.value = '';
+        nextDeviceId = '';
     }
+
+    currentDeviceId.value = nextDeviceId;
 
     // Update current device config if selected
     const current = taskStore.devices.find(d => d.id === currentDeviceId.value);
@@ -359,6 +363,7 @@ const fetchDevices = async () => {
     console.error('Failed to fetch devices', err);
     ElMessage.error('获取设备列表失败');
   }
+  return previousDeviceId !== currentDeviceId.value;
 };
 
 const deviceError = ref(false);
@@ -1446,15 +1451,16 @@ onMounted(async () => {
   window.addEventListener('click', closeRuntimeContextMenu);
   window.addEventListener('resize', updateViewportWidth);
   updateViewportWidth();
+  let selectionChangedDuringBootstrap = false;
   if (taskStore.devices.length > 0) {
     // Cache hit: trigger background refresh, don't wait
-    fetchDevices();
+    void fetchDevices();
   } else {
     // No cache: must wait
-    await fetchDevices();
+    selectionChangedDuringBootstrap = await fetchDevices();
   }
 
-  if (currentDeviceId.value) {
+  if (currentDeviceId.value && !selectionChangedDuringBootstrap) {
       await fetchTasks(currentDeviceId.value, false);
       startTaskPolling(currentDeviceId.value);
   }

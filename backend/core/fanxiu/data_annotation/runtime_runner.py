@@ -2384,10 +2384,8 @@ class DataAnnotationRuntimeRunner(
                     pid = owner.get("pid")
                     step = owner.get("step") or "unknown"
                     return False, data_annotation_runtime_owner_message(pid, step)
-                try:
-                    owner_path.unlink()
-                except FileNotFoundError:
-                    pass
+                if not self._unlink_service_owner_path(owner_path):
+                    return False, "行为树执行器单例锁释放失败：owner 文件暂被占用，请稍后重试"
             fd = os.open(str(owner_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as file:
                 json.dump(self._service_owner_payload(token, entry_id, generation, "starting"), file, ensure_ascii=False, indent=2)
@@ -2398,6 +2396,19 @@ class DataAnnotationRuntimeRunner(
             return False, "行为树执行器已由另一个后端实例抢先启动"
         except Exception as exc:
             return False, f"行为树执行器单例锁获取失败：{exc}"
+
+    def _unlink_service_owner_path(self, owner_path: Path) -> bool:
+        for attempt in range(5):
+            try:
+                owner_path.unlink()
+                return True
+            except FileNotFoundError:
+                return True
+            except PermissionError:
+                if attempt >= 4:
+                    return False
+                time.sleep(0.05)
+        return False
 
     def _release_service_owner(self) -> None:
         with self._lock:
@@ -2412,10 +2423,7 @@ class DataAnnotationRuntimeRunner(
         except Exception:
             owner = {}
         if isinstance(owner, dict) and str(owner.get("token") or "") == token:
-            try:
-                owner_path.unlink()
-            except FileNotFoundError:
-                pass
+            self._unlink_service_owner_path(owner_path)
 
     def _job_group_isolated(self) -> bool:
         return fanxiu_job_group_isolated(_data_annotation_job_group_isolation_path())
@@ -5772,6 +5780,13 @@ class DataAnnotationRuntimeRunner(
         self._log("detail", f"场景识别降级：#34 图像弱命中但 OCR 不像世界，OCR={text[:120]}")
         return False
 
+    def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
+        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+        if self._daily_lingta_text_is_world_like(text):
+            self._log("detail", "场景强 OCR 命中 #34 世界，跳过局部路径候选")
+            return 34
+        return None
+
     def _leave_scene_confirm_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         if ("是否离开" in compact or "离开当前场景" in compact) and ("确认" in compact or "确定" in compact):
@@ -7671,6 +7686,32 @@ class DataAnnotationRuntimeRunner(
             and "仙府" in title
         )
 
+    def _is_scene_jump_recoverable_interruption(
+        self,
+        ctx: dict[str, Any],
+        tree: list[dict[str, Any]],
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        scene_id: int,
+    ) -> bool:
+        if int(scene_id) in {int(source_scene_id), int(target_scene_id)}:
+            return False
+        if self._find_scene_route(tree, int(scene_id), int(target_scene_id)) is None:
+            return False
+        image = (ctx.get("images") or {}).get(int(scene_id)) if isinstance(ctx.get("images"), dict) else None
+        if not isinstance(image, dict):
+            return False
+        image_title = str(image.get("title") or "")
+        if not any(marker in image_title for marker in ("奖励", "提示")):
+            return False
+        safe_titles = {"领取", "确定", "确认", "关闭", "返回", "退出", "空白"}
+        return any(
+            str(shape.get("title") or shape.get("id") or "").strip() in safe_titles
+            and bool(str(shape.get("sceneJumpTarget") or "").strip())
+            for shape in self._flatten_shapes(image.get("shapes"))
+        )
+
     def _is_xianfu_cutscene_landing_target(
         self,
         *,
@@ -7762,14 +7803,18 @@ class DataAnnotationRuntimeRunner(
 
             scene_id, score = self._identify_scene_number(ctx, frame)
             if scene_id is None:
-                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                scene_id, score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
+                strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
+                if strong_scene_id is not None:
+                    scene_id, score = strong_scene_id, float(self.scene_threshold)
+                else:
+                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                    scene_id, score = self._identify_scene_number_for_route(
+                        ctx,
+                        frame,
+                        tree,
+                        target_scene_id,
+                        route_candidate_ids,
+                    )
             last_scene_id, last_score, last_frame = scene_id, score, frame
             if (target_scene_id == 171 or 171 in expected_ids) and self._is_xianfu_entry_cutscene(ctx, scene_id):
                 left_source = True
@@ -7823,6 +7868,19 @@ class DataAnnotationRuntimeRunner(
                         "warning",
                         f"场景跳转：#{source_scene_id} 点击仙府实际到达 #{scene_id}，"
                         f"沿用已标注路径重新规划到 #{target_scene_id}",
+                    )
+                    return scene_id
+                if self._is_scene_jump_recoverable_interruption(
+                    ctx,
+                    tree,
+                    source_scene_id=source_scene_id,
+                    target_scene_id=target_scene_id,
+                    scene_id=scene_id,
+                ):
+                    self._log(
+                        "warning",
+                        f"场景跳转：#{source_scene_id} 点击「{shape.get('title') or '未命名'}」"
+                        f"被 #{scene_id} 奖励/提示页打断，沿用已标注路径重新规划到 #{target_scene_id}",
                     )
                     return scene_id
                 if dynamic_landing:
@@ -7992,14 +8050,18 @@ class DataAnnotationRuntimeRunner(
             frame = self._screencap(ctx)
             current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
-                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                current_scene_id, score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
+                strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
+                if strong_scene_id is not None:
+                    current_scene_id, score = strong_scene_id, float(self.scene_threshold)
+                else:
+                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                    current_scene_id, score = self._identify_scene_number_for_route(
+                        ctx,
+                        frame,
+                        tree,
+                        target_scene_id,
+                        route_candidate_ids,
+                    )
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
                     recovered_unknown_start = True

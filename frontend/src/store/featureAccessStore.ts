@@ -4,12 +4,79 @@ import { fetchAccessContext, type FeatureAccessContext, type FeatureAccessFlatIt
 import { useUserStore } from '@/store/userStore'
 
 let pendingContextRequest: Promise<FeatureAccessContext> | null = null
+const CONTEXT_CACHE_KEY = 'codeyun:feature-access-context:v1'
+const CONTEXT_CACHE_TTL_MS = 60 * 1000
+
+interface FeatureAccessContextCache {
+  authKey: string
+  savedAt: number
+  context: FeatureAccessContext
+}
 
 interface FeatureAccessState {
   context: FeatureAccessContext | null
   loading: boolean
   loaded: boolean
   error: string | null
+}
+
+function hashToken(value: string | null): string {
+  if (!value) {
+    return 'anonymous'
+  }
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `token:${(hash >>> 0).toString(36)}:${value.length}`
+}
+
+function readCachedContext(authKey: string): FeatureAccessContext | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(CONTEXT_CACHE_KEY)
+    if (!raw) {
+      return null
+    }
+    const payload = JSON.parse(raw) as Partial<FeatureAccessContextCache>
+    if (
+      payload.authKey !== authKey
+      || !payload.context
+      || typeof payload.savedAt !== 'number'
+      || Date.now() - payload.savedAt > CONTEXT_CACHE_TTL_MS
+    ) {
+      return null
+    }
+    return payload.context
+  } catch {
+    return null
+  }
+}
+
+function writeCachedContext(authKey: string, context: FeatureAccessContext) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const payload: FeatureAccessContextCache = {
+      authKey,
+      savedAt: Date.now(),
+      context,
+    }
+    window.localStorage.setItem(CONTEXT_CACHE_KEY, JSON.stringify(payload))
+  } catch {
+    // localStorage may be unavailable or full; the network path remains the source of truth.
+  }
+}
+
+function clearCachedContext() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.removeItem(CONTEXT_CACHE_KEY)
 }
 
 export const useFeatureAccessStore = defineStore('feature-access', {
@@ -50,11 +117,22 @@ export const useFeatureAccessStore = defineStore('feature-access', {
         return this.context
       }
 
+      const userStore = useUserStore()
+      const authKey = hashToken(userStore.token)
+      if (!force) {
+        const cachedContext = readCachedContext(authKey)
+        if (cachedContext) {
+          this.context = cachedContext
+          this.loaded = true
+          this.error = null
+          return cachedContext
+        }
+      }
+
       this.loading = true
       this.error = null
       const request = (async () => {
         let nextContext = await fetchAccessContext()
-        const userStore = useUserStore()
 
         // If a stale/expired access token made the optional-auth endpoint fall back to
         // anonymous context, try repairing the session through /auth/me first and then
@@ -68,6 +146,7 @@ export const useFeatureAccessStore = defineStore('feature-access', {
 
         this.context = nextContext
         this.loaded = true
+        writeCachedContext(hashToken(userStore.token), nextContext)
         return nextContext
       })()
       pendingContextRequest = request
@@ -101,6 +180,7 @@ export const useFeatureAccessStore = defineStore('feature-access', {
       this.loaded = false
       this.loading = false
       this.error = null
+      clearCachedContext()
     },
   },
 })

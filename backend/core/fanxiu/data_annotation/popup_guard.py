@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import io
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -7,8 +10,133 @@ from typing import Any
 
 from pyxllib.autogui import CloseActionPlanner, Shape, View
 
+from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+
 
 class PopupGuardMixin:
+    def _disconnect_popup_frame_size(self, frame_data_url: str) -> tuple[int, int]:
+        try:
+            _header, encoded = frame_data_url.split(",", 1) if "," in frame_data_url else ("", frame_data_url)
+            raw = base64.b64decode(encoded)
+            from PIL import Image
+
+            with Image.open(io.BytesIO(raw)) as image:
+                return int(image.size[0]), int(image.size[1])
+        except Exception:
+            return 900, 1600
+
+    def _disconnect_popup_detected(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return (
+            "断线重连" in compact
+            or "网络已断开" in compact
+            or ("请重新登录" in compact and "重连" in compact)
+        )
+
+    def _disconnect_popup_button_center(
+        self,
+        lines: list[dict[str, Any]],
+        *,
+        width: int,
+        height: int,
+    ) -> tuple[float, float, str, str]:
+        preferred = ("重连", "重新登录")
+        min_button_y = height * 0.45
+        candidates: list[tuple[int, float, float, str, str]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text:
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            if w <= 0 or h <= 0:
+                continue
+            center_y = y + h / 2
+            if center_y < min_button_y:
+                continue
+            for index, label in enumerate(preferred):
+                if label in text:
+                    candidates.append((index, x + w / 2, center_y, label, text))
+                    break
+        if candidates:
+            _index, x, y, label, text = sorted(candidates, key=lambda item: (item[0], item[2], item[1]))[0]
+            return x, y, label, text
+        # The disconnect dialog has a stable two-button layout. If OCR proves this
+        # exact system dialog but misses the button glyphs, prefer the right-side
+        # reconnect button over restarting the emulator or clicking random areas.
+        return width * 0.66, height * 0.66, "重连", "layout_fallback"
+
+    def _handle_disconnect_reconnect_popup(self, runtime: Any) -> bool | str:
+        try:
+            frame = runtime.cur_frame(update=False)
+            lines = runtime.ocr_lines(frame)
+            text = runtime.ocr_text(frame)
+        except Exception:
+            return False
+        if not self._disconnect_popup_detected(text):
+            with self._lock:
+                if self._status.get("network_disconnect_reconnect_attempts"):
+                    self._status["network_disconnect_reconnect_attempts"] = 0
+            return False
+
+        with self._lock:
+            attempts = int(self._status.get("network_disconnect_reconnect_attempts") or 0)
+            if attempts >= 3:
+                event = {
+                    "time": time.time(),
+                    "kind": "network_disconnect",
+                    "image": "OCR",
+                    "title": "断线重连",
+                    "folder_path": "runtime/ocr",
+                    "score": 100.0,
+                    "action": "device_recovery_required",
+                    "ocr": _sanitize_ocr_text(text)[:80],
+                    "attempts": attempts,
+                }
+                self._status.update({
+                    "current_scene": None,
+                    "message": f"断线重连点击「重连」连续 {attempts} 次无效，停止弹窗守护并要求重启 MuMu/设备恢复",
+                    "last_guard_event": event,
+                    "network_disconnect_reconnect_blocked": True,
+                    "updated_at": time.time(),
+                })
+                self._log_locked("error", self._status["message"])
+                return "blocked"
+            self._status["network_disconnect_reconnect_attempts"] = attempts + 1
+
+        width, height = self._disconnect_popup_frame_size(frame)
+        x, y, action, source = self._disconnect_popup_button_center(lines, width=width, height=height)
+        click_image = {
+            "type": "image",
+            "title": "断线重连OCR",
+            "filename": "runtime_disconnect_reconnect.png",
+            "width": width,
+            "height": height,
+            "shapes": [],
+        }
+        runtime.click_frame_point(click_image, x, y)
+        event = {
+            "time": time.time(),
+            "kind": "network_disconnect",
+            "image": "OCR",
+            "title": "断线重连",
+            "folder_path": "runtime/ocr",
+            "score": 100.0,
+            "action": f"click:{action}",
+            "ocr": _sanitize_ocr_text(text)[:80],
+            "button_source": source,
+            "attempts": attempts + 1,
+        }
+        self._record_popup_guard_click(
+            None,
+            f"守护处理：断线重连 OCR 点击「{action}」",
+            event,
+            action,
+        )
+        return True
+
     def _is_independent_exit_shape(self, shape: dict[str, Any]) -> bool:
         return CloseActionPlanner().is_independent_exit_shape(shape)
 
@@ -371,6 +499,12 @@ class PopupGuardMixin:
         previous_min_score = runtime.attrs.get("popup_guard_min_score")
         runtime.attrs["popup_guard_min_score"] = min_score
         try:
+            disconnect_result = self._handle_disconnect_reconnect_popup(runtime)
+            if disconnect_result is True:
+                return True
+            if disconnect_result == "blocked":
+                return False
+
             view = runtime.find_view("弹窗")
             matched = runtime.matched_view
             if view is None or matched is None:

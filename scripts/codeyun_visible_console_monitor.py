@@ -215,11 +215,33 @@ def _enum_visible_console_windows() -> list[dict[str, Any]]:
     return items
 
 
+def _window_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    return (int(item.get("hwnd") or 0), int(item.get("pid") or 0), str(item.get("title") or ""))
+
+
+def _new_visible_window_events(
+    windows: list[dict[str, Any]],
+    *,
+    active_keys: set[tuple[int, int, str]],
+) -> list[dict[str, Any]]:
+    current_keys: set[tuple[int, int, str]] = set()
+    events: list[dict[str, Any]] = []
+    for item in windows:
+        key = _window_key(item)
+        current_keys.add(key)
+        if key not in active_keys:
+            events.append(item)
+    active_keys.clear()
+    active_keys.update(current_keys)
+    return events
+
+
 def run_loop(*, duration_seconds: float, interval_seconds: float, heartbeat_seconds: float) -> int:
     MONITOR_DIR.mkdir(parents=True, exist_ok=True)
     start = time.time()
     deadline = start + max(1.0, float(duration_seconds))
-    seen: set[tuple[int, int, str]] = set()
+    active_keys: set[tuple[int, int, str]] = set()
+    event_count = 0
     next_heartbeat = 0.0
     base_status = {
         "pid": os.getpid(),
@@ -231,14 +253,14 @@ def run_loop(*, duration_seconds: float, interval_seconds: float, heartbeat_seco
     _write_status({**base_status, "heartbeat_at": _now_text(), "alive": True})
 
     while time.time() < deadline:
-        for item in _enum_visible_console_windows():
-            key = (int(item.get("hwnd") or 0), int(item.get("pid") or 0), str(item.get("title") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
+        for item in _new_visible_window_events(
+            _enum_visible_console_windows(),
+            active_keys=active_keys,
+        ):
             item["time"] = _now_text()
             with EVENTS_PATH.open("a", encoding="utf-8") as file:
                 file.write(json.dumps(item, ensure_ascii=False) + "\n")
+            event_count += 1
 
         now = time.time()
         if now >= next_heartbeat:
@@ -248,7 +270,8 @@ def run_loop(*, duration_seconds: float, interval_seconds: float, heartbeat_seco
                     "heartbeat_at": _now_text(),
                     "expires_at": datetime.fromtimestamp(deadline).strftime("%Y-%m-%d %H:%M:%S"),
                     "alive": True,
-                    "seen_windows": len(seen),
+                    "active_windows": len(active_keys),
+                    "seen_windows": event_count,
                 }
             )
             next_heartbeat = now + max(1.0, float(heartbeat_seconds))
@@ -259,7 +282,8 @@ def run_loop(*, duration_seconds: float, interval_seconds: float, heartbeat_seco
             **base_status,
             "finished_at": _now_text(),
             "alive": False,
-            "seen_windows": len(seen),
+            "active_windows": len(active_keys),
+            "seen_windows": event_count,
         }
     )
     return 0
