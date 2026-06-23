@@ -6339,6 +6339,26 @@ def test_daily_youli_return_to_world_uses_runtime_clicks(tmp_path, monkeypatch):
                 yield None
             return state["scene"]
 
+        def view_visible(self, view_id, **_kwargs):
+            return ("view", int(view_id))
+
+        def ocr_matches(self, predicate, **_kwargs):
+            return ("ocr_matches", predicate)
+
+        def wait_any(self, conditions, **kwargs):
+            actions.append(("wait_any", tuple(conditions.keys()), kwargs.get("label")))
+            for key, condition in conditions.items():
+                kind = condition[0]
+                if kind == "view" and state["scene"] == condition[1]:
+                    if False:
+                        yield None
+                    return key
+                if kind == "ocr_matches" and condition[1](self.ocr_text()):
+                    if False:
+                        yield None
+                    return key
+            raise AssertionError(f"no fake wait_any condition matched: {conditions}")
+
     def fake_wait_daily_youli_home(*_args, **kwargs):
         actions.append(("wait_home", kwargs.get("label")))
         assert state["scene"] == 228
@@ -6366,8 +6386,99 @@ def test_daily_youli_return_to_world_uses_runtime_clicks(tmp_path, monkeypatch):
         ("wait_click", 236, "返回"),
         ("wait_home", "日常_游历：等待 #236 返回到修仙传游历 #228"),
         ("wait_click", 228, "返回"),
-        ("wait_view", (34,)),
+        ("wait_any", ("world_scene", "world_text", "daily_text"), "日常_游历：等待 #228 返回到日常或世界"),
     ]
+
+
+def test_daily_youli_return_to_world_exits_daily_page_after_228_return(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+    state = {"scene": 228, "text": "修仙传游历 返回"}
+    ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}
+    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        def current_scene(self, view_ids=None, **_kwargs):
+            actions.append(("current_scene", tuple(view_ids or ())))
+            return state["scene"], 100.0, "frame"
+
+        def ocr_text(self, _frame=None):
+            actions.append(("ocr_text", state["text"]))
+            return state["text"]
+
+        def wait_click(self, view_id, shape, **_kwargs):
+            actions.append(("wait_click", view_id, shape))
+            assert view_id == 228
+            assert shape == "返回"
+            state["scene"] = 69
+            state["text"] = "日常 活跃度 游历 1/1"
+            if False:
+                yield None
+            return "success"
+
+        def view_visible(self, view_id, **_kwargs):
+            return ("view", int(view_id))
+
+        def ocr_matches(self, predicate, **_kwargs):
+            return ("ocr_matches", predicate)
+
+        def wait_any(self, conditions, **kwargs):
+            actions.append(("wait_any", tuple(conditions.keys()), kwargs.get("label")))
+            for key, condition in conditions.items():
+                kind = condition[0]
+                if kind == "view" and state["scene"] == condition[1]:
+                    if False:
+                        yield None
+                    return key
+                if kind == "ocr_matches" and condition[1](self.ocr_text()):
+                    if False:
+                        yield None
+                    return key
+            raise AssertionError(f"no fake wait_any condition matched: {conditions}")
+
+    def fake_wait_daily_youli_home(*_args, **kwargs):
+        actions.append(("wait_home", kwargs.get("label")))
+        assert state["scene"] == 228
+        if False:
+            yield None
+        return "success"
+
+    def fake_exit_daily_page(*_args, **_kwargs):
+        actions.append(("exit_daily_page",))
+        if False:
+            yield None
+        return "success"
+
+    record_calls: list[dict[str, object]] = []
+
+    def fake_record_daily_entry_done(*_args, **kwargs):
+        actions.append(("record_done", kwargs.get("message")))
+        record_calls.append(kwargs)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_daily_youli_home", fake_wait_daily_youli_home)
+    monkeypatch.setattr(runner, "_exit_daily_youli_daily_page_to_world", fake_exit_daily_page)
+    monkeypatch.setattr(runner, "_record_daily_entry_done", fake_record_daily_entry_done)
+
+    result = _drain_generator(
+        runner._return_daily_youli_to_world(
+            ctx,
+            fanxiu.threading.Event(),
+            {"id": 228},
+            {"id": 236},
+            task_label="日常_游历",
+        )
+    )
+
+    assert result == "success"
+    assert actions.index(("exit_daily_page",)) < actions.index(("record_done", "游历已完成并回到世界"))
+    assert record_calls == [{
+        "task_id": "legacy-daily-youli",
+        "task_type": "daily_youli",
+        "label": "日常_游历",
+        "message": "游历已完成并回到世界",
+    }]
 
 
 def test_daily_youli_reward_recovery_return_uses_runtime_clicks(tmp_path, monkeypatch):
@@ -6379,17 +6490,19 @@ def test_daily_youli_reward_recovery_return_uses_runtime_clicks(tmp_path, monkey
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeRuntime:
-        def wait_click(self, view_id, shape, **_kwargs):
-            actions.append(("wait_click", view_id, shape))
+        def cur_frame(self, update=False):
+            actions.append(("cur_frame", update))
+            return "frame"
+
+        def click_shape_center(self, view_id, shape, **_kwargs):
+            actions.append(("click_shape_center", view_id, shape))
             if view_id == 69 and shape == "退出":
                 if state["after_first_exit"]:
                     state["after_first_exit"] = False
                     state["scene"] = 69
+                    state["text"] = "日常 活跃度 活动报名 小助手 奖励找回"
                 else:
                     state["scene"] = 34
-            if False:
-                yield None
-            return "success"
 
         def wait_action_settle(self, seconds=1.0):
             actions.append(("settle", seconds))
@@ -6403,15 +6516,27 @@ def test_daily_youli_reward_recovery_return_uses_runtime_clicks(tmp_path, monkey
 
         def ocr_text(self, _frame=None):
             actions.append(("ocr_text",))
-            return "日常 活跃度 活动报名 小助手 奖励找回"
+            return state.get("text", "奖励找回 一键免费 一键全部 全部找回")
 
-        def wait_view(self, *view_ids, **_kwargs):
-            actions.append(("wait_view", view_ids))
-            if int(state["scene"]) not in {int(view_id) for view_id in view_ids}:
-                raise RuntimeError("unexpected scene")
-            if False:
-                yield None
-            return state["scene"]
+        def view_visible(self, view_id, **_kwargs):
+            return ("view", int(view_id))
+
+        def ocr_matches(self, predicate, **_kwargs):
+            return ("ocr_matches", predicate)
+
+        def wait_any(self, conditions, **kwargs):
+            actions.append(("wait_any", tuple(conditions.keys()), kwargs.get("label")))
+            for key, condition in conditions.items():
+                kind = condition[0]
+                if kind == "view" and state["scene"] == condition[1]:
+                    if False:
+                        yield None
+                    return key
+                if kind == "ocr_matches" and condition[1](self.ocr_text()):
+                    if False:
+                        yield None
+                    return key
+            raise AssertionError(f"no fake wait_any condition matched: {conditions}")
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(
@@ -6431,13 +6556,16 @@ def test_daily_youli_reward_recovery_return_uses_runtime_clicks(tmp_path, monkey
     assert result["result"] == "skipped"
     assert "不是游历完成证据" in result["message"]
     assert actions == [
-        ("wait_click", 69, "退出"),
-        ("settle", 1.5),
-        ("current_scene", (34, 69)),
+        ("cur_frame", True),
         ("ocr_text",),
-        ("wait_click", 69, "退出"),
+        ("click_shape_center", 69, "退出"),
         ("settle", 1.5),
-        ("wait_view", (34,)),
+        ("wait_any", ("world_scene", "world_text", "daily_text"), "日常_游历：等待奖励找回关闭后回到日常或世界"),
+        ("ocr_text",),
+        ("ocr_text",),
+        ("click_shape_center", 69, "退出"),
+        ("settle", 1.5),
+        ("wait_any", ("world_scene", "world_text", "daily_text"), "日常_游历：等待日常退出到世界"),
     ]
 
 

@@ -69,6 +69,51 @@ def test_watchdog_startup_status_reads_windows_task_xml(monkeypatch):
     assert status["task_name"] == "CodeYun Watchdog"
 
 
+def test_list_watchdog_processes_skips_non_python_cmdline_probe(monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid: int, name: str, cmdline: list[str]):
+            self.pid = pid
+            self.info = {"name": name}
+            self._name = name
+            self._cmdline = cmdline
+            self.cmdline_calls = 0
+
+        def cmdline(self):
+            self.cmdline_calls += 1
+            return list(self._cmdline)
+
+        def name(self):
+            return self._name
+
+        def ppid(self):
+            return 1
+
+        def create_time(self):
+            return 123.0
+
+    script_path = Path("D:/mock/scripts/codeyun_watchdog.py")
+    non_python = FakeProcess(91001, "node.exe", ["node.exe", "server.js"])
+    watchdog = FakeProcess(
+        91002,
+        "pythonw.exe",
+        ["pythonw.exe", os.fspath(script_path), "--loop", "--interval", "60"],
+    )
+
+    monkeypatch.setattr(codeyun_watchdog_runtime, "WATCHDOG_SCRIPT", script_path)
+    monkeypatch.setattr(codeyun_watchdog_runtime, "_read_lock_pid", lambda: None)
+    monkeypatch.setattr(
+        codeyun_watchdog_runtime.psutil,
+        "process_iter",
+        lambda _attrs: [non_python, watchdog],
+    )
+
+    items = codeyun_watchdog_runtime.list_codeyun_watchdog_processes()
+
+    assert non_python.cmdline_calls == 0
+    assert watchdog.cmdline_calls >= 1
+    assert [item["pid"] for item in items] == [91002]
+
+
 def test_enable_watchdog_startup_creates_onlogon_task(monkeypatch, tmp_path):
     calls: list[tuple[str, ...]] = []
     script = tmp_path / "scripts" / "codeyun_watchdog.py"

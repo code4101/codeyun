@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -110,11 +111,34 @@ def list_proxy_traffic_audit_processes() -> list[dict[str, Any]]:
     return [asdict(item) for item in items]
 
 
-def get_proxy_traffic_audit_status() -> dict[str, Any]:
+def _read_proxy_traffic_audit_collector_state(db_path: Path) -> dict[str, str]:
+    if not db_path.is_file():
+        return {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            return {
+                str(row[0]): str(row[1])
+                for row in conn.execute(
+                    "SELECT key, value FROM collector_state WHERE key IN ('last_sample_at', 'last_sample_summary')"
+                ).fetchall()
+            }
+    except sqlite3.Error:
+        return {}
+
+
+def get_proxy_traffic_audit_status(*, include_summary: bool = True) -> dict[str, Any]:
     processes = list_proxy_traffic_audit_processes()
     running = bool(processes)
     db_path = get_proxy_traffic_audit_db_path()
-    summary = summarize_proxy_traffic(db_path=db_path, hours=24, limit=5, group_by="host")
+    state: dict[str, Any]
+    top_hosts: list[dict[str, Any]]
+    if include_summary:
+        summary = summarize_proxy_traffic(db_path=db_path, hours=24, limit=5, group_by="host")
+        state = dict(summary.get("state", {}))
+        top_hosts = list(summary.get("items", []))
+    else:
+        state = _read_proxy_traffic_audit_collector_state(db_path)
+        top_hosts = []
     return {
         "key": PROXY_TRAFFIC_AUDIT_SERVICE_KEY,
         "title": PROXY_TRAFFIC_AUDIT_TITLE,
@@ -129,9 +153,9 @@ def get_proxy_traffic_audit_status() -> dict[str, Any]:
         "process_count": len(processes),
         "processes": processes,
         "pids": [item["pid"] for item in processes if item.get("pid") is not None],
-        "last_sample_at": summary.get("state", {}).get("last_sample_at", ""),
-        "last_sample_summary": summary.get("state", {}).get("last_sample_summary", ""),
-        "top_hosts": summary.get("items", []),
+        "last_sample_at": state.get("last_sample_at", ""),
+        "last_sample_summary": state.get("last_sample_summary", ""),
+        "top_hosts": top_hosts,
         "external": True,
         "controllable": True,
     }

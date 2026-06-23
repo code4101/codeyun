@@ -556,7 +556,7 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
 
 
 def _serialize_proxy_traffic_audit_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or get_proxy_traffic_audit_status())
+    payload = dict(status or get_proxy_traffic_audit_status(include_summary=False))
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "stopped"))
     interval = payload.get("interval_seconds") or 2

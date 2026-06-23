@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
@@ -2715,6 +2715,110 @@ class DailyFoundationTaskMixin:
         compact = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         return bool("已拜谒" in compact or re.search(r"剩余次数[:：]?0/1", compact))
 
+    def _baiye_text_can_worship(self, text: Any) -> bool:
+        compact = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        return bool("拜谒" in compact and re.search(r"剩余次数[:：]?1/1", compact))
+
+    def _baiye_text_is_target_worship_page(self, text: Any, target: str) -> bool:
+        compact = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        target_text = _sanitize_ocr_text(target).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        return bool(target_text and target_text in compact and self._baiye_text_can_worship(compact))
+
+    def _click_baiye_worship_button(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+    ) -> Iterator[Any]:
+        self._log("action", f"日常_拜谒：{reason}，点击 #266「拜谒」")
+        runtime.click_shape_center(266, "拜谒")
+        yield from runtime.wait_action_settle(float(payload.get("baiye_worship_settle_seconds") or 2.0))
+        worship_text = runtime.ocr_text(update=True)
+        if self._baiye_text_is_completed(worship_text):
+            self._log("success", f"日常_拜谒：已完成拜谒，OCR={worship_text[:120]}")
+            yield from self._return_baiye_to_world(runtime, payload, reason="拜谒完成后收尾")
+            return "success"
+        if self._baiye_text_can_worship(worship_text) or self._baiye_text_is_lord_map(worship_text):
+            raise RuntimeError(f"日常_拜谒：点击 #266「拜谒」后仍未完成，OCR={worship_text[:120]}")
+        self._log("success", f"日常_拜谒：已点击 #266「拜谒」，点击后 OCR={worship_text[:120]}")
+        yield from self._return_baiye_to_world(runtime, payload, reason="拜谒点击后收尾")
+        return "success"
+
+    def _return_baiye_to_world(
+        self,
+        runtime: Any,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        reason: str,
+    ) -> Iterator[Any]:
+        options = payload or {}
+        timeout = float(options.get("baiye_return_timeout") or 20.0)
+        settle = float(options.get("baiye_return_settle_seconds") or 1.0)
+        self._log("action", f"日常_拜谒：{reason}，返回世界")
+
+        scene_id, _score, frame = runtime.current_scene([266, 265, 264, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+
+        if scene_id == 266 or self._baiye_text_is_completed(text) or self._baiye_text_can_worship(text):
+            self._log("action", "日常_拜谒：点击 #266「返回」")
+            runtime.click_shape_center(266, "返回")
+            yield from runtime.wait_any(
+                {
+                    "scene": runtime.view_visible(265),
+                    "text": runtime.ocr_matches(self._baiye_text_is_lord_map, label="日常_拜谒：返回 #265 OCR"),
+                },
+                timeout=timeout,
+                label="日常_拜谒：等待返回 #265",
+            )
+            yield from runtime.wait_action_settle(settle)
+            scene_id = 265
+
+        if scene_id == 265:
+            self._log("action", "日常_拜谒：点击 #265「返回」")
+            runtime.click_shape_center(265, "返回")
+            yield from runtime.wait_any(
+                {
+                    "scene": runtime.view_visible(264),
+                    "text": runtime.ocr_matches(self._baiye_text_is_rule_map, label="日常_拜谒：返回 #264 OCR"),
+                },
+                timeout=timeout,
+                label="日常_拜谒：等待返回 #264",
+            )
+            yield from runtime.wait_action_settle(settle)
+            scene_id = 264
+
+        if scene_id == 264:
+            self._log("action", "日常_拜谒：点击 #264「返回」")
+            runtime.click_shape_center(264, "返回")
+            yield from runtime.wait_any(
+                {
+                    "scene": runtime.view_visible(69),
+                    "world": runtime.view_visible(34),
+                },
+                timeout=timeout,
+                label="日常_拜谒：等待返回 #69/#34",
+            )
+            yield from runtime.wait_action_settle(settle)
+            scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+
+        if scene_id == 69:
+            self._log("action", "日常_拜谒：点击 #69「退出」")
+            runtime.click_shape_center(69, "退出")
+            yield from runtime.wait_any(
+                {"scene": runtime.view_visible(34)},
+                timeout=timeout,
+                label="日常_拜谒：等待返回 #34",
+            )
+            yield from runtime.wait_action_settle(settle)
+            scene_id = 34
+
+        if scene_id == 34:
+            self._log("success", "日常_拜谒：已返回 #34 世界，闭环完成")
+            return "success"
+
+        raise RuntimeError(f"日常_拜谒：拜谒后收尾未能返回 #34，当前 scene={scene_id}")
+
     def _execute_daily_baiye_task(
         self,
         ctx: dict[str, Any],
@@ -2727,8 +2831,10 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少日常_拜谒资产树路径，无法执行作业")
         target = self._baiye_payload_target(payload)
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([265, 264, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([266, 265, 264, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if self._baiye_text_is_completed(text) or self._baiye_text_can_worship(text):
+            return (yield from self._select_baiye_law_lord(ctx, stop_event, payload, target=target))
         if scene_id != 265 and not self._baiye_text_is_lord_map(text):
             if scene_id != 264 and not self._baiye_text_is_rule_map(text):
                 if scene_id != 69:
@@ -2941,8 +3047,29 @@ class DailyFoundationTaskMixin:
             frame = runtime.cur_frame(update=True)
             current_text = runtime.ocr_text(frame)
             if self._baiye_text_is_completed(current_text):
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        "日常_拜谒：当前已在法则详情完成态",
+                        phase="daily_baiye_detail_done",
+                        current_scene=266,
+                    )
                 self._log("success", f"日常_拜谒：当前已是完成态，OCR={current_text[:120]}")
+                yield from self._return_baiye_to_world(runtime, payload, reason="检测到已完成态后收尾")
                 return "success"
+            if self._baiye_text_can_worship(current_text):
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        "日常_拜谒：当前已在法则详情可拜谒态",
+                        phase="daily_baiye_detail_worship",
+                        current_scene=266,
+                    )
+                if self._baiye_text_is_target_worship_page(current_text, target):
+                    reason = f"当前已在「{target}」详情页"
+                else:
+                    reason = f"当前详情页已显示可拜谒状态，但 OCR 未稳定包含目标「{target}」"
+                return (yield from self._click_baiye_worship_button(runtime, payload, reason=reason))
             words = runtime.ocr_words_in_shapes(
                 265,
                 ["识别区"],
@@ -2989,10 +3116,14 @@ class DailyFoundationTaskMixin:
                 after_text = runtime.ocr_text(update=True)
                 if self._baiye_text_is_completed(after_text):
                     self._log("success", f"日常_拜谒：已点击「{target}」，完成态 OCR={after_text[:120]}")
+                    yield from self._return_baiye_to_world(runtime, payload, reason=f"已点击「{target}」进入完成态后收尾")
                     return "success"
+                if self._baiye_text_can_worship(after_text):
+                    return (yield from self._click_baiye_worship_button(runtime, payload, reason=f"已选中「{target}」且显示可拜谒"))
                 if self._baiye_text_is_lord_map(after_text):
-                    self._log("skip", f"日常_拜谒：已点击「{target}」，但仍停留在法则之主选择页，后续确认态未闭环，OCR={after_text[:120]}")
-                    return "skipped"
+                    if not self._baiye_text_can_worship(after_text):
+                        self._log("skip", f"日常_拜谒：已点击「{target}」，但仍停留在法则之主选择页且未确认可拜谒，OCR={after_text[:120]}")
+                        return "skipped"
                 self._log("success", f"日常_拜谒：已点击「{target}」，点击后 OCR={after_text[:120]}")
                 return "success"
             self._log("detail", f"日常_拜谒：暂未命中「{target}」，OCR={last_text[:80]}")

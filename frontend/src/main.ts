@@ -23,8 +23,11 @@ userStore.initialize()
 
 watch(
   () => userStore.token,
-  () => {
-    featureAccessStore.refreshContext().catch(error => {
+  (_token, oldToken) => {
+    const loadContext = oldToken === undefined
+      ? featureAccessStore.ensureLoaded()
+      : featureAccessStore.refreshContext()
+    loadContext.catch(error => {
       console.warn('Failed to load feature access context:', error?.message || error)
     })
   },

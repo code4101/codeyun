@@ -2140,6 +2140,75 @@ def _sync_attendance_questionnaire_entry_statuses(
     return _sync_attendance_wjx_entries_from_sheet_document(session, document_json)
 
 
+_attendance_questionnaire_sync_cache_lock = threading.Lock()
+_attendance_questionnaire_sync_cache: dict[str, tuple[Any, ...]] = {}
+
+
+def _get_attendance_questionnaire_sync_signature(
+    session: Session,
+    document: SheetDocument,
+) -> tuple[Any, ...] | None:
+    if not _is_attendance_questionnaire_data_sheet(document):
+        return None
+
+    from backend.api.attendance import (
+        FEEDBACK_COURSE_SOURCE_SHEET_ID,
+        FIXED_WJX_TEMPLATE_ACTIVITY_ID,
+        LOCAL_FEEDBACK_ACTIVITY_ID,
+    )
+    from backend.models import AttendanceWjxDataEntry
+
+    activity_ids = [FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]
+    entry_stats = session.exec(
+        select(
+            func.count(AttendanceWjxDataEntry.id),
+            func.max(AttendanceWjxDataEntry.updated_at),
+            func.max(AttendanceWjxDataEntry.synced_at),
+        ).where(AttendanceWjxDataEntry.activity_id.in_(activity_ids))
+    ).one()
+    course_source_stats = session.exec(
+        select(SheetDocument.version, SheetDocument.updated_at)
+        .where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
+    ).first()
+    return (
+        str(document.id),
+        int(document.version or 0),
+        float(document.updated_at or 0.0),
+        int(entry_stats[0] or 0),
+        float(entry_stats[1] or 0.0),
+        float(entry_stats[2] or 0.0),
+        int(course_source_stats[0] or 0) if course_source_stats else 0,
+        float(course_source_stats[1] or 0.0) if course_source_stats else 0.0,
+    )
+
+
+def _sync_attendance_questionnaire_sheet_document_if_needed(
+    session: Session,
+    document: SheetDocument,
+    *,
+    sync_entry_statuses: bool = False,
+) -> None:
+    signature = _get_attendance_questionnaire_sync_signature(session, document)
+    if signature is None:
+        return
+
+    cache_key = str(document.id)
+    with _attendance_questionnaire_sync_cache_lock:
+        if _attendance_questionnaire_sync_cache.get(cache_key) == signature:
+            return
+
+    _sync_attendance_questionnaire_sheet_document(
+        session,
+        document,
+        sync_entry_statuses=sync_entry_statuses,
+    )
+
+    next_signature = _get_attendance_questionnaire_sync_signature(session, document)
+    if next_signature is not None:
+        with _attendance_questionnaire_sync_cache_lock:
+            _attendance_questionnaire_sync_cache[cache_key] = next_signature
+
+
 def _sync_attendance_questionnaire_sheet_document(
     session: Session,
     document: SheetDocument,
@@ -14721,7 +14790,7 @@ def get_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
-    _sync_attendance_questionnaire_sheet_document(session, document)
+    _sync_attendance_questionnaire_sheet_document_if_needed(session, document)
     stored_document = _ensure_sheet_document_identity_persisted(session, document)
     stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(

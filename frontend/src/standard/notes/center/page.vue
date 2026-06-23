@@ -32,7 +32,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted } from 'vue';
+import { defineAsyncComponent, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
 import { Delete } from '@element-plus/icons-vue';
@@ -113,11 +113,13 @@ const handleTabRemove = (name: any) => {
   noteStore.removeTab(name);
 };
 
-// Initialize based on route or other logic if needed
-onMounted(() => {
-  const requestedTab = typeof route.query.tab === 'string' ? route.query.tab : null;
-  noteStore.setActiveTab(requestedTab || 'calendar');
-});
+watch(
+  () => route.query.tab,
+  (tab) => {
+    noteStore.setActiveTab(typeof tab === 'string' ? tab : 'calendar');
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>

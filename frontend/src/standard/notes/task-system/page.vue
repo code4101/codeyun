@@ -406,6 +406,7 @@ const healthIssues = computed(() => [
     title: issue.message,
     taskId: issue.taskId,
     interactive: Boolean(issue.taskId),
+    kind: issue.taskId ? 'task' : 'note',
   })),
   ...visibleAutomationFailures.value.map((failure) => ({
     key: `automation-${failure.code}`,
@@ -413,6 +414,7 @@ const healthIssues = computed(() => [
     title: failure.message,
     taskId: null,
     interactive: false,
+    kind: 'note',
   })),
 ].slice(0, 4))
 const latestPlannerOutcome = computed(() => {
@@ -1348,7 +1350,7 @@ watch(selectedTaskId, () => {
         <component
           v-for="issue in healthIssues"
           :key="issue.key"
-          class="audit-issue"
+          :class="['audit-issue', issue.kind === 'task' ? 'audit-issue-link' : 'audit-issue-note']"
           :is="issue.interactive ? 'button' : 'span'"
           :type="issue.interactive ? 'button' : undefined"
           :title="issue.title"
@@ -1796,9 +1798,9 @@ watch(selectedTaskId, () => {
 .audit-issues {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  overflow: hidden;
 }
 
 .stale-reload {
@@ -1825,24 +1827,32 @@ watch(selectedTaskId, () => {
 .audit-issue {
   display: inline-flex;
   align-items: center;
-  max-width: 360px;
-  overflow: hidden;
-  padding: 3px 8px;
-  border: 1px solid #fed7aa;
+  min-width: 0;
+  padding: 0;
+  border: 0;
   color: #9a3412;
-  background: #fff7ed;
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  background: transparent;
 }
 
 .audit-issue:disabled {
   cursor: default;
 }
 
-.audit-issue:not(button) {
+.audit-issue-note {
   cursor: default;
+}
+
+.audit-issue-link {
+  cursor: pointer;
+}
+
+.audit-issue-link:hover {
+  color: #c2410c;
+  text-decoration: underline;
 }
 
 .audit-ok {
