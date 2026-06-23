@@ -56,6 +56,34 @@ def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypat
     assert result["decoded"][0]["decoded_sources"][1]["stream"] == 1
 
 
+def test_capture_paths_records_actual_decoded_streams(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    pcap.write_bytes(b"x" * 128)
+
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_decoded_capture_sources_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
+    monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0, 1])
+    monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(
+        worker,
+        "decode_and_sync_fanxiu_runtime_capture",
+        lambda *_args, **_kwargs: {
+            "decoded_count": 1,
+            "runtime_protocol_count": 0,
+            "worship_protocol_count": 0,
+            "decoded": [{"stream": 0, "output_path": str(tmp_path / "stream0.json"), "record_id": "r0"}],
+        },
+    )
+
+    result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
+
+    assert result["decoded"][0]["target_stream_ids"] == [0, 1]
+    assert result["decoded"][0]["decoded_stream_ids"] == [0]
+    assert result["decoded"][0]["missing_stream_ids"] == [1]
+
+
 def test_capture_paths_skips_only_when_target_streams_are_decoded(monkeypatch, tmp_path):
     pcap = tmp_path / "capture.pcap"
     pcap.write_bytes(b"x" * 128)
@@ -135,7 +163,7 @@ def test_decode_max_streams_default_matches_runtime_flush_budget():
     assert worker.DEFAULT_DECODE_MAX_STREAMS == 4
 
 
-def test_maintenance_once_runs_bounded_mail_backlog_without_full_historical_sync(monkeypatch):
+def test_maintenance_once_runs_historical_business_backlog(monkeypatch):
     calls: list[dict[str, object]] = []
 
     def fake_maintenance(**kwargs):
@@ -150,7 +178,7 @@ def test_maintenance_once_runs_bounded_mail_backlog_without_full_historical_sync
     assert result["ok"] is True
     assert result["capture_runtime_backstop"]["reason"] == "test_disabled"
     assert calls
-    assert calls[0]["include_historical_business_backlog"] is False
+    assert calls[0]["include_historical_business_backlog"] is True
     assert calls[0]["include_mail_business_backlog"] is True
 
 
@@ -510,6 +538,52 @@ def test_live_capture_backlog_skips_pcaps_without_target_stream(monkeypatch, tmp
     assert decode_calls == []
     assert result["decoded_count"] == 0
     assert result["skipped"][0]["reason"] == "no_target_stream"
+
+
+def test_live_capture_backlog_marks_partial_decode_as_gap(monkeypatch, tmp_path):
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+    pcap = live_dir / "fanxiu_runtime_20260608_131252.pcap"
+    pcap.write_bytes(b"x" * 128)
+    old_time = time.time() - 10
+    os.utime(pcap, (old_time, old_time))
+    state_path = tmp_path / "worker_state.json"
+
+    monkeypatch.setattr(worker, "_worker_state_path", lambda _data_dir=None: state_path)
+    monkeypatch.setattr(worker, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+    monkeypatch.setattr(worker, "resolve_fanxiu_tcp_store_root", lambda _data_dir=None: tmp_path / "tcp-flow")
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_decoded_capture_sources_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_sha256_file", lambda path: f"digest:{Path(path).name}")
+    monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda path, *, max_streams: [0, 1])
+    monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(
+        worker,
+        "decode_and_sync_fanxiu_runtime_capture",
+        lambda *_args, **_kwargs: {
+            "decoded_count": 1,
+            "runtime_protocol_count": 0,
+            "worship_protocol_count": 0,
+            "decoded": [{"stream": 0, "output_path": str(tmp_path / "stream0.json"), "record_id": "r0"}],
+        },
+    )
+
+    result = worker.sync_fanxiu_live_capture_backlog(
+        data_dir=tmp_path,
+        stable_seconds=1,
+        retry_failed_after_seconds=0,
+        max_capture_age_seconds=None,
+        use_cursor=True,
+        limit=1,
+    )
+
+    assert result["ok"] is False
+    assert result["has_unconfirmed_gap"] is True
+    assert result["confirmed_cursor_pcap"] == ""
+    assert result["decoded"][0]["missing_stream_ids"] == [1]
+    assert result["errors"][0]["missing_stream_ids"] == [1]
+    assert result["pcap_states"][0]["status"] == "partial_decoded"
 
 
 def test_iter_stable_live_pcaps_skips_current_runtime_capture(monkeypatch, tmp_path):

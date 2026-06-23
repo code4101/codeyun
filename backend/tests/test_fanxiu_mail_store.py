@@ -8,8 +8,10 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from backend.core.fanxiu.packet.tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
 from backend.core.fanxiu.packet.tcp_flow import _resolve_fanxiu_message_text_assets
 from backend.core.fanxiu.mail.store import (
+    align_fanxiu_mail_records_claimable_between_times,
     mark_fanxiu_mail_action,
     merge_duplicate_fanxiu_mail_records,
+    parse_fanxiu_mail_time_text_ms,
     upsert_fanxiu_mail_fact,
 )
 from backend.core.fanxiu.mail.policy import (
@@ -190,6 +192,92 @@ def test_packet_mail_seen_does_not_downgrade_requested_action():
 
     row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "mail-claim-requested")).one()
     assert row.status == "claim_requested"
+
+
+def test_visible_adjacency_alignment_marks_desired_records_claimable():
+    session = _session()
+    for mail_id, title, time_text, status in [
+        ("newer", "上边界", "2026年06月21日22:15", "留存"),
+        ("protected-middle", "中间留存", "2026年06月20日23:59", "留存"),
+        ("locked-middle", "中间锁定", "2026年06月19日23:59", "锁定"),
+        ("seen-middle", "中间旧状态", "2026年06月18日23:59", "seen"),
+        ("older", "下边界", "2026年06月17日23:58", "留存"),
+        ("claimed", "已完成", "2026年06月19日12:00", "claimed"),
+    ]:
+        upsert_fanxiu_mail_fact(
+            session,
+            title=title,
+            mail_id=mail_id,
+            create_time_text=time_text,
+            source="packet",
+            status=status,
+            locked=status == "锁定",
+            payload={"mail_rewards": [{"item_name": "洗灵奇石"}]},
+        )
+    boundary_with_seconds, _ = upsert_fanxiu_mail_fact(
+        session,
+        title="下边界带秒",
+        mail_id="older-with-seconds",
+        create_time_text="2026年06月17日23:58",
+        source="packet",
+        status="锁定",
+        locked=True,
+    )
+    boundary_with_seconds.create_time_ms = parse_fanxiu_mail_time_text_ms("2026年06月17日23:58") + 30_000
+    session.add(boundary_with_seconds)
+    session.commit()
+
+    result = align_fanxiu_mail_records_claimable_between_times(
+        session,
+        newer_time_text="2026年06月21日22:15",
+        older_time_text="2026年06月17日23:58",
+        source="pytest",
+    )
+    session.commit()
+
+    rows = {row.mail_id: row for row in session.exec(select(FanxiuMailRecord)).all()}
+    assert result["matched"] == 3
+    assert result["updated"] == 3
+    for mail_id in ("protected-middle", "locked-middle", "seen-middle"):
+        assert rows[mail_id].status == "可领"
+        assert rows[mail_id].locked is False
+        assert rows[mail_id].action_policy == "claim"
+        assert rows[mail_id].evidence["visible_adjacency_claimable_alignment"]["source"] == "pytest"
+    assert rows["newer"].status == "留存"
+    assert rows["older"].status == "留存"
+    assert rows["older-with-seconds"].status == "锁定"
+    assert rows["claimed"].status == "claimed"
+
+
+def test_visible_adjacency_alignment_is_open_interval_and_descending_only():
+    session = _session()
+    upsert_fanxiu_mail_fact(
+        session,
+        title="边界同刻",
+        mail_id="same-time",
+        create_time_text="2026年06月21日22:15",
+        source="packet",
+        status="锁定",
+    )
+    session.commit()
+
+    same_time = align_fanxiu_mail_records_claimable_between_times(
+        session,
+        newer_time_text="2026年06月21日22:15",
+        older_time_text="2026年06月21日22:15",
+        source="pytest",
+    )
+    reversed_time = align_fanxiu_mail_records_claimable_between_times(
+        session,
+        newer_time_text="2026年06月17日23:58",
+        older_time_text="2026年06月21日22:15",
+        source="pytest",
+    )
+
+    row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "same-time")).one()
+    assert same_time["ok"] is False
+    assert reversed_time["ok"] is False
+    assert row.status == "锁定"
 
 
 def test_packet_mail_reward_claim_beats_followup_delete(monkeypatch, tmp_path):

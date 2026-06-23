@@ -32,7 +32,7 @@ from backend.core.fanxiu.packet.tcp_flow import (
 )
 from backend.core.settings import get_settings
 
-PACKET_INSIGHT_SCHEMA_VERSION = 18
+PACKET_INSIGHT_SCHEMA_VERSION = 19
 
 PACKET_RUNTIME_INSIGHT_PROTOCOLS = {
     "SM_Login",

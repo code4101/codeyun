@@ -163,7 +163,16 @@ def _parse_xianfu_visit_cd_seconds(text: Any) -> int | None:
 
 
 def _parse_xianfu_skill_cd_seconds(text: Any) -> int | None:
-    return _parse_xianfu_visit_cd_seconds(text)
+    seconds = _parse_xianfu_visit_cd_seconds(text)
+    if seconds is not None:
+        return seconds
+    normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    if not normalized:
+        return None
+    normalized = normalized.replace("：", ":").replace("O", "0").replace("o", "0")
+    if "免费抽取" in normalized or "免费领悟" in normalized:
+        return 0
+    return None
 
 
 def _parse_daily_boss_cd_seconds(text: Any) -> int | None:

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a"
-last_audited_at: "2026-06-23T06:31:35.963091+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-task-system-c1a7cc90/report.md"
-last_frontend_commit_summary: "完整关闭 19a72062..c1a7cc90：task-system 健康条去掉内嵌告警 chip，三视口实图与前端构建验证已补齐。"
-audited_commit_count: 34
+last_audited_commit: "266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4"
+last_audited_at: "2026-06-23T16:15:00+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-266187a4/report.md"
+last_frontend_commit_summary: "完整关闭 c1a7cc90..266187a4：权限上下文缓存、星图笔记 tab 路由同步、运行管理设备选择启动时序和 task-system 健康条均完成三视口实图巡检，无需自动修复。"
+audited_commit_count: 35
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-23
+
+- 完整范围：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a..266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
+- 覆盖提交：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
+- 前端入口提交：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
+- 入口如何牵引到旧问题：本次提交虽然主题是凡修 data-annotation 运行监控与巡检能力补强，但同时触及 `featureAccessStore`、`main.ts`、`notes/center`、`cluster/runtime` 和 `notes/task-system`。巡检边界因此收敛在“首屏状态是否稳定投影”这条链路：权限上下文不应制造菜单/路由闪烁，星图笔记 query 应只表达当前 tab，运行管理设备选择应作为唯一状态作用域，任务空间健康条继续区分只读事实和可跳转任务。
+- 本轮减法：未新增任何 UI 控件；提交本身用 60 秒权限上下文缓存、首次 `ensureLoaded`、route watcher、设备选择变更判定和健康条文本/链接分层减少重复加载、重复状态和错误动作暗示。
+- 信息量保持：菜单权限、路由守卫、星图笔记 tab 直达、运行管理设备状态加载、任务空间健康告警和任务跳转能力都保留；减少的是首屏等待、竞态导致的重复拉取，以及只读告警被当作按钮的视觉歧义。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-266187a4/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 `notes/task-system`、`cluster/runtime`、`notes/center?tab=calendar`、`notes/center?tab=list` 各补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 12 张有效截图；`/notes?tab=...` 作为错误入口探针进入 403，确认规范入口是 `/notes/center?tab=...`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：本轮前端变化属于前端状态投影稳定性收敛；未发现新的表现层溢出、后端数据投影问题或业务建模债务，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：`cluster/runtime` 当前仍主要覆盖本机已有设备样本，没有强制构造设备列表为空或 token 失效的错误态；本轮没有源码修复，因此风险仅记录在报告中。
+- 处理结果：本轮完整处理 `c1a7cc90..266187a4`，有前端相关提交但无需自动修复，因此把 `last_audited_commit` 推进到 `266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`。
 
 - 完整范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35`
 - 覆盖提交：`d656704fa2d9f6c97e52fa5eeda3a6ff7c4b28eb`、`bd4d49f1a43940b0bc42892cb53f5e3fbb0e4596`、`62c00f967cf8ced2c7a23badca5aa113a5addf0c`、`0b8cd38cf4d76ba44faced3b53a0e7c4a0947075`、`19a720628aad19a07a61eb117125a96af4600c35`

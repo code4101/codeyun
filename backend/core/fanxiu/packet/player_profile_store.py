@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from backend.models import FanxiuPlayerProfileRecord
@@ -22,6 +23,10 @@ def _profile_attack_attr(row: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(attr, dict) and attr.get("key") == 2001 and attr.get("value") not in (None, ""):
             return attr
     return None
+
+
+def _has_battle_score(row: dict[str, Any]) -> bool:
+    return row.get("battle_score") not in (None, "") or bool(str(row.get("battle_score_text") or "").strip())
 
 
 def _packet_id(row: dict[str, Any]) -> str:
@@ -87,7 +92,7 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
             skipped_invalid += 1
             continue
         attack = _profile_attack_attr(row)
-        if not attack:
+        if not attack and not _has_battle_score(row):
             skipped_invalid += 1
             continue
         packet_id = _packet_id(row)
@@ -118,8 +123,8 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
             server_name=str(row.get("server_name") or ""),
             cultivation_level=row.get("cultivation_level") if isinstance(row.get("cultivation_level"), int) else None,
             cultivation_level_text=str(row.get("cultivation_level_text") or ""),
-            attack_value=attack.get("value") if isinstance(attack.get("value"), int | float) else None,
-            attack_text=str(attack.get("text") or ""),
+            attack_value=attack.get("value") if attack and isinstance(attack.get("value"), int | float) else None,
+            attack_text=str(attack.get("text") if attack else ""),
             captured_at=str(row.get("captured_at") or ""),
             captured_date=str(row.get("captured_at") or "")[:10],
             battle_score=row.get("battle_score") if isinstance(row.get("battle_score"), int | float) else None,
@@ -150,17 +155,32 @@ def list_fanxiu_player_profile_records(session: Session, *, limit: int = 1000) -
 
 
 def list_latest_fanxiu_player_profile_records(session: Session, *, limit: int = 1000) -> list[dict[str, Any]]:
-    rows = session.exec(
-        select(FanxiuPlayerProfileRecord)
-        .order_by(FanxiuPlayerProfileRecord.captured_at.desc(), FanxiuPlayerProfileRecord.created_at.desc())
-        .limit(5000)
+    capped_limit = max(1, min(limit, 5000))
+    id_rows = session.exec(
+        text(
+            """
+            WITH ranked AS (
+                SELECT
+                    id,
+                    captured_at,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(NULLIF(role_id_text, ''), NULLIF(role_id, ''), NULLIF(name, ''), packet_id)
+                        ORDER BY captured_at DESC, created_at DESC
+                    ) AS rn
+                FROM fanxiuplayerprofilerecord
+            )
+            SELECT id
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY captured_at DESC, created_at DESC
+            LIMIT :limit
+            """
+        ).bindparams(limit=capped_limit)
     ).all()
-    latest_by_role: dict[str, FanxiuPlayerProfileRecord] = {}
-    for row in rows:
-        role_key = str(row.role_id_text or row.role_id or row.name or row.packet_id).strip()
-        if not role_key or role_key in latest_by_role:
-            continue
-        latest_by_role[role_key] = row
-        if len(latest_by_role) >= max(1, min(limit, 5000)):
-            break
-    return [serialize_fanxiu_player_profile_record(row) for row in latest_by_role.values()]
+    ids = [str(row if isinstance(row, str) else row[0]) for row in id_rows]
+    if not ids:
+        return []
+    rows = session.exec(select(FanxiuPlayerProfileRecord).where(FanxiuPlayerProfileRecord.id.in_(ids))).all()
+    rows_by_id = {row.id: row for row in rows}
+    return [serialize_fanxiu_player_profile_record(rows_by_id[row_id]) for row_id in ids if row_id in rows_by_id]

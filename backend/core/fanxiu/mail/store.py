@@ -356,6 +356,123 @@ def update_fanxiu_mail_desired_status(
     return record
 
 
+def _fanxiu_mail_record_time_ms(record: FanxiuMailRecord) -> int | None:
+    if record.create_time_ms is not None:
+        try:
+            return int(record.create_time_ms)
+        except (TypeError, ValueError):
+            pass
+    normalized = normalize_fanxiu_mail_time_text(record.create_time_text)
+    if not normalized:
+        return None
+    try:
+        return int(datetime.strptime(normalized, "%Y年%m月%d日%H:%M").timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def parse_fanxiu_mail_time_text_ms(value: Any) -> int | None:
+    normalized = normalize_fanxiu_mail_time_text(value)
+    if not normalized:
+        return None
+    try:
+        return int(datetime.strptime(normalized, "%Y年%m月%d日%H:%M").timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def align_fanxiu_mail_records_claimable_between_times(
+    session: Session,
+    *,
+    newer_time_text: str,
+    older_time_text: str,
+    source: str = "visible_mail_adjacency",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Mark user-managed records in an observed empty open interval as claimable.
+
+    The interval is open: records exactly at either visible boundary are not touched.
+    """
+
+    ensure_fanxiu_mail_table()
+    newer_ms = parse_fanxiu_mail_time_text_ms(newer_time_text)
+    older_ms = parse_fanxiu_mail_time_text_ms(older_time_text)
+    if newer_ms is None or older_ms is None or newer_ms <= older_ms:
+        return {
+            "ok": False,
+            "reason": "invalid_or_non_descending_interval",
+            "newer_time_text": normalize_fanxiu_mail_time_text(newer_time_text),
+            "older_time_text": normalize_fanxiu_mail_time_text(older_time_text),
+            "matched": 0,
+            "updated": 0,
+            "records": [],
+        }
+    rows = session.exec(
+        select(FanxiuMailRecord).where(
+            FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+            FanxiuMailRecord.status.in_(("锁定", "留存", "seen")),
+        )
+    ).all()
+    matched: list[FanxiuMailRecord] = []
+    newer_normalized = normalize_fanxiu_mail_time_text(newer_time_text)
+    older_normalized = normalize_fanxiu_mail_time_text(older_time_text)
+    for row in rows:
+        row_time_text = normalize_fanxiu_mail_time_text(row.create_time_text)
+        if row_time_text in {newer_normalized, older_normalized}:
+            continue
+        row_ms = _fanxiu_mail_record_time_ms(row)
+        if row_ms is None:
+            continue
+        if older_ms < row_ms < newer_ms:
+            matched.append(row)
+    now = time.time()
+    source_text = str(source or "visible_mail_adjacency").strip() or "visible_mail_adjacency"
+    records: list[dict[str, Any]] = []
+    updated = 0
+    for row in sorted(matched, key=lambda item: (_fanxiu_mail_record_time_ms(item) or 0, item.mail_key), reverse=True):
+        previous_status = str(row.status or "")
+        records.append(
+            {
+                "mail_key": row.mail_key,
+                "mail_id": row.mail_id,
+                "title": row.title,
+                "create_time_text": row.create_time_text,
+                "previous_status": previous_status,
+            }
+        )
+        if dry_run:
+            continue
+        evidence = dict(row.evidence or {})
+        history = [item for item in evidence.get("visible_adjacency_claimable_alignment_history") or [] if isinstance(item, dict)]
+        history.append(
+            {
+                "source": source_text,
+                "newer_time_text": normalize_fanxiu_mail_time_text(newer_time_text),
+                "older_time_text": normalize_fanxiu_mail_time_text(older_time_text),
+                "previous_status": previous_status,
+                "aligned_at": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        evidence["visible_adjacency_claimable_alignment"] = history[-1]
+        evidence["visible_adjacency_claimable_alignment_history"] = history[-12:]
+        row.status = "可领"
+        row.locked = False
+        row.action_policy = "claim"
+        row.last_action_error = ""
+        row.evidence = evidence
+        row.updated_at = now
+        session.add(row)
+        updated += 1
+    return {
+        "ok": True,
+        "newer_time_text": normalize_fanxiu_mail_time_text(newer_time_text),
+        "older_time_text": normalize_fanxiu_mail_time_text(older_time_text),
+        "matched": len(matched),
+        "updated": updated,
+        "records": records,
+    }
+
+
 def mark_fanxiu_mail_locked(
     session: Session,
     mail_id: Any,

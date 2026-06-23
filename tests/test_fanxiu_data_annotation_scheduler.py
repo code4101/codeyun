@@ -142,6 +142,96 @@ def test_daily_audit_dungeon_requires_full_purchased_attempts():
     assert by_task["daily_dungeon"]["done"] is True
 
 
+class _FakeDailyAuditRuntime:
+    def __init__(self, image69):
+        self.image69 = image69
+        self.actions = []
+        self._frames = ["frame-top", "frame-next"]
+        self._frame_index = 0
+        self._up_results = [True, False]
+        self._down_results = [True, False]
+
+    def current_scene(self, candidates=None, **kwargs):
+        return 69, 100.0, kwargs.get("frame_data_url") or "frame-current"
+
+    def ocr_text(self, frame):
+        return "日常 活跃度 活动报名 挑战或扫荡淬剑试炼 0/1"
+
+    def view(self, view_id):
+        assert view_id == 69
+        return self.image69
+
+    def shape(self, view, title):
+        assert view is self.image69
+        return next(shape for shape in self.image69["shapes"] if shape["title"] == title)
+
+    def scroll_shape_content(self, view, shape, *, direction="down"):
+        self.actions.append(("scroll_shape_content", direction))
+        results = self._up_results if direction == "up" else self._down_results
+        if False:
+            yield None
+        return results.pop(0) if results else False
+
+    def cur_frame(self, update=True):
+        frame = self._frames[min(self._frame_index, len(self._frames) - 1)]
+        self._frame_index += 1
+        return frame
+
+
+def test_daily_audit_scroll_loop_records_merged_world_facts(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    image69 = {
+        "id": 69,
+        "title": "日常",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"title": "滚动窗口", "x": 0.05, "y": 0.18, "w": 0.9, "h": 0.66}],
+    }
+    fake_runtime = _FakeDailyAuditRuntime(image69)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: fake_runtime)
+    lines_by_frame = {
+        "frame-top": [
+            {"text": "日常 活跃度 活动报名", "x": 120, "y": 230, "w": 420, "h": 40},
+            {"text": "挑战或扫荡淬剑试炼", "x": 120, "y": 320, "w": 380, "h": 40},
+            {"text": "活 10/次", "x": 420, "y": 390, "w": 120, "h": 36},
+            {"text": "次 0/1", "x": 420, "y": 436, "w": 100, "h": 36},
+        ],
+        "frame-next": [
+            {"text": "日常 活跃度 活动报名", "x": 120, "y": 230, "w": 420, "h": 40},
+            {"text": "完成双人修炼1次", "x": 120, "y": 520, "w": 360, "h": 40},
+            {"text": "活 10/次", "x": 420, "y": 590, "w": 120, "h": 36},
+            {"text": "次 3/3", "x": 420, "y": 636, "w": 100, "h": 36},
+        ],
+    }
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, frame: lines_by_frame[frame])
+
+    result = _drain_generator(
+        runner._execute_daily_audit_task(
+            {"asset_tree_path": tmp_path / "asset-tree.json", "images": {69: image69}},
+            fanxiu.threading.Event(),
+            {"max_scrolls": 3},
+        )
+    )
+
+    facts = runtime_runner_core._read_data_annotation_world_facts()
+    audit = facts["discoveries"]["daily_audit"]
+    by_task = {row["task_type"]: row for row in audit["rows"] if row["task_type"]}
+
+    assert result == "success"
+    assert fake_runtime.actions == [
+        ("scroll_shape_content", "up"),
+        ("scroll_shape_content", "up"),
+        ("scroll_shape_content", "down"),
+        ("scroll_shape_content", "down"),
+    ]
+    assert audit["row_count"] == 2
+    assert by_task["daily_jianling"]["done"] is False
+    assert by_task["daily_shuangxiu"]["done"] is True
+    assert audit["incomplete_task_ids"] == ["legacy-daily-jianling"]
+    assert audit["completed_task_ids"] == ["legacy-daily-shuangxiu"]
+
+
 def test_scheduler_plan_treats_fresh_daily_audit_incomplete_as_due():
     now = datetime(2026, 6, 20, 8, 0, 0)
     now_ts = now.timestamp()

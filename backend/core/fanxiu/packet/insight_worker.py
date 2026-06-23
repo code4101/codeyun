@@ -254,6 +254,35 @@ def _capture_streams_fully_decoded(
     return set(target_stream_ids).issubset(decoded_streams_by_digest.get(digest) or set())
 
 
+def _decoded_stream_ids_from_result(result: dict[str, Any]) -> set[int]:
+    stream_ids: set[int] = set()
+    for item in result.get("decoded") or []:
+        if not isinstance(item, dict) or not item.get("output_path"):
+            continue
+        try:
+            stream_ids.add(int(item.get("stream") or 0))
+        except (TypeError, ValueError):
+            continue
+    return stream_ids
+
+
+def _decoded_sources_from_result(path: Path, digest: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "decoded_path": item.get("output_path") or "",
+            "record_id": item.get("record_id") or "",
+            "pcap_name": path.name,
+            "created_at": _now_text(),
+            "source_kind": "runtime",
+            "source_pcap": str(path),
+            "stream": item.get("stream"),
+            "capture_sha256": digest,
+        }
+        for item in (result.get("decoded") or [])
+        if isinstance(item, dict) and item.get("output_path")
+    ]
+
+
 def _decode_result_from_source(source: dict[str, Any]) -> dict[str, Any] | None:
     decoded_path = Path(str(source.get("decoded_path") or ""))
     decoded = _load_json(decoded_path, {})
@@ -933,6 +962,8 @@ def sync_fanxiu_capture_paths(
                 data_dir=data_dir,
                 max_streams=max(1, int(max_streams)),
             )
+            actual_decoded_stream_ids = _decoded_stream_ids_from_result(result)
+            missing_stream_ids = sorted(set(target_stream_ids) - actual_decoded_stream_ids)
             decoded.append(
                 {
                     "path": str(path),
@@ -941,24 +972,14 @@ def sync_fanxiu_capture_paths(
                     "worship_protocol_count": result.get("worship_protocol_count") or 0,
                     "packet_runtime_sync": result.get("packet_runtime_sync") or {},
                     "mail_packet_sync": result.get("mail_packet_sync") or {},
-                    "decoded_sources": [
-                        {
-                            "decoded_path": item.get("output_path") or "",
-                            "record_id": item.get("record_id") or "",
-                            "pcap_name": path.name,
-                            "created_at": _now_text(),
-                            "source_kind": "runtime",
-                            "source_pcap": str(path),
-                            "stream": item.get("stream"),
-                            "capture_sha256": digest,
-                        }
-                        for item in (result.get("decoded") or [])
-                        if isinstance(item, dict) and item.get("output_path")
-                    ],
+                    "target_stream_ids": target_stream_ids,
+                    "decoded_stream_ids": sorted(actual_decoded_stream_ids),
+                    "missing_stream_ids": missing_stream_ids,
+                    "decoded_sources": _decoded_sources_from_result(path, digest, result),
                 }
             )
             decoded_digests.add(digest)
-            decoded_streams_by_digest.setdefault(digest, set()).update(target_stream_ids)
+            decoded_streams_by_digest.setdefault(digest, set()).update(actual_decoded_stream_ids)
         except Exception as exc:
             errors.append({"path": str(path), "digest": digest, "error": str(exc)})
     _runtime_sync, mail_sync = _sync_business_after_decoded(decoded, data_dir=data_dir)
@@ -1150,9 +1171,12 @@ def sync_fanxiu_live_capture_backlog(
                 data_dir=data_dir,
                 max_streams=max(1, int(max_streams)),
             )
+            actual_decoded_stream_ids = _decoded_stream_ids_from_result(result)
+            missing_stream_ids = sorted(set(target_stream_ids) - actual_decoded_stream_ids)
             decoded_digests.add(digest)
-            decoded_streams_by_digest.setdefault(digest, set()).update(target_stream_ids)
-            previous_errors.pop(digest, None)
+            decoded_streams_by_digest.setdefault(digest, set()).update(actual_decoded_stream_ids)
+            if not missing_stream_ids:
+                previous_errors.pop(digest, None)
             decoded.append(
                 {
                     "path": str(path),
@@ -1161,22 +1185,34 @@ def sync_fanxiu_live_capture_backlog(
                     "worship_protocol_count": result.get("worship_protocol_count") or 0,
                     "packet_runtime_sync": result.get("packet_runtime_sync") or {},
                     "mail_packet_sync": result.get("mail_packet_sync") or {},
-                    "decoded_sources": [
-                        {
-                            "decoded_path": item.get("output_path") or "",
-                            "record_id": item.get("record_id") or "",
-                            "pcap_name": path.name,
-                            "created_at": _now_text(),
-                            "source_kind": "runtime",
-                            "source_pcap": str(path),
-                            "stream": item.get("stream"),
-                            "capture_sha256": digest,
-                        }
-                        for item in (result.get("decoded") or [])
-                        if isinstance(item, dict) and item.get("output_path")
-                    ],
+                    "target_stream_ids": target_stream_ids,
+                    "decoded_stream_ids": sorted(actual_decoded_stream_ids),
+                    "missing_stream_ids": missing_stream_ids,
+                    "decoded_sources": _decoded_sources_from_result(path, digest, result),
                 }
             )
+            if missing_stream_ids:
+                attempts = int((previous_error or {}).get("attempts") or 0) + 1
+                error_item = {
+                    "path": str(path),
+                    "digest": digest,
+                    "error": "pcap 部分 stream 未完成解码",
+                    "target_stream_ids": target_stream_ids,
+                    "decoded_stream_ids": sorted(actual_decoded_stream_ids),
+                    "missing_stream_ids": missing_stream_ids,
+                    "attempts": attempts,
+                    "first_error_at": (previous_error or {}).get("first_error_at") or _now_text(),
+                    "last_error_at": _now_text(),
+                    "last_error_at_epoch": now_epoch,
+                    "parser_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+                }
+                errors.append(error_item)
+                previous_errors[digest] = error_item
+                pcap_state_updates.append(
+                    _pcap_state_item(path, digest, status="partial_decoded", reason="missing_streams", extra=error_item)
+                )
+                cursor_blocked = True
+                continue
             pcap_state_updates.append(
                 _pcap_state_item(
                     path,
@@ -1186,6 +1222,8 @@ def sync_fanxiu_live_capture_backlog(
                         "decoded_count": result.get("decoded_count") or 0,
                         "runtime_protocol_count": result.get("runtime_protocol_count") or 0,
                         "worship_protocol_count": result.get("worship_protocol_count") or 0,
+                        "target_stream_ids": target_stream_ids,
+                        "decoded_stream_ids": sorted(actual_decoded_stream_ids),
                     },
                 )
             )
@@ -1443,7 +1481,7 @@ class FanxiuPacketInsightWorker:
             capture_backstop = {"ok": False, "ensured": False, "error": str(exc)}
         result = sync_fanxiu_capture_maintenance_backlog(
             stable_seconds=self.stable_seconds,
-            include_historical_business_backlog=False,
+            include_historical_business_backlog=True,
             include_mail_business_backlog=True,
         )
         result["capture_runtime_backstop"] = capture_backstop
