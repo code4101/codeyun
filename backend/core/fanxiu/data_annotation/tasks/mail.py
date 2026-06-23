@@ -24,6 +24,7 @@ from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_visible_group_action_policy,
 )
 from backend.core.fanxiu.mail.runtime_store import (
+    align_packet_mail_records_claimable_between_visible_neighbors,
     find_packet_mail_record_by_raw_title,
     find_packet_mail_record_exact,
     mark_packet_mail_record_missing_from_list,
@@ -232,11 +233,18 @@ class MailTaskMixin:
             self._raise_if_stopped(stop_event)
             frame = runtime.cur_frame(update=True)
             rows = self._runtime_mail_rows_from_frame(runtime, view121, frame)
+            aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup")
+            if aligned_result.get("updated"):
+                self._log(
+                    "success",
+                    "邮件_清理：可见相邻断层校准 "
+                    f"{aligned_result.get('updated')} 封为可领，区间 {aligned_result.get('interval_count')}",
+                )
             action_row: _RuntimeMailRow | None = None
             for mail in rows:
                 seen_count += 1
                 self._prepare_mail_row_policy(mail.raw, action_enabled=True, action_policies={"claim"})
-                if mail.status in {"已阅", "锁定"}:
+                if mail.status == "已阅":
                     continue
                 if mail.raw.get("policy") == "claim":
                     action_row = mail
@@ -401,6 +409,64 @@ class MailTaskMixin:
             entry_mode="dynamic",
         )
         return (yield from result) if isinstance(result, GeneratorType) else result
+
+    def _visible_mail_adjacency_intervals(self, rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+        ordered = sorted(rows, key=lambda item: float(item.get("y") or 0))
+        intervals: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for newer, older in zip(ordered, ordered[1:]):
+            if str(newer.get("visual_scope") or "") != str(older.get("visual_scope") or ""):
+                continue
+            newer_slot = newer.get("visual_slot_index")
+            older_slot = older.get("visual_slot_index")
+            if not isinstance(newer_slot, int) or not isinstance(older_slot, int):
+                continue
+            if older_slot != newer_slot + 1:
+                continue
+            newer_time = self._normalize_mail_time_text(str(newer.get("time_text") or ""))
+            older_time = self._normalize_mail_time_text(str(older.get("time_text") or ""))
+            if not newer_time or not older_time or newer_time == older_time:
+                continue
+            if newer_time <= older_time:
+                continue
+            key = (newer_time, older_time)
+            if key in seen:
+                continue
+            seen.add(key)
+            intervals.append({"newer_time_text": newer_time, "older_time_text": older_time})
+        return intervals
+
+    def _align_mail_records_from_visible_adjacency(
+        self,
+        rows: list[_RuntimeMailRow] | list[dict[str, Any]],
+        *,
+        source: str,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        raw_rows = [row.raw if isinstance(row, _RuntimeMailRow) else row for row in rows]
+        intervals = self._visible_mail_adjacency_intervals([row for row in raw_rows if isinstance(row, dict)])
+        results: list[dict[str, Any]] = []
+        updated = 0
+        matched = 0
+        for interval in intervals:
+            result = align_packet_mail_records_claimable_between_visible_neighbors(
+                _db_engine,
+                newer_time_text=str(interval.get("newer_time_text") or ""),
+                older_time_text=str(interval.get("older_time_text") or ""),
+                source=source,
+                dry_run=dry_run,
+            )
+            results.append(result)
+            updated += int(result.get("updated") or 0)
+            matched += int(result.get("matched") or 0)
+        return {
+            "ok": True,
+            "interval_count": len(intervals),
+            "matched": matched,
+            "updated": updated,
+            "intervals": intervals,
+            "results": results,
+        }
 
     def _runtime_mail_rows_from_frame(self, runtime: FanxiuRuntime, view121: View, frame: str) -> list[_RuntimeMailRow]:
         if not isinstance(view121.raw, dict):
@@ -1522,10 +1588,10 @@ class MailTaskMixin:
         ui_status = self._normalize_mail_row_status(str(row.get("status") or ""))
         if not ui_status and bool(row.get("is_read")):
             ui_status = "已阅"
-        if bool(row.get("list_has_lock")):
+        if not ui_status and bool(row.get("list_has_lock")):
             ui_status = "锁定"
         row["status"] = ui_status or "无"
-        if ui_status in {"已阅", "锁定"}:
+        if ui_status == "已阅":
             row["mail_key"] = ""
             row["policy"] = ""
             row["packet_match"] = "ui_skipped"
@@ -2018,6 +2084,7 @@ class MailTaskMixin:
         if template_shape and title_shape and time_shape:
             rows = self._mail_rows_in_shape_by_template(lines, image, shape, title_shape, time_shape, status_shape)
             if rows:
+                self._annotate_mail_rows_visual_slots(rows, image, template_shape, shape_title)
                 return rows
         box = self._box(shape, image)
         left = float(box.get("x") or 0)
@@ -2063,6 +2130,26 @@ class MailTaskMixin:
                 item["status"] = "无"
             rows.append(item)
         return rows
+
+    def _annotate_mail_rows_visual_slots(
+        self,
+        rows: list[dict[str, Any]],
+        image: dict[str, Any],
+        template_shape: dict[str, Any],
+        shape_title: str,
+    ) -> None:
+        template_box = self._box(template_shape, image)
+        row_pitch = float(template_box.get("h") or 0)
+        if row_pitch < 24:
+            return
+        origin_y = float(template_box.get("y") or 0)
+        for row in rows:
+            try:
+                row_y = float(row.get("y") or 0)
+            except (TypeError, ValueError):
+                continue
+            row["visual_scope"] = shape_title
+            row["visual_slot_index"] = int(round((row_y - origin_y) / row_pitch))
 
     def _mail_template_child_shape(self, image: dict[str, Any], title: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
         template_shape = self._find_shape(image, "邮件模板")

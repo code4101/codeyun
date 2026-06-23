@@ -702,7 +702,6 @@ const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'spirit_stone_v
 const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
 const playerProfileSortKey = ref<PlayerProfileSortKey>('attack_desc')
 const playerProfilePage = ref(1)
-const selectedPlayerProfileAttackUnits = ref<string[]>([])
 const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
 const storageBagWorshipTableVisible = ref(false)
 const selectedPacketCategory = ref('')
@@ -1197,13 +1196,6 @@ function normalizePlayerProfileSortKey(_value: unknown): PlayerProfileSortKey {
   return 'attack_desc'
 }
 
-function normalizePlayerProfileAttackUnits(value: unknown) {
-  const allowed = new Set(PLAYER_PROFILE_ATTACK_UNIT_ORDER)
-  return Array.from(new Set((Array.isArray(value) ? value : [])
-    .map(item => String(item))
-    .filter(item => allowed.has(item))))
-}
-
 function loadPlayerProfilePreferences() {
   if (!canUseLocalStorage()) return
   try {
@@ -1211,13 +1203,8 @@ function loadPlayerProfilePreferences() {
     if (!raw) return
     const config = JSON.parse(raw) as {
       sortKey?: unknown;
-      attackUnits?: unknown;
     }
     playerProfileSortKey.value = normalizePlayerProfileSortKey(config.sortKey)
-    selectedPlayerProfileAttackUnits.value = normalizePlayerProfileAttackUnits(config.attackUnits)
-    playerProfileAttackUnitSelectionInitialized = true
-    playerProfileAttackUnitPreferenceLoaded = true
-    previousPlayerProfileAttackUnits = []
   } catch (error) {
     console.warn('Failed to load Fanxiu player profile preferences:', error)
     window.localStorage.removeItem(PLAYER_PROFILE_PREF_STORAGE_KEY)
@@ -1229,7 +1216,6 @@ function persistPlayerProfilePreferences() {
   try {
     window.localStorage.setItem(PLAYER_PROFILE_PREF_STORAGE_KEY, JSON.stringify({
       sortKey: playerProfileSortKey.value,
-      attackUnits: selectedPlayerProfileAttackUnits.value,
     }))
   } catch (error) {
     console.warn('Failed to persist Fanxiu player profile preferences:', error)
@@ -1327,9 +1313,9 @@ function loadPageConfig() {
     page.value = normalizePage(config.page, 1)
     pageSize.value = normalizePageSize(config.pageSize, 50)
     mailPage.value = normalizePage(config.mailPage, 1)
-    mailPageSize.value = normalizeMailPageSize(config.mailPageSize)
+    mailPageSize.value = DEFAULT_MAIL_PAGE_SIZE
     mailSummaryPage.value = normalizePage(config.mailSummaryPage, 1)
-    mailSummaryPageSize.value = normalizeMailPageSize(config.mailSummaryPageSize)
+    mailSummaryPageSize.value = DEFAULT_MAIL_PAGE_SIZE
     selectedId.value = String(config.selectedId ?? '')
     expandedFacetRows.value = config.expandedFacetRows && typeof config.expandedFacetRows === 'object'
       ? { ...config.expandedFacetRows }
@@ -1374,9 +1360,7 @@ function persistPageConfig() {
       page: page.value,
       pageSize: pageSize.value,
       mailPage: mailPage.value,
-      mailPageSize: mailPageSize.value,
       mailSummaryPage: mailSummaryPage.value,
-      mailSummaryPageSize: mailSummaryPageSize.value,
       selectedId: selectedId.value,
       expandedFacetRows: expandedFacetRows.value,
     }))
@@ -6171,42 +6155,8 @@ const playerProfileAttackUnitOptions = computed(() => {
     .map(unit => ({ unit, count: counts.get(unit) || 0 }))
 })
 
-let playerProfileAttackUnitSelectionInitialized = false
-let previousPlayerProfileAttackUnits: string[] = []
-let playerProfileAttackUnitPreferenceLoaded = false
-
-watch(playerProfileAttackUnitOptions, (options) => {
-  const units = options.map(option => option.unit)
-  if (!units.length) {
-    selectedPlayerProfileAttackUnits.value = []
-    previousPlayerProfileAttackUnits = []
-    return
-  }
-  if (!playerProfileAttackUnitSelectionInitialized) {
-    selectedPlayerProfileAttackUnits.value = units
-    previousPlayerProfileAttackUnits = units
-    playerProfileAttackUnitSelectionInitialized = true
-    return
-  }
-  const previousUnits = new Set(previousPlayerProfileAttackUnits)
-  const selectedUnits = new Set(selectedPlayerProfileAttackUnits.value.filter(unit => units.includes(unit)))
-  if (!selectedUnits.size) {
-    selectedPlayerProfileAttackUnits.value = units
-    previousPlayerProfileAttackUnits = units
-    return
-  }
-  if (!playerProfileAttackUnitPreferenceLoaded) {
-    for (const unit of units) {
-      if (!previousUnits.has(unit)) selectedUnits.add(unit)
-    }
-  }
-  selectedPlayerProfileAttackUnits.value = units.filter(unit => selectedUnits.has(unit))
-  previousPlayerProfileAttackUnits = units
-}, { immediate: true })
-
 const filteredPlayerProfileRows = computed(() => {
-  const selectedUnits = new Set(selectedPlayerProfileAttackUnits.value)
-  return searchFilteredPlayerProfileRows.value.filter(row => selectedUnits.has(playerProfileAttackUnit(row)))
+  return searchFilteredPlayerProfileRows.value
 })
 
 const attackRankedPlayerProfileRows = computed(() => (
@@ -7032,16 +6982,6 @@ function sortPlayerProfileByField(key: PlayerProfileSortKey) {
 function playerProfileSortIndicator(key: PlayerProfileSortKey) {
   if (playerProfileSortKey.value !== key) return ''
   return key.endsWith('_desc') ? ' ↓' : ' ↑'
-}
-
-function togglePlayerProfileAttackUnit(unit: string) {
-  const current = new Set(selectedPlayerProfileAttackUnits.value)
-  if (current.has(unit)) {
-    current.delete(unit)
-  } else {
-    current.add(unit)
-  }
-  selectedPlayerProfileAttackUnits.value = PLAYER_PROFILE_ATTACK_UNIT_ORDER.filter(item => current.has(item))
 }
 
 function packetInsightRankTitle(row: Record<string, any>) {
@@ -11988,10 +11928,10 @@ watch([storageBagMainGroup, storageBagSubGroup], () => {
   persistStorageBagFilterConfig()
 })
 watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
-watch([playerProfileSortKey, selectedPlayerProfileAttackUnits], persistPlayerProfilePreferences, { deep: true })
-watch([query, playerProfileSortKey, selectedPlayerProfileAttackUnits], () => {
+watch(playerProfileSortKey, persistPlayerProfilePreferences)
+watch([query, playerProfileSortKey], () => {
   if (activeTab.value === 'player_profile') playerProfilePage.value = 1
-}, { deep: true })
+})
 watch(playerProfilePageCount, () => {
   if (playerProfilePage.value > playerProfilePageCount.value) playerProfilePage.value = playerProfilePageCount.value
 })
@@ -13409,18 +13349,15 @@ onBeforeUnmount(() => {
       <section v-if="playerProfileAttackUnitOptions.length" class="storage-bag-groups player-profile-unit-groups">
         <div class="storage-bag-group-row">
           <span class="facet-label">攻击单位</span>
-          <button
+          <span
             v-for="option in playerProfileAttackUnitOptions"
             :key="option.unit"
-            class="facet-option"
-            :class="{ active: selectedPlayerProfileAttackUnits.includes(option.unit) }"
+            class="facet-option read-only active"
             :style="playerProfileAttackUnitOptionStyle(option.unit)"
-            type="button"
-            @click="togglePlayerProfileAttackUnit(option.unit)"
           >
             <span class="facet-option-label">{{ option.unit }}</span>
             <small>{{ option.count }}</small>
-          </button>
+          </span>
         </div>
       </section>
       <section v-if="playerProfileLatestRows.length" class="player-profile-region-list">

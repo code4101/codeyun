@@ -7243,7 +7243,7 @@ def test_packet_claim_policy_does_not_rescue_read_mail_by_title(monkeypatch):
     assert row["policy"] == ""
 
 
-def test_packet_claim_policy_does_not_rescue_locked_mail_by_title(monkeypatch):
+def test_packet_claim_policy_claims_locked_visible_row_when_packet_is_safe(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     row = {"title": "香车馈赠", "time_text": "2026年06月09日13:48", "list_has_lock": True}
     record = FanxiuMailRecord(
@@ -7253,7 +7253,8 @@ def test_packet_claim_policy_does_not_rescue_locked_mail_by_title(monkeypatch):
         normalized_title="香车馈赠",
         create_time_text="2026年06月09日13:48",
         source="packet",
-        status="seen",
+        status="可领",
+        action_policy="claim",
         payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币", "amount": 8888}]},
     )
     monkeypatch.setattr(runner, "_find_packet_mail_records_for_visible_row", lambda _title, _time_text: [record])
@@ -7261,9 +7262,32 @@ def test_packet_claim_policy_does_not_rescue_locked_mail_by_title(monkeypatch):
     runner._prepare_mail_row_policy(row, action_policies={"claim"})
 
     assert row["status"] == "锁定"
-    assert row["mail_key"] == ""
+    assert row["mail_key"] == "id:xiangche-latest"
+    assert row["policy"] == "claim"
+    assert row["packet_match"] == "matched"
+
+
+def test_packet_claim_policy_keeps_locked_visible_row_when_packet_is_protected(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    row = {"title": "珍贵馈赠", "time_text": "2026年06月09日13:48", "list_has_lock": True}
+    record = FanxiuMailRecord(
+        mail_key="id:protected-latest",
+        mail_id="protected-latest",
+        title="珍贵馈赠",
+        normalized_title="珍贵馈赠",
+        create_time_text="2026年06月09日13:48",
+        source="packet",
+        status="seen",
+        payload={"mail_rewards": [{"item_name": "洗灵奇石", "item_type": "资源", "amount": 1}]},
+    )
+    monkeypatch.setattr(runner, "_find_packet_mail_records_for_visible_row", lambda _title, _time_text: [record])
+
+    runner._prepare_mail_row_policy(row, action_policies={"claim"})
+
+    assert row["status"] == "锁定"
+    assert row["mail_key"] == "id:protected-latest"
     assert row["policy"] == ""
-    assert row["packet_match"] == "ui_skipped"
+    assert row["packet_match"] == "matched"
 
 
 def test_mail_rows_use_template_status_lock_text():
@@ -7307,6 +7331,44 @@ def test_mail_status_single_lock_character_is_not_locked():
     assert runner._normalize_mail_row_status("锁") == ""
     assert runner._normalize_mail_row_status("锁走") == "锁定"
     assert runner._normalize_mail_row_status("锁定") == "锁定"
+
+
+def test_visible_mail_adjacency_uses_visual_slots_not_filtered_rows():
+    runner = create_fanxiu_runtime_runner()
+    rows = [
+        {"title": "a", "time_text": "2026年06月21日23:59", "y": 100, "visual_scope": "邮件清单2", "visual_slot_index": 0},
+        # visual slot 1 exists on screen but OCR reconstruction failed, so it is not in rows.
+        {"title": "c", "time_text": "2026年06月19日23:59", "y": 420, "visual_scope": "邮件清单2", "visual_slot_index": 2},
+        {"title": "d", "time_text": "2026年06月18日23:59", "y": 580, "visual_scope": "邮件清单2", "visual_slot_index": 3},
+    ]
+
+    intervals = runner._visible_mail_adjacency_intervals(rows)
+
+    assert intervals == [
+        {
+            "newer_time_text": "2026年06月19日23:59",
+            "older_time_text": "2026年06月18日23:59",
+        }
+    ]
+
+
+def test_visible_mail_adjacency_skips_same_time_and_cross_scope_rows():
+    runner = create_fanxiu_runtime_runner()
+    rows = [
+        {"title": "a", "time_text": "2026年06月21日23:59", "y": 100, "visual_scope": "第1封", "visual_slot_index": 0},
+        {"title": "b", "time_text": "2026年06月21日23:59", "y": 260, "visual_scope": "邮件清单2", "visual_slot_index": 1},
+        {"title": "c", "time_text": "2026年06月21日23:59", "y": 420, "visual_scope": "邮件清单2", "visual_slot_index": 2},
+        {"title": "d", "time_text": "2026年06月20日23:59", "y": 580, "visual_scope": "邮件清单2", "visual_slot_index": 3},
+    ]
+
+    intervals = runner._visible_mail_adjacency_intervals(rows)
+
+    assert intervals == [
+        {
+            "newer_time_text": "2026年06月21日23:59",
+            "older_time_text": "2026年06月20日23:59",
+        }
+    ]
 
 
 def test_packet_mail_record_matches_noisy_ocr_title_by_time(monkeypatch):
@@ -10093,6 +10155,7 @@ def test_xianfu_learn_skill_cd_parser_reuses_free_draw_cd_text():
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("06:33:27后可免费抽取") == 23607
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("12分05秒后可免费抽取") == 725
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("免费抽取") == 0
+    assert runtime_runner_core._parse_xianfu_skill_cd_seconds("攻击+18.9兆御+7282.42万免费抽取后重新倒计时") == 0
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("无法识别") is None
 
 

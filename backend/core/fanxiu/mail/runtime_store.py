@@ -231,3 +231,27 @@ def update_packet_mail_action(
         updated = mark_fanxiu_mail_action(session, mail_key, status=status, evidence=evidence)
         session.commit()
         return updated
+
+
+def align_packet_mail_records_claimable_between_visible_neighbors(
+    engine_getter: EngineGetter,
+    *,
+    newer_time_text: str,
+    older_time_text: str,
+    source: str = "visible_mail_adjacency",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from backend.core.fanxiu.mail.store import align_fanxiu_mail_records_claimable_between_times
+
+    Session, _select, _mail_record = _sqlmodel_mail_record()
+    with Session(engine_getter()) as session:
+        result = align_fanxiu_mail_records_claimable_between_times(
+            session,
+            newer_time_text=newer_time_text,
+            older_time_text=older_time_text,
+            source=source,
+            dry_run=dry_run,
+        )
+        if not dry_run:
+            session.commit()
+        return result

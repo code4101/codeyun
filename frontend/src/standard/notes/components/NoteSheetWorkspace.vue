@@ -224,6 +224,7 @@ const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据
 const EXCEL_IMPORT_APPEND_BUTTON_LABEL = '添加新表数据'
 const SHEET_CELL_ACTION_BUTTON_TRIGGER_GUARD_MS = 700
 const REGISTRATION_MATCH_RUN_POLL_MS = 2000
+const INITIAL_SHEET_ACTION_STATUS_REFRESH_DELAY_MS = 1600
 const REGISTRATION_ORDER_MATCH_HEADERS = ['订单日期', '商户订单号', '订单金额', '已返款']
 const REGISTRATION_USER_MATCH_HEADERS = ['用户ID', '匹配得分']
 const REGISTRATION_STANDARD_USER_ID_HEADERS = new Set(['用户ID', '关联用户ID'])
@@ -4343,6 +4344,7 @@ let formulaEngineImportPromise: Promise<FormulaEngineClass | null> | null = null
 let sheetFormulaPluginRegistered = false
 let columnMarkerSelectionAnchor: number | null = null
 let userMatchRunPollTimer: ReturnType<typeof setTimeout> | null = null
+let initialSheetActionStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let lastNotifiedUserMatchRunId = ''
 let lastNotifiedUserMatchRunStatus = ''
 let clockinLinkDetectionRunPollTimer: ReturnType<typeof setTimeout> | null = null
@@ -5203,6 +5205,7 @@ function clearSheetRenderEnhancementFrame() {
 
 function beginSheetCoreRenderPhase() {
   clearSheetRenderEnhancementFrame()
+  clearInitialSheetActionStatusRefreshTimer()
   sheetRenderPhase.value = 'core'
 }
 
@@ -5556,6 +5559,47 @@ function clearUserMatchRunPollTimer() {
     clearTimeout(userMatchRunPollTimer)
     userMatchRunPollTimer = null
   }
+}
+
+function clearInitialSheetActionStatusRefreshTimer() {
+  if (initialSheetActionStatusRefreshTimer) {
+    clearTimeout(initialSheetActionStatusRefreshTimer)
+    initialSheetActionStatusRefreshTimer = null
+  }
+}
+
+function refreshInitialSheetActionStatuses() {
+  void refreshAttendanceCourseScriptStatuses()
+  void refreshUserMatchRunStatus(undefined, { silent: true })
+  void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })
+}
+
+function scheduleInitialSheetActionStatusRefresh() {
+  clearInitialSheetActionStatusRefreshTimer()
+  if (props.sheetId == null) {
+    return
+  }
+  const scheduledSheetId = props.sheetId
+  const scheduledWorkbookId = props.workbookId
+  const run = () => {
+    initialSheetActionStatusRefreshTimer = null
+    if (
+      props.sheetId !== scheduledSheetId
+      || props.workbookId !== scheduledWorkbookId
+      || !sheetContentReady.value
+    ) {
+      return
+    }
+    refreshInitialSheetActionStatuses()
+  }
+  if (typeof window === 'undefined') {
+    run()
+    return
+  }
+  initialSheetActionStatusRefreshTimer = window.setTimeout(
+    run,
+    INITIAL_SHEET_ACTION_STATUS_REFRESH_DELAY_MS,
+  )
 }
 
 function scheduleUserMatchRunPolling() {
@@ -17792,9 +17836,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (shouldSyncLocalDraft) {
       scheduleRemoteSave(0)
     }
-    void refreshAttendanceCourseScriptStatuses()
-    void refreshUserMatchRunStatus(undefined, { silent: true })
-    void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })
+    scheduleInitialSheetActionStatusRefresh()
   } catch (error) {
     const status = getNoteSheetApiErrorStatus(error)
     const message = status === 401 || status === 403
@@ -26272,6 +26314,7 @@ onBeforeUnmount(() => {
   clearDeferredCellSelectionState()
   clearCellLinkOpenPointerGuard()
   resetSheetFilterReloadState()
+  clearInitialSheetActionStatusRefreshTimer()
   clearUserMatchRunPollTimer()
   clearClockinLinkDetectionRunPollTimer()
   finishFormulaReferenceRange()

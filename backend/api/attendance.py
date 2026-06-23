@@ -1716,6 +1716,26 @@ def _ensure_attendance_wjx_sheet_document(
     return document
 
 
+def _find_existing_attendance_wjx_sheet_location_document(session: Session) -> SheetDocument | None:
+    workbook = _get_attendance_wjx_data_workbook(session)
+    if workbook is None:
+        return None
+
+    document = _find_attendance_wjx_sheet_document(session, workbook)
+    if document is None or document.numeric_id is None:
+        return None
+
+    link = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
+    ).first()
+    if link is None:
+        return None
+
+    return document
+
+
 def _seed_attendance_wjx_sheet_from_entries(
     session: Session,
     document_json: dict[str, Any],
@@ -3814,7 +3834,9 @@ def get_attendance_wjx_data_sheet_location(
     _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
 ):
     ensure_can_use_attendance_service(current_user, session)
-    document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    document = _find_existing_attendance_wjx_sheet_location_document(session)
+    if document is None:
+        document = _ensure_attendance_wjx_sheet_document(session, create=True)
     if document is None or document.numeric_id is None:
         raise HTTPException(status_code=404, detail="没有找到工作簿 2，无法创建问卷数据表")
     sheet_id = int(document.numeric_id)
