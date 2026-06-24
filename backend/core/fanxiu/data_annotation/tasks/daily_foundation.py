@@ -2752,72 +2752,13 @@ class DailyFoundationTaskMixin:
         *,
         reason: str,
     ) -> Iterator[Any]:
-        options = payload or {}
-        timeout = float(options.get("baiye_return_timeout") or 20.0)
-        settle = float(options.get("baiye_return_settle_seconds") or 1.0)
-        self._log("action", f"日常_拜谒：{reason}，返回世界")
-
-        scene_id, _score, frame = runtime.current_scene([266, 265, 264, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
-
-        if scene_id == 266 or self._baiye_text_is_completed(text) or self._baiye_text_can_worship(text):
-            self._log("action", "日常_拜谒：点击 #266「返回」")
-            runtime.click_shape_center(266, "返回")
-            yield from runtime.wait_any(
-                {
-                    "scene": runtime.view_visible(265),
-                    "text": runtime.ocr_matches(self._baiye_text_is_lord_map, label="日常_拜谒：返回 #265 OCR"),
-                },
-                timeout=timeout,
-                label="日常_拜谒：等待返回 #265",
-            )
-            yield from runtime.wait_action_settle(settle)
-            scene_id = 265
-
-        if scene_id == 265:
-            self._log("action", "日常_拜谒：点击 #265「返回」")
-            runtime.click_shape_center(265, "返回")
-            yield from runtime.wait_any(
-                {
-                    "scene": runtime.view_visible(264),
-                    "text": runtime.ocr_matches(self._baiye_text_is_rule_map, label="日常_拜谒：返回 #264 OCR"),
-                },
-                timeout=timeout,
-                label="日常_拜谒：等待返回 #264",
-            )
-            yield from runtime.wait_action_settle(settle)
-            scene_id = 264
-
-        if scene_id == 264:
-            self._log("action", "日常_拜谒：点击 #264「返回」")
-            runtime.click_shape_center(264, "返回")
-            yield from runtime.wait_any(
-                {
-                    "scene": runtime.view_visible(69),
-                    "world": runtime.view_visible(34),
-                },
-                timeout=timeout,
-                label="日常_拜谒：等待返回 #69/#34",
-            )
-            yield from runtime.wait_action_settle(settle)
-            scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-
-        if scene_id == 69:
-            self._log("action", "日常_拜谒：点击 #69「退出」")
-            runtime.click_shape_center(69, "退出")
-            yield from runtime.wait_any(
-                {"scene": runtime.view_visible(34)},
-                timeout=timeout,
-                label="日常_拜谒：等待返回 #34",
-            )
-            yield from runtime.wait_action_settle(settle)
-            scene_id = 34
-
+        self._log("action", f"日常_拜谒：{reason}，调用通用场景移动返回 #34")
+        yield from runtime.goto_view(34)
+        scene_id, _score, _frame = runtime.current_scene([34], update=True)
         if scene_id == 34:
-            self._log("success", "日常_拜谒：已返回 #34 世界，闭环完成")
+            self._log("success", "日常_拜谒：已通过通用 goto 返回 #34 世界，闭环完成")
             return "success"
-
-        raise RuntimeError(f"日常_拜谒：拜谒后收尾未能返回 #34，当前 scene={scene_id}")
+        raise RuntimeError(f"日常_拜谒：通用 goto 返回后未能确认 #34，当前 scene={scene_id}")
 
     def _execute_daily_baiye_task(
         self,

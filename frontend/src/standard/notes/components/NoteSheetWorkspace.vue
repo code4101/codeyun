@@ -5266,8 +5266,7 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
     const hot = getHotInstance()
     if (hot) {
       hot.updateSettings(getCurrentSheetHotRenderSettings())
-      hot.render()
-      trace?.mark('render')
+      trace?.mark('update-settings')
       void updateSheetViewportHeight('renderEnhancement')
     }
     if (isCurrent && !isCurrent()) {

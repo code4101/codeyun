@@ -227,6 +227,7 @@ const FACET_OPTION_DISPLAY_LIMIT = 100
 const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const MAIL_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const MAIL_MIN_PAGE_SIZE = Math.min(...MAIL_PAGE_SIZE_OPTIONS)
 const DEFAULT_MAIL_PAGE_SIZE = 20
 const MAIL_REWARD_SLOT_WIDTH = 44
 const DEFAULT_PLAYER_PROFILE_PAGE_SIZE = 50
@@ -1734,7 +1735,11 @@ const activityDisplayItems = computed(() => {
 
 const displayTotal = computed(() => {
   if (activeTab.value === 'storage_bag') return filteredStorageBagItems.value.length
-  if (activeTab.value === 'mail') return filteredMailRecords.value.length
+  if (activeTab.value === 'mail') {
+    const filtered = filteredMailRecords.value.length
+    const all = mailRecords.value.length
+    return filtered === all ? filtered : `${filtered}/${all}`
+  }
   if (activeTab.value === 'player_profile') return filteredPlayerProfileRows.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'document') return activityDocumentItems.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'period') return activityDisplayItems.value.length
@@ -5465,6 +5470,15 @@ const activeMailSelectedStatuses = computed(() => (
   mailSubTab.value === 'summary' ? mailSummarySelectedStatuses.value : mailRecordSelectedStatuses.value
 ))
 
+const activeMailAllStatusesSelected = computed(() => activeMailSelectedStatuses.value.length === MAIL_STATUS_OPTIONS.length)
+
+function selectAllMailStatusFilters() {
+  const target = mailSubTab.value === 'summary' ? mailSummarySelectedStatuses : mailRecordSelectedStatuses
+  target.value = MAIL_STATUS_OPTIONS.map(option => option.key)
+  resetMailFilterStatusSnapshot()
+  persistMailStatusFilterPreference(mailSubTab.value)
+}
+
 function toggleMailStatusFilter(value: MailStatusFilter) {
   const target = mailSubTab.value === 'summary' ? mailSummarySelectedStatuses : mailRecordSelectedStatuses
   const selected = new Set(target.value)
@@ -5772,6 +5786,7 @@ const filteredMailSummaryRecords = computed(() => {
 
 const sortedMailRecords = computed(() => [...filteredMailRecords.value].sort(compareMailRecords))
 const mailPageCount = computed(() => Math.max(1, Math.ceil(sortedMailRecords.value.length / Math.max(mailPageSize.value, 1))))
+const showMailPagination = computed(() => filteredMailRecords.value.length > MAIL_MIN_PAGE_SIZE)
 const mailPageStart = computed(() => (mailPage.value - 1) * mailPageSize.value)
 const visibleMailRecords = computed(() => sortedMailRecords.value.slice(mailPageStart.value, mailPageStart.value + mailPageSize.value))
 const mailStatusCounts = computed(() => {
@@ -5834,6 +5849,7 @@ const mailTitleSummaries = computed(() => {
     .sort((a, b) => b.count - a.count || mailStatusRank(b.initialStatus) - mailStatusRank(a.initialStatus) || a.title.localeCompare(b.title, 'zh-Hans-CN'))
 })
 const mailSummaryPageCount = computed(() => Math.max(1, Math.ceil(mailTitleSummaries.value.length / Math.max(mailSummaryPageSize.value, 1))))
+const showMailSummaryPagination = computed(() => mailTitleSummaries.value.length > MAIL_MIN_PAGE_SIZE)
 const mailSummaryPageStart = computed(() => (mailSummaryPage.value - 1) * mailSummaryPageSize.value)
 const visibleMailTitleSummaries = computed(() => mailTitleSummaries.value.slice(mailSummaryPageStart.value, mailSummaryPageStart.value + mailSummaryPageSize.value))
 
@@ -13085,6 +13101,15 @@ onBeforeUnmount(() => {
         <div class="storage-bag-group-row">
           <span class="facet-label">状态</span>
           <button
+            class="facet-option mail-status-filter-all"
+            :class="{ active: activeMailAllStatusesSelected }"
+            type="button"
+            @click="selectAllMailStatusFilters"
+          >
+            <span class="facet-option-label">全部</span>
+            <small>{{ mailRecords.length }}</small>
+          </button>
+          <button
             v-for="option in MAIL_STATUS_OPTIONS"
             :key="option.key"
             class="facet-option"
@@ -13217,7 +13242,7 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
         <StandardPagination
-          v-if="filteredMailRecords.length > mailPageSize"
+          v-if="showMailPagination"
           class="object-pagination mail-pagination"
           :page="mailPage"
           :page-size="mailPageSize"
@@ -13313,7 +13338,7 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
         <StandardPagination
-          v-if="mailTitleSummaries.length > mailSummaryPageSize"
+          v-if="showMailSummaryPagination"
           class="object-pagination mail-pagination"
           :page="mailSummaryPage"
           :page-size="mailSummaryPageSize"
@@ -16713,6 +16738,7 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   padding: 18px 22px;
   box-sizing: border-box;
   color: #172033;
@@ -17588,6 +17614,7 @@ onBeforeUnmount(() => {
 
 .player-profile-workspace,
 .mail-workspace {
+  flex: 0 0 auto;
   max-width: 1280px;
   display: grid;
   gap: 12px;
@@ -17752,6 +17779,11 @@ onBeforeUnmount(() => {
 .mail-status-filter-claimable {
   --mail-status-bg: #eaf2ff;
   --mail-status-color: #175cd3;
+}
+
+.mail-status-filter-all {
+  --mail-status-bg: #f2f4f7;
+  --mail-status-color: #344054;
 }
 
 .storage-bag-table-wrap {

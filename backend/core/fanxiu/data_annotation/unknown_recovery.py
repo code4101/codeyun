@@ -20,7 +20,7 @@ class UnknownShapeScore:
     score: float
     is_scene_identity: bool
     scene_identity_role: str
-    scene_identity_scope: str
+    legacy_scene_identity_scope: str
     pixel_tolerance: int | None
     image_match_role: str
     ocr_match_role: str
@@ -150,6 +150,8 @@ def _reference_frame_similarity(runner: Any, image: dict[str, Any], frame_data_u
 
 
 def _shape_identity_scope(runner: Any, shape: dict[str, Any]) -> str:
+    """保留旧 shape scope 作为迁移/诊断信息，不参与候选过滤。"""
+
     try:
         return str(runner._scene_identity_scope(shape))
     except Exception:
@@ -169,14 +171,14 @@ def _shape_score_detail(runner: Any, ctx: dict[str, Any], image: dict[str, Any],
         score=round(score, 1),
         is_scene_identity=bool(shape.get("isSceneIdentity")),
         scene_identity_role=str(shape.get("sceneIdentityRole") or ""),
-        scene_identity_scope=_shape_identity_scope(runner, shape),
+        legacy_scene_identity_scope=_shape_identity_scope(runner, shape),
         pixel_tolerance=_safe_int(shape.get("pixelTolerance")),
         image_match_role=str(shape.get("imageMatchRole") or ""),
         ocr_match_role=str(shape.get("ocrMatchRole") or ""),
     )
 
 
-def _candidate_scene_ids(runner: Any, ctx: dict[str, Any], expected_scene_ids: list[int], *, max_candidates: int) -> list[int]:
+def _candidate_scene_ids(runner: Any, ctx: dict[str, Any], expected_scene_ids: list[int]) -> list[int]:
     ids: list[int] = []
     for scene_id in expected_scene_ids:
         if scene_id not in ids:
@@ -195,7 +197,7 @@ def _candidate_scene_ids(runner: Any, ctx: dict[str, Any], expected_scene_ids: l
                 continue
             if scene_id not in ids:
                 ids.append(scene_id)
-    return ids[:max_candidates]
+    return ids
 
 
 def _exit_shapes(image: dict[str, Any]) -> list[str]:
@@ -221,30 +223,20 @@ def _build_candidates(
 ) -> list[UnknownSceneCandidate]:
     images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
     candidates: list[UnknownSceneCandidate] = []
-    for scene_id in _candidate_scene_ids(runner, ctx, expected_scene_ids, max_candidates=max_candidates):
+    for scene_id in _candidate_scene_ids(runner, ctx, expected_scene_ids):
         image = images.get(scene_id)
         if not isinstance(image, dict):
             continue
-        previous_scope = ctx.get("_scene_identity_scope_filter")
-        if scene_id in expected_scene_ids:
-            ctx["_scene_identity_scope_filter"] = "local_or_global"
+        identity_shapes = runner._scene_identity_shapes(image)
+        identity_scores = [
+            _shape_score_detail(runner, ctx, image, shape, frame_data_url)
+            for shape in identity_shapes
+        ]
         try:
-            identity_shapes = runner._scene_identity_shapes(image)
-            identity_scores = [
-                _shape_score_detail(runner, ctx, image, shape, frame_data_url)
-                for shape in identity_shapes
-            ]
-            try:
-                scene_score = _safe_float(runner._scene_score(ctx, image, frame_data_url))
-            except Exception:
-                scene_score = min((item.score for item in identity_scores), default=0.0)
-            frame_similarity = _reference_frame_similarity(runner, image, frame_data_url)
-        finally:
-            if scene_id in expected_scene_ids:
-                if previous_scope is None:
-                    ctx.pop("_scene_identity_scope_filter", None)
-                else:
-                    ctx["_scene_identity_scope_filter"] = previous_scope
+            scene_score = _safe_float(runner._scene_score(ctx, image, frame_data_url))
+        except Exception:
+            scene_score = min((item.score for item in identity_scores), default=0.0)
+        frame_similarity = _reference_frame_similarity(runner, image, frame_data_url)
         candidates.append(UnknownSceneCandidate(
             scene_id=int(scene_id),
             title=str(image.get("title") or image.get("filename") or ""),
@@ -254,10 +246,11 @@ def _build_candidates(
             exit_shapes=_exit_shapes(image),
             expected=scene_id in expected_scene_ids,
         ))
-    return sorted(
+    ranked = sorted(
         candidates,
         key=lambda item: (not item.expected, -max(item.scene_score, item.frame_similarity or 0.0), item.scene_id),
     )
+    return ranked[:max_candidates]
 
 
 def _classification_and_suggestion(
@@ -269,6 +262,12 @@ def _classification_and_suggestion(
     expected = [item for item in candidates if item.scene_id in expected_scene_ids]
     all_items = candidates
     best = max(all_items, key=lambda item: max(item.scene_score, item.frame_similarity or 0.0), default=None)
+    best_scene = max(all_items, key=lambda item: item.scene_score, default=None)
+    best_frame = max(
+        (item for item in all_items if item.frame_similarity is not None),
+        key=lambda item: item.frame_similarity or 0.0,
+        default=None,
+    )
     best_expected = max(expected, key=lambda item: item.scene_score, default=None)
     if best_expected:
         scores = [shape.score for shape in best_expected.identity_scores]
@@ -283,25 +282,30 @@ def _classification_and_suggestion(
                 "target_scene_low_confidence",
                 f"目标 #{best_expected.scene_id} 接近命中 {best_expected.scene_score:.0f}%，优先验证匹配参数而不是改业务路径。",
             )
-    if best and best.frame_similarity is not None and best.frame_similarity >= 80.0:
+    if best_scene and best_scene.scene_score >= 80.0:
         return (
             "matched_existing_frame",
-            f"当前帧与已有 #{best.scene_id}「{best.title}」全图相似 {best.frame_similarity:.0f}%，可优先复用该帧的低风险返回/关闭路径。",
+            f"当前帧更像已有 #{best_scene.scene_id}「{best_scene.title}」{best_scene.scene_score:.0f}%，可优先复用该帧的低风险返回/关闭路径。",
         )
-    if best and best.scene_score >= 80.0:
+    if best_frame and best_frame.frame_similarity is not None and best_frame.frame_similarity >= 80.0:
+        if best_frame.identity_scores and best_frame.scene_score < 50.0:
+            return (
+                "full_frame_similar_identity_mismatch",
+                f"当前帧与已有 #{best_frame.scene_id}「{best_frame.title}」全图相似 {best_frame.frame_similarity:.0f}%，但身份证据仅 {best_frame.scene_score:.0f}%；只能作为归并候选，不能直接复用该帧路径。",
+            )
         return (
             "matched_existing_frame",
-            f"当前帧更像已有 #{best.scene_id}「{best.title}」{best.scene_score:.0f}%，可优先复用该帧的低风险返回/关闭路径。",
+            f"当前帧与已有 #{best_frame.scene_id}「{best_frame.title}」全图相似 {best_frame.frame_similarity:.0f}%，可优先复用该帧的低风险返回/关闭路径。",
         )
-    if best and best.frame_similarity is not None and best.frame_similarity >= 65.0:
+    if best_frame and best_frame.frame_similarity is not None and best_frame.frame_similarity >= 65.0:
         return (
             "possible_existing_frame_variant",
-            f"当前帧与已有 #{best.scene_id}「{best.title}」全图有中等相似 {best.frame_similarity:.0f}%，建议人工判断是否为变体。",
+            f"当前帧与已有 #{best_frame.scene_id}「{best_frame.title}」全图有中等相似 {best_frame.frame_similarity:.0f}%，建议人工判断是否为变体。",
         )
-    if best and best.scene_score >= 50.0:
+    if best_scene and best_scene.scene_score >= 50.0:
         return (
             "possible_existing_frame_variant",
-            f"当前帧与已有 #{best.scene_id}「{best.title}」有中等相似 {best.scene_score:.0f}%，建议人工判断是否为变体。",
+            f"当前帧与已有 #{best_scene.scene_id}「{best_scene.title}」有中等相似 {best_scene.scene_score:.0f}%，建议人工判断是否为变体。",
         )
     if frame_stability_score is not None and frame_stability_score < 80.0:
         return (

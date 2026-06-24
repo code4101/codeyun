@@ -13,6 +13,7 @@ from pyxllib.autogui import (
     image_number,
     index_images,
     normalize_match_role,
+    normalize_scene_identity_level,
 )
 
 
@@ -79,6 +80,30 @@ def test_view_scene_identity_uses_match_role_model():
     assert [shape.title for shape in identities] == ["旧标识", "新标识"]
     assert identities[0].scene_identity_role is MatchRole.required
     assert identities[1].scene_identity_role is MatchRole.decisive
+
+
+def test_view_scene_identity_level_keeps_legacy_scope_compatible():
+    local_image = {
+        "type": "image",
+        "filename": "0266.png",
+        "shapes": [{"id": "local", "title": "拜谒", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
+    }
+    global_image = {
+        "type": "image",
+        "filename": "0034.png",
+        "shapes": [{"id": "global", "title": "世界", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
+    }
+    explicit_image = {
+        "type": "image",
+        "filename": "0001.png",
+        "sceneIdentityLevel": 0,
+        "shapes": [{"id": "legacy", "title": "旧", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
+    }
+
+    assert normalize_scene_identity_level("global") == 2
+    assert View(local_image).scene_identity_level == 1
+    assert View(global_image).scene_identity_level == 2
+    assert View(explicit_image).scene_identity_level == 0
 
 
 def test_view_close_keeps_action_on_runtime_side():

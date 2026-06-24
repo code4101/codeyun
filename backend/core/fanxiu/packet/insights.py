@@ -164,9 +164,26 @@ def _packet_evidence(entry: dict[str, Any]) -> dict[str, Any]:
         "packet_id": entry.get("id") or "",
         "protocol": entry.get("name") or "",
         "decoded_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "record_id": entry.get("record_id") or "",
         "pcap_name": entry.get("pcap_name") or "",
     }
+
+
+def _capture_time_from_pcap_name(name: str) -> str:
+    match = re.search(r"(20\d{6})_(\d{6})", str(name or ""))
+    if not match:
+        return ""
+    date_text, time_text = match.groups()
+    return (
+        f"{date_text[:4]}-{date_text[4:6]}-{date_text[6:8]} "
+        f"{time_text[:2]}:{time_text[2:4]}:{time_text[4:6]}"
+    )
+
+
+def _decoded_source_captured_at(source: dict[str, Any], data: dict[str, Any] | None = None) -> str:
+    pcap_name = str(source.get("pcap_name") or (data or {}).get("pcap_name") or Path(str((data or {}).get("pcap") or "")).name)
+    return _capture_time_from_pcap_name(pcap_name) or str(source.get("created_at") or "").strip()
 
 
 def _load_item_index(export_root: str | Path | None = None) -> dict[str, Any]:
@@ -540,7 +557,7 @@ def _normalize_role(role: dict[str, Any], entry: dict[str, Any]) -> dict[str, An
         "battle_score": role.get("battleScore") or role.get("fightScore"),
         "club_name": (role.get("clubOutlookVO") or {}).get("clubName") if isinstance(role.get("clubOutlookVO"), dict) else "",
         "alliance_name": (role.get("allianceOutlookVO") or {}).get("allianceName") if isinstance(role.get("allianceOutlookVO"), dict) else "",
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "evidence": _packet_evidence(entry),
     }
 
@@ -574,7 +591,7 @@ def _extract_self_rank_identity(parsed: dict[str, Any], entry: dict[str, Any]) -
         "level": self_rank.get("level"),
         "server": self_rank.get("serverId"),
         "club_name": self_rank.get("clubName") or "",
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "evidence": _packet_evidence(entry),
     }
 
@@ -589,7 +606,7 @@ def _extract_wallet(parsed: dict[str, Any], entry: dict[str, Any], item_index: d
         return None
     rows.sort(key=lambda item: (int(item.get("type") or 0), str(item.get("code") or "")))
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "resource_count": len(rows),
         "resources": rows,
         "evidence": _packet_evidence(entry),
@@ -761,7 +778,7 @@ def _extract_bag(
                 total_amount = sum(max(0, _as_int(row.get("num")) or 0) for row in compact_items)
                 analysis_source = analysis.get("path")
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         **_storage_bag_owner_fields(owner_identity),
         "stack_count": declared_stack_count or stack_count,
         "decoded_stack_count": stack_count,
@@ -796,7 +813,7 @@ def _extract_equipment(parsed: dict[str, Any], entry: dict[str, Any], item_index
     if not rows:
         return None
     rows.sort(key=lambda item: int(item.get("slot") or 0))
-    return {"captured_at": entry.get("decoded_at") or "", "count": len(rows), "items": rows, "evidence": _packet_evidence(entry)}
+    return {"captured_at": entry.get("captured_at") or entry.get("decoded_at") or "", "count": len(rows), "items": rows, "evidence": _packet_evidence(entry)}
 
 
 def _extract_blue_star_energy(parsed: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -805,7 +822,7 @@ def _extract_blue_star_energy(parsed: dict[str, Any], entry: dict[str, Any]) -> 
     return {
         "energy": parsed.get("energy"),
         "last_recover_time": parsed.get("lastRecoverTime"),
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "evidence": _packet_evidence(entry),
     }
 
@@ -819,7 +836,7 @@ def _extract_medicine(parsed: dict[str, Any], entry: dict[str, Any]) -> dict[str
         return None
     rows.sort(key=lambda item: int(item.get("num") or 0), reverse=True)
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "count": len(rows),
         "top_items": rows[:60],
         "evidence": _packet_evidence(entry),
@@ -843,7 +860,7 @@ def _extract_attr_changes(parsed: dict[str, Any], entry: dict[str, Any]) -> dict
     if not final_rows and not add_rows:
         return None
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "protocol": parsed.get("_class") or entry.get("name") or "",
         "final_attrs": final_rows[:80],
         "add_attrs": add_rows[:80],
@@ -1020,7 +1037,7 @@ def _extract_show_other_profile(
     server_fields = _profile_server_fields(role_vo.get("server"))
     cultivation_level = role_vo.get("level")
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "role_id": role_vo.get("roleId"),
         "role_id_text": str(role_vo.get("roleId") or ""),
         "name": role_vo.get("name") or "",
@@ -1087,7 +1104,7 @@ def _extract_sync_player_profile(
     server_fields = _profile_server_fields(server)
     cultivation_level = player_vo.get("level") or player_vo.get("roleLevel") or visible_vo.get("level")
     return {
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "source_kind": "sync_player",
         "source_label": "玩家同步",
         "role_id": role_id,
@@ -1373,7 +1390,7 @@ def _extract_worship_got_record(raw: dict[str, Any], entry: dict[str, Any], path
         "faze_id": faze_id,
         "activity_id": raw.get("activityId"),
         "got_time": raw.get("gotTime"),
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "protocol": entry.get("name") or "",
         "source_path": path,
         "evidence": _packet_evidence(entry),
@@ -1411,7 +1428,7 @@ def _extract_worship_rank_record(raw: dict[str, Any], entry: dict[str, Any], pat
         "target_label": _worship_target_label(activity_cfg=activity_cfg),
         "friendship": score,
         "rank": _as_int(raw.get("rank")),
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "protocol": entry.get("name") or "",
         "source_path": path,
         "evidence": _packet_evidence(entry),
@@ -1508,7 +1525,7 @@ def _normalize_worship_record(raw: dict[str, Any], entry: dict[str, Any], path: 
         "friendship": score,
         "rank": _as_int(_first_present(merged, ("rank", "index", "order"))),
         "faze_id": _first_present(merged, ("fazeId", "lawId", "ruleId")),
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "protocol": entry.get("name") or "",
         "source_path": path,
         "evidence": _packet_evidence(entry),
@@ -1567,7 +1584,7 @@ def _worship_packet_observation(parsed: dict[str, Any], entry: dict[str, Any], r
     return {
         "protocol": entry.get("name") or parsed.get("_class") or "",
         "direction": entry.get("direction") or "",
-        "captured_at": entry.get("decoded_at") or "",
+        "captured_at": entry.get("captured_at") or entry.get("decoded_at") or "",
         "record_count": len(records),
         "evidence": _packet_evidence(entry),
     }
@@ -1858,6 +1875,7 @@ def _player_profile_rows_from_decoded_source(
         decoded_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(decoded_path.stat().st_mtime))
     record_id = str(source.get("record_id") or data.get("record_id") or "") if isinstance(data, dict) else str(source.get("record_id") or "")
     pcap_name = str(source.get("pcap_name") or Path(str(data.get("pcap") or decoded_path.name)).name) if isinstance(data, dict) else str(source.get("pcap_name") or decoded_path.name)
+    captured_at = _decoded_source_captured_at({**source, "pcap_name": pcap_name}, data if isinstance(data, dict) else None) or decoded_at
     rows: list[dict[str, Any]] = []
     login_rows: list[dict[str, Any]] = []
     self_identity_rows: list[dict[str, Any]] = []
@@ -1882,6 +1900,7 @@ def _player_profile_rows_from_decoded_source(
                 ]
             ),
             "decoded_at": decoded_at,
+            "captured_at": captured_at,
             "record_id": record_id,
             "pcap_name": pcap_name,
             "source_path": str(decoded_path),

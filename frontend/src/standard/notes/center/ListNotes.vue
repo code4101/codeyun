@@ -164,6 +164,7 @@
     </NoteSplitView>
 
     <BatchNoteEditDialog
+      v-if="batchEditVisible"
       v-model="batchEditVisible"
       :note-ids="selectedNoteIds"
       @saved="handleBatchEditSaved"
@@ -172,7 +173,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { defineAsyncComponent, ref, computed, onMounted, watch, nextTick } from 'vue';
 import {
   useNoteStore,
   type NoteNode,
@@ -186,11 +187,9 @@ import {
 } from '@/api/notes';
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
-import BatchNoteEditDialog from '@/components/BatchNoteEditDialog.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
@@ -199,6 +198,8 @@ import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 import { getStableBadgeStyle } from '@/utils/stableVisualColor';
 
 const noteStore = useNoteStore();
+const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
+const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/BatchNoteEditDialog.vue'));
 const props = defineProps<{
   tabId: string;
   active?: boolean;

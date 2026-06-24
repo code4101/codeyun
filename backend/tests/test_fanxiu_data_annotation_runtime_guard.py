@@ -8067,14 +8067,12 @@ def test_baiye_completed_text_wins_over_lord_map_text():
 class _BaiyeReturnRuntimeMixin:
     def current_scene(self, *_args, **_kwargs):
         self._actions.append(("current_scene", _args, _kwargs))
-        if getattr(self, "_returned_from_264", False):
-            return 69, 100.0, "frame"
+        if getattr(self, "_goto_world", False):
+            return 34, 100.0, "frame"
         return 266, 100.0, "frame"
 
     def click_shape_center(self, *_args):
         self._actions.append(("click_shape_center", _args))
-        if _args == (264, "返回"):
-            self._returned_from_264 = True
 
     def wait_any(self, *_args, **_kwargs):
         self._actions.append(("wait_any", _kwargs.get("label")))
@@ -8093,6 +8091,13 @@ class _BaiyeReturnRuntimeMixin:
         if False:
             yield None
         return "settled"
+
+    def goto_view(self, scene_id: int):
+        self._actions.append(("goto_view", scene_id))
+        self._goto_world = scene_id == 34
+        if False:
+            yield None
+        return "success"
 
 
 def test_baiye_lord_selection_short_circuits_when_already_completed(monkeypatch):
@@ -8132,10 +8137,11 @@ def test_baiye_lord_selection_short_circuits_when_already_completed(monkeypatch)
     assert ("cur_frame", True) in actions
     assert not any(action[0] == "ocr_words_in_shapes" for action in actions)
     assert not any(action[0] == "click_frame_point" for action in actions)
-    assert ("click_shape_center", (266, "返回")) in actions
-    assert ("click_shape_center", (265, "返回")) in actions
-    assert ("click_shape_center", (264, "返回")) in actions
-    assert ("click_shape_center", (69, "退出")) in actions
+    assert ("goto_view", 34) in actions
+    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
 
 
 def test_baiye_lord_selection_clicks_worship_button_after_target_selected(monkeypatch):
@@ -8178,10 +8184,11 @@ def test_baiye_lord_selection_clicks_worship_button_after_target_selected(monkey
     assert result == "success"
     assert any(action[0] == "click_frame_point" for action in actions)
     assert ("click_shape_center", (266, "拜谒")) in actions
-    assert ("click_shape_center", (266, "返回")) in actions
-    assert ("click_shape_center", (265, "返回")) in actions
-    assert ("click_shape_center", (264, "返回")) in actions
-    assert ("click_shape_center", (69, "退出")) in actions
+    assert ("goto_view", 34) in actions
+    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
 
 
 def test_baiye_lord_selection_clicks_worship_when_already_on_target_page(monkeypatch):
@@ -8220,10 +8227,11 @@ def test_baiye_lord_selection_clicks_worship_when_already_on_target_page(monkeyp
 
     assert result == "success"
     assert ("click_shape_center", (266, "拜谒")) in actions
-    assert ("click_shape_center", (266, "返回")) in actions
-    assert ("click_shape_center", (265, "返回")) in actions
-    assert ("click_shape_center", (264, "返回")) in actions
-    assert ("click_shape_center", (69, "退出")) in actions
+    assert ("goto_view", 34) in actions
+    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
     assert not any(action[0] == "ocr_words_in_shapes" for action in actions)
 
 

@@ -257,6 +257,30 @@ def test_self_attribute_change_uses_fallback_identity_for_player_profile(tmp_pat
     assert any(attr["key"] == 2001 and attr["value"] == 123456 for attr in row["combat_attributes"])
 
 
+def test_player_profile_rows_use_pcap_capture_time_before_decode_time(tmp_path) -> None:
+    decoded_path = tmp_path / "decoded.json"
+    _write_self_attr_decoded(decoded_path, pcap_name="fanxiu_runtime_20260621_194741.pcap")
+
+    rows = insights._player_profile_rows_from_decoded_source(
+        {
+            "decoded_path": decoded_path,
+            "record_id": "self-attrs-record",
+            "pcap_name": "fanxiu_runtime_20260621_194741.pcap",
+            "created_at": "2026-06-24 01:30:00",
+            "stream": 0,
+        },
+        fallback_self_identity={
+            "role_id": "24082878061086206",
+            "name": "止清ღ羊驼",
+            "level": 201,
+            "server": 22077,
+        },
+    )
+
+    assert rows[0]["captured_at"] == "2026-06-21 19:47:41"
+    assert rows[0]["evidence"]["captured_at"] == "2026-06-21 19:47:41"
+
+
 def test_self_attribute_change_rejects_unconfirmed_fallback_identity(tmp_path) -> None:
     decoded_path = tmp_path / "decoded.json"
     _write_self_attr_decoded(decoded_path)
