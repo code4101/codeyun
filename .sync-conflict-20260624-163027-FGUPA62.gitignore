@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# PyCharm / VS Code
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Project Specific
+backend/data/
+*.log
+.DS_Store
+/.trae
+/tools/
+
+
+# Environment Variables
+.env
+# .env.example - should be committed
+.env.local
+.env.*.local
+/backend/static
+/frontend/.codeyun-state/
+/backend/private_modules/*
+!/backend/private_modules/__init__.py
+/backend/private_modules/*/tests/
+/backend/private_modules/*/tests/**
+/frontend/src/private/modules/
+/tests/private/
+/.tmp-dev-observe

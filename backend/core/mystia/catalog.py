@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
-CATALOG_VERSION = 2
+CATALOG_VERSION = 9
 DEFAULT_ANALYSIS_ROOT = Path(r"D:\home\chenkunze\data\m2606东方夜雀食堂逆向\mystia_analysis_exports")
 CATALOG_PATH = DEFAULT_ANALYSIS_ROOT / "mystia_catalog.json"
 
@@ -14,9 +14,10 @@ MystiaKind = Literal[
     "foods",
     "ingredients",
     "beverages",
-    "recipes",
     "guests",
     "special_guests",
+    "special_guest_records",
+    "locations",
     "images",
     "audio",
 ]
@@ -55,7 +56,14 @@ def load_mystia_catalog() -> dict[str, Any]:
     return data
 
 
-def list_mystia_catalog_entries(kind: MystiaKind, query: str = "") -> dict[str, Any]:
+def list_mystia_catalog_entries(
+    kind: MystiaKind,
+    query: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "",
+    sort_order: str = "",
+) -> dict[str, Any]:
     catalog = load_mystia_catalog()
     rows = list(catalog.get(kind) or [])
     normalized_query = query.strip().lower()
@@ -64,11 +72,38 @@ def list_mystia_catalog_entries(kind: MystiaKind, query: str = "") -> dict[str, 
             row for row in rows
             if normalized_query in json.dumps(row, ensure_ascii=False).lower()
         ]
+    normalized_sort_by = sort_by.strip()
+    normalized_sort_order = sort_order.strip().lower()
+    if normalized_sort_by and normalized_sort_order in {"asc", "desc"}:
+        rows.sort(
+            key=lambda row: _sort_value(row, normalized_sort_by),
+            reverse=normalized_sort_order == "desc",
+        )
+    normalized_page_size = min(200, max(1, int(page_size or 50)))
+    total = len(rows)
+    total_pages = max(1, (total + normalized_page_size - 1) // normalized_page_size)
+    normalized_page = min(total_pages, max(1, int(page or 1)))
+    start = (normalized_page - 1) * normalized_page_size
+    items = rows[start:start + normalized_page_size]
     return {
         "kind": kind,
         "query": query,
-        "total": len(rows),
-        "items": rows,
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "sort_by": normalized_sort_by,
+        "sort_order": normalized_sort_order if normalized_sort_by else "",
+        "total": total,
+        "total_pages": total_pages,
+        "items": items,
         "stats": catalog.get("stats", {}),
         "source": catalog.get("source", {}),
     }
+
+
+def _sort_value(row: dict[str, Any], key: str) -> tuple[int, Any]:
+    value = row.get(key)
+    if value is None or value == "":
+        return (1, "")
+    if isinstance(value, (int, float)):
+        return (0, value)
+    return (0, str(value).lower())

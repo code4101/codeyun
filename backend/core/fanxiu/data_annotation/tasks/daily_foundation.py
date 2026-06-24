@@ -362,6 +362,9 @@ class DailyFoundationTaskMixin:
             self._set_status_locked("running", "日常_首领：点击前往挑战", phase="daily_boss_challenge", current_scene=179)
             self._log_locked("action", "日常_首领：点击 #179「前往挑战」")
         challenge_shape.click(runtime)
+        if remaining is not None:
+            payload = dict(payload)
+            payload["_daily_boss_challenge_remaining"] = remaining
         post_result = yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload)
         return post_result
 
@@ -623,8 +626,24 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._log_locked("warning", "日常_首领：缺少 #181「离开」标注，无法回列表读取 #182 刷新时间")
 
+        challenge_remaining = payload.get("_daily_boss_challenge_remaining")
+        try:
+            challenge_remaining_int = int(challenge_remaining) if challenge_remaining is not None else None
+        except (TypeError, ValueError):
+            challenge_remaining_int = None
+        if challenge_remaining_int is not None and challenge_remaining_int <= 1:
+            next_time = self._next_daily_boss_reset_time_text()
+            self._record_scheduler_task_discovered_next_time(
+                str(payload.get("__scheduler_task_id") or "daily-boss"),
+                next_time,
+                task_type="daily_boss",
+                label="日常_首领",
+                last_result="success",
+            )
+            return next_time, "挑战前剩余奖励次数为 1，已识别 #181 封印完成，奖励次数已用尽"
+
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-        return next_time, "已识别 #181 封印完成；挑战后不直接判定当天完成，半小时后复查剩余奖励次数"
+        return next_time, "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查剩余奖励次数"
 
     def _record_daily_boss_next_time_from_current_list(self, ctx: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
         remaining = self._daily_boss_reward_remaining_from_scene(ctx, ctx.get("images", {}).get(178) or {})
@@ -1556,7 +1575,7 @@ class DailyFoundationTaskMixin:
                 world_like = scene_id == 34 or self._daily_assistant_text_is_world_like(text)
             except Exception as exc:
                 self._log("warning", f"{label}：修仙传游历页返回世界失败，继续尝试场景图恢复：{exc}")
-        hidden_world_popup_like = scene_id == 59 or "封魔杀" in _sanitize_ocr_text(text)
+        hidden_world_popup_like = scene_id == 59
         if scene_id is None and not world_like and not hidden_world_popup_like:
             try:
                 with self._lock:

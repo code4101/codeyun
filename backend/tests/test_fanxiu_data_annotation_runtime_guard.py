@@ -1559,6 +1559,41 @@ def test_daily_shuangxiu_can_resume_from_detail_scene(monkeypatch):
     ]
 
 
+def test_daily_shuangxiu_remaining_zero_goes_to_finish(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": Path("asset-tree.json"), "images": {}}
+    stop_event = threading.Event()
+    actions: list[tuple] = []
+
+    class FakeRuntime:
+        def current_scene(self, candidates, *, update: bool = False):
+            actions.append(("current_scene", candidates, update))
+            return None, 0.0, "frame"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            return "双人修炼 今日剩余修炼次数：0+ 前往修炼"
+
+    def fake_finish(*_args, **_kwargs):
+        actions.append(("finish",))
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", fake_finish)
+    monkeypatch.setattr(runner, "_click_daily_shuangxiu_start_training", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
+
+    result = _drain_generator(runner._execute_daily_shuangxiu_task(ctx, stop_event, {}))
+
+    assert result == "success"
+    assert actions == [
+        ("current_scene", [216, 215, 69, 34], True),
+        ("ocr_text", "frame"),
+        ("finish",),
+    ]
+
+
 def test_click_shape_respecting_conditions_raw_clicks_without_condition(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image = _image("双修秘术", "0215.png")
@@ -4406,6 +4441,74 @@ def test_daily_boss_entry_match_does_not_click_boss_marquee():
     matches = runner._daily_entry_matches(lines, image69, title_pattern=r"击\s*败\s*首\s*领")
 
     assert matches == []
+
+
+def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "daily", "kind": "rect", "title": "日常", "x": 0.04, "y": 0.20, "w": 0.08, "h": 0.07},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": Path("asset-tree.json"),
+        "images": {34: image34},
+    }
+    wait_clicks: list[tuple[int, str]] = []
+    goto_targets: list[int] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.after_goto = False
+
+        def current_scene(self, *_args, **_kwargs):
+            if self.after_goto:
+                return 69, 100.0, "daily-frame"
+            return 34, 100.0, "world-frame"
+
+        def ocr_text(self, frame=None, *_args, **_kwargs):
+            if frame == "daily-frame":
+                return "日常 击败首领 0/3"
+            return "世界 储物袋 角色 装备 功法书 封魔杀"
+
+        def wait_click(self, scene_id, shape_title, **_kwargs):
+            wait_clicks.append((scene_id, shape_title))
+            if False:
+                yield None
+            return "clicked"
+
+        def goto_view(self, target_scene_id):
+            goto_targets.append(target_scene_id)
+            self.after_goto = True
+            if False:
+                yield None
+            return target_scene_id
+
+    fake_runtime = FakeRuntime()
+
+    def false_generator():
+        if False:
+            yield None
+        return False
+
+    monkeypatch.setattr(runner, "_leave_world_side_scene_if_present", lambda *_args, **_kwargs: false_generator())
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._enter_daily_from_world_like(
+            ctx,
+            fake_runtime,
+            threading.Event(),
+            "world-frame",
+            34,
+            "世界 储物袋 角色 装备 功法书 封魔杀",
+            label="日常_首领",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == 69
+    assert wait_clicks == []
+    assert goto_targets == [69]
 
 
 def test_daily_task_row_progress_repairs_ocr_prefix_glued_to_fraction():
@@ -10115,6 +10218,55 @@ def test_daily_boss_done_falls_back_to_half_hour_when_list_cd_unread(tmp_path, m
     assert fact["last_result"] == "skipped"
 
 
+def test_daily_boss_done_marks_success_when_last_reward_was_challenged(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+    ])
+    ctx = {
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {178: image178},
+    }
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (178, 100.0, "list-frame"))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+
+    def fake_ocr_lines_in_shapes(_frame, _image, _names, **_kwargs):
+        return [{"text": ""}]
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", fake_ocr_lines_in_shapes)
+
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._complete_daily_boss_from_done_frame(
+            ctx,
+            FakeStopEvent(),
+            {"_daily_boss_challenge_remaining": 1},
+        ),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-12 05:00:00"
+    assert fact.get("discovered_retry_after") is None
+    assert fact["last_result"] == "success"
+
+
 def test_manual_daily_boss_success_does_not_mark_scheduler_success(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -11202,7 +11354,7 @@ def test_runtime_engine_tick_respects_group_flags(monkeypatch):
     }
 
 
-def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup(monkeypatch):
+def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup_without_pending_manual_job(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -11219,6 +11371,7 @@ def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup(monkey
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
     monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
     monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard") or True)
+    monkeypatch.setattr(runner, "_pending_manual_job_count", lambda: 0)
     monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or None)
     monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
     monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
@@ -11229,6 +11382,40 @@ def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup(monkey
     assert status["engine_tick"] == {
         "ran": True,
         "action": "guard_checked",
+        "guard": True,
+        "manual_job": True,
+        "scheduled_job": True,
+    }
+
+
+def test_runtime_engine_tick_starts_pending_manual_job_after_guard_handles_popup(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[str] = []
+
+    with runner._lock:
+        runner._service_entry = object()
+        runner._service_entry_id = "mf-entry"
+        runner._service_asset_tree_path = Path("asset-tree.json")
+        runner._guard_group_enabled = True
+        runner._guard_enabled = True
+        runner._status["running"] = False
+
+    monkeypatch.setattr(runner, "_service_context", lambda: (object(), "mf-entry", Path("asset-tree.json")))
+    monkeypatch.setattr(runner, "_service_paths_still_current", lambda: True)
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+    monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
+    monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard") or True)
+    monkeypatch.setattr(runner, "_pending_manual_job_count", lambda: 1)
+    monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or {"id": "manual-1"})
+    monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
+    monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
+
+    status = runner.run_service_tick_once(guard=True, manual_job=True, scheduled_job=True)
+
+    assert events == ["device_health", "idle_guard", "manual_job"]
+    assert status["engine_tick"] == {
+        "ran": True,
+        "action": "manual_job_started",
         "guard": True,
         "manual_job": True,
         "scheduled_job": True,
