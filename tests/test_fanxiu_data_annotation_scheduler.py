@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -3264,10 +3265,53 @@ def test_unknown_evidence_matches_existing_reference_frame(monkeypatch, tmp_path
         last_score=0.0,
     )
 
-    assert evidence.classification == "matched_existing_frame"
+    assert evidence.classification == "full_frame_similar_identity_mismatch"
+    assert "身份证据仅 0%" in evidence.suggestion
     assert evidence.candidates[0].scene_id == 261
     assert evidence.candidates[0].frame_similarity == 100.0
     assert evidence.candidates[0].exit_shapes == ["返回"]
+
+
+def test_unknown_evidence_scores_all_candidates_before_limiting(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    frame_data_url = _solid_png_data_url((11, 22, 33))
+    images = {
+        scene_id: {
+            "id": scene_id,
+            "title": f"scene-{scene_id}",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {
+                    "title": f"identity-{scene_id}",
+                    "isSceneIdentity": True,
+                    "sceneIdentityRole": "required",
+                    "imageMatchRole": "required",
+                }
+            ],
+        }
+        for scene_id in range(1, 31)
+    }
+    ctx = {"images": images}
+    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda ctx: list(range(1, 31)))
+    monkeypatch.setattr(runner, "_shape_score", lambda ctx, image, shape, frame, **kwargs: 96.0 if image["id"] == 30 else 0.0)
+    monkeypatch.setattr(runner, "_scene_score", lambda ctx, image, frame: 96.0 if image["id"] == 30 else 0.0)
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda ctx, frame: [])
+
+    evidence = runtime_runner_core.build_unknown_evidence(
+        runner,
+        ctx,
+        frame_data_url,
+        label="wait_click",
+        expected_scene_ids=[],
+        last_scene_id=None,
+        last_score=0.0,
+        max_candidates=3,
+    )
+
+    assert evidence.classification == "matched_existing_frame"
+    assert evidence.candidates[0].scene_id == 30
+    assert len(evidence.candidates) == 3
 
 
 def test_wait_view_timeout_reports_unknown_evidence(monkeypatch):
@@ -10053,15 +10097,15 @@ def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(mon
     calls = []
 
     class FakeSceneRecognizer:
-        def identify_scene_number(self, recog_ctx, frame_data_url, preferred_scene_ids=None):
-            calls.append((recog_ctx.get("_scene_identity_scope_filter"), frame_data_url, tuple(preferred_scene_ids or ())))
+        def identify_scene_tree_number(self, recog_ctx, frame_data_url, preferred_scene_ids=None):
+            calls.append((frame_data_url, tuple(preferred_scene_ids or ()), "_scene_identity_scope_filter" in recog_ctx))
             return 34, 90.0
 
     monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeSceneRecognizer())
     monkeypatch.setattr(runner, "_scene_number_ocr_confirmed", lambda *_args, **_kwargs: True)
 
     assert runner._identify_scene_number(ctx, "frame", [66, 34]) == (34, 90.0)
-    assert calls == [("local_or_global", "frame", (66, 34))]
+    assert calls == [("frame", (66, 34), False)]
 
 
 def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatch):
@@ -10236,6 +10280,59 @@ def test_data_annotation_mark_scheduler_task_skipped_retries_without_advancing_d
     assert task["last_run_at"] == "2026-06-02 06:00:00"
     assert task["next_time"] is None
     assert task["retry_after"] == "2026-06-02 06:10:00"
+
+
+def test_generic_runtime_task_with_scheduler_id_marks_skipped_retry(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    fixed_now = datetime(2026, 6, 2, 6, 0, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    monkeypatch.setattr(runtime_runner_core, "datetime", FixedDatetime)
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "legacy-daily-youli",
+        "task_type": "daily_youli",
+        "label": "日常_游历",
+        "schedule_kind": "daily",
+        "schedule_times": ["00:00", "05:00"],
+        "next_time": "2026-06-02 05:00:00",
+        "last_result": "queued",
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "enabled": True,
+    }
+    fanxiu._write_data_annotation_scheduler_tasks([task])
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(
+        runner,
+        "_run_runtime_behavior_tree",
+        lambda **_kwargs: {"result": "skipped", "message": "日常_游历：稍后重试"},
+    )
+
+    runner._run_generic_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task_type="daily_youli",
+        payload={"__scheduler_task_id": "legacy-daily-youli"},
+        asset_tree_path=tmp_path / "entry.json",
+        stop_event=threading.Event(),
+    )
+
+    updated = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-youli")
+    assert updated["last_result"] == "skipped"
+    assert updated["last_run_at"] == "2026-06-02 06:00:00"
+    assert updated["next_time"] is None
+    assert updated["retry_after"] == "2026-06-02 06:10:00"
 
 
 def test_data_annotation_mark_scheduler_task_skipped_uses_discovered_recheck_time(tmp_path, monkeypatch):

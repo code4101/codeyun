@@ -25,10 +25,6 @@ def _profile_attack_attr(row: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _has_battle_score(row: dict[str, Any]) -> bool:
-    return row.get("battle_score") not in (None, "") or bool(str(row.get("battle_score_text") or "").strip())
-
-
 def _packet_id(row: dict[str, Any]) -> str:
     evidence = row.get("evidence")
     if isinstance(evidence, dict):
@@ -85,6 +81,7 @@ def serialize_fanxiu_player_profile_record(record: FanxiuPlayerProfileRecord) ->
 
 def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any]]) -> dict[str, Any]:
     created = 0
+    updated_existing = 0
     skipped_invalid = 0
     skipped_duplicate = 0
     for row in rows:
@@ -92,7 +89,7 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
             skipped_invalid += 1
             continue
         attack = _profile_attack_attr(row)
-        if not attack and not _has_battle_score(row):
+        if not attack:
             skipped_invalid += 1
             continue
         packet_id = _packet_id(row)
@@ -106,6 +103,23 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
             select(FanxiuPlayerProfileRecord).where(FanxiuPlayerProfileRecord.packet_id == packet_id)
         ).first()
         if existing:
+            captured_at = str(row.get("captured_at") or "")
+            if captured_at and captured_at != existing.captured_at:
+                existing.captured_at = captured_at
+                existing.captured_date = captured_at[:10]
+                evidence = dict(existing.evidence or {})
+                row_evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+                if row_evidence:
+                    evidence.update(row_evidence)
+                evidence["captured_at"] = captured_at
+                existing.evidence = evidence
+                payload = dict(existing.payload or {})
+                payload["captured_at"] = captured_at
+                if row_evidence:
+                    payload["evidence"] = evidence
+                existing.payload = payload
+                existing.updated_at = time.time()
+                updated_existing += 1
             skipped_duplicate += 1
             continue
         now = time.time()
@@ -140,7 +154,7 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
         )
         session.add(record)
         created += 1
-    if created:
+    if created or updated_existing:
         session.commit()
     return {"created": created, "skipped_invalid": skipped_invalid, "skipped_duplicate": skipped_duplicate}
 
@@ -169,6 +183,7 @@ def list_latest_fanxiu_player_profile_records(session: Session, *, limit: int = 
                         ORDER BY captured_at DESC, created_at DESC
                     ) AS rn
                 FROM fanxiuplayerprofilerecord
+                WHERE attack_value IS NOT NULL OR attack_text != ''
             )
             SELECT id
             FROM ranked

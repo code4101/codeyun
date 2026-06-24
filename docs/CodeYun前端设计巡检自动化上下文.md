@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4"
-last_audited_at: "2026-06-23T16:15:00+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-266187a4/report.md"
-last_frontend_commit_summary: "完整关闭 c1a7cc90..266187a4：权限上下文缓存、星图笔记 tab 路由同步、运行管理设备选择启动时序和 task-system 健康条均完成三视口实图巡检，无需自动修复。"
-audited_commit_count: 35
+last_audited_commit: "e18149f483ba7f1f859a772d7fe3b12ceec2f45d"
+last_audited_at: "2026-06-24T02:10:17.7721884+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-e18149f4/report.md"
+last_frontend_commit_summary: "完整关闭 266187a4..e18149f4：凡修图鉴邮件/玩家面板与星云表格工作区完成三视口实图巡检；本轮提交本身降低状态投影复杂度，无需自动修复。"
+audited_commit_count: 36
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-24
+
+- 完整范围：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4..e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
+- 覆盖提交：`e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
+- 前端入口提交：`e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
+- 入口如何牵引到旧问题：本次提交主题是凡修数据标注邮件与洞察链路补强，同时触及 `fanxiu/wiki` 的邮件、玩家面板投影，以及 `NoteSheetWorkspace` 初始动作状态刷新。巡检边界因此收敛在“采集/运行结果如何稳定进入首屏状态表”这条链路：邮件状态应作为筛选事实而不是多层解释，玩家攻击单位应作为分布事实而不是伪命令，sheet 动作状态刷新不应打断表格首屏。
+- 本轮减法：提交本身删除玩家面板攻击单位筛选偏好和切换命令，把攻击单位退回只读分布标签；邮件页大小回到默认状态，不再持久化额外分页偏好；`NoteSheetWorkspace` 将初始动作状态刷新延后，避免表格内容恢复阶段同步触发多个状态查询。未新增页面、菜单、权限入口或常驻解释区。
+- 信息量保持：凡修邮件状态分布、邮件清单、附件、玩家面板排序、攻击单位分布、星云表格内容和 sheet 动作状态刷新能力都保留；减少的是分布事实被当作筛选命令、页大小长期偏好和首屏同步刷新造成的额外状态概念。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-e18149f4/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，用 admin JWT 打开 `fanxiu/wiki?tab=mail`、`fanxiu/wiki?tab=player_profile`、`notes/sheets`、`notes/sheets/8`，补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 12 张真实截图；页面无控制台错误、无相关 API 错误，非表格主体无不可接受溢出；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：本轮前端变化属于前端状态投影收敛；未发现新的表现层问题、后端数据投影问题或业务建模债务，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：`NoteSheetWorkspace` 只在普通 sheet `#8 操作明细` 上完成截图；未构造考勤脚本、用户匹配、打卡链接检测三个动作状态同时存在的 sheet。当前工作区已有未提交前端改动，截图反映当前页面状态而非纯 `HEAD`。
+- 处理结果：本轮完整处理 `266187a4..e18149f4`，有前端相关提交但无需自动修复，验证通过，因此把 `last_audited_commit` 推进到 `e18149f483ba7f1f859a772d7fe3b12ceec2f45d`。
 
 ### 2026-06-23
 

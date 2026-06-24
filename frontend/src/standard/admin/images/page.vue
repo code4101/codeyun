@@ -345,7 +345,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
@@ -573,12 +573,20 @@ const refreshData = async () => {
   }
 };
 
-const handleTabChange = (tabName: string | number) => {
+const ensureActiveTabLoaded = (tabName: string | number) => {
   const normalizedName = String(tabName);
-  if (normalizedName === 'dashboard' && !dashboardStats.value) loadDashboard();
-  if (normalizedName === 'analysis' && !analysis.value) loadAnalysis();
-  if (normalizedName === 'maintenance' && !maintenanceStatus.value) loadMaintenance();
+  if (normalizedName === 'dashboard' && !dashboardStats.value && !dashboardLoading.value) loadDashboard();
+  if (normalizedName === 'analysis' && !analysis.value && !analysisLoading.value) loadAnalysis();
+  if (normalizedName === 'maintenance' && !maintenanceStatus.value && !maintenanceLoading.value) loadMaintenance();
 };
+
+const handleTabChange = (tabName: string | number) => {
+  ensureActiveTabLoaded(tabName);
+};
+
+watch(activeTab, (tabName) => {
+  ensureActiveTabLoaded(tabName);
+});
 
 // Actions
 const saveSchedule = async () => {

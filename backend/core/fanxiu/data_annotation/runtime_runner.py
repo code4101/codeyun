@@ -121,6 +121,7 @@ from pyxllib.autogui import (
     frame_size as _runtime_frame_size,
     image_number as _runtime_image_number,
     index_images as _index_runtime_images,
+    normalize_scene_identity_level,
 )
 
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
@@ -3603,6 +3604,13 @@ class DataAnnotationRuntimeRunner(
         task_id = str(task_id or "").strip()
         return f"[{task_id}] {message}" if task_id else message
 
+    def _normalize_runtime_task_result(self, value: Any) -> tuple[str, str]:
+        if isinstance(value, dict):
+            result = str(value.get("result") or "success").strip() or "success"
+            message = str(value.get("message") or "").strip()
+            return result, message
+        return str(value or "success"), ""
+
     def _persist_status(self) -> None:
         try:
             _persist_data_annotation_runtime_status(self.status())
@@ -3886,7 +3894,7 @@ class DataAnnotationRuntimeRunner(
                 "images": self._index_images(tree),
             }
             self._require_assets(ctx)
-            task_result = self._run_runtime_behavior_tree(
+            raw_task_result = self._run_runtime_behavior_tree(
                 runtime_ctx=ctx,
                 asset_tree_path=asset_tree_path,
                 stop_event=stop_event,
@@ -3895,14 +3903,18 @@ class DataAnnotationRuntimeRunner(
                 tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
                 max_runtime_seconds=self._task_timeout_seconds(payload),
             )
-            if (task_result or "success") == "success":
+            task_result, task_message = self._normalize_runtime_task_result(raw_task_result)
+            if task_id:
+                tasks = _read_data_annotation_scheduler_tasks()
+                self._mark_scheduler_task(tasks, task_id, task_result)
+            elif task_result == "success":
                 self._mark_matching_scheduler_tasks_for_manual_success(task_type, payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
                     "status": "success" if task_result == "success" else str(task_result or "success"),
                     "phase": "done",
-                    "message": f"{self._runtime_task_label(task_type, payload)}完成" if task_result == "success" else f"{self._runtime_task_label(task_type, payload)}已跳过",
+                    "message": task_message or (f"{self._runtime_task_label(task_type, payload)}完成" if task_result == "success" else f"{self._runtime_task_label(task_type, payload)}已跳过"),
                     "finished_at": time.time(),
                     "updated_at": time.time(),
                     "current_index": 1,
@@ -3963,23 +3975,24 @@ class DataAnnotationRuntimeRunner(
                 stop_event=stop_event,
                 max_runtime_seconds=self._task_timeout_seconds(payload),
             )
+            task_result, task_message = self._normalize_runtime_task_result(result)
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
             if scheduler_task_id:
                 tasks = _read_data_annotation_scheduler_tasks()
-                self._mark_scheduler_task(tasks, scheduler_task_id, str(result or "success"))
-            elif (result or "success") == "success":
+                self._mark_scheduler_task(tasks, scheduler_task_id, task_result)
+            elif task_result == "success":
                 self._mark_matching_scheduler_tasks_for_manual_success(str(task.get("task_type") or ""), payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
-                    "status": "success" if (result or "success") == "success" else str(result or "success"),
+                    "status": "success" if task_result == "success" else task_result,
                     "phase": "done",
-                    "message": f"手动作业完成：{task.get('label') or task.get('task_type') or task_id}",
+                    "message": task_message or f"手动作业完成：{task.get('label') or task.get('task_type') or task_id}",
                     "finished_at": time.time(),
                     "updated_at": time.time(),
                     "current_index": 1,
                 })
-                self._log_locked("success", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
+                self._log_locked("success" if task_result == "success" else "skip", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
                     title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
                     source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
@@ -4070,7 +4083,7 @@ class DataAnnotationRuntimeRunner(
                         )
                         self._log_locked("action", f"开始到期任务：{label}")
                     self._mark_scheduler_task(all_tasks, task_id, "running")
-                    result = self._run_runtime_behavior_tree(
+                    raw_result = self._run_runtime_behavior_tree(
                         runtime_ctx=ctx,
                         asset_tree_path=asset_tree_path,
                         stop_event=stop_event,
@@ -4083,6 +4096,7 @@ class DataAnnotationRuntimeRunner(
                         label=label,
                         max_runtime_seconds=self._task_timeout_seconds(_data_annotation_task_payload_with_meta(task)),
                     )
+                    result, _result_message = self._normalize_runtime_task_result(raw_result)
                     self._mark_scheduler_task(all_tasks, task_id, result or "success")
                     with self._lock:
                         self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")
@@ -5727,50 +5741,32 @@ class DataAnnotationRuntimeRunner(
                 ctx,
                 frame_data_url,
                 preferred_scene_ids,
-                scene_identity_scope_filter="local_or_global",
             )
 
-        scene_id, score = self._identify_scene_number_from_candidates(
+        return self._identify_scene_number_from_candidates(
             ctx,
             frame_data_url,
             candidate_scene_ids,
-            scene_identity_scope_filter="global",
         )
-        if scene_id is not None:
-            return scene_id, score
-
-        return scene_id, score
 
     def _identify_scene_number_from_candidates(
         self,
         ctx: dict[str, Any],
         frame_data_url: str,
         candidate_scene_ids: list[int],
-        *,
-        scene_identity_scope_filter: str | None = None,
     ) -> tuple[int | None, float]:
-        previous_scope_filter = ctx.get("_scene_identity_scope_filter")
-        if scene_identity_scope_filter is not None:
-            ctx["_scene_identity_scope_filter"] = scene_identity_scope_filter
-        try:
-            if 86 in candidate_scene_ids:
-                text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
-                if self._leave_scene_confirm_text(text):
-                    return 86, 100.0
-            scene_id, score = self._scene_recognizer().identify_scene_number(
-                ctx,
-                frame_data_url,
-                preferred_scene_ids=candidate_scene_ids or None,
-            )
-            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
-                return None, score
-            return scene_id, score
-        finally:
-            if scene_identity_scope_filter is not None:
-                if previous_scope_filter is None:
-                    ctx.pop("_scene_identity_scope_filter", None)
-                else:
-                    ctx["_scene_identity_scope_filter"] = previous_scope_filter
+        if 86 in candidate_scene_ids:
+            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            if self._leave_scene_confirm_text(text):
+                return 86, 100.0
+        scene_id, score = self._scene_recognizer().identify_scene_tree_number(
+            ctx,
+            frame_data_url,
+            preferred_scene_ids=candidate_scene_ids or None,
+        )
+        if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+            return None, score
+        return scene_id, score
 
     def _scene_number_ocr_confirmed(
         self,
@@ -5850,7 +5846,7 @@ class DataAnnotationRuntimeRunner(
                         and int(image_id) in images
                         and isinstance(images.get(int(image_id)), dict)
                         and in_popup_path == include_popups
-                        and (include_popups or self._image_has_scene_identity_scope(images[int(image_id)], "global"))
+                        and (include_popups or self._image_scene_identity_level(images[int(image_id)]) >= 2)
                     ):
                         add_candidate(int(image_id))
                     child_inside_image = True
@@ -5956,22 +5952,14 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(images, dict) or not candidate_scene_ids:
             return None, 0.0
 
-        previous_scope_filter = ctx.get("_scene_identity_scope_filter")
-        ctx["_scene_identity_scope_filter"] = "local_or_global"
-        try:
-            candidates: list[tuple[int, float, int, int, int]] = []
-            for order, scene_id in enumerate(candidate_scene_ids):
-                image = images.get(int(scene_id))
-                if not isinstance(image, dict):
-                    continue
-                score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
-                明确性, 路径长度 = self._scene_route_ranking(tree, int(scene_id), int(target_scene_id))
-                candidates.append((int(scene_id), score, 明确性, 路径长度, int(order)))
-        finally:
-            if previous_scope_filter is None:
-                ctx.pop("_scene_identity_scope_filter", None)
-            else:
-                ctx["_scene_identity_scope_filter"] = previous_scope_filter
+        candidates: list[tuple[int, float, int, int, int]] = []
+        for order, scene_id in enumerate(candidate_scene_ids):
+            image = images.get(int(scene_id))
+            if not isinstance(image, dict):
+                continue
+            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+            明确性, 路径长度 = self._scene_route_ranking(tree, int(scene_id), int(target_scene_id))
+            candidates.append((int(scene_id), score, 明确性, 路径长度, int(order)))
 
         if not candidates:
             return None, 0.0
@@ -6089,24 +6077,23 @@ class DataAnnotationRuntimeRunner(
             return normalized
         return "local" if bool(shape.get("isSceneIdentity")) or str(shape.get("sceneIdentityRole") or "").strip() not in {"", "off", "无"} else "none"
 
-    def _scene_identity_scope_matches(self, shape: dict[str, Any], scope_filter: str | None) -> bool:
-        scope = self._scene_identity_scope(shape)
-        if scope == "none":
-            return False
-        if scope_filter == "global":
-            return scope == "global"
-        if scope_filter == "local_or_global":
-            return scope in {"local", "global"}
-        return scope in {"local", "global"}
+    def _image_scene_identity_level(self, image: dict[str, Any]) -> int:
+        if "sceneIdentityLevel" in image:
+            return normalize_scene_identity_level(image.get("sceneIdentityLevel"), 0)
+        level = 0
+        for shape in View(image).get_shapes(include_groups=False):
+            scope = self._scene_identity_scope(shape.raw)
+            if scope == "global":
+                level = max(level, 2)
+            elif scope == "local":
+                level = max(level, 1)
+        return level
 
-    def _image_has_scene_identity_scope(self, image: dict[str, Any], scope_filter: str) -> bool:
-        return any(self._scene_identity_scope_matches(shape.raw, scope_filter) for shape in View(image).get_shapes(include_groups=False))
-
-    def _scene_identity_shapes(self, image: dict[str, Any], scope_filter: str | None = None) -> list[dict[str, Any]]:
+    def _scene_identity_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
         return [
             shape.raw
             for shape in View(image).get_shapes(include_groups=False)
-            if shape.is_scene_identity and self._scene_identity_scope_matches(shape.raw, scope_filter)
+            if shape.is_scene_identity
         ]
 
     def _popup_match_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6630,8 +6617,7 @@ class DataAnnotationRuntimeRunner(
         ).scene_identity_shape_score(ctx, image, shape, frame_data_url)
 
     def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
-        scope_filter = str(ctx.get("_scene_identity_scope_filter") or "") or None
-        scene_identity_shapes = self._scene_identity_shapes(image, scope_filter)
+        scene_identity_shapes = self._scene_identity_shapes(image)
         scorer = SceneScorer(
             shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(

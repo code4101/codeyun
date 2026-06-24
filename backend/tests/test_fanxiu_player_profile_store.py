@@ -80,7 +80,7 @@ def test_player_profile_store_accepts_real_capture_source():
     assert rows[0].name == "止清"
 
 
-def test_player_profile_store_accepts_real_battle_score_only_source():
+def test_player_profile_store_rejects_real_battle_score_only_source():
     session = _session()
 
     result = upsert_fanxiu_player_profile_rows(
@@ -95,10 +95,8 @@ def test_player_profile_store_accepts_real_battle_score_only_source():
     )
 
     rows = session.exec(select(FanxiuPlayerProfileRecord)).all()
-    assert result == {"created": 1, "skipped_invalid": 0, "skipped_duplicate": 0}
-    assert len(rows) == 1
-    assert rows[0].battle_score_text == "3.7万京"
-    assert rows[0].attack_value is None
+    assert result == {"created": 0, "skipped_invalid": 1, "skipped_duplicate": 0}
+    assert rows == []
 
 
 def test_latest_player_profile_records_keep_older_roles_after_dense_recent_samples():

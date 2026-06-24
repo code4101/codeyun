@@ -31,7 +31,7 @@
 
 ### UI-HANDOFF-20260623-002
 
-- 状态：open
+- 状态：accepted
 - 来源自动化：CodeYun 前端设计巡检 / 凡修自动化复盘
 - 来源报告：`docs/凡修拜谒与行为树基础设施任务清单.md`
 - 触发范围：`/fanxiu/data-annotation`、`/fanxiu/data-annotation/runtime`、凡修 Runtime 业务节点
@@ -45,7 +45,7 @@
 
 ### UI-HANDOFF-20260623-001
 
-- 状态：open
+- 状态：accepted
 - 来源自动化：CodeYun 前端设计巡检
 - 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md`
 - 触发范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35` / `/fanxiu/data-annotation/runtime`
@@ -77,7 +77,8 @@
 
 ## 已接手记录
 
-暂无。
+- `UI-HANDOFF-20260623-002`：已完成 Runtime 通用动作接口残留只读审计，归因为 Runtime action model / 业务节点投影债务；当前通用 helper 已覆盖 `wait_click_then_view`、`scroll_shape_content`、`nudge_shape_content_for_box`、`ocr_words_in_shapes`、`drag_shape_to_shape`，但业务层仍有 `shape.click(runtime)` 21 处、`click_shape_center` 31 处、`scroll_shape_content` 5 处。结论是不要批量替换普通 `wait_click`，下一步只处理明确小切片，例如 `xianfu.py` 的重复直接点击导航或 `daily_foundation.py` 的滚动查找候选，并且涉及真实点击前必须另走真实 Runtime 验收。报告：`%TEMP%\codeyun\idle-maintenance\20260624-000512-runtime_action_helper_residue_audit.json`；验证：`uv run pytest backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_runtime_drag_shape_to_shape_uses_runtime_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_uses_half_page_slow_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_can_limit_signature_to_recognition_shape tests/test_fanxiu_data_annotation_scheduler.py::test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_debug_eval_context_exposes_wait_click_then_view -q --durations=10`，结果 `5 passed, 1 warning in 2.51s`。
+- `UI-HANDOFF-20260623-001`：已完成只读模型审计，归因为 API/DTO 投影债务；现有后端动态作业 `next_time` 同步链路验证通过，下一步应补一级状态表可用的稳定 `next_trigger` 投影，而不是继续让前端用空 `next_time` + `schedule_kind` 推导解释文案。报告：`%TEMP%\codeyun\idle-maintenance\20260623-234942-runtime_next_trigger_projection_audit.json`；验证：`uv run pytest tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_syncs_dynamic_next_time_from_world_facts tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_syncs_retry_after_from_world_facts tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_sync_ignores_manual_pending_fact_next_time -q --durations=10`，结果 `3 passed, 1 warning in 2.31s`。
 
 ## 维护规则
 

@@ -1064,14 +1064,14 @@ def get_storage_analysis(session: Session = Depends(get_session)):
                         ext = os.path.splitext(entry.name)[1].lower()
                         file_types[ext] = file_types.get(ext, 0) + 1
             
-            # Sort by size desc
+            file_list.sort(key=lambda x: x["size"], reverse=True)
+            top_file_rows = file_list[:50]
             device_file_ids = _attachment_device_file_ids(
                 session,
-                {str(f["filename"]) for f in file_list},
+                {str(f["filename"]) for f in top_file_rows},
                 ensure_missing=True,
             )
-            file_list.sort(key=lambda x: x["size"], reverse=True)
-            for f in file_list[:50]:
+            for f in top_file_rows:
                 top_files.append(TopFile(
                     filename=f["filename"],
                     device_file_id=device_file_ids.get(str(f["filename"])),
