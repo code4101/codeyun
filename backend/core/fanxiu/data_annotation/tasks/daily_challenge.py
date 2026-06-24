@@ -543,6 +543,9 @@ class DailyChallengeTaskMixin:
                 yield from runtime.wait_view(223, timeout=10.0, label="日常_每日副本：等待回到副本挑战 #223")
                 return 225
             text = runtime.ocr_text(_frame)
+            if self._daily_dungeon_text_is_purchase(text):
+                self._log("success", f"{label}：OCR 确认 #224 购买破界符")
+                return 224
             if self._daily_dungeon_text_is_purchase_unavailable(text):
                 self._log("success", f"{label}：OCR 确认 #225 数量不足，关闭弹窗")
                 yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
@@ -694,10 +697,12 @@ class DailyChallengeTaskMixin:
         image221 = images.get(221)
 
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([215, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([216, 215, 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if self._daily_shuangxiu_text_is_complete(text):
             return (yield from self._click_daily_shuangxiu_continue(ctx, stop_event, payload))
+        if self._daily_shuangxiu_text_remaining_zero(text):
+            return (yield from self._finish_daily_shuangxiu_after_continue(ctx, stop_event, payload))
         if self._daily_shuangxiu_text_is_training_ready(text):
             return (yield from self._click_daily_shuangxiu_start_training(ctx, stop_event, payload))
         if self._daily_shuangxiu_text_is_xianyuan_invite_list(text):
@@ -705,6 +710,8 @@ class DailyChallengeTaskMixin:
         if self._daily_shuangxiu_text_is_invite(text):
             return (yield from self._click_daily_shuangxiu_xianyuan_tab(ctx, stop_event, payload))
         if self._daily_shuangxiu_text_is_detail(text):
+            return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
+        if scene_id == 216:
             return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
         if self._daily_shuangxiu_text_is_book_list(text):
             return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
@@ -806,7 +813,11 @@ class DailyChallengeTaskMixin:
     def _daily_shuangxiu_text_is_detail(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         compact = re.sub(r"\s+", "", normalized)
-        return "痴情咒" in compact and "邀请道友" in compact and ("双人神通" in compact or "双人互动" in compact)
+        return "痴情咒" in compact and (
+            "邀请道友" in compact
+            or "双人神通" in compact
+            or "双人互动" in compact
+        )
 
     def _daily_shuangxiu_text_is_book_list(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -890,6 +901,11 @@ class DailyChallengeTaskMixin:
         normalized = _sanitize_ocr_text(text)
         compact = re.sub(r"\s+", "", normalized)
         return "前往修炼" in compact and ("今日剩余修炼次数" in compact or "双人修炼规则" in compact or "修炼场景" in compact)
+
+    def _daily_shuangxiu_text_remaining_zero(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        compact = re.sub(r"\s+", "", normalized).replace("O", "0").replace("o", "0")
+        return "今日剩余修炼次数" in compact and bool(re.search(r"今日剩余修炼次数[:：]?0(?:\\D|$)", compact))
 
     def _daily_shuangxiu_text_is_complete(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)

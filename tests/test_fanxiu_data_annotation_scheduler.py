@@ -3293,7 +3293,7 @@ def test_unknown_evidence_scores_all_candidates_before_limiting(monkeypatch):
         for scene_id in range(1, 31)
     }
     ctx = {"images": images}
-    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda ctx: list(range(1, 31)))
+    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda ctx: [1, 2, 3])
     monkeypatch.setattr(runner, "_shape_score", lambda ctx, image, shape, frame, **kwargs: 96.0 if image["id"] == 30 else 0.0)
     monkeypatch.setattr(runner, "_scene_score", lambda ctx, image, frame: 96.0 if image["id"] == 30 else 0.0)
     monkeypatch.setattr(runner, "_cached_ocr_lines", lambda ctx, frame: [])
@@ -10098,7 +10098,8 @@ def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(mon
 
     class FakeSceneRecognizer:
         def identify_scene_tree_number(self, recog_ctx, frame_data_url, preferred_scene_ids=None):
-            calls.append((frame_data_url, tuple(preferred_scene_ids or ()), "_scene_identity_scope_filter" in recog_ctx))
+            legacy_filter_present = any(str(key).endswith("scope_filter") for key in recog_ctx)
+            calls.append((frame_data_url, tuple(preferred_scene_ids or ()), legacy_filter_present))
             return 34, 90.0
 
     monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeSceneRecognizer())

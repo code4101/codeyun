@@ -83,6 +83,7 @@ const ATTENDANCE_HEADER_TOOL_PATH = requirePageMenuPath('AttendanceHeaderTool');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
+const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
 const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
 const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
@@ -161,6 +162,7 @@ const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE
 const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDERS_PATH);
 const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
 const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
+const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
 const MAGIC_CRAFT_TITLE = requirePermissionTitle('magic-craft');
 const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH);
 const FANXIU_TITLE = requirePermissionTitle('fanxiu');
@@ -463,6 +465,7 @@ const gameToolsMenuVisible = computed(() =>
     fanxiuMenuVisible.value
     || magicCraftMenuVisible.value
     || canAccessMenuPath(DSP_CALCULATOR_PATH)
+    || canAccessMenuPath(MYSTIA_WIKI_PATH)
   ),
 );
 
@@ -845,6 +848,9 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(DSP_CALCULATOR_PATH)" :index="DSP_CALCULATOR_PATH">
               <span>{{ DSP_CALCULATOR_TITLE }}</span>
+            </el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(MYSTIA_WIKI_PATH)" :index="MYSTIA_WIKI_PATH">
+              <span>{{ MYSTIA_WIKI_TITLE }}</span>
             </el-menu-item>
             <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
               <template #title>

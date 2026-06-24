@@ -68,6 +68,12 @@ def _image(title: str, filename: str, shapes: list[dict] | None = None) -> dict:
     }
 
 
+def _scene_image(title: str, filename: str, shapes: list[dict] | None = None, *, level: int = 1) -> dict:
+    image = _image(title, filename, shapes)
+    image["sceneIdentityLevel"] = level
+    return image
+
+
 def _drain_generator(result):
     while True:
         try:
@@ -705,6 +711,37 @@ def test_daily_dungeon_purchase_clicks_until_unavailable_without_waiting_view(mo
     assert fake_runtime.wait_any_calls == 0
 
 
+def test_daily_dungeon_wait_purchase_result_accepts_purchase_ocr_when_scene_unknown(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": Path("asset-tree.json")}
+    stop_event = threading.Event()
+
+    class FakeRuntime:
+        def current_scene(self, candidates, *, update: bool = False):
+            assert candidates == [224, 225, 223]
+            return None, 0.0, "frame"
+
+        def ocr_text(self, frame):
+            assert frame == "frame"
+            return "破界符 价格：100 拥有：255320 购买并使用"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._wait_daily_dungeon_purchase_result(
+            ctx,
+            stop_event,
+            {"id": 223},
+            {"id": 224},
+            {"id": 225},
+            timeout=1.0,
+            label="日常_每日副本：等待购买结果",
+        )
+    )
+
+    assert result == 224
+
+
 def test_scene_route_click_falls_back_for_world_open_menu(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     shape = {"id": "open-menu", "kind": "rect", "title": "打开下方菜单", "x": 0.4, "y": 0.9, "w": 0.1, "h": 0.06}
@@ -1044,13 +1081,13 @@ def test_scene_route_candidates_prefer_nearer_scene_when_scores_tie(tmp_path, mo
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
-    image34 = _image("世界", "0034.jpg", [
+    image34 = _scene_image("世界", "0034.jpg", [
         {"id": "open", "kind": "rect", "title": "打开下方菜单", "sceneJumpTarget": "35"}
     ])
-    image35 = _image("世界下方菜单", "0035.png", [
+    image35 = _scene_image("世界下方菜单", "0035.png", [
         {"id": "mail", "kind": "rect", "title": "邮件", "sceneJumpTarget": "121"}
     ])
-    image121 = _image("邮件", "0121.png", [])
+    image121 = _scene_image("邮件", "0121.png", [])
     tree = [image34, image35, image121]
     ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": {34: image34, 35: image35, 121: image121}}
 
@@ -1071,11 +1108,11 @@ def test_scene_route_candidates_prefer_nearer_scene_when_scores_tie(tmp_path, mo
 def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
-    image34 = _image("世界", "0034.jpg", [
+    image34 = _scene_image("世界", "0034.jpg", [
         {"id": "daily", "kind": "rect", "title": "日常", "sceneJumpTarget": "69"}
     ])
-    image69 = _image("日常", "0069.jpg", [])
-    image187 = _image("战灵长老", "0187.jpg", [
+    image69 = _scene_image("日常", "0069.jpg", [])
+    image187 = _scene_image("战灵长老", "0187.jpg", [
         {"id": "blank", "kind": "rect", "title": "空白", "sceneJumpTarget": "183"}
     ])
     tree = [image34, image69, image187]
@@ -1477,6 +1514,51 @@ def test_click_shape_respecting_conditions_waits_when_shape_has_condition(monkey
     assert clicked == [("matched-frame", {"matched": True, "similarity": 100, "fixed_box": {"x": 100, "y": 200, "w": 80, "h": 40}})]
 
 
+def test_daily_shuangxiu_detail_allows_invite_button_ocr_miss():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_shuangxiu_text_is_detail(
+        "修炼 凤舞九天诀 激活功法 痴情咒 每次修炼可得体魄：1800 气劲：1800 双人神通 激活本功法即可获得被动技能：痴情神通"
+    ) is True
+
+
+def test_daily_shuangxiu_can_resume_from_detail_scene(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": Path("asset-tree.json"),
+        "images": {216: _image("双修痴情咒详情", "0216.png")},
+    }
+    stop_event = threading.Event()
+    actions: list[tuple] = []
+
+    class FakeRuntime:
+        def current_scene(self, candidates, *, update: bool = False):
+            actions.append(("current_scene", candidates, update))
+            return 216, 100.0, "frame"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            return "痴情咒 双人神通"
+
+    def fake_invite(*_args, **_kwargs):
+        actions.append(("invite",))
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_daily_shuangxiu_invite", fake_invite)
+
+    result = _drain_generator(runner._execute_daily_shuangxiu_task(ctx, stop_event, {}))
+
+    assert result == "success"
+    assert actions == [
+        ("current_scene", [216, 215, 69, 34], True),
+        ("ocr_text", "frame"),
+        ("invite",),
+    ]
+
+
 def test_click_shape_respecting_conditions_raw_clicks_without_condition(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image = _image("双修秘术", "0215.png")
@@ -1628,13 +1710,13 @@ def test_scene_jump_edges_infer_nested_leave_returns_to_parent_scene():
     runner = create_fanxiu_runtime_runner()
     leave_shape = {"id": "leave", "kind": "rect", "title": "离开", "x": 0.8, "y": 0.5, "w": 0.1, "h": 0.1}
     tree = [
-        _image("世界", "0034.jpg", []),
+        _scene_image("世界", "0034.jpg", []),
         {
             "id": "folder-world",
             "type": "folder",
             "title": "世界",
             "children": [
-                _image("某区域内部", "0085.png", [leave_shape]),
+                _scene_image("某区域内部", "0085.png", [leave_shape]),
             ],
         },
     ]
@@ -1655,8 +1737,8 @@ def test_scene_jump_edges_infer_world_menu_close_returns_to_world():
             "type": "folder",
             "title": "世界",
             "children": [
-                _image("世界", "0034.jpg", []),
-                _image("世界下方菜单", "0035.png", [close_shape]),
+                _scene_image("世界", "0034.jpg", []),
+                _scene_image("世界下方菜单", "0035.png", [close_shape]),
             ],
         },
     ]
@@ -1667,6 +1749,84 @@ def test_scene_jump_edges_infer_world_menu_close_returns_to_world():
     assert edges[35][0]["shape"] is close_shape
     assert edges[35][0]["target_ids"] == [34]
     assert runner._find_scene_route(tree, 35, 34) == [edges[35][0]]
+
+
+def test_go_scene_next_edge_prefers_observed_reachable_action_over_first_bfs_edge():
+    runner = create_fanxiu_runtime_runner()
+    low_confidence_shape = {
+        "id": "low",
+        "kind": "rect",
+        "title": "低频入口",
+        "x": 0.1,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "2",
+    }
+    high_confidence_shape = {
+        "id": "high",
+        "kind": "rect",
+        "title": "高频入口",
+        "x": 0.4,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "4(7)",
+    }
+    tree = [
+        _scene_image("起点", "0001.png", [low_confidence_shape, high_confidence_shape]),
+        _scene_image("低频落点", "0002.png", [{"id": "to-target-a", "kind": "rect", "title": "去目标", "sceneJumpTarget": "3"}]),
+        _scene_image("目标", "0003.png", []),
+        _scene_image("高频落点", "0004.png", [{"id": "to-target-b", "kind": "rect", "title": "去目标", "sceneJumpTarget": "3"}]),
+    ]
+
+    route = runner._find_scene_route(tree, 1, 3)
+    assert route is not None
+    assert route[0]["shape"] is low_confidence_shape
+
+    decision = runner._select_scene_next_edge(tree, 1, 3)
+
+    assert decision is not None
+    assert decision["edge"]["shape"] is high_confidence_shape
+
+
+def test_go_scene_next_edge_skips_failed_candidate_within_same_goto_round():
+    runner = create_fanxiu_runtime_runner()
+    first_shape = {
+        "id": "first",
+        "kind": "rect",
+        "title": "第一入口",
+        "x": 0.1,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "2(9)",
+    }
+    second_shape = {
+        "id": "second",
+        "kind": "rect",
+        "title": "备用入口",
+        "x": 0.4,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "4(1)",
+    }
+    tree = [
+        _scene_image("起点", "0001.png", [first_shape, second_shape]),
+        _scene_image("第一落点", "0002.png", [{"id": "to-target-a", "kind": "rect", "title": "去目标", "sceneJumpTarget": "3"}]),
+        _scene_image("目标", "0003.png", []),
+        _scene_image("备用落点", "0004.png", [{"id": "to-target-b", "kind": "rect", "title": "去目标", "sceneJumpTarget": "3"}]),
+    ]
+
+    first_decision = runner._select_scene_next_edge(tree, 1, 3)
+    assert first_decision is not None
+    failed = {runner._scene_jump_edge_key(first_decision["edge"])}
+
+    second_decision = runner._select_scene_next_edge(tree, 1, 3, failed_edge_keys=failed)
+
+    assert second_decision is not None
+    assert second_decision["edge"]["shape"] is second_shape
 
 
 def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold(monkeypatch):
@@ -1791,12 +1951,12 @@ def test_scene_route_candidates_include_leave_confirmation_popup():
     runner = create_fanxiu_runtime_runner()
     confirm = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
     tree = [
-        _image("世界", "0034.jpg", []),
+        _scene_image("世界", "0034.jpg", []),
         {
             "id": "popup",
             "type": "folder",
             "title": "弹窗",
-            "children": [_image("离开场景", "0086.png", [confirm])],
+            "children": [_scene_image("离开场景", "0086.png", [confirm])],
         },
     ]
 
@@ -3172,7 +3332,7 @@ def test_identify_scene_number_without_context_does_not_try_local_popup_fallback
     scanned: list[list[int] | None] = []
 
     class FakeRecognizer:
-        def identify_scene_number(self, _ctx, _frame, *, preferred_scene_ids=None):
+        def identify_scene_tree_number(self, _ctx, _frame, *, preferred_scene_ids=None):
             scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
             if preferred_scene_ids == [47]:
                 return 47, 92.0
@@ -3247,8 +3407,8 @@ def test_go_scene_moves_by_scene_jump_and_records_declared_target_frequency(tmp_
     runner = create_fanxiu_runtime_runner()
     jump_shape = {"id": "jump", "kind": "rect", "title": "去二", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "2"}
     tree = [
-        _image("一", "0001.jpg", [jump_shape]),
-        _image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [jump_shape]),
+        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -3283,9 +3443,9 @@ def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkey
     jump_shape = {"id": "jump13", "kind": "rect", "title": "日常", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     claim_shape = {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1, "sceneJumpTarget": "1"}
     tree = [
-        _image("一", "0001.jpg", [jump_shape]),
-        _image("报名领取灵石奖励", "0002.jpg", [claim_shape]),
-        _image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [jump_shape]),
+        _scene_image("报名领取灵石奖励", "0002.jpg", [claim_shape]),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -3332,9 +3492,9 @@ def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatc
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     second_shape = {"id": "jump23", "kind": "rect", "title": "去三", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _image("一", "0001.jpg", [first_shape]),
-        _image("二", "0002.jpg", [second_shape]),
-        _image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [first_shape]),
+        _scene_image("二", "0002.jpg", [second_shape]),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")

@@ -535,6 +535,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "mystia.wiki",
+      "title": "东方夜雀食堂",
+      "node_type": "feature",
+      "parent_key": "game-tools",
+      "sort_order": 25,
+      "route_paths": ["/mystia/wiki"],
+      "menu_paths": ["/mystia/wiki"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "magic-craft",
       "title": "魔法工艺",
       "node_type": "group",

@@ -1,4 +1,4 @@
-from pyxllib.autogui import SceneRecognizer
+from pyxllib.autogui import SceneNavigator, SceneRecognizer
 from pyxllib.autogui.matching import SceneScorer
 
 
@@ -110,6 +110,81 @@ def test_scene_recognizer_ignores_non_scene_frames_without_candidates():
     )
 
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (34, 85.0)
+
+
+def test_scene_recognizer_treats_non_scene_frame_as_transparent_parent():
+    helper = {
+        "type": "image",
+        "filename": "0999.png",
+        "title": "非场景素材组",
+        "sceneIdentityLevel": 0,
+        "children": [
+            {
+                "type": "image",
+                "filename": "0034.png",
+                "title": "世界",
+                "sceneIdentityLevel": 2,
+            }
+        ],
+    }
+    ctx = {"asset_tree": [helper], "images": {999: helper, 34: helper["children"][0]}}
+    recognizer = SceneRecognizer(
+        score_image=lambda _ctx, image, _frame: 100.0 if image["title"] == "非场景素材组" else 88.0,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (34, 88.0)
+
+
+def test_scene_navigator_treats_non_scene_frame_as_transparent_parent():
+    parent = {
+        "type": "image",
+        "filename": "0100.png",
+        "title": "父场景",
+        "sceneIdentityLevel": 2,
+        "children": [
+            {
+                "type": "image",
+                "filename": "0999.png",
+                "title": "非场景素材",
+                "sceneIdentityLevel": 0,
+                "shapes": [
+                    {"id": "helper-action", "title": "返回", "sceneJumpTarget": "100"},
+                ],
+                "children": [
+                    {
+                        "type": "image",
+                        "filename": "0101.png",
+                        "title": "子场景",
+                        "sceneIdentityLevel": 1,
+                        "shapes": [
+                            {"id": "return", "title": "返回"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    edges = SceneNavigator([parent]).scene_jump_edges()
+
+    assert 999 not in edges
+    assert edges[101][0]["target_ids"] == [100]
+
+
+def test_scene_navigator_resolves_folder_to_scene_frames_only():
+    tree = [
+        {
+            "type": "folder",
+            "title": "候选组",
+            "children": [
+                {"type": "image", "filename": "0999.png", "title": "素材", "sceneIdentityLevel": 0},
+                {"type": "image", "filename": "0100.png", "title": "场景", "sceneIdentityLevel": 2},
+            ],
+        }
+    ]
+
+    assert SceneNavigator(tree).resolve_scene_jump_label("候选组") == [100]
 
 
 def test_scene_scorer_requires_all_scene_identity_shapes():
