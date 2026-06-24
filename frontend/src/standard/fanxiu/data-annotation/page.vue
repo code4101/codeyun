@@ -257,7 +257,7 @@
                       <span
                         v-if="data.type === 'image'"
                         class="scene-level-badge"
-                        :class="`is-level-${inferredSceneIdentityLevel(data)}`"
+                        :class="sceneIdentityLevelClass(inferredSceneIdentityLevel(data))"
                         :title="sceneIdentityLevelTitle(inferredSceneIdentityLevel(data))"
                       >
                         {{ sceneIdentityLevelLabel(inferredSceneIdentityLevel(data)) }}
@@ -1475,7 +1475,7 @@ type GameMacroAnnotationMode = 'simple' | 'ai';
 type GameMacroDragDurationMode = 'real' | 'fixed';
 type ShapeMatchRole = 'off' | 'optional' | 'required';
 type SceneIdentityScope = 'none' | 'local' | 'global';
-type SceneIdentityLevel = 0 | 1 | 2;
+type SceneIdentityLevel = number;
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
 type AssetTreeViewMode = 'business' | 'scene';
 
@@ -7207,6 +7207,8 @@ const normalizeSceneIdentityLevel = (value: unknown, fallback: SceneIdentityLeve
   if (value === 2 || value === '2' || value === 'global' || value === '全') return 2;
   if (value === 1 || value === '1' || value === 'local' || value === '局') return 1;
   if (value === 0 || value === '0' || value === 'none' || value === 'off' || value === '无') return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.floor(value));
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Math.max(0, Math.floor(Number(value.trim())));
   return fallback;
 };
 
@@ -8365,17 +8367,26 @@ const inferredSceneIdentityLevel = (image: DataAnnotationAssetNode): SceneIdenti
   return 0;
 };
 
-const sceneIdentityLevelLabel = (level: SceneIdentityLevel) => ({
-  0: '非',
-  1: '局',
-  2: '全',
-}[level]);
+const sceneIdentityLevelLabel = (level: SceneIdentityLevel) => {
+  if (level <= 0) return '非';
+  if (level === 1) return '局';
+  if (level === 2) return '全';
+  return String(level);
+};
 
-const sceneIdentityLevelTitle = (level: SceneIdentityLevel) => ({
-  0: '非场景帧：不参与默认场景身份识别',
-  1: '局部场景帧：在父场景、候选或路径上下文中参与识别',
-  2: '全局场景帧：可作为无上下文 detect_scene 的入口',
-}[level]);
+const sceneIdentityLevelTitle = (level: SceneIdentityLevel) => {
+  if (level <= 0) return '非场景帧：不参与默认场景身份识别';
+  if (level === 1) return '局部场景帧：在父场景、候选或路径上下文中参与识别';
+  if (level === 2) return '全局场景帧：可作为无上下文 detect_scene 的入口';
+  return `扩展场景层级 ${level}：按数值优先级参与场景身份树识别`;
+};
+
+const sceneIdentityLevelClass = (level: SceneIdentityLevel) => {
+  if (level <= 0) return 'is-level-0';
+  if (level === 1) return 'is-level-1';
+  if (level === 2) return 'is-level-2';
+  return 'is-level-high';
+};
 
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
   node?.id === SCENE_TREE_ROOT_ID || node?.id === NON_SCENE_TREE_ROOT_ID
@@ -8390,16 +8401,17 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
   const records = new Map<string, SceneRecord>();
   const ordered: SceneRecord[] = [];
 
-  const visit = (items: DataAnnotationAssetNode[], parentImageId: string | null) => {
+  const visit = (items: DataAnnotationAssetNode[], nearestSceneParentId: string | null) => {
     for (const node of items) {
       if (node.type === 'folder') {
-        visit(node.children ?? [], parentImageId);
+        visit(node.children ?? [], nearestSceneParentId);
         continue;
       }
-      const record: SceneRecord = { node, parentImageId, children: [] };
+      const level = inferredSceneIdentityLevel(node);
+      const record: SceneRecord = { node, parentImageId: nearestSceneParentId, children: [] };
       records.set(node.id, record);
       ordered.push(record);
-      visit(node.children ?? [], node.id);
+      visit(node.children ?? [], level > 0 ? node.id : nearestSceneParentId);
     }
   };
   visit(nodes, null);
@@ -14120,6 +14132,12 @@ const finishShapeDrag = () => {
   border-color: #79bbff;
   color: #1d6fb8;
   background: #ecf5ff;
+}
+
+.scene-level-badge.is-level-high {
+  border-color: #b37feb;
+  color: #722ed1;
+  background: #f9f0ff;
 }
 
 .asset-context-menu {

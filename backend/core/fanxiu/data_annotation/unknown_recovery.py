@@ -189,14 +189,15 @@ def _candidate_scene_ids(runner: Any, ctx: dict[str, Any], expected_scene_ids: l
             if scene_id not in ids:
                 ids.append(scene_id)
     except Exception:
-        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
-        for scene_id in images:
-            try:
-                scene_id = int(scene_id)
-            except (TypeError, ValueError):
-                continue
-            if scene_id not in ids:
-                ids.append(scene_id)
+        pass
+    images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+    for scene_id in images:
+        try:
+            scene_id = int(scene_id)
+        except (TypeError, ValueError):
+            continue
+        if scene_id not in ids:
+            ids.append(scene_id)
     return ids
 
 
