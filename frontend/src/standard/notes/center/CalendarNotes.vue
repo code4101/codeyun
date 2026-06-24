@@ -86,6 +86,7 @@
 
           <div class="backend-filter-tags">
             <el-tag type="success">加载: {{ formatDateShort(periodStartTs) }} - {{ formatDateShort(periodEndTs - 1) }}</el-tag>
+            <el-tag v-if="calendarScale === 'month' && loading" type="info">刷新中</el-tag>
             <el-tag
               v-if="codexWorkloadStatusText"
               :type="codexWorkloadStatusType"
@@ -131,7 +132,7 @@
       @resize-start="startResizing"
     >
       <template #main>
-        <div v-if="calendarScale === 'month'" class="calendar-container" v-loading="loading">
+        <div v-if="calendarScale === 'month'" class="calendar-container">
           <div class="weekday-header">
             <div v-for="day in weekDays" :key="day" class="weekday-cell">{{ day }}</div>
           </div>

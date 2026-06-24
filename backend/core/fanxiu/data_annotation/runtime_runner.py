@@ -2701,7 +2701,7 @@ class DataAnnotationRuntimeRunner(
                         self._mark_service_heartbeat("idle_guard")
                         guard_handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
                         self._mark_service_heartbeat("idle_guard_done")
-                    if guard_handled:
+                    if guard_handled and self._pending_manual_job_count() <= 0:
                         self._service_wake_event.wait(0.1)
                         self._service_wake_event.clear()
                         continue
@@ -2782,7 +2782,8 @@ class DataAnnotationRuntimeRunner(
                     guard_checked = True
                     if guard_handled:
                         action = "guard_checked"
-                if not guard_handled and manual_job:
+                manual_job_pending_after_guard = guard_handled and self._pending_manual_job_count() > 0
+                if (not guard_handled or manual_job_pending_after_guard) and manual_job:
                     self._mark_service_heartbeat("manual_job_poll")
                     if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
                         action = "manual_job_started"
@@ -5258,7 +5259,7 @@ class DataAnnotationRuntimeRunner(
         image219 = ctx.get("images", {}).get(219)
         if not isinstance(image219, dict):
             raise RuntimeError("日常_双修：缺少 #219「双修修炼准备」标注，无法离开")
-        leave_shape = self._find_shape(image219, "离开", "退出", "返回")
+        leave_shape = self._find_shape(image219, "请离", "离开", "退出", "返回")
         if leave_shape is None:
             raise RuntimeError("日常_双修：#219 缺少「离开」按钮标注，无法完成收尾")
         with self._lock:
@@ -7922,6 +7923,14 @@ class DataAnnotationRuntimeRunner(
                     if 171 not in expected_ids and scene_id != target_scene_id and scene_id not in expected_ids:
                         return scene_id
                 continue
+            if scene_id is not None and scene_id != source_scene_id and int(scene_id) in expected_ids:
+                left_source = True
+                history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% declared-landing left={left_source}")
+                if not edge.get("_runtime_confirm_edge") and self._increment_scene_jump_target(shape, int(scene_id)):
+                    self._write_asset_tree(asset_tree_path, tree)
+                    ctx["images"] = self._index_images(tree)
+                self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，命中声明落点")
+                return int(scene_id)
             if scene_id == target_scene_id and scene_id != source_scene_id:
                 if scene_id in expected_ids:
                     left_source = True
@@ -8265,6 +8274,7 @@ class DataAnnotationRuntimeRunner(
                         yield BehaviorTreeStatus.RUNNING
                         continue
                     self._log("detail", f"场景移动：确认后实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
                     continue
                 if last_failed_edge is not None:
                     return self._save_unknown_scene_frame(
@@ -8325,6 +8335,7 @@ class DataAnnotationRuntimeRunner(
                 yield BehaviorTreeStatus.RUNNING
                 continue
             self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
+            yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
 
         raise RuntimeError(f"场景移动超过最大重规划步数，未到达 #{target_scene_id}")
 

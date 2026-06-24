@@ -1,0 +1,126 @@
+from contextlib import asynccontextmanager
+import os
+
+import uvicorn
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from backend.api.admin import init_storage_scheduler, router as admin_router
+from backend.api.attendance import router as attendance_router
+from backend.api.ai_chat import router as ai_chat_router
+from backend.api.ai_git_repos import router as ai_git_repos_router
+from backend.api.auth import router as auth_router
+from backend.api.device import router as device_router
+from backend.api.device_entries import router as device_entries_router
+from backend.api.device_control import router as device_control_router
+from backend.api.fanxiu import router as fanxiu_router
+from backend.api.filesystem import router as filesystem_router
+from backend.api.git_tools import router as git_tools_router
+from backend.api.notes import router as notes_router
+from backend.api.reduction_documents import router as reduction_documents_router
+from backend.api.task_manager import (
+    router as task_router,
+    start_task_manager_services,
+    stop_task_manager_services,
+)
+from backend.api.upload import router as upload_router
+from backend.core.bootstrap import ensure_bootstrap_admin
+from backend.core.auth import verify_api_token
+from backend.core.private_modules import register_private_modules
+from backend.core.settings import get_settings
+from backend.core.storage import (
+    ATTACHMENTS_URL_PREFIX,
+    LEGACY_UPLOADS_URL_PREFIX,
+    get_attachments_dir,
+    migrate_legacy_attachments,
+)
+from backend.db import init_db
+
+settings = get_settings()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    ensure_bootstrap_admin()
+    await start_task_manager_services()
+    init_storage_scheduler()
+    yield
+    await stop_task_manager_services()
+
+
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+
+if settings.allow_all_cors:
+    cors_kwargs["allow_origin_regex"] = ".*"
+else:
+    cors_kwargs["allow_origins"] = list(settings.cors_origins)
+    if settings.cors_origin_regex:
+        cors_kwargs["allow_origin_regex"] = settings.cors_origin_regex
+
+app = FastAPI(
+    title="CodeYun Backend",
+    description="Local backend for CodeYun tools",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
+    redoc_url=None,
+)
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
+
+# Include routers with global authentication
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
+app.include_router(device_router, prefix="/api/devices", tags=["devices"]) # User protected inside
+app.include_router(device_entries_router, prefix="/api/device-entries", tags=["device-entries"])
+app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
+app.include_router(task_router, prefix="/api/task", tags=["task"])
+app.include_router(
+    device_control_router,
+    prefix="/api/device-control",
+    tags=["device-control"],
+)
+app.include_router(
+    git_tools_router,
+    prefix="/api/git-tools",
+    tags=["git-tools"],
+)
+app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
+app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
+app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+app.include_router(attendance_router, prefix="/api/attendance", tags=["attendance"])
+app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
+app.include_router(ai_git_repos_router, prefix="/api/ai-git-repos", tags=["ai-git-repos"])
+app.include_router(reduction_documents_router, prefix="/api/reduction-documents", tags=["reduction-documents"])
+register_private_modules(app)
+
+# Mount static files
+migrate_legacy_attachments()
+attachments_dir = os.fspath(get_attachments_dir())
+app.mount(ATTACHMENTS_URL_PREFIX, StaticFiles(directory=attachments_dir), name="attachments")
+app.mount(LEGACY_UPLOADS_URL_PREFIX, StaticFiles(directory=attachments_dir), name="uploads-legacy")
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/")
+def read_root():
+    return {"message": "CodeYun Backend is running"}
+
+if __name__ == "__main__":
+    print(
+        f"Starting backend in {settings.environment} mode on "
+        f"{settings.backend_host}:{settings.backend_port}"
+    )
+    uvicorn.run(
+        "backend.app:app",
+        host=settings.backend_host,
+        port=settings.backend_port,
+        reload=settings.is_development,
+    )

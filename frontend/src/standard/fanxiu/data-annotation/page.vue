@@ -255,14 +255,10 @@
                       <el-icon v-if="data.type === 'folder'"><Folder /></el-icon>
                       <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
                       <span
-                        v-if="data.type === 'image'"
-                        class="scene-level-badge"
-                        :class="sceneIdentityLevelClass(inferredSceneIdentityLevel(data))"
-                        :title="sceneIdentityLevelTitle(inferredSceneIdentityLevel(data))"
-                      >
-                        {{ sceneIdentityLevelLabel(inferredSceneIdentityLevel(data)) }}
-                      </span>
-                      <span>{{ data.title }}</span>
+                        class="asset-node-title"
+                        :title="data.type === 'image' ? sceneIdentityLevelTitle(inferredSceneIdentityLevel(data)) : ''"
+                        :style="data.type === 'image' ? sceneIdentityLevelStyle(inferredSceneIdentityLevel(data)) : undefined"
+                      >{{ data.title }}</span>
                     </span>
                   </template>
                 </el-tree>
@@ -8367,13 +8363,6 @@ const inferredSceneIdentityLevel = (image: DataAnnotationAssetNode): SceneIdenti
   return 0;
 };
 
-const sceneIdentityLevelLabel = (level: SceneIdentityLevel) => {
-  if (level <= 0) return '非';
-  if (level === 1) return '局';
-  if (level === 2) return '全';
-  return String(level);
-};
-
 const sceneIdentityLevelTitle = (level: SceneIdentityLevel) => {
   if (level <= 0) return '非场景帧：不参与默认场景身份识别';
   if (level === 1) return '局部场景帧：在父场景、候选或路径上下文中参与识别';
@@ -8381,11 +8370,10 @@ const sceneIdentityLevelTitle = (level: SceneIdentityLevel) => {
   return `扩展场景层级 ${level}：按数值优先级参与场景身份树识别`;
 };
 
-const sceneIdentityLevelClass = (level: SceneIdentityLevel) => {
-  if (level <= 0) return 'is-level-0';
-  if (level === 1) return 'is-level-1';
-  if (level === 2) return 'is-level-2';
-  return 'is-level-high';
+const sceneIdentityLevelStyle = (level: SceneIdentityLevel) => {
+  if (level <= 0) return { color: '#303133' };
+  const colors = ['#2f8f2f', '#d93026', '#9c27b0', '#c76a00', '#0b7fab'];
+  return { color: colors[(level - 1) % colors.length] };
 };
 
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
@@ -14097,10 +14085,6 @@ const finishShapeDrag = () => {
   min-width: 0;
 }
 
-.asset-tree-node.is-image {
-  color: #409eff;
-}
-
 .asset-node-id {
   flex: 0 0 auto;
   min-width: 28px;
@@ -14109,35 +14093,9 @@ const finishShapeDrag = () => {
   font-variant-numeric: tabular-nums;
 }
 
-.scene-level-badge {
-  flex: 0 0 auto;
-  min-width: 18px;
-  padding: 0 4px;
-  border-radius: 3px;
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
-  border: 1px solid #dcdfe6;
-  color: #606266;
-  background: #f5f7fa;
-}
-
-.scene-level-badge.is-level-1 {
-  border-color: #95d475;
-  color: #3f8f25;
-  background: #f0f9eb;
-}
-
-.scene-level-badge.is-level-2 {
-  border-color: #79bbff;
-  color: #1d6fb8;
-  background: #ecf5ff;
-}
-
-.scene-level-badge.is-level-high {
-  border-color: #b37feb;
-  color: #722ed1;
-  background: #f9f0ff;
+.asset-node-title {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .asset-context-menu {

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "e18149f483ba7f1f859a772d7fe3b12ceec2f45d"
-last_audited_at: "2026-06-24T02:10:17.7721884+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-e18149f4/report.md"
-last_frontend_commit_summary: "完整关闭 266187a4..e18149f4：凡修图鉴邮件/玩家面板与星云表格工作区完成三视口实图巡检；本轮提交本身降低状态投影复杂度，无需自动修复。"
-audited_commit_count: 36
+last_audited_commit: "2f6baf8b44212a4d492e7b97b7f537d015dc2a0e"
+last_audited_at: "2026-06-24T15:49:54.8395380+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-2f6baf8b/report.md"
+last_frontend_commit_summary: "完整关闭 e18149f4..2f6baf8b：凡修 data-annotation 场景身份迁移与 Mystia 标准目录入口完成三视口实图巡检；UI 模型保持主表/投影/详情的低概念数，无需自动修复。"
+audited_commit_count: 38
 pending_or_skipped_ranges: []
 ```
 
@@ -260,6 +260,17 @@ pending_or_skipped_ranges: []
 
 ### 2026-06-24
 
+- 完整范围：`e18149f483ba7f1f859a772d7fe3b12ceec2f45d..2f6baf8b44212a4d492e7b97b7f537d015dc2a0e`
+- 覆盖提交：`a43ff89b0f87f38b98f42350e49b81d89f5a6e09`、`2f6baf8b44212a4d492e7b97b7f537d015dc2a0e`
+- 前端入口提交：`a43ff89b0f87f38b98f42350e49b81d89f5a6e09`、`2f6baf8b44212a4d492e7b97b7f537d015dc2a0e`
+- 入口如何牵引到旧问题：本轮先由凡修 data-annotation 场景身份迁移牵引到“帧资产 -> shape 证据 -> 场景识别 -> 运行治理结果”闭环，随后 `HEAD` 新增 Mystia 标准目录入口并继续联动 data-annotation 扩展场景层级。巡检边界因此覆盖 `fanxiu/data-annotation`、`fanxiu/data-annotation/runtime`、`mystia/wiki`，并抽查同轮顺带改动的图鉴邮件、星图列表和存储维护懒加载入口。
+- 本轮减法：凡修链路把旧的 shape 级“场景标识范围”收回到帧级身份层级，shape inspector 只保留与图像/OCR 同构的 `关/必/定` 证据角色；扩展层级继续复用同一徽标体系。Mystia 新页面使用“数据集切换 + 搜索 + 主表 + 详情”四类基础概念，不把图片、音频和字段解释平铺成多个常驻面板。
+- 信息量保持：帧树、场景树、非场景帧、局部/全局/扩展场景层级、shape 身份证据、场景跳转、运行页守护/作业状态、Mystia 菜品/食材/饮品/角色/素材目录、菜单入口和权限路径都保留；减少的是同一场景身份事实在 shape 级控件里的重复表达。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-2f6baf8b/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，用本地 admin 登录后打开 `fanxiu/data-annotation`、`fanxiu/data-annotation/runtime`、`fanxiu/wiki?tab=mail`、`notes/center?tab=list`、`admin/images`、`mystia/wiki`，补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180`；其中 data-annotation 额外切到“场景”树投影，共 21 张真实截图。浏览器控制台 error/warn 为空；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：本轮前端变化属于前端状态投影收敛和新增静态目录页；未发现新增表现层问题、后端数据投影问题或业务建模债务，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：当前工作区仍有未提交改动，截图反映当前工作树运行态而不是纯净 `2f6baf8b` checkout；runtime 页面仍有旧长文案表格压力，但不是本轮新增 UI 模型问题；Mystia 页面只验证默认菜品 tab，未逐一截图全部数据集 tab；凡修未人工构造扩展层级大于 2 的专门样本。
+- 处理结果：本轮完整处理 `e18149f4..2f6baf8b`，两个前端相关提交均无需自动修复，验证通过，因此把 `last_audited_commit` 推进到 `2f6baf8b44212a4d492e7b97b7f537d015dc2a0e`。
 - 完整范围：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4..e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
 - 覆盖提交：`e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
 - 前端入口提交：`e18149f483ba7f1f859a772d7fe3b12ceec2f45d`
@@ -393,3 +404,4 @@ pending_or_skipped_ranges: []
 - 验证：复用本地 `5173/8000` 开发环境，以本地 admin token 打开真实页面 `http://127.0.0.1:5173/notes/task-system`，在宽屏 / 普通桌面 / 窄屏三种视口下分别截图 `task-system-after-wide.png`、`task-system-after-desktop.png`、`task-system-after-narrow.png`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
 - 剩余风险：本轮真实数据只复现了自动化只读告警，没有同时采到“可跳转任务问题 + 自动化告警”混合样本；但改动只收敛同一健康条内的投影层级，不改 API、写回和任务逻辑，风险较低。
 - 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`。
+

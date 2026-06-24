@@ -905,7 +905,7 @@ class DailyChallengeTaskMixin:
     def _daily_shuangxiu_text_remaining_zero(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         compact = re.sub(r"\s+", "", normalized).replace("O", "0").replace("o", "0")
-        return "今日剩余修炼次数" in compact and bool(re.search(r"今日剩余修炼次数[:：]?0(?:\\D|$)", compact))
+        return "今日剩余修炼次数" in compact and bool(re.search(r"今日剩余修炼次数[:：]?0(?:\D|$)", compact))
 
     def _daily_shuangxiu_text_is_complete(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
