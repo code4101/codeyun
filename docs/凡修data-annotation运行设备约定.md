@@ -1,6 +1,6 @@
 # 凡修 data-annotation 运行设备约定
 
-> Last Updated: 2026-06-02
+> Last Updated: 2026-06-25
 
 ## 当前事实
 
@@ -9,6 +9,7 @@
 - `data-annotation` 资产树按设备 `entry_id` 存放；当前有效资产树是 `codepc_mf` 对应的 `30b82d72-8a76-4a74-be4b-4fc1591c6ce2.json`。
 - `frontend/src/standard/fanxiu/game-window2` 是历史博物馆代码，不再注册为当前页面；当前“数据标注”页面是 `/fanxiu/data-annotation`，由 `data-annotation` 承载。
 - 后端和前端里仍有 `game-window2` 命名的截图、点击、匹配、流式画面 API，这是给 `data-annotation` 复用的底层兼容能力，不代表 `game-window2` 页面仍在运行。
+- 经验观察：凡修有时会在下午 16:00-17:00 左右进入临时维护。若这段时间画面停在公告、登录、维护提示或无法进入游戏，先按维护窗口处理，只做 MuMu/Runtime 恢复和只读诊断，不把业务作业失败直接归因到任务逻辑或标注缺失；维护结束后再恢复保底调度。
 
 ## 开发要求
 

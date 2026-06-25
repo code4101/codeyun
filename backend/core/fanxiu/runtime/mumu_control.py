@@ -71,6 +71,8 @@ MUMU_MAIN_WINDOW_RECT_ENV = "CODEYUN_FANXIU_MUMU_WINDOW_RECT"
 SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
 BURST_FRAME_DIRNAME = "连拍缓存"
+DEFAULT_MATCH_FRAME_MAX_FILES = 1000
+MATCH_FRAME_MAX_FILES_ENV = "FX_MATCH_FRAME_MAX_FILES"
 _SCREENSHOT_FRAME_LOCK = threading.Lock()
 _MATCH_FRAME_LOCK = threading.Lock()
 _BURST_FRAME_LOCK = threading.Lock()
@@ -1910,6 +1912,52 @@ def _next_screenshot_frame_path(output_dir: Path) -> tuple[int, Path]:
     return _next_numbered_frame_path(output_dir, ".png")
 
 
+def _match_frame_max_files() -> int:
+    raw_value = os.getenv(MATCH_FRAME_MAX_FILES_ENV, "").strip()
+    if not raw_value:
+        return DEFAULT_MATCH_FRAME_MAX_FILES
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return DEFAULT_MATCH_FRAME_MAX_FILES
+    return max(1, value)
+
+
+def _prune_match_frame_dir(output_dir: Path, *, max_files: int | None = None) -> None:
+    limit = _match_frame_max_files() if max_files is None else max(1, int(max_files))
+    try:
+        files = [
+            path
+            for path in output_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in _SCREENSHOT_IMAGE_SUFFIXES
+        ]
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return
+
+    overflow = len(files) - limit
+    if overflow <= 0:
+        return
+
+    for path in sorted(files, key=_screenshot_sort_key)[:overflow]:
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
+def _save_limited_match_frame(data: bytes, suffix: str) -> tuple[int, Path]:
+    output_dir = get_fanxiu_match_frame_dir()
+    with _MATCH_FRAME_LOCK:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        index, output = _next_numbered_frame_path(output_dir, suffix)
+        while output.exists():
+            index += 1
+            output = output_dir / f"{index:04d}{suffix}"
+        output.write_bytes(data)
+        _prune_match_frame_dir(output_dir)
+    return index, output
+
+
 def _normalize_screenshot_filename(filename: str) -> str:
     name = Path(str(filename or "")).name
     if not name or name != str(filename) or "\x00" in name:
@@ -3632,13 +3680,7 @@ def match_fanxiu_screenshot_box_frame(
         output_dir = get_fanxiu_match_frame_dir()
         output: Path | None = None
         if save_match_frame:
-            with _MATCH_FRAME_LOCK:
-                output_dir.mkdir(parents=True, exist_ok=True)
-                index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
-                while output.exists():
-                    index += 1
-                    output = output_dir / f"{index:04d}{match_frame_suffix}"
-                output.write_bytes(data)
+            index, output = _save_limited_match_frame(data, match_frame_suffix)
 
         return {
             "ok": True,
@@ -3757,13 +3799,7 @@ def match_fanxiu_screenshot_box_frame(
     output_dir = get_fanxiu_match_frame_dir()
     output: Path | None = None
     if save_match_frame:
-        with _MATCH_FRAME_LOCK:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
-            while output.exists():
-                index += 1
-                output = output_dir / f"{index:04d}{match_frame_suffix}"
-            output.write_bytes(data)
+        index, output = _save_limited_match_frame(data, match_frame_suffix)
 
     result = {
         "ok": True,

@@ -86,7 +86,6 @@
 
           <div class="backend-filter-tags">
             <el-tag type="success">加载: {{ formatDateShort(periodStartTs) }} - {{ formatDateShort(periodEndTs - 1) }}</el-tag>
-            <el-tag v-if="calendarScale === 'month' && loading" type="info">刷新中</el-tag>
             <el-tag
               v-if="codexWorkloadStatusText"
               :type="codexWorkloadStatusType"
@@ -1161,10 +1160,11 @@ const refreshCodexWorkloadStats = async () => {
       return;
     }
 
+    const includeStandaloneLocal = shouldIncludeStandaloneLocalCodex(devices);
     codexHistoricalSecondsByDay.value = collectCachedCodexDaySecondsWithLocal(cache, devices);
     const yesterdayKey = toDateStr(new Date(todayStartMs - 1));
 
-    const results = await Promise.allSettled(
+    const deviceResultsPromise = Promise.allSettled(
       devices.map(async (device) => {
         const requestStartMs = resolveCodexCacheRequestStartAt(cache.devices[device.id], todayStartMs);
         return {
@@ -1172,13 +1172,21 @@ const refreshCodexWorkloadStats = async () => {
           requestStartMs,
           workload: await fetchCodexWorkloadForEntry(
             device.id,
-            requestStartMs === undefined ? undefined : { startAt: requestStartMs / 1000 }
+            {
+              startAt: requestStartMs === undefined ? undefined : requestStartMs / 1000,
+              compact: true,
+              includeSegments: false,
+            }
           ),
         };
       })
     );
-    const localResult = await Promise.allSettled([
-      refreshStandaloneCodexWorkloadSource(cache, todayStartMs)
+    const localResultPromise = includeStandaloneLocal
+      ? Promise.allSettled([refreshStandaloneCodexWorkloadSource(cache, todayStartMs)])
+      : Promise.resolve([]);
+    const [results, localResult] = await Promise.all([
+      deviceResultsPromise,
+      localResultPromise,
     ]);
     if (requestId !== latestCodexWorkloadRequestId) return;
 
@@ -1893,11 +1901,14 @@ const collectStandaloneCachedCodexDaySeconds = (cache: CodexWorkloadStatsCache):
   return deviceCache ? { ...deviceCache.days } : collectAllCachedCodexDaySeconds(cache);
 };
 
+const shouldIncludeStandaloneLocalCodex = (devices: Device[]) => !devices.some((device) => device.mode === 'local');
+
 const collectCachedCodexDaySecondsWithLocal = (
   cache: CodexWorkloadStatsCache,
   devices: Device[],
 ): CodexWorkloadDaySeconds => {
   const days = collectCachedCodexDaySeconds(cache, devices);
+  if (!shouldIncludeStandaloneLocalCodex(devices)) return days;
   const localCache = cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID];
   if (!localCache) return days;
   for (const [dateKey, seconds] of Object.entries(localCache.days)) {
@@ -2013,7 +2024,11 @@ const refreshStandaloneCodexWorkloadSource = async (
   cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID] = deviceCache;
   const requestStartMs = resolveCodexCacheRequestStartAt(deviceCache, todayStartMs);
   const workload = await fetchLocalCodexWorkload(
-    requestStartMs === undefined ? undefined : { startAt: requestStartMs / 1000 }
+    {
+      startAt: requestStartMs === undefined ? undefined : requestStartMs / 1000,
+      compact: true,
+      includeSegments: false,
+    }
   );
   const historicalDays = mapToCodexWorkloadDaySeconds(
     aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)

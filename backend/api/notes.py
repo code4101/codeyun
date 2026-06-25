@@ -3784,6 +3784,16 @@ def _serialize_note_edges_for_note_mappings(edges: list[NoteEdge], notes: Iterab
     return [_serialize_note_edge(edge, note_public_ids=note_public_ids) for edge in edges]
 
 
+def _maybe_strip_note_list_custom_fields(
+    nodes: list[dict[str, Any]],
+    *,
+    include_custom_fields: bool,
+) -> list[dict[str, Any]]:
+    if include_custom_fields:
+        return nodes
+    return [{key: value for key, value in node.items() if key != "custom_fields"} for node in nodes]
+
+
 def _load_edges_between_refs(session: Session, user_id: int, refs: set[str]) -> list[NoteEdge]:
     if not refs:
         return []

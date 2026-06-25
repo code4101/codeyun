@@ -3795,7 +3795,7 @@ def test_fanxiu_runtime_wait_click_ocr_floating_child_uses_shape_center(monkeypa
     assert clicks[-1]["y"] == pytest.approx(1488.0)
 
 
-def test_goto_view_route_candidate_ranking_prefers_score_clarity_then_shortest(monkeypatch):
+def test_goto_view_route_candidate_ranking_prefers_clarity_then_shortest_after_threshold(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     tree = [
         {"type": "image", "id": 1, "title": "高可信长路径", "shapes": [{"title": "下一步", "sceneJumpTarget": "10"}]},
@@ -10062,7 +10062,9 @@ def test_go_scene_uses_global_current_scene_before_route_candidates(monkeypatch,
     runner = create_fanxiu_runtime_runner()
     shape = {"title": "回到世界", "sceneJumpTarget": "34"}
     edge = {"source_id": 20, "image": {"title": "绿瓶"}, "shape": shape, "target_ids": [34]}
-    ctx = {"entry": object(), "asset_tree": [], "images": {}}
+    image20 = {"type": "image", "title": "绿瓶", "filename": "0020.png", "sceneIdentityLevel": 2, "shapes": [shape]}
+    image34 = {"type": "image", "title": "世界", "filename": "0034.png", "sceneIdentityLevel": 2, "shapes": []}
+    ctx = {"entry": object(), "asset_tree": [image20, image34], "images": {20: image20, 34: image34}}
     calls = []
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
@@ -10953,143 +10955,136 @@ def test_data_annotation_ocr_centers_in_shape_filters_signup_button_text():
     assert centers == [(740.0, 486.0, "报名")]
 
 
-def test_daily_assistant_item_precloses_late_result_before_next_item(tmp_path, monkeypatch):
+def test_daily_assistant_entry_prefers_bottom_assistant_tab():
+    runner = create_fanxiu_runtime_runner()
+    image69 = {
+        "id": 69,
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "滚动窗口", "x": 0.08, "y": 0.25, "w": 0.85, "h": 0.55},
+        ],
+    }
+    lines = [
+        {"text": "仙府小助手任务", "x": 300, "y": 500, "w": 260, "h": 42},
+        {"text": "活动报名小助手奖励找回新", "x": 160, "y": 1410, "w": 420, "h": 40},
+    ]
+
+    matches = runner._daily_assistant_entry_matches(lines, image69)
+
+    assert matches
+    x, y, text = matches[0]
+    assert "活动报名" in text
+    assert 900 * 0.33 <= x <= 900 * 0.40
+    assert y > 1600 * 0.78
+
+
+def test_daily_assistant_new_overview_text_is_list():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_assistant_text_is_list("小助手 游历 灵兽 万灵 试炼 仙府 宗门 一键执行")
+
+
+def test_daily_assistant_one_key_waits_progress_then_closes_result(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     asset_tree = tmp_path / "asset_tree.json"
     asset_tree.write_text("[]", encoding="utf-8")
     image204 = {
         "id": 204,
-        "title": "小助手清单",
+        "title": "小助手总览",
         "width": 900,
         "height": 1600,
-        "shapes": [
-            {"title": "滚动窗口", "x": 0.0, "y": 0.2, "w": 1.0, "h": 0.65},
-            {
-                "title": "弟子教学助手",
-                "x": 0.1,
-                "y": 0.3,
-                "w": 0.8,
-                "h": 0.1,
-                "children": [
-                    {"title": "标题", "x": 0.15, "y": 0.31, "w": 0.4, "h": 0.04},
-                    {"title": "前往", "x": 0.75, "y": 0.33, "w": 0.12, "h": 0.04},
-                ],
-            },
-        ],
+        "shapes": [{"title": "一键执行", "x": 0.25, "y": 0.83, "w": 0.5, "h": 0.08}],
     }
-    image205 = {"id": 205, "title": "小助手执行详情", "shapes": [{"title": "点击屏幕继续", "x": 0.4, "y": 0.84, "w": 0.2, "h": 0.04}]}
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204, 205: image205}}
+    image276 = {"id": 276, "title": "小助手消耗确认", "shapes": [{"title": "是", "x": 0.62, "y": 0.64, "w": 0.1, "h": 0.04}]}
+    image277 = {"id": 277, "title": "小助手执行进度", "shapes": [{"title": "进度", "x": 0.52, "y": 0.51, "w": 0.22, "h": 0.05}]}
+    image275 = {"id": 275, "title": "小助手执行结果", "shapes": [{"title": "退出", "x": 0.36, "y": 0.91, "w": 0.28, "h": 0.06}]}
+    ctx = {"asset_tree_path": asset_tree, "images": {204: image204, 275: image275, 276: image276, 277: image277}}
     actions: list[tuple] = []
 
     class FakeRuntime:
         def __init__(self):
             self.scene_calls = 0
 
-        def current_scene(self, view_ids=None, **kwargs):
-            self.scene_calls += 1
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            if self.scene_calls == 1:
-                return 34, 98.0, "late-result"
-            return 204, 100.0, "list"
-
-        def ocr_lines(self, frame):
-            actions.append(("ocr_lines", frame))
-            if frame == "list":
-                return [{"text": "弟子教学助手", "x": 260, "y": 560, "w": 180, "h": 40}]
-            return []
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            if frame == "late-result":
-                return "神物园效率加成 点击屏幕继续"
-            return "小助手 弟子教学助手 前往"
-
         def wait_click(self, view_id, shape, **kwargs):
             actions.append(("wait_click", view_id, shape, kwargs))
             if False:
                 yield None
             return "success"
-
-        def click_frame_point(self, view_id, x, y):
-            actions.append(("click_frame_point", view_id, round(x), round(y)))
 
         def click_shape_center(self, image, shape_title):
             actions.append(("click_shape_center", image.get("id"), shape_title))
 
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+
+        def wait_view(self, view_id, **kwargs):
+            actions.append(("wait_view", view_id, kwargs))
+            if False:
+                yield None
+            return view_id, 100.0
+
+        def current_scene(self, view_ids=None, **kwargs):
+            self.scene_calls += 1
+            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
+            if self.scene_calls == 1:
+                return 276, 98.0, "confirm"
+            if self.scene_calls == 2:
+                return 277, 100.0, "progress"
+            return 275, 100.0, "result"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            if frame == "confirm":
+                return "本次执行预计消耗140灵石 是否继续执行 是 否"
+            if frame == "progress":
+                return "小助手执行中 剩余时间 0007"
+            return "神物园自动收取 本次获得的道具 退出"
+
     def wait_list(*_args, **_kwargs):
+        actions.append(("wait_list",))
         if False:
             yield None
         return 204, 100.0
-
-    def wait_result(*_args, **_kwargs):
-        if False:
-            yield None
-        return "no_popup"
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_wait_daily_assistant_list_state", wait_list)
-    monkeypatch.setattr(runner, "_ensure_daily_assistant_list_state", wait_list)
-    monkeypatch.setattr(runner, "_wait_daily_assistant_item_result", wait_result)
 
-    gen = runner._run_daily_assistant_item_from_list(ctx, fanxiu.threading.Event(), {}, image204, "弟子教学助手/前往")
-    with pytest.raises(StopIteration) as exc_info:
-        while True:
-            next(gen)
+    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {"assistant_return_after_items": True}))
 
-    assert exc_info.value.value == "no_popup"
-    assert ("click_shape_center", 205, "点击屏幕继续") in actions
-    assert any(action[0] == "click_frame_point" for action in actions)
+    assert result == "success"
+    assert ("wait_click", 204, "一键执行", {}) in actions
+    assert ("wait_click", 276, "是", {}) in actions
+    assert ("settle", 7.0) in actions
+    assert ("click_shape_center", 275, "退出") in actions
+    assert ("wait_list",) in actions
+    assert any(action[0] == "wait_click" and action[1:3] == (204, "返回") for action in actions)
+    assert any(action[0] == "wait_click" and action[1:3] == (69, "退出") for action in actions)
+    assert any(action[0] == "wait_view" and action[1] == 34 for action in actions)
 
 
-@pytest.mark.parametrize(
-    ("shape_title", "has_legacy_shape"),
-    [
-        ("执行-道义秘库助手", True),
-        ("执行-神物园助手", False),
-        ("执行-宗门助手", False),
-    ],
-)
-def test_daily_assistant_initial_items_use_first_screen_fixed_shapes(tmp_path, monkeypatch, shape_title, has_legacy_shape):
+def test_daily_assistant_one_key_closes_result_before_list_success(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     asset_tree = tmp_path / "asset_tree.json"
     asset_tree.write_text("[]", encoding="utf-8")
     image204 = {
         "id": 204,
-        "title": "小助手清单",
+        "title": "小助手总览",
         "width": 900,
         "height": 1600,
-        "shapes": [
-            {"title": "滚动窗口", "x": 0.0, "y": 0.2, "w": 1.0, "h": 0.65},
-            {
-                "title": shape_title.removeprefix("执行-"),
-                "x": 0.1,
-                "y": 0.3,
-                "w": 0.8,
-                "h": 0.1,
-                "children": [
-                    {"title": "标题", "x": 0.15, "y": 0.31, "w": 0.4, "h": 0.04},
-                    {"title": "执行", "x": 0.75, "y": 0.33, "w": 0.12, "h": 0.04},
-                ],
-            },
-        ],
+        "shapes": [{"title": "一键执行", "x": 0.25, "y": 0.83, "w": 0.5, "h": 0.08}],
     }
-    if has_legacy_shape:
-        image204["shapes"].append({"title": shape_title, "x": 0.72, "y": 0.33, "w": 0.15, "h": 0.05})
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
+    image276 = {"id": 276, "title": "小助手消耗确认", "shapes": [{"title": "是", "x": 0.62, "y": 0.64, "w": 0.1, "h": 0.04}]}
+    image277 = {"id": 277, "title": "小助手执行进度", "shapes": [{"title": "进度", "x": 0.52, "y": 0.51, "w": 0.22, "h": 0.05}]}
+    image275 = {"id": 275, "title": "小助手执行结果", "shapes": [{"title": "退出", "x": 0.36, "y": 0.91, "w": 0.28, "h": 0.06}]}
+    ctx = {"asset_tree_path": asset_tree, "images": {204: image204, 275: image275, 276: image276, 277: image277}}
     actions: list[tuple] = []
 
     class FakeRuntime:
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 204, 100.0, "list"
-
-        def ocr_lines(self, frame):
-            actions.append(("ocr_lines", frame))
-            return []
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "小助手"
+        def __init__(self):
+            self.scene_calls = 0
 
         def wait_click(self, view_id, shape, **kwargs):
             actions.append(("wait_click", view_id, shape, kwargs))
@@ -11097,259 +11092,46 @@ def test_daily_assistant_initial_items_use_first_screen_fixed_shapes(tmp_path, m
                 yield None
             return "success"
 
-        def click_frame_point(self, view_id, x, y):
-            actions.append(("click_frame_point", view_id, round(x), round(y)))
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
 
-    def wait_result(*_args, **_kwargs):
-        if False:
-            yield None
-        return "detail_closed"
+        def click_shape_center(self, image, shape_title):
+            actions.append(("click_shape_center", image.get("id"), shape_title))
 
-    def fail_scroll(*_args, **_kwargs):
-        raise AssertionError("first-screen initial assistant items must not scroll")
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_wait_daily_assistant_item_result", wait_result)
-    monkeypatch.setattr(runner, "_scroll_daily_xianyuan_list", fail_scroll)
-
-    result = _drain_generator(
-        runner._run_daily_assistant_item_from_list(ctx, fanxiu.threading.Event(), {}, image204, shape_title)
-    )
-
-    assert result == "detail_closed"
-    if has_legacy_shape:
-        assert ("wait_click", 204, shape_title, {}) in actions
-        assert not any(action[0] == "click_frame_point" for action in actions)
-    else:
-        assert any(action[0] == "click_frame_point" for action in actions)
-        assert not any(action[0] == "wait_click" for action in actions)
-
-
-def test_daily_assistant_allows_no_popup_summary(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {"id": 204, "title": "小助手清单", "width": 900, "height": 1600, "shapes": []}
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-
-    def fake_group(*_args, **_kwargs):
-        if False:
-            yield None
-        return [("执行-道义秘库助手", "no_popup")]
-
-    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-
-    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {"assistant_group": "完整小助手"}))
-
-    assert result == "success"
-
-
-def test_daily_assistant_allows_returned_daily_summary(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {
-        "id": 204,
-        "title": "小助手清单",
-        "width": 900,
-        "height": 1600,
-        "shapes": [{"title": "返回", "x": 0.05, "y": 0.9, "w": 0.1, "h": 0.05}],
-    }
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-    actions: list[tuple] = []
-
-    class FakeRuntime:
         def current_scene(self, view_ids=None, **kwargs):
+            self.scene_calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 69, 100.0, "daily"
+            if self.scene_calls == 1:
+                return 276, 100.0, "confirm"
+            if self.scene_calls == 2:
+                return 277, 100.0, "progress"
+            return 204, 99.0, "result-overlay"
 
         def ocr_text(self, frame):
             actions.append(("ocr_text", frame))
-            return "日常 活跃度"
+            if frame == "confirm":
+                return "本次执行预计消耗140灵石 是否继续执行 是 否"
+            if frame == "progress":
+                return "小助手执行中 剩余时间 0033"
+            return "小助手 游历 灵兽 一键执行 神物园自动收取 本次获得的道具 退出"
 
-        def wait_click(self, view_id, shape, **kwargs):
-            actions.append(("wait_click", view_id, shape, kwargs))
-            if False:
-                yield None
-
-        def wait_view(self, view_id, **kwargs):
-            actions.append(("wait_view", view_id, kwargs))
-            if False:
-                yield None
-
-    def fake_group(*_args, **_kwargs):
-        if False:
-            yield None
-        return [("弟子教学助手/前往", "returned_daily")]
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-
-    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {"assistant_group": "完整小助手"}))
-
-    assert result == "success"
-    assert not any(action[0] == "wait_click" and action[1] == 204 for action in actions)
-
-
-def test_daily_assistant_no_popup_item_remains_success_state(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {
-        "id": 204,
-        "title": "小助手清单",
-        "width": 900,
-        "height": 1600,
-        "shapes": [
-            {"title": "滚动窗口", "x": 0.0, "y": 0.2, "w": 1.0, "h": 0.65},
-            {
-                "title": "弟子求学助手",
-                "x": 0.1,
-                "y": 0.3,
-                "w": 0.8,
-                "h": 0.1,
-                "children": [
-                    {"title": "标题", "x": 0.15, "y": 0.31, "w": 0.4, "h": 0.04},
-                    {"title": "前往", "x": 0.75, "y": 0.33, "w": 0.12, "h": 0.04},
-                ],
-            },
-        ],
-    }
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-
-    class FakeRuntime:
-        def current_scene(self, view_ids=None, **kwargs):
-            return 204, 100.0, "list"
-
-        def ocr_lines(self, frame):
-            return [{"text": "弟子求学助手", "x": 260, "y": 560, "w": 180, "h": 40}]
-
-        def ocr_text(self, frame):
-            return "小助手 弟子求学助手 前往"
-
-        def wait_click(self, view_id, shape, **kwargs):
-            if False:
-                yield None
-            return "success"
-
-        def click_frame_point(self, view_id, x, y):
-            return None
-
-    def wait_result(*_args, **_kwargs):
-        if False:
-            yield None
-        return "no_popup"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_wait_daily_assistant_item_result", wait_result)
-
-    result = _drain_generator(
-        runner._run_daily_assistant_item_from_list(ctx, fanxiu.threading.Event(), {}, image204, "弟子求学助手/前往")
-    )
-
-    assert result == "no_popup"
-
-
-def test_daily_assistant_return_after_items_skips_204_when_already_daily(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {
-        "id": 204,
-        "title": "小助手清单",
-        "width": 900,
-        "height": 1600,
-        "shapes": [{"title": "返回", "x": 0.05, "y": 0.9, "w": 0.1, "h": 0.05}],
-    }
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-    actions: list[tuple] = []
-
-    class FakeRuntime:
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 69, 100.0, "daily"
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "日常 活跃度"
-
-        def wait_click(self, view_id, shape, **kwargs):
-            actions.append(("wait_click", view_id, shape, kwargs))
-            if False:
-                yield None
-
-        def wait_view(self, view_id, **kwargs):
-            actions.append(("wait_view", view_id, kwargs))
-            if False:
-                yield None
-
-    def fake_group(*_args, **_kwargs):
-        if False:
-            yield None
-        return [("弟子教学助手/前往", "returned_daily")]
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-
-    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {"assistant_group": "完整小助手"}))
-
-    assert result == "success"
-    assert not any(action[0] == "wait_click" and action[1] == 204 for action in actions)
-
-
-def test_daily_assistant_allows_verified_detail_summary(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {"id": 204, "title": "小助手清单", "width": 900, "height": 1600, "shapes": []}
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-
-    def fake_group(*_args, **_kwargs):
-        if False:
-            yield None
-        return [("执行-神物园助手", "detail_closed")]
-
-    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-
-    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {"assistant_group": "完整小助手"}))
-
-    assert result == "success"
-
-
-def test_daily_assistant_full_group_reopens_list_between_groups(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    image204 = {"id": 204, "title": "小助手清单", "width": 900, "height": 1600, "shapes": []}
-    ctx = {"asset_tree_path": asset_tree, "images": {204: image204}}
-    actions: list[tuple] = []
-
-    def fake_group(_ctx, _stop_event, _payload, _image204, group):
-        actions.append(("group", group))
-        if False:
-            yield None
-        return [(str(group), "no_popup")]
-
-    def ensure_list(*_args, **kwargs):
-        actions.append(("ensure_list", kwargs.get("label")))
+    def wait_list(*_args, **_kwargs):
+        actions.append(("wait_list",))
         if False:
             yield None
         return 204, 100.0
 
-    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-    monkeypatch.setattr(runner, "_ensure_daily_assistant_list_state", ensure_list)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_daily_assistant_list_state", wait_list)
 
-    result = _drain_generator(
-        runner._run_daily_assistant_full_group(ctx, fanxiu.threading.Event(), {}, image204)
-    )
+    result = _drain_generator(runner._run_daily_assistant_from_list(ctx, fanxiu.threading.Event(), {}))
 
-    assert result == [
-        ("initial_executes", "no_popup"),
-        ("xianfu_resource", "no_popup"),
-        ("授业-传道-授业", "no_popup"),
-        ("求学-教学", "no_popup"),
-    ]
-    assert [action[0] for action in actions].count("ensure_list") == 3
+    assert result == "success"
+    assert ("settle", 10.0) in actions
+    assert ("click_shape_center", 275, "退出") in actions
+    assert ("wait_list",) in actions
 
 
 def test_daily_assistant_ensure_list_waits_transition_before_reopen(tmp_path, monkeypatch):
@@ -11393,245 +11175,3 @@ def test_daily_assistant_ensure_list_waits_transition_before_reopen(tmp_path, mo
 
     assert result == (204, 100.0)
     assert [action[0] for action in actions].count("current_scene") == 2
-
-
-def test_daily_assistant_default_no_popup_waits_confirm_window(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    ctx = {"asset_tree_path": asset_tree, "images": {}}
-    actions: list[tuple] = []
-
-    class FakeRuntime:
-        def wait_action_settle(self, seconds=1.0):
-            actions.append(("settle", seconds))
-            yield None
-            return "success"
-
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 204, 100.0, "list"
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "小助手 神物园助手 执行"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-
-    result = _drain_generator(
-        runner._wait_daily_assistant_item_result(
-            ctx,
-            fanxiu.threading.Event(),
-            {"assistant_item_wait_seconds": 0.01, "assistant_item_poll_seconds": 0.001},
-            "神物园助手",
-            "执行",
-        )
-    )
-
-    assert result == "no_popup"
-    assert not any(action[0] == "current_scene" and action[1] == (209, 205) for action in actions)
-
-
-def test_daily_assistant_dizi_teaching_execute_skips_fast_list_probe(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    ctx = {"asset_tree_path": asset_tree, "images": {}}
-    actions: list[tuple] = []
-
-    class FakeRuntime:
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 204, 100.0, "list"
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "小助手 弟子授业助手 当前没有可授业的弟子"
-
-        def wait_action_settle(self, seconds=1.0):
-            actions.append(("settle", seconds))
-            yield None
-            return "success"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-
-    result = _drain_generator(
-        runner._wait_daily_assistant_item_result(
-            ctx,
-            fanxiu.threading.Event(),
-            {"assistant_capture_transient_feedback": False},
-            "弟子授业助手",
-            "执行",
-        )
-    )
-
-    assert result == "no_action"
-    assert actions[0] == ("current_scene", (214, 213, 210, 208, 263, 209, 205, 204, 69, 34), {"update": True})
-    assert not any(action[0] == "current_scene" and action[1] == (209, 205) for action in actions)
-
-
-def test_daily_assistant_tongyou_scene_213_cancels_without_ocr_hint(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    ctx = {
-        "asset_tree_path": asset_tree,
-        "images": {
-            213: {
-                "id": 213,
-                "title": "同游传道弟子已满提示",
-                "width": 900,
-                "height": 1600,
-                "shapes": [{"title": "取消", "x": 0.2, "y": 0.7, "w": 0.2, "h": 0.08}],
-            }
-        },
-    }
-    actions: list[tuple] = []
-
-    class FakeRuntime:
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 213, 100.0, "limit-dialog"
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "一键同游 取消 确认"
-
-        def click_shape_center(self, image, title):
-            actions.append(("click_shape_center", image["id"], title))
-
-        def wait_action_settle(self, seconds=1.0):
-            actions.append(("settle", seconds))
-            yield None
-            return "success"
-
-        def wait_view(self, scene_id, timeout=10.0, label=""):
-            actions.append(("wait_view", scene_id, timeout, label))
-            yield None
-            return "success"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-
-    result = _drain_generator(
-        runner._wait_daily_assistant_item_result(ctx, fanxiu.threading.Event(), {}, "同游传道助手", "执行")
-    )
-
-    assert result == "cancelled"
-    assert ("click_shape_center", 213, "取消") in actions
-    assert not any(action[:3] == ("click_shape_center", 210, "确认") for action in actions)
-
-
-def test_daily_assistant_tongyou_scene_210_confirms_without_ocr_hint(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    asset_tree = tmp_path / "asset_tree.json"
-    asset_tree.write_text("[]", encoding="utf-8")
-    ctx = {
-        "asset_tree_path": asset_tree,
-        "images": {
-            210: {
-                "id": 210,
-                "title": "同游传道确认",
-                "width": 900,
-                "height": 1600,
-                "shapes": [{"title": "确认", "x": 0.6, "y": 0.7, "w": 0.2, "h": 0.08}],
-            }
-        },
-    }
-    actions: list[tuple] = []
-
-    class FakeRuntime:
-        result_checked = False
-
-        def current_scene(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            if view_ids == [209, 205]:
-                return None, 0.0, "confirm-dialog"
-            if view_ids == [204]:
-                return None, 0.0, "confirm-dialog"
-            if view_ids == [214, 213, 210, 208, 263, 209, 205, 204, 69, 34]:
-                return 210, 100.0, "confirm-dialog"
-            self.result_checked = True
-            return 204, 100.0, "list"
-
-        def ocr_text(self, frame):
-            actions.append(("ocr_text", frame))
-            return "一键同游 取消 确认" if frame == "confirm-dialog" else "小助手 同游传道助手 执行"
-
-        def click_shape_center(self, image, title):
-            actions.append(("click_shape_center", image["id"], title))
-
-        def wait_action_settle(self, seconds=1.0):
-            actions.append(("settle", seconds))
-            yield None
-            return "success"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-
-    result = _drain_generator(
-        runner._wait_daily_assistant_item_result(
-            ctx,
-            fanxiu.threading.Event(),
-            {"assistant_tongyou_result_timeout_seconds": 0.01, "assistant_item_poll_seconds": 0.001},
-            "同游传道助手",
-            "执行",
-        )
-    )
-
-    assert result == "confirmed_no_result"
-    assert ("click_shape_center", 210, "确认") in actions
-    assert not any(action[:3] == ("click_shape_center", 213, "取消") for action in actions)
-    assert sum(1 for action in actions if action[0] == "current_scene" and action[1] == (212, 211, 263, 205, 209, 204, 210, 208, 69, 34)) >= 2
-
-
-def test_daily_assistant_result_scene_accepts_generic_continue_reward_text():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_scene_id(
-        None,
-        "【仙花祈愿】活动积分增加454点 恭喜获得神·刘备：获得积分效率加成 点击屏幕继续",
-    ) == 205
-
-
-def test_daily_assistant_result_scene_accepts_elixir_cultivation_continue_text():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_scene_id(
-        None,
-        "九转炽阳得触发服用丹药获得属性翻倍修为2821.78万 点击屏幕继续 3秒后自动关闭",
-    ) == 205
-
-
-def test_daily_assistant_result_scene_accepts_elixir_cultivation_without_continue_text():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_scene_id(
-        None,
-        "九转炽阳 触发服用丹药获得属性翻倍 修为2821.78万",
-    ) == 263
-
-
-def test_daily_assistant_result_scene_ignores_daily_page_reward_float_text():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_scene_id(
-        69,
-        "日常 参与道法争锋 攻击+2.2兆 九转炽阳 触发服用丹药获得属性翻倍",
-    ) is None
-
-
-def test_daily_assistant_result_scene_ignores_list_page_continue_float_text():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_scene_id(
-        204,
-        "神物园效率加成 点击屏幕继续",
-    ) is None
-
-
-def test_daily_assistant_tongyou_terminal_states_are_verified():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_assistant_result_is_verified("confirmed_no_result") is True
-    assert runner._daily_assistant_result_is_verified("cancelled") is True
-
-

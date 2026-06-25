@@ -1868,6 +1868,77 @@ def test_local_entry_proxy_prefers_everything_recursive_size_over_stale_index(
     assert payload["items"][0]["direct_file_bytes"] == 10
 
 
+def test_local_entry_proxy_can_scan_filesystem_recursive_size_over_stale_index(
+    client,
+    session,
+    auth_user,
+    test_device,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    indexed_dir = browse_dir / "indexed"
+    nested_dir = indexed_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    indexed_file = indexed_dir / "old-index.txt"
+    indexed_file.write_bytes(b"a" * 10)
+    extra_file = nested_dir / "extra.bin"
+    extra_file.write_bytes(b"b" * 90)
+
+    monkeypatch.setattr("backend.api.filesystem.get_device_id", lambda: test_device["id"])
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        lambda **_: {},
+    )
+    session.add(
+        DeviceFile(
+            device_id=test_device["id"],
+            absolute_path=str(indexed_file),
+            last_known_path=str(indexed_file),
+            file_size=10,
+            modified_at_ms=1000,
+            match_status="matched",
+            weight=0,
+        )
+    )
+    session.commit()
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={
+            "absolute_path": str(browse_dir),
+            "recursive_stats_source": "filesystem",
+            "sort_program": {
+                "rules": [
+                    {
+                        "field": "recursive_total_bytes",
+                        "direction": "desc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["items"][0]["name"] == "indexed"
+    assert payload["items"][0]["recursive_total_bytes"] == 100
+    assert payload["items"][0]["recursive_file_count"] == 2
+    assert payload["items"][0]["direct_file_bytes"] == 10
+
+
 def test_remote_entry_proxy_forwards_files_request(client, session, auth_user, monkeypatch):
     entry = UserDevice(
         user_id=auth_user.id,

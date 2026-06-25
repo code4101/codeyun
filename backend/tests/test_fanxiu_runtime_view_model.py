@@ -12,8 +12,8 @@ from pyxllib.autogui import (
     flatten_shapes,
     image_number,
     index_images,
+    normalize_frame_layer,
     normalize_match_role,
-    normalize_scene_identity_level,
 )
 
 
@@ -82,28 +82,30 @@ def test_view_scene_identity_uses_match_role_model():
     assert identities[1].scene_identity_role is MatchRole.decisive
 
 
-def test_view_scene_identity_level_keeps_legacy_scope_compatible():
-    local_image = {
+def test_view_layer_uses_explicit_frame_layer():
+    layer2_image = {
         "type": "image",
         "filename": "0266.png",
+        "layer": 2,
         "shapes": [{"id": "local", "title": "拜谒", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
     }
-    global_image = {
+    layer1_image = {
         "type": "image",
         "filename": "0034.png",
+        "layer": 1,
         "shapes": [{"id": "global", "title": "世界", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
     }
-    explicit_image = {
+    default_image = {
         "type": "image",
         "filename": "0001.png",
-        "sceneIdentityLevel": 0,
         "shapes": [{"id": "legacy", "title": "旧", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
     }
 
-    assert normalize_scene_identity_level("global") == 2
-    assert View(local_image).scene_identity_level == 1
-    assert View(global_image).scene_identity_level == 2
-    assert View(explicit_image).scene_identity_level == 0
+    assert normalize_frame_layer("layer1") == 1
+    assert normalize_frame_layer("2") == 2
+    assert View(layer2_image).layer == 2
+    assert View(layer1_image).layer == 1
+    assert View(default_image).layer == 3
 
 
 def test_view_close_keeps_action_on_runtime_side():
@@ -260,9 +262,12 @@ def test_fanxiu_runtime_wait_view_prefers_view_identity_match(monkeypatch):
 def test_fanxiu_runtime_wait_view_timeout(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {"entry": object(), "images": {}}
-    monotonic_values = iter([0.0, 0.5, 1.2])
+    monotonic_values = iter([0.0, 0.2, 0.2, 0.5, 0.5, 0.8, 0.8, 1.2, 1.2])
 
-    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.time.monotonic", lambda: next(monotonic_values))
+    def monotonic_time():
+        return next(monotonic_values, 1.2)
+
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.time.monotonic", monotonic_time)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
 

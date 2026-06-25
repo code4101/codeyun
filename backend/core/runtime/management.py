@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import copy
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +92,13 @@ from backend.models import Task as TaskModel, UserDevice
 BUILTIN_OCR_SERVICE_KEY = "ocr"
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
 CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
+_BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 10.0
+_builtin_services_status_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _invalidate_builtin_services_status_cache() -> None:
+    global _builtin_services_status_cache
+    _builtin_services_status_cache = None
 
 
 def _env_enabled(value: str | None) -> bool | None:
@@ -1396,6 +1405,13 @@ def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
 
 
 def _collect_builtin_services() -> dict[str, Any]:
+    global _builtin_services_status_cache
+    now = time.monotonic()
+    if _builtin_services_status_cache is not None:
+        cached_at, cached_payload = _builtin_services_status_cache
+        if now - cached_at <= _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached_payload)
+
     items = [
         _serialize_ocr_service_item(get_ocr_service_status()),
         _serialize_codeyun_watchdog_service_item(),
@@ -1409,9 +1425,11 @@ def _collect_builtin_services() -> dict[str, Any]:
         items.append(_serialize_fanxiu_capture_runtime_service_item())
     if _fanxiu_game_window_service_enabled():
         items.append(_serialize_game_window_service_item())
-    return {
+    payload = {
         "items": items,
     }
+    _builtin_services_status_cache = (now, copy.deepcopy(payload))
+    return payload
 
 
 def build_runtime_status(session: Session, device_id: str | None = None) -> dict[str, Any]:
@@ -1595,6 +1613,7 @@ def add_builtin_runtime_job(task_key: str) -> dict[str, Any]:
 
 def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, Any]:
     normalized_key = str(task_key or "").strip()
+    _invalidate_builtin_services_status_cache()
     if normalized_key == BUILTIN_OCR_SERVICE_KEY:
         try:
             return start_ocr_service(replace_existing=False)
@@ -1660,6 +1679,7 @@ def stop_command_runtime_item(task_key: str, session: Session) -> dict[str, Any]
 
 def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
     normalized_key = str(task_key or "").strip()
+    _invalidate_builtin_services_status_cache()
     if normalized_key == BUILTIN_OCR_SERVICE_KEY:
         return stop_ocr_service()
     if normalized_key == CODEYUN_WATCHDOG_SERVICE_KEY:
@@ -1690,6 +1710,7 @@ def configure_builtin_runtime_item_autostart(task_key: str, enabled: bool) -> di
     normalized_key = str(task_key or "").strip()
     if normalized_key != CODEYUN_WATCHDOG_SERVICE_KEY:
         raise HTTPException(status_code=400, detail="该运行单元不支持开机自启配置")
+    _invalidate_builtin_services_status_cache()
     try:
         return enable_codeyun_watchdog_startup() if enabled else disable_codeyun_watchdog_startup()
     except CodeYunWatchdogError as exc:

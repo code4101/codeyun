@@ -109,15 +109,29 @@ class DataAnnotationRuntimeDebugContext:
         return None
 
     def shape(self, scene: int | str, title: str, *, contains: bool = False) -> dict[str, Any] | None:
-        return self._runner._find_shape(self.image(scene), title, contains=contains)
+        image = self.image(scene)
+        if not image:
+            return None
+        if contains or not hasattr(self._runner, "_fanxiu_runtime"):
+            return self._runner._find_shape(image, title, contains=contains)
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        try:
+            return runtime.shape(image, title).raw
+        except RuntimeError:
+            return None
 
     def shape_score(self, scene: int | str, title: str, *, frame: str | None = None, contains: bool = False) -> float:
         image = self.image(scene)
-        shape = self._runner._find_shape(image, title, contains=contains)
+        shape = self.shape(scene, title, contains=contains)
         if not image or not shape:
             raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
         frame_data_url = frame or self.frame()
-        return float(self._runner._shape_score(self._ctx, image, shape, frame_data_url) or 0.0)
+        source_image = (
+            self._runner._effective_shape_source_image(self._ctx, image, shape)
+            if hasattr(self._runner, "_effective_shape_source_image")
+            else image
+        )
+        return float(self._runner._shape_score(self._ctx, source_image, shape, frame_data_url) or 0.0)
 
     def shape_probe(
         self,
@@ -129,16 +143,21 @@ class DataAnnotationRuntimeDebugContext:
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         image = self.image(scene)
-        raw_shape = self._runner._find_shape(image, title, contains=contains)
+        raw_shape = self.shape(scene, title, contains=contains)
         if not image or not raw_shape:
             raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
         shape = dict(raw_shape)
         if overrides:
             shape.update(overrides)
         frame_data_url = frame or self.frame()
+        source_image = (
+            self._runner._effective_shape_source_image(self._ctx, image, raw_shape)
+            if hasattr(self._runner, "_effective_shape_source_image")
+            else image
+        )
         condition_results: list[dict[str, Any]] = []
         for condition in self._runner._shape_match_conditions(shape):
-            result = self._runner._match_shape(self._ctx, image, shape, frame_data_url, condition=condition)
+            result = self._runner._match_shape(self._ctx, source_image, shape, frame_data_url, condition=condition)
             condition_results.append({
                 "condition": condition,
                 "similarity": float(result.get("similarity") or 0.0),
@@ -180,10 +199,15 @@ class DataAnnotationRuntimeDebugContext:
     def tap_shape(self, scene: int | str, title: str, *, contains: bool = False, frame: str | None = None) -> None:
         self._require_act()
         image = self.image(scene)
-        shape = self._runner._find_shape(image, title, contains=contains)
+        shape = self.shape(scene, title, contains=contains)
         if not image or not shape:
             raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
-        self._runner._click_shape(self._ctx, image, shape, frame_data_url=frame)
+        source_image = (
+            self._runner._effective_shape_source_image(self._ctx, image, shape)
+            if hasattr(self._runner, "_effective_shape_source_image")
+            else image
+        )
+        self._runner._click_shape(self._ctx, source_image, shape, frame_data_url=frame)
 
     def wait_click(self, frame: int | str | None, shape: str, **options: Any):
         self._require_act()

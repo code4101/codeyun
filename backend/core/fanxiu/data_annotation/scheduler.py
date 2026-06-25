@@ -535,7 +535,7 @@ def repair_data_annotation_scheduler_tasks(
             task["cooldown_seconds"] = default_task.get("cooldown_seconds")
             changed = True
         if str(task.get("id") or "") == "legacy-daily-assistant":
-            for key in ("enabled", "schedule_times", "cooldown_seconds"):
+            for key in ("schedule_times", "cooldown_seconds"):
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True

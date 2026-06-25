@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "2f6baf8b44212a4d492e7b97b7f537d015dc2a0e"
-last_audited_at: "2026-06-24T15:49:54.8395380+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-2f6baf8b/report.md"
-last_frontend_commit_summary: "完整关闭 e18149f4..2f6baf8b：凡修 data-annotation 场景身份迁移与 Mystia 标准目录入口完成三视口实图巡检；UI 模型保持主表/投影/详情的低概念数，无需自动修复。"
-audited_commit_count: 38
+last_audited_commit: "30ba2484654687cc6bb9582a3cce8312a68e2c2f"
+last_audited_at: "2026-06-25T09:37:26.6568801+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-25-frontend-design-30ba2484-closeout/report.md"
+last_frontend_commit_summary: "完整关闭 2f6baf8b..30ba2484：补齐 Fanxiu data-annotation admin 权限实图，连同上一轮 Mystia/日历巡检和日历刷新标签减法修复一起完成验证；当前无 pending。"
+audited_commit_count: 39
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,34 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-25（补审关闭）
+
+- 完整范围：`2f6baf8b44212a4d492e7b97b7f537d015dc2a0e..30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 覆盖提交：`30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 前端入口提交：`30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 入口如何牵引到旧问题：本轮没有新增提交，而是关闭上轮同一范围的 pending。上轮缺口只剩 `fanxiu/data-annotation` 真实权限页面；本轮用本地 admin token 补齐三视口实图，验证同一条“帧树身份事实 -> 场景/目录投影 -> 继续标注”的用户决策闭环。
+- 本轮减法：本轮不新增源码修复、不新增 UI 概念。上一轮已完成的日历月视图 `刷新中` 标签删除继续保留；Fanxiu 截图确认 `目录 / 场景` 仍归属于同一个帧树投影，没有拆出额外常驻说明或状态区。
+- 信息量保持：Fanxiu 仍展示设备、窗口、通道、画面参数、行为树入口、画面空态、帧树目录/场景投影和连拍入口；减少的是上轮日历自动刷新时的瞬时状态标签，不减少标注能力。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-25-frontend-design-30ba2484-closeout/report.md`
+- 验证：复用本地 `5173/8000` 开发环境；`fanxiu/data-annotation` 用 admin token 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；控制台 error/warn 为 0，DOM 横向溢出检测为 0；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：Fanxiu pending 属于验证权限阻塞，不是新的 UI 模型债务；日历问题仍归类为已修复的前端状态投影；sync-conflict 文件仍是源码同步污染风险，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：当前截图反映有未提交改动的工作树运行态，不是纯净 `30ba2484` checkout；Fanxiu 未连接真实设备，因此没有覆盖选中真实截图帧后的 shape inspector 细节；大量 `*.sync-conflict-*` 文件仍未清理。
+- 处理结果：本轮补齐上轮缺失的 Fanxiu 有权限实图并完成构建验证，因此完整关闭 `2f6baf8b..30ba2484`，把 `last_audited_commit` 推进到 `30ba2484654687cc6bb9582a3cce8312a68e2c2f`，清空 `pending_or_skipped_ranges`。
+
+### 2026-06-25
+
+- 完整范围：`2f6baf8b44212a4d492e7b97b7f537d015dc2a0e..30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 覆盖提交：`30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 前端入口提交：`30ba2484654687cc6bb9582a3cce8312a68e2c2f`
+- 入口如何牵引到旧问题：提交同时推进 Mystia 目录分页/排序/详情投影、凡修 data-annotation 帧树场景身份显示、星图日历月视图 loading 投影，并把大量 `*.sync-conflict-*` 副本带入源码树。巡检边界因此收敛在“目录候选表 -> 选中详情”“帧树身份事实”“日历后台加载状态是否打断首屏”三条链路；冲突副本只作为源码污染风险记录，不作为 UI 页面重构对象扩散。
+- 本轮减法：删除 `CalendarNotes.vue` 月视图加载时的 `刷新中` 标签，让自动刷新回到静默后台状态；保留日期加载范围、Codex 统计错误和重试入口。Mystia 保持“数据集切换 + 搜索 + 表格 + 分页 + 可调详情”的基础模型，未恢复统计横条。凡修提交方向上把独立场景徽标收回到帧标题样式，但未能完成有权限实图复验。
+- 信息量保持：日历仍展示后端加载日期范围、前端筛选程序、日历节点和错误重试；Mystia 仍展示菜品/食材/饮品/客人/地点/图片/音频目录、分页、排序、详情图片和长文本；减少的是日历刷新时的瞬时状态标签。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-25-frontend-design-30ba2484/report.md`
+- 验证：复用并重启本地 `5173/8000` 开发环境；Mystia 菜品、Mystia 稀客、星图日历均完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。Mystia DOM 横向溢出检测来自表格内容宽于视口且被 `.wiki-list` 滚动容器承接，未判为遮挡。
+- 根因分层：日历问题属于前端状态投影，已修；Mystia 未发现新表现层问题；凡修 data-annotation 因权限阻塞无法完成表现层截图；大量 sync-conflict 文件属于源码/同步流程污染，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：普通临时审计账号访问 `fanxiu/data-annotation` 落到 403，未取得真实工作台三视口截图；提交新增的 `*.sync-conflict-*` 文件和 `components.d.ts` 冲突组件声明未导致构建失败但仍污染源码树；当前工作区有多处非本轮未提交改动，本轮只修改了 `CalendarNotes.vue` 一个标签。
+- 处理结果：本轮已做低风险修复但未完整关闭增量范围；按规则不推进 `last_audited_commit`，在 `pending_or_skipped_ranges` 保留 `2f6baf8b..30ba2484`，待补凡修有权限实图后再关闭。
 
 ### 2026-06-24
 

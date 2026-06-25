@@ -106,15 +106,15 @@ class CodexThreadMessageImagesResponse(BaseModel):
 
 class CodexWorkloadTurn(BaseModel):
     id: str
-    thread_id: str
-    turn_index: int
-    thread_title: str
-    project_label: str
+    thread_id: str | None = None
+    turn_index: int | None = None
+    thread_title: str | None = None
+    project_label: str | None = None
     project_secondary_label: str | None = None
     workspace_root: str | None = None
-    group_key: str
-    group_label: str
-    user_seq: int
+    group_key: str | None = None
+    group_label: str | None = None
+    user_seq: int | None = None
     assistant_seq: int | None = None
     start_at: float
     end_at: float
@@ -284,11 +284,20 @@ def get_codex_workload(
     root_dir: str | None = Query(default=None),
     start_at: float | None = Query(default=None),
     end_at: float | None = Query(default=None),
+    compact: bool = Query(default=False),
+    include_segments: bool = Query(default=True),
     session: Session = Depends(get_session),
     _: BaseDevice = Depends(verify_api_token),
 ):
     try:
-        return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
+        return build_codex_workload(
+            root_dir,
+            session=session,
+            start_at=start_at,
+            end_at=end_at,
+            compact=compact,
+            include_segments=include_segments,
+        )
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         raise _translate_codex_error(exc) from exc
 

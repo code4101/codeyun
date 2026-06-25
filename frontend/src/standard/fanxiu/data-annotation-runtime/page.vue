@@ -59,8 +59,11 @@ const contextMenu = ref({
 let pollTimer: number | null = null;
 let pollTick = 0;
 let polling = false;
+let doctorEnsurePromise: Promise<void> | null = null;
+let lastDoctorEnsureAt = 0;
 const CELL_LOG_LIMIT = 24;
 const CELL_LOG_ENTRY_LIMIT = 1200;
+const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
 const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
 const HUMAN_ISOLATION_TTL_SECONDS = 21600;
 
@@ -548,12 +551,43 @@ const refreshScheduler = async () => {
 };
 
 const refreshDoctorWatchLatest = async () => {
-  try {
-    await ensureFanxiuDataAnnotationDoctorWatch();
-  } catch (error) {
-    console.warn('ensure doctor watch failed', error);
-  }
   doctorWatchLatest.value = await getFanxiuDataAnnotationDoctorWatchLatest();
+};
+
+const applyDoctorWatchLatestPayload = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') return false;
+  const candidate = payload as Partial<FanxiuDataAnnotationDoctorWatchLatestResponse>;
+  const hasPayload = (
+    typeof candidate.exists === 'boolean'
+    || typeof candidate.message === 'string'
+    || (candidate.snapshot && typeof candidate.snapshot === 'object')
+    || (candidate.heartbeat && typeof candidate.heartbeat === 'object')
+  );
+  if (!hasPayload) return false;
+  doctorWatchLatest.value = candidate as FanxiuDataAnnotationDoctorWatchLatestResponse;
+  return true;
+};
+
+const shouldEnsureDoctorWatch = (payload = doctorWatchLatest.value) => {
+  if (!payload?.exists) return true;
+  return !Boolean(payload.heartbeat?.active);
+};
+
+const ensureDoctorWatchInBackground = () => {
+  if (doctorEnsurePromise || !shouldEnsureDoctorWatch()) return;
+  const now = Date.now();
+  if (now - lastDoctorEnsureAt < DOCTOR_ENSURE_COOLDOWN_MS) return;
+  lastDoctorEnsureAt = now;
+  doctorEnsurePromise = (async () => {
+    try {
+      const ensured = await ensureFanxiuDataAnnotationDoctorWatch();
+      applyDoctorWatchLatestPayload(ensured.latest);
+    } catch (error) {
+      console.warn('ensure doctor watch failed', error);
+    } finally {
+      doctorEnsurePromise = null;
+    }
+  })();
 };
 
 const refreshAll = async () => {
@@ -563,6 +597,7 @@ const refreshAll = async () => {
   } finally {
     loading.value = false;
   }
+  ensureDoctorWatchInBackground();
 };
 
 const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotationRuntimeStatus | void>) => {
@@ -575,6 +610,7 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
     const status = await action();
     if (status) applyStatus(status);
     await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+    ensureDoctorWatchInBackground();
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '操作失败');
   } finally {
@@ -670,6 +706,7 @@ const startPolling = () => {
         await refreshStatus();
         if (syncSlowState) {
           await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+          ensureDoctorWatchInBackground();
         }
       } finally {
         polling = false;

@@ -814,6 +814,7 @@ let workspaceStateReady = false;
 let workspacePersistTimer: number | null = null;
 let lastTableScrollTop = 0;
 let lastTableScrollLeft = 0;
+let rootLoadVersion = 0;
 
 const rootOptions = computed<RootOption[]>(() => [
   ...(isWechatMode.value
@@ -1649,6 +1650,7 @@ async function fetchListing(request: DeviceFileSelector): Promise<DeviceDirector
   return fetchDeviceDirectoryItems(selectedEntryId.value, {
     ...request,
     sort_program: DIRECTORY_SORT_PROGRAM,
+    recursive_stats_source: 'filesystem',
   });
 }
 
@@ -1673,6 +1675,22 @@ async function restoreExpandedNodes(
   }
 }
 
+async function continueRestoreExpandedState(
+  loadVersion: number,
+  state: StorageWorkspaceState | null | undefined,
+) {
+  // Let the root rows render first, then continue restoring the expanded tree.
+  await nextTick();
+  if (loadVersion !== rootLoadVersion) {
+    return;
+  }
+  await restoreExpandedNodes(rootNodes.value, state);
+  if (loadVersion !== rootLoadVersion) {
+    return;
+  }
+  await restoreTableScroll(state);
+}
+
 async function loadRoot(
   request: DeviceFileSelector,
   options: LoadRootOptions = {},
@@ -1683,6 +1701,7 @@ async function loadRoot(
 
   loading.value = true;
   loadError.value = '';
+  const loadVersion = ++rootLoadVersion;
   try {
     const listing = await fetchListing(request);
     currentListing.value = listing;
@@ -1695,8 +1714,7 @@ async function loadRoot(
     rootNodes.value = createNodes(listing, 0, options.workspaceState);
     syncPathInputFromRequest(request);
     if (options.restoreExpanded) {
-      await restoreExpandedNodes(rootNodes.value, options.workspaceState);
-      await restoreTableScroll(options.workspaceState);
+      void continueRestoreExpandedState(loadVersion, options.workspaceState);
     } else {
       await resetTableScroll();
     }

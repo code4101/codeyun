@@ -520,6 +520,31 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
     assert filtered_workload["total_turns"] == 1
     assert [item["id"] for item in filtered_workload["turns"]] == ["thread-2:1"]
 
+    compact_workload_response = client.get(
+        f"/api/device-entries/{entry_id}/codex/workload",
+        params={
+            "root_dir": str(codex_root),
+            "start_at": 1776920404.1,
+            "compact": True,
+            "include_segments": False,
+        },
+    )
+    assert compact_workload_response.status_code == 200
+    compact_workload = compact_workload_response.json()
+    assert compact_workload["total_threads"] == 1
+    assert compact_workload["total_turns"] == 1
+    assert compact_workload["segments"] == []
+    assert compact_workload["max_concurrency"] == 0
+    assert compact_workload["turns"] == [
+        {
+            "id": "thread-2:1",
+            "start_at": 1776920403.0,
+            "end_at": 1776920405.0,
+            "duration_seconds": 2.0,
+            "completed": True,
+        }
+    ]
+
     root_key = os.path.normcase(os.path.normpath(str(codex_root.resolve(strict=False))))
     root_cache = session.get(CodexTextCacheRoot, root_key)
     assert root_cache is not None
@@ -1067,11 +1092,16 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
 
     workload_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/workload",
-        params={"root_dir": "C:\\Users\\test\\.codex"},
+        params={"root_dir": "C:\\Users\\test\\.codex", "compact": True, "include_segments": False},
     )
     assert workload_response.status_code == 200
     assert captured[3]["url"] == "http://remote-device:8000/api/codex/workload"
     assert captured[3]["timeout"] == 180
+    assert captured[3]["params"] == {
+        "root_dir": "C:\\Users\\test\\.codex",
+        "compact": True,
+        "include_segments": False,
+    }
 
     latest_daily_summary_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/daily-summary/latest",

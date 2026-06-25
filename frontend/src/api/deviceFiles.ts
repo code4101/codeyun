@@ -13,6 +13,7 @@ export type DeviceDirectorySortField =
   | 'weighted_file_count';
 export type DeviceDirectorySortDirection = 'asc' | 'desc';
 export type DeviceDirectorySortNulls = 'first' | 'last';
+export type DeviceDirectoryRecursiveStatsSource = 'indexed' | 'filesystem';
 
 export interface DeviceDirectorySortRule {
   field: DeviceDirectorySortField;
@@ -102,6 +103,7 @@ export interface DeviceMediaListRequest extends DeviceFileSelector {
 
 export interface DeviceDirectoryListRequest extends DeviceFileSelector {
   sort_program?: DeviceDirectorySortProgram | null;
+  recursive_stats_source?: DeviceDirectoryRecursiveStatsSource;
 }
 
 export interface DeviceMediaListing {
