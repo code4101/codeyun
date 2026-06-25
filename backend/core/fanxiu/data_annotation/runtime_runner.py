@@ -121,7 +121,7 @@ from pyxllib.autogui import (
     frame_size as _runtime_frame_size,
     image_number as _runtime_image_number,
     index_images as _index_runtime_images,
-    normalize_scene_identity_level,
+    normalize_frame_layer,
 )
 
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
@@ -431,12 +431,40 @@ class FanxiuRuntime(Runtime):
             current = current.parent_shape
         return "[" + "/".join(reversed(parts)) + "]"
 
-    def resolve_shape_selector(self, view: View, selector: Shape | str) -> Shape:
-        if isinstance(selector, Shape):
-            return selector
-        parts = self._shape_selector_parts(selector)
-        if not parts:
-            raise RuntimeError("shape 选择器为空")
+    def _view_ancestor_chain(self, view: View) -> list[View]:
+        if not isinstance(view.raw, dict):
+            return []
+        view_id = self.runner._image_number(view.raw)
+        if view_id is None:
+            return []
+        tree = self.ctx.get("asset_tree")
+        if not isinstance(tree, list):
+            return []
+        path: list[dict[str, Any]] = []
+
+        def visit(items: list[dict[str, Any]], ancestors: list[dict[str, Any]]) -> bool:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                next_ancestors = ancestors
+                if item.get("type") == "image":
+                    item_id = self.runner._image_number(item)
+                    if item_id == view_id:
+                        path.extend(ancestors)
+                        return True
+                    next_ancestors = [*ancestors, item]
+                children = item.get("children")
+                if isinstance(children, list) and visit([child for child in children if isinstance(child, dict)], next_ancestors):
+                    return True
+            return False
+
+        visit([node for node in tree if isinstance(node, dict)], [])
+        return [View(item) for item in reversed(path)]
+
+    def _effective_shape_search_views(self, view: View) -> list[View]:
+        return [view, *self._view_ancestor_chain(view)]
+
+    def _resolve_own_shape_selector(self, view: View, parts: list[str]) -> Shape | None:
         if len(parts) > 1:
             candidates = [shape for shape in view.get_shapes(include_descendants=False) if shape.title == parts[0]]
             for title in parts[1:]:
@@ -444,20 +472,37 @@ class FanxiuRuntime(Runtime):
                 for candidate in candidates:
                     next_candidates.extend([child for child in candidate.children() if child.title == title])
                 candidates = next_candidates
-            if not candidates:
-                raise RuntimeError(f"shape 选择器 [{'/'.join(parts)}] 未命中")
+            if len(candidates) == 1:
+                return candidates[0]
             if len(candidates) > 1:
-                choices = "\n".join(f"- {self._shape_path(candidate)}" for candidate in candidates)
+                choices = "\n".join(f"- #{view.id or '?'} {self._shape_path(candidate)}" for candidate in candidates)
                 raise RuntimeError(f"shape 选择器 [{'/'.join(parts)}] 命中多个目标：\n{choices}\n请使用更精确路径。")
-            return candidates[0]
+            return None
         title = parts[0]
         candidates = [shape for shape in view.get_shapes() if shape.title == title]
-        if not candidates:
-            raise RuntimeError(f"shape 选择器 [{title}] 未命中")
+        if len(candidates) == 1:
+            return candidates[0]
         if len(candidates) > 1:
-            choices = "\n".join(f"- {self._shape_path(candidate)}" for candidate in candidates)
+            choices = "\n".join(f"- #{view.id or '?'} {self._shape_path(candidate)}" for candidate in candidates)
             raise RuntimeError(f"shape 选择器 [{title}] 命中多个目标：\n{choices}\n请使用精确路径。")
-        return candidates[0]
+        return None
+
+    def resolve_shape_selector(self, view: View, selector: Shape | str) -> Shape:
+        if isinstance(selector, Shape):
+            return selector
+        parts = self._shape_selector_parts(selector)
+        if not parts:
+            raise RuntimeError("shape 选择器为空")
+        for candidate_view in self._effective_shape_search_views(view):
+            found = self._resolve_own_shape_selector(candidate_view, parts)
+            if found is not None:
+                if candidate_view.id != view.id:
+                    self.runner._log(
+                        "detail",
+                        f"shape 继承：#{view.id or '?'} 使用父帧 #{candidate_view.id or '?'} {self._shape_path(found)}",
+                    )
+                return found
+        raise RuntimeError(f"shape 选择器 [{'/'.join(parts)}] 未命中")
 
     def _view_has_scene_identity(self, view: View) -> bool:
         if not isinstance(view.raw, dict):
@@ -571,6 +616,7 @@ class FanxiuRuntime(Runtime):
         else:
             self.runner._log("detail", f"wait_click：#{view.id or '?'} 无场景标识，跳过场景等待")
         target = self.resolve_shape_selector(view, shape)
+        target_view = target.parent_view if isinstance(target.parent_view, View) and isinstance(target.parent_view.raw, dict) else view
         label = f"wait_click #{view.id or '?'} {self._shape_path(target)}"
         self._emit_runtime_action(
             f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
@@ -586,12 +632,12 @@ class FanxiuRuntime(Runtime):
             frame_data_url, match_result = yield from self.runner._wait_shape_match(
                 self.ctx,
                 self.stop_event or threading.Event(),
-                view.raw,
+                target_view.raw,
                 match_shape,
                 timeout=timeout,
                 label=label,
             )
-            self.runner._click_shape(self.ctx, view.raw, target.raw, frame_data_url, match_result=match_result)
+            self.runner._click_shape(self.ctx, target_view.raw, target.raw, frame_data_url, match_result=match_result)
             self.clear_frame()
             return
         if bool(target.raw.get("floating")):
@@ -599,11 +645,11 @@ class FanxiuRuntime(Runtime):
                 "warning",
                 f"{label}：标注开启了浮动但没有图像/OCR条件，退化为固定坐标点击",
             )
-        width, height = self.runner._frame_size(view.raw)
+        width, height = self.runner._frame_size(target_view.raw)
         click_x = (float(target.raw.get("x") or 0) + float(target.raw.get("w") or 0) * x_ratio) * width
         click_y = (float(target.raw.get("y") or 0) + float(target.raw.get("h") or 0) * y_ratio) * height
         self.runner._log("detail", f"{label}：固定点击 ({click_x:.1f},{click_y:.1f})")
-        self.runner._click_frame_point(self.ctx, view.raw, click_x, click_y)
+        self.runner._click_frame_point(self.ctx, target_view.raw, click_x, click_y)
         self.clear_frame()
 
     def wait_clicks(self, steps: Iterable[tuple[View | int | str | None, Shape | str]]):
@@ -768,7 +814,13 @@ class FanxiuRuntime(Runtime):
             frame_elapsed = time.monotonic() - frame_started_at
             elapsed = time.monotonic() - start
             identify_started_at = time.monotonic()
-            scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
+            for view_id in view_ids:
+                target_view = target_views_by_id.get(int(view_id))
+                if isinstance(target_view, View) and target_view.is_match(self):
+                    scene_id, score = int(view_id), float(self.runner.scene_threshold)
+                    break
+            else:
+                scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
             identify_elapsed = time.monotonic() - identify_started_at
             if elapsed >= 10.0 or frame_elapsed + identify_elapsed >= 1.0:
                 self.runner._log(
@@ -1014,16 +1066,17 @@ class FanxiuRuntime(Runtime):
             return False
         frame = self.cur_frame()
         entry = self.ctx.get("entry")
+        source_view = shape.parent_view if isinstance(shape.parent_view, View) and isinstance(shape.parent_view.raw, dict) else view
         if hasattr(entry, "mode"):
             result: dict[str, Any] = {"matched": False}
             for condition in self.runner._shape_match_conditions(shape.raw):
-                result = self.runner._match_shape(self.ctx, view.raw, shape.raw, frame, condition=condition)
+                result = self.runner._match_shape(self.ctx, source_view.raw, shape.raw, frame, condition=condition)
                 if bool(result.get("matched")):
                     break
             self._shape_match_results[id(shape.raw)] = result
             return bool(result.get("matched"))
 
-        score = float(self.runner._shape_score(self.ctx, view.raw, shape.raw, frame) or 0)
+        score = float(self.runner._shape_score(self.ctx, source_view.raw, shape.raw, frame) or 0)
         matched = score >= float(self.runner.overlay_threshold)
         if not matched:
             self._shape_match_results.pop(id(shape.raw), None)
@@ -1045,6 +1098,11 @@ class FanxiuRuntime(Runtime):
         if not isinstance(raw_shape, dict):
             target_shape = self.resolve_shape_selector(target_view, raw_shape)
             raw_shape = target_shape.raw
+        source_view = (
+            target_shape.parent_view
+            if isinstance(target_shape, Shape) and isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict)
+            else target_view
+        )
         if isinstance(target_shape, Shape):
             self.last_clicked_shape = target_shape
         action_match_result = match_result
@@ -1056,20 +1114,20 @@ class FanxiuRuntime(Runtime):
         try:
             result = self.runner._click_shape(
                 self.ctx,
-                target_view.raw,
+                source_view.raw,
                 raw_shape,
                 frame,
                 match_result=action_match_result,
             )
         except RuntimeError as exc:
-            if not self.runner._scene_route_fixed_click_fallback_allowed(target_view.raw, raw_shape, exc):
+            if not self.runner._scene_route_fixed_click_fallback_allowed(source_view.raw, raw_shape, exc):
                 raise
-            x, y = ActionPlanner().shape_center(target_view.raw, raw_shape)
+            x, y = ActionPlanner().shape_center(source_view.raw, raw_shape)
             self.runner._log(
                 "info",
-                f"Runtime View：#{self.runner._image_number(target_view.raw) or '?'}「{raw_shape.get('title') or raw_shape.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
+                f"Runtime View：#{self.runner._image_number(source_view.raw) or '?'}「{raw_shape.get('title') or raw_shape.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
             )
-            result = self.runner._click_frame_point(self.ctx, target_view.raw, x, y)
+            result = self.runner._click_frame_point(self.ctx, source_view.raw, x, y)
         self.clear_frame()
         return result
 
@@ -1110,7 +1168,8 @@ class FanxiuRuntime(Runtime):
     ) -> Any:
         target_view = self.view(view)
         target_shape = self.resolve_shape_selector(target_view, shape)
-        width, height = self.runner._frame_size(target_view.raw)
+        source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
+        width, height = self.runner._frame_size(source_view.raw)
         click_x = (float(target_shape.raw.get("x") or 0) + float(target_shape.raw.get("w") or 0) * float(x_ratio)) * width
         click_y = (float(target_shape.raw.get("y") or 0) + float(target_shape.raw.get("h") or 0) * float(y_ratio)) * height
         self._emit_runtime_action(
@@ -1119,7 +1178,7 @@ class FanxiuRuntime(Runtime):
             kind="click",
             current_scene=target_view.id,
         )
-        result = self.runner._click_frame_point(self.ctx, target_view.raw, click_x, click_y)
+        result = self.runner._click_frame_point(self.ctx, source_view.raw, click_x, click_y)
         self.clear_frame()
         return result
 
@@ -1135,9 +1194,11 @@ class FanxiuRuntime(Runtime):
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        target_shape = self.resolve_shape_selector(target_view, shape_title)
+        source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_row_clicks_in_shape(
             lines,
-            target_view.raw,
+            source_view.raw,
             shape_title,
             include=include,
             exclude=exclude,
@@ -1155,9 +1216,11 @@ class FanxiuRuntime(Runtime):
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        target_shape = self.resolve_shape_selector(target_view, shape_title)
+        source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_centers_in_shape(
             lines,
-            target_view.raw,
+            source_view.raw,
             shape_title,
             include=include,
             exclude=exclude,
@@ -1174,7 +1237,7 @@ class FanxiuRuntime(Runtime):
     ) -> list[dict[str, Any]]:
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options)
+        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options, ctx=self.ctx)
 
     def ocr_words_in_shapes(
         self,
@@ -1188,7 +1251,7 @@ class FanxiuRuntime(Runtime):
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         ocr_options = {"return_word_box": True, **dict(options or {})}
-        return self.runner._ocr_words_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=ocr_options)
+        return self.runner._ocr_words_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=ocr_options, ctx=self.ctx)
 
     def ocr_text_in_shapes(
         self,
@@ -2042,15 +2105,11 @@ class DataAnnotationRuntimeRunner(
         "daily_xianyuan_challenge_confirm": 201,
         "daily_xianyuan_challenge_result": 202,
         "daily_xianyuan_leave_confirm": 203,
-        "daily_assistant_list": 204,
-        "daily_assistant_detail": 205,
-        "daily_assistant_no_action": 208,
-        "daily_assistant_teaching_result": 209,
+        "daily_assistant_overview": 204,
         "daily_assistant_tongyou_confirm": 210,
-        "daily_assistant_tongyou_result": 211,
-        "daily_assistant_tongyou_new_disciple": 212,
-        "daily_assistant_tongyou_full_cancel": 213,
-        "daily_assistant_teaching_complete": 214,
+        "daily_assistant_one_key_result": 275,
+        "daily_assistant_one_key_confirm": 276,
+        "daily_assistant_one_key_progress": 277,
         "daily_shuangxiu_secret": 215,
         "daily_shuangxiu_detail": 216,
         "daily_shuangxiu_invite": 217,
@@ -5705,15 +5764,11 @@ class DataAnnotationRuntimeRunner(
                 "youli_region_detail": 5,
                 "youli_purchase_empty": 5,
                 "youli_purchase": 5,
-                "daily_assistant_teaching_complete": 5,
-                "daily_assistant_tongyou_full_cancel": 5,
-                "daily_assistant_tongyou_new_disciple": 5,
-                "daily_assistant_tongyou_result": 5,
+                "daily_assistant_one_key_progress": 5,
+                "daily_assistant_one_key_confirm": 5,
+                "daily_assistant_one_key_result": 5,
                 "daily_assistant_tongyou_confirm": 5,
-                "daily_assistant_teaching_result": 5,
-                "daily_assistant_no_action": 5,
-                "daily_assistant_detail": 5,
-                "daily_assistant_list": 5,
+                "daily_assistant_overview": 5,
                 "daily_shuangxiu_secret": 5,
                 "daily_shuangxiu_detail": 5,
                 "daily_shuangxiu_invite": 5,
@@ -5827,9 +5882,17 @@ class DataAnnotationRuntimeRunner(
             return []
         candidates: list[int] = []
 
+        layer_buckets: dict[int, list[int]] = {1: [], 2: [], 3: []}
+
         def add_candidate(image_id: int) -> None:
             if image_id not in candidates:
                 candidates.append(image_id)
+
+        def add_layer_candidate(image_id: int) -> None:
+            layer = self._image_layer(images[int(image_id)])
+            bucket = layer_buckets.get(layer)
+            if bucket is not None and image_id not in bucket:
+                bucket.append(image_id)
 
         def visit(items: list[dict[str, Any]], path: list[str], inside_image: bool) -> None:
             for item in items:
@@ -5847,9 +5910,11 @@ class DataAnnotationRuntimeRunner(
                         and int(image_id) in images
                         and isinstance(images.get(int(image_id)), dict)
                         and in_popup_path == include_popups
-                        and (include_popups or self._image_scene_identity_level(images[int(image_id)]) >= 2)
                     ):
-                        add_candidate(int(image_id))
+                        if include_popups:
+                            add_candidate(int(image_id))
+                        else:
+                            add_layer_candidate(int(image_id))
                     child_inside_image = True
                 else:
                     child_inside_image = inside_image
@@ -5858,6 +5923,10 @@ class DataAnnotationRuntimeRunner(
                     visit([child for child in children if isinstance(child, dict)], current_path, child_inside_image)
 
         visit([item for item in tree if isinstance(item, dict)], [], False)
+        if not include_popups:
+            for layer in (1, 2, 3):
+                for image_id in layer_buckets[layer]:
+                    add_candidate(image_id)
         if not candidates:
             return []
         return candidates
@@ -6065,6 +6134,28 @@ class DataAnnotationRuntimeRunner(
 
         if not candidates:
             return None, 0.0
+        matched_candidates = [
+            candidate
+            for candidate in candidates
+            if self._scene_matches_id(candidate[0], candidate[1])
+        ]
+        if matched_candidates:
+            matched_candidates.sort(
+                key=lambda item: (
+                    item[2],
+                    -item[3],
+                    item[1],
+                    -item[4],
+                ),
+                reverse=True,
+            )
+            scene_id, score, 明确性, 路径长度, _order = matched_candidates[0]
+            self._log(
+                "detail",
+                f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {明确性}，路径长度 {路径长度}",
+            )
+            return scene_id, score
+
         candidates.sort(
             key=lambda item: (
                 item[1],
@@ -6074,13 +6165,7 @@ class DataAnnotationRuntimeRunner(
             ),
             reverse=True,
         )
-        scene_id, score, 明确性, 路径长度, _order = candidates[0]
-        if self._scene_matches_id(scene_id, score):
-            self._log(
-                "detail",
-                f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {明确性}，路径长度 {路径长度}",
-            )
-            return scene_id, score
+        _scene_id, score, _明确性, _路径长度, _order = candidates[0]
         return None, score
 
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
@@ -6162,6 +6247,51 @@ class DataAnnotationRuntimeRunner(
                 return shape.raw
         return None
 
+    def _image_contains_shape(self, image: dict[str, Any], target_shape: dict[str, Any]) -> bool:
+        target_id = str(target_shape.get("id") or "").strip()
+        for shape in View(image).get_shapes():
+            if shape.raw is target_shape:
+                return True
+            if target_id and str(shape.raw.get("id") or "").strip() == target_id:
+                return True
+        return False
+
+    def _image_ancestor_chain(self, ctx: dict[str, Any], image: dict[str, Any]) -> list[dict[str, Any]]:
+        image_id = self._image_number(image)
+        tree = ctx.get("asset_tree")
+        if image_id is None or not isinstance(tree, list):
+            return []
+        path: list[dict[str, Any]] = []
+
+        def visit(items: list[dict[str, Any]], ancestors: list[dict[str, Any]]) -> bool:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                next_ancestors = ancestors
+                if item.get("type") == "image":
+                    if self._image_number(item) == image_id:
+                        path.extend(ancestors)
+                        return True
+                    next_ancestors = [*ancestors, item]
+                children = item.get("children")
+                if isinstance(children, list) and visit([child for child in children if isinstance(child, dict)], next_ancestors):
+                    return True
+            return False
+
+        visit([node for node in tree if isinstance(node, dict)], [])
+        return list(reversed(path))
+
+    def _effective_shape_source_image(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        shape: dict[str, Any],
+    ) -> dict[str, Any]:
+        for candidate in [image, *self._image_ancestor_chain(ctx, image)]:
+            if isinstance(candidate, dict) and self._image_contains_shape(candidate, shape):
+                return candidate
+        return image
+
     def _scene_identity_scope(self, shape: dict[str, Any]) -> str:
         value = str(shape.get("sceneIdentityScope") or shape.get("scene_identity_scope") or "").strip().lower()
         aliases = {
@@ -6179,17 +6309,8 @@ class DataAnnotationRuntimeRunner(
             return normalized
         return "local" if bool(shape.get("isSceneIdentity")) or str(shape.get("sceneIdentityRole") or "").strip() not in {"", "off", "无"} else "none"
 
-    def _image_scene_identity_level(self, image: dict[str, Any]) -> int:
-        if "sceneIdentityLevel" in image:
-            return normalize_scene_identity_level(image.get("sceneIdentityLevel"), 0)
-        level = 0
-        for shape in View(image).get_shapes(include_groups=False):
-            scope = self._scene_identity_scope(shape.raw)
-            if scope == "global":
-                level = max(level, 2)
-            elif scope == "local":
-                level = max(level, 1)
-        return level
+    def _image_layer(self, image: dict[str, Any]) -> int:
+        return normalize_frame_layer(image.get("layer"), 3)
 
     def _scene_identity_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
         return [
@@ -7294,6 +7415,22 @@ class DataAnnotationRuntimeRunner(
             elapsed = time.monotonic() - start
             scene_id, score = self._identify_scene_number(ctx, frame, [121])
             last_scene_id, last_score = scene_id, score
+            try:
+                text = self._ocr_text(self._ocr_lines(frame))
+            except Exception:
+                text = ""
+            reward_transition_matches = getattr(self, "_mail_reward_transition_text_matches", None)
+            if callable(reward_transition_matches) and reward_transition_matches(text):
+                with self._lock:
+                    self._status.update(
+                        {
+                            "phase": "wait_mail_reward_transition",
+                            "current_scene": scene_id,
+                            "message": f"{label}：检测到领取奖励过场，等待自动回到邮件 #121",
+                            "updated_at": time.time(),
+                        }
+                    )
+                continue
             marker_score = 0.0
             marker_matched = False
             if scene_id == 121:
@@ -7369,8 +7506,9 @@ class DataAnnotationRuntimeRunner(
         *,
         padding: int = 16,
         options: dict[str, Any] | None = None,
+        ctx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding)
+        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
             return response.get("lines") if isinstance(response.get("lines"), list) else []
@@ -7390,8 +7528,9 @@ class DataAnnotationRuntimeRunner(
         *,
         padding: int = 16,
         options: dict[str, Any] | None = None,
+        ctx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding)
+        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
             return response.get("words") if isinstance(response.get("words"), list) else []
@@ -7410,6 +7549,7 @@ class DataAnnotationRuntimeRunner(
         shape_titles: tuple[str, ...] | list[str],
         *,
         padding: int = 16,
+        ctx: dict[str, Any] | None = None,
     ) -> tuple[str, float, float] | None:
         try:
             header, encoded = frame_data_url.split(",", 1) if "," in frame_data_url else ("", frame_data_url)
@@ -7422,7 +7562,15 @@ class DataAnnotationRuntimeRunner(
                 for title in shape_titles:
                     shape = self._find_shape(image, str(title))
                     if shape:
-                        boxes.append(self._box(shape, image))
+                        source_image = self._effective_shape_source_image(ctx, image, shape) if isinstance(ctx, dict) else image
+                        boxes.append(self._box(shape, source_image))
+                        continue
+                    if isinstance(ctx, dict):
+                        for ancestor in self._image_ancestor_chain(ctx, image):
+                            shape = self._find_shape(ancestor, str(title))
+                            if shape:
+                                boxes.append(self._box(shape, ancestor))
+                                break
                 if not boxes:
                     return None
                 left = max(0, int(min(float(box.get("x") or 0) for box in boxes) - padding))

@@ -57,6 +57,9 @@ def install_no_window_popen_default() -> bool:
     This is intentionally narrower than background_popen_kwargs(): it does not
     detach or create a new process group, so third-party libraries can keep
     their normal pipes and return-code behavior while avoiding console flashes.
+    Patch ``Popen.__init__`` in place instead of only replacing
+    ``subprocess.Popen`` so modules that imported ``Popen`` before this hook was
+    installed are covered as well.
     """
 
     if os.name != "nt":
@@ -65,21 +68,20 @@ def install_no_window_popen_default() -> bool:
         return False
 
     original_popen = subprocess.Popen
+    original_init = original_popen.__init__
 
-    class CodeYunNoWindowPopen(original_popen):  # type: ignore[misc, valid-type]
-        _codeyun_no_window_default = True
+    def codeyun_no_window_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
+        if kwargs.get("startupinfo") is None:
+            kwargs["startupinfo"] = _windows_startupinfo_hidden()
+        original_init(self, *args, **kwargs)
 
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
-            if kwargs.get("startupinfo") is None:
-                kwargs["startupinfo"] = _windows_startupinfo_hidden()
-            super().__init__(*args, **kwargs)
-
-    CodeYunNoWindowPopen.__name__ = getattr(original_popen, "__name__", "Popen")
-    CodeYunNoWindowPopen.__qualname__ = getattr(original_popen, "__qualname__", "Popen")
-    CodeYunNoWindowPopen.__module__ = getattr(original_popen, "__module__", "subprocess")
-
-    subprocess.Popen = CodeYunNoWindowPopen  # type: ignore[assignment]
+    codeyun_no_window_init.__name__ = getattr(original_init, "__name__", "__init__")
+    codeyun_no_window_init.__qualname__ = getattr(original_init, "__qualname__", "Popen.__init__")
+    codeyun_no_window_init.__module__ = getattr(original_init, "__module__", "subprocess")
+    setattr(original_popen, "__init__", codeyun_no_window_init)
+    setattr(original_popen, "_codeyun_no_window_default", True)
+    setattr(original_popen, "_codeyun_no_window_original_init", original_init)
     return True
 
 
@@ -221,6 +223,21 @@ def python_service_env(env: dict[str, str] | None = None, *, root_dir: str | Pat
     return apply_python_no_window_env(service_env, root_dir=root_dir)
 
 
+def managed_child_env(env: dict[str, str] | None = None, *, root_dir: str | Path | None = None) -> dict[str, str]:
+    """Return environment for any CodeYun-managed child process.
+
+    A managed command might be ``git.exe``, ``cmd.exe`` or ``powershell.exe`` but
+    still launch Python/Node grandchildren. Propagating both hooks through the
+    whole managed process tree keeps those grandchildren hidden without each
+    caller having to know the final executable type.
+    """
+
+    service_env = dict(os.environ if env is None else env)
+    apply_python_no_window_env(service_env, root_dir=root_dir)
+    apply_node_windows_hide_env(service_env, root_dir=root_dir)
+    return service_env
+
+
 def _looks_like_python_command(command: list[str]) -> bool:
     if not command:
         return False
@@ -235,23 +252,15 @@ def _looks_like_node_command(command: list[str]) -> bool:
     return executable in {"node.exe", "node"}
 
 
-def _inject_python_service_env_for_command(command: list[str], kwargs: dict[str, Any]) -> None:
-    if os.name != "nt" or not _looks_like_python_command(command):
+def _inject_managed_child_env_for_command(command: list[str], kwargs: dict[str, Any]) -> None:
+    if os.name != "nt":
         return
-    kwargs["env"] = python_service_env(kwargs.get("env"))
-
-
-def _inject_node_service_env_for_command(command: list[str], kwargs: dict[str, Any]) -> None:
-    if os.name != "nt" or not _looks_like_node_command(command):
-        return
-    env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
-    kwargs["env"] = apply_node_windows_hide_env(env)
+    kwargs["env"] = managed_child_env(kwargs.get("env"))
 
 
 def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     kwargs.setdefault("shell", False)
-    _inject_python_service_env_for_command(command, kwargs)
-    _inject_node_service_env_for_command(command, kwargs)
+    _inject_managed_child_env_for_command(command, kwargs)
     kwargs.update(hidden_subprocess_kwargs())
     return subprocess.run(command, **kwargs)
 
@@ -261,8 +270,7 @@ def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]
     kwargs.setdefault("stdout", subprocess.DEVNULL)
     kwargs.setdefault("stderr", subprocess.DEVNULL)
     kwargs.setdefault("shell", False)
-    _inject_python_service_env_for_command(command, kwargs)
-    _inject_node_service_env_for_command(command, kwargs)
+    _inject_managed_child_env_for_command(command, kwargs)
     kwargs.update(background_popen_kwargs(independent=True))
     return subprocess.Popen(command, **kwargs)
 
@@ -300,7 +308,7 @@ def popen_python_module_background(
     executable: str | Path | None = None,
     **kwargs: Any,
 ) -> subprocess.Popen[Any]:
-    kwargs["env"] = python_service_env(kwargs.get("env"))
+    kwargs["env"] = managed_child_env(kwargs.get("env"))
     return popen_background(
         python_module_command(module, *args, preferred_root=preferred_root, executable=executable),
         **kwargs,
@@ -314,7 +322,7 @@ def popen_python_script_background(
     executable: str | Path | None = None,
     **kwargs: Any,
 ) -> subprocess.Popen[Any]:
-    kwargs["env"] = python_service_env(kwargs.get("env"))
+    kwargs["env"] = managed_child_env(kwargs.get("env"))
     return popen_background(
         python_script_command(script_path, *args, preferred_root=preferred_root, executable=executable),
         **kwargs,

@@ -574,6 +574,17 @@ class MailTaskMixin:
             last_scene_id, last_score = scene_id, score
             marker_score = 0.0
             marker_matched = False
+            if self._mail_reward_transition_text_matches(text):
+                with self._lock:
+                    self._status.update(
+                        {
+                            "phase": "mail_cleanup_wait_reward_transition",
+                            "current_scene": scene_id,
+                            "message": f"{label}：检测到领取奖励过场，等待自动回到邮件 #121",
+                            "updated_at": time.time(),
+                        }
+                    )
+                continue
             if scene_id == 121:
                 if isinstance(image121, dict) and marker_shape:
                     try:
@@ -590,7 +601,7 @@ class MailTaskMixin:
                         self._status.update({"current_scene": 121, "updated_at": time.time()})
                     self._log("success", f"{label}：已到达 #121 {score:.0f}%，邮件标识 {marker_score:.0f}%")
                     return "list"
-            if detail_scene_id is not None and scene_id == detail_scene_id and elapsed >= 3.0:
+            if detail_scene_id is not None and scene_id == detail_scene_id and elapsed >= 5.0:
                 self._log("info", f"{label}：领取后仍停留 #{detail_scene_id} {score:.0f}%，提前走详情页返回")
                 return "detail_still_open"
             now = time.monotonic()
@@ -657,6 +668,15 @@ class MailTaskMixin:
         dynamic_result = self._try_open_mail_dynamic_entry(ctx, stop_event)
         dynamic_opened = (yield from dynamic_result) if isinstance(dynamic_result, GeneratorType) else dynamic_result
         return dynamic_opened if dynamic_opened != "missing" else visible_opened
+
+    def _mail_reward_transition_text_matches(self, text: str) -> bool:
+        compact = _sanitize_ocr_text(text).replace(" ", "")
+        if not compact:
+            return False
+        has_reward_title = "恭喜获得" in compact or bool(re.search(r"[恭共]喜.{0,3}[获莎]?得", compact))
+        has_continue_hint = "点击屏幕继续" in compact or "点击继续" in compact
+        has_auto_close = "自动关闭" in compact or bool(re.search(r"\d+秒后.{0,4}关闭", compact))
+        return bool(has_reward_title and (has_continue_hint or has_auto_close or "获得" in compact))
 
     def _mail_world_reward_tip_text_matches(self, text: str) -> bool:
         compact = _sanitize_ocr_text(text).replace(" ", "")

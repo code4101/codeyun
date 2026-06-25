@@ -13,7 +13,7 @@
 
 ## 帧树语义
 
-帧树同时承载两种投影：业务目录投影和场景身份树投影。业务目录只是方便人找帧的分组；场景身份树是 Runtime 判断当前画面身份的事实结构。场景身份树不以目录为节点，而是“frame 嵌套 frame”的树：父 frame 表示粗场景，子 frame 表示在父场景基础上的更细状态或详情页。
+帧树同时承载两条正交概念：`layer` 和 `structure`。`layer` 表示 frame 所在的目录识别队列；`structure` 表示 frame/subframe 的父子关系。目录只是方便人找帧和组织识别队列；真正的父子语义只来自 image.children 中的 frame 嵌套。
 
 如果一个流程可达某个父帧，那么该父帧下的子帧在逻辑上也视为可达候选；任务实现不应要求每条跳转路径都重复写到每个子帧。
 
@@ -21,11 +21,15 @@ Runtime 识别场景时应优先使用帧树内已有帧和 shape。只有缺少
 
 frame 承载“场景身份”，shape 承载“判定证据”。同一场景可以有多个 `isSceneIdentity / sceneIdentityRole` 锚点，Runtime 场景分数按“全部场景标识都命中”理解：同一 view 内多个场景标识取最低分，任意一个 required 锚点低于阈值都不能判定为该场景。检测/调试页可以把每个条件都展示出来，用来评估是哪一个锚点没有通过。不要把同一场景的多个备选锚点都勾成场景标识；如果只是备选，请拆成不同子帧，或只保留当前稳定的一组必要锚点。
 
-frame 的 `sceneIdentityLevel` 表示它在场景身份树里的入口层级：`0` 表示非场景帧或模板帧，不参与默认 detect；`1` 表示局部场景帧，只在父场景、候选或路径上下文中参与识别；`2` 表示全局场景帧，可作为无上下文 detect 的入口。以后可以扩展更高层级，但识别逻辑应只依赖树结构和层级优先级，不写死业务含义。标注页应提供一个特殊“非场景帧”投影，集中查看 `sceneIdentityLevel=0` 的普通帧、模板帧和过渡帧；如果 `level=0` 的 image 节点下面挂了子 image，识别树应把这个 `level=0` 节点当成透明容器，不把它作为父场景身份，也不能让它挡住子场景成为场景树入口。
+frame 的 `layer` 表示它进入哪条目录识别队列：`layer=1` 先识别，`layer=2` 后识别，`layer=3` 最后识别，通常用于模板、素材、过渡和低优先级帧。同一个 `layer` 内用 `layerOrder` 表达识别优先顺序；Layer 视图里的拖拽排序只更新这个顺序字段，不改变目录归属。`layer` 和 `layerOrder` 都不表达父子关系；父 frame 与 subframe 的 structure 只由 image.children 表达。
 
-旧标注中的 shape `sceneIdentityScope=local/global` 只作为兼容迁移来源：旧 `local` 推导 frame level 1，旧 `global` 推导 frame level 2。新标注和维护时，局部/全局属于 frame；shape 只表达“这个框是否作为当前 frame 身份证据，以及它的图像/OCR required/optional/off 策略”。不要再把“证据”和“身份层级”混在同一个 shape 字段上。
+旧 frame 等级只作为一次性迁移输入：旧等级 2 迁移为 `layer=1`，旧等级 1 迁移为 `layer=2`，旧非场景帧迁移为 `layer=3`。迁移后代码、UI 和文档只使用 `layer` 与 `structure`。shape 只表达“这个框是否作为当前 frame 场景标识，以及它的图像/OCR required/optional/off 策略”。
 
-Runtime 无上下文识别应优先从 `sceneIdentityLevel>=2` 的根 frame 开始，父场景命中后再向子 frame 细化，最终返回最深可信 frame；如果传入候选清单，则优先在候选及其子树中识别，但仍必须使用统一识别接口。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.goto_view(...)` 或正式 `go_scene` 等公共入口，让基础设施按整棵场景树和全部身份条件判定。
+Runtime 无上下文识别按 `Layer 1 -> Layer 2 -> Layer 3` 的目录队列顺序尝试。每个 root frame 命中后，沿 frame/subframe structure 继续下钻；subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。如果传入候选清单或 `sceneJumpTarget` 预期目标，则优先在这些候选及其 structure 子树内识别，但仍必须使用统一识别接口。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.goto_view(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
+
+subframe 的场景身份按链式语义理解：父 frame 命中后才会进入子 frame 识别，因此子 frame 只需要匹配自己的增量场景标识，不应把父 frame 的场景标识重复并入子 frame 的匹配谓词。语义上 `#75 = #69 + #75 own identity`，运行时则是先算 #69，命中后只算 #75 自己。
+
+shape 的使用规则与场景身份不同：subframe 可以继承祖先 frame 的普通 shape、动作 shape、区域 shape 和滚动 shape。查找 shape 时先查当前 frame 自己定义的 shape，再沿父 frame、祖先 frame 向上查找；子 frame 的同名 shape 会覆盖父 frame 的同名 shape。点击、匹配、OCR 裁剪和滚动区域使用 inherited shape 时，参考标注来源仍是 shape 所在的原 frame，但当前场景上下文仍是已识别到的子 frame。
 
 行为树实现必须复用帧树的三类信息：
 

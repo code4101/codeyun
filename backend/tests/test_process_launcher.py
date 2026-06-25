@@ -64,3 +64,15 @@ def test_popen_service_delegates_to_background_runner(monkeypatch):
     assert isinstance(proc, FakePopen)
     assert calls == [(["tool"], {"cwd": "repo"})]
 
+
+def test_apply_managed_child_env_delegates_to_runtime_policy(monkeypatch):
+    calls = []
+
+    def fake_managed_child_env(env, *, root_dir=None):
+        calls.append((env, root_dir))
+        return {"patched": "1"}
+
+    monkeypatch.setattr(process_launcher, "managed_child_env", fake_managed_child_env)
+
+    assert process_launcher.apply_managed_child_env({"A": "B"}, root_dir="D:/repo") == {"patched": "1"}
+    assert calls == [({"A": "B"}, "D:/repo")]

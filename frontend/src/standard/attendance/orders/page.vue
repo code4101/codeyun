@@ -1464,9 +1464,10 @@ onBeforeUnmount(() => {
       <section class="panel-card">
         <div class="panel-header">
           <h2>退款历史</h2>
+          <span v-if="refundHistoryLoading" class="panel-header__status" aria-live="polite">刷新中...</span>
         </div>
 
-        <div v-loading="refundHistoryLoading" class="history-table-shell">
+        <div class="history-table-shell">
           <el-table
             :data="refundHistoryItems"
             row-key="id"
@@ -1735,6 +1736,10 @@ onBeforeUnmount(() => {
 }
 
 .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 18px;
 }
 
@@ -1742,6 +1747,13 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 22px;
   color: #322719;
+}
+
+.panel-header__status {
+  color: #9d7b49;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .panel-header--tight {
@@ -1942,6 +1954,10 @@ onBeforeUnmount(() => {
 
   .panel-header h2 {
     font-size: 20px;
+  }
+
+  .panel-header__status {
+    font-size: 12px;
   }
 
   .section-action-row,

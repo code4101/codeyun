@@ -84,15 +84,15 @@ export interface CodexThreadMessageImagesResponse {
 
 export interface CodexWorkloadTurn {
   id: string;
-  thread_id: string;
-  turn_index: number;
-  thread_title: string;
-  project_label: string;
+  thread_id?: string | null;
+  turn_index?: number | null;
+  thread_title?: string | null;
+  project_label?: string | null;
   project_secondary_label?: string | null;
   workspace_root?: string | null;
-  group_key: string;
-  group_label: string;
-  user_seq: number;
+  group_key?: string | null;
+  group_label?: string | null;
+  user_seq?: number | null;
   assistant_seq?: number | null;
   start_at: number;
   end_at: number;
@@ -178,6 +178,8 @@ export async function fetchCodexWorkloadForEntry(
     rootDir?: string;
     startAt?: number;
     endAt?: number;
+    compact?: boolean;
+    includeSegments?: boolean;
   },
 ) {
   const rootDir = typeof options === 'string' ? options : options?.rootDir;
@@ -192,6 +194,12 @@ export async function fetchCodexWorkloadForEntry(
     if (Number.isFinite(options?.endAt)) {
       requestParams.end_at = Number(options?.endAt);
     }
+    if (options?.compact) {
+      requestParams.compact = 'true';
+    }
+    if (options?.includeSegments === false) {
+      requestParams.include_segments = 'false';
+    }
   }
   const response = await api.get<CodexWorkloadResponse>(getDeviceEntryPath(entryId, '/codex/workload'), {
     params: Object.keys(requestParams).length ? requestParams : undefined,
@@ -205,6 +213,8 @@ export async function fetchLocalCodexWorkload(
     rootDir?: string;
     startAt?: number;
     endAt?: number;
+    compact?: boolean;
+    includeSegments?: boolean;
   },
 ) {
   const requestParams: Record<string, string | number> = {};
@@ -216,6 +226,12 @@ export async function fetchLocalCodexWorkload(
   }
   if (Number.isFinite(options?.endAt)) {
     requestParams.end_at = Number(options?.endAt);
+  }
+  if (options?.compact) {
+    requestParams.compact = 'true';
+  }
+  if (options?.includeSegments === false) {
+    requestParams.include_segments = 'false';
   }
   const response = await api.get<CodexWorkloadResponse>('/device-entries/local-codex/workload', {
     params: Object.keys(requestParams).length ? requestParams : undefined,

@@ -17564,6 +17564,18 @@ async function syncDefinedNamesForRestoreRequest(
   }
 }
 
+function sheetDocumentHasFormulaExpressions(document: SheetDocument) {
+  const headers = normalizeHeaders(document.columns)
+  const rowGroups = [
+    document.grid_rows,
+    document.rows,
+  ].filter((rows): rows is SheetStoredRow[] => Array.isArray(rows))
+
+  return rowGroups.some((rows) => (
+    rows.some((row) => normalizeRow(row, headers).some(isFormulaExpression))
+  ))
+}
+
 function scheduleFilteredPaginationReload() {
   if (props.sheetId == null || !paginationEnabled.value) {
     return

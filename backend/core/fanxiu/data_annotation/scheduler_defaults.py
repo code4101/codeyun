@@ -180,7 +180,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
         legacy_daily_task("legacy-daily-zhenxie", "日常_镇邪", "20:59", window=("20:59", "21:05")),
         runtime_daily_task("legacy-daily-youli", "daily_youli", "日常_游历", "00:00", "05:00", cooldown_seconds=600),
-        runtime_daily_task("legacy-daily-assistant", "daily_assistant", "日常_助手", "00:00", "06:00", "12:00", "18:00", enabled=True, cooldown_seconds=600),
+        runtime_daily_task("legacy-daily-assistant", "daily_assistant", "日常_助手", "00:00", "06:00", "12:00", "18:00", enabled=False, cooldown_seconds=600),
         runtime_daily_task("legacy-daily-signup", "daily_signup", "日常_报名", "05:00", cooldown_seconds=600),
         legacy_daily_task("legacy-daily-vip", "日常_每日vip", "00:00"),
         legacy_daily_task("legacy-daily-zongmen-redpacket", "日常_宗门红包", "05:00", "12:00", "06:00", "00:00"),

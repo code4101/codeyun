@@ -345,6 +345,7 @@ class NoteProgramExecutor(BaseModel):
 
 class NoteProgramResultOptions(BaseModel):
     include_edges: bool = True
+    include_custom_fields: bool = True
     order_by: str = "updated_at"
     order_desc: bool = True
     skip: int = 0

@@ -32,6 +32,7 @@ def _python_files() -> list[Path]:
         for path in BACKEND.rglob("*.py")
         if "tests" not in path.parts
         and "__pycache__" not in path.parts
+        and ".sync-conflict-" not in path.name
     ]
     files.extend(LOCAL_RUNTIME_SCRIPTS)
     return files

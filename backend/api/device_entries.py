@@ -2404,13 +2404,22 @@ def get_codex_workload_for_entry(
     root_dir: str | None = Query(default=None),
     start_at: float | None = Query(default=None),
     end_at: float | None = Query(default=None),
+    compact: bool = Query(default=False),
+    include_segments: bool = Query(default=True),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         try:
-            return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
+            return build_codex_workload(
+                root_dir,
+                session=session,
+                start_at=start_at,
+                end_at=end_at,
+                compact=compact,
+                include_segments=include_segments,
+            )
         except Exception as exc:  # pragma: no cover - translated for HTTP callers
             _raise_codex_http_error(exc)
 
@@ -2421,6 +2430,10 @@ def get_codex_workload_for_entry(
         params["start_at"] = start_at
     if end_at is not None:
         params["end_at"] = end_at
+    if compact:
+        params["compact"] = True
+    if not include_segments:
+        params["include_segments"] = False
     payload, error_response = _fetch_remote_json(
         entry,
         "GET",
@@ -2443,11 +2456,20 @@ def get_local_codex_workload_for_user(
     root_dir: str | None = Query(default=None),
     start_at: float | None = Query(default=None),
     end_at: float | None = Query(default=None),
+    compact: bool = Query(default=False),
+    include_segments: bool = Query(default=True),
     session: Session = Depends(get_session),
     _current_user: User = Depends(get_current_user_from_token),
 ):
     try:
-        return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
+        return build_codex_workload(
+            root_dir,
+            session=session,
+            start_at=start_at,
+            end_at=end_at,
+            compact=compact,
+            include_segments=include_segments,
+        )
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         _raise_codex_http_error(exc)
 
@@ -3789,6 +3811,7 @@ def list_directory_for_entry(
             req.path,
             absolute_path=req.absolute_path,
             sort_program=req.sort_program,
+            recursive_stats_source=req.recursive_stats_source,
             session=session,
         )
     return _proxy_request(entry, "POST", "/fs/scoped/list_dir", json_body=_filesystem_payload(req))

@@ -1468,8 +1468,8 @@ const syncCustomFields = (options: { immediate?: boolean } = {}) => {
 
 const onWeightChange = (value: number | undefined) => {
   if (!currentNote.value || effectiveReadonly.value) return;
+  const baseline = autoSave.getBaselineSnapshot();
   if (value == null || Number.isNaN(value)) {
-    const baseline = autoSave.getBaselineSnapshot();
     const nextWeight = baseline ? normalizeNoteWeight(baseline.weight) : NOTE_WEIGHT_DEFAULT;
     if (currentNote.value.weight !== nextWeight) {
       pushLocalUndoSnapshot('weight');
@@ -1478,10 +1478,14 @@ const onWeightChange = (value: number | undefined) => {
     return;
   }
   const nextWeight = normalizeNoteWeight(value);
-  if (currentNote.value.weight === nextWeight) return;
-  pushLocalUndoSnapshot('weight');
-  currentNote.value.weight = nextWeight;
-  queueMetaAutoSave();
+  const hasChangedFromBaseline = baseline
+    ? nextWeight !== normalizeNoteWeight(baseline.weight)
+    : currentNote.value.weight !== nextWeight;
+  if (currentNote.value.weight !== nextWeight) {
+    pushLocalUndoSnapshot('weight');
+    currentNote.value.weight = nextWeight;
+  }
+  if (hasChangedFromBaseline) queueMetaAutoSave();
 };
 
 const onWeightBlur = () => { if (currentNote.value) onWeightChange(currentNote.value.weight); };
@@ -1490,8 +1494,8 @@ const normalizePrivateLevel = (value: number) => Math.max(0, Math.trunc(value));
 
 const onPrivateLevelChange = (value: number | undefined) => {
   if (!currentNote.value || effectiveReadonly.value) return;
+  const baseline = autoSave.getBaselineSnapshot();
   if (value == null || Number.isNaN(value)) {
-    const baseline = autoSave.getBaselineSnapshot();
     const nextPrivateLevel = baseline ? normalizePrivateLevel(baseline.private_level) : 0;
     if (currentNote.value.private_level !== nextPrivateLevel) {
       pushLocalUndoSnapshot('private-level');
@@ -1500,10 +1504,14 @@ const onPrivateLevelChange = (value: number | undefined) => {
     return;
   }
   const nextPrivateLevel = normalizePrivateLevel(value);
-  if (currentNote.value.private_level === nextPrivateLevel) return;
-  pushLocalUndoSnapshot('private-level');
-  currentNote.value.private_level = nextPrivateLevel;
-  queueMetaAutoSave();
+  const hasChangedFromBaseline = baseline
+    ? nextPrivateLevel !== normalizePrivateLevel(baseline.private_level)
+    : currentNote.value.private_level !== nextPrivateLevel;
+  if (currentNote.value.private_level !== nextPrivateLevel) {
+    pushLocalUndoSnapshot('private-level');
+    currentNote.value.private_level = nextPrivateLevel;
+  }
+  if (hasChangedFromBaseline) queueMetaAutoSave();
 };
 
 const onPrivateLevelBlur = () => { if (currentNote.value) onPrivateLevelChange(currentNote.value.private_level); };

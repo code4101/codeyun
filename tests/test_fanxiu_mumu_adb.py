@@ -158,6 +158,22 @@ def test_mumu_adb_black_frame_summary_keeps_normal_frame():
     assert summary["black"] is False
 
 
+def test_match_frame_retention_prunes_old_numbered_images(monkeypatch, tmp_path):
+    output_dir = tmp_path / "match"
+    output_dir.mkdir()
+    for index in range(1, 5):
+        (output_dir / f"{index:04d}.png").write_bytes(f"old-{index}".encode("ascii"))
+
+    monkeypatch.setenv("FX_MATCH_FRAME_DIR", str(output_dir))
+    monkeypatch.setenv(rotate.MATCH_FRAME_MAX_FILES_ENV, "3")
+
+    index, output = rotate._save_limited_match_frame(b"new", ".png")
+
+    assert index == 5
+    assert output.name == "0005.png"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["0003.png", "0004.png", "0005.png"]
+
+
 def test_black_frame_failure_triggers_recovery(monkeypatch):
     recovered: list[dict[str, object]] = []
 

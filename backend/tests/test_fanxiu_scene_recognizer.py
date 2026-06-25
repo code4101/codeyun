@@ -55,13 +55,13 @@ def test_scene_recognizer_returns_deepest_scene_tree_match():
         "type": "image",
         "filename": "0265.png",
         "title": "法则之主选择页",
-        "sceneIdentityLevel": 2,
+        "layer": 1,
         "children": [
             {
                 "type": "image",
                 "filename": "0266.png",
                 "title": "法则之主拜谒详情",
-                "sceneIdentityLevel": 1,
+                "layer": 2,
             }
         ],
     }
@@ -80,13 +80,13 @@ def test_scene_recognizer_keeps_parent_when_child_evidence_fails():
         "type": "image",
         "filename": "0265.png",
         "title": "法则之主选择页",
-        "sceneIdentityLevel": 2,
+        "layer": 1,
         "children": [
             {
                 "type": "image",
                 "filename": "0266.png",
                 "title": "法则之主拜谒详情",
-                "sceneIdentityLevel": 1,
+                "layer": 2,
             }
         ],
     }
@@ -100,9 +100,9 @@ def test_scene_recognizer_keeps_parent_when_child_evidence_fails():
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (265, 92.0)
 
 
-def test_scene_recognizer_ignores_non_scene_frames_without_candidates():
-    scene = {"type": "image", "filename": "0034.png", "title": "世界", "sceneIdentityLevel": 2}
-    helper = {"type": "image", "filename": "0999.png", "title": "普通模板", "sceneIdentityLevel": 0}
+def test_scene_recognizer_ignores_layer3_frames_without_candidates():
+    scene = {"type": "image", "filename": "0034.png", "title": "世界", "layer": 1}
+    helper = {"type": "image", "filename": "0999.png", "title": "普通模板", "layer": 3}
     ctx = {"asset_tree": [scene, helper], "images": {34: scene, 999: helper}}
     recognizer = SceneRecognizer(
         score_image=lambda _ctx, image, _frame: 100.0 if image["title"] == "普通模板" else 85.0,
@@ -112,42 +112,54 @@ def test_scene_recognizer_ignores_non_scene_frames_without_candidates():
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (34, 85.0)
 
 
-def test_scene_recognizer_treats_non_scene_frame_as_transparent_parent():
+def test_scene_recognizer_uses_layer_order_within_same_layer():
+    first_in_tree = {"type": "image", "filename": "0100.png", "title": "低优先", "layer": 1, "layerOrder": 20}
+    second_in_tree = {"type": "image", "filename": "0200.png", "title": "高优先", "layer": 1, "layerOrder": 10}
+    ctx = {"asset_tree": [first_in_tree, second_in_tree], "images": {100: first_in_tree, 200: second_in_tree}}
+    recognizer = SceneRecognizer(
+        score_image=lambda *_args: 100.0,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (200, 100.0)
+
+
+def test_scene_recognizer_treats_layer3_frame_as_transparent_parent():
     helper = {
         "type": "image",
         "filename": "0999.png",
-        "title": "非场景素材组",
-        "sceneIdentityLevel": 0,
+        "title": "Layer3素材组",
+        "layer": 3,
         "children": [
             {
                 "type": "image",
                 "filename": "0034.png",
                 "title": "世界",
-                "sceneIdentityLevel": 2,
+                "layer": 1,
             }
         ],
     }
     ctx = {"asset_tree": [helper], "images": {999: helper, 34: helper["children"][0]}}
     recognizer = SceneRecognizer(
-        score_image=lambda _ctx, image, _frame: 100.0 if image["title"] == "非场景素材组" else 88.0,
+        score_image=lambda _ctx, image, _frame: 100.0 if image["title"] == "Layer3素材组" else 88.0,
         threshold_for_scene_id=lambda _scene_id: 80.0,
     )
 
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (34, 88.0)
 
 
-def test_scene_navigator_treats_non_scene_frame_as_transparent_parent():
+def test_scene_navigator_treats_layer3_frame_as_transparent_parent():
     parent = {
         "type": "image",
         "filename": "0100.png",
         "title": "父场景",
-        "sceneIdentityLevel": 2,
+        "layer": 1,
         "children": [
             {
                 "type": "image",
                 "filename": "0999.png",
-                "title": "非场景素材",
-                "sceneIdentityLevel": 0,
+                "title": "Layer3素材",
+                "layer": 3,
                 "shapes": [
                     {"id": "helper-action", "title": "返回", "sceneJumpTarget": "100"},
                 ],
@@ -156,7 +168,7 @@ def test_scene_navigator_treats_non_scene_frame_as_transparent_parent():
                         "type": "image",
                         "filename": "0101.png",
                         "title": "子场景",
-                        "sceneIdentityLevel": 1,
+                        "layer": 2,
                         "shapes": [
                             {"id": "return", "title": "返回"},
                         ],
@@ -178,8 +190,8 @@ def test_scene_navigator_resolves_folder_to_scene_frames_only():
             "type": "folder",
             "title": "候选组",
             "children": [
-                {"type": "image", "filename": "0999.png", "title": "素材", "sceneIdentityLevel": 0},
-                {"type": "image", "filename": "0100.png", "title": "场景", "sceneIdentityLevel": 2},
+                {"type": "image", "filename": "0999.png", "title": "素材", "layer": 3},
+                {"type": "image", "filename": "0100.png", "title": "场景", "layer": 1},
             ],
         }
     ]
@@ -210,23 +222,23 @@ def test_scene_recognizer_uses_preferred_subtree_without_context_filter():
         "type": "image",
         "filename": "0265.png",
         "title": "法则之主选择页",
-        "sceneIdentityLevel": 2,
+        "layer": 1,
         "children": [
             {
                 "type": "image",
                 "filename": "0266.png",
                 "title": "法则之主拜谒详情",
-                "sceneIdentityLevel": 1,
+                "layer": 2,
             },
             {
                 "type": "image",
                 "filename": "0267.png",
                 "title": "无关子页",
-                "sceneIdentityLevel": 1,
+                "layer": 2,
             },
         ],
     }
-    other = {"type": "image", "filename": "0034.png", "title": "世界", "sceneIdentityLevel": 2}
+    other = {"type": "image", "filename": "0034.png", "title": "世界", "layer": 1}
     ctx = {"asset_tree": [other, parent], "images": {34: other, 265: parent, 266: parent["children"][0], 267: parent["children"][1]}}
     calls = []
 

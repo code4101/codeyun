@@ -318,6 +318,7 @@ DirectorySortField = Literal[
     "max_weight",
     "weighted_file_count",
 ]
+DirectoryRecursiveStatsSource = Literal["indexed", "filesystem"]
 
 
 class DirectorySortRule(BaseModel):
@@ -332,6 +333,7 @@ class DirectorySortProgram(BaseModel):
 
 class DirectoryListRequest(RootScopedRequest):
     sort_program: Optional[DirectorySortProgram] = None
+    recursive_stats_source: DirectoryRecursiveStatsSource = "indexed"
 
 
 class MediaListRequest(RootScopedRequest):
@@ -2072,6 +2074,64 @@ def _build_direct_directory_stats_by_name(
     return stats_by_name
 
 
+def _scan_recursive_directory_stats(path: Path) -> dict[str, int | None]:
+    recursive_total_bytes = 0
+    recursive_file_count = 0
+    latest_descendant_modified_at: int | None = None
+
+    def touch_modified(stat_result: os.stat_result) -> None:
+        nonlocal latest_descendant_modified_at
+        modified_at = int(stat_result.st_mtime * 1000)
+        latest_descendant_modified_at = max(latest_descendant_modified_at or 0, modified_at)
+
+    def scan_dir(directory: Path) -> None:
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        stat_result = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+
+                    if entry.is_file(follow_symlinks=False):
+                        nonlocal recursive_total_bytes, recursive_file_count
+                        recursive_total_bytes += int(stat_result.st_size)
+                        recursive_file_count += 1
+                        touch_modified(stat_result)
+                    elif entry.is_dir(follow_symlinks=False):
+                        touch_modified(stat_result)
+                        scan_dir(Path(entry.path))
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            return
+
+    scan_dir(path)
+    return {
+        "recursive_total_bytes": recursive_total_bytes,
+        "recursive_file_count": recursive_file_count,
+        "latest_descendant_modified_at": latest_descendant_modified_at,
+    }
+
+
+def _build_filesystem_recursive_directory_stats_by_name(
+    *,
+    target_path: Path,
+    directory_items: list[dict],
+) -> dict[str, dict[str, int | None]]:
+    if not directory_items:
+        return {}
+
+    stats_by_name: dict[str, dict[str, int | None]] = {}
+    for item in directory_items:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        stats = _build_empty_directory_stats()
+        stats.update(_scan_recursive_directory_stats(Path(target_path) / name))
+        stats_by_name[name] = stats
+
+    return stats_by_name
+
+
 def _iter_everything3_dll_candidates() -> Iterator[Path]:
     env_paths = [
         os.environ.get("CODEYUN_EVERYTHING3_DLL", ""),
@@ -2405,6 +2465,7 @@ def list_directory_items(
     absolute_path: str = "",
     *,
     sort_program: DirectorySortProgram | None = None,
+    recursive_stats_source: DirectoryRecursiveStatsSource = "indexed",
     session: Session | None = None,
 ) -> dict:
     if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
@@ -2450,6 +2511,20 @@ def list_directory_items(
             everything_stats_by_name,
             override_keys={"recursive_total_bytes"},
         )
+        if recursive_stats_source == "filesystem":
+            filesystem_stats_by_name = _build_filesystem_recursive_directory_stats_by_name(
+                target_path=target_path,
+                directory_items=directory_items,
+            )
+            stats_by_name = _merge_directory_stats(
+                stats_by_name,
+                filesystem_stats_by_name,
+                override_keys={
+                    "recursive_total_bytes",
+                    "recursive_file_count",
+                    "latest_descendant_modified_at",
+                },
+            )
     direct_stats_by_name = _build_direct_directory_stats_by_name(
         target_path=target_path,
         directory_items=directory_items,
@@ -5979,6 +6054,7 @@ def list_scoped_directory(req: DirectoryListRequest, session: Session = Depends(
         req.path,
         absolute_path=req.absolute_path,
         sort_program=req.sort_program,
+        recursive_stats_source=req.recursive_stats_source,
         session=session,
     )
 

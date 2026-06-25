@@ -2250,8 +2250,12 @@ class DailyFoundationTaskMixin:
 
     def _daily_assistant_text_is_list(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if re.search(r"同游结果|同游消耗|总共获得宝物|查看下一个|点击空白处关闭", compact):
+        if re.search(r"同游结果|同游消耗|总共获得宝物|查看下一个|点击空白处关闭|本次获得的道具|神物园自动收取|自动兑换", compact):
             return False
+        if "一键执行" in compact and (
+            "小助手" in compact or re.search(r"游历.*灵兽|万灵.*试炼|仙府.*宗门", compact)
+        ):
+            return True
         task_hit = re.search(
             r"道义.*秘库|神物园助手|神物园|宗门助手|仙府资源|弟子授业|同游传道|弟子求学|弟子教学|前往设置|自动派遣",
             compact,

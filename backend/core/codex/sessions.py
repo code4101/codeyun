@@ -1365,6 +1365,8 @@ def build_codex_workload(
     *,
     start_at: float | None = None,
     end_at: float | None = None,
+    compact: bool = False,
+    include_segments: bool = True,
 ) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session)
     with _session_scope(session) as session:
@@ -1397,29 +1399,33 @@ def build_codex_workload(
         thread = thread_map.get(row.thread_id)
         if thread is None:
             continue
-        group = _build_group_stub(thread)
-        turns.append(
-            {
-                "id": f"{row.thread_id}:{row.turn_index}",
-                "thread_id": row.thread_id,
-                "turn_index": row.turn_index,
-                "thread_title": thread["title"],
-                "project_label": thread["project_label"],
-                "project_secondary_label": thread.get("project_secondary_label"),
-                "workspace_root": thread.get("workspace_root"),
-                "group_key": group["key"],
-                "group_label": group["label"],
-                "user_seq": row.user_seq,
-                "assistant_seq": row.assistant_seq,
-                "start_at": float(row.start_at),
-                "end_at": float(row.end_at),
-                "duration_seconds": float(row.duration_seconds),
-                "completed": bool(row.completed),
-                "preview": row.preview,
-            }
-        )
+        turn_payload = {
+            "id": f"{row.thread_id}:{row.turn_index}",
+            "start_at": float(row.start_at),
+            "end_at": float(row.end_at),
+            "duration_seconds": float(row.duration_seconds),
+            "completed": bool(row.completed),
+        }
+        if not compact:
+            group = _build_group_stub(thread)
+            turn_payload.update(
+                {
+                    "thread_id": row.thread_id,
+                    "turn_index": row.turn_index,
+                    "thread_title": thread["title"],
+                    "project_label": thread["project_label"],
+                    "project_secondary_label": thread.get("project_secondary_label"),
+                    "workspace_root": thread.get("workspace_root"),
+                    "group_key": group["key"],
+                    "group_label": group["label"],
+                    "user_seq": row.user_seq,
+                    "assistant_seq": row.assistant_seq,
+                    "preview": row.preview,
+                }
+            )
+        turns.append(turn_payload)
 
-    segments = _build_workload_segments(turns)
+    segments = _build_workload_segments(turns) if include_segments else []
     time_range_start = turns[0]["start_at"] if turns else None
     time_range_end = max((float(item["end_at"]) for item in turns), default=None)
     max_concurrency = max((int(item["concurrency"]) for item in segments), default=0)

@@ -8,7 +8,7 @@ def _image(title: str, filename: str, shapes: list[dict] | None = None) -> dict:
         "filename": filename,
         "width": 900,
         "height": 1600,
-        "sceneIdentityLevel": 1,
+        "layer": 2,
         "shapes": shapes or [],
     }
 

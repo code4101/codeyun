@@ -187,14 +187,20 @@
 
             <aside class="annotation-panel" :style="annotationPanelStyle">
               <div class="annotation-panel-head">
-                <span>帧树</span>
                 <div class="annotation-panel-actions">
-                  <el-segmented
+                  <el-select
                     v-model="assetTreeViewMode"
-                    class="asset-tree-view-mode"
+                    class="asset-view-select"
                     size="small"
-                    :options="assetTreeViewModeOptions"
-                  />
+                    aria-label="帧树视图"
+                  >
+                    <el-option
+                      v-for="option in assetTreeViewModeOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
                   <el-input
                     v-model="assetFrameSearchText"
                     class="asset-frame-search"
@@ -240,12 +246,13 @@
                   :default-expanded-keys="assetTreeDefaultExpandedKeys"
                   :auto-expand-parent="false"
                   highlight-current
-                  :draggable="assetTreeViewMode === 'business'"
+                  :draggable="true"
                   :expand-on-click-node="false"
                   :current-node-key="selectedAssetId"
                   :allow-drop="allowAssetDrop"
                   :filter-node-method="filterAssetTreeNode"
                   @node-click="selectAssetNode"
+                  @node-drop="handleAssetNodeDrop"
                   @node-expand="node => setAssetNodeExpanded(node.id, true)"
                   @node-collapse="node => setAssetNodeExpanded(node.id, false)"
                   @node-contextmenu="openAssetContextMenu"
@@ -256,8 +263,8 @@
                       <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
                       <span
                         class="asset-node-title"
-                        :title="data.type === 'image' ? sceneIdentityLevelTitle(inferredSceneIdentityLevel(data)) : ''"
-                        :style="data.type === 'image' ? sceneIdentityLevelStyle(inferredSceneIdentityLevel(data)) : undefined"
+                        :title="data.type === 'image' ? frameLayerTitle(inferredFrameLayer(data)) : ''"
+                        :style="data.type === 'image' ? frameLayerStyle(inferredFrameLayer(data)) : undefined"
                       >{{ data.title }}</span>
                     </span>
                   </template>
@@ -281,23 +288,23 @@
                 <button
                   v-if="assetContextMenuNode?.type === 'image'"
                   type="button"
-                  @click="setAssetContextMenuSceneIdentityLevel(2)"
+                  @click="setAssetContextMenuFrameLayer(1)"
                 >
-                  设为全局场景
+                  设为 Layer 1
                 </button>
                 <button
                   v-if="assetContextMenuNode?.type === 'image'"
                   type="button"
-                  @click="setAssetContextMenuSceneIdentityLevel(1)"
+                  @click="setAssetContextMenuFrameLayer(2)"
                 >
-                  设为局部场景
+                  设为 Layer 2
                 </button>
                 <button
                   v-if="assetContextMenuNode?.type === 'image'"
                   type="button"
-                  @click="setAssetContextMenuSceneIdentityLevel(0)"
+                  @click="setAssetContextMenuFrameLayer(3)"
                 >
-                  设为非场景
+                  设为 Layer 3
                 </button>
                 <button v-if="assetContextMenuNode" type="button" class="is-danger" @click="deleteAssetFromContextMenu">
                   删除
@@ -467,7 +474,7 @@
                     >
                       {{ shapeMatchRoleLabel(selectedShapeSceneIdentityRole) }}
                     </button>
-                    <span>身份证据</span>
+                    <span>场景标识</span>
                   </span>
                   <div class="shape-jump-field">
                     <span>场景跳转</span>
@@ -1471,7 +1478,7 @@ type GameMacroAnnotationMode = 'simple' | 'ai';
 type GameMacroDragDurationMode = 'real' | 'fixed';
 type ShapeMatchRole = 'off' | 'optional' | 'required';
 type SceneIdentityScope = 'none' | 'local' | 'global';
-type SceneIdentityLevel = number;
+type FrameLayer = 1 | 2 | 3;
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
 type AssetTreeViewMode = 'business' | 'scene';
 
@@ -6631,10 +6638,10 @@ onMounted(async () => {
   if (selectedEntryId.value) {
     persistEntrySelection(selectedEntryId.value);
     persistWindowSelection();
-    await loadEntryAssetTree(selectedEntryId.value);
-    if (windowViewMode.value !== 'off') {
-      await connectWindow();
-    }
+    const entryId = selectedEntryId.value;
+    const loadAssetTreeTask = loadEntryAssetTree(entryId);
+    const connectWindowTask = windowViewMode.value !== 'off' ? connectWindow() : Promise.resolve();
+    await Promise.all([loadAssetTreeTask, connectWindowTask]);
   }
   startPolling();
   void ensureSelectedImagePreview();
@@ -6684,7 +6691,8 @@ type DataAnnotationAssetNode = {
   imageDataUrl?: string;
   width?: number;
   height?: number;
-  sceneIdentityLevel?: SceneIdentityLevel;
+  layer?: FrameLayer;
+  layerOrder?: number;
   shapes?: DataAnnotationShape[];
 };
 
@@ -7133,11 +7141,10 @@ const assetTreeProps = {
   children: 'children',
   label: 'title',
 };
-const SCENE_TREE_ROOT_ID = '__scene_identity_tree__';
-const NON_SCENE_TREE_ROOT_ID = '__non_scene_frames__';
-const assetTreeViewModeOptions = [
+const LAYER_TREE_ROOT_IDS = ['__frame_layer_1__', '__frame_layer_2__', '__frame_layer_3__'] as const;
+const assetTreeViewModeOptions: Array<{ label: string; value: AssetTreeViewMode }> = [
   { label: '目录', value: 'business' },
-  { label: '场景', value: 'scene' },
+  { label: 'Layer', value: 'scene' },
 ];
 const shapeTreeProps = {
   children: 'children',
@@ -7149,20 +7156,25 @@ type DataAnnotationUiState = {
   selectedShapeId?: string | null;
   expandedAssetNodeIds?: string[];
   expandedShapeNodeIds?: string[];
+  assetTreeViewMode?: AssetTreeViewMode;
 };
 
 const createAssetId = (prefix: string) => prefix + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
 
 const createAssetImageNode = (
   title: string,
-  options: Partial<Pick<DataAnnotationAssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height'>> = {},
-): DataAnnotationAssetNode => ({
-  id: createAssetId('image'),
-  type: 'image',
-  title,
-  ...options,
-  shapes: [],
-});
+  options: Partial<Pick<DataAnnotationAssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height' | 'layer'>> = {},
+): DataAnnotationAssetNode => {
+  const { layer, ...restOptions } = options;
+  return {
+    id: createAssetId('image'),
+    type: 'image',
+    title,
+    ...restOptions,
+    layer: normalizeFrameLayer(layer, 3),
+    shapes: [],
+  };
+};
 
 const createDefaultAssetTree = (): DataAnnotationAssetNode[] => ([
   {
@@ -7199,12 +7211,12 @@ const normalizeSceneIdentityScope = (value: unknown, fallback: SceneIdentityScop
   return fallback;
 };
 
-const normalizeSceneIdentityLevel = (value: unknown, fallback: SceneIdentityLevel = 0): SceneIdentityLevel => {
-  if (value === 2 || value === '2' || value === 'global' || value === '全') return 2;
-  if (value === 1 || value === '1' || value === 'local' || value === '局') return 1;
-  if (value === 0 || value === '0' || value === 'none' || value === 'off' || value === '无') return 0;
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.floor(value));
-  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Math.max(0, Math.floor(Number(value.trim())));
+const normalizeFrameLayer = (value: unknown, fallback: FrameLayer = 3): FrameLayer => {
+  if (value === 1 || value === '1' || value === 'layer1' || value === 'Layer 1') return 1;
+  if (value === 2 || value === '2' || value === 'layer2' || value === 'Layer 2') return 2;
+  if (value === 3 || value === '3' || value === 'layer3' || value === 'Layer 3') return 3;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.min(3, Math.max(1, Math.floor(value))) as FrameLayer;
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Math.min(3, Math.max(1, Math.floor(Number(value.trim())))) as FrameLayer;
   return fallback;
 };
 
@@ -7228,7 +7240,7 @@ const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
   required: '必',
 }[role]);
 const shapeMatchRoleTitle = (kind: 'image' | 'ocr' | 'scene', role: ShapeMatchRole) => {
-  const name = kind === 'image' ? '图像' : (kind === 'ocr' ? 'OCR' : '场景身份证据');
+  const name = kind === 'image' ? '图像' : (kind === 'ocr' ? 'OCR' : '场景标识');
   return {
     off: `${name}：不要求`,
     optional: `${name}：命中即定`,
@@ -7375,25 +7387,6 @@ const normalizeShapes = (
   }];
 });
 
-const inferSceneIdentityLevelFromShapes = (shapes: DataAnnotationShape[] = []): SceneIdentityLevel => {
-  let level: SceneIdentityLevel = 0;
-  const visit = (items: DataAnnotationShape[]) => {
-    for (const shape of items) {
-      if (shape.kind === 'group') {
-        visit(shape.children ?? []);
-        continue;
-      }
-      const role = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
-      const scope = normalizeSceneIdentityScope(shape.sceneIdentityScope, legacySceneIdentityScope(shape, role));
-      if (scope === 'global') level = 2;
-      else if (scope === 'local' && level < 1) level = 1;
-      visit(shape.children ?? []);
-    }
-  };
-  visit(shapes);
-  return level;
-};
-
 const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.map((node) => {
   if (node.type === 'folder') {
     return {
@@ -7410,7 +7403,8 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
     imageDataUrl: !node.filename && typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
-    sceneIdentityLevel: normalizeSceneIdentityLevel(node.sceneIdentityLevel, inferSceneIdentityLevelFromShapes(normalizedShapes)),
+    layer: normalizeFrameLayer(node.layer, 3),
+    layerOrder: typeof node.layerOrder === 'number' && Number.isFinite(node.layerOrder) ? node.layerOrder : undefined,
     shapes: normalizedShapes,
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -7800,6 +7794,7 @@ const persistDataAnnotationUiState = () => {
     selectedShapeId: selectedShapeId.value,
     expandedAssetNodeIds: expandedAssetNodeIds.value,
     expandedShapeNodeIds: expandedShapeNodeIds.value,
+    assetTreeViewMode: assetTreeViewMode.value,
   }));
 };
 
@@ -7987,7 +7982,11 @@ const findShapeById = (shapes: DataAnnotationShape[], id: string | null): DataAn
   return null;
 };
 
-const filterExistingAssetNodeIds = (ids: string[]) => ids.filter((id) => Boolean(findAssetNode(assetTree.value, id)));
+const isLayerTreeRootId = (id: string) => (LAYER_TREE_ROOT_IDS as readonly string[]).includes(id);
+
+const filterExistingAssetNodeIds = (ids: string[]) => ids.filter((id) => (
+  isLayerTreeRootId(id) || Boolean(findAssetNode(assetTree.value, id))
+));
 const filterExistingShapeNodeIds = (ids: string[]) => {
   const image = selectedImageNode.value;
   if (!image) return [];
@@ -7999,12 +7998,18 @@ const collectAssetFolderIds = (nodes: DataAnnotationAssetNode[]): string[] => no
   ...collectAssetFolderIds(node.children ?? []),
 ]);
 
+const collectDisplayedAssetFolderIds = () => (
+  assetTreeViewMode.value === 'scene'
+    ? [...LAYER_TREE_ROOT_IDS, ...collectAssetFolderIds(assetTree.value)]
+    : collectAssetFolderIds(assetTree.value)
+);
+
 const syncAssetTreeExpansionFromState = async () => {
   await nextTick();
   const tree = assetTreeRef.value;
   if (!tree) return;
   const expandedIds = new Set(expandedAssetNodeIds.value);
-  for (const id of collectAssetFolderIds(assetTree.value)) {
+  for (const id of collectDisplayedAssetFolderIds()) {
     const treeNode = tree.getNode(id);
     if (!treeNode) continue;
     if (expandedIds.has(id)) {
@@ -8038,12 +8043,13 @@ const syncShapeTreeExpansionFromState = async () => {
 
 const restoreDataAnnotationUiState = () => {
   const state = loadDataAnnotationUiState();
+  assetTreeViewMode.value = state.assetTreeViewMode === 'scene' ? 'scene' : 'business';
   const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
   const savedAsset = savedAssetId ? findAssetNode(assetTree.value, savedAssetId) : null;
   selectedAssetId.value = savedAsset?.id ?? findFirstImageNode(assetTree.value)?.id ?? null;
   expandedAssetNodeIds.value = Array.isArray(state.expandedAssetNodeIds)
     ? filterExistingAssetNodeIds(normalizeStringIdArray(state.expandedAssetNodeIds))
-    : collectAssetFolderIds(assetTree.value);
+    : [...LAYER_TREE_ROOT_IDS, ...collectAssetFolderIds(assetTree.value)];
 
   const image = selectedImageNode.value;
   const savedShapeId = typeof state.selectedShapeId === 'string' ? state.selectedShapeId : null;
@@ -8352,32 +8358,28 @@ const shapeSceneIdentityScope = (shape: DataAnnotationShape) => (
 );
 const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityRole(shape) !== 'off';
 
-const inferredSceneIdentityLevel = (image: DataAnnotationAssetNode): SceneIdentityLevel => {
-  const explicit = (image as DataAnnotationAssetNode & Record<string, unknown>).sceneIdentityLevel;
-  if (explicit !== undefined && explicit !== null) return normalizeSceneIdentityLevel(explicit);
-  const scopes = flattenShapes(image.shapes ?? [])
-    .filter(isDrawableShape)
-    .map(shapeSceneIdentityScope);
-  if (scopes.includes('global')) return 2;
-  if (scopes.includes('local')) return 1;
-  return 0;
-};
+const inferredFrameLayer = (image: DataAnnotationAssetNode): FrameLayer => normalizeFrameLayer(image.layer, 3);
 
-const sceneIdentityLevelTitle = (level: SceneIdentityLevel) => {
-  if (level <= 0) return '非场景帧：不参与默认场景身份识别';
-  if (level === 1) return '局部场景帧：在父场景、候选或路径上下文中参与识别';
-  if (level === 2) return '全局场景帧：可作为无上下文 detect_scene 的入口';
-  return `扩展场景层级 ${level}：按数值优先级参与场景身份树识别`;
-};
+const frameLayerTitle = (layer: FrameLayer) => ({
+  1: 'Layer 1：第一目录队列，默认优先识别',
+  2: 'Layer 2：第二目录队列，在 Layer 1 之后识别',
+  3: 'Layer 3：第三目录队列，通常用于模板、素材和低优先级帧',
+}[layer]);
 
-const sceneIdentityLevelStyle = (level: SceneIdentityLevel) => {
-  if (level <= 0) return { color: '#303133' };
-  const colors = ['#2f8f2f', '#d93026', '#9c27b0', '#c76a00', '#0b7fab'];
-  return { color: colors[(level - 1) % colors.length] };
-};
+const frameLayerStyle = (layer: FrameLayer) => ({
+  1: { color: '#d93026' },
+  2: { color: '#2f8f2f' },
+  3: { color: '#303133' },
+}[layer]);
 
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
-  node?.id === SCENE_TREE_ROOT_ID || node?.id === NON_SCENE_TREE_ROOT_ID
+  Boolean(node && (LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id))
+);
+
+const frameLayerOrderValue = (image: DataAnnotationAssetNode, fallback: number) => (
+  typeof image.layerOrder === 'number' && Number.isFinite(image.layerOrder)
+    ? image.layerOrder
+    : fallback
 );
 
 const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
@@ -8385,6 +8387,7 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
     node: DataAnnotationAssetNode;
     parentImageId: string | null;
     children: SceneRecord[];
+    order: number;
   };
   const records = new Map<string, SceneRecord>();
   const ordered: SceneRecord[] = [];
@@ -8395,47 +8398,63 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
         visit(node.children ?? [], nearestSceneParentId);
         continue;
       }
-      const level = inferredSceneIdentityLevel(node);
-      const record: SceneRecord = { node, parentImageId: nearestSceneParentId, children: [] };
+      const record: SceneRecord = { node, parentImageId: nearestSceneParentId, children: [], order: ordered.length };
       records.set(node.id, record);
       ordered.push(record);
-      visit(node.children ?? [], level > 0 ? node.id : nearestSceneParentId);
+      visit(node.children ?? [], node.id);
     }
   };
   visit(nodes, null);
 
   const sceneRoots: SceneRecord[] = [];
-  const nonSceneFrames: DataAnnotationAssetNode[] = [];
   for (const record of ordered) {
-    const level = inferredSceneIdentityLevel(record.node);
-    if (level === 0) {
-      nonSceneFrames.push({ ...record.node, children: [] });
-      continue;
-    }
     const parent = record.parentImageId ? records.get(record.parentImageId) : null;
-    if (parent && inferredSceneIdentityLevel(parent.node) > 0) parent.children.push(record);
+    if (parent) parent.children.push(record);
     else sceneRoots.push(record);
   }
 
   const cloneSceneRecord = (record: SceneRecord): DataAnnotationAssetNode => ({
     ...record.node,
-    children: record.children
-      .filter((child) => inferredSceneIdentityLevel(child.node) > 0)
-      .map(cloneSceneRecord),
+    children: record.children.map(cloneSceneRecord),
   });
+
+  const rootsByLayer: Record<FrameLayer, DataAnnotationAssetNode[]> = {
+    1: [],
+    2: [],
+    3: [],
+  };
+  for (const record of sceneRoots) {
+    rootsByLayer[inferredFrameLayer(record.node)].push(cloneSceneRecord(record));
+  }
+  for (const layer of [1, 2, 3] as FrameLayer[]) {
+    rootsByLayer[layer].sort((left, right) => {
+      const leftSource = records.get(left.id)?.node ?? left;
+      const rightSource = records.get(right.id)?.node ?? right;
+      const leftOrder = records.get(left.id)?.order ?? 0;
+      const rightOrder = records.get(right.id)?.order ?? 0;
+      return frameLayerOrderValue(leftSource, leftOrder) - frameLayerOrderValue(rightSource, rightOrder)
+        || leftOrder - rightOrder;
+    });
+  }
 
   return [
     {
-      id: SCENE_TREE_ROOT_ID,
+      id: LAYER_TREE_ROOT_IDS[0],
       type: 'folder',
-      title: '场景树',
-      children: sceneRoots.map(cloneSceneRecord),
+      title: 'Layer 1',
+      children: rootsByLayer[1],
     },
     {
-      id: NON_SCENE_TREE_ROOT_ID,
+      id: LAYER_TREE_ROOT_IDS[1],
       type: 'folder',
-      title: '非场景帧',
-      children: nonSceneFrames,
+      title: 'Layer 2',
+      children: rootsByLayer[2],
+    },
+    {
+      id: LAYER_TREE_ROOT_IDS[2],
+      type: 'folder',
+      title: 'Layer 3',
+      children: rootsByLayer[3],
     },
   ];
 };
@@ -8446,7 +8465,7 @@ const assetTreeDisplayData = computed(() => (
 
 const assetTreeDefaultExpandedKeys = computed(() => (
   assetTreeViewMode.value === 'scene'
-    ? [SCENE_TREE_ROOT_ID, NON_SCENE_TREE_ROOT_ID, ...expandedAssetNodeIds.value]
+    ? expandedAssetNodeIds.value
     : expandedAssetNodeIds.value
 ));
 
@@ -8857,7 +8876,7 @@ watch(selectedShapeId, (id) => {
 });
 
 watch(
-  [selectedAssetId, selectedShapeId, expandedAssetNodeIds, expandedShapeNodeIds],
+  [selectedAssetId, selectedShapeId, expandedAssetNodeIds, expandedShapeNodeIds, assetTreeViewMode],
   persistDataAnnotationUiState,
   { deep: true },
 );
@@ -9637,15 +9656,110 @@ const openAssetContextMenu = (event: MouseEvent, node: DataAnnotationAssetNode) 
   };
 };
 
+const findDisplayAssetParentId = (
+  nodes: DataAnnotationAssetNode[],
+  id: string,
+  parentId: string | null = null,
+): string | null | undefined => {
+  for (const node of nodes) {
+    if (node.id === id) return parentId;
+    const found = findDisplayAssetParentId(node.children ?? [], id, node.id);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+const moveIdInOrder = (
+  ids: string[],
+  draggingId: string,
+  dropId: string,
+  type: 'prev' | 'next',
+) => {
+  const result = ids.filter((id) => id !== draggingId);
+  const dropIndex = result.indexOf(dropId);
+  if (dropIndex < 0) return ids;
+  result.splice(type === 'prev' ? dropIndex : dropIndex + 1, 0, draggingId);
+  return result;
+};
+
+const layerFromVirtualRootId = (id: string | null | undefined): FrameLayer | null => {
+  const index = id ? LAYER_TREE_ROOT_IDS.indexOf(id) : -1;
+  return index >= 0 ? ((index + 1) as FrameLayer) : null;
+};
+
+const applyLayerRootOrder = (layer: FrameLayer, orderedIds: string[]) => {
+  orderedIds.forEach((id, index) => {
+    const node = findAssetNode(assetTree.value, id);
+    if (node?.type !== 'image') return;
+    node.layer = normalizeFrameLayer(layer);
+    node.layerOrder = index + 1;
+  });
+};
+
+const moveAssetChildWithinParent = (
+  parentId: string,
+  draggingId: string,
+  dropId: string,
+  type: 'prev' | 'next',
+) => {
+  const parent = findAssetNode(assetTree.value, parentId);
+  const siblings = parent?.children;
+  if (!Array.isArray(siblings)) return;
+  const sourceIndex = siblings.findIndex((item) => item.id === draggingId);
+  const targetIndex = siblings.findIndex((item) => item.id === dropId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+  const [item] = siblings.splice(sourceIndex, 1);
+  const nextTargetIndex = siblings.findIndex((candidate) => candidate.id === dropId);
+  siblings.splice(type === 'prev' ? nextTargetIndex : nextTargetIndex + 1, 0, item);
+};
+
 const allowAssetDrop = (
   draggingNode: { data?: DataAnnotationAssetNode },
   dropNode: { data?: DataAnnotationAssetNode },
-  _type: 'prev' | 'inner' | 'next',
-) => (
-  assetTreeViewMode.value === 'business'
-  && !isVirtualAssetTreeNode(draggingNode.data)
-  && !isVirtualAssetTreeNode(dropNode.data)
-);
+  type: 'prev' | 'inner' | 'next',
+) => {
+  if (assetTreeViewMode.value === 'business') {
+    return !isVirtualAssetTreeNode(draggingNode.data) && !isVirtualAssetTreeNode(dropNode.data);
+  }
+  if (assetTreeViewMode.value !== 'scene') return false;
+  const dragging = draggingNode.data;
+  const drop = dropNode.data;
+  if (!dragging || !drop || dragging.type !== 'image' || drop.type !== 'image') return false;
+  if (type === 'inner') return false;
+  const draggingParentId = findDisplayAssetParentId(assetTreeDisplayData.value, dragging.id);
+  const dropParentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
+  if (!draggingParentId || draggingParentId !== dropParentId) return false;
+  const rootLayer = layerFromVirtualRootId(dropParentId);
+  if (rootLayer) return inferredFrameLayer(dragging) === rootLayer && inferredFrameLayer(drop) === rootLayer;
+  return Boolean(findAssetNode(assetTree.value, draggingParentId));
+};
+
+const handleAssetNodeDrop = (
+  draggingNode: { data?: DataAnnotationAssetNode },
+  dropNode: { data?: DataAnnotationAssetNode },
+  type: 'before' | 'after' | 'inner',
+) => {
+  if (assetTreeViewMode.value !== 'scene') return;
+  const dragging = draggingNode.data;
+  const drop = dropNode.data;
+  if (!dragging || !drop || dragging.type !== 'image' || drop.type !== 'image') return;
+  const dropType = type === 'before' ? 'prev' : (type === 'after' ? 'next' : null);
+  if (!dropType) return;
+  const parentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
+  if (!parentId || parentId !== findDisplayAssetParentId(assetTreeDisplayData.value, dragging.id)) return;
+  const rootLayer = layerFromVirtualRootId(parentId);
+  if (rootLayer) {
+    const projectionRoot = assetTreeDisplayData.value.find((node) => node.id === parentId);
+    const currentIds = (projectionRoot?.children ?? [])
+      .filter((node) => node.type === 'image')
+      .map((node) => node.id);
+    applyLayerRootOrder(rootLayer, moveIdInOrder(currentIds, dragging.id, drop.id, dropType));
+  } else {
+    moveAssetChildWithinParent(parentId, dragging.id, drop.id, dropType);
+  }
+  assetTree.value = [...assetTree.value];
+  selectedAssetId.value = dragging.id;
+};
 
 const deleteAssetFromContextMenu = async () => {
   selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
@@ -9653,11 +9767,11 @@ const deleteAssetFromContextMenu = async () => {
   await deleteSelectedAsset();
 };
 
-const setAssetContextMenuSceneIdentityLevel = (level: SceneIdentityLevel) => {
+const setAssetContextMenuFrameLayer = (layer: FrameLayer) => {
   const nodeId = assetContextMenu.value.nodeId || selectedAssetId.value;
   const node = findAssetNode(assetTree.value, nodeId);
   if (node?.type !== 'image') return;
-  node.sceneIdentityLevel = normalizeSceneIdentityLevel(level);
+  node.layer = normalizeFrameLayer(layer);
   selectedAssetId.value = node.id;
   closeAssetContextMenu();
 };
@@ -14006,6 +14120,11 @@ const finishShapeDrag = () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.asset-view-select {
+  width: 82px;
+  flex: 0 0 auto;
 }
 
 .asset-frame-search {

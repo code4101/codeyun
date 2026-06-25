@@ -85,6 +85,24 @@ def test_install_no_window_popen_default_keeps_popen_subclassable(monkeypatch):
     assert issubclass(ChildPopen, FakePopen)
 
 
+def test_install_no_window_popen_default_patches_cached_popen_reference(monkeypatch):
+    calls = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    cached_popen = FakePopen
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    assert subprocess_utils.install_no_window_popen_default() is True
+    cached_popen(["tool"])
+
+    assert calls[0][1]["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+    assert calls[0][1]["startupinfo"].wShowWindow == subprocess.SW_HIDE
+
+
 def test_resolve_pythonw_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
     scripts_dir = tmp_path / ".venv" / "Scripts"
     scripts_dir.mkdir(parents=True)
@@ -264,6 +282,31 @@ def test_popen_background_injects_python_env_for_python_command(monkeypatch, tmp
     env = calls[0][1]["env"]
     assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep)[0] == str(sitecustomize_dir)
     assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+
+
+def test_popen_background_injects_managed_env_for_non_python_command(monkeypatch, tmp_path):
+    calls = []
+    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir.mkdir(parents=True)
+    (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
+    preload = tmp_path / "scripts" / "node_windows_hide_child_processes.cjs"
+    preload.parent.mkdir(parents=True)
+    preload.write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils, "_repo_root_from_runtime", lambda: tmp_path)
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    subprocess_utils.popen_background(["git.exe", "status"], env={"PYTHONPATH": "external"})
+
+    env = calls[0][1]["env"]
+    assert env["PYTHONPATH"].split(subprocess_utils.os.pathsep)[0] == str(sitecustomize_dir)
+    assert env["CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT"] == "1"
+    assert f"--require={preload.as_posix()}" in env["NODE_OPTIONS"]
 
 
 def test_run_hidden_injects_python_env_for_python_command(monkeypatch, tmp_path):

@@ -23,20 +23,20 @@ def _install_no_window_popen_default() -> None:
         return
 
     original_popen = subprocess.Popen
+    original_init = original_popen.__init__
 
-    class CodeYunNoWindowPopen(original_popen):  # type: ignore[misc, valid-type]
-        _codeyun_no_window_default = True
+    def codeyun_no_window_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
+        if kwargs.get("startupinfo") is None:
+            kwargs["startupinfo"] = _windows_startupinfo_hidden()
+        original_init(self, *args, **kwargs)
 
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
-            if kwargs.get("startupinfo") is None:
-                kwargs["startupinfo"] = _windows_startupinfo_hidden()
-            super().__init__(*args, **kwargs)
-
-    CodeYunNoWindowPopen.__name__ = getattr(original_popen, "__name__", "Popen")
-    CodeYunNoWindowPopen.__qualname__ = getattr(original_popen, "__qualname__", "Popen")
-    CodeYunNoWindowPopen.__module__ = getattr(original_popen, "__module__", "subprocess")
-    subprocess.Popen = CodeYunNoWindowPopen  # type: ignore[assignment]
+    codeyun_no_window_init.__name__ = getattr(original_init, "__name__", "__init__")
+    codeyun_no_window_init.__qualname__ = getattr(original_init, "__qualname__", "Popen.__init__")
+    codeyun_no_window_init.__module__ = getattr(original_init, "__module__", "subprocess")
+    setattr(original_popen, "__init__", codeyun_no_window_init)
+    setattr(original_popen, "_codeyun_no_window_default", True)
+    setattr(original_popen, "_codeyun_no_window_original_init", original_init)
 
 
 _install_no_window_popen_default()

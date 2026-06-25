@@ -9,6 +9,7 @@ from backend.core.runtime.subprocess_utils import (
     apply_python_no_window_env,
     background_popen_kwargs,
     install_no_window_popen_default,
+    managed_child_env,
     node_npm_command,
     node_script_command,
     popen_background,
@@ -115,6 +116,10 @@ def apply_background_node_env(env: dict[str, str], *, root_dir: str | Path | Non
 
 def apply_background_python_env(env: dict[str, str], *, root_dir: str | Path | None = None) -> dict[str, str]:
     return apply_python_no_window_env(env, root_dir=root_dir)
+
+
+def apply_managed_child_env(env: dict[str, str] | None = None, *, root_dir: str | Path | None = None) -> dict[str, str]:
+    return managed_child_env(env, root_dir=root_dir)
 
 
 def install_child_process_no_window_default() -> bool:
