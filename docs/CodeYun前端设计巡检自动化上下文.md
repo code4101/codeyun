@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "ccae0b2174254caefce956d0ed3fdd5a8c56144b"
-last_audited_at: "2026-06-26T00:34:25.5570130+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-ccae0b21/report.md"
-last_frontend_commit_summary: "完整关闭 30ba2484..ccae0b21：凡修标注页 Layer 视图在首屏自动展开当前帧链路，连同行为树页三视口复验一起完成；其余 notes/storage/codex 契约同步未引出新 UI 问题。"
-audited_commit_count: 40
+last_audited_commit: "46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e"
+last_audited_at: "2026-06-26T16:37:31.7741967+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-46c34d1d/report.md"
+last_frontend_commit_summary: "完整关闭 ccae0b21..46c34d1d：凡修标注页 Layer 视图与运行时链路、星图笔记日历 Codex 工作量投影、订单页退款历史加载节奏均已做真实三视口复核；未发现需要新增修复的 UI 回归。"
+audited_commit_count: 41
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-26
+
+- 完整范围：`ccae0b2174254caefce956d0ed3fdd5a8c56144b..46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e`
+- 覆盖提交：`46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e`
+- 前端入口提交：`46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e`
+- 入口如何牵引到旧问题：提交把凡修 Runtime / Scheduler / 默认任务和 Codex workload 摘要一起收口，前端入口因此落在三条同链路闭环上：`fanxiu/data-annotation` 的 Layer 视图是否能在更简单的树模型里直接暴露当前帧，`fanxiu/data-annotation/runtime` 是否继续维持“运行状态事实优先”的首屏层级，以及 `notes/center?tab=calendar` 是否把 Codex 工作量继续压回稳定的日级状态投影。`attendance/orders` 只做退款历史并行加载，无需扩散成新的页面重构。
+- 本轮减法：不新增任何按钮、卡片、说明或状态。提交自身已经完成三处有效减法：1）`fanxiu/data-annotation` 的 Layer 视图继续收敛到“当前选中帧的祖先链路”，减少手动展开树；2）`dailyTaskPresets.ts` 删除一批旧日常 preset，减少候选噪声；3）`CalendarNotes` 用后端 `day_seconds` 摘要和 60 秒冷却稳定后台刷新，不把刷新过程抬成一级 UI 概念。
+- 信息量保持：凡修标注页仍保留设备/窗口/通道/画面参数、树视图、连拍、行为树跳转和标注工作台；行为树页仍保留运行内核、守护、作业、巡检阻塞和日志入口；星图日历仍保留后端筛选、前端筛选、月格工作量小时数和节点内容；订单页仍保留查询输入与退款历史。减少的是重复展开动作、冗余候选和隐性的后台刷新噪声，不是减少判断与操作能力。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-46c34d1d/report.md`
+- 验证：复用本地 `5173/8000` 开发环境；`fanxiu/data-annotation`（Layer 视图）、`fanxiu/data-annotation/runtime`、`notes/center?tab=calendar`、`attendance/orders` 都完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`overflowX` 全部为 `0`，控制台未采到页面级 `error/pageerror`。证据见 `evidence.json` 与 `fanxiu-annotation-layer-evidence.json`。
+- 根因分层：本轮入口没有暴露新的样式 bug。`fanxiu/data-annotation` 和 `CalendarNotes` 的变化都属于前端状态投影收敛，其中日历还消费了新的后端日汇总投影；`attendance/orders` 属于加载节奏优化。未发现需要升级为后端数据投影或业务建模交接的新债务。
+- 剩余风险：当前工作树包含用户未提交改动，其中 `frontend/src/standard/attendance/orders/page.vue` 另有窄屏历史列表调整；本轮截图基于当前工作树而不是纯净 commit checkout。订单页窄屏证据主要覆盖首屏与历史区入口，没有继续下滚到所有退款历史卡片，但这不影响对本轮并行加载提交的无异常判定。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图与文档沉淀；没有发现需要自动修复的低风险 UI 回归，因此不改前端源码，直接把 `last_audited_commit` 推进到 `46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`30ba2484654687cc6bb9582a3cce8312a68e2c2f..ccae0b2174254caefce956d0ed3fdd5a8c56144b`
 - 覆盖提交：`ccae0b2174254caefce956d0ed3fdd5a8c56144b`

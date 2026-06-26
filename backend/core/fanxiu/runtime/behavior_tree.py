@@ -49,10 +49,15 @@ from backend.core.fanxiu.data_annotation.runner import (
     register_fanxiu_runtime_runner_class,
 )
 from backend.core.runtime.process_launcher import popen_python_script_service
-from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.fanxiu.data_annotation.storage import (
+    DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID,
+    data_annotation_asset_tree_path,
+    fanxiu_data_annotation_dir,
+)
+from backend.core.settings import ROOT_DIR
 
 
-DEFAULT_FANXIU_ENTRY_ID = "30b82d72-8a76-4a74-be4b-4fc1591c6ce2"
+DEFAULT_FANXIU_ENTRY_ID = DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID
 _RUNTIME_RUNNER: Any | None = None
 FANXIU_EMBEDDED_SERVICE_ENV = "CODEYUN_FANXIU_EMBEDDED_BEHAVIOR_TREE_SERVICE"
 FANXIU_EXTERNAL_SERVICE_ENV = "CODEYUN_FANXIU_EXTERNAL_BEHAVIOR_TREE_SERVICE"
@@ -125,10 +130,6 @@ def resolve_fanxiu_entry(entry_id: str = DEFAULT_FANXIU_ENTRY_ID) -> Any:
     )
 
 
-def fanxiu_data_annotation_dir() -> Path:
-    return get_settings().data_dir / "fanxiu" / "data-annotation"
-
-
 def fanxiu_data_annotation_runtime_dir() -> Path:
     path = fanxiu_data_annotation_dir() / "runtime"
     path.mkdir(parents=True, exist_ok=True)
@@ -157,11 +158,6 @@ def fanxiu_data_annotation_manual_job_state_path() -> Path:
 
 def fanxiu_data_annotation_mail_scan_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "mail_scan_state.json"
-
-
-def data_annotation_asset_tree_path(entry_id: str = DEFAULT_FANXIU_ENTRY_ID) -> Path:
-    safe_entry_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).strip("._") or "default"
-    return fanxiu_data_annotation_dir() / "asset-trees" / f"{safe_entry_id}.json"
 
 
 def fanxiu_job_group_isolation_path() -> Path:

@@ -13,7 +13,7 @@ from typing import Any, Callable
 from pyxllib.autogui import MatchRole, Shape, View, image_number, normalize_frame_layer
 
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
-from backend.core.fanxiu.runtime.mumu_control import get_fanxiu_screenshot_path
+from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
 
 
 ShapeScoreFunc = Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], float]
@@ -168,12 +168,19 @@ def organize_frame_structure_in_tree(
     tree: list[dict[str, Any]],
     *,
     score_shape: ShapeScoreFunc,
+    scope: str = "sibling",
     threshold: float = 80.0,
     min_shared_anchors: int = 1,
     require_same_layer: bool = True,
     demote_unshared_parent_identities: bool = True,
 ) -> tuple[list[dict[str, Any]], FrameStructureOrganizerStats]:
-    """按场景身份公共锚点把同目录 sibling frame 整理为 frame/subframe 结构。"""
+    """按场景身份公共锚点整理 frame/subframe 结构。
+
+    `sibling` 模式只整理同一业务目录中的同级图片，保留旧行为。
+    `layer` 模式按 Layer 视图收集 root frame，目录不参与工程判断。
+    """
+    if scope not in {"sibling", "layer"}:
+        raise ValueError(f"未知 frame structure scope：{scope}")
 
     counters = {
         "image_count": 0,
@@ -206,6 +213,46 @@ def organize_frame_structure_in_tree(
             if isinstance(children, list):
                 count_images([child for child in children if isinstance(child, dict)])
 
+    def apply_planned_adoptions(
+        planned: list[FrameStructureAdoption],
+        shared_keys: dict[int, set[str]],
+        *,
+        by_id: dict[int, dict[str, Any]],
+        source_children_by_id: dict[int, list[Any]],
+    ) -> None:
+        if not planned:
+            return
+        child_to_parent = {item.child_id: item.parent_id for item in planned}
+        for adoption in planned:
+            parent = by_id.get(adoption.parent_id)
+            child = by_id.get(adoption.child_id)
+            source_children = source_children_by_id.get(adoption.child_id)
+            if parent is None or child is None or source_children is None:
+                continue
+            parent_children = parent.get("children")
+            if not isinstance(parent_children, list):
+                parent_children = []
+                parent["children"] = parent_children
+            if child not in parent_children:
+                parent_children.append(child)
+            adoptions.append(adoption)
+        if demote_unshared_parent_identities:
+            for parent_id, keys in shared_keys.items():
+                parent = by_id.get(parent_id)
+                if parent is None:
+                    continue
+                demoted = _demote_unshared_parent_identities(parent, shared_shape_keys=keys)
+                demoted_identities.extend(demoted)
+        for child_id in child_to_parent:
+            source_children = source_children_by_id.get(child_id)
+            if source_children is None:
+                continue
+            source_children[:] = [
+                child
+                for child in source_children
+                if not (isinstance(child, dict) and image_number(child) == child_id)
+            ]
+
     def organize_children(children: list[Any], *, allow_adoption: bool) -> list[Any]:
         for child in children:
             if not isinstance(child, dict):
@@ -228,34 +275,57 @@ def organize_frame_structure_in_tree(
             counters["scored_pair_count"] += scored_count
             if planned:
                 by_id = {image_number(item): item for item in direct_images}
-                child_to_parent = {item.child_id: item.parent_id for item in planned}
-                for adoption in planned:
-                    parent = by_id.get(adoption.parent_id)
-                    child = by_id.get(adoption.child_id)
-                    if parent is None or child is None:
-                        continue
-                    parent_children = parent.get("children")
-                    if not isinstance(parent_children, list):
-                        parent_children = []
-                        parent["children"] = parent_children
-                    parent_children.append(child)
-                    adoptions.append(adoption)
-                if demote_unshared_parent_identities:
-                    for parent_id, keys in shared_keys.items():
-                        parent = by_id.get(parent_id)
-                        if parent is None:
-                            continue
-                        demoted = _demote_unshared_parent_identities(parent, shared_shape_keys=keys)
-                        demoted_identities.extend(demoted)
-                children = [
-                    child
-                    for child in children
-                    if not (isinstance(child, dict) and image_number(child) in child_to_parent)
-                ]
+                source_children_by_id = {
+                    int(image_number(item)): children
+                    for item in direct_images
+                    if image_number(item) is not None
+                }
+                apply_planned_adoptions(planned, shared_keys, by_id=by_id, source_children_by_id=source_children_by_id)
         return children
 
+    def collect_layer_root_images(nodes: list[Any], *, inside_image: bool = False) -> tuple[list[dict[str, Any]], dict[int, list[Any]]]:
+        roots: list[dict[str, Any]] = []
+        source_children_by_id: dict[int, list[Any]] = {}
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_is_image = node.get("type") == "image"
+            node_id = image_number(node) if node_is_image else None
+            if node_is_image and node_id is not None and not inside_image:
+                roots.append(node)
+                source_children_by_id[int(node_id)] = nodes
+            children = node.get("children")
+            if isinstance(children, list):
+                child_roots, child_sources = collect_layer_root_images(children, inside_image=inside_image or node_is_image)
+                roots.extend(child_roots)
+                source_children_by_id.update(child_sources)
+        return roots, source_children_by_id
+
+    def organize_layer_roots() -> None:
+        roots, source_children_by_id = collect_layer_root_images(migrated)
+        if len(roots) < 2:
+            return
+        counters["sibling_group_count"] += 1
+        planned, shared_keys, scored_count = _plan_sibling_adoptions(
+            roots,
+            score_shape=score_shape,
+            threshold=threshold,
+            min_shared_anchors=min_shared_anchors,
+            require_same_layer=require_same_layer,
+        )
+        counters["scored_pair_count"] += scored_count
+        by_id = {
+            int(image_number(item)): item
+            for item in roots
+            if image_number(item) is not None
+        }
+        apply_planned_adoptions(planned, shared_keys, by_id=by_id, source_children_by_id=source_children_by_id)
+
     count_images([node for node in migrated if isinstance(node, dict)])
-    organize_children(migrated, allow_adoption=True)
+    if scope == "layer":
+        organize_layer_roots()
+    else:
+        organize_children(migrated, allow_adoption=True)
     counters["adoption_count"] = len(adoptions)
     counters["demoted_identity_count"] = len(demoted_identities)
     return migrated, FrameStructureOrganizerStats(
@@ -265,9 +335,10 @@ def organize_frame_structure_in_tree(
     )
 
 
-def _image_data_url(filename: str) -> str:
-    path = get_fanxiu_screenshot_path(filename)
-    if not path.exists():
+def _image_data_url(filename: str, *, entry_id: str | None = None) -> str:
+    asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
+    path = asset.path
+    if not asset.exists:
         raise FileNotFoundError(f"截图不存在：{path}")
     mime = mimetypes.guess_type(str(path))[0] or "image/png"
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
@@ -285,7 +356,7 @@ def _runtime_score_shape_factory(tree: list[dict[str, Any]], asset_tree_path: Pa
         if number is None:
             raise ValueError(f"无法识别 frame 编号：{image.get('filename')}")
         if number not in frame_cache:
-            frame_cache[number] = _image_data_url(str(image.get("filename") or ""))
+            frame_cache[number] = _image_data_url(str(image.get("filename") or ""), entry_id=entry_id)
         return frame_cache[number]
 
     def score(parent: dict[str, Any], shape: dict[str, Any], child: dict[str, Any]) -> float:
@@ -304,6 +375,7 @@ def organize_frame_structure_file(
     entry_id: str,
     write: bool = False,
     backup: bool = True,
+    scope: str = "layer",
     threshold: float = 80.0,
     min_shared_anchors: int = 1,
     require_same_layer: bool = True,
@@ -316,6 +388,7 @@ def organize_frame_structure_file(
     organized, stats = organize_frame_structure_in_tree(
         tree,
         score_shape=score_shape,
+        scope=scope,
         threshold=threshold,
         min_shared_anchors=min_shared_anchors,
         require_same_layer=require_same_layer,

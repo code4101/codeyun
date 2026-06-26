@@ -1,11 +1,21 @@
-import ELK, { type ElkExtendedEdge, type ElkNode } from 'elkjs/lib/elk-api.js';
-import elkWorkerUrl from 'elkjs/lib/elk-worker.min.js?url';
+import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api.js';
 import { type Edge, type Node } from '@vue-flow/core';
 import { getNoteWeightScaleFactor } from '@/utils/noteWeight';
 
-// Use the worker build so the 1.5MB ELK runtime is emitted as a worker asset,
-// not bundled into the main graph chunk.
-const elk = new ELK({ workerUrl: elkWorkerUrl });
+let elkInstancePromise: Promise<any> | null = null;
+
+const getElkInstance = async () => {
+    if (!elkInstancePromise) {
+        elkInstancePromise = Promise.all([
+            import('elkjs/lib/elk-api.js'),
+            import('elkjs/lib/elk-worker.min.js?url'),
+        ]).then(([elkModule, workerModule]) => (
+            new elkModule.default({ workerUrl: workerModule.default })
+        ));
+    }
+
+    return elkInstancePromise;
+};
 
 // Handle Mapping
 // CustomNode.vue defined handles:
@@ -46,6 +56,7 @@ function getNodeDimensions(weight: number = 0, nodeType?: string | null, weightM
  * @returns Object containing laid out nodes and edges
  */
 export const useLayout = async (nodes: Node[], edges: Edge[]) => {
+    const elk = await getElkInstance();
     
     // 0. Pre-sort nodes by start time (user controlled order)
     // This gives ELK a hint for the "model order"

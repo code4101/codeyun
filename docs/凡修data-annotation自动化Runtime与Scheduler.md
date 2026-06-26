@@ -6,26 +6,34 @@
 
 - 帧树是感知与定位的第一数据源。
 - 已有场景、父帧/子帧、shape 标注可用时，Runtime 禁止猜坐标。
-- 处理行为树任务前必须先读取当前 `entry_id` 的资产树标注，而不是从截图重新目测入口。当前机器的标注数据位于 `CODEYUN_DATA_DIR/fanxiu/data-annotation/asset-trees/<entry_id>.json`，后端统一通过 `_data_annotation_asset_tree_path(entry_id)` 和 `_index_images()` 读取。
+- 处理行为树任务前必须先读取当前 `entry_id` 的资产树标注，而不是从截图重新目测入口。当前机器的标注数据位于 `CODEYUN_DATA_DIR/fanxiu/data-annotation/entries/<entry_id>/asset-tree.json`，图片位于同一 entry 目录下的 `images/`，后端统一通过 `_data_annotation_asset_tree_path(entry_id)` 和 `_index_images()` 读取。
 - 前端只负责控制、调试、展示和标注，不承载正式任务状态机。
 - Runtime 负责实际执行、当前场景识别、守护 tick、点击、输入、等待。
 - Scheduler 负责任务清单、到期判断、按分组和触发时间排队，以及手动触发。
 
 ## 帧树语义
 
-帧树同时承载两条正交概念：`layer` 和 `structure`。`layer` 表示 frame 所在的目录识别队列；`structure` 表示 frame/subframe 的父子关系。目录只是方便人找帧和组织识别队列；真正的父子语义只来自 image.children 中的 frame 嵌套。
+帧树同时承载两条正交概念：`layer` 和 `structure`。`layer` 表示 root frame 所在的全局识别队列；`structure` 表示 frame/subframe 的父子关系。目录只是方便人找帧和组织 root 识别队列；真正的父子语义只来自 image.children 中的 frame 嵌套。
 
 如果一个流程可达某个父帧，那么该父帧下的子帧在逻辑上也视为可达候选；任务实现不应要求每条跳转路径都重复写到每个子帧。
+
+定期检查 frame/subframe 归纳时，使用标准入口：
+
+```bash
+uv run python scripts/fanxiu_organize_frame_structure.py --scope layer --keep-unshared-parent-identities
+```
+
+该命令默认 dry-run：按 Layer 视图收集 root frame，跨业务目录检查“父 frame 的场景身份锚点是否在另一个 root frame 中成立”，并输出候选父子关系、命中锚点、分数和双方路径。确认候选合理后再追加 `--write` 写回资产树；写回时会创建备份。目录不作为归纳依据；写回结果仍使用现有 `image.children` 表达 subframe。
 
 Runtime 识别场景时应优先使用帧树内已有帧和 shape。只有缺少标注时，任务才应报错或进入人工补标流程，不应在正式任务里临时猜测按钮位置。
 
 frame 承载“场景身份”，shape 承载“判定证据”。同一场景可以有多个 `isSceneIdentity / sceneIdentityRole` 锚点，Runtime 场景分数按“全部场景标识都命中”理解：同一 view 内多个场景标识取最低分，任意一个 required 锚点低于阈值都不能判定为该场景。检测/调试页可以把每个条件都展示出来，用来评估是哪一个锚点没有通过。不要把同一场景的多个备选锚点都勾成场景标识；如果只是备选，请拆成不同子帧，或只保留当前稳定的一组必要锚点。
 
-frame 的 `layer` 表示它进入哪条目录识别队列：`layer=1` 先识别，`layer=2` 后识别，`layer=3` 最后识别，通常用于模板、素材、过渡和低优先级帧。同一个 `layer` 内用 `layerOrder` 表达识别优先顺序；Layer 视图里的拖拽排序只更新这个顺序字段，不改变目录归属。`layer` 和 `layerOrder` 都不表达父子关系；父 frame 与 subframe 的 structure 只由 image.children 表达。
+frame 的 `layer` 表示 root frame 进入哪条全局识别队列：`layer=1` 先识别，`layer=2` 后识别，`layer=3` 最后识别，通常用于模板、素材、过渡和低优先级帧。同一个 `layer` 内用 `layerOrder` 表达识别优先顺序；Layer 视图里的拖拽排序只更新这个顺序字段，不改变目录归属。`layer` 和 `layerOrder` 都不表达父子关系；父 frame 与 subframe 的 structure 只由 image.children 表达。
 
 旧 frame 等级只作为一次性迁移输入：旧等级 2 迁移为 `layer=1`，旧等级 1 迁移为 `layer=2`，旧非场景帧迁移为 `layer=3`。迁移后代码、UI 和文档只使用 `layer` 与 `structure`。shape 只表达“这个框是否作为当前 frame 场景标识，以及它的图像/OCR required/optional/off 策略”。
 
-Runtime 无上下文识别按 `Layer 1 -> Layer 2 -> Layer 3` 的目录队列顺序尝试。每个 root frame 命中后，沿 frame/subframe structure 继续下钻；subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。如果传入候选清单或 `sceneJumpTarget` 预期目标，则优先在这些候选及其 structure 子树内识别，但仍必须使用统一识别接口。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.goto_view(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
+Runtime 无上下文识别按 root `Layer 1 -> Layer 2 -> Layer 3` 的全局队列阻断式尝试。前一层命中 root frame 后，不再检测后续 root layer；而是沿该 frame 的 structure children 继续细化。subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。子 frame 的 `layer` 不参与 subtree 细化顺序，也不会让识别重新回到全局 layer 队列。如果传入候选清单或 `sceneJumpTarget` 预期目标，则候选视为 `layer0`，优先在这些候选所在 root 及其 structure 子树内识别，候选未命中才回到默认 root layer 队列。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.goto_view(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
 
 subframe 的场景身份按链式语义理解：父 frame 命中后才会进入子 frame 识别，因此子 frame 只需要匹配自己的增量场景标识，不应把父 frame 的场景标识重复并入子 frame 的匹配谓词。语义上 `#75 = #69 + #75 own identity`，运行时则是先算 #69，命中后只算 #75 自己。
 
@@ -339,7 +347,7 @@ def task(ctx):
 - 运行报告至少记录：起点场景、目标场景、action 日志、跳转日志、最终 `success/error`、耗时和当前游戏可见状态。没有 action 日志或场景变化时，不得说“真实操作已验证”。
 - 当前游戏可见状态必须由真实 MuMu/ADB 当前帧或用户可见画面确认；如果截图观察脚本抓到桌面、旧帧或非游戏内容，这张图不能算验收证据。
 - Runtime 内嵌守护不能因弹窗误命中长期抢占主作业。守护 service 命中一次弹窗后本轮返回 `RUNNING` 暂停主作业，下一轮重新取帧；当守护跳过时，主作业必须继续获得 tick，否则 `go_scene` 会停在“守护处理”日志但游戏不移动。
-- 场景身份识别不能用全屏 scan 兜底，且候选场景必须取最高分而不是顺序优先。像“日程”这种也会出现在世界页入口上的元素不能单独作为日程页身份锚点。
+- 场景身份识别不能用全屏 scan 兜底。候选组可以并行打分，但必须按候选顺序返回第一个过阈值的显式场景，不能让低优先级弱锚点或全图相似素材用最高分抢结果。像“日程”这种也会出现在世界页入口上的元素不能单独作为日程页身份锚点。
 - 不要手动点游戏、直接改状态文件或只调用底层函数来冒充行为树验收；只有用户明确要求底层探针时，才把结论限定为底层探针结果。
 
 已加测试：

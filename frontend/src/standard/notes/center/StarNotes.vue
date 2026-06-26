@@ -211,6 +211,7 @@ let graphFilterQueued = false;
 let graphRelayoutQueued = false;
 let inactiveGraphRefreshPending = false;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
+let deferredInitialRelayoutTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
 const isActive = computed(() => props.active !== false);
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
@@ -376,6 +377,33 @@ const scheduleGraphFilterApply = (delay: number = 120) => {
     graphFilterTimer = null;
     void applyGraphFilters(false, false);
   }, delay);
+};
+
+const clearDeferredInitialRelayout = () => {
+  if (deferredInitialRelayoutTimer) {
+    clearTimeout(deferredInitialRelayoutTimer);
+    deferredInitialRelayoutTimer = null;
+  }
+};
+
+const hasCachedNodePositions = () => Object.keys(nodePositionCache.value).length > 0;
+
+const shouldDeferAutoRelayout = (hadCachedNodePositions: boolean = hasCachedNodePositions()) => (
+  isGlobalGraph.value
+  && shouldAutoRelayoutGraph()
+  && !hadCachedNodePositions
+);
+
+const scheduleDeferredInitialRelayout = () => {
+  clearDeferredInitialRelayout();
+  deferredInitialRelayoutTimer = setTimeout(() => {
+    deferredInitialRelayoutTimer = null;
+    if (!isActive.value || isRefreshing.value || isGraphUpdating.value) {
+      scheduleDeferredInitialRelayout();
+      return;
+    }
+    void applyGraphFilters(true, true);
+  }, 0);
 };
 
 const waitForAnimationFrame = () =>
@@ -1121,7 +1149,11 @@ watch(viewProgram, async (value) => {
 
 onMounted(async () => {
     if (canUseCachedGlobalGraph()) {
-        await applyGraphFilters(true, shouldAutoRelayoutGraph());
+        const shouldDeferRelayout = shouldDeferAutoRelayout(hasCachedNodePositions());
+        await applyGraphFilters(true, false);
+        if (shouldDeferRelayout) {
+          scheduleDeferredInitialRelayout();
+        }
         if (!isCachedGlobalGraphFresh()) {
           void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
         }
@@ -1133,8 +1165,12 @@ onMounted(async () => {
 watch(isActive, async (active) => {
     if (!active) return;
     if (canUseCachedGlobalGraph()) {
-        await applyGraphFilters(true, inactiveGraphRefreshPending && shouldAutoRelayoutGraph());
+        const shouldDeferRelayout = inactiveGraphRefreshPending && shouldDeferAutoRelayout(hasCachedNodePositions());
+        await applyGraphFilters(true, false);
         inactiveGraphRefreshPending = false;
+        if (shouldDeferRelayout) {
+            scheduleDeferredInitialRelayout();
+        }
         if (!isCachedGlobalGraphFresh()) {
             void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
         }
@@ -1149,6 +1185,7 @@ onUnmounted(() => {
         clearTimeout(graphFilterTimer);
         graphFilterTimer = null;
     }
+    clearDeferredInitialRelayout();
     if (dragRerouteFrame !== null) {
         window.cancelAnimationFrame(dragRerouteFrame);
         dragRerouteFrame = null;
@@ -1164,6 +1201,7 @@ const refreshGraph = async (
   isRefreshing.value = true;
   try {
     let deferredStoreRefresh = false;
+    const hadCachedNodePositions = hasCachedNodePositions();
     if (isGlobalGraph.value) {
       const normalizedProgram = normalizeNoteProgramChannel(program);
       const request = buildGlobalGraphRequest(normalizedProgram);
@@ -1187,7 +1225,10 @@ const refreshGraph = async (
     }
 
     if (!deferredStoreRefresh) {
-      await applyGraphFilters(true, shouldAutoRelayoutGraph());
+      await applyGraphFilters(true, false);
+      if (shouldDeferAutoRelayout(hadCachedNodePositions)) {
+        scheduleDeferredInitialRelayout();
+      }
     }
   } finally {
       isRefreshing.value = false;

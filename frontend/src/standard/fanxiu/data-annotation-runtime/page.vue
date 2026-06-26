@@ -590,14 +590,19 @@ const ensureDoctorWatchInBackground = () => {
   })();
 };
 
+const refreshDoctorWatchPanel = async () => {
+  await refreshDoctorWatchLatest();
+  ensureDoctorWatchInBackground();
+};
+
 const refreshAll = async () => {
   loading.value = true;
   try {
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
   } finally {
     loading.value = false;
   }
-  ensureDoctorWatchInBackground();
+  void refreshDoctorWatchPanel();
 };
 
 const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotationRuntimeStatus | void>) => {

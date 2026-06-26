@@ -5736,51 +5736,55 @@ class DataAnnotationRuntimeRunner(
     def _scene_matches_id(self, scene_id: int, score: float) -> bool:
         return self._scene_recognizer().scene_matches_id(scene_id, score)
 
+    def _scene_key_order(self) -> list[str]:
+        return [
+            "duplicated",
+            "reward",
+            "wanling_invite",
+            "gift",
+            "youli_result",
+            "youli_explore",
+            "youli",
+            "daily_activity",
+            "signup_reward",
+            "signup",
+            "daily_xianyuan_leave_confirm",
+            "daily_xianyuan_challenge_result",
+            "daily_xianyuan_challenge_confirm",
+            "daily_xianyuan_challenge_dialogue",
+            "daily_xianyuan_dialogue",
+            "daily_xianyuan_detail",
+            "daily_xianyuan_list",
+            "youli_quick_result",
+            "youli_region_detail",
+            "youli_purchase_empty",
+            "youli_purchase",
+            "daily_assistant_one_key_progress",
+            "daily_assistant_one_key_confirm",
+            "daily_assistant_one_key_result",
+            "daily_assistant_tongyou_confirm",
+            "daily_assistant_overview",
+            "daily_shuangxiu_secret",
+            "daily_shuangxiu_detail",
+            "daily_shuangxiu_invite",
+            "daily_shuangxiu_xianyuan_invite",
+            "daily_shuangxiu_training_ready",
+            "daily_shuangxiu_complete",
+            "daily",
+            "settings",
+            "world_menu",
+            "hide_floating",
+            "world",
+        ]
+
     def _scene_recognizer(self) -> SceneRecognizer:
         return SceneRecognizer(
             score_image=self._scene_score,
             threshold_for_scene_id=self._scene_match_threshold,
             image_for_key=self._image,
             threshold_for_key=lambda key: float(self.scene_thresholds.get(key, self.scene_threshold)),
-            key_priorities={
-                "duplicated": 12,
-                "reward": 11,
-                "wanling_invite": 10,
-                "gift": 9,
-                "youli_result": 8,
-                "youli_explore": 7,
-                "youli": 6,
-                "daily_activity": 5,
-                "signup_reward": 5,
-                "signup": 5,
-                "daily_xianyuan_leave_confirm": 5,
-                "daily_xianyuan_challenge_result": 5,
-                "daily_xianyuan_challenge_confirm": 5,
-                "daily_xianyuan_challenge_dialogue": 5,
-                "daily_xianyuan_dialogue": 5,
-                "daily_xianyuan_detail": 5,
-                "daily_xianyuan_list": 5,
-                "youli_quick_result": 5,
-                "youli_region_detail": 5,
-                "youli_purchase_empty": 5,
-                "youli_purchase": 5,
-                "daily_assistant_one_key_progress": 5,
-                "daily_assistant_one_key_confirm": 5,
-                "daily_assistant_one_key_result": 5,
-                "daily_assistant_tongyou_confirm": 5,
-                "daily_assistant_overview": 5,
-                "daily_shuangxiu_secret": 5,
-                "daily_shuangxiu_detail": 5,
-                "daily_shuangxiu_invite": 5,
-                "daily_shuangxiu_xianyuan_invite": 5,
-                "daily_shuangxiu_training_ready": 5,
-                "daily_shuangxiu_complete": 5,
-                "daily": 4,
-                "settings": 3,
-                "world_menu": 2,
-                "hide_floating": 1,
-                "world": 0,
-            },
+            max_parallel_workers=1,
+            max_candidate_batch_size=8,
         )
 
     def _identify_scene_number(
@@ -5788,21 +5792,41 @@ class DataAnnotationRuntimeRunner(
         ctx: dict[str, Any],
         frame_data_url: str,
         preferred_scene_ids: list[int] | None = None,
+        trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
         candidate_scene_ids = preferred_scene_ids
         if candidate_scene_ids is None:
-            candidate_scene_ids = self._runtime_scene_candidate_ids(ctx)
+            if 86 in self._runtime_scene_candidate_ids(ctx):
+                text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+                if self._leave_scene_confirm_text(text):
+                    if trace is not None:
+                        trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
+                    return 86, 100.0
+            recognizer = self._scene_recognizer()
+            if trace is None:
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=None)
+            else:
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=None, trace=trace)
+            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+                if trace is not None:
+                    trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
+                return None, score
+            return scene_id, score
         if preferred_scene_ids is not None:
             if 86 in preferred_scene_ids:
                 text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
                 if self._leave_scene_confirm_text(text):
+                    if trace is not None:
+                        trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
                     return 86, 100.0
-            scene_id, score = self._scene_recognizer().identify_scene_number(
-                ctx,
-                frame_data_url,
-                preferred_scene_ids=preferred_scene_ids,
-            )
+            recognizer = self._scene_recognizer()
+            if trace is None:
+                scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
+            else:
+                scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+                if trace is not None:
+                    trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
                 return None, score
             return scene_id, score
 
@@ -5810,6 +5834,7 @@ class DataAnnotationRuntimeRunner(
             ctx,
             frame_data_url,
             candidate_scene_ids,
+            trace=trace,
         )
 
     def _identify_scene_number_from_candidates(
@@ -5817,17 +5842,22 @@ class DataAnnotationRuntimeRunner(
         ctx: dict[str, Any],
         frame_data_url: str,
         candidate_scene_ids: list[int],
+        trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
         if 86 in candidate_scene_ids:
             text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
             if self._leave_scene_confirm_text(text):
+                if trace is not None:
+                    trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
                 return 86, 100.0
-        scene_id, score = self._scene_recognizer().identify_scene_tree_number(
-            ctx,
-            frame_data_url,
-            preferred_scene_ids=candidate_scene_ids or None,
-        )
+        recognizer = self._scene_recognizer()
+        if trace is None:
+            scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None)
+        else:
+            scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None, trace=trace)
         if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+            if trace is not None:
+                trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
             return None, score
         return scene_id, score
 
@@ -6491,6 +6521,7 @@ class DataAnnotationRuntimeRunner(
             image,
             shape,
             frame_data_url,
+            entry_id=str(getattr(ctx.get("entry"), "entry_id", "") or getattr(ctx.get("entry"), "id", "") or ""),
             scan=scan,
             match_strategy=match_strategy,
             ocr_enabled=ocr_enabled,
@@ -6504,6 +6535,7 @@ class DataAnnotationRuntimeRunner(
         shape: dict[str, Any],
         frame_data_url: str,
         *,
+        entry_id: str = "",
         scan: bool,
         match_strategy: str,
         ocr_enabled: bool,
@@ -6517,6 +6549,7 @@ class DataAnnotationRuntimeRunner(
         if save_match_frame is None:
             save_match_frame = not use_ocr
         payload = {
+            "entry_id": str(entry_id or ""),
             "filename": filename,
             "box": self._box(shape, image),
             "scan": scan,
@@ -7051,11 +7084,10 @@ class DataAnnotationRuntimeRunner(
 
     def _identify_scene(self, ctx: dict[str, Any], frame_data_url: str, keys: list[str] | None = None) -> tuple[str, float]:
         recognizer = self._scene_recognizer()
-        priorities = recognizer.key_priorities or {}
         return recognizer.identify_scene_key(
             ctx,
             frame_data_url,
-            keys=keys or list(priorities),
+            keys=keys or self._scene_key_order(),
         )
 
     def _scene_matches(self, key: str, score: float) -> bool:

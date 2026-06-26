@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,37 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     if all(get_fanxiu_data_annotation_manual_job_definition(task_type) is not None for task_type in _DEFAULT_RUNTIME_JOB_TYPES):
         return
 
+    def _compact_detect_scene_trace(trace: list[dict[str, Any]], *, max_candidates: int = 12) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for event in trace:
+            item = dict(event)
+            candidates = item.get("candidates")
+            if isinstance(candidates, list) and len(candidates) > max_candidates:
+                selected_ids = {int(scene_id) for scene_id in item.get("selected_ids") or []}
+                selected = [
+                    candidate
+                    for candidate in candidates
+                    if isinstance(candidate, dict) and int(candidate.get("scene_id") or -1) in selected_ids
+                ]
+                top = sorted(
+                    [candidate for candidate in candidates if isinstance(candidate, dict)],
+                    key=lambda candidate: float(candidate.get("score") or 0),
+                    reverse=True,
+                )[:max_candidates]
+                merged: list[dict[str, Any]] = []
+                seen: set[int] = set()
+                for candidate in [*selected, *top]:
+                    scene_id = int(candidate.get("scene_id") or -1)
+                    if scene_id in seen:
+                        continue
+                    seen.add(scene_id)
+                    merged.append(candidate)
+                item["candidate_count"] = len(candidates)
+                item["candidates"] = merged
+                item["candidates_note"] = f"compact_top_{max_candidates}_plus_selected"
+            compact.append(item)
+        return compact
+
     @register_fanxiu_data_annotation_manual_job("detect_scene", "单步识别", scheduler_supported=False)
     def _run_data_annotation_detect_scene_manual_job(
         runner: Any,
@@ -46,17 +78,32 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> str:
-        del payload, stop_event
+        del stop_event
+        raw_preferred = payload.get("preferred_scene_ids") or payload.get("candidates") or payload.get("scene_ids")
+        preferred_scene_ids: list[int] | None = None
+        if isinstance(raw_preferred, list):
+            preferred_scene_ids = [int(item) for item in raw_preferred if str(item).strip()]
+        elif isinstance(raw_preferred, str) and raw_preferred.strip():
+            preferred_scene_ids = [int(part.strip().lstrip("#")) for part in raw_preferred.split(",") if part.strip()]
+        trace_enabled = bool(payload.get("trace") or payload.get("debug") or payload.get("explain"))
+        trace: list[dict[str, Any]] | None = [] if trace_enabled else None
         frame = runner._screencap(ctx)
-        scene_id, score = runner._identify_scene_number(ctx, frame)
+        scene_id, score = runner._identify_scene_number(ctx, frame, preferred_scene_ids, trace=trace)
         with runner._lock:
             runner._status.update({
-                "phase": "manual_tick",
+                "phase": "detect_scene_debug" if trace_enabled else "manual_tick",
                 "current_scene": scene_id,
                 "message": f"单步识别：{('#' + str(scene_id)) if scene_id is not None else 'unknown'} {score:.0f}%",
                 "updated_at": time.time(),
             })
             runner._log_locked("detail", runner._status["message"])
+            if trace is not None:
+                logged_trace = trace if bool(payload.get("full_trace")) else _compact_detect_scene_trace(
+                    trace,
+                    max_candidates=max(3, min(50, int(payload.get("max_trace_candidates") or 12))),
+                )
+                max_chars = max(1000, min(30000, int(payload.get("max_trace_chars") or 12000)))
+                runner._log_locked("detail", f"detect_scene trace: {json.dumps(logged_trace, ensure_ascii=False, default=str)[:max_chars]}")
         return "success"
 
     @register_fanxiu_data_annotation_manual_job("manual_tick", "单步识别", scheduler_supported=False)

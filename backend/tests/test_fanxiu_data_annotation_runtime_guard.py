@@ -3607,16 +3607,16 @@ def test_identify_scene_number_without_context_checks_popup_root_but_not_nested_
 
         def identify_scene_tree_number(self, _ctx, _frame, *, preferred_scene_ids=None):
             scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
-            if preferred_scene_ids and 47 in preferred_scene_ids:
+            if preferred_scene_ids is None or 47 in preferred_scene_ids:
                 return 47, 92.0
             return None, 0.0
 
     monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
 
     assert runner._identify_scene_number(ctx, "frame") == (47, 92.0)
-    assert scanned == [[34, 47, 204]]
+    assert scanned == [None]
     assert runner._identify_scene_number(ctx, "frame", [47]) == (47, 92.0)
-    assert scanned == [[34, 47, 204], [47]]
+    assert scanned == [None, [47]]
 
 
 def test_identify_scene_number_directly_checks_explicit_nested_candidate(monkeypatch):
