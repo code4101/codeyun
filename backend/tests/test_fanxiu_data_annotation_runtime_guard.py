@@ -1827,7 +1827,7 @@ def test_runtime_shape_payload_scans_floating_image_without_ocr():
     assert payload["ocr_enabled"] is False
 
 
-def test_auto_close_guard_images_use_only_first_level_popup_group_children():
+def test_auto_close_guard_images_use_only_top_level_popup_entries():
     runner = create_fanxiu_runtime_runner()
     top_level = _image("所有提示窗口", "0047.jpg")
     nested = _image("拍卖", "0028.jpg")
@@ -1859,6 +1859,69 @@ def test_scene_score_requires_explicit_scene_identity_shape(monkeypatch):
 
     assert runner._scene_score({"entry": object()}, image, "frame") == 0
     assert calls == []
+
+
+def test_scene_score_uses_full_frame_similarity_only_for_layer3_without_identity(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    layer3_image = _image("素材模板", "0999.jpg")
+    layer3_image["layer"] = 3
+    layer2_image = _image("普通页面", "0100.jpg")
+    layer2_image["layer"] = 2
+    identified_image = _image("明确页面", "0101.jpg", [
+        {"id": "identity", "kind": "rect", "title": "身份", "sceneIdentityRole": "required"},
+    ])
+    identified_image["layer"] = 3
+
+    monkeypatch.setattr(runtime_runner_core, "_reference_frame_similarity", lambda *_args: 93.0)
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 91.0)
+
+    assert runner._scene_score({"entry": object()}, layer3_image, "frame") == 93.0
+    assert runner._scene_score({"entry": object()}, layer2_image, "frame") == 0.0
+    assert runner._scene_score({"entry": object()}, identified_image, "frame") == 91.0
+
+
+def test_navigation_scene_id_maps_layer3_weak_child_to_parent_scene():
+    runner = create_fanxiu_runtime_runner()
+    parent = _image("世界", "0034.jpg", [
+        {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
+    ])
+    parent["layer"] = 1
+    weak_child = _image("世界-下方动态", "0068.jpg")
+    weak_child["layer"] = 3
+    identified_child = _image("明确子场景", "0100.jpg", [
+        {"id": "child-id", "kind": "rect", "title": "明确", "sceneIdentityRole": "required"},
+    ])
+    identified_child["layer"] = 3
+    parent["children"] = [weak_child, identified_child]
+    ctx = {"asset_tree": [parent], "images": {34: parent, 68: weak_child, 100: identified_child}}
+
+    assert runner._navigation_scene_id(ctx, 68) == 34
+    assert runner._navigation_scene_id(ctx, 100) == 100
+
+
+def test_navigation_scene_id_rejects_top_level_layer3_weak_scene():
+    runner = create_fanxiu_runtime_runner()
+    weak_root = _image("弱兜底素材", "0999.jpg")
+    weak_root["layer"] = 3
+    ctx = {"asset_tree": [weak_root], "images": {999: weak_root}}
+
+    assert runner._navigation_scene_id(ctx, 999) is None
+
+
+def test_identify_scene_number_for_route_uses_ordered_detect_candidates(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    tree: list[dict] = []
+    ctx = {"images": {1: _image("先匹配", "0001.jpg"), 2: _image("后匹配", "0002.jpg")}}
+    seen: list[list[int]] = []
+
+    def fake_identify(_ctx, _frame, candidates=None):
+        seen.append(list(candidates or []))
+        return 1, 81.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
+
+    assert runner._identify_scene_number_for_route(ctx, "frame", tree, 34, [1, 2]) == (1, 81.0)
+    assert seen == [[1, 2]]
 
 
 def test_popup_score_can_fallback_to_plain_shapes(monkeypatch):
@@ -2874,7 +2937,7 @@ def test_popup_guard_parallel_scoring_checks_all_candidates_in_one_tick(tmp_path
     assert set(seen) == {f"图{index}" for index in range(12)}
 
 
-def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate(monkeypatch):
+def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate_up_to_cap(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(12)]
     created_workers: list[int] = []
@@ -2892,6 +2955,26 @@ def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate(monkeypatch)
 
     assert created_workers == [len(candidates)]
     assert scores == [0] * 11 + [70]
+
+
+def test_popup_guard_parallel_scoring_caps_worker_count(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(40)]
+    created_workers: list[int] = []
+    real_executor = popup_guard_core.ThreadPoolExecutor
+
+    class SpyExecutor(real_executor):
+        def __init__(self, *args, **kwargs):
+            created_workers.append(int(kwargs.get("max_workers") or args[0]))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(popup_guard_core, "ThreadPoolExecutor", SpyExecutor)
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "图39" else 0)
+
+    scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
+
+    assert created_workers == [32]
+    assert scores == [0] * 39 + [70]
 
 
 def test_popup_guard_parallel_scoring_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
@@ -3467,6 +3550,8 @@ def test_runtime_scene_candidates_use_layer_queue_roots_without_context():
     image47["layer"] = 1
     image86 = _image("离开提示", "0086.png")
     image86["layer"] = 1
+    image278 = _image("邮件删除提示", "0278.png")
+    image278["layer"] = 3
     image198 = _image("仙缘人物详情", "0198.png", [
         {"id": "local-id", "kind": "rect", "title": "身份", "sceneIdentityRole": "required", "sceneIdentityScope": "local"},
     ])
@@ -3486,13 +3571,14 @@ def test_runtime_scene_candidates_use_layer_queue_roots_without_context():
         {"type": "folder", "title": "弹窗", "children": [image47, image86]},
         {"type": "folder", "title": "日常", "children": [image198, image204, image199]},
     ]
-    ctx = {"asset_tree": tree, "images": {20: image20, 34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 199: image199, 204: image204}}
+    image47["children"] = [image278]
+    ctx = {"asset_tree": tree, "images": {20: image20, 34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 199: image199, 204: image204, 278: image278}}
 
-    assert runner._runtime_scene_candidate_ids(ctx) == [20, 34, 204, 198, 199]
+    assert runner._runtime_scene_candidate_ids(ctx) == [20, 34, 47, 86, 204, 198, 199]
     assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
 
 
-def test_identify_scene_number_without_context_does_not_try_local_popup_fallback(monkeypatch):
+def test_identify_scene_number_without_context_checks_popup_root_but_not_nested_children(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
@@ -3513,18 +3599,46 @@ def test_identify_scene_number_without_context_does_not_try_local_popup_fallback
     scanned: list[list[int] | None] = []
 
     class FakeRecognizer:
-        def identify_scene_tree_number(self, _ctx, _frame, *, preferred_scene_ids=None):
+        def identify_scene_number(self, _ctx, _frame, *, preferred_scene_ids=None):
             scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
             if preferred_scene_ids == [47]:
                 return 47, 92.0
             return None, 0.0
 
+        def identify_scene_tree_number(self, _ctx, _frame, *, preferred_scene_ids=None):
+            scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
+            if preferred_scene_ids and 47 in preferred_scene_ids:
+                return 47, 92.0
+            return None, 0.0
+
     monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
 
-    assert runner._identify_scene_number(ctx, "frame") == (None, 0.0)
-    assert scanned == [[34, 204]]
+    assert runner._identify_scene_number(ctx, "frame") == (47, 92.0)
+    assert scanned == [[34, 47, 204]]
     assert runner._identify_scene_number(ctx, "frame", [47]) == (47, 92.0)
-    assert scanned == [[34, 204], [47]]
+    assert scanned == [[34, 47, 204], [47]]
+
+
+def test_identify_scene_number_directly_checks_explicit_nested_candidate(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image47 = _image("所有提示窗口", "0047.png", [
+        {"id": "title", "kind": "rect", "title": "提示", "sceneIdentityRole": "required"},
+    ])
+    image278 = _image("邮件删除提示", "0278.png", [
+        {"id": "mail", "kind": "rect", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"},
+    ])
+    image47["children"] = [image278]
+    tree = [{"type": "folder", "title": "弹窗", "children": [image47]}]
+    ctx = {"asset_tree": tree, "images": {47: image47, 278: image278}}
+
+    monkeypatch.setattr(
+        runner,
+        "_scene_score",
+        lambda _ctx, image, _frame: 100.0 if runner._image_number(image) == 278 else 40.0,
+    )
+
+    assert runner._identify_scene_number(ctx, "frame") == (None, 40.0)
+    assert runner._identify_scene_number(ctx, "frame", [278]) == (278, 100.0)
 
 
 def test_runtime_container_skips_disabled_guards(tmp_path, monkeypatch):
@@ -3806,17 +3920,11 @@ def test_daily_boss_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_daily_lingzu_is_daily_runtime_task():
-    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingzu")
+def test_daily_lingzu_is_not_independent_scheduler_task():
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 
-    assert task["task_type"] == "daily_lingzu"
-    assert task["label"] == "日常_灵祖"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is False
-    assert task["cooldown_seconds"] == 600
-    assert _data_annotation_task_supported(task)
+    assert "legacy-daily-lingzu" not in tasks
+    assert _data_annotation_task_supported({"task_type": "daily_lingzu"}) is False
 
 
 def test_daily_jianling_is_daily_runtime_task():
@@ -3832,17 +3940,11 @@ def test_daily_jianling_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_daily_lingta_is_daily_runtime_task():
-    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingta")
+def test_daily_lingta_is_not_independent_scheduler_task():
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 
-    assert task["task_type"] == "daily_lingta"
-    assert task["label"] == "日常_灵塔"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is False
-    assert task["cooldown_seconds"] == 600
-    assert _data_annotation_task_supported(task)
+    assert "legacy-daily-lingta" not in tasks
+    assert _data_annotation_task_supported({"task_type": "daily_lingta"}) is False
 
 
 def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
@@ -3908,12 +4010,12 @@ def test_daily_assistant_is_daily_runtime_task():
     assert task["source"] == "data_annotation_runtime"
     assert task["schedule_kind"] == "daily"
     assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
-    assert task["enabled"] is False
+    assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
     assert _data_annotation_task_supported(task)
 
 
-def test_daily_assistant_scheduler_task_preserves_disabled_with_standard_times():
+def test_daily_assistant_scheduler_task_enables_with_standard_times():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -3939,7 +4041,7 @@ def test_daily_assistant_scheduler_task_preserves_disabled_with_standard_times()
     task = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
 
     assert changed is True
-    assert task["enabled"] is False
+    assert task["enabled"] is True
     assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
     assert task["last_result"] != "unsupported"
 
@@ -3977,28 +4079,13 @@ def test_scheduler_time_order_sorts_dynamic_before_later_daily_and_disabled_last
     assert ordered == ["retry-0050", "dynamic-0115", "daily-0500", "manual-disabled"]
 
 
-def test_daily_yaowang_and_yaozu_are_daily_runtime_tasks():
+def test_daily_yaowang_and_yaozu_are_not_independent_scheduler_tasks():
     tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 
-    yaowang = tasks["legacy-daily-yaowang"]
-    assert yaowang["task_type"] == "daily_yaowang"
-    assert yaowang["label"] == "日常_妖王来袭"
-    assert yaowang["source"] == "data_annotation_runtime"
-    assert yaowang["schedule_kind"] == "daily"
-    assert yaowang["schedule_times"] == ["05:00"]
-    assert yaowang["enabled"] is False
-    assert yaowang["cooldown_seconds"] == 600
-    assert _data_annotation_task_supported(yaowang)
-
-    yaozu = tasks["legacy-daily-yaozu"]
-    assert yaozu["task_type"] == "daily_yaozu"
-    assert yaozu["label"] == "日常_妖族袭城"
-    assert yaozu["source"] == "data_annotation_runtime"
-    assert yaozu["schedule_kind"] == "daily"
-    assert yaozu["schedule_times"] == ["05:00"]
-    assert yaozu["enabled"] is False
-    assert yaozu["cooldown_seconds"] == 600
-    assert _data_annotation_task_supported(yaozu)
+    assert "legacy-daily-yaowang" not in tasks
+    assert "legacy-daily-yaozu" not in tasks
+    assert _data_annotation_task_supported({"task_type": "daily_yaowang"}) is False
+    assert _data_annotation_task_supported({"task_type": "daily_yaozu"}) is False
 
 
 def test_daily_entry_matches_yaowang_and_yaozu_in_scroll_window():
@@ -5172,7 +5259,7 @@ def test_legacy_daily_boss_scheduler_task_is_migrated_to_runtime_task():
     assert task["label"] == "日常_首领"
     assert task["schedule_times"] == ["05:00"]
     assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert task["next_time"] == "2026-06-10 05:00:00"
 
 
 def test_scheduler_world_fact_sync_ignores_fact_older_than_task_run():
@@ -5216,7 +5303,7 @@ def test_scheduler_world_fact_sync_ignores_fact_older_than_task_run():
     assert task["retry_after"] == "2026-06-12 09:46:44"
 
 
-def test_legacy_daily_lingzu_scheduler_task_is_migrated_to_runtime_task():
+def test_legacy_daily_lingzu_scheduler_task_is_removed_by_assistant_coverage():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5239,16 +5326,9 @@ def test_legacy_daily_lingzu_scheduler_task_is_migrated_to_runtime_task():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 10, 12, 0, 0),
     )
-    task = next(item for item in tasks if item["id"] == "legacy-daily-lingzu")
 
     assert changed is True
-    assert task["task_type"] == "daily_lingzu"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["label"] == "日常_灵祖"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert not any(item["id"] == "legacy-daily-lingzu" for item in tasks)
 
 
 def test_legacy_daily_jianling_scheduler_task_is_migrated_to_runtime_task():
@@ -5283,10 +5363,10 @@ def test_legacy_daily_jianling_scheduler_task_is_migrated_to_runtime_task():
     assert task["label"] == "日常_剑灵"
     assert task["schedule_times"] == ["05:00"]
     assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert task["next_time"] == "2026-06-10 05:00:00"
 
 
-def test_legacy_daily_lingta_scheduler_task_is_migrated_to_runtime_task():
+def test_legacy_daily_lingta_scheduler_task_is_removed_by_assistant_coverage():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5309,16 +5389,9 @@ def test_legacy_daily_lingta_scheduler_task_is_migrated_to_runtime_task():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 10, 12, 0, 0),
     )
-    task = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
 
     assert changed is True
-    assert task["task_type"] == "daily_lingta"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["label"] == "日常_灵塔"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert not any(item["id"] == "legacy-daily-lingta" for item in tasks)
 
 
 def test_legacy_daily_xianyuan_scheduler_task_is_migrated_to_runtime_task():
@@ -5353,7 +5426,7 @@ def test_legacy_daily_xianyuan_scheduler_task_is_migrated_to_runtime_task():
     assert task["label"] == "日常_挑战仙缘"
     assert task["schedule_times"] == ["05:00"]
     assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert task["next_time"] == "2026-06-10 00:00:00"
 
 
 def test_legacy_daily_assistant_scheduler_task_is_migrated_to_runtime_task():
@@ -5387,12 +5460,12 @@ def test_legacy_daily_assistant_scheduler_task_is_migrated_to_runtime_task():
     assert task["schedule_kind"] == "daily"
     assert task["label"] == "日常_助手"
     assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
-    assert task["enabled"] is False
+    assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert task["next_time"] == "2026-06-10 00:00:00"
 
 
-def test_legacy_daily_yaowang_scheduler_task_is_migrated_to_runtime_task():
+def test_legacy_daily_yaowang_scheduler_task_is_removed_by_assistant_coverage():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5415,19 +5488,12 @@ def test_legacy_daily_yaowang_scheduler_task_is_migrated_to_runtime_task():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 10, 12, 0, 0),
     )
-    task = next(item for item in tasks if item["id"] == "legacy-daily-yaowang")
 
     assert changed is True
-    assert task["task_type"] == "daily_yaowang"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["label"] == "日常_妖王来袭"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert not any(item["id"] == "legacy-daily-yaowang" for item in tasks)
 
 
-def test_legacy_daily_yaozu_scheduler_task_is_migrated_to_runtime_task():
+def test_legacy_daily_yaozu_scheduler_task_is_removed_by_assistant_coverage():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5450,17 +5516,9 @@ def test_legacy_daily_yaozu_scheduler_task_is_migrated_to_runtime_task():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 10, 12, 0, 0),
     )
-    task = next(item for item in tasks if item["id"] == "legacy-daily-yaozu")
 
     assert changed is True
-    assert task["task_type"] == "daily_yaozu"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["label"] == "日常_妖族袭城"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["cooldown_seconds"] == 600
-    assert "args" not in task["payload"]
-    assert task["next_time"] == "2026-06-11 05:00:00"
+    assert not any(item["id"] == "legacy-daily-yaozu" for item in tasks)
 
 
 def test_legacy_xianfu_skill_scheduler_task_is_migrated_to_runtime_task():

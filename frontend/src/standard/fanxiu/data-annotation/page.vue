@@ -7875,6 +7875,20 @@ const findAssetAncestorFolderIds = (
   return null;
 };
 
+const findDisplayAssetAncestorIds = (
+  nodes: DataAnnotationAssetNode[],
+  id: string | null,
+  ancestors: string[] = [],
+): string[] | null => {
+  if (!id) return null;
+  for (const node of nodes) {
+    if (node.id === id) return ancestors;
+    const found = findDisplayAssetAncestorIds(node.children ?? [], id, [...ancestors, node.id]);
+    if (found) return found;
+  }
+  return null;
+};
+
 const firstSceneJumpNumericTarget = (value: string | number | null | undefined) => {
   const firstToken = parseSceneJumpEntries(value)[0]?.label ?? '';
   const numeric = Number(firstToken.replace(/^#/, ''));
@@ -8047,9 +8061,12 @@ const restoreDataAnnotationUiState = () => {
   const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
   const savedAsset = savedAssetId ? findAssetNode(assetTree.value, savedAssetId) : null;
   selectedAssetId.value = savedAsset?.id ?? findFirstImageNode(assetTree.value)?.id ?? null;
-  expandedAssetNodeIds.value = Array.isArray(state.expandedAssetNodeIds)
+  const restoredExpandedAssetNodeIds = Array.isArray(state.expandedAssetNodeIds)
     ? filterExistingAssetNodeIds(normalizeStringIdArray(state.expandedAssetNodeIds))
-    : [...LAYER_TREE_ROOT_IDS, ...collectAssetFolderIds(assetTree.value)];
+    : collectAssetFolderIds(assetTree.value);
+  expandedAssetNodeIds.value = assetTreeViewMode.value === 'scene'
+    ? Array.from(new Set([...restoredExpandedAssetNodeIds, ...collectSceneExpandedNodeIds(selectedAssetId.value)]))
+    : restoredExpandedAssetNodeIds;
 
   const image = selectedImageNode.value;
   const savedShapeId = typeof state.selectedShapeId === 'string' ? state.selectedShapeId : null;
@@ -8102,8 +8119,10 @@ const scrollCurrentTreeNodeIntoView = (treeClass: string) => {
 };
 
 const focusAssetImage = async (image: DataAnnotationAssetNode) => {
-  const ancestorFolderIds = findAssetAncestorFolderIds(assetTree.value, image.id) ?? [];
-  expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...ancestorFolderIds]));
+  const expandedIds = assetTreeViewMode.value === 'scene'
+    ? collectSceneExpandedNodeIds(image.id)
+    : (findAssetAncestorFolderIds(assetTree.value, image.id) ?? []);
+  expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...expandedIds]));
   selectedAssetId.value = image.id;
   assetTreeRef.value?.setCurrentKey?.(image.id);
   await syncAssetTreeExpansionFromState();
@@ -8462,6 +8481,11 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
 const assetTreeDisplayData = computed(() => (
   assetTreeViewMode.value === 'scene' ? buildSceneTreeProjection(assetTree.value) : assetTree.value
 ));
+
+const collectSceneExpandedNodeIds = (selectedId: string | null) => Array.from(new Set([
+  ...LAYER_TREE_ROOT_IDS,
+  ...(findDisplayAssetAncestorIds(assetTreeDisplayData.value, selectedId) ?? []),
+]));
 
 const assetTreeDefaultExpandedKeys = computed(() => (
   assetTreeViewMode.value === 'scene'
@@ -8873,6 +8897,15 @@ watch(selectedShapeId, (id) => {
   const next = { ...shapeDetectResults.value };
   delete next[id];
   shapeDetectResults.value = next;
+});
+
+watch(assetTreeViewMode, (mode) => {
+  if (mode !== 'scene') return;
+  expandedAssetNodeIds.value = Array.from(new Set([
+    ...expandedAssetNodeIds.value,
+    ...collectSceneExpandedNodeIds(selectedAssetId.value),
+  ]));
+  queueAssetTreeExpansionSync();
 });
 
 watch(
@@ -14250,7 +14283,8 @@ const finishShapeDrag = () => {
 }
 
 .annotation-workbench {
-  width: 100%;
+  width: max-content;
+  max-width: 100%;
   margin-top: 12px;
   border-top: 1px solid #dcdfe6;
   background: #fff;
@@ -14262,7 +14296,7 @@ const finishShapeDrag = () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 10px;
+  padding: 10px 0 10px;
   overflow: auto;
 }
 

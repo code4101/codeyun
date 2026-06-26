@@ -515,6 +515,29 @@ def _build_workload_segments(turns: list[dict[str, Any]]) -> list[dict[str, Any]
     return segments
 
 
+def _aggregate_workload_turn_by_local_day(
+    day_seconds: dict[str, float],
+    *,
+    start_at: float,
+    end_at: float,
+) -> None:
+    if end_at <= start_at:
+        return
+
+    current = datetime.fromtimestamp(start_at)
+    while True:
+        day_start = datetime(current.year, current.month, current.day)
+        next_day = day_start + timedelta(days=1)
+        chunk_start = max(start_at, day_start.timestamp())
+        chunk_end = min(end_at, next_day.timestamp())
+        if chunk_end > chunk_start:
+            day_key = day_start.date().isoformat()
+            day_seconds[day_key] = day_seconds.get(day_key, 0.0) + (chunk_end - chunk_start)
+        if next_day.timestamp() >= end_at:
+            break
+        current = next_day
+
+
 def _file_signature(path: Path) -> tuple[int | None, int | None]:
     try:
         stat = path.stat()
@@ -1367,6 +1390,7 @@ def build_codex_workload(
     end_at: float | None = None,
     compact: bool = False,
     include_segments: bool = True,
+    historical_day_summary_before: float | None = None,
 ) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session)
     with _session_scope(session) as session:
@@ -1395,9 +1419,19 @@ def build_codex_workload(
             skipped_threads += 1
 
     turns: list[dict[str, Any]] = []
+    day_seconds: dict[str, float] = {}
+    summarized_turns = 0
     for row in turn_rows:
         thread = thread_map.get(row.thread_id)
         if thread is None:
+            continue
+        if historical_day_summary_before is not None and float(row.end_at) <= float(historical_day_summary_before):
+            _aggregate_workload_turn_by_local_day(
+                day_seconds,
+                start_at=float(row.start_at),
+                end_at=float(row.end_at),
+            )
+            summarized_turns += 1
             continue
         turn_payload = {
             "id": f"{row.thread_id}:{row.turn_index}",
@@ -1436,11 +1470,14 @@ def build_codex_workload(
     return {
         "root_dir": context["root_dir"],
         "total_threads": total_threads,
-        "total_turns": len(turns),
+        "total_turns": len(turn_rows),
+        "returned_turns": len(turns),
+        "summarized_turns": summarized_turns,
         "skipped_threads": skipped_threads,
         "max_concurrency": max_concurrency,
         "time_range_start": time_range_start,
         "time_range_end": time_range_end,
+        "day_seconds": day_seconds,
         "turns": turns,
         "segments": segments,
     }

@@ -2406,6 +2406,7 @@ def get_codex_workload_for_entry(
     end_at: float | None = Query(default=None),
     compact: bool = Query(default=False),
     include_segments: bool = Query(default=True),
+    historical_day_summary_before: float | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
@@ -2419,6 +2420,7 @@ def get_codex_workload_for_entry(
                 end_at=end_at,
                 compact=compact,
                 include_segments=include_segments,
+                historical_day_summary_before=historical_day_summary_before,
             )
         except Exception as exc:  # pragma: no cover - translated for HTTP callers
             _raise_codex_http_error(exc)
@@ -2434,6 +2436,8 @@ def get_codex_workload_for_entry(
         params["compact"] = True
     if not include_segments:
         params["include_segments"] = False
+    if historical_day_summary_before is not None:
+        params["historical_day_summary_before"] = historical_day_summary_before
     payload, error_response = _fetch_remote_json(
         entry,
         "GET",
@@ -2458,6 +2462,7 @@ def get_local_codex_workload_for_user(
     end_at: float | None = Query(default=None),
     compact: bool = Query(default=False),
     include_segments: bool = Query(default=True),
+    historical_day_summary_before: float | None = Query(default=None),
     session: Session = Depends(get_session),
     _current_user: User = Depends(get_current_user_from_token),
 ):
@@ -2469,6 +2474,7 @@ def get_local_codex_workload_for_user(
             end_at=end_at,
             compact=compact,
             include_segments=include_segments,
+            historical_day_summary_before=historical_day_summary_before,
         )
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         _raise_codex_http_error(exc)

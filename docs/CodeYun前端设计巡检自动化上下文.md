@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "30ba2484654687cc6bb9582a3cce8312a68e2c2f"
-last_audited_at: "2026-06-25T09:37:26.6568801+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-25-frontend-design-30ba2484-closeout/report.md"
-last_frontend_commit_summary: "完整关闭 2f6baf8b..30ba2484：补齐 Fanxiu data-annotation admin 权限实图，连同上一轮 Mystia/日历巡检和日历刷新标签减法修复一起完成验证；当前无 pending。"
-audited_commit_count: 39
+last_audited_commit: "ccae0b2174254caefce956d0ed3fdd5a8c56144b"
+last_audited_at: "2026-06-26T00:34:25.5570130+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-ccae0b21/report.md"
+last_frontend_commit_summary: "完整关闭 30ba2484..ccae0b21：凡修标注页 Layer 视图在首屏自动展开当前帧链路，连同行为树页三视口复验一起完成；其余 notes/storage/codex 契约同步未引出新 UI 问题。"
+audited_commit_count: 40
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-26
+
+- 完整范围：`30ba2484654687cc6bb9582a3cce8312a68e2c2f..ccae0b2174254caefce956d0ed3fdd5a8c56144b`
+- 覆盖提交：`ccae0b2174254caefce956d0ed3fdd5a8c56144b`
+- 前端入口提交：`ccae0b2174254caefce956d0ed3fdd5a8c56144b`
+- 入口如何牵引到旧问题：提交把 `fanxiu/data-annotation` 的帧树模型从业务目录/场景身份迁到 `Layer 1/2/3` 投影，并同步重写 runtime / scheduler 执行链路；同一条“当前帧识别证据 -> 行为树运行状态 -> 缺标补标”闭环因此必须一起复看。notes / storage / codex / orders 相关前端改动主要是 API 契约同步，只做无异常抽查，不扩散成独立页面重构。
+- 本轮减法：不新增任何入口或说明，只让 Layer 视图在恢复状态、切换视图和聚焦图片时自动展开当前帧所在链路，删除“先手动展开 Layer 根目录再找当前帧”的额外操作。
+- 信息量保持：标注页仍保留设备/窗口/通道/画面参数、Layer 选择、树、shape 标注与运行页跳转；行为树页仍保留运行内核、框架、调度器、守护、作业、日志和巡检阻断事实。减少的是新 Layer 模型下被隐藏的当前选择，不减少判断与操作能力。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-ccae0b21/report.md`
+- 验证：复用本地 `5173/8000` 开发环境；`fanxiu/data-annotation` 与 `fanxiu/data-annotation/runtime` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图，拼图见 `annotation-collage.png` 与 `runtime-collage.png`；布局探针确认两页都没有页面级横向溢出，窄屏滚动由局部容器承接；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：本轮修复的问题属于前端状态投影，不是样式 bug。Layer 树已经收回为更简单的基础模型，但展开状态仍沿用旧目录视图心智，导致“当前选中帧”没有被投影到首屏。行为树页未发现需要交接的后端投影或业务建模债务。
+- 剩余风险：当前工作树仍有用户未提交的后端调度/preset 改动，本轮只修改 `frontend/src/standard/fanxiu/data-annotation/page.vue`；标注页窄屏截图优先展示当前画面，没有继续滚动到下方 shape inspector；行为树页当前样本未同时覆盖“打开补标”按钮可见态，但本轮未改该区域交互。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复与前端验证，因此把 `last_audited_commit` 推进到 `ccae0b2174254caefce956d0ed3fdd5a8c56144b`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-06-25（补审关闭）
 

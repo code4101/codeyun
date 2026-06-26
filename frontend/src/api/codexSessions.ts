@@ -112,10 +112,13 @@ export interface CodexWorkloadResponse {
   root_dir: string;
   total_threads: number;
   total_turns: number;
+  returned_turns?: number;
+  summarized_turns?: number;
   skipped_threads: number;
   max_concurrency: number;
   time_range_start?: number | null;
   time_range_end?: number | null;
+  day_seconds?: Record<string, number>;
   turns: CodexWorkloadTurn[];
   segments: CodexWorkloadSegment[];
 }
@@ -180,6 +183,7 @@ export async function fetchCodexWorkloadForEntry(
     endAt?: number;
     compact?: boolean;
     includeSegments?: boolean;
+    historicalDaySummaryBefore?: number;
   },
 ) {
   const rootDir = typeof options === 'string' ? options : options?.rootDir;
@@ -200,6 +204,9 @@ export async function fetchCodexWorkloadForEntry(
     if (options?.includeSegments === false) {
       requestParams.include_segments = 'false';
     }
+    if (Number.isFinite(options?.historicalDaySummaryBefore)) {
+      requestParams.historical_day_summary_before = Number(options?.historicalDaySummaryBefore);
+    }
   }
   const response = await api.get<CodexWorkloadResponse>(getDeviceEntryPath(entryId, '/codex/workload'), {
     params: Object.keys(requestParams).length ? requestParams : undefined,
@@ -215,6 +222,7 @@ export async function fetchLocalCodexWorkload(
     endAt?: number;
     compact?: boolean;
     includeSegments?: boolean;
+    historicalDaySummaryBefore?: number;
   },
 ) {
   const requestParams: Record<string, string | number> = {};
@@ -232,6 +240,9 @@ export async function fetchLocalCodexWorkload(
   }
   if (options?.includeSegments === false) {
     requestParams.include_segments = 'false';
+  }
+  if (Number.isFinite(options?.historicalDaySummaryBefore)) {
+    requestParams.historical_day_summary_before = Number(options?.historicalDaySummaryBefore);
   }
   const response = await api.get<CodexWorkloadResponse>('/device-entries/local-codex/workload', {
     params: Object.keys(requestParams).length ? requestParams : undefined,

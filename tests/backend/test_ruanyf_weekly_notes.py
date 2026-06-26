@@ -212,6 +212,39 @@ def test_maybe_create_weekly_note_skips_publication_outside_current_friday(
     assert len(notes) == 1
 
 
+def test_maybe_create_weekly_note_falls_back_when_publication_api_unavailable(
+    session,
+    auth_user,
+    monkeypatch,
+):
+    session.add(
+        make_weekly_note(
+            auth_user,
+            "issue-400",
+            400,
+            "科技周刊第第第400期：rsync 的争论",
+        )
+    )
+    session.commit()
+    latest_issue = weekly.RuanyfWeeklyIssue(401, "如何赚到10亿美元", "docs/issue-401.md")
+    current_time = datetime(2026, 6, 26, 12, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE)
+    monkeypatch.setattr(weekly, "fetch_latest_ruanyf_weekly_issue", lambda: latest_issue)
+    monkeypatch.setattr(
+        weekly,
+        "fetch_ruanyf_weekly_publication",
+        lambda issue: (_ for _ in ()).throw(RuntimeError("rate limit exceeded")),
+    )
+
+    result = weekly.maybe_create_ruanyf_weekly_note(session, now=current_time)
+
+    assert result.status == "created"
+    assert result.issue_number == 401
+    note = session.exec(select(NoteNode).where(NoteNode.id == result.created_note_id)).one()
+    assert note.title == "科技周刊第第第401期：如何赚到10亿美元"
+    assert note.start_at == current_time.timestamp()
+    assert [weekly.RUANYF_WEEKLY_COMMIT_SHA_FIELD, "string", ""] in note.custom_fields
+
+
 def test_maybe_create_weekly_note_skips_after_current_window_success(
     session,
     auth_user,

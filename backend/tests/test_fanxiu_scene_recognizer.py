@@ -2,14 +2,14 @@ from pyxllib.autogui import SceneNavigator, SceneRecognizer
 from pyxllib.autogui.matching import SceneScorer
 
 
-def test_scene_recognizer_uses_best_preferred_candidate():
+def test_scene_recognizer_uses_first_matching_preferred_candidate():
     ctx = {"images": {34: {"title": "#34"}, 66: {"title": "#66"}}}
     recognizer = SceneRecognizer(
         score_image=lambda _ctx, image, _frame: {"#34": 90.0, "#66": 80.0}[image["title"]],
         threshold_for_scene_id=lambda _scene_id: 80.0,
     )
 
-    assert recognizer.identify_scene_number(ctx, "frame", preferred_scene_ids=[66, 34]) == (34, 90.0)
+    assert recognizer.identify_scene_number(ctx, "frame", preferred_scene_ids=[66, 34]) == (66, 80.0)
 
 
 def test_scene_recognizer_returns_none_when_best_score_below_threshold():
@@ -22,14 +22,14 @@ def test_scene_recognizer_returns_none_when_best_score_below_threshold():
     assert recognizer.identify_scene_number(ctx, "frame") == (None, 79.0)
 
 
-def test_scene_recognizer_prefers_smaller_scene_id_when_scores_tie():
+def test_scene_recognizer_uses_input_order_when_scores_tie():
     ctx = {"images": {66: {"title": "#66"}, 34: {"title": "#34"}}}
     recognizer = SceneRecognizer(
         score_image=lambda *_args: 90.0,
         threshold_for_scene_id=lambda _scene_id: 80.0,
     )
 
-    assert recognizer.identify_scene_number(ctx, "frame") == (34, 90.0)
+    assert recognizer.identify_scene_number(ctx, "frame") == (66, 90.0)
 
 
 def test_scene_recognizer_identifies_key_by_score_then_priority():
@@ -110,6 +110,48 @@ def test_scene_recognizer_ignores_layer3_frames_without_candidates():
     )
 
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (34, 85.0)
+
+
+def test_scene_recognizer_uses_best_score_for_layer3_weak_similarity_fallback():
+    scene = {"type": "image", "filename": "0034.png", "title": "世界", "layer": 1}
+    lower = {"type": "image", "filename": "0901.png", "title": "弱相似低分", "layer": 3}
+    higher = {"type": "image", "filename": "0902.png", "title": "弱相似高分", "layer": 3}
+    ctx = {"asset_tree": [scene, lower, higher], "images": {34: scene, 901: lower, 902: higher}}
+    scores = {"世界": 40.0, "弱相似低分": 86.0, "弱相似高分": 93.0}
+    recognizer = SceneRecognizer(
+        score_image=lambda _ctx, image, _frame: scores[image["title"]],
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (902, 93.0)
+
+
+def test_scene_recognizer_prefers_explicit_child_identity_before_weak_layer3_fallback():
+    parent = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {"type": "image", "filename": "0060.png", "title": "封魔杀", "layer": 3},
+            {
+                "type": "image",
+                "filename": "0278.png",
+                "title": "邮件删除确认",
+                "layer": 3,
+                "shapes": [{"id": "mail", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"}],
+            },
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {47: parent, 60: parent["children"][0], 278: parent["children"][1]}}
+    scores = {"所有提示窗口": 95.0, "封魔杀": 93.0, "邮件删除确认": 100.0}
+    recognizer = SceneRecognizer(
+        score_image=lambda _ctx, image, _frame: scores[image["title"]],
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (278, 95.0)
 
 
 def test_scene_recognizer_uses_layer_order_within_same_layer():

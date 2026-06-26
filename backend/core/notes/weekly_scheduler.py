@@ -227,10 +227,9 @@ def maybe_create_ruanyf_weekly_note(
     try:
         publication = fetch_ruanyf_weekly_publication(latest_issue)
     except Exception as exc:
-        return RuanyfWeeklyJobResult(
-            status="publication_unavailable",
-            issue_number=latest_issue.number,
-            message=str(exc),
+        publication = RuanyfWeeklyPublication(
+            published_at=current_time,
+            commit_sha="",
         )
     if publication is None:
         return RuanyfWeeklyJobResult(
