@@ -330,6 +330,7 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             payload,
             lambda: match_fanxiu_screenshot_box_frame(
                 filename=payload["filename"],
+                entry_id=payload.get("entry_id"),
                 box=payload["box"],
                 scan=bool(payload.get("scan")),
                 scan_box=payload.get("scan_box"),

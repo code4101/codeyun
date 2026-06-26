@@ -29,6 +29,7 @@ from pyxllib.cv.rgbfmt import (
 
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.runtime.process_launcher import popen_service, run_quiet
+from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
@@ -3594,6 +3595,7 @@ def _match_scan_frame(
 def match_fanxiu_screenshot_box_frame(
     *,
     filename: str,
+    entry_id: str | None = None,
     box: dict[str, Any],
     scan: bool = False,
     scan_box: dict[str, Any] | None = None,
@@ -3622,7 +3624,10 @@ def match_fanxiu_screenshot_box_frame(
     debug_match: bool = False,
     save_match_frame: bool = True,
 ) -> dict[str, Any]:
-    source_path = get_fanxiu_screenshot_path(filename)
+    source_asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
+    if not source_asset.exists:
+        raise FileNotFoundError(f"data-annotation 图片不存在：{source_asset.path}")
+    source_path = source_asset.path
     reference_frame = _read_image_bgr(source_path)
     if reference_frame is None:
         raise RuntimeError(f"读取截图失败：{source_path.name}")

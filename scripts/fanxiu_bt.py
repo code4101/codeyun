@@ -304,7 +304,7 @@ def _doctor_blocking_overlays(screenshot: dict[str, Any] | None) -> list[dict[st
         data_url = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
         runner = create_fanxiu_runtime_runner()
         text = runner._ocr_text(runner._ocr_lines(data_url))
-        asset_tree_path = fanxiu_data_annotation_dir() / "asset-trees" / f"{DEFAULT_FANXIU_ENTRY_ID}.json"
+        asset_tree_path = data_annotation_asset_tree_path(DEFAULT_FANXIU_ENTRY_ID)
         tree = runner._load_asset_tree(asset_tree_path)
         ctx = {
             "asset_tree": tree,

@@ -109,3 +109,51 @@ def test_frame_structure_organizer_is_idempotent_for_existing_subframes():
 
     assert organized == tree
     assert stats.adoption_count == 0
+
+
+def test_frame_structure_organizer_adopts_layer_roots_across_business_folders():
+    tree = [
+        {
+            "type": "folder",
+            "title": "默认分组",
+            "children": [_image(71, "修仙传游历", [_shape("修仙传")])],
+        },
+        {
+            "type": "folder",
+            "title": "日常",
+            "children": [
+                {
+                    "type": "folder",
+                    "title": "供奉",
+                    "children": [_image(251, "供奉", [_shape("供奉")])],
+                }
+            ],
+        },
+    ]
+
+    def score_shape(parent, shape, child):
+        key = (int(parent["filename"][:4]), shape["title"], int(child["filename"][:4]))
+        return 96 if key == (71, "修仙传", 251) else 0
+
+    organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
+    parent = organized[0]["children"][0]
+
+    assert [item["filename"] for item in organized[1]["children"][0]["children"]] == []
+    assert [item["filename"] for item in parent["children"]] == ["0251.png"]
+    assert stats.adoption_count == 1
+    assert [(item.parent_id, item.child_id) for item in stats.adoptions] == [(71, 251)]
+
+
+def test_frame_structure_organizer_sibling_scope_does_not_cross_business_folders():
+    tree = [
+        {"type": "folder", "title": "默认分组", "children": [_image(71, "修仙传游历", [_shape("修仙传")])]},
+        {"type": "folder", "title": "日常", "children": [_image(251, "供奉", [_shape("供奉")])]},
+    ]
+
+    def score_shape(parent, shape, child):
+        return 100
+
+    organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="sibling")
+
+    assert organized == tree
+    assert stats.adoption_count == 0

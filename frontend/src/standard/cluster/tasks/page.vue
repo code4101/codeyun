@@ -35,6 +35,8 @@ const currentDevice = computed(() => {
 
 const runtimeStatuses = ref<Record<string, RuntimeStatusResponse>>({});
 const CODEYUN_WATCHDOG_KEY = 'codeyun-watchdog';
+const RUNTIME_STATUS_CACHE_KEY_PREFIX = 'codeyun.runtime-status.v1';
+const RUNTIME_STATUS_CACHE_TTL_MS = 10 * 60 * 1000;
 const currentRuntimeStatus = computed(() => runtimeStatuses.value[currentDeviceId.value] || null);
 const currentRuntimeItems = computed<RuntimeItem[]>(() => currentRuntimeStatus.value?.items || []);
 const serviceItems = computed(() => currentRuntimeItems.value.filter(item => item.kind === 'service'));
@@ -71,6 +73,79 @@ const isLoopbackHost = (host: string) => {
 const updateViewportWidth = () => {
   viewportWidth.value = typeof window === 'undefined' ? 1280 : window.innerWidth;
 };
+
+type RuntimeStatusCachePayload = {
+  savedAt: number;
+  runtime: RuntimeStatusResponse;
+};
+
+const runtimeStatusCacheKey = (deviceId: string) => `${RUNTIME_STATUS_CACHE_KEY_PREFIX}:${deviceId}`;
+
+const cloneRuntimeStatus = (runtime: RuntimeStatusResponse): RuntimeStatusResponse => {
+  const cloned = JSON.parse(JSON.stringify(runtime)) as RuntimeStatusResponse;
+  cloned.items = (cloned.items || []).map((item: RuntimeItem) => ({
+    ...item,
+    actionLoading: false,
+    toggleLoading: false,
+  }));
+  return cloned;
+};
+
+const buildCommandTasksFromRuntime = (runtime: RuntimeStatusResponse, deviceId: string): Task[] => (
+  (runtime.items || [])
+    .filter(item => item.source === 'command')
+    .map((item: RuntimeItem) => ({
+      ...(item.raw || {}),
+      status: item.status || { running: item.active },
+      entry_id: deviceId,
+    })) as Task[]
+);
+
+const persistRuntimeStatusCache = (deviceId: string, runtime: RuntimeStatusResponse) => {
+  if (typeof window === 'undefined' || !deviceId) return;
+  try {
+    const payload: RuntimeStatusCachePayload = {
+      savedAt: Date.now(),
+      runtime: cloneRuntimeStatus(runtime),
+    };
+    window.localStorage.setItem(runtimeStatusCacheKey(deviceId), JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Failed to persist runtime status cache', error);
+  }
+};
+
+const applyRuntimeStatus = (deviceId: string, runtime: RuntimeStatusResponse, persist = true) => {
+  const normalized = cloneRuntimeStatus(runtime);
+  runtimeStatuses.value[deviceId] = normalized;
+  taskStore.tasks[deviceId] = buildCommandTasksFromRuntime(normalized, deviceId);
+  if (persist) {
+    persistRuntimeStatusCache(deviceId, normalized);
+  }
+};
+
+const hydrateRuntimeStatusFromCache = (deviceId: string) => {
+  if (typeof window === 'undefined' || !deviceId) return false;
+  try {
+    const raw = window.localStorage.getItem(runtimeStatusCacheKey(deviceId));
+    if (!raw) return false;
+    const payload = JSON.parse(raw) as Partial<RuntimeStatusCachePayload>;
+    if (
+      !payload
+      || typeof payload.savedAt !== 'number'
+      || !payload.runtime
+      || Date.now() - payload.savedAt > RUNTIME_STATUS_CACHE_TTL_MS
+    ) {
+      window.localStorage.removeItem(runtimeStatusCacheKey(deviceId));
+      return false;
+    }
+    applyRuntimeStatus(deviceId, payload.runtime as RuntimeStatusResponse, false);
+    return true;
+  } catch (error) {
+    console.warn('Failed to restore runtime status cache', error);
+    return false;
+  }
+};
+
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
 const jobCatalogDialogVisible = ref(false);
@@ -406,6 +481,9 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     taskFetchVersions.set(deviceId, requestVersion);
     const isLatestTaskFetch = () => taskFetchVersions.get(deviceId) === requestVersion;
     const isCurrentDeviceRequest = () => currentDeviceId.value === deviceId;
+    if (!isPolling && !runtimeStatuses.value[deviceId]) {
+      hydrateRuntimeStatusFromCache(deviceId);
+    }
     const cachedRuntime = runtimeStatuses.value[deviceId];
     const hasVisibleRuntimeData = Boolean(
       (cachedRuntime?.items?.length || 0)
@@ -419,7 +497,7 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     }
     
     // Check if we have cached tasks
-    const hasCache = taskStore.tasks[deviceId] && taskStore.tasks[deviceId].length > 0;
+    const hasCache = Boolean(cachedRuntime || (taskStore.tasks[deviceId] && taskStore.tasks[deviceId].length > 0));
     
     // Don't show global loading if we have cache or are polling
     if (!isPolling && !hasCache) {
@@ -435,18 +513,7 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     
     try {
         const runtime = await fetchRuntimeStatus(deviceId);
-        runtime.items.forEach((item: RuntimeItem) => {
-          item.actionLoading = false;
-          item.toggleLoading = false;
-        });
-        runtimeStatuses.value[deviceId] = runtime;
-        taskStore.tasks[deviceId] = runtime.items
-          .filter(item => item.source === 'command')
-          .map((item: RuntimeItem) => ({
-            ...(item.raw || {}),
-            status: item.status || { running: item.active },
-            entry_id: deviceId,
-          })) as Task[];
+        applyRuntimeStatus(deviceId, runtime);
         if (isCurrentDeviceRequest() && isLatestTaskFetch()) {
           deviceError.value = false;
           runtimeLoadIssue.value = '';
@@ -507,8 +574,7 @@ const fetchLegacyTasks = async (
     tasks.forEach((t: Task) => {
       t.entry_id = deviceId;
     });
-    taskStore.tasks[deviceId] = tasks;
-    runtimeStatuses.value[deviceId] = {
+    const runtime = {
       device_id: devices.value.find(d => d.id === deviceId)?.device_id || deviceId,
       device: {},
       groups: [
@@ -546,7 +612,8 @@ const fetchLegacyTasks = async (
       queue: null,
       runner_running: false,
       next_wake_at: null,
-    };
+    } as RuntimeStatusResponse;
+    applyRuntimeStatus(deviceId, runtime);
     if (shouldApplyGlobalState()) {
       deviceError.value = false;
       runtimeLoadIssue.value = '';

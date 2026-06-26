@@ -10,6 +10,7 @@ from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.data_annotation import storage as storage_core
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_manual_job_definition,
     list_fanxiu_data_annotation_manual_job_definitions,
@@ -46,11 +47,11 @@ def test_core_asset_tree_path_sanitizes_entry_id(monkeypatch, tmp_path):
     class Settings:
         data_dir = tmp_path
 
-    monkeypatch.setattr(bt, "get_settings", lambda: Settings())
+    monkeypatch.setattr(storage_core, "get_settings", lambda: Settings())
 
     path = bt.data_annotation_asset_tree_path(" bad/id ")
 
-    assert path == tmp_path / "fanxiu" / "data-annotation" / "asset-trees" / "bad_id.json"
+    assert path == tmp_path / "fanxiu" / "data-annotation" / "entries" / "bad_id" / "asset-tree.json"
 
 
 def test_core_runtime_paths_live_under_data_annotation_runtime(monkeypatch, tmp_path):

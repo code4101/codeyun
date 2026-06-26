@@ -371,7 +371,7 @@ def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
     try:
         from paddleocr import PaddleOCR
     except Exception as exc:  # pragma: no cover - depends on runtime env
-        raise OcrPreviewError("PaddleOCR 不可用，请先完成 codeyun backend 的 OCR 依赖安装") from exc
+        raise OcrPreviewError(f"PaddleOCR 不可用，请先完成 codeyun backend 的 OCR 依赖安装：{exc}") from exc
 
     return PaddleOCR(
         lang=config.lang,
@@ -584,10 +584,12 @@ class PaddleOcrServiceManager:
 
         try:
             return self._create_record(instance_id, generation, config)
-        except Exception:
+        except Exception as exc:
             with self._condition:
                 self._active_instances = max(0, self._active_instances - 1)
                 self._total_instances = max(0, self._total_instances - 1)
+                self._error_count += 1
+                self._last_error = str(exc)
                 self._condition.notify_all()
             raise
 

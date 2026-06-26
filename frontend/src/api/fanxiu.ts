@@ -666,6 +666,45 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   updated_at: number;
 }
 
+export interface FanxiuDataAnnotationFrameStructureAdoption {
+  parent_id: number;
+  child_id: number;
+  shared_shape_titles: string[];
+  average_score: number;
+  parent?: {
+    title?: string;
+    filename?: string;
+    path?: string;
+    layer?: number;
+    parent_id?: number | null;
+  };
+  child?: {
+    title?: string;
+    filename?: string;
+    path?: string;
+    layer?: number;
+    parent_id?: number | null;
+  };
+}
+
+export interface FanxiuDataAnnotationFrameStructureResponse {
+  path: string;
+  entry_id: string;
+  write: boolean;
+  changed: boolean;
+  backup_path: string | null;
+  updated_at: number;
+  stats: {
+    image_count: number;
+    sibling_group_count: number;
+    scored_pair_count: number;
+    adoption_count: number;
+    demoted_identity_count: number;
+    adoptions: FanxiuDataAnnotationFrameStructureAdoption[];
+    demoted_identities: Array<Record<string, unknown>>;
+  };
+}
+
 export interface FanxiuDataAnnotationOcrFrameLine {
   text: string;
   x: number;
@@ -5212,6 +5251,25 @@ export const getFanxiuDataAnnotationAssetTree = (entryId: string) => {
 export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[]) => {
   return api
     .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree })
+    .then(res => res.data);
+};
+
+export const organizeFanxiuDataAnnotationFrameStructure = (entryId: string, write = false) => {
+  return api
+    .post<FanxiuDataAnnotationFrameStructureResponse>(
+      '/fanxiu/data-annotation/asset-tree/organize-frame-structure',
+      {
+        entry_id: entryId,
+        write,
+        backup: true,
+        scope: 'layer',
+        threshold: 80,
+        min_shared_anchors: 1,
+        require_same_layer: true,
+        demote_unshared_parent_identities: false,
+      },
+      { timeout: 600000 },
+    )
     .then(res => res.data);
 };
 

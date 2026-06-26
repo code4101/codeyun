@@ -91,7 +91,7 @@ const pageRootRef = ref<HTMLElement | null>(null)
 const inputHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const queryHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const refundHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
-const viewportWidth = ref(0)
+const viewportWidth = ref(resolveInitialViewportWidth())
 const inputMeasuredHeight = ref<number | null>(null)
 const queryMeasuredHeight = ref<number | null>(null)
 const inputRows = ref<InputOrderRow[]>([createEmptyInputRow()])
@@ -258,6 +258,12 @@ function getAdaptiveTableHeight(
     maxVisibleRows,
   )
   return HOT_TABLE_HEADER_HEIGHT + visibleRows * HOT_TABLE_ROW_HEIGHT
+}
+
+function resolveInitialViewportWidth() {
+  if (typeof window === 'undefined') return 0
+  const visualWidth = window.visualViewport?.width ?? window.innerWidth
+  return Math.max(0, Math.floor(visualWidth || 0))
 }
 
 function normalizeTextValue(value: unknown): string {
@@ -1469,9 +1475,10 @@ onBeforeUnmount(() => {
 
         <div class="history-table-shell">
           <el-table
+            v-if="!isCompactViewport"
             :data="refundHistoryItems"
             row-key="id"
-            table-layout="auto"
+            table-layout="fixed"
             empty-text="暂无退款历史"
             class="history-table desktop-history-table"
           >
@@ -1498,7 +1505,7 @@ onBeforeUnmount(() => {
             <el-table-column prop="result_text" label="处理结果" min-width="180" show-overflow-tooltip />
           </el-table>
 
-          <div class="mobile-history-list" aria-live="polite">
+          <div v-else class="mobile-history-list" aria-live="polite">
             <article v-for="row in refundHistoryItems" :key="row.id" class="mobile-history-item">
               <div class="mobile-history-item__head">
                 <div class="mobile-history-item__title">

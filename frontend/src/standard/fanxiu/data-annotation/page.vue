@@ -222,6 +222,16 @@
                   />
                   <el-button
                     size="small"
+                    plain
+                    title="按 Layer 视图体检并归纳场景 frame/subframe"
+                    :loading="frameStructureOrganizing"
+                    :disabled="!selectedEntryId"
+                    @click="organizeFrameStructureFromToolbar"
+                  >
+                    场景归纳
+                  </el-button>
+                  <el-button
+                    size="small"
                     :type="burstCaptureRunning ? 'primary' : 'default'"
                     :icon="burstCaptureRunning ? VideoPause : VideoPlay"
                     title="连拍"
@@ -1222,6 +1232,7 @@ import {
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
+  organizeFanxiuDataAnnotationFrameStructure,
   recognizeFanxiuDataAnnotationOcrFrame,
   removeFanxiuDataAnnotationBackground,
   runFanxiuVisualScript,
@@ -1250,6 +1261,7 @@ import {
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
   type FanxiuDataAnnotationRuntimeStatus,
+  type FanxiuDataAnnotationFrameStructureAdoption,
   type FanxiuDataAnnotationMacroAnnotateResponse,
   type FanxiuDataAnnotationOcrFrameLine,
   type FanxiuDataAnnotationSchedulerTaskItem,
@@ -1585,6 +1597,7 @@ const layerVisible = ref(true);
 const windowViewMode = ref<WindowViewMode>('live');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
+const frameStructureOrganizing = ref(false);
 const burstCaptureRunning = ref(false);
 const burstCaptureSaving = ref(false);
 const burstImporting = ref(false);
@@ -7722,6 +7735,48 @@ const refreshEntryAssetTreeIfChanged = async () => {
   }
 };
 
+const frameStructureAdoptionLine = (item: FanxiuDataAnnotationFrameStructureAdoption) => {
+  const parentTitle = item.parent?.title || `#${item.parent_id}`;
+  const childTitle = item.child?.title || `#${item.child_id}`;
+  const shapeText = (item.shared_shape_titles ?? []).join('、') || '场景标识';
+  return `#${item.parent_id} ${parentTitle} -> #${item.child_id} ${childTitle} (${shapeText} ${Math.round(item.average_score)}%)`;
+};
+
+const organizeFrameStructureFromToolbar = async () => {
+  if (!selectedEntryId.value || frameStructureOrganizing.value) return;
+  const entryId = selectedEntryId.value;
+  frameStructureOrganizing.value = true;
+  try {
+    const preview = await organizeFanxiuDataAnnotationFrameStructure(entryId, false);
+    const adoptions = preview.stats?.adoptions ?? [];
+    if (!adoptions.length) {
+      ElMessage.success('没有发现需要场景归纳的 frame/subframe 候选');
+      return;
+    }
+    const lines = adoptions.slice(0, 30).map(frameStructureAdoptionLine);
+    const moreText = adoptions.length > lines.length ? `\n... 还有 ${adoptions.length - lines.length} 条` : '';
+    await ElMessageBox.confirm(
+      `发现 ${adoptions.length} 个候选，确认写入 frame/subframe 结构？\n\n${lines.join('\n')}${moreText}`,
+      '场景归纳',
+      {
+        type: 'warning',
+        confirmButtonText: '写入',
+        cancelButtonText: '取消',
+        customClass: 'frame-structure-confirm',
+      },
+    );
+    const result = await organizeFanxiuDataAnnotationFrameStructure(entryId, true);
+    assetTreeBackendUpdatedAt.value = 0;
+    await loadEntryAssetTree(entryId);
+    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 subframe`);
+  } catch (error) {
+    if (String((error as { message?: string })?.message || '').includes('cancel')) return;
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    frameStructureOrganizing.value = false;
+  }
+};
+
 const normalizeDiscriminatorGroups = (groups: DiscriminatorGroup[] = []): DiscriminatorGroup[] => groups.map((group) => ({
   id: typeof group.id === 'string' ? group.id : createAssetId('disc-group'),
   title: typeof group.title === 'string' ? group.title : '区分组',
@@ -9746,6 +9801,30 @@ const moveAssetChildWithinParent = (
   siblings.splice(type === 'prev' ? nextTargetIndex : nextTargetIndex + 1, 0, item);
 };
 
+const isAssetDescendantOf = (
+  nodes: DataAnnotationAssetNode[],
+  childId: string,
+  ancestorId: string,
+): boolean => {
+  const ancestor = findAssetNode(nodes, ancestorId);
+  if (!ancestor) return false;
+  return Boolean(findAssetNode(ancestor.children ?? [], childId));
+};
+
+const moveAssetImageIntoParentImage = (draggingId: string, parentId: string) => {
+  if (draggingId === parentId || isAssetDescendantOf(assetTree.value, parentId, draggingId)) return false;
+  const parent = findAssetNode(assetTree.value, parentId);
+  if (parent?.type !== 'image') return false;
+  const sourceSiblings = findAssetParentChildren(assetTree.value, draggingId);
+  if (!sourceSiblings) return false;
+  const sourceIndex = sourceSiblings.findIndex((item) => item.id === draggingId);
+  if (sourceIndex < 0) return false;
+  const [item] = sourceSiblings.splice(sourceIndex, 1);
+  parent.children = parent.children ?? [];
+  parent.children.push(item);
+  return true;
+};
+
 const allowAssetDrop = (
   draggingNode: { data?: DataAnnotationAssetNode },
   dropNode: { data?: DataAnnotationAssetNode },
@@ -9758,7 +9837,9 @@ const allowAssetDrop = (
   const dragging = draggingNode.data;
   const drop = dropNode.data;
   if (!dragging || !drop || dragging.type !== 'image' || drop.type !== 'image') return false;
-  if (type === 'inner') return false;
+  if (type === 'inner') {
+    return dragging.id !== drop.id && !isAssetDescendantOf(assetTree.value, drop.id, dragging.id);
+  }
   const draggingParentId = findDisplayAssetParentId(assetTreeDisplayData.value, dragging.id);
   const dropParentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
   if (!draggingParentId || draggingParentId !== dropParentId) return false;
@@ -9776,6 +9857,12 @@ const handleAssetNodeDrop = (
   const dragging = draggingNode.data;
   const drop = dropNode.data;
   if (!dragging || !drop || dragging.type !== 'image' || drop.type !== 'image') return;
+  if (type === 'inner') {
+    if (!moveAssetImageIntoParentImage(dragging.id, drop.id)) return;
+    assetTree.value = [...assetTree.value];
+    selectedAssetId.value = dragging.id;
+    return;
+  }
   const dropType = type === 'before' ? 'prev' : (type === 'after' ? 'next' : null);
   if (!dropType) return;
   const parentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
@@ -14228,6 +14315,12 @@ const finishShapeDrag = () => {
 
 .asset-tree {
   min-width: max-content;
+}
+
+:global(.frame-structure-confirm .el-message-box__message) {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .asset-tree-node {

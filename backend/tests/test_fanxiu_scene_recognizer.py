@@ -32,7 +32,7 @@ def test_scene_recognizer_uses_input_order_when_scores_tie():
     assert recognizer.identify_scene_number(ctx, "frame") == (66, 90.0)
 
 
-def test_scene_recognizer_identifies_key_by_score_then_priority():
+def test_scene_recognizer_identifies_key_by_input_order():
     images = {
         "world": {"title": "world"},
         "gift": {"title": "gift"},
@@ -43,10 +43,9 @@ def test_scene_recognizer_identifies_key_by_score_then_priority():
         threshold_for_scene_id=lambda _scene_id: 80.0,
         image_for_key=lambda _ctx, key: images.get(key),
         threshold_for_key=lambda _key: 80.0,
-        key_priorities={"world": 0, "settings": 3, "gift": 9},
     )
 
-    assert recognizer.identify_scene_key({}, "frame", keys=["world", "settings", "gift"]) == ("gift", 90.0)
+    assert recognizer.identify_scene_key({}, "frame", keys=["world", "settings", "gift"]) == ("world", 90.0)
     assert recognizer.scene_matches_key("settings", 80.0) is True
 
 
@@ -152,6 +151,219 @@ def test_scene_recognizer_prefers_explicit_child_identity_before_weak_layer3_fal
     )
 
     assert recognizer.identify_scene_tree_number(ctx, "frame") == (278, 95.0)
+
+
+def test_scene_recognizer_keeps_parent_when_explicit_child_fails_even_if_weak_child_matches():
+    parent = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {"type": "image", "filename": "0060.png", "title": "封魔杀", "layer": 3},
+            {
+                "type": "image",
+                "filename": "0278.png",
+                "title": "邮件删除确认",
+                "layer": 3,
+                "shapes": [{"id": "mail", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"}],
+            },
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {47: parent, 60: parent["children"][0], 278: parent["children"][1]}}
+    scores = {"所有提示窗口": 95.0, "封魔杀": 93.0, "邮件删除确认": 0.0}
+    recognizer = SceneRecognizer(
+        score_image=lambda _ctx, image, _frame: scores[image["title"]],
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (47, 95.0)
+
+
+def test_scene_recognizer_trace_records_root_and_child_refinement():
+    parent = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {
+                "type": "image",
+                "filename": "0278.png",
+                "title": "邮件删除确认",
+                "layer": 3,
+                "shapes": [{"id": "mail", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"}],
+            },
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {47: parent, 278: parent["children"][0]}}
+    scores = {"所有提示窗口": 95.0, "邮件删除确认": 99.0}
+    recognizer = SceneRecognizer(
+        score_image=lambda _ctx, image, _frame: scores[image["title"]],
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+    trace: list[dict] = []
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame", trace=trace) == (278, 95.0)
+    assert trace[0]["event"] == "root_layer_queue"
+    assert any(item["event"] == "candidate_group" and item["stage"] == "layer2" and item["selected_ids"] == [47] for item in trace)
+    assert any(item["event"] == "candidate_group" and item["stage"] == "children" and item["parent_id"] == 47 and item["selected_ids"] == [278] for item in trace)
+    assert trace[-1]["event"] == "final"
+    assert trace[-1]["scene_id"] == 278
+
+
+def test_scene_recognizer_trace_records_batched_stage_timing():
+    roots = [
+        {"type": "image", "filename": f"{scene_id:04d}.png", "title": f"root-{scene_id}", "layer": 2}
+        for scene_id in (101, 102, 103, 104, 105)
+    ]
+    ctx = {"asset_tree": roots, "images": {101: roots[0], 102: roots[1], 103: roots[2], 104: roots[3], 105: roots[4]}}
+    seen: list[int] = []
+
+    def score_image(_ctx, image, _frame):
+        scene_id = int(image["filename"].split(".")[0])
+        seen.append(scene_id)
+        return 90.0 if scene_id == 103 else 40.0
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+        max_parallel_workers=1,
+        max_candidate_batch_size=2,
+    )
+    trace: list[dict] = []
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame", trace=trace) == (103, 90.0)
+    batches = [item for item in trace if item["event"] == "candidate_batch" and item["stage"] == "layer2"]
+    assert [batch["candidate_ids"] for batch in batches] == [[101, 102], [103, 104]]
+    assert all("elapsed_seconds" in batch and "elapsed_text" in batch for batch in batches)
+    group = next(item for item in trace if item["event"] == "candidate_group" and item["stage"] == "layer2")
+    assert group["batch_size"] == 2
+    assert group["batch_count"] == 3
+    assert group["processed_count"] == 4
+    assert group["stopped_early"] is True
+    assert "elapsed_seconds" in group and "elapsed_text" in group
+    assert seen == [101, 102, 103, 104]
+
+
+def test_scene_recognizer_stops_root_layer_scan_after_layer2_popup_match():
+    world = {"type": "image", "filename": "0034.png", "title": "世界", "layer": 1}
+    popup = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {
+                "type": "image",
+                "filename": "0278.png",
+                "title": "邮件删除确认",
+                "layer": 3,
+                "shapes": [{"id": "mail", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"}],
+            }
+        ],
+    }
+    global_layer3 = {"type": "image", "filename": "0999.png", "title": "全局弱素材", "layer": 3}
+    ctx = {"asset_tree": [world, popup, global_layer3], "images": {34: world, 47: popup, 278: popup["children"][0], 999: global_layer3}}
+    seen: list[str] = []
+    scores = {"世界": 40.0, "所有提示窗口": 95.0, "邮件删除确认": 100.0}
+
+    def score_image(_ctx, image, _frame):
+        seen.append(image["title"])
+        if image["title"] == "全局弱素材":
+            raise AssertionError("layer2 命中后不应继续检测全局 layer3 root")
+        return scores[image["title"]]
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (278, 95.0)
+    assert seen == ["世界", "所有提示窗口", "邮件删除确认"]
+
+
+def test_scene_recognizer_ignores_layer_when_refining_subframes():
+    parent = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {
+                "type": "image",
+                "filename": "0210.png",
+                "title": "二层确认弹窗",
+                "layer": 2,
+                "shapes": [{"id": "confirm", "title": "确认", "sceneIdentityRole": "required"}],
+            },
+            {
+                "type": "image",
+                "filename": "0060.png",
+                "title": "三层明确子帧",
+                "layer": 3,
+                "shapes": [{"id": "child-id", "title": "子帧标识", "sceneIdentityRole": "required"}],
+            },
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {47: parent, 210: parent["children"][0], 60: parent["children"][1]}}
+    seen: list[str] = []
+
+    def score_image(_ctx, image, _frame):
+        seen.append(image["title"])
+        return {"所有提示窗口": 95.0, "二层确认弹窗": 40.0, "三层明确子帧": 90.0}[image["title"]]
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (60, 90.0)
+    assert seen == ["所有提示窗口", "二层确认弹窗", "三层明确子帧"]
+
+
+def test_scene_recognizer_keeps_parent_when_no_direct_child_matches():
+    parent = {
+        "type": "image",
+        "filename": "0047.png",
+        "title": "所有提示窗口",
+        "layer": 2,
+        "shapes": [{"id": "line", "title": "分割线", "sceneIdentityRole": "required", "imageMatchRole": "required"}],
+        "children": [
+            {
+                "type": "image",
+                "filename": "0210.png",
+                "title": "二层确认弹窗",
+                "layer": 2,
+                "shapes": [{"id": "confirm", "title": "确认", "sceneIdentityRole": "required"}],
+            },
+            {
+                "type": "image",
+                "filename": "0278.png",
+                "title": "三层邮件确认",
+                "layer": 3,
+                "shapes": [{"id": "mail", "title": "邮件", "sceneIdentityRole": "required", "ocrMatchRole": "required"}],
+            },
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {47: parent, 210: parent["children"][0], 278: parent["children"][1]}}
+    seen: list[str] = []
+
+    def score_image(_ctx, image, _frame):
+        seen.append(image["title"])
+        return {"所有提示窗口": 95.0, "二层确认弹窗": 40.0, "三层邮件确认": 40.0}[image["title"]]
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (47, 95.0)
+    assert seen == ["所有提示窗口", "二层确认弹窗", "三层邮件确认"]
 
 
 def test_scene_recognizer_uses_layer_order_within_same_layer():
@@ -295,3 +507,35 @@ def test_scene_recognizer_uses_preferred_subtree_without_context_filter():
 
     assert recognizer.identify_scene_tree_number(ctx, "frame", preferred_scene_ids=[266]) == (266, 91.0)
     assert calls == ["法则之主选择页", "法则之主拜谒详情"]
+
+
+def test_scene_recognizer_falls_back_to_default_layers_after_preferred_layer0_misses():
+    parent = {
+        "type": "image",
+        "filename": "0265.png",
+        "title": "法则之主选择页",
+        "layer": 1,
+        "children": [
+            {
+                "type": "image",
+                "filename": "0266.png",
+                "title": "法则之主拜谒详情",
+                "layer": 2,
+            }
+        ],
+    }
+    world = {"type": "image", "filename": "0034.png", "title": "世界", "layer": 1}
+    ctx = {"asset_tree": [world, parent], "images": {34: world, 265: parent, 266: parent["children"][0]}}
+    calls: list[str] = []
+
+    def score_image(_ctx, image, _frame):
+        calls.append(image["title"])
+        return {"世界": 90.0, "法则之主选择页": 40.0, "法则之主拜谒详情": 100.0}[image["title"]]
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame", preferred_scene_ids=[266]) == (34, 90.0)
+    assert calls == ["法则之主选择页", "世界"]

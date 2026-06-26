@@ -263,9 +263,12 @@ class DailyResourceTaskMixin:
         current = int(current_text)
         required = int(required_text)
         if required > 0 and current > required and len(current_text) > len(required_text):
-            suffix = int(current_text[-len(required_text):])
-            if suffix <= required:
-                current = suffix
+            if current_text.startswith(required_text):
+                current = int(current_text[len(required_text):].lstrip("0") or "0")
+            elif len(current_text) >= len(required_text) * 2:
+                suffix = int(current_text[-len(required_text):])
+                if suffix <= required:
+                    current = suffix
         return (current, required) if required > 0 else None
 
     def _close_daily_gongfeng_item_detail_if_present(
