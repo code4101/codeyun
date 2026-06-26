@@ -941,6 +941,7 @@ function handleRefundAfterChange(_changes: unknown, source?: string) {
 
 async function loadPageData() {
   loading.value = true
+  const refundHistoryPromise = loadRefundHistory(refundHistoryPage.value, refundHistoryPageSize.value)
   try {
     const configData = await fetchAttendanceConfig()
     config.value = configData
@@ -949,8 +950,7 @@ async function loadPageData() {
   } finally {
     loading.value = false
   }
-
-  await loadRefundHistory(refundHistoryPage.value, refundHistoryPageSize.value)
+  await refundHistoryPromise
 }
 
 async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refundHistoryPageSize.value) {

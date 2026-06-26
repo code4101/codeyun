@@ -36,12 +36,33 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL = {
 }
 _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
-    "legacy-daily-lingta",
+    "legacy-daily-assistant",
     "legacy-daily-xianyuan",
-    "legacy-daily-lingzu",
     "legacy-daily-jianling",
+}
+_OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
+    "legacy-daily-youli",
+    "legacy-daily-lingta",
+    "legacy-daily-shuangxiu",
+    "legacy-daily-lingzu",
     "legacy-daily-yaowang",
     "legacy-daily-yaozu",
+}
+_OBSOLETE_ASSISTANT_COVERED_TASK_TYPES = {
+    "daily_youli",
+    "daily_lingta",
+    "daily_shuangxiu",
+    "daily_lingzu",
+    "daily_yaowang",
+    "daily_yaozu",
+}
+_OBSOLETE_ASSISTANT_COVERED_TASK_LABELS = {
+    "日常_游历",
+    "日常_灵塔",
+    "日常_双修",
+    "日常_灵祖",
+    "日常_妖王来袭",
+    "日常_妖族袭城",
 }
 
 
@@ -450,13 +471,20 @@ def repair_data_annotation_scheduler_tasks(
             task["legacy_name"] = "日常_妖族袭城"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key not in {"legacy_name", "args"}}
-    obsolete_task_ids = {"gift-code-real-test", "gift-code-test-real", "real-test-gift-code", "mail-full-scan"}
-    obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历"}
+    obsolete_task_ids = {
+        "gift-code-real-test",
+        "gift-code-test-real",
+        "real-test-gift-code",
+        "mail-full-scan",
+        *_OBSOLETE_ASSISTANT_COVERED_TASK_IDS,
+    }
+    obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历", *_OBSOLETE_ASSISTANT_COVERED_TASK_LABELS}
     before_cleanup_count = len(tasks)
     tasks = [
         task
         for task in tasks
         if str(task.get("id") or "") not in obsolete_task_ids
+        and str(task.get("task_type") or "") not in _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
     changed = len(tasks) != before_cleanup_count
@@ -520,15 +548,10 @@ def repair_data_annotation_scheduler_tasks(
                 "daily-boss",
                 "xianfu-visit-partner",
                 "xianfu-learn-skill",
-                "legacy-daily-lingzu",
                 "legacy-daily-jianling",
-                "legacy-daily-lingta",
                 "legacy-daily-xianyuan",
                 "legacy-daily-assistant",
-                "legacy-daily-shuangxiu",
                 "legacy-daily-dungeon",
-                "legacy-daily-yaowang",
-                "legacy-daily-yaozu",
             }
             and task.get("cooldown_seconds") != default_task.get("cooldown_seconds")
         ):

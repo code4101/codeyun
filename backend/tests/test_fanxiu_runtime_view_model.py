@@ -979,12 +979,21 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
+    image210 = {
+        "type": "image",
+        "title": "一键删除确认",
+        "filename": "0210.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "confirm", "kind": "rect", "title": "确认", "x": 0.55, "y": 0.64, "w": 0.28, "h": 0.08}],
+    }
     ctx = {
         "entry": object(),
         "asset_tree_path": tmp_path / "asset_tree.json",
-        "images": {121: image121},
+        "images": {121: image121, 210: image210},
     }
-    clicked = []
+    actions = []
+    wait_view_calls = {"count": 0}
 
     monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
 
@@ -998,14 +1007,31 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
-    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
+    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: actions.append(("click", shape.parent_view.raw["title"], shape.title)))
 
     def fake_scroll(self, *_args, **_kwargs):
         if False:
             yield None
         return False
 
+    def fake_wait_view(self, *view_ids, **kwargs):
+        actions.append(("wait_view", view_ids, kwargs))
+        wait_view_calls["count"] += 1
+        if False:
+            yield None
+        if wait_view_calls["count"] == 1:
+            assert view_ids == (210, 278, 121)
+            return View(image210)
+        assert view_ids == (121, 34)
+        return View(image121)
+
+    def fake_click_shape(self, view_id, shape_title, **kwargs):
+        actions.append(("click_shape", view_id, shape_title, kwargs))
+        return "success"
+
     monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
+    monkeypatch.setattr(FanxiuRuntime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(FanxiuRuntime, "click_shape", fake_click_shape)
 
     class FakeStopEvent:
         def is_set(self):
@@ -1021,7 +1047,101 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
     )
 
     assert result == "success"
-    assert clicked == [("邮件", "一键删除")]
+    assert actions == [
+        ("click", "邮件", "一键删除"),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("click_shape", 210, "确认", {"frame_data_url": None}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+    ]
+
+
+def test_mail_cleanup_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
+        ],
+    }
+    image210 = {
+        "type": "image",
+        "title": "一键删除确认",
+        "filename": "0210.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "confirm", "kind": "rect", "title": "确认", "x": 0.55, "y": 0.64, "w": 0.28, "h": 0.08}],
+    }
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {121: image121, 210: image210},
+    }
+    actions: list[tuple] = []
+    wait_view_calls = {"count": 0}
+
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+
+    def fake_open_entry(_runtime):
+        if False:
+            yield None
+        return "success"
+
+    def fake_scroll(self, *_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def fake_wait_view(self, *view_ids, **kwargs):
+        actions.append(("wait_view", view_ids, kwargs))
+        wait_view_calls["count"] += 1
+        if False:
+            yield None
+        if wait_view_calls["count"] == 1:
+            assert view_ids == (210, 278, 121)
+            image278 = {"type": "image", "title": "邮件删除确认", "filename": "0278.png", "width": 900, "height": 1600}
+            return View(image278)
+        assert view_ids == (121, 34)
+        return View(image121)
+
+    def fake_click_shape(self, view_id, shape_title, **kwargs):
+        actions.append(("click_shape", view_id, shape_title, kwargs))
+        return "success"
+
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: actions.append(("click", shape.parent_view.raw["title"], shape.title)))
+    monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
+    monkeypatch.setattr(FanxiuRuntime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(FanxiuRuntime, "click_shape", fake_click_shape)
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert actions == [
+        ("click", "邮件", "一键删除"),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("click_shape", 278, "确认", {"frame_data_url": None}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+    ]
 
 
 def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_path):
@@ -1037,10 +1157,18 @@ def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_pa
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
+    image210 = {
+        "type": "image",
+        "title": "一键删除确认",
+        "filename": "0210.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "confirm", "kind": "rect", "title": "确认", "x": 0.55, "y": 0.64, "w": 0.28, "h": 0.08}],
+    }
     ctx = {
         "entry": object(),
         "asset_tree_path": tmp_path / "asset_tree.json",
-        "images": {121: image121},
+        "images": {121: image121, 210: image210},
     }
     scroll_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
@@ -1064,6 +1192,25 @@ def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
     monkeypatch.setattr(Shape, "click", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
+
+    wait_view_calls = {"count": 0}
+
+    def fake_wait_view(self, *view_ids, **_kwargs):
+        wait_view_calls["count"] += 1
+        if False:
+            yield None
+        if wait_view_calls["count"] == 1:
+            assert view_ids == (210, 278, 121)
+            return View(image210)
+        assert view_ids == (121, 34)
+        return View(image121)
+
+    def fake_click_shape(self, view_id, shape_title, **_kwargs):
+        assert (view_id, shape_title) == (210, "确认")
+        return "success"
+
+    monkeypatch.setattr(FanxiuRuntime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(FanxiuRuntime, "click_shape", fake_click_shape)
 
     class FakeStopEvent:
         def is_set(self):
@@ -1096,12 +1243,21 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
+    image210 = {
+        "type": "image",
+        "title": "一键删除确认",
+        "filename": "0210.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "confirm", "kind": "rect", "title": "确认", "x": 0.55, "y": 0.64, "w": 0.28, "h": 0.08}],
+    }
     ctx = {
         "entry": object(),
         "asset_tree_path": tmp_path / "asset_tree.json",
-        "images": {121: image121},
+        "images": {121: image121, 210: image210},
     }
-    clicked = []
+    actions = []
+    wait_view_calls = {"count": 0}
 
     monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
 
@@ -1113,8 +1269,9 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
-    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
+    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: actions.append(("click", shape.parent_view.raw["title"], shape.title)))
 
     def fake_scroll(self, *_args, **_kwargs):
         if False:
@@ -1122,6 +1279,24 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
+
+    def fake_wait_view(self, *view_ids, **kwargs):
+        actions.append(("wait_view", view_ids, kwargs))
+        wait_view_calls["count"] += 1
+        if False:
+            yield None
+        if wait_view_calls["count"] == 1:
+            assert view_ids == (210, 278, 121)
+            return View(image210)
+        assert view_ids == (121, 34)
+        return View(image121)
+
+    def fake_click_shape(self, view_id, shape_title, **kwargs):
+        actions.append(("click_shape", view_id, shape_title, kwargs))
+        return "success"
+
+    monkeypatch.setattr(FanxiuRuntime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(FanxiuRuntime, "click_shape", fake_click_shape)
 
     class FakeStopEvent:
         def is_set(self):
@@ -1137,7 +1312,12 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     )
 
     assert result == "success"
-    assert clicked == [("邮件", "一键删除")]
+    assert actions == [
+        ("click", "邮件", "一键删除"),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("click_shape", 210, "确认", {"frame_data_url": None}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+    ]
     assert any("仍未确认到底，继续一键删除已阅" in log["message"] for log in runner.status()["logs"])
 
 

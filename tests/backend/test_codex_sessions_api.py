@@ -499,6 +499,9 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
 
     assert workload["total_threads"] == 2
     assert workload["total_turns"] == 2
+    assert workload["returned_turns"] == 2
+    assert workload["summarized_turns"] == 0
+    assert workload["day_seconds"] == {}
     assert workload["max_concurrency"] == 2
     assert workload["skipped_threads"] == 0
     assert [item["id"] for item in workload["turns"]] == ["thread-1:1", "thread-2:1"]
@@ -533,9 +536,40 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
     compact_workload = compact_workload_response.json()
     assert compact_workload["total_threads"] == 1
     assert compact_workload["total_turns"] == 1
+    assert compact_workload["returned_turns"] == 1
+    assert compact_workload["summarized_turns"] == 0
+    assert compact_workload["day_seconds"] == {}
     assert compact_workload["segments"] == []
     assert compact_workload["max_concurrency"] == 0
     assert compact_workload["turns"] == [
+        {
+            "id": "thread-2:1",
+            "start_at": 1776920403.0,
+            "end_at": 1776920405.0,
+            "duration_seconds": 2.0,
+            "completed": True,
+        }
+    ]
+
+    summarized_workload_response = client.get(
+        f"/api/device-entries/{entry_id}/codex/workload",
+        params={
+            "root_dir": str(codex_root),
+            "compact": True,
+            "include_segments": False,
+            "historical_day_summary_before": 1776920404.1,
+        },
+    )
+    assert summarized_workload_response.status_code == 200
+    summarized_workload = summarized_workload_response.json()
+    assert summarized_workload["total_threads"] == 2
+    assert summarized_workload["total_turns"] == 2
+    assert summarized_workload["returned_turns"] == 1
+    assert summarized_workload["summarized_turns"] == 1
+    assert summarized_workload["segments"] == []
+    assert summarized_workload["max_concurrency"] == 0
+    assert sum(summarized_workload["day_seconds"].values()) == 2.0
+    assert summarized_workload["turns"] == [
         {
             "id": "thread-2:1",
             "start_at": 1776920403.0,
@@ -1092,7 +1126,12 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
 
     workload_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/workload",
-        params={"root_dir": "C:\\Users\\test\\.codex", "compact": True, "include_segments": False},
+        params={
+            "root_dir": "C:\\Users\\test\\.codex",
+            "compact": True,
+            "include_segments": False,
+            "historical_day_summary_before": 123.5,
+        },
     )
     assert workload_response.status_code == 200
     assert captured[3]["url"] == "http://remote-device:8000/api/codex/workload"
@@ -1101,6 +1140,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
         "root_dir": "C:\\Users\\test\\.codex",
         "compact": True,
         "include_segments": False,
+        "historical_day_summary_before": 123.5,
     }
 
     latest_daily_summary_response = client.get(

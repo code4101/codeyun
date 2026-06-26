@@ -435,7 +435,7 @@ class PopupGuardMixin:
     ) -> list[float]:
         if len(candidates) <= 1:
             return self._auto_close_popup_candidate_scores_serial(ctx, candidates, frame_data_url)
-        workers = len(candidates)
+        workers = min(len(candidates), 32)
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-popup-match") as executor:
             return list(executor.map(lambda candidate: self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url), candidates))
 

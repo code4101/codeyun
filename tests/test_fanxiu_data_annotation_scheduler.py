@@ -465,20 +465,17 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     legacy_tasks = [item for item in tasks if item["source"] == "legacy_behavior_tree"]
     daily_tasks = [item for item in legacy_tasks if item["schedule_kind"] == "daily"]
     dynamic_tasks = [item for item in legacy_tasks if item["schedule_kind"] == "dynamic"]
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
     baiye = next(item for item in tasks if item["id"] == "legacy-daily-baiye")
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
     signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
     gift = next(item for item in tasks if item["id"] == "gift-code-weekly")
 
-    assert len(tasks) == 32
+    assert len(tasks) == 26
     assert len(legacy_tasks) == 10
     assert len(daily_tasks) == 9
     assert len(dynamic_tasks) == 1
-    assert youli["task_type"] == "daily_youli"
-    assert youli["source"] == "data_annotation_runtime"
-    assert youli["enabled"] is True
-    assert youli["interruptible"] is True
+    assert not any(item["id"] == "legacy-daily-youli" for item in tasks)
+    assert not any(item["task_type"] == "daily_youli" for item in tasks)
     assert signup["task_type"] == "daily_signup"
     assert signup["source"] == "data_annotation_runtime"
     assert signup["enabled"] is True
@@ -540,19 +537,11 @@ def test_data_annotation_scheduler_read_repairs_structural_fields(tmp_path, monk
     ])
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
 
     assert not any(item["label"] == "真实测试礼包码" for item in tasks)
-    assert youli["task_type"] == "daily_youli"
-    assert youli["source"] == "data_annotation_runtime"
-    assert youli["schedule_kind"] == "daily"
-    assert youli["legacy_name"] == "日常_游历"
-    assert youli["schedule_times"] == ["00:00", "05:00"]
-    assert youli["payload"] == {"__scheduler_definition_task_type": "daily_youli"}
-    assert youli["enabled"] is True
-    assert "priority" not in youli
-    assert youli["interruptible"] is True
+    assert not any(item["id"] == "legacy-daily-youli" for item in tasks)
+    assert not any(item["task_type"] == "daily_youli" for item in tasks)
     assert assistant["enabled"] is True
     assert assistant["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
     assert any(item["id"] == "gift-code-weekly" for item in tasks)
@@ -571,7 +560,7 @@ def test_data_annotation_scheduler_response_marks_supported_tasks(tmp_path, monk
     assert by_id["go-settings"].supported is True
     assert by_id["hide-floating-window"].supported is True
     assert by_id["legacy-daily-assistant"].supported is True
-    assert by_id["legacy-daily-youli"].supported is True
+    assert "legacy-daily-youli" not in by_id
 
 
 def test_data_annotation_scheduler_put_does_not_persist_supported_view_field(tmp_path, monkeypatch):
@@ -669,7 +658,7 @@ def test_data_annotation_scheduler_partial_update_preserves_other_enabled_tasks(
     assert by_id["xianfu-visit-partner"]["enabled"] is True
 
 
-def test_data_annotation_scheduler_read_migrates_supported_legacy_tasks(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_removes_assistant_covered_legacy_tasks(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     fanxiu._write_data_annotation_scheduler_tasks([
         {
@@ -693,11 +682,8 @@ def test_data_annotation_scheduler_read_migrates_supported_legacy_tasks(tmp_path
     persisted = json.loads(_scheduler_state_path(tmp_path).read_text(encoding="utf-8"))
     persisted_by_id = {item["id"]: item for item in persisted}
 
-    assert by_id["legacy-daily-youli"].supported is True
-    assert by_id["legacy-daily-youli"].enabled is True
-    assert by_id["legacy-daily-youli"].last_result == ""
-    assert persisted_by_id["legacy-daily-youli"]["enabled"] is True
-    assert persisted_by_id["legacy-daily-youli"]["last_result"] == ""
+    assert "legacy-daily-youli" not in by_id
+    assert "legacy-daily-youli" not in persisted_by_id
 
 
 def test_data_annotation_runtime_scheduler_routes_replace_stepper_routes():
@@ -1246,7 +1232,7 @@ def test_data_annotation_scheduler_read_initializes_enabled_daily_next_time(tmp_
     assert assistant["next_time"] == "2026-06-02 00:00:00"
 
 
-def test_data_annotation_scheduler_read_repairs_enabled_failed_task_retry_time(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_removes_enabled_failed_assistant_covered_task(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -1277,15 +1263,11 @@ def test_data_annotation_scheduler_read_repairs_enabled_failed_task_retry_time(t
     ])
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
 
-    assert youli["enabled"] is True
-    assert youli["last_result"] == "stopped"
-    assert youli["next_time"] is None
-    assert youli["retry_after"] == "2026-06-02 06:10:00"
+    assert not any(item["id"] == "legacy-daily-youli" for item in tasks)
 
 
-def test_data_annotation_scheduler_read_clears_failed_task_stale_next_time_when_retrying(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_removes_failed_assistant_covered_task(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -1316,11 +1298,8 @@ def test_data_annotation_scheduler_read_clears_failed_task_stale_next_time_when_
     ])
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    lingta = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
 
-    assert lingta["last_result"] == "error"
-    assert lingta["next_time"] is None
-    assert lingta["retry_after"] == "2026-06-02 06:10:00"
+    assert not any(item["id"] == "legacy-daily-lingta" for item in tasks)
 
 
 def test_data_annotation_scheduler_read_retries_stopped_task_with_stale_next_time(tmp_path, monkeypatch):
@@ -1399,7 +1378,7 @@ def test_data_annotation_scheduler_read_keeps_manual_check_pending_unscheduled(t
     assert boss["retry_after"] is None
 
 
-def test_data_annotation_scheduler_sync_ignores_failed_fact_stale_next_time_when_retrying(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_sync_removes_failed_assistant_covered_task(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -1445,11 +1424,8 @@ def test_data_annotation_scheduler_sync_ignores_failed_fact_stale_next_time_when
     })
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    lingta = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
 
-    assert lingta["last_result"] == "error"
-    assert lingta["next_time"] is None
-    assert lingta["retry_after"] == "2026-06-02 06:10:00"
+    assert not any(item["id"] == "legacy-daily-lingta" for item in tasks)
 
 
 def test_data_annotation_scheduler_sync_ignores_manual_pending_fact_next_time(tmp_path, monkeypatch):
@@ -1505,7 +1481,7 @@ def test_data_annotation_scheduler_sync_ignores_manual_pending_fact_next_time(tm
     assert boss["retry_after"] is None
 
 
-def test_data_annotation_scheduler_sync_success_next_time_repairs_retry_state(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_sync_removes_successful_assistant_covered_task(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -1551,11 +1527,8 @@ def test_data_annotation_scheduler_sync_success_next_time_repairs_retry_state(tm
     })
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
 
-    assert youli["last_result"] == "success"
-    assert youli["next_time"] == "2026-06-03 00:00:00"
-    assert youli["retry_after"] is None
+    assert not any(item["id"] == "legacy-daily-youli" for item in tasks)
 
 
 def test_data_annotation_scheduler_forces_manual_tasks_disabled(tmp_path, monkeypatch):
@@ -2782,7 +2755,7 @@ def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_s
         fanxiu._DATA_ANNOTATION_MANUAL_JOB_REGISTRY.pop(task_type, None)
 
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_assistant"}) is True
-    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_youli"}) is True
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_youli"}) is False
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_baiye"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_yihuo"}) is True
     assert runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo") is not None
@@ -2806,7 +2779,7 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
 
     assert by_id["legacy-daily-assistant"]["task_type"] == "daily_assistant"
     assert by_id["legacy-daily-assistant"]["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
-    assert by_id["legacy-daily-youli"]["task_type"] == "daily_youli"
+    assert "legacy-daily-youli" not in by_id
     assert by_id["legacy-daily-yihuo"]["task_type"] == "daily_yihuo"
     assert by_id["legacy-daily-gongfeng"]["task_type"] == "daily_gongfeng"
     assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
@@ -3949,9 +3922,9 @@ def test_data_annotation_daily_schedule_uses_nearest_future_time_independent_of_
 
 def test_data_annotation_scheduler_repair_corrects_wrong_multi_clock_future_next_time():
     raw = [{
-        "id": "legacy-daily-youli",
-        "task_type": "daily_youli",
-        "label": "日常_游历",
+        "id": "legacy-daily-signup",
+        "task_type": "daily_signup",
+        "label": "日常_报名",
         "source": "data_annotation_runtime",
         "schedule_kind": "daily",
         "enabled": True,
@@ -3960,7 +3933,7 @@ def test_data_annotation_scheduler_repair_corrects_wrong_multi_clock_future_next
         "last_run_at": "2026-06-13 18:00:00",
         "last_result": "success",
         "retry_after": None,
-        "payload": {"__scheduler_definition_task_type": "daily_youli"},
+        "payload": {"__scheduler_definition_task_type": "daily_signup"},
     }]
 
     tasks, changed = fanxiu.repair_data_annotation_scheduler_tasks(
@@ -3971,12 +3944,12 @@ def test_data_annotation_scheduler_repair_corrects_wrong_multi_clock_future_next
         now=datetime(2026, 6, 13, 18, 16, 0),
     )
 
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
+    signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
     assert changed is True
-    assert youli["next_time"] == "2026-06-14 00:00:00"
+    assert signup["next_time"] == "2026-06-14 00:00:00"
 
 
-def test_data_annotation_scheduler_repair_keeps_unfinished_daily_task_due_today():
+def test_data_annotation_scheduler_repair_removes_unfinished_assistant_covered_task():
     raw = [{
         "id": "legacy-daily-lingta",
         "task_type": "daily_lingta",
@@ -4000,9 +3973,8 @@ def test_data_annotation_scheduler_repair_keeps_unfinished_daily_task_due_today(
         now=datetime(2026, 6, 18, 15, 0, 0),
     )
 
-    lingta = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
     assert changed is True
-    assert lingta["next_time"] == "2026-06-18 05:00:00"
+    assert not any(item["id"] == "legacy-daily-lingta" for item in tasks)
 
 
 def test_data_annotation_scheduler_defaults_enable_standard_daily_tasks():
@@ -4011,12 +3983,8 @@ def test_data_annotation_scheduler_defaults_enable_standard_daily_tasks():
 
     for task_id in {
         "daily-boss",
-        "legacy-daily-lingta",
         "legacy-daily-xianyuan",
-        "legacy-daily-lingzu",
         "legacy-daily-jianling",
-        "legacy-daily-yaowang",
-        "legacy-daily-yaozu",
     }:
         assert by_id[task_id]["enabled"] is True
 
@@ -4024,9 +3992,9 @@ def test_data_annotation_scheduler_defaults_enable_standard_daily_tasks():
 def test_data_annotation_scheduler_repair_reenables_standard_daily_tasks():
     raw = [
         {
-            "id": "legacy-daily-lingta",
-            "task_type": "daily_lingta",
-            "label": "日常_灵塔",
+            "id": "legacy-daily-xianyuan",
+            "task_type": "daily_xianyuan",
+            "label": "日常_挑战仙缘",
             "source": "data_annotation_runtime",
             "schedule_kind": "daily",
             "enabled": False,
@@ -4035,7 +4003,7 @@ def test_data_annotation_scheduler_repair_reenables_standard_daily_tasks():
             "last_run_at": None,
             "last_result": "",
             "retry_after": None,
-            "payload": {"__scheduler_definition_task_type": "daily_lingta"},
+            "payload": {"__scheduler_definition_task_type": "daily_xianyuan"},
         },
         {
             "id": "daily-boss",
@@ -4063,7 +4031,7 @@ def test_data_annotation_scheduler_repair_reenables_standard_daily_tasks():
 
     by_id = {item["id"]: item for item in tasks}
     assert changed is True
-    assert by_id["legacy-daily-lingta"]["enabled"] is True
+    assert by_id["legacy-daily-xianyuan"]["enabled"] is True
     assert by_id["daily-boss"]["enabled"] is True
 
 
@@ -4155,16 +4123,16 @@ def test_daily_signup_return_world_uses_fixed_exit_click_before_world_wait():
 
 def test_data_annotation_scheduler_repair_keeps_due_multi_clock_task_due():
     raw = [{
-        "id": "legacy-daily-youli",
-        "task_type": "daily_youli",
-        "label": "日常_游历",
+        "id": "legacy-daily-assistant",
+        "task_type": "daily_assistant",
+        "label": "日常_助手",
         "source": "data_annotation_runtime",
         "schedule_kind": "daily",
         "enabled": True,
         "next_time": "2026-06-14 00:00:00",
         "schedule_times": ["05:00", "00:00"],
         "retry_after": None,
-        "payload": {"__scheduler_definition_task_type": "daily_youli"},
+        "payload": {"__scheduler_definition_task_type": "daily_assistant"},
     }]
 
     tasks, _changed = fanxiu.repair_data_annotation_scheduler_tasks(
@@ -4175,8 +4143,8 @@ def test_data_annotation_scheduler_repair_keeps_due_multi_clock_task_due():
         now=datetime(2026, 6, 14, 0, 0, 1),
     )
 
-    youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
-    assert youli["next_time"] == "2026-06-14 00:00:00"
+    assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
+    assert assistant["next_time"] == "2026-06-14 00:00:00"
 
 
 def test_xianfu_visit_partner_returns_world_when_waiting_cd(tmp_path, monkeypatch):

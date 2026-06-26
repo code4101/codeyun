@@ -134,10 +134,13 @@ class CodexWorkloadResponse(BaseModel):
     root_dir: str
     total_threads: int
     total_turns: int
+    returned_turns: int = 0
+    summarized_turns: int = 0
     skipped_threads: int = 0
     max_concurrency: int = 0
     time_range_start: float | None = None
     time_range_end: float | None = None
+    day_seconds: dict[str, float] = {}
     turns: list[CodexWorkloadTurn]
     segments: list[CodexWorkloadSegment]
 
@@ -286,6 +289,7 @@ def get_codex_workload(
     end_at: float | None = Query(default=None),
     compact: bool = Query(default=False),
     include_segments: bool = Query(default=True),
+    historical_day_summary_before: float | None = Query(default=None),
     session: Session = Depends(get_session),
     _: BaseDevice = Depends(verify_api_token),
 ):
@@ -297,6 +301,7 @@ def get_codex_workload(
             end_at=end_at,
             compact=compact,
             include_segments=include_segments,
+            historical_day_summary_before=historical_day_summary_before,
         )
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         raise _translate_codex_error(exc) from exc

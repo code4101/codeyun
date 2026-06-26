@@ -202,6 +202,22 @@ class MailTaskMixin:
         max_scrolls = max(1, int(payload.get("max_scrolls") or 24))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
+        frame = runtime.cur_frame(update=True)
+        pending_scene_id, pending_score = self._identify_scene_number(ctx, frame, [278])
+        if pending_scene_id == 278:
+            with self._lock:
+                self._set_status_locked("running", "邮件_清理：处理遗留一键删除确认", phase="mail_cleanup_resume_confirm_delete_read", current_scene=278)
+                self._log_locked("action", f"邮件_清理：启动时检测到 #278 一键删除确认 {pending_score:.0f}%，点击「确认」")
+            self._click_confirmed_mail_delete_prompt(runtime, 278, frame_data_url=frame)
+            resumed_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：遗留确认后等待邮件页或世界页")
+            resumed_scene_id = resumed_view.id if isinstance(resumed_view, View) else None
+            if resumed_scene_id == 34:
+                with self._lock:
+                    self._log_locked("info", "邮件_清理：遗留一键删除确认后回到世界页，继续进入邮件")
+            elif resumed_scene_id == 121:
+                with self._lock:
+                    self._log_locked("info", "邮件_清理：遗留一键删除确认后回到邮件页，继续扫描")
+
         with self._lock:
             self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
         scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 34, 35, 69], update=True)
@@ -287,8 +303,19 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
                     self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
                 delete_read_shape.click(runtime)
-                delete_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：一键删除后等待邮件页或世界页")
+                delete_result_view = yield from runtime.wait_view(210, 278, 121, timeout=12.0, label="邮件_清理：一键删除后等待确认弹窗")
                 delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
+                if delete_result_scene in {210, 278}:
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_清理：确认一键删除", phase="mail_cleanup_confirm_delete_read", current_scene=delete_result_scene)
+                        self._log_locked("action", f"邮件_清理：#{delete_result_scene} 一键删除确认弹窗，点击「确认」")
+                    self._click_confirmed_mail_delete_prompt(runtime, delete_result_scene)
+                    delete_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：确认一键删除后等待邮件页或世界页")
+                    delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
+                elif delete_result_scene == 121:
+                    self._log("info", "邮件_清理：#121「一键删除」后未出现确认弹窗，按无可删已阅邮件继续")
+                else:
+                    raise RuntimeError("邮件_清理：#121「一键删除」后未进入确认弹窗，也未回到邮件页")
             else:
                 self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
         elif processed_count >= max_actions:
@@ -314,6 +341,17 @@ class MailTaskMixin:
             )
             self._log_locked("success", self._status["message"])
         return "success"
+
+    def _click_confirmed_mail_delete_prompt(
+        self,
+        runtime,
+        scene_id: int,
+        *,
+        frame_data_url: str | None = None,
+    ) -> None:
+        """点击已经由当前帧或 wait_view 确认过的删除确认弹窗。"""
+
+        runtime.click_shape(int(scene_id), "确认", frame_data_url=frame_data_url)
 
 
 

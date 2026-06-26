@@ -20,20 +20,14 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "hide_floating_window",
     "daily_signup",
     "daily_boss",
-    "daily_lingzu",
     "daily_jianling",
-    "daily_lingta",
     "daily_xianyuan",
-    "daily_yaowang",
-    "daily_yaozu",
-    "daily_youli",
     "daily_baiye",
     "daily_yihuo",
     "daily_gongfeng",
     "daily_xianshi",
     "daily_dungeon",
     "daily_assistant",
-    "daily_shuangxiu",
     "daily_audit",
     "mail_cleanup",
     "xianfu_visit_partner",
@@ -149,15 +143,6 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_boss_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_lingzu", "日常_灵祖", scheduler_supported=True)
-    def _run_data_annotation_daily_lingzu_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_lingzu_task(ctx, stop_event, payload)
-
     @register_fanxiu_data_annotation_manual_job("daily_jianling", "日常_剑灵", scheduler_supported=True)
     def _run_data_annotation_daily_jianling_manual_job(
         runner: Any,
@@ -167,15 +152,6 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_jianling_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_lingta", "日常_灵塔", scheduler_supported=True)
-    def _run_data_annotation_daily_lingta_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_lingta_task(ctx, stop_event, payload)
-
     @register_fanxiu_data_annotation_manual_job("daily_xianyuan", "日常_挑战仙缘", scheduler_supported=True)
     def _run_data_annotation_daily_xianyuan_manual_job(
         runner: Any,
@@ -184,33 +160,6 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_xianyuan_task(ctx, stop_event, payload)
-
-    @register_fanxiu_data_annotation_manual_job("daily_yaowang", "日常_妖王来袭", scheduler_supported=True)
-    def _run_data_annotation_daily_yaowang_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_yaowang_task(ctx, stop_event, payload)
-
-    @register_fanxiu_data_annotation_manual_job("daily_yaozu", "日常_妖族袭城", scheduler_supported=True)
-    def _run_data_annotation_daily_yaozu_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_yaozu_task(ctx, stop_event, payload)
-
-    @register_fanxiu_data_annotation_manual_job("daily_youli", "日常_游历", scheduler_supported=True)
-    def _run_data_annotation_daily_youli_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_youli_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_baiye", "日常_拜谒", scheduler_supported=True)
     def _run_data_annotation_daily_baiye_manual_job(
@@ -279,15 +228,6 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_assistant_task(ctx, stop_event, payload)
-
-    @register_fanxiu_data_annotation_manual_job("daily_shuangxiu", "日常_双修", scheduler_supported=True)
-    def _run_data_annotation_daily_shuangxiu_manual_job(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return runner._execute_daily_shuangxiu_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_audit", "日常_复核", scheduler_supported=False)
     def _run_data_annotation_daily_audit_manual_job(

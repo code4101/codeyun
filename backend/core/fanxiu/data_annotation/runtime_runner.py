@@ -56,7 +56,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
     repair_data_annotation_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
-from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence
+from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _reference_frame_similarity
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
@@ -5793,11 +5793,18 @@ class DataAnnotationRuntimeRunner(
         if candidate_scene_ids is None:
             candidate_scene_ids = self._runtime_scene_candidate_ids(ctx)
         if preferred_scene_ids is not None:
-            return self._identify_scene_number_from_candidates(
+            if 86 in preferred_scene_ids:
+                text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+                if self._leave_scene_confirm_text(text):
+                    return 86, 100.0
+            scene_id, score = self._scene_recognizer().identify_scene_number(
                 ctx,
                 frame_data_url,
-                preferred_scene_ids,
+                preferred_scene_ids=preferred_scene_ids,
             )
+            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+                return None, score
+            return scene_id, score
 
         return self._identify_scene_number_from_candidates(
             ctx,
@@ -5855,19 +5862,19 @@ class DataAnnotationRuntimeRunner(
         return bool("是否中止修炼" in compact and "留下" in compact and "离开" in compact)
 
     def _runtime_scene_candidate_ids(self, ctx: dict[str, Any]) -> list[int]:
-        return self._runtime_scene_candidate_ids_by_kind(ctx, include_popups=False)
+        return self._runtime_scene_candidate_ids_by_kind(ctx, include_popups=None)
 
     def _runtime_popup_scene_candidate_ids(self, ctx: dict[str, Any]) -> list[int]:
         return self._runtime_scene_candidate_ids_by_kind(ctx, include_popups=True)
 
-    def _runtime_scene_candidate_ids_by_kind(self, ctx: dict[str, Any], *, include_popups: bool) -> list[int]:
+    def _runtime_scene_candidate_ids_by_kind(self, ctx: dict[str, Any], *, include_popups: bool | None) -> list[int]:
         images = ctx.get("images") or {}
         if not isinstance(images, dict):
             return []
         tree_candidates = self._runtime_tree_scene_candidate_ids(ctx, include_popups=include_popups)
         if isinstance(ctx.get("asset_tree"), list):
             return tree_candidates
-        if include_popups:
+        if include_popups is True:
             return []
         return [
             int(scene_id)
@@ -5875,7 +5882,7 @@ class DataAnnotationRuntimeRunner(
             if int(scene_id) in images and isinstance(images.get(int(scene_id)), dict)
         ]
 
-    def _runtime_tree_scene_candidate_ids(self, ctx: dict[str, Any], *, include_popups: bool) -> list[int]:
+    def _runtime_tree_scene_candidate_ids(self, ctx: dict[str, Any], *, include_popups: bool | None) -> list[int]:
         tree = ctx.get("asset_tree")
         images = ctx.get("images") or {}
         if not isinstance(tree, list) or not isinstance(images, dict):
@@ -5909,9 +5916,9 @@ class DataAnnotationRuntimeRunner(
                         and not inside_image
                         and int(image_id) in images
                         and isinstance(images.get(int(image_id)), dict)
-                        and in_popup_path == include_popups
+                        and (include_popups is None or in_popup_path == include_popups)
                     ):
-                        if include_popups:
+                        if include_popups is True:
                             add_candidate(int(image_id))
                         else:
                             add_layer_candidate(int(image_id))
@@ -5923,7 +5930,7 @@ class DataAnnotationRuntimeRunner(
                     visit([child for child in children if isinstance(child, dict)], current_path, child_inside_image)
 
         visit([item for item in tree if isinstance(item, dict)], [], False)
-        if not include_popups:
+        if include_popups is not True:
             for layer in (1, 2, 3):
                 for image_id in layer_buckets[layer]:
                     add_candidate(image_id)
@@ -6123,49 +6130,14 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(images, dict) or not candidate_scene_ids:
             return None, 0.0
 
-        candidates: list[tuple[int, float, int, int, int]] = []
-        for order, scene_id in enumerate(candidate_scene_ids):
-            image = images.get(int(scene_id))
-            if not isinstance(image, dict):
-                continue
-            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+        scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
+        if scene_id is not None:
             明确性, 路径长度 = self._scene_route_ranking(tree, int(scene_id), int(target_scene_id))
-            candidates.append((int(scene_id), score, 明确性, 路径长度, int(order)))
-
-        if not candidates:
-            return None, 0.0
-        matched_candidates = [
-            candidate
-            for candidate in candidates
-            if self._scene_matches_id(candidate[0], candidate[1])
-        ]
-        if matched_candidates:
-            matched_candidates.sort(
-                key=lambda item: (
-                    item[2],
-                    -item[3],
-                    item[1],
-                    -item[4],
-                ),
-                reverse=True,
-            )
-            scene_id, score, 明确性, 路径长度, _order = matched_candidates[0]
             self._log(
                 "detail",
                 f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {明确性}，路径长度 {路径长度}",
             )
             return scene_id, score
-
-        candidates.sort(
-            key=lambda item: (
-                item[1],
-                item[2],
-                -item[3],
-                -item[4],
-            ),
-            reverse=True,
-        )
-        _scene_id, score, _明确性, _路径长度, _order = candidates[0]
         return None, score
 
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
@@ -6311,6 +6283,23 @@ class DataAnnotationRuntimeRunner(
 
     def _image_layer(self, image: dict[str, Any]) -> int:
         return normalize_frame_layer(image.get("layer"), 3)
+
+    def _navigation_scene_id(self, ctx: dict[str, Any], scene_id: int | None) -> int | None:
+        if scene_id is None:
+            return None
+        images = ctx.get("images") or {}
+        image = images.get(int(scene_id)) if isinstance(images, dict) else None
+        if not isinstance(image, dict):
+            return int(scene_id)
+        if self._image_layer(image) != 3 or self._scene_identity_shapes(image):
+            return int(scene_id)
+        for ancestor in self._image_ancestor_chain(ctx, image):
+            ancestor_id = self._image_number(ancestor)
+            if ancestor_id is not None and self._image_layer(ancestor) in {1, 2}:
+                self._log("detail", f"场景移动：#{scene_id} 是无场景标识 layer3，导航起点归到父场景 #{ancestor_id}")
+                return int(ancestor_id)
+        self._log("detail", f"场景移动：#{scene_id} 是无父场景标识 layer3，只作为弱兜底证据，不作为导航起点")
+        return None
 
     def _scene_identity_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
         return [
@@ -6841,6 +6830,8 @@ class DataAnnotationRuntimeRunner(
 
     def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
         scene_identity_shapes = self._scene_identity_shapes(image)
+        if not scene_identity_shapes and self._image_layer(image) == 3:
+            return float(_reference_frame_similarity(self, image, frame_data_url) or 0.0)
         scorer = SceneScorer(
             shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(
@@ -8360,6 +8351,19 @@ class DataAnnotationRuntimeRunner(
                     action_shape=None,
                     elapsed_seconds=0.0,
                     history=[f"起点识别 unknown {score:.0f}%"],
+                )
+            current_scene_id = self._navigation_scene_id(ctx, current_scene_id)
+            if current_scene_id is None:
+                return self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=None,
+                    action_shape=None,
+                    elapsed_seconds=0.0,
+                    history=[f"弱兜底匹配不可作为导航起点 {score:.0f}%"],
                 )
             if current_scene_id == target_scene_id:
                 with self._lock:

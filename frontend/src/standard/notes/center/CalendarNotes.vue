@@ -659,6 +659,7 @@ const MONTH_WEEK_ROW_MIN_HEIGHT = 108;
 const MONTH_WEEK_ROW_UNIT_HEIGHT = 18;
 const MONTH_WEEK_ROW_MAX_HEIGHT = 240;
 const CODEX_WORKLOAD_DEVICE_CACHE_MS = 60_000;
+const CODEX_WORKLOAD_AUTO_REFRESH_COOLDOWN_MS = 60_000;
 const CODEX_WORKLOAD_HOUR_SECONDS = 3600;
 const CODEX_WORKLOAD_STATS_CACHE_KEY = 'codeyun:notes:calendar:codex-workload-days:v2';
 const CODEX_WORKLOAD_STATS_CACHE_VERSION = 2;
@@ -1176,6 +1177,7 @@ const refreshCodexWorkloadStats = async () => {
               startAt: requestStartMs === undefined ? undefined : requestStartMs / 1000,
               compact: true,
               includeSegments: false,
+              historicalDaySummaryBefore: todayStartMs / 1000,
             }
           ),
         };
@@ -1204,9 +1206,7 @@ const refreshCodexWorkloadStats = async () => {
         updatedAt: 0,
       };
       cache.devices[device.id] = deviceCache;
-      const historicalDays = mapToCodexWorkloadDaySeconds(
-        aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)
-      );
+      const historicalDays = extractHistoricalCodexWorkloadDays(workload, requestStartMs, todayStartMs);
       mergeCodexHistoricalDeviceDays(deviceCache, historicalDays, requestStartMs, todayStartMs, yesterdayKey);
     }
     saveCodexWorkloadStatsCache(cache);
@@ -1249,6 +1249,13 @@ const refreshCodexWorkloadStats = async () => {
   } finally {
     logCalendarPerf('refreshCodexWorkloadStats', perfStartedAt);
   }
+};
+
+const maybeRefreshCodexWorkloadStats = (cache?: CodexWorkloadStatsCache) => {
+  const nextCache = cache ?? loadCodexWorkloadStatsCache();
+  // Rapid calendar re-entry does not need to immediately re-fetch multi-megabyte workload payloads.
+  if (hasFreshCodexWorkloadStatsCache(nextCache)) return;
+  void refreshCodexWorkloadStats();
 };
 
 let scheduledCalendarRefreshToken = 0;
@@ -1871,6 +1878,16 @@ const saveCodexWorkloadStatsCache = (cache: CodexWorkloadStatsCache) => {
   }
 };
 
+const hasFreshCodexWorkloadStatsCache = (
+  cache: CodexWorkloadStatsCache,
+  nowMs = Date.now(),
+) => {
+  const deviceCaches = Object.values(cache.devices);
+  if (!deviceCaches.length) return false;
+  const freshAfterMs = nowMs - CODEX_WORKLOAD_AUTO_REFRESH_COOLDOWN_MS;
+  return deviceCaches.every((item) => Number.isFinite(item.updatedAt) && item.updatedAt >= freshAfterMs);
+};
+
 const collectCachedCodexDaySeconds = (
   cache: CodexWorkloadStatsCache,
   devices: Device[],
@@ -1994,6 +2011,20 @@ const mergeCodexHistoricalDeviceDays = (
   deviceCache.updatedAt = Date.now();
 };
 
+const extractHistoricalCodexWorkloadDays = (
+  workload: CodexWorkloadResponse,
+  requestStartMs: number | undefined,
+  todayStartMs: number,
+) => {
+  const daySeconds = normalizeCodexWorkloadDaySeconds(workload.day_seconds);
+  if (Object.keys(daySeconds).length > 0) {
+    return daySeconds;
+  }
+  return mapToCodexWorkloadDaySeconds(
+    aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)
+  );
+};
+
 const applyCachedCodexWorkloadSnapshot = (cache: CodexWorkloadStatsCache) => {
   codexHistoricalSecondsByDay.value = taskStore.devices.length
     ? collectCachedCodexDaySecondsWithLocal(cache, taskStore.devices)
@@ -2028,11 +2059,10 @@ const refreshStandaloneCodexWorkloadSource = async (
       startAt: requestStartMs === undefined ? undefined : requestStartMs / 1000,
       compact: true,
       includeSegments: false,
+      historicalDaySummaryBefore: todayStartMs / 1000,
     }
   );
-  const historicalDays = mapToCodexWorkloadDaySeconds(
-    aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)
-  );
+  const historicalDays = extractHistoricalCodexWorkloadDays(workload, requestStartMs, todayStartMs);
   mergeCodexHistoricalDeviceDays(
     deviceCache,
     historicalDays,
@@ -3082,9 +3112,10 @@ onMounted(() => {
   void measureCalendarPerf('nextTick after mounted', () => nextTick());
   void loadYearMonthMemos();
   if (showCodexWorkload.value) {
-    applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
+    const codexWorkloadCache = loadCodexWorkloadStatsCache();
+    applyCachedCodexWorkloadSnapshot(codexWorkloadCache);
     if (isActive.value) {
-      void refreshCodexWorkloadStats();
+      maybeRefreshCodexWorkloadStats(codexWorkloadCache);
     } else {
       inactiveCalendarRefreshPending = true;
     }
@@ -3154,7 +3185,7 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
     return;
   }
   if (isAuthenticated) {
-    void refreshCodexWorkloadStats();
+    maybeRefreshCodexWorkloadStats();
   } else {
     codexWorkloadTurns.value = [];
     applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
@@ -3171,7 +3202,7 @@ watch(isActive, (active) => {
     void refreshData({ silent: true });
   }
   if (showCodexWorkload.value && !codexWorkloadLoaded.value) {
-    void refreshCodexWorkloadStats();
+    maybeRefreshCodexWorkloadStats();
   }
 });
 

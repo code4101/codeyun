@@ -45,11 +45,6 @@ const createDailyTaskPreset = (
 });
 
 export const defaultDailyTaskPresets = (): DailyTaskPreset[] => [
-  createDailyTaskPreset('daily-find-yaozu', '妖族', '妖族', {
-    requireProgress: false,
-    legacySource: '妖族袭城.py: 日常_妖族袭城 -> 日常_查找("妖族", not_found_status=-1)',
-    note: '旧版日常_妖族袭城用 require_progress=False，后续由妖族状态类读取购买次数、挑战次数。',
-  }),
   createDailyTaskPreset('daily-find-daily-dungeon', '每日副本', '悟道|试炼周本|每日副本', {
     matchMode: 'regex',
     requireProgress: false,
@@ -66,13 +61,6 @@ export const defaultDailyTaskPresets = (): DailyTaskPreset[] => [
     legacySource: '日常功能.py: 灵脉_进入主页 -> 日常_查找(灵脉_日常入口匹配式)',
     note: '旧版完整入口是参与灵脉争夺1小时，短匹配规避 OCR 漏字；入口进入后还会读取体力。',
   }),
-  createDailyTaskPreset('daily-find-youli', '游历', '游历|修仙.?传|修仙.*历|传.?游', {
-    matchMode: 'regex',
-    scanPlan: 'candidate_rows',
-    notFoundStatus: 2,
-    legacySource: '日常功能.py: 日常_查找游历任务',
-    note: '游历标题 OCR 不稳定，旧版使用逐屏候选扫描；找不到保持默认完成态。',
-  }),
   createDailyTaskPreset('daily-find-baiye', '拜谒', '一次拜|拜谒', {
     matchMode: 'regex',
     scanPlan: 'bidirectional',
@@ -83,24 +71,6 @@ export const defaultDailyTaskPresets = (): DailyTaskPreset[] => [
     requireProgress: false,
     legacySource: '日常功能.py: 日常_拜谒 -> 点击日常拜谒任务',
     note: '拜谒完成后可能不再出现在活跃任务列表，找不到按完成态处理。',
-  }),
-  createDailyTaskPreset('daily-find-yaowang', '妖王', '妖王来袭', {
-    legacySource: '日常功能.py: 日常_妖王来袭 -> 日常_查找("妖王来袭", not_found_status=-1)',
-    note: '常规日常入口，命中后按进度/状态决定是否进入。',
-  }),
-  createDailyTaskPreset('daily-find-shuangxiu', '双修', '双人', {
-    legacySource: '日常功能.py: 日常_双修 -> 日常_查找("双人", not_found_status=-1)',
-    note: '旧版用双人稳定片段，而不是依赖完整标题。',
-  }),
-  createDailyTaskPreset('daily-find-lingta', '灵塔', '混沌灵塔|灵塔', {
-    matchMode: 'regex',
-    timeoutSeconds: 180,
-    legacySource: '日常功能.py: 日常_灵塔 -> 日常_查找("混沌灵塔|灵塔", not_found_status=-1, timeout_seconds=180)',
-    note: '旧版给较长超时，适合列表靠后或 OCR 波动时继续滚动查找。',
-  }),
-  createDailyTaskPreset('daily-find-lingzu', '灵祖', '灵祖', {
-    legacySource: '日常功能.py: 日常_灵祖 -> 日常_查找("灵祖", not_found_status=-1)',
-    note: '常规日常入口，进入后走灵祖挑战链路。',
   }),
   createDailyTaskPreset('daily-find-jianling', '剑灵', '挑战.*剑试', {
     matchMode: 'regex',
