@@ -54,7 +54,7 @@ from backend.core.fanxiu.data_annotation.storage import (
     data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir,
 )
-from backend.core.settings import ROOT_DIR
+from backend.core.settings import ROOT_DIR, get_settings
 
 
 DEFAULT_FANXIU_ENTRY_ID = DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID
@@ -134,6 +134,10 @@ def fanxiu_data_annotation_runtime_dir() -> Path:
     path = fanxiu_data_annotation_dir() / "runtime"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def fanxiu_data_annotation_dir() -> Path:
+    return get_settings().data_dir / "fanxiu" / "data-annotation"
 
 
 def fanxiu_data_annotation_runtime_state_path() -> Path:
@@ -824,7 +828,7 @@ def wait_fanxiu_local_manual_job(
             terminal_logs = [
                 item
                 for item in matching_logs
-                if str(item.get("kind") or "") in {"success", "stop", "error"}
+                if str(item.get("kind") or "") in {"success", "skip", "stop", "error"}
             ]
             if terminal_logs:
                 return {

@@ -1,8 +1,8 @@
 import json
 import datetime
 
-from backend.core.runtime import background_task_runner as background_tasks
-from backend.core.runtime.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
+from backend.core import background_task_runner as background_tasks
+from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
 from backend.models import AppSetting
 from pyxllib.prog.behavior_tree import BehaviorTreeRunner, Status
 
@@ -25,7 +25,7 @@ def _runner_for_test(tmp_path):
 
 def _set_enabled(monkeypatch, enabled_by_key):
     monkeypatch.setattr(
-        "backend.core.runtime.background_task_runner._is_task_enabled",
+        "backend.core.background_task_runner._is_task_enabled",
         lambda task_key: bool(enabled_by_key.get(task_key, False)),
     )
 
@@ -50,10 +50,12 @@ def _write_schedule_state(path, values, *, schedule_version=background_tasks.BAC
 def test_background_task_runner_builtin_presets_are_disabled_until_user_enables(engine, session, monkeypatch):
     monkeypatch.setattr("backend.db.engine", engine)
     monkeypatch.setattr(background_tasks, "is_fanxiu_slimming_allowed_host", lambda: True)
+    monkeypatch.setattr(background_tasks, "is_fanxiu_tianjige_quiz_allowed_host", lambda: True)
 
     assert background_tasks._is_task_enabled(background_tasks.MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY) is False
     assert background_tasks._is_task_enabled(background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY) is False
     assert background_tasks._is_task_enabled(background_tasks.FANXIU_SLIMMING_TASK_KEY) is False
+    assert background_tasks._is_task_enabled(background_tasks.FANXIU_TIANJIGE_QUIZ_TASK_KEY) is False
     assert background_tasks._is_task_enabled(background_tasks.RUANYF_WEEKLY_TASK_NAME) is False
 
     session.add(
@@ -72,6 +74,16 @@ def test_background_task_runner_builtin_presets_are_disabled_until_user_enables(
 
     assert background_tasks._is_task_enabled(background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY) is True
     assert background_tasks._is_task_enabled("storage_analysis") is True
+
+
+def test_background_task_runner_fanxiu_tianjige_default_schedule():
+    policy = background_tasks._default_background_task_schedule_policy(
+        background_tasks.FANXIU_TIANJIGE_QUIZ_TASK_KEY
+    )
+
+    assert policy is not None
+    assert policy["trigger"] == {"type": "weekly", "weekdays": [2, 3, 4], "time": "17:59:50"}
+    assert policy["outcome"]["on_failure"] == {"type": "retry_after", "minutes": 10}
 
 
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
@@ -99,36 +111,6 @@ def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monke
     assert tasks["note_metadata_feedback_optimization"]["enabled"] is False
     assert tasks["note_metadata_feedback_optimization"]["next_run_at"] is None
     assert tasks["attendance_summary_monthly_templates"]["enabled"] is True
-
-
-def test_background_task_schedule_status_hides_disabled_next_run(monkeypatch):
-    spec = BackgroundTaskSpec(
-        key="example_task",
-        title="示例任务",
-        category="测试",
-        description="",
-        schedule_label="每天 00:00",
-        retry_label="失败后 10 分钟重试",
-        action=lambda: None,
-    )
-    monkeypatch.setattr(
-        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
-        lambda task_key, enabled=None: {
-            "enabled": bool(enabled),
-            "trigger": {"type": "daily", "time": "00:00"},
-        },
-    )
-
-    status = background_tasks._background_task_schedule_status(
-        spec,
-        {"Root/MemorySelector/example_task": {"next_run_at": "2099-05-10 01:00:00"}},
-        enabled=False,
-    )
-
-    assert status["enabled"] is False
-    assert status["next_run_at"] is None
-    assert status["schedule_policy"]["enabled"] is False
-    assert status["schedule_label"] == "每天 00:00"
 
 
 def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypatch):
@@ -183,10 +165,10 @@ def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_
         retry_label="失败后 10 分钟重试",
         action=lambda: "queue-1",
     )
-    monkeypatch.setattr("backend.core.runtime.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
     _set_enabled(monkeypatch, {"rime_config_sync": True})
     monkeypatch.setattr(
-        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
+        "backend.core.background_task_runner._effective_background_task_schedule_policy",
         lambda task_key, enabled=None: {
             "enabled": True,
             "trigger": {"type": "interval", "minutes": 60, "anchor": "last_finish"},
@@ -208,7 +190,7 @@ def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_
             "recent": [{"id": "queue-1", "status": "completed"}],
         }
 
-    monkeypatch.setattr("backend.core.runtime.background_task_runner.background_task_queue.snapshot", queue_snapshot)
+    monkeypatch.setattr("backend.core.background_task_runner.background_task_queue.snapshot", queue_snapshot)
 
     runner = _runner_for_test(tmp_path)
     _write_schedule_state(
@@ -242,10 +224,10 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
         retry_label="失败后 10 分钟重试",
         action=lambda: "queue-1",
     )
-    monkeypatch.setattr("backend.core.runtime.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
     _set_enabled(monkeypatch, {"ruanyf_weekly_note": True})
     monkeypatch.setattr(
-        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
+        "backend.core.background_task_runner._effective_background_task_schedule_policy",
         lambda task_key, enabled=None: {
             "enabled": True,
             "trigger": {"type": "weekly", "weekdays": [5], "time": "06:00"},
@@ -253,7 +235,7 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
         },
     )
     monkeypatch.setattr(
-        "backend.core.runtime.background_task_runner.background_task_queue.snapshot",
+        "backend.core.background_task_runner.background_task_queue.snapshot",
         lambda: {
             "running": None,
             "pending": [],

@@ -337,6 +337,10 @@ def _ensure_local_entry(entry: UserDevice) -> None:
     ensure_local_codex_entry(entry)
 
 
+def _is_local_runtime_entry(entry: UserDevice) -> bool:
+    return entry.mode == "local" or entry.device_id == get_device_id()
+
+
 def _remote_base_url(entry: UserDevice) -> str:
     if entry.mode != "remote":
         raise HTTPException(status_code=400, detail="This entry is not a remote entry")
@@ -406,6 +410,8 @@ def _filesystem_payload(
         payload.pop("recursive", None)
     if not payload.get("sort_program", {}).get("rules"):
         payload.pop("sort_program", None)
+    if payload.get("recursive_stats_source") == "indexed":
+        payload.pop("recursive_stats_source", None)
     if payload.get("sort_mode") == "path":
         payload.pop("sort_mode", None)
     if not payload.get("snapshot_id"):
@@ -1344,7 +1350,7 @@ def get_runtime_status_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return build_runtime_status(session, entry.device_id)
     return _proxy_request(entry, "GET", "/runtime/status")
 
@@ -1356,7 +1362,7 @@ def list_runtime_job_catalog_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return list_builtin_runtime_job_catalog(session)
     return _proxy_request(entry, "GET", "/runtime/jobs/catalog")
 
@@ -1370,7 +1376,7 @@ def get_runtime_system_metrics_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return get_system_metric_history(session, device_id=entry.device_id, hours=hours, limit=limit)
     return _proxy_request(entry, "GET", "/runtime/system-metrics", params={"hours": hours, "limit": limit})
 
@@ -1383,7 +1389,7 @@ def trigger_runtime_job_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return trigger_builtin_runtime_job(job_key, session)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/trigger")
 
@@ -1396,7 +1402,7 @@ def add_runtime_job_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return add_builtin_runtime_job(job_key)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/add")
 
@@ -1410,7 +1416,7 @@ def trigger_runtime_item_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         if source == "builtin":
             return trigger_builtin_runtime_item(item_key, session)
         if source == "command":
@@ -1428,7 +1434,7 @@ def stop_runtime_item_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         if source == "builtin":
             return stop_builtin_runtime_item(item_key)
         if source == "command":
@@ -1447,7 +1453,7 @@ def get_runtime_item_logs_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return get_runtime_item_logs(source, item_key, session, n, device_id=entry.device_id)
     return _proxy_request(entry, "GET", f"/runtime/items/{source}/{item_key}/logs", params={"n": n})
 
@@ -1461,7 +1467,7 @@ def toggle_runtime_job_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return toggle_builtin_runtime_job(job_key, payload.enabled, session)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/toggle", json_body=payload.model_dump())
 
@@ -1475,7 +1481,7 @@ def configure_runtime_job_schedule_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return configure_builtin_runtime_job_schedule(
             job_key,
             payload.schedule_policy,
@@ -1499,7 +1505,7 @@ def delete_runtime_queue_task_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return delete_builtin_runtime_queue_task(task_id)
     return _proxy_request(entry, "DELETE", f"/runtime/jobs/queue/{task_id}")
 
@@ -1512,7 +1518,7 @@ def delete_runtime_job_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return delete_builtin_runtime_job(job_key)
     return _proxy_request(entry, "DELETE", f"/runtime/jobs/{job_key}")
 
@@ -1525,7 +1531,7 @@ def reset_runtime_job_schedule_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    if entry.mode == "local":
+    if _is_local_runtime_entry(entry):
         return reset_builtin_runtime_job_schedule(job_key)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/reset-schedule")
 

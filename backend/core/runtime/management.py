@@ -61,13 +61,14 @@ from backend.core.attendance.behavior_tree_service import (
     start_attendance_behavior_tree_service,
     stop_attendance_behavior_tree_service,
 )
-from backend.core.fanxiu.runtime.capture_runtime import (
-    FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
-    FANXIU_CAPTURE_RUNTIME_BEHAVIOR_TREE_REASON,
-    ensure_fanxiu_capture_runtime_backstop,
-    fanxiu_capture_runtime_service,
+from backend.core.fanxiu.runtime.capture_runtime import FANXIU_CAPTURE_RUNTIME_SERVICE_KEY
+from backend.core.fanxiu.packet.service_runtime import (
+    FanxiuPacketServiceError,
+    build_fanxiu_packet_service_log_lines,
+    get_fanxiu_packet_service_status,
+    start_fanxiu_packet_service,
+    stop_fanxiu_packet_service,
 )
-from backend.core.fanxiu.packet.insight_worker import fanxiu_packet_insight_worker
 from backend.core.fanxiu.runtime.behavior_tree import (
     ensure_fanxiu_behavior_tree_service,
     fanxiu_data_annotation_runtime_dir,
@@ -93,7 +94,7 @@ BUILTIN_OCR_SERVICE_KEY = "ocr"
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
 CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
 _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 10.0
-_builtin_services_status_cache: tuple[float, dict[str, Any]] | None = None
+_builtin_services_status_cache: tuple[float, tuple[bool, bool, bool, bool], dict[str, Any]] | None = None
 
 
 def _invalidate_builtin_services_status_cache() -> None:
@@ -120,10 +121,27 @@ def _fanxiu_runtime_service_enabled(service_key: str, aliases: set[str], env_nam
 
 
 def _fanxiu_capture_runtime_service_enabled() -> bool:
-    return _fanxiu_runtime_service_enabled(
-        FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
-        {"fanxiu_capture_runtime", "capture_runtime", "capture", "凡修抓包"},
-        "FX_CAPTURE_RUNTIME_SERVICE_ENABLED",
+    configured = _env_enabled(os.getenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED"))
+    if configured is not None:
+        return configured
+    services_text = os.getenv("FX_RUNTIME_SERVICES")
+    if services_text is None:
+        return True
+    services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
+    return bool(
+        services
+        & {
+            "*",
+            "all",
+            "fanxiu",
+            FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
+            "fanxiu_capture_runtime",
+            "capture_runtime",
+            "capture",
+            "fanxiu_packet_service",
+            "packet_service",
+            "凡修抓包",
+        }
     )
 
 
@@ -812,12 +830,11 @@ def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, 
     entry = _resolve_data_annotation_runtime_entry(session)
     ensure_fanxiu_behavior_tree_service(entry=entry, entry_id=entry.entry_id)
     result: dict[str, Any] = {"status": "started", "service": _get_data_annotation_behavior_tree_status()}
-    try:
-        result["capture_runtime"] = ensure_fanxiu_capture_runtime_backstop(
-            FANXIU_CAPTURE_RUNTIME_BEHAVIOR_TREE_REASON,
-        )
-    except Exception as exc:
-        result["capture_runtime"] = {"ok": False, "ensured": False, "error": str(exc)}
+    if _fanxiu_capture_runtime_service_enabled():
+        try:
+            result["capture_runtime"] = start_fanxiu_packet_service()
+        except FanxiuPacketServiceError as exc:
+            result["capture_runtime"] = {"status": "error", "error": str(exc)}
     if _fanxiu_doctor_watch_autostart_enabled():
         try:
             result["doctor_watch"] = ensure_doctor_watch_background()
@@ -856,6 +873,12 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
             results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = start_proxy_traffic_audit()
         except ProxyTrafficAuditError as exc:
             results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = {"status": "error", "error": str(exc)}
+
+    if _fanxiu_capture_runtime_service_enabled() and _local_builtin_service_autostart_enabled("FX_PACKET_SERVICE_AUTOSTART"):
+        try:
+            results[FANXIU_CAPTURE_RUNTIME_SERVICE_KEY] = start_fanxiu_packet_service()
+        except FanxiuPacketServiceError as exc:
+            results[FANXIU_CAPTURE_RUNTIME_SERVICE_KEY] = {"status": "error", "error": str(exc)}
 
     if _local_builtin_service_autostart_enabled("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART"):
         results["critical-command-services"] = ensure_local_critical_command_services()
@@ -978,8 +1001,15 @@ def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
     return " · ".join(part for part in parts if part)
 
 
-def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
+def _serialize_fanxiu_behavior_tree_service_item(
+    status: dict[str, Any] | None = None,
+    *,
+    include_logs: bool = False,
+) -> dict[str, Any]:
     payload = dict(status or _get_data_annotation_behavior_tree_status())
+    raw_payload = dict(payload)
+    if not include_logs:
+        raw_payload.pop("logs", None)
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "idle"))
     return {
@@ -1020,7 +1050,7 @@ def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None =
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs", "configure"],
-        "raw": payload,
+        "raw": raw_payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
         "timeout_seconds": None,
@@ -1032,32 +1062,34 @@ def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None =
 
 
 def _fanxiu_capture_runtime_description(status: dict[str, Any]) -> str:
-    parts = [str(status.get("state") or "stopped")]
-    reasons = status.get("active_reasons") or []
-    if reasons:
-        parts.append(f"consumer {', '.join(str(item) for item in reasons)}")
-    if status.get("current_pcap_path"):
-        parts.append(Path(str(status.get("current_pcap_path"))).name)
-    if status.get("watchdog_running"):
-        interval = status.get("watchdog_interval_seconds") or 0
-        parts.append(f"守护巡检 {interval:g}s")
-    if status.get("last_error"):
-        parts.append(f"错误 {status.get('last_error')}")
+    parts = [str(status.get("state_label") or status.get("state") or "stopped")]
+    capture = status.get("capture_runtime") if isinstance(status.get("capture_runtime"), dict) else {}
+    worker = status.get("packet_worker") if isinstance(status.get("packet_worker"), dict) else {}
+    if status.get("process_count"):
+        parts.append(f"PID {', '.join(str(pid) for pid in status.get('pids') or [])}")
+    if capture.get("current_pcap_path"):
+        parts.append(Path(str(capture.get("current_pcap_path"))).name)
+    if worker.get("updated_at"):
+        parts.append(f"解析 {worker.get('updated_at')}")
+    if capture.get("last_error"):
+        parts.append(f"错误 {capture.get('last_error')}")
     return " · ".join(part for part in parts if part)
 
 
 def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or fanxiu_capture_runtime_service.status())
+    payload = dict(status or get_fanxiu_packet_service_status())
+    capture = payload.get("capture_runtime") if isinstance(payload.get("capture_runtime"), dict) else {}
+    worker = payload.get("packet_worker") if isinstance(payload.get("packet_worker"), dict) else {}
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "stopped"))
-    reasons = payload.get("active_reasons") or []
-    active = running or bool(reasons)
+    reasons = capture.get("active_reasons") or []
+    active = running or bool(capture.get("running")) or bool(reasons)
     state_label = {
         "stopped": "已停止",
         "waiting_game": "等待游戏",
         "recovering": "恢复中",
-        "running": "采集中",
-    }.get(state, state)
+        "running": "运行中",
+    }.get(state, str(payload.get("state_label") or state))
     return {
         "id": f"builtin:{FANXIU_CAPTURE_RUNTIME_SERVICE_KEY}",
         "key": FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
@@ -1067,8 +1099,8 @@ def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None
         "group_title": "游戏服务",
         "title": "凡修抓包",
         "description": _fanxiu_capture_runtime_description(payload),
-        "command": "adb tcpdump -> fanxiu/tcp-flow/live-captures",
-        "cwd": "",
+        "command": payload.get("module") or "backend.services.fanxiu_packet_daemon",
+        "cwd": payload.get("cwd") or "",
         "schedule": "",
         "schedule_policy": None,
         "schedule_label": "",
@@ -1081,21 +1113,28 @@ def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None
             "running": running,
             "state": state,
             "state_label": state_label,
-            "game_running": bool(payload.get("game_running")),
-            "adb_connected": bool(payload.get("adb_connected")),
-            "root_ready": bool(payload.get("root_ready")),
-            "tcpdump_ready": bool(payload.get("tcpdump_ready")),
+            "game_running": bool(capture.get("game_running")),
+            "adb_connected": bool(capture.get("adb_connected")),
+            "root_ready": bool(capture.get("root_ready")),
+            "tcpdump_ready": bool(capture.get("tcpdump_ready")),
             "active_reasons": reasons,
-            "current_pcap_path": payload.get("current_pcap_path") or "",
-            "current_pcap_size": payload.get("current_pcap_size") or 0,
-            "started_at": payload.get("started_at") or "",
-            "last_error": payload.get("last_error") or "",
-            "last_recover_at": payload.get("last_recover_at") or "",
-            "watchdog_running": bool(payload.get("watchdog_running")),
-            "watchdog_interval_seconds": payload.get("watchdog_interval_seconds") or 0,
-            "watchdog_last_check_at": payload.get("watchdog_last_check_at") or "",
-            "watchdog_last_action": payload.get("watchdog_last_action") or "",
-            "watchdog_last_error": payload.get("watchdog_last_error") or "",
+            "current_pcap_path": capture.get("current_pcap_path") or "",
+            "current_pcap_size": capture.get("current_pcap_size") or 0,
+            "started_at": capture.get("started_at") or "",
+            "last_error": capture.get("last_error") or "",
+            "last_recover_at": capture.get("last_recover_at") or "",
+            "watchdog_running": bool(capture.get("watchdog_running")),
+            "watchdog_interval_seconds": capture.get("watchdog_interval_seconds") or 0,
+            "watchdog_last_check_at": capture.get("watchdog_last_check_at") or "",
+            "watchdog_last_action": capture.get("watchdog_last_action") or "",
+            "watchdog_last_error": capture.get("watchdog_last_error") or "",
+            "realtime_running": bool(worker.get("realtime_running")),
+            "maintenance_running": bool(worker.get("maintenance_running")),
+            "process_count": payload.get("process_count") or 0,
+            "pids": payload.get("pids") or [],
+            "log_path": payload.get("log_path") or "",
+            "state_path": payload.get("state_path") or "",
+            "updated_at": payload.get("updated_at") or "",
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs"],
@@ -1190,37 +1229,7 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
                 lines.append(f"{entry.get('time') or ''} {entry.get('kind') or ''} {entry.get('message') or ''}".strip())
         return lines
     if item.get("key") == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
-        worker_status = fanxiu_packet_insight_worker.status()
-        mail_sync = {}
-        for decoded_item in worker_status.get("decoded") or []:
-            if isinstance(decoded_item, dict) and isinstance(decoded_item.get("mail_packet_sync"), dict):
-                mail_sync = decoded_item["mail_packet_sync"]
-                break
-        lines = [
-            f"名称：{item.get('title') or item.get('key')}",
-            f"状态：{(item.get('status') or {}).get('state_label') or '-'}",
-            (
-                "解析队列："
-                f"{worker_status.get('updated_at') or '-'}；"
-                f"本轮解码 {worker_status.get('decoded_count') or 0}；"
-                f"跳过 {worker_status.get('skipped_count') or 0}；"
-                f"错误 {worker_status.get('error_count') or 0}"
-            ),
-        ]
-        if mail_sync:
-            lines.append(
-                "邮件落库："
-                f"记录 {mail_sync.get('record_count') or 0}；"
-                f"新增 {mail_sync.get('inserted') or 0}；"
-                f"更新 {mail_sync.get('updated') or 0}；"
-                f"源包 {mail_sync.get('source_packets') or 0}；"
-                f"动作包 {mail_sync.get('action_packets') or 0}"
-            )
-        for error in worker_status.get("errors") or []:
-            if isinstance(error, dict):
-                lines.append(f"解析错误：{error.get('path') or '-'}；{error.get('error') or '-'}")
-        lines.extend(fanxiu_capture_runtime_service.log_lines())
-        return lines
+        return build_fanxiu_packet_service_log_lines()
     if item.get("key") == GAME_WINDOW_SERVICE_KEY:
         return _build_game_window_service_log_lines(item)
     if item.get("key") == CODEYUN_WATCHDOG_SERVICE_KEY:
@@ -1407,9 +1416,18 @@ def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
 def _collect_builtin_services() -> dict[str, Any]:
     global _builtin_services_status_cache
     now = time.monotonic()
+    enabled_signature = (
+        is_attendance_behavior_tree_service_enabled(),
+        _fanxiu_behavior_tree_service_enabled(),
+        _fanxiu_capture_runtime_service_enabled(),
+        _fanxiu_game_window_service_enabled(),
+    )
     if _builtin_services_status_cache is not None:
-        cached_at, cached_payload = _builtin_services_status_cache
-        if now - cached_at <= _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS:
+        cached_at, cached_signature, cached_payload = _builtin_services_status_cache
+        if (
+            cached_signature == enabled_signature
+            and now - cached_at <= _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS
+        ):
             return copy.deepcopy(cached_payload)
 
     items = [
@@ -1417,18 +1435,18 @@ def _collect_builtin_services() -> dict[str, Any]:
         _serialize_codeyun_watchdog_service_item(),
         _serialize_proxy_traffic_audit_service_item(),
     ]
-    if is_attendance_behavior_tree_service_enabled():
+    if enabled_signature[0]:
         items.append(_serialize_attendance_behavior_tree_service_item())
-    if _fanxiu_behavior_tree_service_enabled():
+    if enabled_signature[1]:
         items.append(_serialize_fanxiu_behavior_tree_service_item())
-    if _fanxiu_capture_runtime_service_enabled():
+    if enabled_signature[2]:
         items.append(_serialize_fanxiu_capture_runtime_service_item())
-    if _fanxiu_game_window_service_enabled():
+    if enabled_signature[3]:
         items.append(_serialize_game_window_service_item())
     payload = {
         "items": items,
     }
-    _builtin_services_status_cache = (now, copy.deepcopy(payload))
+    _builtin_services_status_cache = (now, enabled_signature, copy.deepcopy(payload))
     return payload
 
 
@@ -1532,6 +1550,8 @@ def get_runtime_item_logs(
             (item for item in builtin_services.get("items", []) if item.get("key") == normalized_key),
             None,
         )
+        if service_item is not None and normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
+            service_item = _serialize_fanxiu_behavior_tree_service_item(include_logs=True)
         if service_item is not None:
             return {
                 "source": "builtin",
@@ -1639,7 +1659,10 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
     if normalized_key == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
         if not _fanxiu_capture_runtime_service_enabled():
             raise HTTPException(status_code=404, detail="凡修抓包未在当前机器启用")
-        return fanxiu_capture_runtime_service.ensure_running("runtime-manual")
+        try:
+            return start_fanxiu_packet_service()
+        except FanxiuPacketServiceError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
@@ -1693,7 +1716,7 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
     if normalized_key == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
         if not _fanxiu_capture_runtime_service_enabled():
             raise HTTPException(status_code=404, detail="凡修抓包未在当前机器启用")
-        return fanxiu_capture_runtime_service.force_stop("runtime-manual")
+        return stop_fanxiu_packet_service()
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")

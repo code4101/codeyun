@@ -239,8 +239,8 @@
                     :disabled="!selectedEntryId"
                     @click="toggleBurstCapture"
                   />
-                  <el-button size="small" plain @click="openBurstDialog">
-                    连拍
+                  <el-button size="small" plain title="连拍缓存" aria-label="连拍缓存" @click="openBurstDialog">
+                    缓存
                   </el-button>
                   <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="!selectedAssetNode" @click="deleteSelectedAsset" />
                 </div>
@@ -1217,6 +1217,7 @@ import {
   dragFanxiuGameWindow2,
   getFanxiuGameWindow2BurstFrameImage,
   getFanxiuGameWindow2ServiceStatus,
+  getFanxiuDataAnnotationImage,
   getFanxiuDataAnnotationAssetTree,
   getFanxiuDataAnnotationRuntimeStatus,
   getFanxiuDataAnnotationRuntimeLogs,
@@ -1236,6 +1237,7 @@ import {
   recognizeFanxiuDataAnnotationOcrFrame,
   removeFanxiuDataAnnotationBackground,
   runFanxiuVisualScript,
+  saveFanxiuDataAnnotationFrame,
   saveFanxiuGameWindow2BurstFrame,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
@@ -4848,36 +4850,20 @@ const saveCurrentFrame = async () => {
       preferLiveFrame: true,
       liveFrameWaitMs: 1200,
     });
-    const result = await saveFanxiuGameWindow2Frame({
+    if (!currentFrameDataUrl) throw new Error('当前画面为空，无法保存到帧树');
+    const result = await saveFanxiuDataAnnotationFrame({
       entry_id: selectedEntryId.value,
-      title: targetTitle.value.trim(),
-      title_match: titleMatch.value,
-      mode: 'screen',
-      area: captureArea.value,
-      crop: cropText.value.trim(),
-      trim_border: trimBorderText.value.trim(),
-      rotate: rotateDegrees.value,
-      fixed_width: fixedFrameWidth.value,
-      fixed_height: fixedFrameHeight.value,
-      quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-      current_frame_data_url: currentFrameDataUrl || undefined,
+      current_frame_data_url: currentFrameDataUrl,
     });
-    let imagePreviewUrl = '';
-    try {
-      const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, result.filename);
-      imagePreviewUrl = blobToObjectUrl(blob);
-    } catch {
-      // 保存帧已经成功；预览读取失败时只是不立即显示缩略图。
-    }
     const node = createAssetImageNode(result.filename, {
       filename: result.filename,
       width: result.width,
       height: result.height,
     });
-    if (imagePreviewUrl) setAssetImagePreviewUrl(node.id, imagePreviewUrl);
-    else if (currentFrameDataUrl) setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
+    setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
     addSavedFrameToAssetTree(node);
-    ElMessage.success(`已保存到帧树：${result.filename}`);
+    const persisted = await flushAssetTreeToBackend(selectedEntryId.value, cloneAssetTree(assetTree.value));
+    if (persisted) ElMessage.success(`已保存到帧树：${result.filename}`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -5044,26 +5030,18 @@ const clearBurstFrames = async () => {
 const resetAssetFrame = async (node: DataAnnotationAssetNode) => {
   if (!selectedEntryId.value || node.type !== 'image' || !node.filename) return;
   const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
-  const result = await saveFanxiuGameWindow2Frame({
+  if (!currentFrameDataUrl) throw new Error('当前画面为空，无法重置帧');
+  const result = await saveFanxiuDataAnnotationFrame({
     entry_id: selectedEntryId.value,
-    title: targetTitle.value.trim(),
-    title_match: titleMatch.value,
-    mode: 'screen',
-    area: captureArea.value,
-    crop: cropText.value.trim(),
-    trim_border: trimBorderText.value.trim(),
-    rotate: rotateDegrees.value,
-    fixed_width: fixedFrameWidth.value,
-    fixed_height: fixedFrameHeight.value,
-    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-    current_frame_data_url: currentFrameDataUrl || undefined,
-    overwrite_filename: node.filename,
+    current_frame_data_url: currentFrameDataUrl,
+    filename: node.filename,
   });
   node.filename = result.filename;
   node.width = result.width;
   node.height = result.height;
   delete node.imageDataUrl;
-  if (currentFrameDataUrl) setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
+  setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
+  await flushAssetTreeToBackend(selectedEntryId.value, cloneAssetTree(assetTree.value));
   if (selectedAssetId.value === node.id) {
     await nextTick();
     void ensureSelectedImagePreview();
@@ -7413,7 +7391,7 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   return {
     ...normalizedNode,
     filename: typeof node.filename === 'string' ? node.filename : undefined,
-    imageDataUrl: !node.filename && typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
+    imageDataUrl: typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
     layer: normalizeFrameLayer(node.layer, 3),
@@ -7469,6 +7447,7 @@ globalOcclusionMaskEnabled.value = loadGlobalOcclusionMaskEnabled();
 const assetTree = ref<DataAnnotationAssetNode[]>(loadAssetTree());
 const assetTreeBackendHydrating = ref(false);
 const assetTreeBackendUpdatedAt = ref(0);
+let assetTreeLocalVersion = 0;
 let assetTreeSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 const cloneAssetTree = (nodes: DataAnnotationAssetNode[]) => (
@@ -7636,8 +7615,6 @@ const mergeAssetTreeNodes = (baseNodes: DataAnnotationAssetNode[], extraNodes: D
   const appendMissing = (target: DataAnnotationAssetNode[], incoming: DataAnnotationAssetNode[]) => {
     for (const node of incoming) {
       const key = assetNodeMergeKey(node);
-      const existingNode = findAssetNodeByMergeKey(merged, key);
-      if (existingNode) mergeDuplicateAssetNode(existingNode, node);
       if (node.type === 'folder') {
         const targetFolder = findMergeTargetFolder(merged, node.title);
         if (targetFolder) {
@@ -7664,36 +7641,59 @@ const mergeEntryAssetTrees = (localTree: DataAnnotationAssetNode[], backendTree:
   return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
-const flushAssetTreeToBackend = async (entryId: string, tree: DataAnnotationAssetNode[]) => {
+const assetTreeJson = (tree: DataAnnotationAssetNode[]) => JSON.stringify(tree);
+
+const flushAssetTreeToBackend = async (
+  entryId: string,
+  tree: DataAnnotationAssetNode[],
+  localVersion = assetTreeLocalVersion,
+) => {
   try {
     const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree);
+    if (Array.isArray(response.tree) && selectedEntryId.value === entryId && localVersion === assetTreeLocalVersion) {
+      assetTreeBackendHydrating.value = true;
+      try {
+        assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
+      } finally {
+        assetTreeBackendHydrating.value = false;
+      }
+    }
     assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
-  } catch {
-    // 帧树仍保留在本地缓存；后端短暂失败时不打断标注操作。
+    return true;
+  } catch (error) {
+    console.error(error);
+    ElMessage.error(getErrorMessage(error));
+    return false;
   }
 };
 
 const scheduleAssetTreeBackendSave = () => {
   if (assetTreeBackendHydrating.value || !selectedEntryId.value) return;
   const entryId = selectedEntryId.value;
+  const localVersion = assetTreeLocalVersion;
   const tree = JSON.parse(JSON.stringify(assetTree.value)) as DataAnnotationAssetNode[];
   if (assetTreeSaveTimer) window.clearTimeout(assetTreeSaveTimer);
   assetTreeSaveTimer = window.setTimeout(() => {
     assetTreeSaveTimer = null;
-    void flushAssetTreeToBackend(entryId, tree);
+    void flushAssetTreeToBackend(entryId, tree, localVersion);
   }, 400);
 };
 
 const loadEntryAssetTree = async (entryId: string) => {
   if (!entryId) return;
   assetTreeBackendHydrating.value = true;
+  let mergedTreeToFlush: DataAnnotationAssetNode[] | null = null;
   try {
     const localTree = loadAssetTree();
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-      assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+      const mergedTree = mergeEntryAssetTrees(localTree, backendTree);
+      assetTree.value = mergedTree;
       assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
+      if (assetTreeJson(mergedTree) !== assetTreeJson(filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree)))) {
+        mergedTreeToFlush = mergedTree;
+      }
     } else {
       assetTree.value = localTree;
       void flushAssetTreeToBackend(entryId, localTree);
@@ -7707,6 +7707,7 @@ const loadEntryAssetTree = async (entryId: string) => {
   } finally {
     assetTreeBackendHydrating.value = false;
   }
+  if (mergedTreeToFlush) void flushAssetTreeToBackend(entryId, mergedTreeToFlush);
 };
 
 const refreshEntryAssetTreeIfChanged = async () => {
@@ -7720,9 +7721,13 @@ const refreshEntryAssetTreeIfChanged = async () => {
     if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
     assetTreeBackendHydrating.value = true;
     const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-    const mergedTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+    const compactBackendTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+    const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
+    if (assetTreeJson(mergedTree) !== assetTreeJson(compactBackendTree)) {
+      void flushAssetTreeToBackend(entryId, mergedTree);
+    }
     expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
     await syncAssetTreeExpansionFromState();
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
@@ -7742,6 +7747,12 @@ const frameStructureAdoptionLine = (item: FanxiuDataAnnotationFrameStructureAdop
   return `#${item.parent_id} ${parentTitle} -> #${item.child_id} ${childTitle} (${shapeText} ${Math.round(item.average_score)}%)`;
 };
 
+const frameStructureLayerUpdateLine = (item: Record<string, unknown>) => {
+  const imageId = Number(item.image_id);
+  const title = String(item.title || item.filename || '').trim() || `#${imageId}`;
+  return `#${imageId} ${title}: layer${item.from_layer} -> layer${item.to_layer}`;
+};
+
 const organizeFrameStructureFromToolbar = async () => {
   if (!selectedEntryId.value || frameStructureOrganizing.value) return;
   const entryId = selectedEntryId.value;
@@ -7749,14 +7760,18 @@ const organizeFrameStructureFromToolbar = async () => {
   try {
     const preview = await organizeFanxiuDataAnnotationFrameStructure(entryId, false);
     const adoptions = preview.stats?.adoptions ?? [];
-    if (!adoptions.length) {
+    const layerUpdates = preview.stats?.layer_updates ?? [];
+    if (!adoptions.length && !layerUpdates.length) {
       ElMessage.success('没有发现需要场景归纳的 frame/subframe 候选');
       return;
     }
     const lines = adoptions.slice(0, 30).map(frameStructureAdoptionLine);
-    const moreText = adoptions.length > lines.length ? `\n... 还有 ${adoptions.length - lines.length} 条` : '';
+    const layerLines = layerUpdates.slice(0, Math.max(0, 30 - lines.length)).map(frameStructureLayerUpdateLine);
+    const previewLines = [...lines, ...layerLines];
+    const hiddenCount = adoptions.length + layerUpdates.length - previewLines.length;
+    const moreText = hiddenCount > 0 ? `\n... 还有 ${hiddenCount} 条` : '';
     await ElMessageBox.confirm(
-      `发现 ${adoptions.length} 个候选，确认写入 frame/subframe 结构？\n\n${lines.join('\n')}${moreText}`,
+      `发现 ${adoptions.length} 个 subframe 候选、${layerUpdates.length} 个 layer 修正，确认写入？\n\n${previewLines.join('\n')}${moreText}`,
       '场景归纳',
       {
         type: 'warning',
@@ -7768,7 +7783,7 @@ const organizeFrameStructureFromToolbar = async () => {
     const result = await organizeFanxiuDataAnnotationFrameStructure(entryId, true);
     assetTreeBackendUpdatedAt.value = 0;
     await loadEntryAssetTree(entryId);
-    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 subframe`);
+    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 subframe，${result.stats?.layer_update_count ?? 0} 个 layer 修正`);
   } catch (error) {
     if (String((error as { message?: string })?.message || '').includes('cancel')) return;
     ElMessage.error(getErrorMessage(error));
@@ -8900,6 +8915,7 @@ watch(assetTree, (value) => {
   window.localStorage.setItem(DATA_ANNOTATION_STORAGE_KEY, JSON.stringify(value));
   expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
   queueAssetTreeExpansionSync();
+  if (!assetTreeBackendHydrating.value) assetTreeLocalVersion += 1;
   scheduleAssetTreeBackendSave();
 }, { deep: true });
 
@@ -9071,7 +9087,7 @@ const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
     [image.id]: true,
   };
   try {
-    const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, image.filename);
+    const blob = await getFanxiuDataAnnotationImage(selectedEntryId.value, image.filename);
     const previewUrl = blobToObjectUrl(blob);
     setAssetImagePreviewUrl(image.id, previewUrl);
     return previewUrl;
@@ -9383,6 +9399,7 @@ const saveFrameDataUrlToAssetTree = async (currentFrameDataUrl: string) => {
   });
   const node = createAssetImageNode(result.filename, {
     filename: result.filename,
+    imageDataUrl: currentFrameDataUrl,
     width: result.width,
     height: result.height,
   });

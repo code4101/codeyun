@@ -102,6 +102,7 @@ import {
   createDefaultRecentMonthProgram,
   createIncludeAllProgram,
   areNoteRequestsEquivalent,
+  noteProgramChannelNeedsCustomFieldsLocally,
   noteKey,
   normalizeNoteProgramChannel
 } from '@/api/notes';
@@ -222,6 +223,7 @@ const getViewProgram = () => normalizeNoteProgramChannel(
 );
 const dataProgram = ref(normalizeNoteProgramChannel(getAppliedDataProgram()));
 const viewProgram = ref(normalizeNoteProgramChannel(getViewProgram()));
+const graphViewNeedsCustomFields = computed(() => noteProgramChannelNeedsCustomFieldsLocally(viewProgram.value));
 const AUTO_LAYOUT_NODE_LIMIT = 300;
 const AUTO_LAYOUT_EDGE_LIMIT = 600;
 const DETAILED_EDGE_ROUTING_NODE_LIMIT = 600;
@@ -352,10 +354,16 @@ const resetViewProgram = () => {
 
 const buildGlobalGraphRequest = (program = getAppliedDataProgram()) => (
   buildScanNoteProgramRequest(normalizeNoteProgramChannel(program), {
+    include_custom_fields: graphViewNeedsCustomFields.value,
     limit: 5000,
     include_edges: true
   })
 );
+
+const currentGlobalGraphIncludesCustomFields = () => {
+  const lastQuery = session.value?.lastQuery as { result?: { include_custom_fields?: boolean } } | null | undefined;
+  return Boolean(lastQuery?.result?.include_custom_fields);
+};
 
 const canUseCachedGlobalGraph = (program = getAppliedDataProgram()) => {
   if (!isGlobalGraph.value) return false;
@@ -949,11 +957,8 @@ const buildGraphNodeData = (note: NoteNode) => ({
   lifecycle_stage: note.lifecycle_stage,
   color: note.color,
   weight_mode: note.weight_mode,
-  custom_fields: note.custom_fields,
   completion_progress_expr: note.completion_progress_expr,
   completion_progress: note.completion_progress,
-  created_at: note.created_at,
-  start_at: note.start_at,
 });
 
 const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {
@@ -1141,6 +1146,10 @@ watch(viewProgram, async (value) => {
     });
 
     if (isGlobalGraph.value && isActive.value && !isRefreshing.value) {
+        if (graphViewNeedsCustomFields.value && !currentGlobalGraphIncludesCustomFields()) {
+            void refreshGraph(getAppliedDataProgram(), false);
+            return;
+        }
         scheduleGraphFilterApply();
     } else if (isGlobalGraph.value) {
         inactiveGraphRefreshPending = true;

@@ -127,7 +127,12 @@ from backend.core.fanxiu.packet.capture import build_fanxiu_packet_capture_snaps
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.fanxiu.packet.activity import fanxiu_packet_activity_service
 from backend.core.fanxiu.packet.proxy import fanxiu_packet_proxy_service
-from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu.packet.service_runtime import (
+    get_fanxiu_packet_worker_status as get_fanxiu_packet_daemon_worker_status,
+    get_fanxiu_packet_service_status,
+    start_fanxiu_packet_service,
+    stop_fanxiu_packet_service,
+)
 from backend.core.fanxiu.packet.activity_sync import (
     get_fanxiu_activity_packet_schedule,
     sync_fanxiu_activity_packets,
@@ -242,6 +247,7 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuDataAnnotationOcrFrameResponse,
     FanxiuDataAnnotationRemoveBackgroundRequest,
     FanxiuDataAnnotationRemoveBackgroundResponse,
+    FanxiuDataAnnotationSaveFrameRequest,
     FanxiuPseudoCodeCardCreateRequest,
     FanxiuPseudoCodeCardListResponse,
     FanxiuPseudoCodeCardRead,
@@ -362,10 +368,6 @@ from backend.core.fanxiu.mail.packet_sync import (
     sync_fanxiu_mail_packets,
     trace_fanxiu_mail_packet_gap,
 )
-from backend.core.fanxiu.packet.insight_worker import (
-    fanxiu_packet_insight_worker,
-    sync_fanxiu_capture_paths,
-)
 from backend.core.fanxiu.data_annotation.jobs import (
     DataAnnotationManualJobDefinition as _DataAnnotationManualJobDefinition,
     _DATA_ANNOTATION_MANUAL_JOB_REGISTRY,
@@ -468,6 +470,12 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     resolve_fanxiu_entry,
 )
 from backend.core.fanxiu.data_annotation.frame_structure_organizer import organize_frame_structure_file
+from backend.core.fanxiu.data_annotation.storage import (
+    decode_data_annotation_image_data_url,
+    resolve_data_annotation_image_asset,
+    save_data_annotation_asset_tree_bundle,
+    save_data_annotation_image_bytes,
+)
 from backend.core.fanxiu.game.macro_annotation import (
     _annotate_game_macro_shape_with_ai,
     _build_game_macro_annotation_prompt,
@@ -2748,6 +2756,16 @@ def sync_fanxiu_mail_records_from_packets(
     )
 
 
+def _fanxiu_capture_runtime_status_from_packet_service() -> dict[str, Any]:
+    service = get_fanxiu_packet_service_status()
+    capture = service.get("capture_runtime") if isinstance(service.get("capture_runtime"), dict) else {}
+    return {
+        **capture,
+        "state": capture.get("state") or service.get("state") or "stopped",
+        "running": bool(capture.get("running") or service.get("running")),
+    }
+
+
 @status_router.get("/packet-capture/tcp/storage-bag")
 def get_fanxiu_packet_storage_bag(
     current_user: User = Depends(get_current_active_user),
@@ -2775,7 +2793,7 @@ def get_fanxiu_packet_worker_status(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
-    return fanxiu_packet_insight_worker.status()
+    return get_fanxiu_packet_daemon_worker_status()
 
 
 @status_router.post("/packet-capture/tcp/worker/realtime-scan")
@@ -2784,7 +2802,13 @@ def run_fanxiu_packet_worker_realtime_scan(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
-    return fanxiu_packet_insight_worker.scan_once()
+    start_result = start_fanxiu_packet_service()
+    return {
+        "status": "delegated",
+        "action": "ensure-daemon",
+        "start_result": start_result,
+        "worker": get_fanxiu_packet_daemon_worker_status(),
+    }
 
 
 @status_router.post("/packet-capture/tcp/worker/maintenance")
@@ -2793,7 +2817,13 @@ def run_fanxiu_packet_worker_maintenance(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
-    return fanxiu_packet_insight_worker.maintenance_once()
+    start_result = start_fanxiu_packet_service()
+    return {
+        "status": "delegated",
+        "action": "ensure-daemon",
+        "start_result": start_result,
+        "worker": get_fanxiu_packet_daemon_worker_status(),
+    }
 
 
 @status_router.get("/capture-runtime/status", response_model=FanxiuCaptureRuntimeStatus)
@@ -2802,7 +2832,7 @@ def get_fanxiu_capture_runtime_status(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.status())
+    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
 @status_router.post("/capture-runtime/ensure", response_model=FanxiuCaptureRuntimeStatus)
@@ -2812,9 +2842,9 @@ def ensure_fanxiu_capture_runtime(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuCaptureRuntimeStatus.model_validate(
-        fanxiu_capture_runtime_service.ensure_running(payload.reason)
-    )
+    del payload
+    start_fanxiu_packet_service()
+    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
 @status_router.post("/capture-runtime/release", response_model=FanxiuCaptureRuntimeStatus)
@@ -2824,7 +2854,8 @@ def release_fanxiu_capture_runtime(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.release(payload.reason))
+    del payload
+    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
 @status_router.post("/capture-runtime/stop", response_model=FanxiuCaptureRuntimeStatus)
@@ -2833,7 +2864,8 @@ def stop_fanxiu_capture_runtime(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.force_stop("api-stop"))
+    stop_fanxiu_packet_service()
+    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
 @status_router.get("/packet-capture/activity/status", response_model=FanxiuPacketActivityStatus)
@@ -3463,10 +3495,9 @@ def _stream_game_window2_service(params: dict[str, Any]) -> StreamingResponse:
         response = open_game_window_service_stream(params)
     except GameWindowServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    fanxiu_capture_runtime_service.ensure_running("game-window2-stream")
+    start_fanxiu_packet_service()
     return _stream_response_from_requests(
         response,
-        cleanup=lambda: fanxiu_capture_runtime_service.release("game-window2-stream"),
     )
 
 
@@ -4988,14 +5019,68 @@ def save_fanxiu_data_annotation_asset_tree(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
     path = _data_annotation_asset_tree_path(req.entry_id)
-    _write_data_annotation_json(path, req.tree)
+    try:
+        tree = save_data_annotation_asset_tree_bundle(path, req.tree, entry_id=req.entry_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
         "entry_id": req.entry_id,
         "exists": True,
-        "tree": req.tree,
+        "tree": tree,
         "updated_at": path.stat().st_mtime,
     }
+
+
+@status_router.post("/data-annotation/save-frame")
+def save_fanxiu_data_annotation_frame(
+    req: FanxiuDataAnnotationSaveFrameRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    try:
+        data = decode_data_annotation_image_data_url(req.current_frame_data_url)
+        asset = save_data_annotation_image_bytes(data, entry_id=req.entry_id, filename=req.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    width = 0
+    height = 0
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "entry_id": asset.entry_id,
+        "filename": asset.filename,
+        "path": os.fspath(asset.path),
+        "directory": os.fspath(asset.path.parent),
+        "width": width,
+        "height": height,
+    }
+
+
+@status_router.get("/data-annotation/image")
+def get_fanxiu_data_annotation_image(
+    entry_id: str,
+    filename: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    try:
+        asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not asset.exists:
+        raise HTTPException(status_code=404, detail="data-annotation 图片不存在")
+    return FileResponse(asset.path)
 
 
 @status_router.post("/data-annotation/asset-tree/organize-frame-structure")
@@ -5246,7 +5331,11 @@ def get_fanxiu_data_annotation_runtime_service_status(
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
+    payload = dict(_data_annotation_runtime_status())
+    # Cell logs have their own endpoint; omitting them here avoids shipping the same
+    # large history twice during runtime page bootstrap.
+    payload.pop("cell_logs", None)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
 
 
 def _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(

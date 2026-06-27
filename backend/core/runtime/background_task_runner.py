@@ -28,6 +28,13 @@ from backend.core.fanxiu.runtime.slimming import (
     enqueue_fanxiu_slimming,
     is_fanxiu_slimming_allowed_host,
 )
+from backend.core.fanxiu_tianjige_crawler import (
+    FANXIU_TIANJIGE_QUIZ_RUN_TIME,
+    FANXIU_TIANJIGE_QUIZ_TASK_KEY,
+    FANXIU_TIANJIGE_QUIZ_WEEKDAYS,
+    enqueue_fanxiu_tianjige_quiz,
+    is_fanxiu_tianjige_quiz_allowed_host,
+)
 from backend.core.runtime.public_frontend_deploy import (
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     run_public_frontend_deploy_check,
@@ -212,6 +219,15 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _storage_analysis_schedule_policy()
     if task_key == FANXIU_SLIMMING_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": FANXIU_SLIMMING_RUN_TIME}, retry_minutes=10)
+    if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "weekly",
+                "weekdays": list(FANXIU_TIANJIGE_QUIZ_WEEKDAYS),
+                "time": FANXIU_TIANJIGE_QUIZ_RUN_TIME,
+            },
+            retry_minutes=10,
+        )
     return None
 
 
@@ -286,8 +302,12 @@ def _is_task_enabled(task_key: str) -> bool:
         if row and isinstance(row.value, dict):
             if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
                 return False
+            if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
+                return False
             return bool(row.value.get("enabled", False))
         if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
+            return False
+        if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
             return False
         if task_key in DEFAULT_ENABLED_TASK_KEYS:
             return True
@@ -744,6 +764,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后 10 分钟重试",
         action=enqueue_fanxiu_slimming,
         manual_warning="会调用 Codex CLI；只允许在 mf 执行。自动清理限 24 小时前的低风险日志/临时/生成物，源码功能只报告候选，不自动删除业务代码。",
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_TIANJIGE_QUIZ_TASK_KEY,
+        title="凡修天机阁抢答爬虫",
+        category="凡修",
+        description="在天机阁有奖竞答窗口调用 xlproject 的凡修爬虫脚本自动抢答；默认只允许在 mi15 执行。",
+        schedule_label="每周二/三/四 17:59:50",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_fanxiu_tianjige_quiz,
+        manual_warning="会调用 xlproject 虚拟环境执行凡修天机阁抢答爬虫；默认只允许在 mi15 执行。",
+        default_visible=False,
     ),
 )
 

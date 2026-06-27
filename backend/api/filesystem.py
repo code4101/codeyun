@@ -5006,6 +5006,12 @@ def _refresh_delete_task_record(record: dict[str, Any]) -> dict[str, Any]:
                     "return_code": latest.get("return_code") if latest.get("return_code") is not None else 2,
                 },
             )
+        try:
+            updated_age = time.time() - float(latest.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            updated_age = 999.0
+        if status == "running" and updated_age < 1.0:
+            return latest
         return _update_delete_task_record(
             task_id,
             {
@@ -5163,9 +5169,10 @@ def enqueue_delete_scoped_entry(
     with _filesystem_delete_task_lock:
         _filesystem_delete_processes[task_id] = process
     pid_started_at = _process_create_time(process.pid)
+    return_code = process.poll()
     current_record = _read_delete_task_records().get(task_id) or {}
     current_status = str(current_record.get("status") or "pending")
-    if current_status in {"pending", "running"}:
+    if current_status in {"pending", "running"} and return_code is None:
         _update_delete_task_record(
             task_id,
             {

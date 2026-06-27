@@ -3915,7 +3915,21 @@ def test_daily_boss_is_daily_runtime_task():
     assert task["source"] == "data_annotation_runtime"
     assert task["schedule_kind"] == "daily"
     assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is False
+    assert task["enabled"] is True
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_dongtian_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-dongtian")
+
+    assert task["task_type"] == "daily_dongtian"
+    assert task["label"] == "日常_洞天福地"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["14:00"]
+    assert task["window"] == ["10:00", "22:00"]
+    assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
     assert _data_annotation_task_supported(task)
 
@@ -3927,17 +3941,11 @@ def test_daily_lingzu_is_not_independent_scheduler_task():
     assert _data_annotation_task_supported({"task_type": "daily_lingzu"}) is False
 
 
-def test_daily_jianling_is_daily_runtime_task():
-    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-jianling")
+def test_daily_jianling_is_not_independent_scheduler_task():
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 
-    assert task["task_type"] == "daily_jianling"
-    assert task["label"] == "日常_剑灵"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is False
-    assert task["cooldown_seconds"] == 600
-    assert _data_annotation_task_supported(task)
+    assert "legacy-daily-jianling" not in tasks
+    assert _data_annotation_task_supported({"task_type": "daily_jianling"}) is False
 
 
 def test_daily_lingta_is_not_independent_scheduler_task():
@@ -3997,7 +4005,7 @@ def test_daily_xianyuan_is_daily_runtime_task():
     assert task["source"] == "data_annotation_runtime"
     assert task["schedule_kind"] == "daily"
     assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is False
+    assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
     assert _data_annotation_task_supported(task)
 
@@ -4676,6 +4684,26 @@ def test_daily_boss_entry_match_does_not_click_boss_marquee():
     assert matches == []
 
 
+def test_daily_audit_boss_identity_ignores_boss_marquee():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_audit_task_identity("喜[海浪无声]成功击败积麟秘境首领，获得了[龙魂精魄] 0/3") is None
+    assert runner._daily_audit_task_identity("日常 击败首领 0/3") == {
+        "task_type": "daily_boss",
+        "task_id": "daily-boss",
+    }
+
+
+def test_daily_audit_xianyuan_identity_ignores_xianyuan_duel():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_audit_task_identity("参与仙缘斗法活5/次80/3") is None
+    assert runner._daily_audit_task_identity("日常 挑战仙缘 0/3") == {
+        "task_type": "daily_xianyuan",
+        "task_id": "legacy-daily-xianyuan",
+    }
+
+
 def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
@@ -5331,7 +5359,7 @@ def test_legacy_daily_lingzu_scheduler_task_is_removed_by_assistant_coverage():
     assert not any(item["id"] == "legacy-daily-lingzu" for item in tasks)
 
 
-def test_legacy_daily_jianling_scheduler_task_is_migrated_to_runtime_task():
+def test_legacy_daily_jianling_scheduler_task_is_removed_by_assistant_coverage():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5354,16 +5382,9 @@ def test_legacy_daily_jianling_scheduler_task_is_migrated_to_runtime_task():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 10, 12, 0, 0),
     )
-    task = next(item for item in tasks if item["id"] == "legacy-daily-jianling")
 
     assert changed is True
-    assert task["task_type"] == "daily_jianling"
-    assert task["source"] == "data_annotation_runtime"
-    assert task["schedule_kind"] == "daily"
-    assert task["label"] == "日常_剑灵"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["cooldown_seconds"] == 600
-    assert task["next_time"] == "2026-06-10 05:00:00"
+    assert not any(item["id"] == "legacy-daily-jianling" for item in tasks)
 
 
 def test_legacy_daily_lingta_scheduler_task_is_removed_by_assistant_coverage():
@@ -5591,6 +5612,85 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
 
     assert result == "success"
     assert received == {"action_enabled": False}
+
+
+def test_mail_cleanup_observe_only_job_routes_to_legacy_scan():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_manual_job_definition
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_manual_job_definition("mail_cleanup")
+    assert definition is not None
+    calls: list[str] = []
+
+    class FakeRunner:
+        def _execute_mail_legacy_scan_task(self, _ctx, _stop_event, _payload):
+            calls.append("legacy")
+            return "legacy-result"
+
+        def _execute_mail_cleanup_task(self, _ctx, _stop_event, _payload):
+            calls.append("cleanup")
+            return "cleanup-result"
+
+    result = definition.handler(FakeRunner(), {}, {"observe_only": True}, threading.Event())
+
+    assert result == "legacy-result"
+    assert calls == ["legacy"]
+
+
+def test_wait_manual_job_treats_skip_log_as_terminal(monkeypatch):
+    from backend.core.fanxiu.runtime import behavior_tree as behavior_tree_core
+
+    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_manual_jobs", lambda: [])
+    monkeypatch.setattr(
+        behavior_tree_core,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: {
+            "running": False,
+            "current_task_id": "",
+            "logs": [
+                {
+                    "kind": "skip",
+                    "message": "[manual-123] 手动作业完成：AI保底接管到期任务：日常_仙市",
+                }
+            ],
+        },
+    )
+
+    result = behavior_tree_core.wait_fanxiu_local_manual_job(
+        "manual-123",
+        timeout_seconds=1,
+        poll_seconds=0.1,
+    )
+
+    assert result["done"] is True
+    assert result["result"] == "completed"
+
+
+def test_wait_manual_job_done_when_removed_and_runtime_idle_without_terminal_log(monkeypatch):
+    from backend.core.fanxiu.runtime import behavior_tree as behavior_tree_core
+
+    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_manual_jobs", lambda: [])
+    monkeypatch.setattr(
+        behavior_tree_core,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: {
+            "running": False,
+            "current_task_id": "",
+            "logs": [
+                {"kind": "detail", "message": "场景身份标题 OCR 兜底命中：大地图"},
+            ],
+        },
+    )
+
+    result = behavior_tree_core.wait_fanxiu_local_manual_job(
+        "manual-removed",
+        timeout_seconds=1,
+        poll_seconds=0.1,
+    )
+
+    assert result["done"] is True
+    assert result["result"] == "removed_after_idle"
 
 
 def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_path, monkeypatch):
@@ -6200,7 +6300,7 @@ def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_pat
     assert settled == [0.3, 0.3]
 
 
-def test_mail_reward_tip_close_clicks_world_bottom_menu_shape(monkeypatch):
+def test_mail_reward_tip_close_clicks_reward_card_close_hotspot(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image(
         "世界",
@@ -6216,16 +6316,16 @@ def test_mail_reward_tip_close_clicks_world_bottom_menu_shape(monkeypatch):
         [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
     )
     ctx = {"images": {34: image34, 35: image35}}
-    clicked: list[str] = []
+    clicked: list[tuple[float, float]] = []
 
     class FakeRuntime:
-        def click_shape_center(self, _image, title):
-            clicked.append(str(title))
+        def click_frame_point(self, _image, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
 
-    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "点击使用", "x": 420, "y": 1220, "w": 80, "h": 30}])
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "合欢灵玉 点击查看", "x": 420, "y": 1220, "w": 80, "h": 30}])
 
     assert runner._close_mail_world_reward_tip_if_present(ctx, FakeRuntime(), "frame", "") is True
-    assert clicked == ["下方菜单"]
+    assert clicked == [(690.3, 968.0)]
 
 
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
@@ -8090,12 +8190,14 @@ class _FakeSignupRuntime:
         row_batches: list[list[tuple[float, float, str]]] | None = None,
         scroll_results: list[bool] | None = None,
         fail_first_reward_view: bool = False,
+        claim_return_states: list[str] | None = None,
         initial_scene_id: int | None = None,
     ):
         self.claim_available = claim_available
         self.row_batches = list(row_batches or [])
         self.scroll_results = list(scroll_results or [])
         self.fail_first_reward_view = fail_first_reward_view
+        self.claim_return_states = list(claim_return_states or [])
         self.scene_id = initial_scene_id
         self.actions: list[tuple[Any, ...]] = []
 
@@ -8106,6 +8208,12 @@ class _FakeSignupRuntime:
         return "frame"
 
     def ocr_text(self, _frame):
+        if self.scene_id == 23:
+            return "报名 活动时间 待报名"
+        if self.scene_id == 69:
+            return "日常 活跃度 活动报名 小助手"
+        if self.scene_id == 34:
+            return "世界 储物袋 角色"
         return ""
 
     def goto_view(self, view_id: int):
@@ -8141,6 +8249,14 @@ class _FakeSignupRuntime:
             if False:
                 yield BehaviorTreeStatus.RUNNING
             return "scene"
+        if "报名页" in conditions:
+            state = self.claim_return_states.pop(0) if self.claim_return_states else "报名页"
+            scene_by_state = {"报名页": 23, "日常页": 69, "世界": 34, "绿瓶": 20}
+            self.scene_id = scene_by_state.get(state, self.scene_id)
+            self.actions.append(("wait_any", tuple(conditions.keys()), state))
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return state
         if "已完成" in conditions:
             if False:
                 yield BehaviorTreeStatus.RUNNING
@@ -8192,6 +8308,7 @@ def test_daily_signup_flow_reads_like_business_steps():
     runtime = _FakeSignupRuntime(
         claim_available=True,
         initial_scene_id=34,
+        claim_return_states=["报名页", "报名页"],
         row_batches=[
             [(720.0, 415.0, "丹道问鼎报名")],
             [(720.0, 637.5, "仙缘夺魁报名")],
@@ -8211,12 +8328,12 @@ def test_daily_signup_flow_reads_like_business_steps():
         ("point", 23, 720.0, 415.0),
         ("wait_view", 24),
         ("wait_click", 24, "领取"),
-        ("wait_view", 23),
+        ("wait_any", ("报名页", "日常页", "世界", "绿瓶", "报名文本", "世界文本"), "报名页"),
         ("ocr_rows", 23, "报名列"),
         ("point", 23, 720.0, 637.5),
         ("wait_view", 24),
         ("wait_click", 24, "领取"),
-        ("wait_view", 23),
+        ("wait_any", ("报名页", "日常页", "世界", "绿瓶", "报名文本", "世界文本"), "报名页"),
         ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
@@ -8224,6 +8341,20 @@ def test_daily_signup_flow_reads_like_business_steps():
         ("wait_click", 23, "返回"),
         ("goto", 34),
     ]
+
+
+def test_daily_signup_stops_scanning_when_claim_returns_daily_page():
+    runner = create_fanxiu_runtime_runner()
+    runtime = _FakeSignupRuntime(
+        initial_scene_id=23,
+        row_batches=[[(720.0, 415.0, "丹道问鼎报名")], [(720.0, 637.5, "不应继续扫描")]],
+        claim_return_states=["日常页"],
+    )
+
+    result = _drain_generator(runner.日常报名流程(runtime))
+
+    assert result == {"result": "success", "claimed": 1}
+    assert ("point", 23, 720.0, 637.5) not in runtime.actions
 
 
 def test_daily_signup_flow_returns_world_when_already_done():
@@ -8259,7 +8390,7 @@ def test_daily_signup_list_scrolls_after_click_without_reward_page():
         ("point", 23, 720.0, 415.0),
         ("wait_view", 24),
         ("wait_click", 24, "领取"),
-        ("wait_view", 23),
+        ("wait_any", ("报名页", "日常页", "世界", "绿瓶", "报名文本", "世界文本"), "报名页"),
         ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
@@ -9203,6 +9334,98 @@ def test_daily_boss_reopens_list_after_leave_lands_on_world(tmp_path, monkeypatc
 
     assert result is True
     assert calls == ["goto:69", "open-list"]
+
+
+def test_daily_boss_leave_recheck_failure_on_world_becomes_retry(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}
+    calls: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def wait_view_id(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            raise RuntimeError("not list")
+
+        def goto_view(self, scene_id):
+            calls.append(f"goto:{scene_id}")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    def fake_open_list(_ctx, _stop_event):
+        calls.append("open-list")
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        raise RuntimeError("日常_首领：等待首领列表 #178 超时，最后 #34 100%")
+
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (34, 100.0, "world"))
+    monkeypatch.setattr(runner, "_open_daily_boss_list_from_daily", fake_open_list)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_daily_boss_list_after_leaving_fight(ctx, FakeRuntime(), FakeStopEvent()),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is False
+    assert calls == ["goto:69", "open-list"]
+
+
+def test_daily_boss_leave_closes_reward_result_before_rechecking_list(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {177: _image("领悟绝技", "0177.png", [])},
+    }
+    calls: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        wait_count = 0
+
+        def wait_view_id(self, *_args, **_kwargs):
+            self.wait_count += 1
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            if self.wait_count == 1:
+                raise RuntimeError("reward page")
+            return "success"
+
+        def current_scene(self, *_args, **_kwargs):
+            return 177, 100.0, "reward-frame"
+
+        def ocr_text(self, _frame=None, **_kwargs):
+            return "恭喜获得 点击屏幕继续 1秒后自动关闭"
+
+        def click_frame_point(self, _image, x, y):
+            calls.append(f"click:{round(x)}:{round(y)}")
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(f"settle:{seconds}")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_daily_boss_list_after_leaving_fight(ctx, FakeRuntime(), FakeStopEvent()),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is True
+    assert calls == ["click:450:1376", "settle:2.0"]
 
 
 def test_daily_boss_returns_to_world_after_list_completion(tmp_path, monkeypatch):

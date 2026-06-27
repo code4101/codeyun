@@ -211,6 +211,48 @@ def test_live_capture_backlog_keeps_confirmed_cursor_before_failed_gap_but_decod
     assert states["0002-later.pcap"] == "decoded"
 
 
+def test_live_capture_backlog_newest_failures_do_not_starve_decodable_pcaps(tmp_path, monkeypatch):
+    live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
+    live_dir.mkdir(parents=True)
+    older_good = live_dir / "0001-good.pcap"
+    newer_bad = live_dir / "0002-bad.pcap"
+    newest_bad = live_dir / "0003-bad.pcap"
+    for path in (older_good, newer_bad, newest_bad):
+        path.write_bytes(path.name.encode("utf-8") * 16)
+    now = time.time()
+    os.utime(older_good, (now - 180, now - 180))
+    os.utime(newer_bad, (now - 120, now - 120))
+    os.utime(newest_bad, (now - 60, now - 60))
+
+    monkeypatch.setattr(worker, "_sha256_file", lambda path: f"digest-{path.name}")
+    calls: list[str] = []
+
+    def fake_decode(path, **_kwargs):
+        calls.append(path.name)
+        if path.name.endswith("bad.pcap"):
+            raise RuntimeError("broken pcap")
+        return {"decoded_count": 1, "runtime_protocol_count": 1}
+
+    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", fake_decode)
+
+    result = worker.sync_fanxiu_live_capture_backlog(
+        data_dir=tmp_path,
+        stable_seconds=1,
+        retry_failed_after_seconds=600,
+        newest_first=True,
+        limit=1,
+    )
+
+    assert calls == ["0003-bad.pcap", "0002-bad.pcap", "0001-good.pcap"]
+    assert result["decoded_count"] == 1
+    assert result["error_count"] == 2
+    assert result["has_unconfirmed_gap"] is True
+    states = {item["name"]: item["status"] for item in result["pcap_states"]}
+    assert states["0001-good.pcap"] == "decoded"
+    assert states["0002-bad.pcap"] == "failed"
+    assert states["0003-bad.pcap"] == "failed"
+
+
 def test_sync_capture_paths_decodes_only_given_pcaps_and_syncs_once(tmp_path, monkeypatch):
     pcap = tmp_path / "recent.pcap"
     pcap.write_bytes(b"pcap" * 16)

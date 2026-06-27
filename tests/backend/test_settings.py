@@ -80,7 +80,7 @@ def test_ollama_defaults(monkeypatch):
 
     settings = settings_module.load_settings()
 
-    assert settings.ai_default_provider == "ollama"
+    assert settings.ai_default_provider == "deepseek"
     assert settings.ollama_base_url == "http://127.0.0.1:11434"
     assert settings.ollama_default_model == "qwen3-vl:4b"
     assert settings.ollama_timeout_seconds == 120.0
@@ -114,9 +114,9 @@ def test_deepseek_defaults(monkeypatch):
 
     assert settings.deepseek_base_url == "https://api.deepseek.com/v1"
     assert settings.deepseek_api_key == ""
-    assert settings.deepseek_default_model == "deepseek-chat"
+    assert settings.deepseek_default_model == "deepseek-v4-flash"
     assert settings.deepseek_timeout_seconds == 120.0
-    assert settings.deepseek_models == ("deepseek-chat", "deepseek-reasoner")
+    assert settings.deepseek_models == ("deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner")
 
 
 def test_deepseek_overrides(monkeypatch):

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 from sqlmodel import Session, select
 
@@ -184,6 +185,8 @@ VIDEO_RULE_SYSTEM_REGULAR = "regular"
 VIDEO_RULE_SYSTEM_ZEN_STAGE = "zen_stage"
 VIDEO_RULE_SYSTEM_CHALLENGE = "challenge"
 
+DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621 = "zen46_stage5_dynamic_after_20260621"
+
 
 @dataclass(frozen=True)
 class VideoRuleStrategy:
@@ -214,6 +217,18 @@ class CourseSheetSpec:
     sheet_key: str
     title: str
     order_index: int
+
+
+@dataclass(frozen=True)
+class DynamicClockinSupplementPlugin:
+    plugin_id: str
+    course_name: str
+    community_id: str
+    feed_url: str
+    start_at: datetime
+    clockin_names: dict[str, str]
+    page_size: int = 100
+    max_pages: int = 200
 
 
 @dataclass(frozen=True)
@@ -254,6 +269,24 @@ COURSE_LOCAL_NAME_COLUMNS = {
     VIDEO_DATA_SHEET_KEY: ("lesson_name",),
     CLOCKIN_CONFIG_SHEET_KEY: ("name",),
     CLOCKIN_DATA_SHEET_KEY: ("clockin_name",),
+}
+
+# 重要：动态补打卡插件不是通用课程能力。
+# 下面这个 46期五阶插件只用于 2026-06-21 起“小鹅通无法补共修/共学打卡”的一次性事故处理。
+# 新建、继承或集成其它课程配置时，必须清空 dynamic_clockin_plugin，不要从旧课程复制该插件。
+DYNAMIC_CLOCKIN_SUPPLEMENT_PLUGINS: dict[str, DynamicClockinSupplementPlugin] = {
+    DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621: DynamicClockinSupplementPlugin(
+        plugin_id=DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621,
+        course_name="d260301禅宗46期五阶",
+        community_id="c_69a3a337724fc_TJoXKy8E2351",
+        feed_url=(
+            "https://admin.xiaoe-tech.com/t/community_admin/miniCommunity"
+            "#/community_manage/content_settings/feed_list"
+            "?communityId=c_69a3a337724fc_TJoXKy8E2351&type=manage"
+        ),
+        start_at=datetime(2026, 6, 21, 0, 0, 0),
+        clockin_names={"gongxue": "共学打卡", "gongxiu": "共修打卡"},
+    ),
 }
 
 
@@ -2221,6 +2254,251 @@ def _parse_clockin_urls(url_value: Any) -> list[str]:
     return [text]
 
 
+def _normalize_plugin_course_name(value: Any) -> str:
+    text = _normalize_text(value)
+    match = re.match(r"^20(?P<date>\d{6})(?P<rest>.+)$", text)
+    if match:
+        return f"d{match.group('date')}{match.group('rest')}"
+    return text
+
+
+def _resolve_dynamic_clockin_supplement_plugin(
+    plugin_id: str,
+    *,
+    course_name: str,
+) -> DynamicClockinSupplementPlugin | None:
+    normalized_plugin_id = _normalize_text(plugin_id)
+    if not normalized_plugin_id:
+        return None
+    plugin = DYNAMIC_CLOCKIN_SUPPLEMENT_PLUGINS.get(normalized_plugin_id)
+    if plugin is None:
+        raise ValueError(f"未知动态补打卡插件：{normalized_plugin_id}")
+    if _normalize_plugin_course_name(course_name) != _normalize_plugin_course_name(plugin.course_name):
+        raise ValueError(
+            f"动态补打卡插件 {normalized_plugin_id} 只能用于 {plugin.course_name}，"
+            f"当前课程是 {course_name}"
+        )
+    return plugin
+
+
+def _dynamic_feed_content_text(row: dict[str, Any]) -> str:
+    content = row.get("content")
+    if isinstance(content, dict):
+        return _normalize_text(content.get("text"))
+    return _normalize_text(content)
+
+
+def _dynamic_feed_clockin_kind(row: dict[str, Any]) -> str:
+    return "gongxiu" if "共修" in _dynamic_feed_content_text(row) else "gongxue"
+
+
+def _dynamic_feed_publish_time(row: dict[str, Any]) -> datetime | None:
+    return _parse_datetime_cell(row.get("created_at")) or _parse_datetime_cell(row.get("publish_time"))
+
+
+def _normalize_clockin_name_for_key(value: Any, *, course_name: str = "") -> str:
+    text = _normalize_text(value)
+    if course_name:
+        text = _strip_course_name_prefix(text, course_name)
+    return text or "打卡数"
+
+
+def _clockin_data_day(row: dict[str, Any]) -> str:
+    task_date = _normalize_text(row.get("task_date"))
+    if task_date:
+        return task_date[:10]
+    publish_time = _parse_datetime_cell(row.get("publish_time"))
+    return publish_time.date().isoformat() if publish_time else ""
+
+
+def _clockin_data_duplicate_key(row: dict[str, Any], *, course_name: str = "") -> tuple[str, str, str] | None:
+    user_id = _normalize_text(row.get("user_id2")) or _normalize_text(row.get("用户ID"))
+    clockin_name = _normalize_clockin_name_for_key(row.get("clockin_name"), course_name=course_name)
+    day = _clockin_data_day(row)
+    if not user_id or not clockin_name or not day:
+        return None
+    return user_id, clockin_name, day
+
+
+def _find_clockin_config_target(
+    clockin_config_rows: list[dict[str, Any]],
+    target_name: str,
+    *,
+    course_name: str,
+) -> tuple[int, str] | None:
+    normalized_target = _normalize_text(target_name)
+    fallback: tuple[int, str] | None = None
+    for row in clockin_config_rows:
+        clockin_id = int(_to_float(row.get("clockin_id")))
+        if clockin_id <= 0:
+            continue
+        name = _normalize_clockin_name_for_key(row.get("name"), course_name=course_name)
+        if name == normalized_target:
+            return clockin_id, name
+        if fallback is None and normalized_target and normalized_target in name:
+            fallback = clockin_id, name
+    return fallback
+
+
+def _build_dynamic_clockin_supplement_rows(
+    feed_rows: list[dict[str, Any]],
+    *,
+    plugin: DynamicClockinSupplementPlugin,
+    clockin_config_rows: list[dict[str, Any]],
+    existing_clockin_rows: list[dict[str, Any]],
+    course_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    targets: dict[str, tuple[int, str]] = {}
+    missing_targets: list[str] = []
+    for kind, target_name in plugin.clockin_names.items():
+        target = _find_clockin_config_target(clockin_config_rows, target_name, course_name=course_name)
+        if target is None:
+            missing_targets.append(target_name)
+        else:
+            targets[kind] = target
+    if missing_targets:
+        raise ValueError(f"动态补打卡插件找不到打卡配置：{', '.join(missing_targets)}")
+
+    duplicate_keys: set[tuple[str, str, str]] = set()
+    for row in existing_clockin_rows:
+        key = _clockin_data_duplicate_key(row, course_name=course_name)
+        if key is not None:
+            duplicate_keys.add(key)
+
+    rows: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {
+        "plugin_id": plugin.plugin_id,
+        "course_name": plugin.course_name,
+        "community_id": plugin.community_id,
+        "start_at": _format_datetime_for_sheet(plugin.start_at),
+        "feed_rows": len(feed_rows),
+        "candidate_rows": 0,
+        "inserted_rows": 0,
+        "skipped_before_start_rows": 0,
+        "skipped_empty_content_rows": 0,
+        "skipped_missing_user_rows": 0,
+        "skipped_missing_time_rows": 0,
+        "skipped_duplicate_rows": 0,
+        "inserted_by_clockin_name": {},
+    }
+
+    for feed_row in feed_rows:
+        publish_time = _dynamic_feed_publish_time(feed_row)
+        if publish_time is None:
+            summary["skipped_missing_time_rows"] += 1
+            continue
+        if publish_time < plugin.start_at:
+            summary["skipped_before_start_rows"] += 1
+            continue
+        user_id = _normalize_text(feed_row.get("user_id"))
+        if not user_id:
+            summary["skipped_missing_user_rows"] += 1
+            continue
+
+        content_text = _dynamic_feed_content_text(feed_row)
+        if not content_text:
+            summary["skipped_empty_content_rows"] += 1
+            continue
+
+        kind = _dynamic_feed_clockin_kind(feed_row)
+        clockin_id, clockin_name = targets[kind]
+        task_date = publish_time.date().isoformat()
+        duplicate_key = (user_id, clockin_name, task_date)
+        summary["candidate_rows"] += 1
+        if duplicate_key in duplicate_keys:
+            summary["skipped_duplicate_rows"] += 1
+            continue
+        duplicate_keys.add(duplicate_key)
+
+        extra = {
+            "source": "dynamic_feed_supplement",
+            "plugin_id": plugin.plugin_id,
+            "feed_id": _normalize_text(feed_row.get("id")),
+            "community_id": _normalize_text(feed_row.get("community_id")) or plugin.community_id,
+            "clock_id": _normalize_text(feed_row.get("extend_field1")),
+            "task_id": _normalize_text(feed_row.get("extend_field2")),
+        }
+        rows.append({
+            "user_id2": user_id,
+            "nickname": _normalize_text(feed_row.get("nick_name")),
+            "groupname": _normalize_text(feed_row.get("group_name")),
+            "publish_time": _format_datetime_for_sheet(publish_time),
+            "update_content": content_text,
+            "update_title": "动态补打卡",
+            "update_type": _normalize_text(feed_row.get("apply_type")),
+            "read_num": feed_row.get("record_num", ""),
+            "like_num": feed_row.get("zan_num", ""),
+            "comment_num": feed_row.get("comment_count", ""),
+            "clockin_name": clockin_name,
+            "task_date": task_date,
+            "extra": extra,
+            "clockin_id": clockin_id,
+        })
+        summary["inserted_rows"] += 1
+        inserted_by_name = dict(summary["inserted_by_clockin_name"])
+        inserted_by_name[clockin_name] = int(inserted_by_name.get(clockin_name) or 0) + 1
+        summary["inserted_by_clockin_name"] = inserted_by_name
+
+    return rows, summary
+
+
+def _fetch_dynamic_clockin_feed_page(tab: Any, *, params: dict[str, Any]) -> dict[str, Any]:
+    url = "/small_community/b_feeds_list?" + urlencode({key: value for key, value in params.items() if value is not None})
+    script = """
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', __URL__, false);
+    xhr.withCredentials = true;
+    xhr.send(null);
+    return { status: xhr.status, text: xhr.responseText };
+    """.replace("__URL__", json.dumps(url, ensure_ascii=False))
+    response = tab.run_js(script)
+    if not isinstance(response, dict):
+        raise RuntimeError("动态列表接口返回异常")
+    status = int(response.get("status") or 0)
+    text = _normalize_text(response.get("text"))
+    if status >= 400:
+        raise RuntimeError(f"动态列表接口请求失败：HTTP {status}")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("动态列表接口返回非 JSON") from exc
+    if int(payload.get("code") or 0) != 0:
+        raise RuntimeError(f"动态列表接口返回失败：{payload.get('msg') or payload.get('message') or payload.get('code')}")
+    data = payload.get("data")
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _fetch_dynamic_clockin_feed_rows(xe2: Any, plugin: DynamicClockinSupplementPlugin) -> list[dict[str, Any]]:
+    tab = xe2.tab.get2(plugin.feed_url)
+    rows: list[dict[str, Any]] = []
+    for page_index in range(1, plugin.max_pages + 1):
+        data = _fetch_dynamic_clockin_feed_page(
+            tab,
+            params={
+                "search_content": "",
+                "page_index": page_index,
+                "page_size": plugin.page_size,
+                "community_id": plugin.community_id,
+                "feeds_list_type": -1,
+                "nick_name": "",
+                "start_date": plugin.start_at.date().isoformat(),
+                "end_date": "",
+                "roles": "",
+            },
+        )
+        page_rows = [dict(row) for row in data.get("list") or [] if isinstance(row, dict)]
+        if not page_rows:
+            break
+        rows.extend(page_rows)
+        total_count = int(_to_float(data.get("total_count") or data.get("total")))
+        if total_count and len(rows) >= total_count:
+            break
+        oldest_time = _dynamic_feed_publish_time(page_rows[-1])
+        if oldest_time is not None and oldest_time < plugin.start_at:
+            break
+    return rows
+
+
 def run_nianzhu_course_sheet_step1(
     session: Session,
     *,
@@ -2231,6 +2509,7 @@ def run_nianzhu_course_sheet_step1(
     update_lessons: bool = True,
     update_clockins: bool = True,
     clockin_pattern: str = "",
+    dynamic_clockin_plugin: str = "",
     close_browser: bool = True,
 ) -> dict[str, Any]:
     from kq5034.attendance_api import _close_kqtools_browser, _normalize_shop, ensure_attendance_runtime  # type: ignore
@@ -2245,6 +2524,7 @@ def run_nianzhu_course_sheet_step1(
     normalized_shop_id, shop_name = _normalize_shop(shop_id)
     resolved_clockin_pattern = _normalize_text(clockin_pattern)
     effective_clockin_pattern = _local_clockin_pattern(resolved_clockin_pattern, course_name)
+    dynamic_plugin = _resolve_dynamic_clockin_supplement_plugin(dynamic_clockin_plugin, course_name=course_name)
     now = datetime.now()
 
     kqtools = KqTools()
@@ -2254,6 +2534,7 @@ def run_nianzhu_course_sheet_step1(
     clockin_names: list[str] = []
     clockin_data_insert_count = 0
     clockin_errors: list[str] = []
+    dynamic_clockin_summary: dict[str, Any] | None = None
 
     try:
         kqtools.xe2.switch_shop(shop_name)
@@ -2393,6 +2674,26 @@ def run_nianzhu_course_sheet_step1(
                             else:
                                 Path(str(file)).unlink(missing_ok=True)
 
+            if dynamic_plugin is not None:
+                try:
+                    feed_rows = _fetch_dynamic_clockin_feed_rows(kqtools.xe2, dynamic_plugin)
+                    supplement_rows, dynamic_clockin_summary = _build_dynamic_clockin_supplement_rows(
+                        feed_rows,
+                        plugin=dynamic_plugin,
+                        clockin_config_rows=clockin_config_rows,
+                        existing_clockin_rows=clockin_data_rows,
+                        course_name=course_name,
+                    )
+                    if supplement_rows:
+                        clockin_data_rows.extend(supplement_rows)
+                        clockin_data_insert_count += len(supplement_rows)
+                except Exception as exc:
+                    dynamic_clockin_summary = {
+                        "plugin_id": dynamic_plugin.plugin_id,
+                        "error": str(exc),
+                    }
+                    clockin_errors.append(f"动态补打卡插件 {dynamic_plugin.plugin_id}: {exc}")
+
             _renumber_rows(clockin_data_rows, "clockin_data_id")
             clockin_data_source_meta = dict(clockin_data_document.get("source_meta") or {})
             clockin_data_columns = _clockin_data_columns_for_rows(
@@ -2435,6 +2736,8 @@ def run_nianzhu_course_sheet_step1(
         "update_clockins": bool(update_clockins),
         "clockin_pattern": resolved_clockin_pattern,
         "effective_clockin_pattern": effective_clockin_pattern,
+        "dynamic_clockin_plugin": _normalize_text(dynamic_clockin_plugin),
+        "dynamic_clockin": dynamic_clockin_summary,
         "clockin_names": clockin_names,
         "clockin_update_count": len(clockin_names),
         "clockin_data_insert_count": clockin_data_insert_count,

@@ -331,6 +331,10 @@ class MailTaskMixin:
             final_scene = 34
         else:
             self._log("info", "邮件_清理：缺少 #121「空白-返回」标注，结束后保留在邮件页")
+        if final_scene == 34:
+            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
+            yield from self._close_mail_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_清理")
+            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
 
         with self._lock:
             self._set_status_locked(
@@ -717,12 +721,7 @@ class MailTaskMixin:
         return bool(has_reward_title and (has_continue_hint or has_auto_close or "获得" in compact))
 
     def _mail_world_reward_tip_text_matches(self, text: str) -> bool:
-        compact = _sanitize_ocr_text(text).replace(" ", "")
-        if "点击查看" not in compact and "点击使用" not in compact:
-            return False
-        if not any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励")):
-            return False
-        return True
+        return self._world_reward_tip_text_matches(text)
 
     def _mail_world_reward_tip_detected(
         self,
@@ -732,38 +731,21 @@ class MailTaskMixin:
         *,
         menu_ocr_lines: list[dict[str, Any]] | None = None,
     ) -> bool:
-        if self._mail_world_reward_tip_text_matches(text):
-            return True
-        image35 = ctx.get("images", {}).get(35)
-        if not isinstance(image35, dict) or not self._find_shape(image35, "菜单"):
-            return False
-        lines = menu_ocr_lines
-        if lines is None:
-            try:
-                lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
-            except Exception as exc:
-                self._log("detail", f"邮件_清理：#35 菜单奖励提示 OCR 失败：{exc}")
-                return False
-        menu_text = self._ocr_text(lines or [])
-        if self._mail_world_reward_tip_text_matches(f"{text} {menu_text}"):
-            return True
-        menu_compact = _sanitize_ocr_text(menu_text).replace(" ", "")
-        return "点击查看" in menu_compact or "点击使用" in menu_compact
+        return self._world_reward_tip_detected(ctx, frame, text, menu_ocr_lines=menu_ocr_lines)
 
     def _close_mail_world_reward_tip_if_present(self, ctx: dict[str, Any], runtime: FanxiuRuntime, frame: str, text: str) -> bool:
-        if not self._mail_world_reward_tip_detected(ctx, frame, text):
-            return False
-        image34 = ctx.get("images", {}).get(34)
-        if not isinstance(image34, dict):
-            return False
-        menu_shape = self._find_shape(image34, "下方菜单")
-        if menu_shape is None:
-            return False
-        with self._lock:
-            self._set_status_locked("running", "邮件_清理：关闭世界页奖励提示", phase="mail_cleanup_close_world_reward_tip", current_scene=34)
-            self._log_locked("action", "邮件_清理：检测到世界页奖励提示，点击 #34「下方菜单」收起")
-        runtime.click_shape_center(image34, "下方菜单")
-        return True
+        return self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label="邮件_清理")
+
+    def _close_mail_world_reward_tip_stack_if_present(
+        self,
+        ctx: dict[str, Any],
+        runtime: FanxiuRuntime,
+        stop_event: threading.Event,
+        *,
+        label: str,
+        max_attempts: int = 15,
+    ):
+        yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label=label, max_attempts=max_attempts)
 
     def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
         try:
@@ -821,6 +803,8 @@ class MailTaskMixin:
         result = (yield from go_scene_result) if isinstance(go_scene_result, GeneratorType) else go_scene_result
         if result != "success":
             return result
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_历史扫描")
         if entry_mode in {"stable", "menu", "full", "full_scan", "debug"}:
             stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=False)
             return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
@@ -1474,7 +1458,7 @@ class MailTaskMixin:
                 )
             if fail_on_packet_gap:
                 raise RuntimeError(f"邮件_历史扫描：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，请先修复抓包/解析缺口：{sample_text}")
-        if watermark_time and not crossed_watermark:
+        if action_enabled and watermark_time and not crossed_watermark:
             self._write_mail_scan_state(
                 {
                     **scan_state,

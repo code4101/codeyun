@@ -8,7 +8,7 @@ import App from './App.vue'
 import router from './router'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
-import { resetNoteTypePaletteState } from '@/utils/nodeConfig'
+import { resetNoteTypePaletteState } from '@/utils/noteTypePaletteState'
 
 const app = createApp(App)
 const pinia = createPinia()

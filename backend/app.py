@@ -26,12 +26,6 @@ from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.access.auth import verify_api_token
 from backend.core.runtime.background_task_runner import init_background_task_runner, shutdown_background_task_runner
-from backend.core.fanxiu.runtime.capture_runtime import (
-    FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
-    ensure_fanxiu_capture_runtime_backstop,
-    fanxiu_capture_runtime_service,
-)
-from backend.core.fanxiu.packet.insight_worker import fanxiu_packet_insight_worker
 from backend.core.access.service_tokens import ensure_legacy_service_tokens
 from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
 from backend.core.runtime.management import (
@@ -97,16 +91,6 @@ async def lifespan(app: FastAPI):
             if isinstance(result, dict) and result.get("status") == "error":
                 logger.warning("Skipping local builtin service startup %s: %s", service_key, result.get("error"))
     if not settings.is_test:
-        fanxiu_packet_insight_worker.start()
-    if not settings.is_test and _fanxiu_capture_runtime_service_enabled():
-        fanxiu_capture_runtime_service.start_watchdog(
-            interval_seconds=_fanxiu_capture_watchdog_interval_seconds()
-        )
-        try:
-            ensure_fanxiu_capture_runtime_backstop(FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON)
-        except Exception as exc:
-            logger.warning("Skipping Fanxiu capture runtime startup ensure: %s", exc)
-    if not settings.is_test:
         try:
             ensure_data_annotation_behavior_tree_service_on_startup()
         except Exception as exc:
@@ -117,8 +101,6 @@ async def lifespan(app: FastAPI):
         start_enabled_codex_bridges()
     yield
     if not settings.is_test:
-        fanxiu_capture_runtime_service.stop_watchdog()
-        fanxiu_packet_insight_worker.stop()
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
     shutdown_background_task_runner()

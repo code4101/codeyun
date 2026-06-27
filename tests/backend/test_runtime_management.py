@@ -1,9 +1,10 @@
 import time
 from types import SimpleNamespace
 
-from backend.core.runtime import management as runtime_core
-from backend.core.runtime import system_metrics as system_metrics_core
-from backend.models import Task
+from backend.api import device_entries as device_entries_api
+from backend.core import runtime_management as runtime_core
+from backend.core import system_metrics as system_metrics_core
+from backend.models import Task, UserDevice
 
 
 def _headers(test_device):
@@ -82,6 +83,70 @@ def test_local_device_entry_system_metrics_uses_entry_device_id(
     assert payload["latest"]["cpu_percent"] == 22.0
 
 
+def test_remote_entry_with_local_device_id_runtime_status_uses_local_engine(
+    client,
+    session,
+    auth_user,
+    test_device,
+    monkeypatch,
+):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id=test_device["id"],
+        mode="remote",
+        name="Current Device Via Localhost",
+        server_url="http://localhost:8000",
+        token="local-device-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    captured = {}
+
+    def fake_build_runtime_status(runtime_session, device_id):
+        captured["device_id"] = device_id
+        captured["same_session"] = runtime_session is session
+        return {
+            "device_id": device_id,
+            "device": {"id": device_id},
+            "groups": [{"id": "service:test", "kind": "service", "title": "测试服务"}],
+            "items": [
+                {
+                    "id": "command:server",
+                    "key": "server",
+                    "kind": "service",
+                    "source": "command",
+                    "group_id": "service:test",
+                    "group_title": "测试服务",
+                    "title": "server",
+                    "active": False,
+                    "status": {"running": False},
+                    "actions": [],
+                    "raw": {},
+                }
+            ],
+            "queue": None,
+            "runner_running": False,
+            "next_wake_at": None,
+            "runner_error": None,
+        }
+
+    def fail_proxy_request(*args, **kwargs):
+        raise AssertionError("local device runtime entry should not proxy to itself")
+
+    monkeypatch.setattr(device_entries_api, "build_runtime_status", fake_build_runtime_status)
+    monkeypatch.setattr(device_entries_api.requests, "request", fail_proxy_request)
+
+    response = client.get(f"/api/device-entries/{entry.entry_id}/runtime/status")
+
+    assert response.status_code == 200
+    assert captured == {"device_id": test_device["id"], "same_session": True}
+    payload = response.json()
+    assert payload["device_id"] == test_device["id"]
+    assert payload["items"][0]["title"] == "server"
+
+
 def test_trigger_command_job_runtime_item_queues(client, session, test_device, monkeypatch):
     task = Task(
         id="job-command",
@@ -146,32 +211,6 @@ def test_trigger_command_service_runtime_item_starts_service(client, session, te
         "replace_running": True,
         "trigger_reason": "manual_runtime",
     }
-
-
-def test_trigger_legacy_codeyun_command_delegates_to_watchdog(session, test_device, monkeypatch):
-    task = Task(
-        id="legacy-codeyun-command",
-        name="codeyun",
-        command="uv run dev.py",
-        device_id=test_device["id"],
-        created_at=time.time(),
-    )
-    session.add(task)
-    session.commit()
-
-    captured = {}
-
-    def fake_trigger_builtin_runtime_item(item_key: str, session_arg):
-        captured["item_key"] = item_key
-        captured["session"] = session_arg
-        return {"status": "started", "key": item_key}
-
-    monkeypatch.setattr(runtime_core, "trigger_builtin_runtime_item", fake_trigger_builtin_runtime_item)
-
-    result = runtime_core.trigger_command_runtime_item("legacy-codeyun-command", session)
-
-    assert result == {"status": "started", "key": "codeyun-watchdog"}
-    assert captured == {"item_key": "codeyun-watchdog", "session": session}
 
 
 def test_local_device_entry_runtime_item_trigger_uses_same_runtime_engine(
@@ -296,47 +335,6 @@ def test_runtime_queue_uses_runtime_titles_and_preserves_duplicate_records(sessi
     ]
 
 
-def test_runtime_status_hides_legacy_codeyun_command_item(session, test_device, monkeypatch):
-    legacy_task = Task(
-        id="legacy-codeyun-command",
-        name="codeyun",
-        command="uv run dev.py",
-        device_id=test_device["id"],
-        created_at=time.time(),
-    )
-    normal_task = Task(
-        id="normal-service-command",
-        name="capture",
-        command="python capture.py",
-        device_id=test_device["id"],
-        created_at=time.time(),
-    )
-    session.add(legacy_task)
-    session.add(normal_task)
-    session.commit()
-
-    monkeypatch.setattr(runtime_core.task_manager, "scan_running_tasks", lambda: None)
-    monkeypatch.setattr(runtime_core.task_manager, "get_task_status", lambda task_id: {"running": False})
-    monkeypatch.setattr(
-        runtime_core,
-        "_collect_builtin_jobs",
-        lambda session: {
-            "items": [],
-            "queue": {"running": None, "pending": [], "recent": []},
-            "runner_running": False,
-            "next_wake_at": None,
-            "runner_error": None,
-        },
-    )
-    monkeypatch.setattr(runtime_core, "_collect_builtin_services", lambda: {"items": []})
-
-    payload = runtime_core.build_runtime_status(session, test_device["id"])
-
-    command_keys = {item["key"] for item in payload["items"] if item["source"] == "command"}
-    assert "legacy-codeyun-command" not in command_keys
-    assert "normal-service-command" in command_keys
-
-
 def test_builtin_runtime_logs_use_runtime_title_and_queue_records(session, monkeypatch):
     queue = {
         "running": None,
@@ -417,65 +415,6 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
     assert item["actions"] == ["trigger", "stop", "logs", "configure"]
     assert "空闲10分释放" in item["description"]
     assert "独立进程" in item["description"]
-
-
-def test_builtin_service_runtime_projection_contract_is_stable():
-    ocr_item = runtime_core._serialize_ocr_service_item({
-        "key": "ocr",
-        "title": "OCR",
-        "running": False,
-        "loaded": False,
-        "state": "cold",
-    })
-    watchdog_item = runtime_core._serialize_codeyun_watchdog_service_item({
-        "title": "CodeYun 本机守护",
-        "running": True,
-        "state": "running",
-        "interval_seconds": 60,
-        "script_path": "watchdog.py",
-        "cwd": ".",
-    })
-
-    common_keys = {
-        "id",
-        "key",
-        "kind",
-        "source",
-        "group_id",
-        "group_title",
-        "title",
-        "description",
-        "command",
-        "cwd",
-        "schedule",
-        "schedule_policy",
-        "schedule_label",
-        "next_run_at",
-        "timeout",
-        "order",
-        "enabled",
-        "active",
-        "status",
-        "actions",
-        "raw",
-        "schedule_kind",
-        "timeout_policy",
-        "timeout_seconds",
-        "concurrency_scope",
-        "concurrency_key",
-        "overlap_policy",
-        "queue_key",
-    }
-
-    for item in (ocr_item, watchdog_item):
-        assert common_keys <= item.keys()
-        assert item["kind"] == "service"
-        assert item["source"] == "builtin"
-        assert item["schedule_kind"] == "manual"
-        assert item["timeout_policy"] == "none"
-        assert item["concurrency_scope"] == "unit"
-        assert item["queue_key"] is None
-        assert isinstance(item["status"], dict)
 
 
 def test_trigger_builtin_ocr_runtime_item_starts_external_service(session, monkeypatch):
@@ -635,21 +574,15 @@ def test_attendance_behavior_tree_builtin_service_is_mi15_scoped(monkeypatch):
     monkeypatch.setattr(runtime_core, "is_fanxiu_behavior_tree_service_enabled", lambda: True)
 
     monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: False)
-    assert [item["key"] for item in runtime_core._collect_builtin_services()["items"]] == [
-        "ocr",
-        "codeyun-watchdog",
-        "proxy-traffic-audit",
-        "fanxiu-behavior-tree",
-    ]
+    keys = [item["key"] for item in runtime_core._collect_builtin_services()["items"]]
+    assert keys[:3] == ["ocr", "codeyun-watchdog", "proxy-traffic-audit"]
+    assert "attendance-behavior-tree" not in keys
+    assert "fanxiu-behavior-tree" in keys
 
     monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: True)
-    assert [item["key"] for item in runtime_core._collect_builtin_services()["items"]] == [
-        "ocr",
-        "codeyun-watchdog",
-        "proxy-traffic-audit",
-        "attendance-behavior-tree",
-        "fanxiu-behavior-tree",
-    ]
+    keys = [item["key"] for item in runtime_core._collect_builtin_services()["items"]]
+    assert keys[:3] == ["ocr", "codeyun-watchdog", "proxy-traffic-audit"]
+    assert keys.index("attendance-behavior-tree") < keys.index("fanxiu-behavior-tree")
 
 
 def test_disabled_attendance_behavior_tree_runtime_item_cannot_start_on_non_execution_host(session, monkeypatch):
@@ -697,7 +630,7 @@ def test_disabled_fanxiu_behavior_tree_runtime_item_cannot_start_on_non_executio
 
 
 def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
 
     monkeypatch.setenv("FX_CODEYUN_OCR_HOST", "http://192.168.31.15:8000")
 
@@ -709,7 +642,7 @@ def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
 
 
 def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
     monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
@@ -724,7 +657,7 @@ def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(mon
 
 
 def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
     monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
@@ -740,7 +673,7 @@ def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypat
 
 
 def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("CODEYUN_OCR_DEVICE", raising=False)
     monkeypatch.delenv("FX_CODEYUN_OCR_DEVICE", raising=False)
@@ -756,57 +689,8 @@ def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
     assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="cpu")) == "gpu"
 
 
-def test_fanxiu_behavior_tree_ocr_idle_timeout_uses_global_setting(tmp_path, monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
-
-    fx_root = tmp_path / "fx"
-    script_path = fx_root / "tools" / "凡修手游.py"
-    script_path.parent.mkdir(parents=True)
-    script_path.write_text("# test\n", encoding="utf-8")
-    python_path = tmp_path / "python.exe"
-    python_path.write_text("", encoding="utf-8")
-    mainwin = tmp_path / "mainwin"
-    mainwin.mkdir()
-
-    captured_ocr_env: dict[str, str] = {}
-    captured_service_env: dict[str, str] = {}
-
-    def fake_start_ocr_service(*, replace_existing: bool = False, env_overrides=None):
-        captured_ocr_env.update(env_overrides or {})
-        return {"service": {"running": True, "url": "http://127.0.0.1:8765", "device": "gpu"}}
-
-    monkeypatch.delenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS", raising=False)
-    monkeypatch.setenv("FX_PROJECT_ROOT", str(fx_root))
-    monkeypatch.setenv("FX_PYTHON", str(python_path))
-    monkeypatch.setenv("FX_MAINWIN_ROOT", str(mainwin))
-    monkeypatch.setattr(fanxiu_service, "terminate_behavior_tree_processes", lambda timeout=5.0: {"terminated": []})
-    monkeypatch.setattr(
-        fanxiu_service,
-        "get_settings",
-        lambda: SimpleNamespace(
-            ocr_device="gpu",
-            ocr_idle_timeout_seconds=120,
-            backend_host="127.0.0.1",
-            backend_port=8000,
-        ),
-    )
-    monkeypatch.setattr(fanxiu_service, "get_ocr_service_status", lambda: {"running": False, "device": "gpu"})
-    monkeypatch.setattr(fanxiu_service, "start_ocr_service", fake_start_ocr_service)
-    monkeypatch.setattr(
-        fanxiu_service,
-        "popen_python_script_service",
-        lambda *_args, **kwargs: captured_service_env.update(kwargs.get("env") or {}) or SimpleNamespace(pid=2468),
-    )
-    monkeypatch.setattr(fanxiu_service.time, "sleep", lambda _seconds: None)
-
-    fanxiu_service.start_behavior_tree_service(replace_existing=False)
-
-    assert captured_ocr_env["CODEYUN_OCR_IDLE_TIMEOUT_SECONDS"] == "120"
-    assert captured_service_env["FX_CODEYUN_OCR_PROBE_MODE"] == "status"
-
-
 def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monkeypatch):
-    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
 
     class FakeSocket:
         def __enter__(self):

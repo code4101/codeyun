@@ -182,6 +182,12 @@ class FanxiuDataAnnotationAssetTreeRequest(BaseModel):
     tree: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class FanxiuDataAnnotationSaveFrameRequest(BaseModel):
+    entry_id: str
+    current_frame_data_url: str = Field(min_length=1)
+    filename: Optional[str] = None
+
+
 class FanxiuDataAnnotationFrameStructureRequest(BaseModel):
     entry_id: str
     write: bool = False

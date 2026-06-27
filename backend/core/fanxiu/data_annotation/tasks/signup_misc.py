@@ -77,9 +77,11 @@ class SignupMiscTaskMixin:
                 if not (yield from self._日常报名等待领取页(runtime)):
                     continue
                 yield from runtime.wait_click(24, "领取")
-                yield from runtime.wait_view(23)
                 领取数量 += 1
                 无变化确认次数 = 0
+                领取后落点 = yield from self._日常报名等待领取后落点(runtime)
+                if 领取后落点 != "报名页":
+                    return 领取数量
                 continue
 
             滚动有变化 = yield from runtime.scroll_shape_content(23, "报名列")
@@ -98,7 +100,28 @@ class SignupMiscTaskMixin:
         except TimeoutError:
             return False
 
+    def _日常报名等待领取后落点(self, runtime: Any) -> str:
+        return (
+            yield from runtime.wait_any(
+                {
+                    "报名页": runtime.view_visible(23),
+                    "日常页": runtime.view_visible(69),
+                    "世界": runtime.view_visible(34),
+                    "绿瓶": runtime.view_visible(20),
+                    "报名文本": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：领取后报名页 OCR"),
+                    "世界文本": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：领取后世界 OCR"),
+                },
+                label="日常_报名：等待领取后落点",
+            )
+        )
+
     def _日常报名返回日常页(self, runtime: Any):
+        scene_id, _score, frame = runtime.current_scene([23, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id in (69, 34) or self._daily_assistant_text_is_world_like(text):
+            return
+        if scene_id != 23 and not self._日常报名文本是报名页(text):
+            return
         if all(hasattr(runtime, name) for name in ("click_shape_center", "wait_action_settle")):
             runtime.click_shape_center(23, "返回")
             yield from runtime.wait_action_settle(1.0)

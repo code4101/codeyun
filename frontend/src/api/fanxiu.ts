@@ -666,6 +666,22 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   updated_at: number;
 }
 
+export interface FanxiuDataAnnotationSaveFramePayload {
+  entry_id: string;
+  current_frame_data_url: string;
+  filename?: string;
+}
+
+export interface FanxiuDataAnnotationSaveFrameResponse {
+  ok: boolean;
+  entry_id: string;
+  filename: string;
+  path: string;
+  directory: string;
+  width: number;
+  height: number;
+}
+
 export interface FanxiuDataAnnotationFrameStructureAdoption {
   parent_id: number;
   child_id: number;
@@ -700,8 +716,10 @@ export interface FanxiuDataAnnotationFrameStructureResponse {
     scored_pair_count: number;
     adoption_count: number;
     demoted_identity_count: number;
+    layer_update_count: number;
     adoptions: FanxiuDataAnnotationFrameStructureAdoption[];
     demoted_identities: Array<Record<string, unknown>>;
+    layer_updates: Array<Record<string, unknown>>;
   };
 }
 
@@ -5251,6 +5269,21 @@ export const getFanxiuDataAnnotationAssetTree = (entryId: string) => {
 export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[]) => {
   return api
     .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree })
+    .then(res => res.data);
+};
+
+export const saveFanxiuDataAnnotationFrame = (payload: FanxiuDataAnnotationSaveFramePayload) => {
+  return api
+    .post<FanxiuDataAnnotationSaveFrameResponse>('/fanxiu/data-annotation/save-frame', payload, { timeout: 60000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuDataAnnotationImage = (entryId: string, filename: string) => {
+  return api
+    .get<Blob>('/fanxiu/data-annotation/image', {
+      params: { entry_id: entryId, filename },
+      responseType: 'blob',
+    })
     .then(res => res.data);
 };
 

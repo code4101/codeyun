@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Delete, Search, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 import type { CellProperties, ColumnSettings } from 'handsontable/settings'
 import { useRoute, useRouter } from 'vue-router'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { useUserStore } from '@/store/userStore'
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate'
-import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
 
 import 'handsontable/styles/handsontable.css'
 import 'handsontable/styles/ht-theme-main.css'
@@ -25,8 +23,6 @@ import {
   type AttendanceOrderRow,
   type AttendanceOrderRefundHistoryItem,
 } from '@/api/attendance'
-
-registerCodeyunHandsontableModules()
 
 type InputOrderRow = {
   订单号: string
@@ -114,6 +110,26 @@ const route = useRoute()
 const router = useRouter()
 const activeSubview = ref<OrderSubview>(resolveOrderSubview(route.query.tab))
 let orderResizeObserver: ResizeObserver | null = null
+let hotTableComponentLoader: Promise<unknown> | null = null
+
+const loadHotTableComponent = async () => {
+  if (!hotTableComponentLoader) {
+    hotTableComponentLoader = (async () => {
+      const [{ registerCodeyunHandsontableModules }, handsontableVue3] = await Promise.all([
+        import('@/utils/handsontableSetup'),
+        import('@handsontable/vue3'),
+      ])
+      registerCodeyunHandsontableModules()
+      return handsontableVue3.HotTable
+    })()
+  }
+  return hotTableComponentLoader
+}
+
+const HotTable = defineAsyncComponent({
+  loader: loadHotTableComponent,
+  suspensible: false,
+})
 
 const orderContentWidth = computed(() => Math.max(280, Math.floor(viewportWidth.value || 0)))
 const isCompactViewport = computed(() => orderContentWidth.value <= 640)

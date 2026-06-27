@@ -928,20 +928,16 @@ def _format_panel_number(value: Any) -> str:
     if number is None:
         return "" if value in (None, "") else str(value)
     units = (
-        ("秭秭", 10**48),
-        ("垓秭", 10**44),
-        ("垓垓", 10**40),
-        ("京垓", 10**36),
-        ("京京", 10**32),
-        ("兆京", 10**28),
-        ("亿京", 10**24),
-        ("万京", 10**20),
+        ("秭", 10**24),
+        ("垓", 10**20),
         ("京", 10**16),
         ("兆", 10**12),
+        ("亿", 10**8),
+        ("万", 10**4),
     )
     for unit, divisor in units:
         if abs(number) >= divisor:
-            return f"{_format_fanxiu_game_decimal(number / divisor)}{unit}"
+            return f"{_format_significant_number(number / divisor)}{unit}"
     return _format_significant_number(number)
 
 

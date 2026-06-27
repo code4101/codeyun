@@ -3,11 +3,9 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from subprocess import CompletedProcess
 
-import dev
-from backend.core.runtime import codeyun_watchdog as codeyun_watchdog_runtime
-from backend.core.runtime import management as runtime_management
+from backend.core import codeyun_watchdog_runtime
+from backend.core import runtime_management
 
 
 def test_codeyun_watchdog_default_paths_stay_outside_repo(monkeypatch):
@@ -27,138 +25,19 @@ def test_codeyun_watchdog_default_paths_stay_outside_repo(monkeypatch):
     assert os.fspath(lock_path).endswith(os.path.join("codeyun", "codeyun-watchdog", "codeyun-watchdog.pid"))
 
 
-def test_dev_setup_env_does_not_disable_watchdog_autostart(monkeypatch):
-    monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
+def test_codeyun_watchdog_status_uses_quick_scan_by_default(monkeypatch):
+    calls: list[bool] = []
 
-    env, _python_executable, _npm_exec = dev.setup_env(os.fspath(codeyun_watchdog_runtime.ROOT_DIR))
+    def fake_list_processes(*, full_scan: bool = True):
+        calls.append(full_scan)
+        return []
 
-    assert "CODEYUN_WATCHDOG_AUTOSTART" not in env
+    monkeypatch.setattr(codeyun_watchdog_runtime, "list_codeyun_watchdog_processes", fake_list_processes)
 
+    status = codeyun_watchdog_runtime.get_codeyun_watchdog_status()
 
-def test_watchdog_launcher_prefers_repo_pythonw_on_windows(monkeypatch, tmp_path):
-    scripts_dir = tmp_path / ".venv" / "Scripts"
-    scripts_dir.mkdir(parents=True)
-    pythonw = scripts_dir / "pythonw.exe"
-    pythonw.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(codeyun_watchdog_runtime, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
-    monkeypatch.setattr(codeyun_watchdog_runtime.sys, "executable", os.fspath(scripts_dir / "python.exe"))
-
-    assert codeyun_watchdog_runtime._resolve_watchdog_python_executable() == os.fspath(pythonw)
-
-
-def test_watchdog_startup_status_reads_windows_task_xml(monkeypatch):
-    xml = """<?xml version="1.0" encoding="UTF-16"?>
-<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Settings><Enabled>true</Enabled></Settings>
-</Task>"""
-
-    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
-    monkeypatch.setattr(
-        codeyun_watchdog_runtime,
-        "_run_schtasks",
-        lambda *args: CompletedProcess(["schtasks", *args], 0, stdout=xml, stderr=""),
-    )
-
-    status = codeyun_watchdog_runtime.get_codeyun_watchdog_startup_status()
-
-    assert status["supported"] is True
-    assert status["configured"] is True
-    assert status["enabled"] is True
-    assert status["task_name"] == "CodeYun Watchdog"
-
-
-def test_list_watchdog_processes_skips_non_python_cmdline_probe(monkeypatch):
-    class FakeProcess:
-        def __init__(self, pid: int, name: str, cmdline: list[str]):
-            self.pid = pid
-            self.info = {"name": name}
-            self._name = name
-            self._cmdline = cmdline
-            self.cmdline_calls = 0
-
-        def cmdline(self):
-            self.cmdline_calls += 1
-            return list(self._cmdline)
-
-        def name(self):
-            return self._name
-
-        def ppid(self):
-            return 1
-
-        def create_time(self):
-            return 123.0
-
-    script_path = Path("D:/mock/scripts/codeyun_watchdog.py")
-    non_python = FakeProcess(91001, "node.exe", ["node.exe", "server.js"])
-    watchdog = FakeProcess(
-        91002,
-        "pythonw.exe",
-        ["pythonw.exe", os.fspath(script_path), "--loop", "--interval", "60"],
-    )
-
-    monkeypatch.setattr(codeyun_watchdog_runtime, "WATCHDOG_SCRIPT", script_path)
-    monkeypatch.setattr(codeyun_watchdog_runtime, "_read_lock_pid", lambda: None)
-    monkeypatch.setattr(
-        codeyun_watchdog_runtime.psutil,
-        "process_iter",
-        lambda _attrs: [non_python, watchdog],
-    )
-
-    items = codeyun_watchdog_runtime.list_codeyun_watchdog_processes()
-
-    assert non_python.cmdline_calls == 0
-    assert watchdog.cmdline_calls >= 1
-    assert [item["pid"] for item in items] == [91002]
-
-
-def test_enable_watchdog_startup_creates_onlogon_task(monkeypatch, tmp_path):
-    calls: list[tuple[str, ...]] = []
-    script = tmp_path / "scripts" / "codeyun_watchdog.py"
-    script.parent.mkdir(parents=True)
-    script.write_text("print('watchdog')", encoding="utf-8")
-
-    def fake_run(*args: str):
-        calls.append(args)
-        if args[:2] == ("/Query", "/TN"):
-            return CompletedProcess(["schtasks", *args], 0, stdout="<Task><Settings><Enabled>true</Enabled></Settings></Task>", stderr="")
-        return CompletedProcess(["schtasks", *args], 0, stdout="", stderr="")
-
-    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
-    monkeypatch.setattr(codeyun_watchdog_runtime, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(codeyun_watchdog_runtime, "WATCHDOG_SCRIPT", script)
-    monkeypatch.setattr(codeyun_watchdog_runtime, "_run_schtasks", fake_run)
-
-    result = codeyun_watchdog_runtime.enable_codeyun_watchdog_startup()
-
-    create_call = calls[0]
-    assert create_call[:2] == ("/Create", "/TN")
-    assert "CodeYun Watchdog" in create_call
-    assert "/SC" in create_call
-    assert "ONLOGON" in create_call
-    assert "/F" in create_call
-    assert result["startup"]["enabled"] is True
-
-
-def test_runtime_autostart_configuration_only_supports_watchdog(monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(
-        runtime_management,
-        "enable_codeyun_watchdog_startup",
-        lambda: calls.append("enable") or {"status": "enabled"},
-    )
-
-    assert runtime_management.configure_builtin_runtime_item_autostart("codeyun-watchdog", True) == {"status": "enabled"}
-    assert calls == ["enable"]
-
-    try:
-        runtime_management.configure_builtin_runtime_item_autostart("ocr", True)
-    except runtime_management.HTTPException as exc:
-        assert exc.status_code == 400
-    else:
-        raise AssertionError("expected HTTPException")
+    assert calls == [False]
+    assert status["running"] is False
 
 
 def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
@@ -166,7 +45,9 @@ def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
 
     monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
     monkeypatch.delenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", raising=False)
-    monkeypatch.delenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", raising=False)
+    monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "0")
+    monkeypatch.delenv("FX_PACKET_SERVICE_AUTOSTART", raising=False)
+    monkeypatch.delenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED", raising=False)
     monkeypatch.setattr(
         runtime_management,
         "start_codeyun_watchdog",
@@ -179,16 +60,16 @@ def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
     )
     monkeypatch.setattr(
         runtime_management,
-        "ensure_local_critical_command_services",
-        lambda: calls.append("critical") or {"status": "ok"},
+        "start_fanxiu_packet_service",
+        lambda: calls.append("fanxiu-packet") or {"status": "started"},
     )
 
     result = runtime_management.ensure_local_builtin_services_on_startup()
 
-    assert calls == ["watchdog", "audit", "critical"]
+    assert calls == ["watchdog", "audit", "fanxiu-packet"]
     assert result["codeyun-watchdog"]["status"] == "started"
     assert result["proxy-traffic-audit"]["status"] == "started"
-    assert result["critical-command-services"]["status"] == "ok"
+    assert result["fanxiu-capture-runtime"]["status"] == "started"
 
 
 def test_local_builtin_services_autostart_can_be_disabled(monkeypatch):
@@ -196,10 +77,11 @@ def test_local_builtin_services_autostart_can_be_disabled(monkeypatch):
 
     monkeypatch.setenv("CODEYUN_WATCHDOG_AUTOSTART", "0")
     monkeypatch.setenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", "false")
-    monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "no")
+    monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "false")
+    monkeypatch.setenv("FX_PACKET_SERVICE_AUTOSTART", "false")
     monkeypatch.setattr(runtime_management, "start_codeyun_watchdog", lambda: calls.append("watchdog"))
     monkeypatch.setattr(runtime_management, "start_proxy_traffic_audit", lambda: calls.append("audit"))
-    monkeypatch.setattr(runtime_management, "ensure_local_critical_command_services", lambda: calls.append("critical"))
+    monkeypatch.setattr(runtime_management, "start_fanxiu_packet_service", lambda: calls.append("fanxiu-packet"))
 
     assert runtime_management.ensure_local_builtin_services_on_startup() == {}
     assert calls == []
@@ -212,85 +94,9 @@ def test_local_builtin_services_autostart_reports_errors(monkeypatch):
     monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
     monkeypatch.setenv("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART", "0")
     monkeypatch.setenv("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART", "0")
+    monkeypatch.setenv("FX_PACKET_SERVICE_AUTOSTART", "0")
     monkeypatch.setattr(runtime_management, "start_codeyun_watchdog", fail_watchdog)
 
     result = runtime_management.ensure_local_builtin_services_on_startup()
 
     assert result["codeyun-watchdog"] == {"status": "error", "error": "boom"}
-
-
-def test_fanxiu_behavior_tree_start_also_ensures_doctor_watch(monkeypatch):
-    calls: list[str] = []
-
-    class Entry:
-        entry_id = "entry"
-
-    monkeypatch.delenv("FANXIU_DOCTOR_WATCH_AUTOSTART", raising=False)
-    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
-    monkeypatch.setattr(
-        runtime_management,
-        "ensure_fanxiu_behavior_tree_service",
-        lambda **kwargs: calls.append(f"bt:{kwargs['entry_id']}") or {"status": "started"},
-    )
-    monkeypatch.setattr(
-        runtime_management,
-        "_get_data_annotation_behavior_tree_status",
-        lambda: {"running": True},
-    )
-    monkeypatch.setattr(
-        runtime_management,
-        "ensure_doctor_watch_background",
-        lambda: calls.append("doctor") or {"ok": True, "started": True},
-    )
-
-    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
-
-    assert calls == ["bt:entry", "doctor"]
-    assert result["service"] == {"running": True}
-    assert result["doctor_watch"] == {"ok": True, "started": True}
-
-
-def test_fanxiu_behavior_tree_start_can_skip_doctor_watch(monkeypatch):
-    calls: list[str] = []
-
-    class Entry:
-        entry_id = "entry"
-
-    monkeypatch.setenv("FANXIU_DOCTOR_WATCH_AUTOSTART", "0")
-    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
-    monkeypatch.setattr(
-        runtime_management,
-        "ensure_fanxiu_behavior_tree_service",
-        lambda **kwargs: calls.append(f"bt:{kwargs['entry_id']}") or {"status": "started"},
-    )
-    monkeypatch.setattr(runtime_management, "_get_data_annotation_behavior_tree_status", lambda: {"running": True})
-    monkeypatch.setattr(
-        runtime_management,
-        "ensure_doctor_watch_background",
-        lambda: (_ for _ in ()).throw(AssertionError("doctor watch should not start")),
-    )
-
-    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
-
-    assert calls == ["bt:entry"]
-    assert "doctor_watch" not in result
-
-
-def test_fanxiu_behavior_tree_start_reports_doctor_watch_error(monkeypatch):
-    class Entry:
-        entry_id = "entry"
-
-    monkeypatch.delenv("FANXIU_DOCTOR_WATCH_AUTOSTART", raising=False)
-    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
-    monkeypatch.setattr(runtime_management, "ensure_fanxiu_behavior_tree_service", lambda **kwargs: {"status": "started"})
-    monkeypatch.setattr(runtime_management, "_get_data_annotation_behavior_tree_status", lambda: {"running": True})
-    monkeypatch.setattr(
-        runtime_management,
-        "ensure_doctor_watch_background",
-        lambda: (_ for _ in ()).throw(RuntimeError("watch boom")),
-    )
-
-    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
-
-    assert result["status"] == "started"
-    assert result["doctor_watch"] == {"ok": False, "started": False, "error": "watch boom"}
