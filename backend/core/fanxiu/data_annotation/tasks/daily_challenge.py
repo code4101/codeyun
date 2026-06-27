@@ -1742,6 +1742,10 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             scene_id, score, frame = runtime.current_scene([276, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
+            if scene_id in {69, 34}:
+                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=int(scene_id))
+                self._log("success", f"日常_助手：一键执行后回到 #{scene_id}，按已处理收尾")
+                return "success"
             if scene_id == 276 or self._daily_assistant_text_is_one_key_confirm(text):
                 if not isinstance(image276, dict) or self._find_shape(image276, "是") is None:
                     raise RuntimeError("日常_助手：检测到一键执行消耗确认，但缺少 #276「是」标注")
@@ -1757,6 +1761,10 @@ class DailyChallengeTaskMixin:
                 yield from runtime.wait_action_settle(float(payload.get("assistant_one_key_confirm_settle_seconds") or 2.0))
                 break
             if time.monotonic() - start >= confirm_timeout:
+                if self._daily_assistant_scene_or_text_is_list(scene_id, text):
+                    yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
+                    self._log("success", "日常_助手：一键执行后仍在小助手总览，按已完成/无需重复执行收尾")
+                    return "success"
                 raise TimeoutError(
                     "日常_助手：点击一键执行后未检测到消耗确认或执行落点，"
                     f"最后 #{scene_id or 'unknown'} {score:.0f}%，OCR={text[:120]}"

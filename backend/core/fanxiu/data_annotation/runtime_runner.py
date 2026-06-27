@@ -519,6 +519,8 @@ class FanxiuRuntime(Runtime):
             if key in parent_raw:
                 raw[key] = parent_raw.get(key)
         raw["_wait_click_action_title"] = shape.title or shape.raw.get("id")
+        if not str(raw.get("ocrText") or "").strip() and str(shape.title or "").strip():
+            raw["ocrText"] = str(shape.title).strip()
         return raw
 
     def _current_view_from_frame(self) -> View | None:
@@ -4902,7 +4904,7 @@ class DataAnnotationRuntimeRunner(
             label=f"{task_label}：等待秘藏阁仙币页",
         )
         yield from runtime.wait_click(248, "仙币")
-        yield from runtime.wait_action_settle(1.5)
+        yield from runtime.wait_action_settle(float(payload.get("coin_tab_settle_seconds") or 2.5))
 
     def _click_daily_xianshi_free_coin_box(
         self,
@@ -4914,37 +4916,25 @@ class DataAnnotationRuntimeRunner(
         *,
         task_label: str,
     ):
+        del image249
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        timeout = float(payload.get("coin_box_timeout") or 60.0)
-        start = time.monotonic()
-        last_error = ""
-        while True:
-            self._raise_if_stopped(stop_event)
-            try:
-                text = yield from runtime.wait_click_and_ocr(
-                    249,
-                    "灵石仙币宝匣",
-                    settle_seconds=float(payload.get("coin_box_settle_seconds") or 1.5),
-                )
-                if self._daily_xianshi_text_is_box_detail(text):
-                    return (yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label))
-                last_error = f"点击后未进入宝匣详情，OCR={text[:120]}"
-            except Exception as exc:
-                last_error = str(exc)
-            if time.monotonic() - start >= timeout:
-                if self._daily_xianshi_text_indicates_no_free_coin_box(last_error):
-                    self._log("success", f"{task_label}：未发现免费灵石仙币宝匣，当前仅见非免费宝匣：{last_error}")
-                    return "not_free"
-                self._log("warning", f"{task_label}：{timeout:.0f} 秒内未能点击免费灵石仙币宝匣，跳过本次领取：{last_error}")
-                return False
-            with self._lock:
-                self._status.update({
-                    "phase": "daily_xianshi_wait_coin_box",
-                    "message": f"{task_label}：等待免费灵石仙币宝匣可点击",
-                    "updated_at": time.time(),
-                })
-            yield from runtime.wait_action_settle(float(payload.get("coin_box_retry_interval_seconds") or 2.0))
+        self._raise_if_stopped(stop_event)
+        with self._lock:
+            self._status.update({
+                "phase": "daily_xianshi_open_coin_box",
+                "message": f"{task_label}：点击灵石仙币宝匣进入详情",
+                "updated_at": time.time(),
+            })
+            self._log_locked("action", f"{task_label}：点击 #249「灵石仙币宝匣」")
+        runtime.click_shape_center(249, "灵石仙币宝匣")
+        yield from runtime.wait_action_settle(float(payload.get("coin_box_settle_seconds") or 1.5))
+        try:
+            return (yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label))
+        except Exception as exc:
+            self._log("success", f"{task_label}：#250 未匹配「领取」，视为今日已无可领免费项：{exc}")
+            yield from self._return_daily_xianshi_box_detail_to_coin_list(ctx, stop_event, payload, image250, task_label=task_label)
+            return "not_free"
 
     def _daily_xianshi_text_indicates_no_free_coin_box(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -4953,6 +4943,26 @@ class DataAnnotationRuntimeRunner(
         if "免费" in normalized:
             return False
         return "宝匣" in normalized and any(fragment in normalized for fragment in ("兑换所需", "价格", "所需"))
+
+    def _return_daily_xianshi_box_detail_to_coin_list(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        image250: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        del image250
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        runtime.click_shape_center(250, "返回")
+        yield from runtime.wait_action_settle(float(payload.get("coin_box_return_settle_seconds") or 1.0))
+        yield from runtime.wait_view(
+            249,
+            label=f"{task_label}：等待返回仙币宝匣列表 #249",
+        )
+        return "success"
 
     def _claim_daily_xianshi_coin_box(
         self,
@@ -5820,10 +5830,11 @@ class DataAnnotationRuntimeRunner(
                         trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
                     return 86, 100.0
             recognizer = self._scene_recognizer()
+            identify = getattr(recognizer, "identify_scene_number", recognizer.identify_scene_tree_number)
             if trace is None:
-                scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
+                scene_id, score = identify(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
             else:
-                scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
+                scene_id, score = identify(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
@@ -5883,6 +5894,10 @@ class DataAnnotationRuntimeRunner(
         if self._daily_lingta_text_is_world_like(text):
             self._log("detail", "场景强 OCR 命中 #34 世界，跳过局部路径候选")
             return 34
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if "可旋转" in compact and "法则之主" in compact and "拜谒" in compact:
+            self._log("detail", "场景强 OCR 命中 #265 法则之主旋转选择页")
+            return 265
         return None
 
     def _leave_scene_confirm_text(self, text: str) -> bool:
@@ -5977,6 +5992,27 @@ class DataAnnotationRuntimeRunner(
         if start_scene_id == target_scene_id:
             return []
         edges = self._scene_jump_edges(tree)
+        for item in tree:
+            if not isinstance(item, dict) or str(item.get("type") or "image") != "image":
+                continue
+            source_id = self._scene_jump_label_number(item.get("id"))
+            if source_id is None:
+                continue
+            edge_list = edges.setdefault(source_id, [])
+            for shape in item.get("shapes") if isinstance(item.get("shapes"), list) else []:
+                if not isinstance(shape, dict) or not str(shape.get("sceneJumpTarget") or "").strip():
+                    continue
+                target_ids = self._scene_jump_target_ids(tree, shape)
+                if not target_ids:
+                    target_id = self._scene_jump_label_number(shape.get("sceneJumpTarget"))
+                    target_ids = [target_id] if target_id is not None else []
+                if target_ids:
+                    edge_list.append({
+                        "source_id": source_id,
+                        "image": item,
+                        "shape": shape,
+                        "target_ids": target_ids,
+                    })
         queue: list[tuple[int, list[dict[str, Any]]]] = [(start_scene_id, [])]
         visited = {start_scene_id}
         while queue:
@@ -6012,6 +6048,32 @@ class DataAnnotationRuntimeRunner(
                 counts[int(scene_id)] = max(counts.get(int(scene_id), 0), count)
         return counts
 
+    def _scene_navigation_shape_risk(self, shape: dict[str, Any]) -> int:
+        title = _sanitize_ocr_text(shape.get("title"))
+        if not title:
+            return 0
+        high_risk_keywords = (
+            "一键领取",
+            "领取",
+            "购买",
+            "挑战",
+            "拜谒",
+            "兑换",
+            "升级",
+            "升阶",
+            "执行",
+            "删除",
+            "使用",
+        )
+        return 100 if any(keyword in title for keyword in high_risk_keywords) else 0
+
+    def _scene_route_navigation_risk(self, route: list[dict[str, Any]]) -> int:
+        risk = 0
+        for edge in route:
+            shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+            risk += self._scene_navigation_shape_risk(shape)
+        return risk
+
     def _rank_scene_next_edge(
         self,
         tree: list[dict[str, Any]],
@@ -6030,6 +6092,9 @@ class DataAnnotationRuntimeRunner(
             return None
 
         shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+        current_edge_risk = self._scene_navigation_shape_risk(shape)
+        if current_edge_risk >= 100:
+            return None
         target_counts = self._scene_jump_target_counts(tree, shape)
         reachable_landings: list[tuple[int, int]] = []
         for landing_id in target_ids:
@@ -6040,6 +6105,14 @@ class DataAnnotationRuntimeRunner(
                 continue
             route = self._find_scene_route(tree, landing_id, int(target_scene_id))
             if route is not None:
+                route_risk = self._scene_route_navigation_risk(route)
+                if route_risk >= 100:
+                    continue
+                first_route_edge = route[0] if route else None
+                if isinstance(first_route_edge, dict) and int(first_route_edge.get("source_id") or 0) == landing_id:
+                    next_ids = {int(item) for item in first_route_edge.get("target_ids") or []}
+                    if source_id in next_ids:
+                        continue
                 reachable_landings.append((landing_id, len(route)))
         if not reachable_landings:
             return None
@@ -6047,12 +6120,22 @@ class DataAnnotationRuntimeRunner(
         direct = any(landing_id == int(target_scene_id) for landing_id, _ in reachable_landings)
         best_landing_id, downstream_len = min(reachable_landings, key=lambda item: item[1])
         best_count = max((target_counts.get(landing_id, 0) for landing_id, _ in reachable_landings), default=0)
+        wrong_target_count = max(
+            (count for landing_id, count in target_counts.items() if landing_id != int(target_scene_id)),
+            default=0,
+        )
         ambiguity = len(target_ids)
         dynamic_penalty = 1 if edge.get("_runtime_confirm_edge") else 0
+        total_path_len = 1 + int(downstream_len)
+        direct_target_count = target_counts.get(int(target_scene_id), 0)
+        route = [] if direct else (self._find_scene_route(tree, best_landing_id, int(target_scene_id)) or [])
+        navigation_risk = current_edge_risk + self._scene_route_navigation_risk(route)
         score = (
             1 if direct else 0,
-            int(best_count),
-            -int(downstream_len),
+            int(direct_target_count),
+            -int(wrong_target_count),
+            -int(total_path_len),
+            -int(navigation_risk),
             -int(ambiguity),
             -int(dynamic_penalty),
             -int(order),
@@ -6144,6 +6227,36 @@ class DataAnnotationRuntimeRunner(
         if route is not None:
             ambiguous_edges = sum(1 for edge in route if len(edge.get("target_ids") or []) != 1)
             return -ambiguous_edges, len(route)
+        simple_edges: dict[int, list[list[int]]] = {}
+        for item in tree:
+            if not isinstance(item, dict):
+                continue
+            item_id = self._image_number(item)
+            if item_id is None:
+                continue
+            for shape in self._flatten_shapes(item.get("shapes")):
+                target_ids = self._scene_jump_target_ids(tree, shape)
+                if target_ids:
+                    simple_edges.setdefault(int(item_id), []).append([int(target_id) for target_id in target_ids])
+        queue: list[tuple[int, int, int]] = [(int(scene_id), 0, 0)]
+        seen = {int(scene_id)}
+        while queue:
+            node_id, distance, ambiguity = queue.pop(0)
+            for target_ids in simple_edges.get(node_id, []):
+                next_ambiguity = ambiguity + (0 if len(target_ids) == 1 else 1)
+                for next_id in target_ids:
+                    if next_id == int(target_scene_id):
+                        return -next_ambiguity, distance + 1
+                    if next_id in seen:
+                        continue
+                    seen.add(next_id)
+                    queue.append((next_id, distance + 1, next_ambiguity))
+        image = next((item for item in tree if isinstance(item, dict) and self._image_number(item) == int(scene_id)), None)
+        if isinstance(image, dict):
+            for shape in self._flatten_shapes(image.get("shapes")):
+                target_ids = self._scene_jump_target_ids(tree, shape)
+                if int(target_scene_id) in target_ids:
+                    return (0 if len(target_ids) == 1 else -1), 1
         if int(scene_id) in self._scene_jump_confirmation_scene_ids(tree):
             return 1, 1
         return -100, 9999
@@ -6160,15 +6273,33 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(images, dict) or not candidate_scene_ids:
             return None, 0.0
 
-        scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
-        if scene_id is not None:
-            明确性, 路径长度 = self._scene_route_ranking(tree, int(scene_id), int(target_scene_id))
-            self._log(
-                "detail",
-                f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {明确性}，路径长度 {路径长度}",
-            )
+        ranked: list[tuple[float, int, int, int]] = []
+        for candidate_scene_id in candidate_scene_ids:
+            try:
+                scene_id = int(candidate_scene_id)
+            except (TypeError, ValueError):
+                continue
+            image = images.get(scene_id)
+            if not isinstance(image, dict):
+                continue
+            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+            if score < 60.0:
+                continue
+            clarity, route_len = self._scene_route_ranking(tree, scene_id, int(target_scene_id))
+            if clarity <= -100:
+                continue
+            ranked.append((score, clarity, -route_len, scene_id))
+        if not ranked:
+            scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
             return scene_id, score
-        return None, score
+        ranked.sort(reverse=True)
+        score, clarity, neg_route_len, scene_id = ranked[0]
+        route_len = -neg_route_len
+        self._log(
+            "detail",
+            f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {clarity}，路径长度 {route_len}",
+        )
+        return scene_id, score
 
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
         source_shape = {"title": "离开"}
@@ -6177,10 +6308,37 @@ class DataAnnotationRuntimeRunner(
         )
 
     def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
-        return SceneNavigator(tree).route_candidate_ids(
+        candidates = SceneNavigator(tree).route_candidate_ids(
             target_scene_id,
             confirmation_scene_ids=self._scene_jump_confirmation_scene_ids(tree),
         )
+        candidate_set = {int(scene_id) for scene_id in candidates}
+
+        def visit(items: list[dict[str, Any]], parent_scene_id: int | None = None) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                current_parent_scene_id = parent_scene_id
+                if item.get("type") == "image":
+                    image_id = self._image_number(item)
+                    layer = self._image_layer(item)
+                    if image_id is not None and layer in {1, 2}:
+                        current_parent_scene_id = int(image_id)
+                    elif (
+                        image_id is not None
+                        and layer == 3
+                        and parent_scene_id is not None
+                        and int(parent_scene_id) in candidate_set
+                        and int(image_id) not in candidate_set
+                    ):
+                        candidates.append(int(image_id))
+                        candidate_set.add(int(image_id))
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)], current_parent_scene_id)
+
+        visit([item for item in tree if isinstance(item, dict)])
+        return candidates
 
     def _write_asset_tree(self, asset_tree_path: Path, tree: list[dict[str, Any]]) -> None:
         _write_data_annotation_json(asset_tree_path, tree)
@@ -6312,7 +6470,7 @@ class DataAnnotationRuntimeRunner(
         return "local" if bool(shape.get("isSceneIdentity")) or str(shape.get("sceneIdentityRole") or "").strip() not in {"", "off", "无"} else "none"
 
     def _image_layer(self, image: dict[str, Any]) -> int:
-        return normalize_frame_layer(image.get("layer"), 3)
+        return normalize_frame_layer(image.get("layer", image.get("sceneIdentityLevel")), 3)
 
     def _navigation_scene_id(self, ctx: dict[str, Any], scene_id: int | None) -> int | None:
         if scene_id is None:
@@ -6441,6 +6599,7 @@ class DataAnnotationRuntimeRunner(
                 frame = frame_data_url or self._screencap(ctx)
             png_data = self._decode_frame_data_url(frame)
             trace_dir = self._action_trace_dir()
+            trace_dir.mkdir(parents=True, exist_ok=True)
             stamp = _now().strftime("%Y%m%d_%H%M%S_%f")
             image_number = self._image_number(image) or "unknown"
             kind = str(action.get("kind") or "action")
@@ -6656,7 +6815,11 @@ class DataAnnotationRuntimeRunner(
             ocr_enabled = False
         if image_role == "off" and not ocr_enabled:
             return {"ok": False, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image), "reason": "match_disabled", "flags": flags}
-        if ocr_enabled and self._has_cached_ocr_lines(ctx, frame_data_url):
+        if ocr_enabled and (
+            self._has_cached_ocr_lines(ctx, frame_data_url)
+            or (image_role != "off" and not str(image.get("filename") or "").strip())
+        ):
+            self._cached_ocr_lines(ctx, frame_data_url)
             result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
             result["flags"] = flags
             return result
@@ -6780,6 +6943,15 @@ class DataAnnotationRuntimeRunner(
         response = self._ocr_frame(frame_data_url, options=options)
         lines = response.get("lines") if isinstance(response.get("lines"), list) else []
         words = response.get("words") if isinstance(response.get("words"), list) else []
+        ocr_lines_method = getattr(self, "_ocr_lines", None)
+        if (
+            not lines
+            and callable(ocr_lines_method)
+            and getattr(ocr_lines_method, "__func__", None) is not type(self)._ocr_lines
+        ):
+            fallback_lines = ocr_lines_method(frame_data_url)
+            if isinstance(fallback_lines, list):
+                lines = fallback_lines
         cache = {"frame": frame_data_url, "options_key": options_key, "lines": lines, "words": words}
         ctx["_ocr_lines_cache"] = cache
         return cache
@@ -6793,7 +6965,8 @@ class DataAnnotationRuntimeRunner(
 
     def _has_cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> bool:
         cache = ctx.get("_ocr_lines_cache")
-        return isinstance(cache, dict) and cache.get("frame") == frame_data_url and isinstance(cache.get("lines"), list)
+        lines = cache.get("lines") if isinstance(cache, dict) and cache.get("frame") == frame_data_url else None
+        return isinstance(lines, list) and any(isinstance(line, dict) for line in lines)
 
     def _ocr_text_matches(self, text: str, target: str, mode: str) -> bool:
         mode = str(mode or "contains").strip().lower()
@@ -8384,6 +8557,14 @@ class DataAnnotationRuntimeRunner(
                     elapsed_seconds=0.0,
                     history=[f"起点识别 unknown {score:.0f}%"],
                 )
+            if current_scene_id == target_scene_id:
+                with self._lock:
+                    self._status.update({
+                        "current_scene": target_scene_id,
+                        "updated_at": time.time(),
+                    })
+                self._log("success", f"已在目标场景 #{target_scene_id}")
+                return "success"
             current_scene_id = self._navigation_scene_id(ctx, current_scene_id)
             if current_scene_id is None:
                 return self._save_unknown_scene_frame(
@@ -8397,14 +8578,6 @@ class DataAnnotationRuntimeRunner(
                     elapsed_seconds=0.0,
                     history=[f"弱兜底匹配不可作为导航起点 {score:.0f}%"],
                 )
-            if current_scene_id == target_scene_id:
-                with self._lock:
-                    self._status.update({
-                        "current_scene": target_scene_id,
-                        "updated_at": time.time(),
-                    })
-                self._log("success", f"已在目标场景 #{target_scene_id}")
-                return "success"
 
             decision = self._select_scene_next_edge(
                 tree,
@@ -8413,53 +8586,6 @@ class DataAnnotationRuntimeRunner(
                 failed_edge_keys=failed_edge_keys,
             )
             if decision is None:
-                current_image = (ctx.get("images") or {}).get(current_scene_id)
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, {"title": "离开"})
-                confirm_edge = {
-                    "source_id": current_scene_id,
-                    "image": current_image,
-                    "shape": confirm_shape,
-                    "target_ids": [target_scene_id],
-                    "_runtime_confirm_edge": True,
-                } if confirm_shape is not None else None
-                if confirm_edge is not None and self._scene_jump_edge_key(confirm_edge) not in failed_edge_keys:
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"场景移动确认：#{current_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
-                            phase="go_scene_confirm",
-                            current_scene=current_scene_id,
-                    )
-                    self._log("action", f"场景移动确认：#{current_scene_id} -> #{target_scene_id}，点击 {confirm_title}")
-                    self._click_scene_route_shape(ctx, current_image, confirm_shape, frame)
-                    actual_scene_id = yield from self._wait_scene_jump_result(
-                        ctx,
-                        asset_tree_path,
-                        tree,
-                        source_scene_id=current_scene_id,
-                        target_scene_id=target_scene_id,
-                        edge=confirm_edge,
-                        stop_event=stop_event,
-                        return_source_on_stall=True,
-                    )
-                    if actual_scene_id == target_scene_id:
-                        with self._lock:
-                            self._status.update({
-                                "current_scene": target_scene_id,
-                                "updated_at": time.time(),
-                        })
-                        self._log("success", f"到达目标场景 #{target_scene_id}")
-                        return "success"
-                    if actual_scene_id == current_scene_id:
-                        failed_edge_keys.add(self._scene_jump_edge_key(confirm_edge))
-                        last_failed_edge = confirm_edge
-                        self._log("warning", f"场景移动确认：仍停留 #{current_scene_id}，重新识别后继续规划")
-                        yield BehaviorTreeStatus.RUNNING
-                        continue
-                    self._log("detail", f"场景移动：确认后实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
-                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
-                    continue
                 if last_failed_edge is not None:
                     return self._save_unknown_scene_frame(
                         ctx,
@@ -8472,7 +8598,9 @@ class DataAnnotationRuntimeRunner(
                         elapsed_seconds=0.0,
                         history=[f"#{current_scene_id} 已尝试 {len(failed_edge_keys)} 个候选仍未离开源场景"],
                     )
-                raise RuntimeError(f"没有从 #{current_scene_id} 到 #{target_scene_id} 的可规划场景跳转路径")
+                raise RuntimeError(
+                    f"goto_scene({target_scene_id}) 失败：无法从当前#{current_scene_id}找到可达#{target_scene_id}的路径，请检查标注shape。"
+                )
             edge = decision["edge"]
             image = edge["image"]
             shape = edge["shape"]

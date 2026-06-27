@@ -65,15 +65,12 @@ from backend.core.ai.chat_user_config import (
     update_user_ai_chat_provider_base_url,
 )
 from backend.core.access.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.access.feature_access_guard import require_feature_access_dependency
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User
 
 
-router = APIRouter(
-    dependencies=[Depends(require_feature_access_dependency("ai-tools"))],
-)
+router = APIRouter()
 ANONYMOUS_DEFAULT_PROVIDER_ID = "ollama"
 
 
@@ -329,6 +326,7 @@ class AiChatSaveProviderConfigRequest(BaseModel):
     preferred_model: Optional[str] = None
     preferred_models: Optional[list[str]] = None
     api_key: Optional[str] = None
+    api_key_label: Optional[str] = None
     clear_api_key: bool = False
 
 
@@ -923,6 +921,7 @@ def put_ai_chat_saved_config(
             preferred_model=payload.preferred_model,
             preferred_models=payload.preferred_models,
             api_key=payload.api_key,
+            api_key_label=payload.api_key_label,
             clear_api_key=payload.clear_api_key,
         )
     except AiChatUserConfigError as exc:

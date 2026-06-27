@@ -127,7 +127,7 @@ def test_run_nianzhu_step3_endpoint_rebuilds_from_course_sheets(client, test_dev
     assert response.json()["sheet_id"] == 721
     assert response.json()["attendance_sheet_id"] == 721
     assert "从课程存储 sheet 重建 3 行" in response.json()["message"]
-    assert calls == [{"attendance_sheet_id": 721, "active_only": True}]
+    assert calls == [{"attendance_sheet_id": 721, "active_only": True, "course_name": "d250106念住闯关"}]
 
 
 def test_run_nianzhu_step3_endpoint_include_frozen_rebuilds_all_rows(client, test_device, monkeypatch):
@@ -160,7 +160,7 @@ def test_run_nianzhu_step3_endpoint_include_frozen_rebuilds_all_rows(client, tes
 
     assert response.status_code == 200
     assert response.json()["active_only"] is False
-    assert calls == [{"attendance_sheet_id": 21, "active_only": False}]
+    assert calls == [{"attendance_sheet_id": 21, "active_only": False, "course_name": "d250106念住闯关"}]
 
 
 def test_run_nianzhu_step1_endpoint_updates_course_sheets(client, test_device, monkeypatch):
@@ -206,6 +206,7 @@ def test_run_nianzhu_step1_endpoint_updates_course_sheets(client, test_device, m
             "update_lessons": True,
             "update_clockins": True,
             "clockin_pattern": "d250106念住闯关-*",
+            "dynamic_clockin_plugin": "",
             "close_browser": False,
         }
     ]
@@ -249,6 +250,6 @@ def test_run_nianzhu_step2_endpoint_compacts_course_sheets(client, test_device, 
     assert response.json()["step2"]["video_data_rows_after"] == 2
     assert response.json()["rebuild"]["updated_rows"] == 1
     assert calls == [
-        ("step2", {"attendance_sheet_id": 21}),
-        ("rebuild", {"attendance_sheet_id": 21, "active_only": False}),
+        ("step2", {"attendance_sheet_id": 21, "course_name": "d250106念住闯关"}),
+        ("rebuild", {"attendance_sheet_id": 21, "active_only": False, "course_name": "d250106念住闯关"}),
     ]

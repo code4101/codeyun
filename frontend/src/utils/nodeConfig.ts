@@ -1,6 +1,13 @@
-import { ref } from 'vue';
 import { fetchNoteCategoryPalette, updateNoteCategoryPalette } from '@/api/noteTypes';
 import { fromHex, getReadableTextColor, mixWeightedColors, toHex } from '@/utils/colorToolkit';
+import {
+  getNoteTypePaletteLoadPromiseState,
+  noteTypePaletteItemsState,
+  noteTypePaletteLoadedState,
+  setNoteTypePaletteLoadPromiseState,
+} from '@/utils/noteTypePaletteState';
+
+export { resetNoteTypePaletteState } from '@/utils/noteTypePaletteState';
 
 export interface NodeTypeItem {
   id: string;
@@ -87,9 +94,10 @@ const normalizeNodeStatusId = (value: string | null | undefined) => {
   return normalized;
 };
 
-const paletteItems = ref<Record<string, NoteTypePaletteItem>>({});
-const paletteLoaded = ref(false);
-let paletteLoadPromise: Promise<NoteTypePaletteItem[]> | null = null;
+const paletteItems = noteTypePaletteItemsState as typeof noteTypePaletteItemsState & {
+  value: Record<string, NoteTypePaletteItem>;
+};
+const paletteLoaded = noteTypePaletteLoadedState;
 
 export const normalizeNodeColor = (value: string | null | undefined) => {
   if (!value) return null;
@@ -183,16 +191,11 @@ const applyPaletteItems = (items: NoteTypePaletteItem[]) => {
   paletteLoaded.value = true;
 };
 
-export const resetNoteTypePaletteState = () => {
-  paletteItems.value = {};
-  paletteLoaded.value = false;
-  paletteLoadPromise = null;
-};
-
 export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
+  const paletteLoadPromise = getNoteTypePaletteLoadPromiseState() as Promise<NoteTypePaletteItem[]> | null;
   if (!force && paletteLoaded.value) return Object.values(paletteItems.value);
   if (!force && paletteLoadPromise) return paletteLoadPromise;
-  paletteLoadPromise = fetchNoteCategoryPalette()
+  const nextLoadPromise = fetchNoteCategoryPalette()
     .then(response => {
       const normalized = normalizeNoteTypePaletteItems(response.items.map(item => ({
         key: item.key,
@@ -208,9 +211,10 @@ export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
       return normalized;
     })
     .finally(() => {
-      paletteLoadPromise = null;
+      setNoteTypePaletteLoadPromiseState(null);
     });
-  return paletteLoadPromise;
+  setNoteTypePaletteLoadPromiseState(nextLoadPromise as Promise<unknown[]>);
+  return nextLoadPromise;
 };
 
 export const saveNoteTypePalette = async (items: NoteTypePaletteItem[]) => {

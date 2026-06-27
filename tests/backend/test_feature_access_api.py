@@ -13,6 +13,8 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "tools.password-generator",
     "tools.image-browser",
     "tools.color-tools",
+    "tools.music-tools",
+    "tools.open-score-study",
     "attendance-tools",
     "attendance.wjx-feedback",
     "game-tools",
@@ -38,6 +40,7 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.labelme",
     "fanxiu.recharge",
     "fanxiu.cuijian-trial",
+    "mystia.wiki",
     "dsp.calculator",
     "magic-craft",
     "magic-craft.xor-matrix",
@@ -45,6 +48,7 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "notes.center",
     "notes.chat-data",
     "notes.infinite-canvas",
+    "notes.task-system",
 }
 
 

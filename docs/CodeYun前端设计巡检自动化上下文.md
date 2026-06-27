@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e"
-last_audited_at: "2026-06-26T16:37:31.7741967+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-46c34d1d/report.md"
-last_frontend_commit_summary: "完整关闭 ccae0b21..46c34d1d：凡修标注页 Layer 视图与运行时链路、星图笔记日历 Codex 工作量投影、订单页退款历史加载节奏均已做真实三视口复核；未发现需要新增修复的 UI 回归。"
-audited_commit_count: 41
+last_audited_commit: "358177a3394d280730a3abc19d3f1d5272cfc0f1"
+last_audited_at: "2026-06-26T20:42:41.7707308+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-358177a3/report.md"
+last_frontend_commit_summary: "完整关闭 46c34d1d..358177a3：凡修标注页新增场景归纳后，把重复的“连拍”结果入口收回为“缓存”，并完成 fanxiu/runtime、cluster/runtime、orders、notes-star 三视口复核。"
+audited_commit_count: 42
 pending_or_skipped_ranges: []
 ```
 
@@ -458,4 +458,15 @@ pending_or_skipped_ranges: []
 - 验证：复用本地 `5173/8000` 开发环境，以本地 admin token 打开真实页面 `http://127.0.0.1:5173/notes/task-system`，在宽屏 / 普通桌面 / 窄屏三种视口下分别截图 `task-system-after-wide.png`、`task-system-after-desktop.png`、`task-system-after-narrow.png`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
 - 剩余风险：本轮真实数据只复现了自动化只读告警，没有同时采到“可跳转任务问题 + 自动化告警”混合样本；但改动只收敛同一健康条内的投影层级，不改 API、写回和任务逻辑，风险较低。
 - 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`。
+
+- 完整范围：`46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e..358177a3394d280730a3abc19d3f1d5272cfc0f1`
+- 覆盖提交：`358177a3394d280730a3abc19d3f1d5272cfc0f1`
+- 前端入口提交：`358177a3394d280730a3abc19d3f1d5272cfc0f1`
+- 入口如何牵引到旧问题：提交把 `fanxiu/data-annotation` 的帧树工具条再增加了一个常驻动作 `场景归纳`，因此同一工具链上原有的旧问题被直接放大了：开始/停止连拍的动作按钮旁边，还有一个只负责打开连拍结果的文字按钮，但两者都叫“连拍”。这不是无关扩散，而是同一页面、同一采集闭环里的重复事实投影。
+- 本轮减法：不新增控件，不改交互，只把 `openBurstDialog` 的文字入口从 `连拍` 收回为 `缓存`，并补齐 `title/aria-label=连拍缓存`。主界面仍保留开始/停止连拍的图标按钮，但结果入口回到更基础的对象名，工具条重新分清“动作”和“结果”。
+- 信息量保持：用户仍然可以保存单帧、开始/停止连拍、查看连拍缓存、做场景归纳、搜索和管理帧树；减少的是同一行里两个“连拍”并列造成的命名重复，而不是减少采集能力。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-358177a3/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，并用 Chrome 现有 `localhost:5173` token 注入临时 Playwright 会话完成已登录实图；`fanxiu/data-annotation`、`fanxiu/data-annotation/runtime`、`cluster/runtime`、`attendance/orders`、`notes/center?tab=star` 均完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`overflowX` 全部为 `0`，`evidence.json` 未记录新的 console `error/warn`。同时 `npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 通过。
+- 剩余风险：`notes/center?tab=star` 的筛选区在窄屏下仍属于既有高密度结构，但和本轮 `StarNotes` relayout 提交只共享入口、不共享本次修复对象；`fanxiu/data-annotation` 窄屏首屏也仍以画面区为主，右侧帧树工具条可见性依赖下滚，这属于旧页面大结构问题，本轮不继续扩散。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `358177a3394d280730a3abc19d3f1d5272cfc0f1`，保持 `pending_or_skipped_ranges` 为空。
 

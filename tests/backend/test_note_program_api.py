@@ -266,6 +266,59 @@ def test_query_program_supports_native_relative_month_window_matcher(client, ses
     assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-inside")]
 
 
+def test_query_program_can_omit_custom_fields_in_list_response(client, session, auth_user):
+    session.add(
+        make_note(
+            auth_user,
+            "note-progress",
+            "Progress",
+            start_at=month_start_timestamp(0),
+            updated_at=100.0,
+            custom_fields=[["__completion_progress_expr", "string", "1/4"], ["owner", "string", "alice"]],
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "relative_month_window",
+                                "field": "start_at",
+                                "start_month_offset": -1,
+                                "end_month_offset": 1,
+                            },
+                        }
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "include_custom_fields": False,
+                "order_by": "updated_at",
+                "order_desc": False,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_nodes"] == 1
+    assert payload["nodes"][0]["custom_fields"] == []
+    assert payload["nodes"][0]["completion_progress_expr"] == "1/4"
+    assert payload["nodes"][0]["completion_progress"] == 0.25
+
+
 def test_query_program_supports_field_between_with_relative_time_values(client, session, auth_user):
     inside = make_note(
         auth_user,

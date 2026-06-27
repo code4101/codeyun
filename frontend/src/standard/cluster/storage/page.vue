@@ -740,6 +740,7 @@ interface DuplicateSettingsState {
 interface LoadRootOptions {
   workspaceState?: StorageWorkspaceState | null;
   restoreExpanded?: boolean;
+  prefetchedListing?: DeviceDirectoryListing | null;
 }
 
 interface LoadChildrenOptions {
@@ -1703,7 +1704,9 @@ async function loadRoot(
   loadError.value = '';
   const loadVersion = ++rootLoadVersion;
   try {
-    const listing = await fetchListing(request);
+    const listing = canReusePrefetchedListing(request, options.prefetchedListing)
+      ? options.prefetchedListing
+      : await fetchListing(request);
     currentListing.value = listing;
     currentRequest.value = request;
     rootVisibleLimit.value = options.workspaceState
@@ -2019,10 +2022,26 @@ async function toggleNode(node: StorageNode) {
   await loadChildren(node);
 }
 
-async function loadRootsForDevice() {
+function canReusePrefetchedListing(
+  request: DeviceFileSelector,
+  prefetchedListing: DeviceDirectoryListing | null | undefined,
+): prefetchedListing is DeviceDirectoryListing {
+  if (!prefetchedListing) {
+    return false;
+  }
+  if (request.absolute_path) {
+    return prefetchedListing.absolute_path === request.absolute_path;
+  }
+  if (request.root) {
+    return prefetchedListing.root === request.root && prefetchedListing.current_path === (request.path || '');
+  }
+  return false;
+}
+
+async function loadRootsForDevice(): Promise<DeviceDirectoryListing | null> {
   if (!selectedEntryId.value) {
     diskRootOptions.value = [];
-    return;
+    return null;
   }
   loadingRoots.value = true;
   try {
@@ -2035,7 +2054,7 @@ async function loadRootsForDevice() {
         const currentRoot = wechatRoots.value.find((root) => root.current);
         selectedRootKey.value = (currentRoot?.device_id || wechatRoots.value[0]?.device_id || selectedEntryId.value);
       }
-      return;
+      return null;
     }
     const listing = await fetchDeviceDirectoryItems(selectedEntryId.value, {
       absolute_path: DEVICE_ROOT_SENTINEL,
@@ -2045,9 +2064,11 @@ async function loadRootsForDevice() {
     if (!rootOptions.value.some((root) => root.key === selectedRootKey.value)) {
       selectedRootKey.value = SYSTEM_ROOT_KEY;
     }
+    return listing;
   } catch (error: any) {
     diskRootOptions.value = [];
     ElMessage.error(error?.response?.data?.detail || error?.message || '加载磁盘根目录失败');
+    return null;
   } finally {
     loadingRoots.value = false;
   }
@@ -2066,11 +2087,13 @@ async function handleDeviceChange() {
       selectedRootKey.value = selectedEntryId.value;
     }
   }
-  await loadRootsForDevice();
+  const prefetchedRootListing = await loadRootsForDevice();
   if (!isWechatMode.value) {
     await syncLatestDeleteTaskForCurrentDevice();
   }
-  await loadFromInputs();
+  await loadRoot(buildInputRequest(), {
+    prefetchedListing: prefetchedRootListing,
+  });
 }
 
 function closeContextMenu() {
@@ -2608,8 +2631,26 @@ onMounted(async () => {
       const localDevice = resolvedDevices.find((device) => device.mode === 'local');
       selectedEntryId.value = (savedDevice ?? localDevice ?? devices.value[0])?.id ?? '';
       canRestoreSelectedEntry = Boolean(savedDevice);
-      await loadRootsForDevice();
+      const prefetchedRootListing = await loadRootsForDevice();
       await syncLatestDeleteTaskForCurrentDevice();
+      if (selectedEntryId.value) {
+        const savedRequest = canRestoreSelectedEntry && requestMatchesAvailableScope(savedWorkspaceState?.currentRequest ?? null)
+          ? savedWorkspaceState?.currentRequest ?? null
+          : null;
+        const restored = savedRequest
+          ? await loadRoot(savedRequest, {
+            workspaceState: savedWorkspaceState,
+            restoreExpanded: true,
+            prefetchedListing: prefetchedRootListing,
+          })
+          : false;
+        if (!restored) {
+          await loadRoot(buildInputRequest(), {
+            prefetchedListing: prefetchedRootListing,
+          });
+        }
+      }
+      return;
     }
 
     if (selectedEntryId.value) {

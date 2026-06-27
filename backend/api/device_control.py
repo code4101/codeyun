@@ -321,6 +321,8 @@ class AttendanceNianzhuStep1Request(BaseModel):
     update_lessons: bool = True
     update_clockins: bool = True
     clockin_pattern: str = ""
+    # 课程事故专用补数据插件，默认必须为空；新课程配置不要继承旧课程的插件值。
+    dynamic_clockin_plugin: str = ""
     close_browser: bool = True
 
 
@@ -499,6 +501,7 @@ def run_attendance_nianzhu_step1(req: AttendanceNianzhuStep1Request | None = Non
                     update_lessons=req.update_lessons,
                     update_clockins=req.update_clockins,
                     clockin_pattern=req.clockin_pattern,
+                    dynamic_clockin_plugin=req.dynamic_clockin_plugin,
                     close_browser=req.close_browser,
                 )
                 session.commit()

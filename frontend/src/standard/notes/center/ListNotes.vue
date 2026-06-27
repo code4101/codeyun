@@ -227,7 +227,7 @@ const selectedNoteIds = ref<string[]>([]);
 const batchEditVisible = ref(false);
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 const currentPage = ref(1);
-const pageSize = ref(100);
+const pageSize = ref(50);
 const isActive = computed(() => props.active !== false);
 
 // Computed
@@ -257,6 +257,7 @@ const runDataProgram = async (program = getAppliedDataProgram(), persist: boolea
     const normalizedProgram = normalizeNoteProgramChannel(program);
     await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
       limit: 1000,
+      include_custom_fields: false,
       include_edges: false
     }));
     if (persist) {

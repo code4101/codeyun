@@ -10,6 +10,8 @@ export default defineConfig({
     vue(),
     Components({
       dts: 'src/components.d.ts',
+      exclude: [/sync-conflict/],
+      globsExclude: ['**/*sync-conflict*'],
       resolvers: [
         ElementPlusResolver({
           importStyle: 'css',

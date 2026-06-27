@@ -3794,6 +3794,14 @@ def _maybe_strip_note_list_custom_fields(
     return [{key: value for key, value in node.items() if key != "custom_fields"} for node in nodes]
 
 
+def _serialize_note_program_nodes(
+    nodes: list[dict[str, Any]],
+    *,
+    include_custom_fields: bool,
+) -> list[dict[str, Any]]:
+    return _maybe_strip_note_list_custom_fields(nodes, include_custom_fields=include_custom_fields)
+
+
 def _load_edges_between_refs(session: Session, user_id: int, refs: set[str]) -> list[NoteEdge]:
     if not refs:
         return []
@@ -4830,7 +4838,10 @@ def _try_execute_note_program_sql_scan(
         else:
             visible_edges = []
         return {
-            "nodes": [note_list_mapping_to_response_dict(note, current_user) for note in visible_mappings],
+            "nodes": _serialize_note_program_nodes(
+                [note_list_mapping_to_response_dict(note, current_user) for note in visible_mappings],
+                include_custom_fields=request.result.include_custom_fields,
+            ),
             "edges": _serialize_note_edges_for_note_mappings(visible_edges, visible_mappings),
             "total_nodes": int(total_nodes or 0),
             "total_edges": len(visible_edges),
@@ -4855,7 +4866,10 @@ def _try_execute_note_program_sql_scan(
         visible_edges = []
 
     return {
-        "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
+        "nodes": _serialize_note_program_nodes(
+            [_serialize_note_list(note, current_user) for note in visible_nodes],
+            include_custom_fields=request.result.include_custom_fields,
+        ),
         "edges": _serialize_note_edges_for_nodes(visible_edges, visible_nodes),
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges),
@@ -5198,7 +5212,10 @@ def _execute_note_program(
         visible_edges = []
 
     return {
-        "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
+        "nodes": _serialize_note_program_nodes(
+            [_serialize_note_list(note, current_user) for note in visible_nodes],
+            include_custom_fields=request.result.include_custom_fields,
+        ),
         "edges": _serialize_note_edges_for_nodes(visible_edges, visible_nodes),
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges),

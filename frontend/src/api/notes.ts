@@ -210,6 +210,7 @@ export interface NoteProgramRequest {
   };
   result?: {
     include_edges?: boolean;
+    include_custom_fields?: boolean;
     order_by?: string;
     order_desc?: boolean;
     skip?: number;
@@ -1203,6 +1204,17 @@ export const applyNoteProgramChannelLocally = (
     }
 
     return decision;
+  });
+};
+
+export const noteProgramChannelNeedsCustomFieldsLocally = (
+  channel?: Partial<NoteProgramChannel> | null
+): boolean => {
+  const normalizedChannel = normalizeNoteProgramChannel(channel);
+  return normalizedChannel.rules.some(rule => {
+    const matcher = normalizeNoteProgramMatcher(rule.matcher);
+    if (matcher.kind === 'full_text_contains') return true;
+    return matcher.kind === 'field' && typeof matcher.field === 'string' && matcher.field.startsWith('custom_fields.');
   });
 };
 

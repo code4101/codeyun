@@ -71,7 +71,7 @@ import {
   getFanxiuResourceIconUrl,
   getFanxiuStaticVisualManifest,
   getFanxiuWikiMediaUrl,
-  getFanxiuWikiLinkIndex,
+  getFanxiuWikiLinkTargets,
   getFanxiuWwiseMp3Manifest,
   listFanxiuTcpBusinessEntries,
   searchFanxiuStaticVisualByImage,
@@ -760,6 +760,7 @@ const homeMakeFormulaQuery = ref('')
 const homeMakeBuffOverviewQuery = ref('')
 const selectedProgressionType = ref('')
 const wikiLinkIndexItems = ref<WikiLinkTarget[]>([])
+const objectDetailRef = ref<HTMLElement | null>(null)
 const contextMenu = ref({
   visible: false,
   x: 0,
@@ -802,6 +803,8 @@ let homeMakeBuffParameterSemanticsRequestSeq = 0
 let homeMakeFormulaCatalogRequestSeq = 0
 let specialFazeCatalogRequestSeq = 0
 let homeMakeBuffOverviewRequestSeq = 0
+let wikiLinkTargetRequestSeq = 0
+let resolvedWikiLinkTargetSignature = ''
 let applyingRouteState = false
 let internalTabNavigation = false
 let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
@@ -1486,10 +1489,15 @@ const activityFacetFilters = computed<FacetFilterMap>(() => ({
   activity_type: activityTypeFilter.value,
 }))
 
+const shouldLoadGongfaFacetIndex = computed(() => Boolean(
+  normalizeSearchQuery(query.value)
+  || gongfaQualityGradeFilter.value
+  || gongfaQualityFamilyFilter.value
+  || gongfaSkillTypeFilter.value
+))
+
 const shouldLoadItemFacetIndex = computed(() => Boolean(
-  activeTab.value === 'gongfa'
-  || activeTab.value === 'item'
-  || normalizeSearchQuery(query.value)
+  normalizeSearchQuery(query.value)
   || itemQualityFilter.value
   || itemTypeFilter.value
   || itemSubTypeFilter.value
@@ -9956,7 +9964,7 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
       ...objectSortParams.value,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
-      include_facets: shouldLoadItemFacetIndex.value,
+      include_facets: shouldLoadGongfaFacetIndex.value,
     })
     if (requestSeq !== listRequestSeq) return
     stats.value = response.stats
@@ -10847,12 +10855,52 @@ async function loadPacketProtocolCategoryDetail(category: string, requestSeq = l
   }
 }
 
-async function loadWikiLinkIndex() {
+function collectVisibleWikiLinkTexts() {
+  const root = objectDetailRef.value
+  if (!root) return []
+  const selectors = [
+    '.detail-title h3',
+    '.game-rich-text',
+    '.plain-rich-text',
+    '.special-faze-text',
+    '.homemake-static-text',
+    '.homemake-formula-text',
+    '.homemake-buff-desc',
+    '.feature-static-text',
+  ]
+  const texts: string[] = []
+  const seen = new Set<string>()
+  for (const node of root.querySelectorAll<HTMLElement>(selectors.join(','))) {
+    const text = node.innerText.replace(/\s+/g, ' ').trim()
+    if (!text || text.length < 2 || seen.has(text)) continue
+    seen.add(text)
+    texts.push(text.slice(0, 1200))
+    if (texts.length >= 40) break
+  }
+  return texts
+}
+
+async function refreshVisibleWikiLinkTargets() {
+  const texts = collectVisibleWikiLinkTexts()
+  if (!texts.length) {
+    resolvedWikiLinkTargetSignature = ''
+    wikiLinkIndexItems.value = []
+    return
+  }
+
+  const signature = `${activeTab.value}|${selectedId.value}|${texts.join('\n')}`
+  if (signature === resolvedWikiLinkTargetSignature) return
+
+  const requestSeq = ++wikiLinkTargetRequestSeq
   try {
-    const response = await getFanxiuWikiLinkIndex()
+    const response = await getFanxiuWikiLinkTargets({ texts, limit: 400 })
+    if (requestSeq !== wikiLinkTargetRequestSeq) return
+    resolvedWikiLinkTargetSignature = signature
     wikiLinkIndexItems.value = response.items ?? []
   } catch (error) {
-    console.warn('Failed to load Fanxiu wiki link index:', error)
+    if (requestSeq === wikiLinkTargetRequestSeq) {
+      console.warn('Failed to load visible Fanxiu wiki link targets:', error)
+    }
   }
 }
 
@@ -12032,6 +12080,33 @@ watch(
   ensureSelectedItemDetailFresh,
   { flush: 'post' },
 )
+watch(
+  () => [
+    activeTab.value,
+    selectedId.value,
+    selectedCard.value?.id ?? '',
+    selectedItem.value?.id ?? '',
+    selectedActivity.value?.id ?? '',
+    selectedLingjieCard.value?.gongfa_id ?? '',
+    selectedDigitDoorCharacter.value?.id ?? '',
+    selectedDigitDoorLevel.value?.id ?? '',
+    selectedDigitDoorEnhanceGroup.value?.char_id ?? '',
+    selectedDoupoTDPartner.value?.id ?? '',
+    selectedDoupoTDReward.value?.id ?? '',
+    loadingDetail.value,
+  ],
+  () => {
+    if (loadingDetail.value) {
+      resolvedWikiLinkTargetSignature = ''
+      wikiLinkIndexItems.value = []
+      return
+    }
+    void nextTick(() => {
+      void refreshVisibleWikiLinkTargets()
+    })
+  },
+  { flush: 'post' },
+)
 watch(selectedStaticAsset, item => {
   void loadStaticAssetPreviewManifest(item)
 })
@@ -12082,7 +12157,6 @@ onMounted(() => {
   if (!restoreActivityPeriodPaneHeight()) {
     updateActivityPeriodPaneHeight()
   }
-  void loadWikiLinkIndex()
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
   startPacketBackedAutoRefresh()
   scheduleStorageBagWorshipChartRender()
@@ -14178,6 +14252,7 @@ onBeforeUnmount(() => {
       </div>
 
       <main
+        ref="objectDetailRef"
         class="object-detail"
         v-loading="loadingDetail"
       >

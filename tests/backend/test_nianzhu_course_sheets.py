@@ -551,6 +551,114 @@ def test_nianzhu_clockin_aggregation_matches_legacy_dedup_semantics() -> None:
     assert clockin_data[("user:u2", "打卡数")] == 1
 
 
+def test_dynamic_clockin_plugin_is_explicit_and_course_scoped() -> None:
+    plugin = nianzhu_course_sheets._resolve_dynamic_clockin_supplement_plugin(
+        nianzhu_course_sheets.DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621,
+        course_name="20260301禅宗46期五阶",
+    )
+
+    assert plugin is not None
+    assert plugin.community_id == "c_69a3a337724fc_TJoXKy8E2351"
+    assert nianzhu_course_sheets._resolve_dynamic_clockin_supplement_plugin("", course_name="20260301禅宗46期五阶") is None
+    with pytest.raises(ValueError, match="只能用于"):
+        nianzhu_course_sheets._resolve_dynamic_clockin_supplement_plugin(
+            nianzhu_course_sheets.DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621,
+            course_name="20260503禅宗9期4.5阶",
+        )
+
+
+def test_dynamic_clockin_plugin_builds_rows_after_start_and_deduplicates() -> None:
+    plugin = nianzhu_course_sheets._resolve_dynamic_clockin_supplement_plugin(
+        nianzhu_course_sheets.DYNAMIC_CLOCKIN_PLUGIN_ZEN46_STAGE5_20260621,
+        course_name="d260301禅宗46期五阶",
+    )
+    assert plugin is not None
+    clockin_config_rows = [
+        {"clockin_id": 1, "name": "共学打卡"},
+        {"clockin_id": 2, "name": "共修打卡"},
+    ]
+    existing_rows = [
+        {"user_id2": "u1", "clockin_name": "共学打卡", "publish_time": "2026-06-21 08:00:00"},
+        {"user_id2": "u2", "clockin_name": "共修打卡", "task_date": "2026-06-21"},
+    ]
+    feed_rows = [
+        {
+            "id": "before",
+            "apply_type": "calendar_clock",
+            "user_id": "u0",
+            "nick_name": "旧数据",
+            "created_at": "2026-06-20 23:59:59",
+            "content": {"text": "共修补打卡"},
+        },
+        {
+            "id": "formal-duplicate-gongxue",
+            "apply_type": "calendar_clock",
+            "user_id": "u1",
+            "nick_name": "重复共学",
+            "created_at": "2026-06-21 09:00:00",
+            "content": {"text": "打卡"},
+        },
+        {
+            "id": "formal-duplicate-gongxiu",
+            "apply_type": "calendar_clock",
+            "user_id": "u2",
+            "nick_name": "重复共修",
+            "created_at": "2026-06-21 09:00:00",
+            "content": {"text": "共修补打卡"},
+        },
+        {
+            "id": "new-gongxiu",
+            "apply_type": "calendar_clock",
+            "user_id": "u3",
+            "nick_name": "新增共修",
+            "group_name": "46期",
+            "created_at": "2026-06-21 10:00:00",
+            "content": {"text": "今天共修补打卡"},
+            "record_num": 3,
+            "zan_num": 1,
+            "comment_count": 0,
+            "extend_field1": "ac_69a45d419ee00_PGQ5wYTC",
+        },
+        {
+            "id": "new-gongxue",
+            "apply_type": "text",
+            "user_id": "u4",
+            "nick_name": "新增共学",
+            "created_at": "2026-06-21 11:00:00",
+            "content": {"text": "补打卡"},
+            "extend_field1": "ac_69a45d0234f97_rHFfClYC",
+        },
+        {
+            "id": "dynamic-duplicate-gongxue",
+            "apply_type": "calendar_clock",
+            "user_id": "u4",
+            "nick_name": "新增共学",
+            "created_at": "2026-06-21 12:00:00",
+            "content": {"text": "第二条也按共学算，但同日重复"},
+        },
+    ]
+
+    rows, summary = nianzhu_course_sheets._build_dynamic_clockin_supplement_rows(
+        feed_rows,
+        plugin=plugin,
+        clockin_config_rows=clockin_config_rows,
+        existing_clockin_rows=existing_rows,
+        course_name="d260301禅宗46期五阶",
+    )
+
+    assert summary["candidate_rows"] == 5
+    assert summary["inserted_rows"] == 2
+    assert summary["skipped_before_start_rows"] == 1
+    assert summary["skipped_duplicate_rows"] == 3
+    assert summary["inserted_by_clockin_name"] == {"共修打卡": 1, "共学打卡": 1}
+    assert [(row["user_id2"], row["clockin_name"], row["task_date"]) for row in rows] == [
+        ("u3", "共修打卡", "2026-06-21"),
+        ("u4", "共学打卡", "2026-06-21"),
+    ]
+    assert rows[0]["update_content"] == "今天共修补打卡"
+    assert rows[0]["extra"]["source"] == "dynamic_feed_supplement"
+
+
 def test_zen_stage_clockin_title_allowlist_matches_legacy_positive_titles() -> None:
     titles = nianzhu_course_sheets._clockin_title_allowlist_for_course("d260601第47届觉观")
 

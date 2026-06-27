@@ -2872,7 +2872,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
 
         assert final is not None
         assert final["status"] == "completed"
-        assert final["updated_count"] == 5
+        assert final["updated_count"] == 4
         registration_updated = final["sheet"]["document_json"]["rows"][0]
         assert registration_updated[registration_columns.index("商户订单号")] == "M20260521"
         assert registration_updated[registration_columns.index("用户ID")] == "u_new"

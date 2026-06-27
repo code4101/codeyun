@@ -312,12 +312,24 @@ def _build_legacy_saved_key(encrypted_api_key: str, updated_at: float | None) ->
 
     return {
         "key-legacy": {
-            "label": "",
+            "label": "Key 1",
             "api_key_encrypted": encrypted_api_key,
             "masked_value": masked_value,
             "updated_at": updated_at,
         }
     }
+
+
+def _generate_next_key_label(api_keys: dict[str, dict[str, Any]]) -> str:
+    max_index = 0
+    for item in api_keys.values():
+        label = item.get("label")
+        if not isinstance(label, str):
+            continue
+        match = re.fullmatch(r"Key\s*(\d+)", label.strip(), flags=re.IGNORECASE)
+        if match:
+            max_index = max(max_index, int(match.group(1)))
+    return f"Key {max_index + 1}"
 
 
 def _load_saved_base_urls(raw_item: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
@@ -405,7 +417,7 @@ def _load_saved_api_keys(raw_item: dict[str, Any]) -> tuple[dict[str, dict[str, 
                     masked_value = "已损坏"
 
             api_keys[key_id] = {
-                "label": "",
+                "label": label.strip() if isinstance(label, str) and label.strip() else _generate_next_key_label(api_keys),
                 "api_key_encrypted": encrypted_api_key.strip(),
                 "masked_value": masked_value.strip(),
                 "updated_at": float(updated_at) if isinstance(updated_at, (int, float)) else None,
@@ -838,6 +850,7 @@ def save_user_ai_chat_provider_config(
     preferred_model: str | None = None,
     preferred_models: list[str] | tuple[str, ...] | None = None,
     api_key: str | None = None,
+    api_key_label: str | None = None,
     clear_api_key: bool = False,
 ) -> dict[str, Any]:
     normalized_id = _normalize_provider_id(provider_id)
@@ -885,11 +898,12 @@ def save_user_ai_chat_provider_config(
     if normalized_api_key:
         new_key_id = f"key-{uuid.uuid4().hex[:12]}"
         next_api_keys[new_key_id] = {
-            "label": "",
+            "label": (api_key_label or "").strip() or _generate_next_key_label(next_api_keys),
             "api_key_encrypted": _encrypt_secret(normalized_api_key),
             "masked_value": _mask_secret(normalized_api_key),
             "updated_at": time.time(),
         }
+        next_active_key_id = new_key_id
 
     if next_active_key_id not in next_api_keys:
         next_active_key_id = _pick_default_active_key_id(next_api_keys)

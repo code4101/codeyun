@@ -38,10 +38,8 @@ _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
-    "legacy-daily-jianling",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
-    "legacy-daily-youli",
     "legacy-daily-lingta",
     "legacy-daily-shuangxiu",
     "legacy-daily-lingzu",
@@ -49,7 +47,6 @@ _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-yaozu",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES = {
-    "daily_youli",
     "daily_lingta",
     "daily_shuangxiu",
     "daily_lingzu",
@@ -57,7 +54,6 @@ _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES = {
     "daily_yaozu",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_LABELS = {
-    "日常_游历",
     "日常_灵塔",
     "日常_双修",
     "日常_灵祖",
@@ -476,15 +472,19 @@ def repair_data_annotation_scheduler_tasks(
         "gift-code-test-real",
         "real-test-gift-code",
         "mail-full-scan",
+        "legacy-daily-jianling",
+        "legacy-daily-youli",
+        "legacy-daily-yihuo",
         *_OBSOLETE_ASSISTANT_COVERED_TASK_IDS,
     }
-    obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历", *_OBSOLETE_ASSISTANT_COVERED_TASK_LABELS}
+    obsolete_task_types = set(_OBSOLETE_ASSISTANT_COVERED_TASK_TYPES)
+    obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历", "日常_剑灵", "日常_游历", "日常_异火", *_OBSOLETE_ASSISTANT_COVERED_TASK_LABELS}
     before_cleanup_count = len(tasks)
     tasks = [
         task
         for task in tasks
         if str(task.get("id") or "") not in obsolete_task_ids
-        and str(task.get("task_type") or "") not in _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES
+        and str(task.get("task_type") or "") not in obsolete_task_types
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
     changed = len(tasks) != before_cleanup_count
@@ -591,7 +591,8 @@ def repair_data_annotation_scheduler_tasks(
     for default_task in defaults_by_id.values():
         task_id = str(default_task.get("id") or "")
         if task_id and task_id not in by_id:
-            tasks.append(normalize_data_annotation_scheduler_task(default_task) or default_task)
+            task = normalize_data_annotation_scheduler_task(default_task) or default_task
+            tasks.append(task)
             changed = True
     if sync_data_annotation_scheduler_tasks_from_world_facts(tasks, facts, now=now):
         changed = True
@@ -690,11 +691,10 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
-            and str(task.get("last_result") or "") not in _UNSCHEDULED_MANUAL_RESULTS
+            and str(task.get("last_result") or "") == "success"
             and isinstance(task.get("schedule_times"), list)
             and len([value for value in task.get("schedule_times", []) if str(value or "").strip()]) > 1
             and not task.get("retry_after")
-            and _daily_task_success_today(task, current_time)
         ):
             expected_next_time = next_data_annotation_scheduler_time(task, current_time)
             expected_ts = parse_data_annotation_task_time(expected_next_time)

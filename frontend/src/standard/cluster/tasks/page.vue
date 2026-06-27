@@ -160,6 +160,13 @@ const currentDeviceId = ref<string>(
     ? (route.query.entry_id[0] || '')
     : ((route.query.entry_id as string) || (Array.isArray(route.query.device_id) ? (route.query.device_id[0] || '') : ((route.query.device_id as string) || '')))
 );
+const primeRuntimeStatusCache = (deviceId: string) => {
+  if (!deviceId || runtimeStatuses.value[deviceId]) {
+    return false;
+  }
+  return hydrateRuntimeStatusFromCache(deviceId);
+};
+primeRuntimeStatusCache(currentDeviceId.value);
 const isEditingDevice = ref(false);
 const isEditingTask = ref(false);
 const currentTaskId = ref<string>('');
@@ -418,6 +425,7 @@ const fetchDevices = async () => {
         nextDeviceId = '';
     }
 
+    primeRuntimeStatusCache(nextDeviceId);
     currentDeviceId.value = nextDeviceId;
 
     // Update current device config if selected
