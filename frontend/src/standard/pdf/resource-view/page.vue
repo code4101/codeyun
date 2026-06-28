@@ -33,20 +33,47 @@
           :disabled="!canGoNext"
           @click="goNextPage"
         />
-        <el-select
-          v-model="zoom"
-          size="small"
-          class="zoom-select"
-          :disabled="!pdfDocument"
-          @change="handleZoomChange"
+        <el-button
+          :icon="MagicStick"
+          text
+          title="随机页"
+          :disabled="!canGoRandomPage"
+          @click="goRandomPage"
         >
-          <el-option label="适合宽度" value="page-width" />
-          <el-option label="适合页面" value="page-fit" />
-          <el-option label="100%" value="100" />
-          <el-option label="125%" value="125" />
-          <el-option label="150%" value="150" />
-          <el-option label="200%" value="200" />
-        </el-select>
+          随机页
+        </el-button>
+        <div class="zoom-controls" aria-label="页面缩放">
+          <el-button
+            :icon="ZoomOut"
+            text
+            title="缩小"
+            :disabled="!canZoomOut"
+            @click="zoomOutPage"
+          />
+          <el-select
+            v-model="zoom"
+            size="small"
+            class="zoom-select"
+            :disabled="!pdfDocument"
+            @change="handleZoomChange"
+          >
+            <el-option label="适合宽度" value="page-width" />
+            <el-option label="适合页面" value="page-fit" />
+            <el-option
+              v-for="percent in ZOOM_PERCENT_OPTIONS"
+              :key="percent"
+              :label="`${percent}%`"
+              :value="String(percent)"
+            />
+          </el-select>
+          <el-button
+            :icon="ZoomIn"
+            text
+            title="放大"
+            :disabled="!canZoomIn"
+            @click="zoomInPage"
+          />
+        </div>
       </div>
 
       <div class="pdf-toolbar-right">
@@ -133,7 +160,7 @@
         </div>
 
         <div class="sidebar-body">
-          <div v-if="sidebarTab === 'outline'" class="outline-panel">
+          <div v-if="sidebarTab === 'outline'" ref="outlinePanelRef" class="outline-panel">
             <div v-if="outlineItems.length > 0" class="outline-actions">
               <span>{{ flatOutlineItems.length }} 项</span>
               <button type="button" class="inline-action" @click="expandAllOutline">展开</button>
@@ -149,6 +176,7 @@
                 type="button"
                 class="outline-item"
                 :class="{ 'is-active': item.id === activeOutlineItemId }"
+                :data-outline-id="item.id"
                 :style="{ paddingLeft: `${8 + item.level * 14}px` }"
                 :disabled="item.page == null && item.children.length === 0"
                 :title="item.title"
@@ -276,6 +304,7 @@
         tabindex="0"
         @keydown.left.prevent="goPreviousPage"
         @keydown.right.prevent="goNextPage"
+        @wheel="handleStageWheel"
       >
         <div v-if="readerErrorText || errorText" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
@@ -320,9 +349,12 @@ import {
   EditPen,
   Fold,
   InfoFilled,
+  MagicStick,
   Menu as MenuIcon,
   Refresh,
   Share,
+  ZoomIn,
+  ZoomOut,
 } from '@element-plus/icons-vue';
 import {
   GlobalWorkerOptions,
@@ -357,8 +389,17 @@ const route = useRoute();
 const PDFJS_WASM_URL = '/pdfjs/wasm/';
 const VALID_SIDEBAR_TABS = ['outline', 'pages', 'page-note', 'info'] as const;
 const PAGE_NAV_WINDOW_SIZE = 96;
+const ZOOM_PERCENT_OPTIONS = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400] as const;
 
 type PdfSidebarTab = typeof VALID_SIDEBAR_TABS[number];
+
+interface ZoomAnchor {
+  scrollElement: HTMLElement;
+  clientX: number;
+  clientY: number;
+  ratioX: number;
+  ratioY: number;
+}
 
 interface PdfOutlineRawItem {
   title?: string;
@@ -385,6 +426,7 @@ const currentPage = ref(1);
 const renderedPage = ref(0);
 const pageCount = ref(0);
 const zoom = ref('page-width');
+const renderedZoomPercent = ref(100);
 const sidebarOpen = ref(true);
 const sidebarTab = ref<PdfSidebarTab>('outline');
 const outlineItems = ref<PdfOutlineItem[]>([]);
@@ -404,6 +446,7 @@ const shareLoading = ref(false);
 const accessInfo = ref<PdfAccessResponse | null>(null);
 const publicShareEnabled = ref(false);
 const stageRef = ref<HTMLElement | null>(null);
+const outlinePanelRef = ref<HTMLElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const pdfDocument = shallowRef<PDFDocumentProxy | null>(null);
 
@@ -417,6 +460,7 @@ let stateSaveTimer: number | null = null;
 let pageNoteSaveTimer: number | null = null;
 let pageNoteApplying = false;
 let pendingPageNoteSave: { pdfId: number; pageNumber: number; contentHtml: string } | null = null;
+let pendingWheelZoom: { direction: 'in' | 'out'; anchor: ZoomAnchor | null } | null = null;
 
 const pdfId = computed(() => normalizePositiveInt(route.params.pdfId));
 const canManageAccess = computed(() => Boolean(documentDetail.value?.access.capabilities.can_manage_access));
@@ -428,6 +472,21 @@ const canGoNext = computed(() => Boolean(
   pdfDocument.value
   && pageCount.value > 0
   && currentPage.value < pageCount.value
+  && !pageRendering.value,
+));
+const canGoRandomPage = computed(() => Boolean(
+  pdfDocument.value
+  && pageCount.value > 1
+  && !pageRendering.value,
+));
+const canZoomOut = computed(() => Boolean(
+  pdfDocument.value
+  && renderedZoomPercent.value > ZOOM_PERCENT_OPTIONS[0]
+  && !pageRendering.value,
+));
+const canZoomIn = computed(() => Boolean(
+  pdfDocument.value
+  && renderedZoomPercent.value < ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]
   && !pageRendering.value,
 ));
 const publicUrl = computed(() => `${window.location.origin}/pdf/${documentDetail.value?.id ?? ''}`);
@@ -447,20 +506,8 @@ const visibleOutlineItems = computed(() => {
   visit(outlineItems.value);
   return result;
 });
-const activeOutlineItemId = computed(() => {
-  let activeItem: PdfOutlineItem | null = null;
-  flatOutlineItems.value.forEach((item) => {
-    if (item.page == null || item.page > currentPage.value) return;
-    if (
-      activeItem == null
-      || item.page > (activeItem.page ?? 0)
-      || (item.page === activeItem.page && item.level > activeItem.level)
-    ) {
-      activeItem = item;
-    }
-  });
-  return activeItem?.id ?? '';
-});
+const activeOutlinePath = computed(() => findActiveOutlinePath(outlineItems.value, currentPage.value));
+const activeOutlineItemId = computed(() => activeOutlinePath.value.at(-1)?.id ?? '');
 const pageNavEnd = computed(() => Math.min(pageNavStart.value + PAGE_NAV_WINDOW_SIZE - 1, pageCount.value || 1));
 const visiblePageNumbers = computed(() => {
   const end = pageNavEnd.value;
@@ -630,6 +677,66 @@ function resolvePageScale(baseWidth: number, baseHeight: number) {
   return Math.max(0.25, Math.min(widthScale, 4));
 }
 
+function getCurrentZoomPercent() {
+  if (/^\d+$/.test(zoom.value)) {
+    return Number(zoom.value);
+  }
+  return renderedZoomPercent.value;
+}
+
+function getNearestZoomPercent(direction: 'in' | 'out') {
+  const currentPercent = getCurrentZoomPercent();
+  if (direction === 'in') {
+    return ZOOM_PERCENT_OPTIONS.find((value) => value > currentPercent + 0.1)
+      ?? ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1];
+  }
+  return [...ZOOM_PERCENT_OPTIONS].reverse().find((value) => value < currentPercent - 0.1)
+    ?? ZOOM_PERCENT_OPTIONS[0];
+}
+
+function getPdfScrollElement() {
+  return stageRef.value?.querySelector<HTMLElement>('.pdf-page-scroll') ?? null;
+}
+
+function clampRatio(value: number) {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function createZoomAnchor(event: WheelEvent): ZoomAnchor | null {
+  const canvas = canvasRef.value;
+  const scrollElement = getPdfScrollElement();
+  if (!canvas || !scrollElement || canvas.clientWidth <= 0 || canvas.clientHeight <= 0) {
+    return null;
+  }
+  const rect = canvas.getBoundingClientRect();
+  return {
+    scrollElement,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    ratioX: clampRatio((event.clientX - rect.left) / rect.width),
+    ratioY: clampRatio((event.clientY - rect.top) / rect.height),
+  };
+}
+
+function restoreZoomAnchor(anchor: ZoomAnchor | null) {
+  if (!anchor || !canvasRef.value) return;
+  const rect = canvasRef.value.getBoundingClientRect();
+  const targetX = rect.left + rect.width * anchor.ratioX;
+  const targetY = rect.top + rect.height * anchor.ratioY;
+  anchor.scrollElement.scrollLeft += targetX - anchor.clientX;
+  anchor.scrollElement.scrollTop += targetY - anchor.clientY;
+}
+
+async function setZoomValue(nextZoom: string, anchor: ZoomAnchor | null = null) {
+  if (!pdfDocument.value) return;
+  zoom.value = nextZoom;
+  await nextTick();
+  await renderCurrentPage();
+  await nextTick();
+  restoreZoomAnchor(anchor);
+}
+
 function normalizePageNavStart(value: number) {
   const count = Math.max(pageCount.value || 1, 1);
   const maxStart = Math.max(count - PAGE_NAV_WINDOW_SIZE + 1, 1);
@@ -673,6 +780,7 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
 
     const baseViewport = page.getViewport({ scale: 1 });
     const cssScale = resolvePageScale(baseViewport.width, baseViewport.height);
+    renderedZoomPercent.value = Math.round(cssScale * 100);
     const outputScale = Math.max(window.devicePixelRatio || 1, 1);
     const cssViewport = page.getViewport({ scale: cssScale });
     const context = canvas.getContext('2d');
@@ -708,6 +816,13 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
     if (version === renderVersion) {
       renderTask = null;
       pageRendering.value = false;
+      if (pendingWheelZoom) {
+        const nextWheelZoom = pendingWheelZoom;
+        pendingWheelZoom = null;
+        window.setTimeout(() => {
+          applyDirectionalZoom(nextWheelZoom.direction, nextWheelZoom.anchor);
+        }, 0);
+      }
     }
   }
 }
@@ -775,6 +890,59 @@ function collectExpandableOutlineIds(items: PdfOutlineItem[], options?: { maxLev
   return result;
 }
 
+function findActiveOutlinePath(items: PdfOutlineItem[], page: number) {
+  let activePath: PdfOutlineItem[] = [];
+  const visit = (nodes: PdfOutlineItem[], ancestors: PdfOutlineItem[]) => {
+    nodes.forEach((node) => {
+      const path = [...ancestors, node];
+      const currentActive = activePath.at(-1);
+      if (
+        node.page != null
+        && node.page <= page
+        && (
+          currentActive == null
+          || node.page > (currentActive.page ?? 0)
+          || (node.page === currentActive.page && node.level > currentActive.level)
+        )
+      ) {
+        activePath = path;
+      }
+      if (node.children.length > 0) {
+        visit(node.children, path);
+      }
+    });
+  };
+  visit(items, []);
+  return activePath;
+}
+
+function revealActiveOutlineItem() {
+  if (!sidebarOpen.value || sidebarTab.value !== 'outline' || !activeOutlineItemId.value) return;
+  void nextTick(() => {
+    const activeElement = outlinePanelRef.value?.querySelector<HTMLElement>('.outline-item.is-active');
+    activeElement?.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function syncOutlineExpansionToCurrentPage(options?: { persist?: boolean; reveal?: boolean }) {
+  if (outlineItems.value.length === 0) return;
+  const nextIds = activeOutlinePath.value
+    .filter((item) => item.children.length > 0)
+    .map((item) => item.id);
+  const currentIds = expandedOutlineIds.value;
+  const changed = nextIds.length !== currentIds.length
+    || nextIds.some((id, index) => id !== currentIds[index]);
+  if (changed) {
+    expandedOutlineIds.value = nextIds;
+    if (options?.persist !== false) {
+      scheduleReaderStateSave();
+    }
+  }
+  if (options?.reveal !== false) {
+    revealActiveOutlineItem();
+  }
+}
+
 function initializeOutlineExpansion(items: PdfOutlineItem[]) {
   const expandableIds = new Set(collectExpandableOutlineIds(items));
   const savedIds = expandedOutlineIds.value.filter((id) => expandableIds.has(id));
@@ -799,6 +967,7 @@ async function loadPdfOutline(documentProxy: PDFDocumentProxy) {
     if (version === outlineLoadVersion && pdfDocument.value === documentProxy) {
       outlineItems.value = items;
       initializeOutlineExpansion(items);
+      syncOutlineExpansionToCurrentPage({ persist: false });
     }
   } catch (error) {
     console.warn('Failed to load PDF outline:', error);
@@ -1099,6 +1268,16 @@ function goNextPage() {
   void goToPage(currentPage.value + 1);
 }
 
+function goRandomPage() {
+  if (!canGoRandomPage.value) return;
+  const count = Math.max(pageCount.value || 1, 1);
+  let targetPage = Math.floor(Math.random() * count) + 1;
+  if (count > 1 && targetPage === currentPage.value) {
+    targetPage = (targetPage % count) + 1;
+  }
+  void goToPage(targetPage);
+}
+
 function handlePageInputChange() {
   void goToPage(currentPage.value);
 }
@@ -1108,8 +1287,35 @@ function handlePageNavInputChange() {
 }
 
 async function handleZoomChange() {
-  await nextTick();
-  await renderCurrentPage();
+  await setZoomValue(zoom.value);
+}
+
+function zoomOutPage() {
+  if (!canZoomOut.value) return;
+  void setZoomValue(String(getNearestZoomPercent('out')));
+}
+
+function zoomInPage() {
+  if (!canZoomIn.value) return;
+  void setZoomValue(String(getNearestZoomPercent('in')));
+}
+
+function applyDirectionalZoom(direction: 'in' | 'out', anchor: ZoomAnchor | null = null) {
+  if (direction === 'in' && !canZoomIn.value) return;
+  if (direction === 'out' && !canZoomOut.value) return;
+  void setZoomValue(String(getNearestZoomPercent(direction)), anchor);
+}
+
+function handleStageWheel(event: WheelEvent) {
+  if (!event.ctrlKey || !pdfDocument.value) return;
+  event.preventDefault();
+  const direction = event.deltaY < 0 ? 'in' : 'out';
+  const anchor = createZoomAnchor(event);
+  if (pageRendering.value) {
+    pendingWheelZoom = { direction, anchor };
+    return;
+  }
+  applyDirectionalZoom(direction, anchor);
 }
 
 async function refreshReaderLayout() {
@@ -1190,7 +1396,14 @@ watch(pdfId, () => {
   void loadPdfDocument();
 });
 
+watch(currentPage, () => {
+  syncOutlineExpansionToCurrentPage();
+});
+
 watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
+  if (sidebarOpen.value && sidebarTab.value === 'outline') {
+    revealActiveOutlineItem();
+  }
   if (sidebarOpen.value && sidebarTab.value === 'page-note') {
     if (pendingPageNoteSave && pendingPageNoteSave.pageNumber !== currentPage.value) {
       flushPendingPageNoteSave();
@@ -1283,6 +1496,12 @@ onBeforeUnmount(() => {
   min-width: 48px;
   color: #64748b;
   font-size: 13px;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .zoom-select {

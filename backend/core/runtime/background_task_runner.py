@@ -14,6 +14,11 @@ from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, 
 from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
 from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.attendance.course_completion import (
+    COURSE_COMPLETION_RUN_TIME,
+    COURSE_COMPLETION_TASK_KEY,
+    enqueue_attendance_course_completion_job,
+)
 from backend.core.attendance.fanbei_schedule import (
     FANBEI_ATTENDANCE_EVENING_RUN_TIME,
     FANBEI_ATTENDANCE_EVENING_TASK_KEY,
@@ -66,7 +71,7 @@ HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY = "critical_command_services_check"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 7
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 8
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
@@ -75,6 +80,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     "codex_diary_yesterday_import",
     RUANYF_WEEKLY_TASK_NAME,
     "attendance_summary_monthly_templates",
+    COURSE_COMPLETION_TASK_KEY,
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
     MARKET_QUOTE_REFRESH_TASK_KEY,
@@ -197,6 +203,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         )
     if task_key == "attendance_summary_monthly_templates":
         return _job_schedule_policy({"type": "monthly", "day": 27, "time": ATTENDANCE_SUMMARY_RUN_TIME}, retry_minutes=10)
+    if task_key == COURSE_COMPLETION_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": COURSE_COMPLETION_RUN_TIME}, retry_minutes=10)
     if task_key == MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}, retry_minutes=10)
     if task_key == FANBEI_ATTENDANCE_EVENING_TASK_KEY:
@@ -662,6 +670,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         schedule_label=f"每月 27 日 {ATTENDANCE_SUMMARY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_attendance_summary,
+    ),
+    BackgroundTaskSpec(
+        key=COURSE_COMPLETION_TASK_KEY,
+        title="考勤课程自动收尾",
+        category="考勤",
+        description="每天扫描课程汇总页，自动将结束日已过且统计已就绪的念住/觉观月课按既有完课动作移动到已完成组，并从 kqmain.py 的觉观念住行为树列表中移除。",
+        schedule_label=f"每天 {COURSE_COMPLETION_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_attendance_course_completion_job,
+        manual_warning="会修改工作簿 2 的课程汇总表，并编辑 kq5034/kqmain.py 中的觉观念住类型列表；不会删除课程脚本文件。",
+        default_visible=False,
     ),
     BackgroundTaskSpec(
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,

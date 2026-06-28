@@ -2,6 +2,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import backend.core.ai.rime_context_prediction as rime_context_prediction
 from backend.models import UserDevice
 
 
@@ -770,6 +771,64 @@ def test_local_entry_lists_input_history_as_readonly_corpus_source(client, auth_
     assert content_payload["pagination"]["total"] == 2
     assert content_payload["pagination"]["has_next"] is True
     assert content_payload["content"] == "服务"
+
+
+def test_local_entry_reuses_cached_input_history_article_summary(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    history_path = rime_dir / "context_prediction_history.log"
+    counts_path = rime_dir / "context_prediction_model_counts.tsv"
+    history_path.write_text(
+        "2026-05-13 10:00:00\t占位\t占位\n"
+        "2026-05-13 10:00:01\t服务\t服务\n",
+        encoding="utf-8",
+    )
+    counts_path.write_text(
+        "# context_key\tpinyin_prefix\tcandidate\tcount\tlast_seen\tcomment\n"
+        "占位\tfu\t服务\t2\t2026-05-13 10:00:01\t输入历史\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+    rime_context_prediction._local_input_history_article_payload_cached.cache_clear()
+
+    original_iter_history_events = rime_context_prediction._iter_history_events
+    original_read_count_rows = rime_context_prediction._read_count_rows
+    call_counts = {"history": 0, "counts": 0}
+
+    def wrapped_iter_history_events(path):
+        call_counts["history"] += 1
+        yield from original_iter_history_events(path)
+
+    def wrapped_read_count_rows(path):
+        call_counts["counts"] += 1
+        return original_read_count_rows(path)
+
+    monkeypatch.setattr(rime_context_prediction, "_iter_history_events", wrapped_iter_history_events)
+    monkeypatch.setattr(rime_context_prediction, "_read_count_rows", wrapped_read_count_rows)
+
+    first_response = client.get(f"/api/device-entries/{entry_id}/rime/context-prediction/articles")
+    second_response = client.get(f"/api/device-entries/{entry_id}/rime/context-prediction/articles")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert call_counts == {"history": 1, "counts": 1}
+
+    history_path.write_text(
+        "2026-05-13 10:00:00\t占位\t占位\n"
+        "2026-05-13 10:00:01\t服务\t服务\n"
+        "2026-05-13 10:00:02\t性能\t性能\n",
+        encoding="utf-8",
+    )
+
+    third_response = client.get(f"/api/device-entries/{entry_id}/rime/context-prediction/articles")
+
+    assert third_response.status_code == 200
+    assert call_counts == {"history": 2, "counts": 2}
+    history_article = next(
+        item for item in third_response.json()["articles"] if item["source_type"] == "input_history"
+    )
+    assert history_article["char_count"] >= len("占位服务性能")
 
 
 def test_local_entry_reads_imported_article_content_by_page(client, auth_user, test_device, tmp_path, monkeypatch):

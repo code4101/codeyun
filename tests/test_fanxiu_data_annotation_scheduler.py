@@ -413,6 +413,52 @@ def test_scheduler_does_not_sync_dungeon_audit_completed_below_required_total():
     assert tasks[0]["retry_after"] == "2026-06-21 18:51:34"
 
 
+def test_scheduler_syncs_same_run_success_fact_over_skipped_retry():
+    tasks = [
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "enabled": True,
+            "schedule_kind": "daily",
+            "schedule_times": ["00:05"],
+            "next_time": None,
+            "last_run_at": "2026-06-28 08:36:41",
+            "last_result": "skipped",
+            "retry_after": "2026-06-28 08:06:54",
+            "payload": {},
+        }
+    ]
+    facts = {
+        "discoveries": {
+            "task": {
+                "mail-cleanup": {
+                    "id": "mail-cleanup",
+                    "task_type": "mail_cleanup",
+                    "label": "邮件_清理",
+                    "last_result": "success",
+                    "last_run_at": "2026-06-28 08:36:41",
+                    "retry_after": None,
+                    "next_time": None,
+                    "updated_at": datetime(2026, 6, 28, 8, 36, 41).timestamp(),
+                }
+            }
+        }
+    }
+
+    changed = scheduler_core.sync_data_annotation_scheduler_tasks_from_world_facts(
+        tasks,
+        facts,
+        now=datetime(2026, 6, 28, 8, 40, 0),
+    )
+
+    assert changed is True
+    assert tasks[0]["last_result"] == "success"
+    assert tasks[0]["retry_after"] is None
+    assert tasks[0]["next_time"] == "2026-06-29 00:05:00"
+
+
 def test_scheduler_does_not_overwrite_newer_retry_with_stale_success_fact():
     tasks = [
         {
@@ -2760,17 +2806,18 @@ def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(mon
 
 
 def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_support():
-    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi"):
+    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi", "daily_vip"):
         fanxiu._DATA_ANNOTATION_MANUAL_JOB_REGISTRY.pop(task_type, None)
 
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_assistant"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_youli"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_baiye"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_green_bottle_baiye"}) is True
-    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_yihuo"}) is True
-    assert runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo") is not None
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_yihuo"}) is False
+    assert runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo") is None
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_gongfeng"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_xianshi"}) is True
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_vip"}) is True
 
 
 def test_daily_green_bottle_baiye_first_step_goto_20(tmp_path, monkeypatch):
@@ -2906,6 +2953,110 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert "legacy-daily-yihuo" not in by_id
     assert by_id["legacy-daily-gongfeng"]["task_type"] == "daily_gongfeng"
     assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
+    assert by_id["legacy-daily-vip"]["task_type"] == "daily_vip"
+    assert by_id["legacy-daily-vip"]["label"] == "日常_vip"
+    assert by_id["legacy-daily-vip"]["enabled"] is True
+    assert by_id["legacy-daily-vip"]["schedule_times"] == ["00:00"]
+
+
+def test_daily_vip_recovers_world_then_claims_free_xiuwei(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 14, 11, 30, 0))
+    runner = create_fanxiu_runtime_runner()
+    asset_tree = tmp_path / "asset_tree.json"
+    asset_tree.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": asset_tree, "images": {scene_id: {"id": scene_id, "title": str(scene_id)} for scene_id in (34, 290, 291, 292)}}
+    actions: list[tuple] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.scene = 75
+
+        def current_scene(self, view_ids=None, **kwargs):
+            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
+            return self.scene, 80.0, "frame"
+
+        def goto_view(self, view_id):
+            actions.append(("goto_view", view_id))
+            self.scene = view_id
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+        def wait_view(self, view_id, **kwargs):
+            actions.append(("wait_view", view_id, kwargs))
+            self.scene = view_id
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+        def wait_click(self, view_id, shape, **kwargs):
+            actions.append(("wait_click", view_id, shape, kwargs))
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+        def click_shape_center(self, view_id, shape, **kwargs):
+            actions.append(("click_shape_center", view_id, shape, kwargs))
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+        def cur_frame(self, **kwargs):
+            actions.append(("cur_frame", kwargs))
+            return "frame"
+
+        def shape_score(self, view_id, shape, **kwargs):
+            actions.append(("shape_score", view_id, shape, kwargs))
+            return 100.0
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_vip_task(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert actions == [
+        ("current_scene", (34,), {"update": True}),
+        ("goto_view", 34),
+        ("wait_view", 34, {"label": "日常_vip：等待世界 #34"}),
+        ("wait_click", 34, "[vip]", {"timeout": 8.0}),
+        ("settle", 2.0),
+        ("wait_view", 290, {"label": "日常_vip：等待 VIP 月卡页 #290"}),
+        ("wait_click", 290, "每日限购", {"timeout": 8.0}),
+        ("settle", 1.5),
+        ("wait_view", 291, {"label": "日常_vip：等待每日限购页 #291"}),
+        ("wait_click", 291, "修为", {"timeout": 8.0}),
+        ("settle", 1.5),
+        ("wait_view", 292, {"label": "日常_vip：等待修为限购页 #292"}),
+        ("cur_frame", {"update": True}),
+        ("shape_score", 292, "免费", {"frame_data_url": "frame"}),
+        ("wait_click", 292, "免费", {"timeout": 8.0}),
+        ("settle", 1.5),
+        ("click_shape_center", 292, "返回", {}),
+        ("settle", 1.0),
+        ("wait_view", 291, {"timeout": 18.0, "label": "日常_vip：等待返回 #291"}),
+        ("click_shape_center", 291, "返回", {}),
+        ("settle", 1.0),
+        ("wait_view", 290, {"timeout": 18.0, "label": "日常_vip：等待返回 #290"}),
+        ("click_shape_center", 290, "返回", {}),
+        ("settle", 1.0),
+        ("wait_view", 34, {"timeout": 18.0, "label": "日常_vip：等待返回 #34"}),
+    ]
+    fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-vip"]
+    assert fact["task_type"] == "daily_vip"
+    assert fact["discovered_next_time"] == "2026-06-15 00:00:00"
 
 
 def test_daily_xianshi_missing_free_box_records_next_day(tmp_path, monkeypatch):
@@ -3602,7 +3753,7 @@ def test_unknown_evidence_scores_all_candidates_before_limiting(monkeypatch):
 
     assert evidence.classification == "matched_existing_frame"
     assert evidence.candidates[0].scene_id == 30
-    assert len(evidence.candidates) == 3
+    assert len(evidence.candidates) == 1
 
 
 def test_wait_view_timeout_reports_unknown_evidence(monkeypatch):
@@ -7207,6 +7358,7 @@ def test_daily_gongfeng_runs_marked_closed_loop(tmp_path, monkeypatch):
     assert "goto:34" in actions
 
 
+@pytest.mark.skip(reason="日常_异火已从作业入口删除，不再自动执行")
 def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     images = {
@@ -7422,6 +7574,7 @@ def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.skip(reason="日常_异火已从作业入口删除，不再自动执行")
 def test_daily_yihuo_return_wait_accepts_direct_world(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = {
@@ -7605,6 +7758,7 @@ def test_scene_recovery_closes_hidden_world_popup_before_unknown_world_goto(monk
     assert actions == ["trace", "click:59:598.5:40.0"]
 
 
+@pytest.mark.skip(reason="日常_异火已从作业入口删除，不再自动执行")
 def test_daily_yihuo_aligns_to_world_from_local_jinglian_page(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     images = {
@@ -7814,6 +7968,7 @@ def test_daily_yihuo_aligns_to_world_from_local_jinglian_page(tmp_path, monkeypa
     ]
 
 
+@pytest.mark.skip(reason="日常_异火已从作业入口删除，不再自动执行")
 def test_daily_yihuo_box_wait_accepts_already_claimed_detail(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image261 = {
@@ -9291,7 +9446,7 @@ def test_data_annotation_service_start_task_endpoint_uses_service_entry_and_shar
     response = fanxiu.start_fanxiu_data_annotation_runtime_service_task(
         fanxiu.FanxiuDataAnnotationRuntimeTaskRequest(
             entry_id="request-start-entry",
-            task_type="daily_yihuo",
+            task_type="daily_gongfeng",
             payload={"force": True},
         ),
         session=object(),
@@ -9302,7 +9457,7 @@ def test_data_annotation_service_start_task_endpoint_uses_service_entry_and_shar
     assert calls == {
         "entry": service_entry,
         "entry_id": "request-start-entry",
-        "task_type": "daily_yihuo",
+        "task_type": "daily_gongfeng",
         "payload": {"force": True},
     }
 

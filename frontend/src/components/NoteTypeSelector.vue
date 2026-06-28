@@ -114,7 +114,6 @@ import NoteTypeManagerDialog from './NoteTypeManagerDialog.vue';
 import {
   derivePrimaryNodeType,
   ensureNoteTypePaletteLoaded,
-  getNodeStyle,
   getNodeTypeConfig,
   getOrderedNodeTypes,
   normalizeNoteTypeAssignments,
@@ -123,6 +122,7 @@ import {
   type NoteTypeAssignment
 } from '@/utils/nodeConfig';
 import { resolveMappedStandardColor } from '@/features/color-tools';
+import { fromHex, getReadableTextColor } from '@/utils/colorToolkit';
 
 const props = defineProps<{
   modelValue: NoteTypeAssignment[] | null | undefined;
@@ -191,13 +191,13 @@ const replaceDropdownStyle = computed(() => {
 });
 
 const triggerStyle = computed(() => {
-  const style = getNodeStyle(primaryType.value, 'idea', props.legacyColor, normalizedValue.value);
+  const color = mixedColorHex.value;
   return {
-    borderColor: style.borderColor,
-    color: style.color,
-    backgroundColor: style.backgroundColor,
-    borderWidth: style.borderWidth,
-    borderStyle: style.borderStyle
+    borderColor: color,
+    color: getReadableTextColor(fromHex(color)),
+    backgroundColor: color,
+    borderWidth: '1px',
+    borderStyle: 'solid'
   };
 });
 
@@ -231,13 +231,13 @@ const getReplaceOptionColumnCount = (currentKey: string) => (
 );
 
 const getChipStyle = (typeKey: string) => {
-  const style = getNodeStyle(typeKey, 'idea');
+  const color = getNodeTypeConfig(typeKey).baseColor;
   return {
-    borderColor: style.borderColor,
-    color: style.color,
-    backgroundColor: style.backgroundColor,
-    borderWidth: style.borderWidth,
-    borderStyle: style.borderStyle
+    borderColor: color,
+    color: getReadableTextColor(fromHex(color)),
+    backgroundColor: color,
+    borderWidth: '1px',
+    borderStyle: 'solid'
   };
 };
 

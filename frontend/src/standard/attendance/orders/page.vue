@@ -9,9 +9,6 @@ import StandardPagination from '@/components/StandardPagination.vue'
 import { useUserStore } from '@/store/userStore'
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate'
 
-import 'handsontable/styles/handsontable.css'
-import 'handsontable/styles/ht-theme-main.css'
-
 import {
   executeAttendanceOrder,
   fetchAttendanceConfig,
@@ -101,6 +98,7 @@ const refundHistoryItems = ref<AttendanceOrderRefundHistoryItem[]>([])
 const refundHistoryPage = ref(1)
 const refundHistoryPageSize = ref(20)
 const refundHistoryTotal = ref(0)
+const refundHistoryLoaded = ref(false)
 const restoredInputDraftStorageKey = ref<string | null>(null)
 const restoredQueryDraftStorageKey = ref<string | null>(null)
 const restoredRefundDraftStorageKey = ref<string | null>(null)
@@ -111,11 +109,24 @@ const router = useRouter()
 const activeSubview = ref<OrderSubview>(resolveOrderSubview(route.query.tab))
 let orderResizeObserver: ResizeObserver | null = null
 let hotTableComponentLoader: Promise<unknown> | null = null
+let hotTableAssetsLoader: Promise<void> | null = null
+let refundHistoryLoadPromise: Promise<void> | null = null
+
+const loadHotTableAssets = async () => {
+  if (!hotTableAssetsLoader) {
+    hotTableAssetsLoader = Promise.all([
+      import('handsontable/styles/handsontable.css'),
+      import('handsontable/styles/ht-theme-main.css'),
+    ]).then(() => undefined)
+  }
+  return hotTableAssetsLoader
+}
 
 const loadHotTableComponent = async () => {
   if (!hotTableComponentLoader) {
     hotTableComponentLoader = (async () => {
-      const [{ registerCodeyunHandsontableModules }, handsontableVue3] = await Promise.all([
+      const [, { registerCodeyunHandsontableModules }, handsontableVue3] = await Promise.all([
+        loadHotTableAssets(),
         import('@/utils/handsontableSetup'),
         import('@handsontable/vue3'),
       ])
@@ -963,7 +974,7 @@ function handleRefundAfterChange(_changes: unknown, source?: string) {
 
 async function loadPageData() {
   loading.value = true
-  const refundHistoryPromise = loadRefundHistory(refundHistoryPage.value, refundHistoryPageSize.value)
+  const refundHistoryPromise = activeSubview.value === 'refund' ? ensureRefundHistoryLoaded() : null
   try {
     const configData = await fetchAttendanceConfig()
     config.value = configData
@@ -972,7 +983,23 @@ async function loadPageData() {
   } finally {
     loading.value = false
   }
-  await refundHistoryPromise
+  if (refundHistoryPromise) {
+    await refundHistoryPromise
+  }
+}
+
+async function ensureRefundHistoryLoaded() {
+  if (refundHistoryLoaded.value) return
+  if (refundHistoryLoadPromise) {
+    await refundHistoryLoadPromise
+    return
+  }
+  refundHistoryLoadPromise = loadRefundHistory(refundHistoryPage.value, refundHistoryPageSize.value)
+  try {
+    await refundHistoryLoadPromise
+  } finally {
+    refundHistoryLoadPromise = null
+  }
 }
 
 async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refundHistoryPageSize.value) {
@@ -986,7 +1013,9 @@ async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refu
     refundHistoryTotal.value = result.total || 0
     refundHistoryPage.value = result.page || page
     refundHistoryPageSize.value = result.page_size || pageSize
+    refundHistoryLoaded.value = true
   } catch (error: any) {
+    refundHistoryLoaded.value = false
     ElMessage.error(error.response?.data?.detail || '加载退款历史失败')
   } finally {
     refundHistoryLoading.value = false
@@ -1310,6 +1339,9 @@ watch(activeSubview, (view) => {
     delete nextQuery.tab
   }
   void router.replace({ query: nextQuery })
+  if (view === 'refund') {
+    void ensureRefundHistoryLoaded()
+  }
 })
 
 watch([orderContentWidth, isCompactViewport], refreshOrderTableLayouts)

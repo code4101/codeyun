@@ -216,6 +216,9 @@ const deletingTokenId = ref('')
 const revealingTokenId = ref('')
 const tokenPlaintexts = ref<Record<string, string>>({})
 let pollTimer: number | null = null
+let loadRequestToken = 0
+let mountingInitialDevice = false
+let initialLoadStarted = false
 
 const ocrService = computed<CodeYunServiceStatus | null>(() => (
   summary.value?.services.find(service => service.key === 'ocr') || null
@@ -300,27 +303,29 @@ function selectDevice(entryId: string, pushRoute = true) {
 
 async function loadCurrentDevice() {
   if (!currentEntryId.value) return
+  const entryId = currentEntryId.value
+  const requestToken = ++loadRequestToken
   summaryLoading.value = true
-  try {
-    summary.value = await fetchClusterServiceSummary(currentEntryId.value)
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error))
-  } finally {
-    summaryLoading.value = false
+  tokensLoading.value = userStore.isAdmin
+  const [summaryResult, tokensResult] = await Promise.allSettled([
+    fetchClusterServiceSummary(entryId),
+    userStore.isAdmin ? fetchClusterServiceTokens(entryId) : Promise.resolve<ServiceAccessToken[] | null>(null),
+  ])
+  if (requestToken !== loadRequestToken || entryId !== currentEntryId.value) {
+    return
   }
+  if (summaryResult.status === 'fulfilled') {
+    summary.value = summaryResult.value
+  } else {
+    ElMessage.error(getErrorMessage(summaryResult.reason))
+  }
+  summaryLoading.value = false
   if (userStore.isAdmin) {
-    await loadTokens()
-  }
-}
-
-async function loadTokens() {
-  if (!currentEntryId.value || !userStore.isAdmin) return
-  tokensLoading.value = true
-  try {
-    tokens.value = await fetchClusterServiceTokens(currentEntryId.value)
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error))
-  } finally {
+    if (tokensResult.status === 'fulfilled') {
+      tokens.value = tokensResult.value || []
+    } else {
+      ElMessage.error(getErrorMessage(tokensResult.reason))
+    }
     tokensLoading.value = false
   }
 }
@@ -484,17 +489,28 @@ function stopPolling() {
 }
 
 watch(currentEntryId, () => {
+  if (mountingInitialDevice) {
+    initialLoadStarted = true
+  }
   void loadCurrentDevice()
 })
 
 onMounted(async () => {
-  const queryEntryId = Array.isArray(route.query.entry_id) ? route.query.entry_id[0] : route.query.entry_id
-  currentEntryId.value = queryEntryId || ''
-  await refreshDevices()
-  if (!currentEntryId.value && devices.value.length) {
-    currentEntryId.value = devices.value[0].id
+  try {
+    mountingInitialDevice = true
+    initialLoadStarted = false
+    const queryEntryId = Array.isArray(route.query.entry_id) ? route.query.entry_id[0] : route.query.entry_id
+    currentEntryId.value = queryEntryId || ''
+    await refreshDevices()
+    if (!currentEntryId.value && devices.value.length) {
+      currentEntryId.value = devices.value[0].id
+    }
+  } finally {
+    mountingInitialDevice = false
   }
-  await loadCurrentDevice()
+  if (!initialLoadStarted) {
+    await loadCurrentDevice()
+  }
   startPolling()
 })
 

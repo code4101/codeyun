@@ -180,6 +180,7 @@ class FanxiuGameWindow2ServiceBurstFrameRequest(FanxiuGameWindow2ServiceSaveFram
 class FanxiuDataAnnotationAssetTreeRequest(BaseModel):
     entry_id: str
     tree: list[dict[str, Any]] = Field(default_factory=list)
+    base_updated_at: Optional[float] = None
 
 
 class FanxiuDataAnnotationSaveFrameRequest(BaseModel):

@@ -3794,9 +3794,12 @@ const sheetHotMergeCells = computed(() => (
 
 const shouldUseEnhancedSheetRenderSettings = computed(() => sheetRenderPhase.value !== 'core')
 
-const sheetHotRenderMergeCells = computed(() => (
-  shouldUseEnhancedSheetRenderSettings.value ? sheetHotMergeCells.value : []
-))
+const sheetHotRenderMergeCells = computed(() => {
+  if (!shouldUseEnhancedSheetRenderSettings.value) {
+    return false
+  }
+  return sheetHotMergeCells.value.length ? sheetHotMergeCells.value : false
+})
 
 const sheetHotRenderManualColumnResize = computed(() => (
   shouldUseEnhancedSheetRenderSettings.value && canEditConfig.value

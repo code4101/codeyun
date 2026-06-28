@@ -33,8 +33,8 @@ AI_APP_DEEPSEEK_PROVIDER = "deepseek"
 AI_APP_DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
 AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
 AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
-AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = "deepseek"
-AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_DEEPSEEK_PRO_MODEL
+AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
 _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
@@ -187,9 +187,14 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
                 "model": AI_APP_CODEX_SPARK_MODEL,
             }
     if app_id == AI_APP_CODEX_DIARY:
-        if item.get("provider") == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER and not item.get("model"):
+        provider = str(item.get("provider") or "").strip().lower()
+        model = str(item.get("model") or "").strip()
+        if (provider == AI_APP_DEEPSEEK_PROVIDER and model in {"", "deepseek-v4-flash"}) or (
+            _is_codex_cli_provider(provider) and model in {"", "gpt-5.4", "deepseek-v4-flash"}
+        ):
             return {
                 **item,
+                "provider": AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
                 "model": AI_APP_CODEX_DIARY_DEFAULT_MODEL,
             }
     return item

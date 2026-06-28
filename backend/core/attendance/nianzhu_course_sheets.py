@@ -2303,21 +2303,21 @@ def _normalize_clockin_name_for_key(value: Any, *, course_name: str = "") -> str
     return text or "打卡数"
 
 
-def _clockin_data_day(row: dict[str, Any]) -> str:
-    task_date = _normalize_text(row.get("task_date"))
-    if task_date:
-        return task_date[:10]
-    publish_time = _parse_datetime_cell(row.get("publish_time"))
-    return publish_time.date().isoformat() if publish_time else ""
-
-
-def _clockin_data_duplicate_key(row: dict[str, Any], *, course_name: str = "") -> tuple[str, str, str] | None:
-    user_id = _normalize_text(row.get("user_id2")) or _normalize_text(row.get("用户ID"))
-    clockin_name = _normalize_clockin_name_for_key(row.get("clockin_name"), course_name=course_name)
-    day = _clockin_data_day(row)
-    if not user_id or not clockin_name or not day:
-        return None
-    return user_id, clockin_name, day
+def _dynamic_feed_duplicate_key(
+    row: dict[str, Any],
+    *,
+    user_id: str,
+    clockin_name: str,
+    publish_time: datetime,
+    content_text: str,
+) -> tuple[str, ...]:
+    # Do not dedupe by day: a student may use multiple feed posts on the same day
+    # to make up multiple clock-ins. This only removes the same feed returned twice.
+    for key in ("id", "feed_id", "feeds_id", "dynamic_id"):
+        value = _normalize_text(row.get(key))
+        if value:
+            return "feed", value
+    return "event", user_id, clockin_name, publish_time.isoformat(), content_text
 
 
 def _find_clockin_config_target(
@@ -2359,11 +2359,7 @@ def _build_dynamic_clockin_supplement_rows(
     if missing_targets:
         raise ValueError(f"动态补打卡插件找不到打卡配置：{', '.join(missing_targets)}")
 
-    duplicate_keys: set[tuple[str, str, str]] = set()
-    for row in existing_clockin_rows:
-        key = _clockin_data_duplicate_key(row, course_name=course_name)
-        if key is not None:
-            duplicate_keys.add(key)
+    duplicate_keys: set[tuple[str, ...]] = set()
 
     rows: list[dict[str, Any]] = []
     summary: dict[str, Any] = {
@@ -2403,7 +2399,13 @@ def _build_dynamic_clockin_supplement_rows(
         kind = _dynamic_feed_clockin_kind(feed_row)
         clockin_id, clockin_name = targets[kind]
         task_date = publish_time.date().isoformat()
-        duplicate_key = (user_id, clockin_name, task_date)
+        duplicate_key = _dynamic_feed_duplicate_key(
+            feed_row,
+            user_id=user_id,
+            clockin_name=clockin_name,
+            publish_time=publish_time,
+            content_text=content_text,
+        )
         summary["candidate_rows"] += 1
         if duplicate_key in duplicate_keys:
             summary["skipped_duplicate_rows"] += 1

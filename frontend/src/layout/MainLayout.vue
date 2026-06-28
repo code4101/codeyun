@@ -117,6 +117,7 @@ const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
 const EASTMONEY_TRADE_PATH = requirePageMenuPath('EastmoneyTrade');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
+const PDF_DOCUMENT_LIBRARY_PATH = requirePageMenuPath('PdfDocumentLibrary');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_QQ_PATH = requirePageMenuPath('NotesQq');
 const NOTES_WECHAT_STORAGE_PATH = requirePageMenuPath('NotesWechatStorage');
@@ -199,6 +200,7 @@ const EASTMONEY_TITLE = requirePermissionTitle('notes.eastmoney');
 const EASTMONEY_TRADE_TITLE = '股票操作建议';
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
+const PDF_DOCUMENT_LIBRARY_TITLE = requirePermissionTitleByMenuPath(PDF_DOCUMENT_LIBRARY_PATH);
 const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
 const NOTES_QQ_TITLE = requirePermissionTitleByMenuPath(NOTES_QQ_PATH);
 const NOTES_WECHAT_STORAGE_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_STORAGE_PATH);
@@ -479,6 +481,7 @@ const noteToolsMenuVisible = computed(() =>
     EASTMONEY_TRADE_PATH,
     FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
+    PDF_DOCUMENT_LIBRARY_PATH,
     NOTES_WECHAT_PATH,
     NOTES_QQ_PATH,
     NOTES_WECHAT_STORAGE_PATH,
@@ -961,6 +964,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(NOTES_TASK_SYSTEM_PATH)" :index="NOTES_TASK_SYSTEM_PATH">{{ NOTES_TASK_SYSTEM_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(PDF_DOCUMENT_LIBRARY_PATH)" :index="PDF_DOCUMENT_LIBRARY_PATH">{{ PDF_DOCUMENT_LIBRARY_TITLE }}</el-menu-item>
             <el-sub-menu
               v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)"
               :index="EASTMONEY_SUBMENU_INDEX"

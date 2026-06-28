@@ -639,6 +639,7 @@ const emit = defineEmits<{
 interface PreviewClipRange {
   start: number;
   end: number;
+  isAutoPauseArmed: boolean;
 }
 
 type PreviewClipStatus = 'idle' | 'loading' | 'seeking' | 'waiting' | 'ready' | 'error';
@@ -1260,7 +1261,7 @@ const handleOpenPreview = async (imageId: string) => {
 const normalizePreviewClip = (startSeconds: number, endSeconds: number): PreviewClipRange => {
   const start = Math.max(0, Number(startSeconds) || 0);
   const end = Math.max(start, Number(endSeconds) || start);
-  return { start, end };
+  return { start, end, isAutoPauseArmed: true };
 };
 
 const seekPreviewClipStart = async () => {
@@ -1357,9 +1358,13 @@ const handlePreviewVideoTimeUpdate = () => {
   if (!clip || !video) {
     return;
   }
-  if (video.currentTime >= clip.end) {
+  if (video.currentTime < clip.end) {
+    clip.isAutoPauseArmed = true;
+    return;
+  }
+  if (clip.isAutoPauseArmed) {
+    clip.isAutoPauseArmed = false;
     video.pause();
-    video.currentTime = clip.end;
   }
 };
 

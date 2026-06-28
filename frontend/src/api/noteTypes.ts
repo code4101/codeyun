@@ -4,6 +4,7 @@ export interface NoteCategoryPaletteItem {
   key: string;
   label: string;
   color: string;
+  description?: string | null;
   order: number;
   builtin: boolean;
   source: 'builtin' | 'custom' | 'legacy' | 'import';

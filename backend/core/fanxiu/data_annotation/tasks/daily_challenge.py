@@ -2008,8 +2008,24 @@ class DailyChallengeTaskMixin:
             raise RuntimeError(f"{label}：当前在邮件页 #{scene_id}，但缺少「空白-返回」标注，无法恢复到世界")
         with self._lock:
             self._set_status_locked("running", f"{label}：退出邮件页 #{scene_id}", phase="daily_leave_mail_scene", current_scene=scene_id)
-            self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
-        yield from runtime.wait_click(scene_id, "空白-返回")
+            if scene_id == 121:
+                self._log_locked("action", f"{label}：点击 #121 外侧空白恢复到世界")
+            else:
+                self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
+        if scene_id == 121:
+            for attempt in range(3):
+                runtime.click_frame_point(121, 1, 1)
+                yield from runtime.wait_action_settle(1.0)
+                current_scene, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [34, 121, 58], update=True)
+                compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+                still_mail = any(token in compact for token in ("邮件", "已阅", "一键领取", "一键删除"))
+                if current_scene == 34 and not still_mail:
+                    self._log("success", f"{label}：已关闭邮件页回到 #34 {score:.0f}%")
+                    return
+                self._log("info", f"{label}：第 {attempt + 1} 次关闭后仍像邮件页，继续点击外侧空白")
+            raise RuntimeError(f"{label}：点击外侧空白后仍未关闭 #121 邮件页")
+        else:
+            yield from runtime.wait_click(scene_id, "空白-返回")
         yield from runtime.wait_view(34, label=f"{label}：等待返回世界 #34")
 
     def _open_daily_xianyuan_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):

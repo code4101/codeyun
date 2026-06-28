@@ -5266,9 +5266,9 @@ export const getFanxiuDataAnnotationAssetTree = (entryId: string) => {
     .then(res => res.data);
 };
 
-export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[]) => {
+export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[], baseUpdatedAt?: number) => {
   return api
-    .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree })
+    .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree, base_updated_at: baseUpdatedAt || undefined })
     .then(res => res.data);
 };
 

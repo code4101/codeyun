@@ -238,6 +238,10 @@ _duplicate_analysis_task_lock = RLock()
 _duplicate_analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="duplicate-analysis")
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
 _media_list_task_manager = LongTaskManager("fs-media-list", max_workers=2, max_records=64)
+_filesystem_recursive_stats_cache_lock = RLock()
+_filesystem_recursive_stats_cache: OrderedDict[str, tuple[float, dict[str, dict[str, int | None]]]] = OrderedDict()
+_FILESYSTEM_RECURSIVE_STATS_CACHE_TTL_SECONDS = 15.0
+_FILESYSTEM_RECURSIVE_STATS_CACHE_LIMIT = 64
 _visual_hash_prewarm_lock = RLock()
 _visual_hash_prewarm_active_keys: set[str] = set()
 _EVERYTHING3_UINT64_MAX = (1 << 64) - 1
@@ -2112,6 +2116,58 @@ def _scan_recursive_directory_stats(path: Path) -> dict[str, int | None]:
     }
 
 
+def _clone_directory_stats_by_name(
+    stats_by_name: dict[str, dict[str, int | None]],
+) -> dict[str, dict[str, int | None]]:
+    return {
+        name: dict(stats)
+        for name, stats in stats_by_name.items()
+    }
+
+
+def _filesystem_recursive_stats_cache_key(target_path: Path) -> str:
+    return os.fspath(target_path.resolve(strict=False))
+
+
+def _get_cached_filesystem_recursive_directory_stats(
+    *,
+    target_path: Path,
+) -> dict[str, dict[str, int | None]] | None:
+    cache_key = _filesystem_recursive_stats_cache_key(target_path)
+    now = time.time()
+    with _filesystem_recursive_stats_cache_lock:
+        while _filesystem_recursive_stats_cache:
+            oldest_key, (cached_at, _) = next(iter(_filesystem_recursive_stats_cache.items()))
+            if now - cached_at <= _FILESYSTEM_RECURSIVE_STATS_CACHE_TTL_SECONDS:
+                break
+            _filesystem_recursive_stats_cache.pop(oldest_key, None)
+        cached = _filesystem_recursive_stats_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, cached_stats = cached
+        if now - cached_at > _FILESYSTEM_RECURSIVE_STATS_CACHE_TTL_SECONDS:
+            _filesystem_recursive_stats_cache.pop(cache_key, None)
+            return None
+        _filesystem_recursive_stats_cache.move_to_end(cache_key)
+        return _clone_directory_stats_by_name(cached_stats)
+
+
+def _store_cached_filesystem_recursive_directory_stats(
+    *,
+    target_path: Path,
+    stats_by_name: dict[str, dict[str, int | None]],
+) -> None:
+    cache_key = _filesystem_recursive_stats_cache_key(target_path)
+    with _filesystem_recursive_stats_cache_lock:
+        _filesystem_recursive_stats_cache[cache_key] = (
+            time.time(),
+            _clone_directory_stats_by_name(stats_by_name),
+        )
+        _filesystem_recursive_stats_cache.move_to_end(cache_key)
+        while len(_filesystem_recursive_stats_cache) > _FILESYSTEM_RECURSIVE_STATS_CACHE_LIMIT:
+            _filesystem_recursive_stats_cache.popitem(last=False)
+
+
 def _build_filesystem_recursive_directory_stats_by_name(
     *,
     target_path: Path,
@@ -2119,6 +2175,10 @@ def _build_filesystem_recursive_directory_stats_by_name(
 ) -> dict[str, dict[str, int | None]]:
     if not directory_items:
         return {}
+
+    cached_stats = _get_cached_filesystem_recursive_directory_stats(target_path=target_path)
+    if cached_stats is not None:
+        return cached_stats
 
     stats_by_name: dict[str, dict[str, int | None]] = {}
     for item in directory_items:
@@ -2129,6 +2189,10 @@ def _build_filesystem_recursive_directory_stats_by_name(
         stats.update(_scan_recursive_directory_stats(Path(target_path) / name))
         stats_by_name[name] = stats
 
+    _store_cached_filesystem_recursive_directory_stats(
+        target_path=target_path,
+        stats_by_name=stats_by_name,
+    )
     return stats_by_name
 
 

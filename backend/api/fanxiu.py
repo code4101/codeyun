@@ -5019,6 +5019,10 @@ def save_fanxiu_data_annotation_asset_tree(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
     path = _data_annotation_asset_tree_path(req.entry_id)
+    if path.is_file() and req.base_updated_at:
+        current_updated_at = path.stat().st_mtime
+        if current_updated_at > float(req.base_updated_at) + 1e-6:
+            raise HTTPException(status_code=409, detail="资产树已被其它页面或 Runtime 更新，请重新加载后再保存，避免覆盖最新标注")
     try:
         tree = save_data_annotation_asset_tree_bundle(path, req.tree, entry_id=req.entry_id)
     except (FileNotFoundError, ValueError) as exc:

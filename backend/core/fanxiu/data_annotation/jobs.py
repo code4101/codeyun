@@ -21,6 +21,13 @@ class DataAnnotationManualJobDefinition:
 
 _DATA_ANNOTATION_MANUAL_JOB_REGISTRY: dict[str, DataAnnotationManualJobDefinition] = {}
 _DATA_ANNOTATION_JOB_GROUP_ORDER = {"guard": 10, "manual_job": 50, "job": 100}
+_DEPRECATED_DATA_ANNOTATION_JOB_TYPES = {
+    "daily_yihuo",
+}
+
+
+def is_deprecated_data_annotation_job_type(task_type: str) -> bool:
+    return str(task_type or "").strip() in _DEPRECATED_DATA_ANNOTATION_JOB_TYPES
 
 
 def register_fanxiu_data_annotation_manual_job(
@@ -37,6 +44,8 @@ def register_fanxiu_data_annotation_manual_job(
         raise ValueError("manual job task_type is required")
 
     def decorator(handler: Callable[[Any, dict[str, Any], dict[str, Any], threading.Event], Any]):
+        if is_deprecated_data_annotation_job_type(task_type):
+            return handler
         _DATA_ANNOTATION_MANUAL_JOB_REGISTRY[task_type] = DataAnnotationManualJobDefinition(
             task_type=task_type,
             label=str(label or task_type),
@@ -51,13 +60,17 @@ def register_fanxiu_data_annotation_manual_job(
 
 
 def get_fanxiu_data_annotation_manual_job_definition(task_type: str) -> DataAnnotationManualJobDefinition | None:
-    return _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.get(str(task_type or "").strip())
+    normalized = str(task_type or "").strip()
+    if is_deprecated_data_annotation_job_type(normalized):
+        return None
+    return _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.get(normalized)
 
 
 def list_fanxiu_data_annotation_manual_job_definitions() -> list[DataAnnotationManualJobDefinition]:
     return [
         _DATA_ANNOTATION_MANUAL_JOB_REGISTRY[key]
         for key in sorted(_DATA_ANNOTATION_MANUAL_JOB_REGISTRY)
+        if not is_deprecated_data_annotation_job_type(key)
     ]
 
 
@@ -128,6 +141,8 @@ def create_data_annotation_manual_job(
     now: float | None = None,
 ) -> dict[str, Any]:
     task_type = str(task_type or "detect_scene").strip() or "detect_scene"
+    if is_deprecated_data_annotation_job_type(task_type):
+        raise ValueError(f"作业已删除，不再支持：{task_type}")
     normalized_payload = dict(payload or {})
     if definition is not None and definition.normalize_payload is not None:
         normalized_payload = definition.normalize_payload(normalized_payload)

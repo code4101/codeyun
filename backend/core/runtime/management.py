@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import copy
 import json
 import os
 import re
@@ -1428,7 +1427,9 @@ def _collect_builtin_services() -> dict[str, Any]:
             cached_signature == enabled_signature
             and now - cached_at <= _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS
         ):
-            return copy.deepcopy(cached_payload)
+            return {
+                "items": [dict(item) for item in cached_payload.get("items", [])],
+            }
 
     items = [
         _serialize_ocr_service_item(get_ocr_service_status()),
@@ -1446,8 +1447,10 @@ def _collect_builtin_services() -> dict[str, Any]:
     payload = {
         "items": items,
     }
-    _builtin_services_status_cache = (now, enabled_signature, copy.deepcopy(payload))
-    return payload
+    _builtin_services_status_cache = (now, enabled_signature, payload)
+    return {
+        "items": [dict(item) for item in items],
+    }
 
 
 def build_runtime_status(session: Session, device_id: str | None = None) -> dict[str, Any]:

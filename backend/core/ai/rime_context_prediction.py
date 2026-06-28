@@ -1065,6 +1065,22 @@ def _default_article_manifest() -> dict[str, Any]:
     return {"version": 1, "articles": []}
 
 
+def _path_signature(path: Path) -> tuple[str, int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return str(path), -1, -1
+    return str(path), int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def _signature_exists(signature: tuple[str, int, int]) -> bool:
+    return signature[1] >= 0
+
+
+def _signature_mtime_seconds(signature: tuple[str, int, int]) -> float:
+    return signature[1] / 1_000_000_000 if _signature_exists(signature) else 0.0
+
+
 def _read_article_manifest(rime_dir: Path) -> dict[str, Any]:
     path = rime_dir / ARTICLE_MANIFEST_FILE
     if not path.exists():
@@ -3116,17 +3132,26 @@ def make_rime_context_prediction_article_content_unavailable(
     }
 
 
-def _local_input_history_article_payload(rime_dir: Path, *, local_history_label: str | None = None) -> dict[str, Any] | None:
-    history_path = rime_dir / HISTORY_FILE
-    article_path = _history_article_path(rime_dir)
-    if not history_path.exists() and not article_path.exists():
+@lru_cache(maxsize=128)
+def _local_input_history_article_payload_cached(
+    history_signature: tuple[str, int, int],
+    article_signature: tuple[str, int, int],
+    meta_signature: tuple[str, int, int],
+    counts_signature: tuple[str, int, int],
+    snapshot_signature: tuple[str, int, int],
+    hot_signature: tuple[str, int, int],
+    local_history_label: str | None,
+) -> dict[str, Any] | None:
+    history_path = Path(history_signature[0])
+    article_path = Path(article_signature[0])
+    if not _signature_exists(history_signature) and not _signature_exists(article_signature):
         return None
 
     event_count = 0
     char_count = 0
     first_seen = ""
     last_seen = ""
-    if history_path.exists():
+    if _signature_exists(history_signature):
         for event in _iter_history_events(history_path):
             event_count += 1
             char_count += len(str(event.get("text") or ""))
@@ -3137,7 +3162,7 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
                 last_seen = timestamp
 
     edited_char_count = 0
-    if article_path.exists():
+    if _signature_exists(article_signature):
         try:
             edited_char_count = len(article_path.read_text(encoding="utf-8"))
         except OSError:
@@ -3145,25 +3170,21 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
     if edited_char_count:
         char_count = max(char_count, edited_char_count)
 
-    updated_at = 0.0
-    for path in [history_path, article_path, _history_article_meta_path(rime_dir)]:
-        if path.exists():
-            try:
-                updated_at = max(updated_at, float(path.stat().st_mtime))
-            except OSError:
-                pass
-    indexed_at = 0.0
-    for path in [rime_dir / COUNTS_FILE, rime_dir / SNAPSHOT_FILE, rime_dir / HOT_FILE]:
-        if path.exists():
-            try:
-                indexed_at = max(indexed_at, float(path.stat().st_mtime))
-            except OSError:
-                pass
+    updated_at = max(
+        _signature_mtime_seconds(history_signature),
+        _signature_mtime_seconds(article_signature),
+        _signature_mtime_seconds(meta_signature),
+    )
+    indexed_at = max(
+        _signature_mtime_seconds(counts_signature),
+        _signature_mtime_seconds(snapshot_signature),
+        _signature_mtime_seconds(hot_signature),
+    )
 
     source_label = f"输入历史 · {local_history_label or '本机'}"
-    count_rows = _read_count_rows(rime_dir / COUNTS_FILE)
+    count_rows = _read_count_rows(Path(counts_signature[0]))
     row_count = sum(1 for row in count_rows if str(row.get("comment") or "").startswith("输入历史"))
-    digest_basis = f"{history_path}:{history_path.stat().st_size if history_path.exists() else 0}:{updated_at}:{event_count}:{last_seen}"
+    digest_basis = f"{history_path}:{max(history_signature[2], 0)}:{updated_at}:{event_count}:{last_seen}"
     return _article_to_payload(
         {
             "id": INPUT_HISTORY_ARTICLE_ID,
@@ -3173,7 +3194,7 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
             "source_key": INPUT_HISTORY_SOURCE_KEY,
             "source_label": source_label,
             "weight_multiplier": 1.0,
-            "status": "ready" if event_count or article_path.exists() else "empty",
+            "status": "ready" if event_count or _signature_exists(article_signature) else "empty",
             "row_count": row_count,
             "char_count": char_count,
             "content_hash": hashlib.sha256(digest_basis.encode("utf-8")).hexdigest(),
@@ -3183,6 +3204,18 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
             "processed_at": indexed_at,
             "readonly": True,
         }
+    )
+
+
+def _local_input_history_article_payload(rime_dir: Path, *, local_history_label: str | None = None) -> dict[str, Any] | None:
+    return _local_input_history_article_payload_cached(
+        _path_signature(rime_dir / HISTORY_FILE),
+        _path_signature(_history_article_path(rime_dir)),
+        _path_signature(_history_article_meta_path(rime_dir)),
+        _path_signature(rime_dir / COUNTS_FILE),
+        _path_signature(rime_dir / SNAPSHOT_FILE),
+        _path_signature(rime_dir / HOT_FILE),
+        local_history_label,
     )
 
 

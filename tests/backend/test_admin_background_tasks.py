@@ -2,6 +2,7 @@ import time
 
 from backend.app import app
 from backend.core.auth import get_current_active_superuser
+from backend.core.attendance.course_completion import COURSE_COMPLETION_TASK_KEY
 from backend.core.background_task_queue import background_task_queue
 from backend.core.background_task_runner import set_background_task_deleted
 from backend.core.fanxiu_tianjige_crawler import FANXIU_TIANJIGE_QUIZ_TASK_KEY
@@ -59,6 +60,22 @@ def test_admin_background_task_catalog_includes_optional_fanxiu_crawler(client):
     assert crawler_item["title"] == "凡修天机阁抢答爬虫"
     assert crawler_item["schedule_label"] == "每周二/三/四 17:59:50"
     assert crawler_item["added"] is False
+
+
+def test_admin_background_task_catalog_includes_optional_attendance_course_completion(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/catalog")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    items_by_key = {item["key"]: item for item in payload["items"]}
+    item = items_by_key[COURSE_COMPLETION_TASK_KEY]
+    assert item["title"] == "考勤课程自动收尾"
+    assert item["schedule_label"] == "每天 06:20"
+    assert item["added"] is False
 
 
 def test_admin_background_tasks_can_trigger_storage_job(client):

@@ -721,6 +721,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "notes.pdfs",
+      "title": "PDF 阅读器",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 31,
+      "route_paths": ["/notes/pdfs"],
+      "menu_paths": ["/notes/pdfs"],
+      "api_scopes": ["note-tools.pdfs"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster-tools",
       "title": "集群管理",
       "node_type": "group",

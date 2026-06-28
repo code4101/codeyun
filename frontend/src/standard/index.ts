@@ -234,6 +234,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
+    routeName: 'PdfDocumentLibrary',
+    canonicalPath: '/notes/pdfs',
+    component: () => import('./pdf/library/page.vue'),
+    permissionKey: 'notes.pdfs',
+    requiresAuth: true,
+  },
+  {
     routeName: 'NotesTrash',
     canonicalPath: '/notes/trash',
     component: () => import('./notes/trash/page.vue'),

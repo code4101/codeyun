@@ -38,8 +38,14 @@ export interface PdfDocumentDetail {
   my_state?: PdfUserState | null;
 }
 
+export type PdfDocumentSummary = PdfDocumentDetail;
+
 export interface PdfDocumentFromDeviceFileRequest extends DeviceFileSelector {
   entry_id: string;
+}
+
+export interface PdfDocumentLocalImportRequest {
+  absolute_path: string;
 }
 
 export interface PdfContentUrlResponse {
@@ -83,6 +89,16 @@ export interface PdfPageNote {
 
 export interface PdfPageNoteUpdateRequest {
   content_html: string;
+}
+
+export async function fetchPdfDocuments() {
+  const response = await api.get<PdfDocumentSummary[]>('/pdf-documents');
+  return response.data;
+}
+
+export async function importPdfDocumentFromLocalPath(payload: PdfDocumentLocalImportRequest) {
+  const response = await api.post<PdfDocumentDetail>('/pdf-documents/import-local-path', payload);
+  return response.data;
 }
 
 export async function createPdfDocumentFromDeviceFile(payload: PdfDocumentFromDeviceFileRequest) {

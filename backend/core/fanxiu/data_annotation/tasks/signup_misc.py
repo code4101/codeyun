@@ -6,6 +6,9 @@ from typing import Any
 class SignupMiscTaskMixin:
     def 日常报名流程(self, runtime: Any):
         起点状态 = yield from self._日常报名进入日常页(runtime)
+        if 起点状态 == "活动页":
+            yield from self._日常报名返回世界(runtime)
+            return {"result": "success", "claimed": 1, "activity_opened": True}
         入口状态 = "报名页" if 起点状态 == "报名页" else (yield from self._日常报名打开活动报名(runtime))
         if 入口状态 == "已完成":
             yield from runtime.goto_view(34)
@@ -25,6 +28,8 @@ class SignupMiscTaskMixin:
     def _日常报名进入日常页(self, runtime: Any):
         scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if self._日常报名文本是报名后活动页(text):
+            return "活动页"
         if self._日常报名文本是报名页(text):
             return "报名页"
         if scene_id == 69:
@@ -39,26 +44,35 @@ class SignupMiscTaskMixin:
         normalized = str(text or "")
         return "报名" in normalized and "活动时间" in normalized and ("已报名" in normalized or "待报名" in normalized)
 
+    def _日常报名文本是报名后活动页(self, text: str) -> bool:
+        normalized = str(text or "")
+        compact = "".join(normalized.split())
+        return bool(
+            ("道法争锋" in compact and ("当前排名" in compact or "剩余挑战次数" in compact))
+            or ("活动将于每周日" in compact and "可挑战" in compact and "当前排名" in compact)
+        )
+
     def _日常报名打开活动报名(self, runtime: Any) -> str:
         current_text = runtime.ocr_text(runtime.cur_frame(update=True))
         if self._日常报名文本是报名页(current_text):
             return "报名页"
-        入口状态 = yield from runtime.wait_any({
-            "可领取": runtime.shape_visible(75, "活动报名-领取"),
-            "已完成": runtime.all_of(
-                runtime.ocr_contains(all_of=("活动报名",)),
-            ),
-        })
-        if 入口状态 == "可领取":
-            yield from runtime.wait_click(75, "活动报名")
-            yield from runtime.wait_any(
-                {
-                    "scene": runtime.view_visible(23),
-                    "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
-                },
-                label="日常_报名：等待报名列表 #23",
-            )
-        return 入口状态
+        max_scrolls = int(getattr(runtime, "payload", {}).get("max_scrolls", 30) or 30)
+        for scroll_index in range(max(1, max_scrolls) + 1):
+            matches = runtime.daily_entry_matches(title_pattern=r"活动报名")
+            if matches:
+                yield from runtime.wait_click(75, "活动报名")
+                yield from runtime.wait_any(
+                    {
+                        "scene": runtime.view_visible(23),
+                        "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
+                    },
+                    label="日常_报名：等待报名列表 #23",
+                )
+                return "报名页"
+            if scroll_index >= max_scrolls:
+                break
+            yield from runtime.scroll_shape_content(69, "滚动窗口", direction="down")
+        raise RuntimeError("日常_报名：#69 日常列表未找到「活动报名」入口")
 
     def _日常报名处理报名列(self, runtime: Any) -> int:
         领取数量 = 0
@@ -133,6 +147,30 @@ class SignupMiscTaskMixin:
         text = runtime.ocr_text(frame)
         if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
             return
+        if self._日常报名文本是报名后活动页(text):
+            for _attempt in range(3):
+                runtime.click_frame_point(23, 80.0, 1482.0)
+                if hasattr(runtime, "wait_action_settle"):
+                    yield from runtime.wait_action_settle(1.0)
+                else:
+                    yield from runtime.wait_any(
+                        {
+                            "scene": runtime.view_visible(34),
+                            "daily": runtime.view_visible(69),
+                            "text": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：活动页返回世界 OCR"),
+                        },
+                        label="日常_报名：等待活动页返回",
+                    )
+                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+                    return
+                if scene_id == 69 or ("日常" in text and "活跃度" in text):
+                    break
+                if not self._日常报名文本是报名后活动页(text):
+                    break
+            if self._日常报名文本是报名后活动页(text):
+                raise RuntimeError("日常_报名：活动页返回后仍停留在道法争锋，请检查该页返回标注")
         if scene_id == 69 or ("日常" in text and "活跃度" in text):
             if all(hasattr(runtime, name) for name in ("click_shape_center", "wait_action_settle")):
                 runtime.click_shape_center(69, "退出")

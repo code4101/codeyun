@@ -252,6 +252,9 @@ def _wait_for_import_run(client, run_id: str) -> dict:
     payload = {}
     for _ in range(60):
         response = client.get(f"/api/notes/codex-diary/import-runs/{run_id}")
+        if response.status_code == 404:
+            time.sleep(0.05)
+            continue
         assert response.status_code == 200
         payload = response.json()
         if payload["status"] != "running":
@@ -570,9 +573,9 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert completed.source_turn_count == 2
     assert completed.created_note_count == 1
     assert all(str(note_id).isdigit() for note_id in completed.created_note_ids)
-    assert completed.result_json["draft_generator"] == "deepseek-json-v1"
-    assert completed.result_json["draft_provider"] == "deepseek"
-    assert completed.result_json["draft_model"] == "deepseek-v4-pro"
+    assert completed.result_json["draft_generator"] == "category-bucket-json-v1"
+    assert completed.result_json["draft_provider"] == "codex-cli"
+    assert completed.result_json["draft_model"] == "gpt-5.3-codex-spark"
     assert len(captured_entry_specs[0]) == 2
 
     notes = _notes_by_public_ids(session, completed.created_note_ids)
@@ -609,7 +612,7 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert "把 codepc_mi15 的 Codex 数据合并进日记来源。" not in first_plain_content
     assert "远端数据已经合并" in first_plain_content
     assert "codepc_mi15" in first_plain_content
-    assert any(item[0] == "__completion_progress_expr" and item[2] == "75/600" for item in first_note.custom_fields)
+    assert any(item[0] == "__completion_progress_expr" and item[2] == "75/75" for item in first_note.custom_fields)
 
 
 def test_codex_diary_import_empty_source_creates_no_notes(
@@ -928,7 +931,7 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
             value={
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
-                    {"key": "custom_codeyun", "label": "codeyun", "color": "#409eff", "order": 10},
+                    {"key": "custom_codeyun", "label": "CodeYun/笔记", "color": "#409eff", "order": 10},
                 ]
             },
         )
@@ -945,42 +948,42 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
             "timezone": ZoneInfo("Asia/Shanghai"),
             "type_items": [],
             "turn_records": [
-                {
-                    "thread_id": "codeyun:morning",
-                    "thread_title": "星云表格课程清单读取",
-                    "project_label": "codeyun",
-                    "time_range": "2026-05-02 09:00 ~ 2026-05-02 09:25",
-                    "user_request": "改成从表格读取课程清单。",
-                    "assistant_result": "已改成从星云表格读取课程清单。",
-                    "assistant_process": "",
-                    "start_at": morning,
-                    "end_at": morning + 25 * 60,
+                    {
+                        "thread_id": "codeyun:morning",
+                        "thread_title": "星图笔记表格清单读取",
+                        "project_label": "codeyun",
+                        "time_range": "2026-05-02 09:00 ~ 2026-05-02 09:25",
+                        "user_request": "改成从表格读取星图笔记清单。",
+                        "assistant_result": "已改成从星图笔记表格读取清单。",
+                        "assistant_process": "",
+                        "start_at": morning,
+                        "end_at": morning + 25 * 60,
                     "source_entry_id": entries[0].entry_id,
                     "source_device_name": "codepc_mf",
                 },
-                {
-                    "thread_id": "codeyun:afternoon",
-                    "thread_title": "问卷采集菜单合并",
-                    "project_label": "codeyun",
-                    "time_range": "2026-05-02 15:00 ~ 2026-05-02 15:20",
-                    "user_request": "统一问卷采集菜单。",
-                    "assistant_result": "已合并问卷采集菜单入口。",
-                    "assistant_process": "",
-                    "start_at": afternoon,
-                    "end_at": afternoon + 20 * 60,
+                    {
+                        "thread_id": "codeyun:afternoon",
+                        "thread_title": "日历节点菜单合并",
+                        "project_label": "codeyun",
+                        "time_range": "2026-05-02 15:00 ~ 2026-05-02 15:20",
+                        "user_request": "统一星图笔记日历节点菜单。",
+                        "assistant_result": "已合并日历节点菜单入口。",
+                        "assistant_process": "",
+                        "start_at": afternoon,
+                        "end_at": afternoon + 20 * 60,
                     "source_entry_id": entries[0].entry_id,
                     "source_device_name": "codepc_mf",
                 },
-                {
-                    "thread_id": "codeyun:evening",
-                    "thread_title": "Codex 会话全量分页",
-                    "project_label": "codeyun",
-                    "time_range": "2026-05-02 20:00 ~ 2026-05-02 20:18",
-                    "user_request": "会话列表改成全量分页。",
-                    "assistant_result": "会话列表已改成全量时间线分页加载。",
-                    "assistant_process": "",
-                    "start_at": evening,
-                    "end_at": evening + 18 * 60,
+                    {
+                        "thread_id": "codeyun:evening",
+                        "thread_title": "Codex 日记全量分页",
+                        "project_label": "codeyun",
+                        "time_range": "2026-05-02 20:00 ~ 2026-05-02 20:18",
+                        "user_request": "Codex 日记列表改成全量分页。",
+                        "assistant_result": "Codex 日记列表已改成全量时间线分页加载。",
+                        "assistant_process": "",
+                        "start_at": evening,
+                        "end_at": evening + 18 * 60,
                     "source_entry_id": entries[0].entry_id,
                     "source_device_name": "codepc_mf",
                 },
@@ -1020,7 +1023,7 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
     assert [note.start_at for note in notes] == [_ts(2026, 5, 2, 9, 0)]
 
 
-def test_codex_diary_blocks_use_ten_hour_target(
+def test_codex_diary_blocks_keep_single_category_even_over_ten_hours(
     session: Session,
     auth_user,
 ):
@@ -1068,15 +1071,66 @@ def test_codex_diary_blocks_use_ten_hour_target(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 2
-    assert [round(block["duration_seconds"] / 60) for block in blocks] == [480, 240]
+    assert len(blocks) == 1
+    assert [round(block["duration_seconds"] / 60) for block in blocks] == [720]
+    assert len(blocks[0]["records"]) == 3
 
 
-def test_codex_diary_completion_progress_uses_ten_hour_duration_ratio():
-    assert _build_codex_diary_completion_progress_expr({"duration_seconds": 37 * 60}) == "37/600"
+def test_codex_diary_completion_progress_defaults_to_own_duration_without_day_context():
+    assert _build_codex_diary_completion_progress_expr({"duration_seconds": 37 * 60}) == "37/37"
 
 
-def test_codex_diary_blocks_absorb_tiny_details_into_core_work(
+def test_codex_diary_completion_progress_uses_day_max_category_duration(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#67c23a", "order": 10},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#e6a23c", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 0, 0)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "fanxiu:long",
+                "thread_title": "凡修调度状态归位",
+                "project_label": "凡修",
+                "user_request": "修复凡修调度和运行状态。",
+                "assistant_result": "凡修调度状态已归位。",
+                "start_at": start_at,
+                "end_at": start_at + 840 * 60,
+            },
+            {
+                "thread_id": "attendance:short",
+                "thread_title": "考勤链路分类策略",
+                "project_label": "考勤",
+                "user_request": "调整考勤链路分类策略。",
+                "assistant_result": "考勤链路分类策略已调整。",
+                "start_at": start_at + 900 * 60,
+                "end_at": start_at + 960 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert {block["category_key"] for block in blocks} == {"legacy_color_67c23a", "legacy_color_e6a23c"}
+    assert {block["progress_base_minutes"] for block in blocks} == {840}
+    assert sorted(_build_codex_diary_completion_progress_expr(block) for block in blocks) == ["60/840", "840/840"]
+
+
+def test_codex_diary_blocks_merge_same_category_details_without_time_split(
     session: Session,
     auth_user,
 ):
@@ -1127,7 +1181,7 @@ def test_codex_diary_blocks_absorb_tiny_details_into_core_work(
     assert len(blocks[0]["records"]) == 2
 
 
-def test_codex_diary_blocks_absorb_related_short_content_under_core_category(
+def test_codex_diary_blocks_keep_short_categories_separate(
     session: Session,
     auth_user,
 ):
@@ -1192,16 +1246,16 @@ def test_codex_diary_blocks_absorb_related_short_content_under_core_category(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {"custom_attendance", "custom_fanxiu"}
-    assert blocks[0]["note_categories"][0]["key"] == blocks[0]["category_key"]
-    assert round(blocks[0]["duration_seconds"] / 60) == 60
-    requests = " ".join(record["user_request"] for record in blocks[0]["records"])
+    assert len(blocks) == 2
+    assert {block["category_key"] for block in blocks} == {"custom_attendance", "custom_fanxiu"}
+    assert all(block["note_categories"] == [{"key": block["category_key"], "weight": 100}] for block in blocks)
+    assert sum(round(block["duration_seconds"] / 60) for block in blocks) == 60
+    requests = " ".join(record["user_request"] for block in blocks for record in block["records"])
     assert "课程脚本" in requests
     assert "prayer_cycle" in requests
 
 
-def test_codex_diary_blocks_absorb_short_project_detail_into_value_category(
+def test_codex_diary_blocks_do_not_absorb_short_project_detail(
     session: Session,
     auth_user,
 ):
@@ -1247,19 +1301,20 @@ def test_codex_diary_blocks_absorb_short_project_detail_into_value_category(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {"custom_codeyun_note", "project"}
-    assert blocks[0]["category_key"] not in {"general", "custom_codeyun_general"}
-    assert round(blocks[0]["duration_seconds"] / 60) == 75
+    assert len(blocks) >= 1
+    assert len({block["category_key"] for block in blocks}) == len(blocks)
+    assert all(block["category_key"] != "project" for block in blocks)
+    assert sum(round(block["duration_seconds"] / 60) for block in blocks) == 75
     combined = " ".join(
         f"{record['thread_title']} {record['assistant_result']}"
-        for record in blocks[0]["records"]
+        for block in blocks
+        for record in block["records"]
     )
     assert "接口" in combined
     assert "交付" in combined
 
 
-def test_codex_diary_blocks_absorb_short_mixed_topics_without_import_category(
+def test_codex_diary_blocks_split_short_mixed_topics_without_import_category(
     session: Session,
     auth_user,
 ):
@@ -1314,15 +1369,15 @@ def test_codex_diary_blocks_absorb_short_mixed_topics_without_import_category(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {"custom_ai", "custom_fanxiu"}
-    assert not str(blocks[0]["category_key"]).startswith("import_")
-    requests = " ".join(record["user_request"] for record in blocks[0]["records"])
+    assert len(blocks) == 2
+    assert {block["category_key"] for block in blocks} == {"custom_ai", "custom_fanxiu"}
+    assert all(not str(block["category_key"]).startswith("import_") for block in blocks)
+    requests = " ".join(record["user_request"] for block in blocks for record in block["records"])
     assert "小狼毫" in requests
     assert "洞天福地" in requests
 
 
-def test_codex_diary_blocks_merge_tiny_mixed_details_into_allowed_category(
+def test_codex_diary_blocks_keep_tiny_mixed_details_by_category(
     session: Session,
     auth_user,
 ):
@@ -1388,18 +1443,19 @@ def test_codex_diary_blocks_merge_tiny_mixed_details_into_allowed_category(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {
+    assert len(blocks) >= 2
+    assert len({block["category_key"] for block in blocks}) == len(blocks)
+    assert {block["category_key"] for block in blocks} <= {
         "custom_fanxiu",
         "custom_codeyun_cluster",
         "custom_codeyun_note",
         "custom_attendance",
     }
-    assert not str(blocks[0]["category_key"]).startswith("import_")
-    assert len(blocks[0]["records"]) == 4
+    assert all(not str(block["category_key"]).startswith("import_") for block in blocks)
+    assert sum(len(block["records"]) for block in blocks) == 4
 
 
-def test_codex_diary_blocks_absorb_tiny_topic_tail_into_core_block(
+def test_codex_diary_blocks_do_not_absorb_tiny_topic_tail_across_categories(
     session: Session,
     auth_user,
 ):
@@ -1466,12 +1522,12 @@ def test_codex_diary_blocks_absorb_tiny_topic_tail_into_core_block(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {"custom_codeyun_note", "legacy_color_e6a23c"}
-    assert blocks[0]["note_categories"][0]["key"] == blocks[0]["category_key"]
-    assert len(blocks[0]["records"]) == 4
-    assert round(blocks[0]["duration_seconds"] / 60) == 100
-    assert {record["thread_title"] for record in blocks[0]["records"]} == {
+    assert len(blocks) == 2
+    assert {block["category_key"] for block in blocks} == {"custom_codeyun_note", "legacy_color_e6a23c"}
+    assert all(block["note_categories"][0]["key"] == block["category_key"] for block in blocks)
+    assert sum(len(block["records"]) for block in blocks) == 4
+    assert sum(round(block["duration_seconds"] / 60) for block in blocks) == 100
+    assert {record["thread_title"] for block in blocks for record in block["records"]} == {
         "PDF阅读器",
         "页面笔记",
         "PDF用户状态层",
@@ -1479,7 +1535,7 @@ def test_codex_diary_blocks_absorb_tiny_topic_tail_into_core_block(
     }
 
 
-def test_codex_diary_blocks_absorb_non_adjacent_tiny_same_day_work(
+def test_codex_diary_blocks_keep_non_adjacent_tiny_same_day_work_by_category(
     session: Session,
     auth_user,
 ):
@@ -1533,11 +1589,11 @@ def test_codex_diary_blocks_absorb_non_adjacent_tiny_same_day_work(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert blocks[0]["category_key"] in {"custom_codeyun_note", "legacy_color_e6a23c"}
-    assert len(blocks[0]["records"]) == 3
-    assert round(blocks[0]["duration_seconds"] / 60) == 60
-    assert {record["thread_title"] for record in blocks[0]["records"]} == {"PDF阅读器", "问卷恢复", "日记导入"}
+    assert len(blocks) == 2
+    assert {block["category_key"] for block in blocks} == {"custom_codeyun_note", "legacy_color_e6a23c"}
+    assert sum(len(block["records"]) for block in blocks) == 3
+    assert sum(round(block["duration_seconds"] / 60) for block in blocks) == 60
+    assert {record["thread_title"] for block in blocks for record in block["records"]} == {"PDF阅读器", "问卷恢复", "日记导入"}
 
 
 def test_codex_diary_questionnaire_records_prefer_attendance_over_codeyun_context(
@@ -1591,6 +1647,368 @@ def test_codex_diary_questionnaire_records_prefer_attendance_over_codeyun_contex
         "CodeYun 问卷采集新条目前插",
         "CodeYun 652 截图内容核对",
     }
+
+
+def test_codex_diary_report_reconstruction_palette_context_is_codeyun_note(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#c19a6b", "order": 20},
+                    {"key": "custom_project", "label": "项目", "color": "#b58900", "order": 30},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 9, 16)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codex-diary:category-policy",
+                "thread_title": "考勤链路分类策略",
+                "project_label": "codeyun",
+                "user_request": (
+                    "日报重构应该按连续问答事务归到单一分类桶，"
+                    "不要因为提到考勤配色和问卷渲染就归为考勤。"
+                ),
+                "assistant_result": (
+                    "提取并确认 note.category_palette.user.2 下含考勤、CodeYun/笔记、"
+                    "CodeYun/集群等颜色映射，作为星图配色基准。给出日报重构方向："
+                    "以连续问答事务为最小单元，按单一最相似分类聚合到日内分类桶。"
+                    "修正考勤问卷渲染：NoteSheetWorkspace.vue 在无合并单元格时使用 "
+                    "mergeCells=false，避免空 merged_cells 传参导致表格异常。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 19 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "custom_codeyun_note"
+    assert blocks[0]["note_categories"] == [{"key": "custom_codeyun_note", "weight": 100}]
+
+
+def test_codex_diary_category_design_examples_do_not_force_attendance(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#c19a6b", "order": 20},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#73b839", "order": 30},
+                    {"key": "custom_project", "label": "项目", "color": "#b58900", "order": 40},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 9, 42)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codex-diary:classification-step",
+                "thread_title": "星图笔记分类方案",
+                "project_label": "codeyun",
+                "user_request": "第1步的设计，要分步骤流程，提高精度吧？不能一口气让ai识别太多。",
+                "assistant_result": (
+                    "第 1 步应该拆成事务分类和候选分类召回。"
+                    "例如出现 MuMu/Runtime/行为树先给凡修候选，出现考勤/问卷/返款先给考勤候选，"
+                    "但最终由 AI 分类在候选中单选，并结合分类说明提高分类正确性。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 2 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "custom_codeyun_note"
+
+
+def test_codex_diary_category_description_ai_classification_is_codeyun_note_not_cluster(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
+                    {"key": "custom_codeyun_cluster", "label": "CodeYun/集群", "color": "#0067a5", "order": 20},
+                    {"key": "custom_project", "label": "项目", "color": "#b58900", "order": 30},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 9, 42)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codex-diary:category-description",
+                "thread_title": "分类描述增强AI归类",
+                "project_label": "codeyun",
+                "user_request": "补每个分类的解释，不然 AI 分类正确性很低。",
+                "assistant_result": (
+                    "识别到仅靠短标签导致 AI 分类准确率偏低，给出策略："
+                    "为每类补充语义化说明文案，并作为分类阶段的核心上下文输入。"
+                    "该策略与问答事务单分类模型一致，先保留规则召回，"
+                    "再用清晰语义约束 AI 归档边界，降低跨类误判。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "custom_codeyun_note"
+
+
+def test_codex_diary_hides_project_for_diary_reconstruction(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
+                    {"key": "project", "label": "项目", "color": "#a57c00", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 0, 27)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codex-diary:rebuild",
+                "thread_title": "日记聚合重构",
+                "project_label": "codeyun",
+                "user_request": "把 Codex 日记生成策略从按时间块切分改成连续问答事务和分类桶聚合。",
+                "assistant_result": (
+                    "实现规则候选召回后由 AI 单选分类，并补充分类说明输入，"
+                    "提升分类稳定性与可解释性。相关机制沉淀在 backend/api/notes.py。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 64 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "custom_codeyun_note"
+
+
+def test_codex_diary_cluster_service_operations_remain_codeyun_cluster(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
+                    {"key": "custom_codeyun_cluster", "label": "CodeYun/集群", "color": "#0067a5", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 10, 0)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codeyun-cluster:service",
+                "thread_title": "CodeYun 集群服务管理",
+                "project_label": "codeyun",
+                "user_request": "梳理多机器 CodeYun 集群服务管理和作业调度。",
+                "assistant_result": "明确设备 token、服务 token、局域网 CodeYun OCR 与 OCR 集中化边界。",
+                "start_at": start_at,
+                "end_at": start_at + 10 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "custom_codeyun_cluster"
+
+
+def test_codex_diary_fanxiu_context_overrides_generic_mail_title(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#67c23a", "order": 10},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 0, 5)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "fanxiu:mail-helper",
+                "thread_title": "邮件清理可靠性修正",
+                "project_label": "CodeYun",
+                "user_request": "修正日常_报备调度口径，排除0点误触发，并继续跑通邮件清理链路。",
+                "assistant_result": (
+                    "持续跑通邮件_清理，将“见到/领取/滚动”接入判断标准；"
+                    "识别小助手链路仍有起点漂移，抓包巡检显示 daemon 与 pcap 进程仍在，"
+                    "但 packet_worker 有 ok=false、has_unconfirmed_gap 异常。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 610 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "legacy_color_67c23a"
+    assert blocks[0]["note_categories"] == [{"key": "legacy_color_67c23a", "weight": 100}]
+
+
+def test_codex_diary_classification_ignores_agent_boilerplate_for_fanxiu_goal(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#67c23a", "order": 10},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 1, 40)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "fanxiu:mail-goal",
+                "thread_title": "凡修行为树，还有几个到期的作业没运行？",
+                "project_label": "codeyun",
+                "user_request": (
+                    "# AGENTS.md instructions for D:\\home\\chenkunze\\slns\\codeyun "
+                    "<INSTRUCTIONS>CodeYun CodeYun CodeYun uv run pytest</INSTRUCTIONS>"
+                    "<codex_internal_context source=\"goal\"><objective>"
+                    "你能看到每轮清理的邮件数的吧？和抓包那边联动，好好调试优化邮件清理功能吧。"
+                    "哪怕实际跑成功了一轮，也要再跑，直到某一轮全部处理下来，都没有被清理的邮件。"
+                    "</objective></codex_internal_context>"
+                ),
+                "assistant_result": "邮件_清理完成，见到 10 封，领取 0 封，滚动 1 次；doctor 显示 due_tasks=[]。",
+                "start_at": start_at,
+                "end_at": start_at + 20 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "legacy_color_67c23a"
+
+
+def test_codex_diary_mail_cleanup_runtime_context_is_fanxiu_without_fanxiu_title(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#67c23a", "order": 10},
+                    {"key": "project", "label": "项目", "color": "#a57c00", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 28, 0, 18)
+    source = {
+        "date": "2026-06-28",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "mail-cleanup:runtime",
+                "thread_title": "邮件判定流程收敛",
+                "project_label": "codeyun",
+                "user_request": "收敛邮件判定流程，避免状态误标。",
+                "assistant_result": (
+                    "在 mail.py 将“翻页到上限未确认到底”从 success 改为 skipped，"
+                    "并写入 retry_after。复跑验证清理结果，输出见到 89 封/滚动 24 后，"
+                    "记录 mail-cleanup 为重试态，不推进到明日批次。"
+                ),
+                "start_at": start_at,
+                "end_at": start_at + 70 * 60,
+            }
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] == "legacy_color_67c23a"
 
 
 def test_codex_diary_blocks_use_primary_category_only(
@@ -1717,7 +2135,7 @@ def test_codex_diary_marks_stale_running_run_failed(
     assert updated.finished_at == now_ts
 
 
-def test_codex_diary_blocks_can_use_user_preset_builtin_categories(
+def test_codex_diary_hides_project_but_uses_other_user_preset_builtin_categories(
     session: Session,
     auth_user,
 ):
@@ -1765,8 +2183,8 @@ def test_codex_diary_blocks_can_use_user_preset_builtin_categories(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["project"]
-    assert blocks[0]["category_label"] == "项目"
+    assert [block["category_key"] for block in blocks] == ["focus"]
+    assert blocks[0]["category_label"] == "重点"
 
 
 def test_codex_diary_general_fallback_does_not_merge_unrelated_threads(

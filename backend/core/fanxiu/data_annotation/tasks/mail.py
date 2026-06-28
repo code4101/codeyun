@@ -4,7 +4,7 @@ import difflib
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from pathlib import Path
 from types import GeneratorType
@@ -198,6 +198,7 @@ class MailTaskMixin:
             with self._lock:
                 self._log_locked("error", f"邮件_抓包：清理入口兜底失败：{exc}")
             raise
+        self._wait_mail_capture_runtime_ready("清理入口", stop_event=stop_event)
         max_actions = max(1, int(payload.get("max_actions") or 20))
         max_scrolls = max(1, int(payload.get("max_scrolls") or 24))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
@@ -220,15 +221,31 @@ class MailTaskMixin:
 
         with self._lock:
             self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
-        scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 34, 35, 69], update=True)
+        scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 227, 34, 35, 69], update=True)
+        if scene_id == 227:
+            with self._lock:
+                self._set_status_locked("running", "邮件_清理：关闭遗留奖励页", phase="mail_cleanup_close_reward_page", current_scene=227)
+                self._log_locked("action", "邮件_清理：点击 #227「继续」关闭遗留奖励页")
+            yield from runtime.wait_click(227, "继续", timeout=8.0)
+            reward_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：奖励页关闭后等待邮件或世界")
+            scene_id = reward_result_view.id if isinstance(reward_result_view, View) else None
+            score = 100.0 if scene_id in {121, 34} else 0.0
+            frame = runtime.cur_frame(update=True)
+            text = self._ocr_text(self._ocr_lines(frame))
         if scene_id not in {121, 122, 123} and (
             yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_清理")
         ):
-            scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 34, 35, 69], update=True)
+            scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 227, 34, 35, 69], update=True)
         if scene_id == 121:
             with self._lock:
                 self._status.update({"current_scene": 121, "updated_at": time.time()})
-                self._log_locked("info", f"邮件_清理：当前已在邮件 #121 {score:.0f}%，直接扫描")
+                self._log_locked("info", f"邮件_清理：当前已在邮件 #121 {score:.0f}%，先退出重进刷新邮件抓包")
+            image121_for_reset = ctx.get("images", {}).get(121) if isinstance(ctx.get("images"), dict) else None
+            if isinstance(image121_for_reset, dict) and self._find_shape(image121_for_reset, "空白-返回") is not None:
+                yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_清理")
+                yield from self._open_mail_cleanup_entry(runtime)
+            else:
+                self._log("error", "邮件_清理：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
         else:
             with self._lock:
                 self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
@@ -241,12 +258,17 @@ class MailTaskMixin:
         if list_shape is None:
             raise RuntimeError("缺少 #121「邮件清单2」标注，无法遍历邮件清单")
 
+        self._refresh_recent_mail_packets_for_runtime_log("进入邮件列表后", flush_capture=True)
+
         processed_count = 0
         seen_count = 0
         scroll_count = 0
         scanned_to_end = False
         while processed_count < max_actions and scroll_count < max_scrolls:
             self._raise_if_stopped(stop_event)
+            if (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")):
+                scanned_to_end = True
+                break
             frame = runtime.cur_frame(update=True)
             rows = self._runtime_mail_rows_from_frame(runtime, view121, frame)
             aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup")
@@ -257,14 +279,31 @@ class MailTaskMixin:
                     f"{aligned_result.get('updated')} 封为可领，区间 {aligned_result.get('interval_count')}",
                 )
             action_row: _RuntimeMailRow | None = None
+            detail_probe_row: _RuntimeMailRow | None = None
+            page_packet_counts: dict[str, int] = {}
+            page_rows_summary: list[str] = []
             for mail in rows:
                 seen_count += 1
                 self._prepare_mail_row_policy(mail.raw, action_enabled=True, action_policies={"claim"})
+                packet_match = str(mail.raw.get("packet_match") or "-")
+                page_packet_counts[packet_match] = page_packet_counts.get(packet_match, 0) + 1
+                if len(page_rows_summary) < 5:
+                    page_rows_summary.append(
+                        f"{mail.title[:16]}|{mail.raw.get('time_text') or '-'}|"
+                        f"{mail.raw.get('policy') or '-'}|{packet_match}"
+                    )
                 if mail.status == "已阅":
                     continue
                 if mail.raw.get("policy") == "claim":
                     action_row = mail
                     break
+                if (
+                    detail_probe_row is None
+                    and str(mail.raw.get("packet_match") or "") in {"missing", "title_only"}
+                    and str(mail.raw.get("title") or "").strip()
+                    and str(mail.raw.get("time_text") or "").strip()
+                ):
+                    detail_probe_row = mail
             if action_row is not None:
                 action_started_at = time.monotonic()
                 actual_policy = yield from self._claim_runtime_mail_row(runtime, action_row)
@@ -280,7 +319,35 @@ class MailTaskMixin:
                     },
                 )
                 processed_count += 1
+                self._refresh_recent_mail_packets_for_runtime_log("领取后同步", flush_capture=True)
                 continue
+
+            if detail_probe_row is not None:
+                probe_started_at = time.monotonic()
+                status = yield from self._process_mail_row_by_detail(
+                    ctx,
+                    stop_event,
+                    image121,
+                    detail_probe_row.raw,
+                    allowed_policies={"claim"},
+                )
+                probe_elapsed = time.monotonic() - probe_started_at
+                self._log(
+                    "detail",
+                    f"邮件_清理：详情页探测「{detail_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
+                )
+                if status == "processed":
+                    processed_count += 1
+                    self._refresh_recent_mail_packets_for_runtime_log("详情页领取后同步", flush_capture=True)
+                    continue
+
+            if rows:
+                counts_text = ",".join(f"{key}={value}" for key, value in sorted(page_packet_counts.items()))
+                self._log(
+                    "detail",
+                    f"邮件_清理：当前页无可领取，packet {counts_text}；"
+                    + "；".join(page_rows_summary),
+                )
 
             scroll_started_at = time.monotonic()
             runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(list_shape)
@@ -297,8 +364,20 @@ class MailTaskMixin:
 
         delete_result_scene: int | None = None
         if scanned_to_end or reached_scroll_limit:
+            if (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")):
+                delete_result_scene = 34
+                self._log("info", "邮件_清理：当前已离开邮件页，跳过一键删除已阅")
+            scene_before_delete, _score_before_delete, _frame_before_delete, _text_before_delete = self._fanxiu_runtime_scene_text(
+                ctx,
+                runtime,
+                [121, 34, 20],
+                update=True,
+            )
+            if delete_result_scene is None and scene_before_delete != 121:
+                delete_result_scene = 34 if scene_before_delete == 34 else None
+                self._log("info", f"邮件_清理：当前不在 #121（#{scene_before_delete or 'unknown'}），跳过一键删除已阅")
             delete_read_shape = view121.get_shape("一键删除")
-            if delete_read_shape is not None:
+            if delete_result_scene is None and delete_read_shape is not None:
                 with self._lock:
                     self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
                     self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
@@ -312,11 +391,12 @@ class MailTaskMixin:
                     self._click_confirmed_mail_delete_prompt(runtime, delete_result_scene)
                     delete_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：确认一键删除后等待邮件页或世界页")
                     delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
+                    self._refresh_recent_mail_packets_for_runtime_log("一键删除已阅后同步", flush_capture=True)
                 elif delete_result_scene == 121:
                     self._log("info", "邮件_清理：#121「一键删除」后未出现确认弹窗，按无可删已阅邮件继续")
                 else:
                     raise RuntimeError("邮件_清理：#121「一键删除」后未进入确认弹窗，也未回到邮件页")
-            else:
+            elif delete_result_scene is None:
                 self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
         elif processed_count >= max_actions:
             self._log("info", f"邮件_清理：达到 max_actions={max_actions}，跳过一键删除已阅")
@@ -336,14 +416,45 @@ class MailTaskMixin:
             yield from self._close_mail_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_清理")
             final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
 
+        if scanned_to_end and not reached_scroll_limit:
+            marked_count = self._mark_pending_packet_mail_actions_not_visible(
+                reason=f"mail_cleanup_full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
+                allowed_policies={"claim"},
+            )
+            if marked_count:
+                self._log(
+                    "success",
+                    f"邮件_清理：完整扫到底未见 packet 待领取项，标记 {marked_count} 封为 missing_from_list",
+                )
+
+        result = "success"
+        if reached_scroll_limit:
+            result = "skipped"
+            retry_after = (datetime.now() + timedelta(seconds=max(60, int(payload.get("retry_seconds") or 600)))).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_scheduler_task_discovered_retry_after(
+                str(payload.get("__scheduler_task_id") or "mail-cleanup"),
+                retry_after,
+                task_type="mail_cleanup",
+                label="邮件_清理",
+                last_result="skipped",
+            )
+            message = (
+                f"邮件_清理：未确认到底，见到 {seen_count} 封，领取 {processed_count} 封，"
+                f"滚动 {scroll_count} 次，{retry_after} 重试"
+            )
+        else:
+            message = f"邮件_清理：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次"
+
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次",
+                message,
                 phase="mail_cleanup_done",
                 current_scene=final_scene,
             )
-            self._log_locked("success", self._status["message"])
+            self._log_locked("success" if result == "success" else "skip", self._status["message"])
+        if result != "success":
+            return {"result": result, "message": message}
         return "success"
 
     def _click_confirmed_mail_delete_prompt(
@@ -444,13 +555,44 @@ class MailTaskMixin:
         asset_tree_path = runtime.asset_tree_path
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少邮件_清理资产树路径，无法进入邮件")
-        result = self._open_mail_scene(
-            runtime.ctx,
-            runtime.stop_event or threading.Event(),
-            asset_tree_path,
-            entry_mode="dynamic",
-        )
+        ctx = runtime.ctx
+        stop_event = runtime.stop_event or threading.Event()
+        recovered_green = yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")
+        if recovered_green:
+            return (yield from self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True))
+        scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 34, 35, 20, 58, 227], update=True)
+        if scene_id == 121:
+            return "success"
+        if scene_id == 227:
+            yield from runtime.wait_click(227, "继续", timeout=8.0)
+            view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：奖励页关闭后等待邮件或世界")
+            scene_id = view.id if isinstance(view, View) else None
+            if scene_id == 121:
+                return "success"
+        if scene_id not in {34, 35}:
+            yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
+        result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
         return (yield from result) if isinstance(result, GeneratorType) else result
+
+    def _leave_green_bottle_to_world_if_present(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        runtime: FanxiuRuntime,
+        *,
+        label: str,
+    ):
+        scene_id, _score, _frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [20, 34, 58], update=True)
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        looks_green_bottle = scene_id == 20 or any(token in compact for token in ("炼丹炉", "神物园", "衣装阁", "丹药"))
+        if not looks_green_bottle:
+            return False
+        with self._lock:
+            self._set_status_locked("running", f"{label}：从绿瓶页返回世界", phase="mail_cleanup_leave_green_bottle", current_scene=20)
+            self._log_locked("action", f"{label}：点击 #20「世界」返回 #34")
+        runtime.click_frame_point(20, 80, 1435)
+        yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：绿瓶返回世界 #34")
+        return True
 
     def _visible_mail_adjacency_intervals(self, rows: list[dict[str, Any]]) -> list[dict[str, str]]:
         ordered = sorted(rows, key=lambda item: float(item.get("y") or 0))
@@ -747,11 +889,49 @@ class MailTaskMixin:
     ):
         yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label=label, max_attempts=max_attempts)
 
+    def _wait_mail_capture_runtime_ready(
+        self,
+        label: str,
+        *,
+        stop_event: threading.Event | None = None,
+        timeout: float = 20.0,
+        settle_seconds: float = 1.5,
+    ) -> bool:
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        last_state = ""
+        while time.monotonic() < deadline:
+            if stop_event is not None:
+                self._raise_if_stopped(stop_event)
+            status = fanxiu_capture_runtime_service.status()
+            if bool(status.get("running")):
+                time.sleep(max(0.0, float(settle_seconds)))
+                with self._lock:
+                    self._log_locked(
+                        "info",
+                        f"邮件_抓包协作：{label} 已运行 "
+                        f"pcap_size={int(status.get('current_pcap_size') or 0)}",
+                    )
+                return True
+            state = str(status.get("state") or "")
+            if state != last_state:
+                last_state = state
+                with self._lock:
+                    self._log_locked("detail", f"邮件_抓包协作：{label} 等待运行 state={state or '-'}")
+            time.sleep(0.5)
+        status = fanxiu_capture_runtime_service.status()
+        with self._lock:
+            self._log_locked(
+                "error",
+                f"邮件_抓包协作：{label} 未等到运行 "
+                f"state={status.get('state') or '-'} error={status.get('last_error') or ''}",
+            )
+        return False
+
     def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
         try:
             pcap_paths: list[str] = []
             if flush_capture:
-                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-cleanup:{label}", restart=False)
+                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-cleanup:{label}", restart=True)
                 pcap_path = str(flush.get("pcap_path") or "").strip() if isinstance(flush, dict) else ""
                 if pcap_path and bool(flush.get("flushed")):
                     pcap_paths.append(pcap_path)
@@ -778,7 +958,8 @@ class MailTaskMixin:
                     "邮件_抓包协作："
                     f"{label} decoded={result.get('decoded_count', 0)} "
                     f"updated={mail_sync.get('updated', 0)} inserted={mail_sync.get('inserted', 0)} "
-                    f"source_packets={mail_sync.get('source_packets', 0)} action_packets={mail_sync.get('action_packets', 0)}",
+                    f"source_packets={mail_sync.get('source_packets', 0)} action_packets={mail_sync.get('action_packets', 0)}"
+                    + (f" skipped={mail_sync.get('reason')}" if mail_sync.get("skipped") else ""),
                 )
         except Exception as exc:
             with self._lock:
@@ -1575,9 +1756,6 @@ class MailTaskMixin:
         for record in records:
             if fanxiu_mail_action_policy_for_record(record) not in policies:
                 continue
-            group = self._find_packet_mail_records_for_visible_row(str(record.normalized_title or record.title or ""), str(record.create_time_text or ""))
-            if fanxiu_mail_visible_group_action_policy(group) not in policies:
-                continue
             mark_packet_mail_record_missing_from_list(_db_engine, record, reason=reason, marked_at=now_text)
             marked += 1
         return marked
@@ -1659,7 +1837,7 @@ class MailTaskMixin:
             row["policy"] = policy if policy in allowed_policies else ""
 
     def _mail_row_packet_action_policy(self, title: str, time_text: str) -> str:
-        records = self._find_packet_mail_records_for_visible_row(title, time_text)
+        records = self._find_packet_mail_records_for_visible_row(title, time_text, allow_title_only=False)
         return self._visible_packet_mail_group_action_policy(records, time_text=time_text)
 
     def _mail_row_packet_missing_reason(self, title: str, time_text: str) -> str:
@@ -1697,7 +1875,13 @@ class MailTaskMixin:
             return False
         return fanxiu_mail_desired_status_for_rewards(fanxiu_mail_rewards_from_payload(getattr(record, "payload", None))) == "可领"
 
-    def _find_packet_mail_records_for_visible_row(self, title: str, time_text: str) -> list[Any]:
+    def _find_packet_mail_records_for_visible_row(
+        self,
+        title: str,
+        time_text: str,
+        *,
+        allow_title_only: bool = True,
+    ) -> list[Any]:
         normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
         normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
@@ -1708,23 +1892,23 @@ class MailTaskMixin:
         same_time = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
         observed_key = self._mail_title_similarity_key(title)
         if len(observed_key) < 3:
-            return self._find_packet_mail_records_by_title_only(title)
+            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
         scored: list[tuple[float, Any]] = []
         for record in same_time:
             score = self._mail_title_similarity(title, str(record.title or record.normalized_title or ""))
             if score > 0:
                 scored.append((score, record))
         if not scored:
-            return self._find_packet_mail_records_by_title_only(title)
+            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
         scored.sort(key=lambda item: item[0], reverse=True)
         best_score = scored[0][0]
         threshold = 0.58 if len(observed_key) >= 5 else 0.72
         if best_score < threshold:
-            return self._find_packet_mail_records_by_title_only(title)
+            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
         fuzzy_matches = [record for score, record in scored if score >= best_score - 0.06]
         if fuzzy_matches:
             return fuzzy_matches
-        return self._find_packet_mail_records_by_title_only(title)
+        return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
 
     def _find_packet_mail_records_by_title_only(self, title: str) -> list[Any]:
         normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)

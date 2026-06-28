@@ -51,6 +51,78 @@ def test_packet_worker_status_is_service_state_projection(monkeypatch, tmp_path)
     assert status["pids"] == [1234]
 
 
+def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+    monkeypatch.setattr(service_runtime, "_age_seconds", lambda value: {"2026-06-28 21:00:00": 30, "2026-06-28 16:28:17": 4 * 3600}.get(value, 0))
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True, "watchdog_last_check_at": "2026-06-28 21:00:00"},
+            "packet_worker": {
+                "ok": True,
+                "updated_at": "2026-06-28 21:00:00",
+                "realtime_running": True,
+                "maintenance_running": True,
+                "realtime_interval_seconds": 15,
+                "maintenance_interval_seconds": 1800,
+                "realtime": {"updated_at": "2026-06-28 21:00:00"},
+                "maintenance": {"updated_at": "2026-06-28 16:28:17"},
+            },
+        }
+    )
+
+    assert "maintenance_result_stale" in health["issues"]
+    assert health["worker_maintenance_age_seconds"] == 4 * 3600
+
+
+def test_latest_live_capture_summary_ignores_vanished_candidates(monkeypatch, tmp_path):
+    live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
+    live_dir.mkdir(parents=True)
+    vanished = live_dir / "vanished.pcap"
+    stable = live_dir / "stable.pcap"
+    stable.write_bytes(b"new")
+    original_glob = Path.glob
+    original_is_file = Path.is_file
+    original_stat = Path.stat
+
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+
+    def glob_with_vanished_file(self, pattern):
+        if self == live_dir and pattern == "*.pcap":
+            return iter([vanished, stable])
+        return original_glob(self, pattern)
+
+    def is_file_with_vanished_file(self):
+        if self == vanished:
+            return True
+        return original_is_file(self)
+
+    def stat_with_vanished_file(self, *args, **kwargs):
+        if self == vanished:
+            raise FileNotFoundError(str(self))
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", glob_with_vanished_file)
+    monkeypatch.setattr(Path, "is_file", is_file_with_vanished_file)
+    monkeypatch.setattr(Path, "stat", stat_with_vanished_file)
+
+    summary = service_runtime._latest_live_capture_summary({})
+
+    assert summary["path"] == str(stable)
+    assert summary["name"] == "stable.pcap"
+    assert summary["source"] == "latest_live_dir"
+
+
 def test_start_packet_service_uses_no_window_module_launcher(monkeypatch, tmp_path):
     calls: list[dict[str, object]] = []
     log_path = tmp_path / "packet_service.log"
