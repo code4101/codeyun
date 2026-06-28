@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "358177a3394d280730a3abc19d3f1d5272cfc0f1"
-last_audited_at: "2026-06-26T20:42:41.7707308+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-26-frontend-design-358177a3/report.md"
-last_frontend_commit_summary: "完整关闭 46c34d1d..358177a3：凡修标注页新增场景归纳后，把重复的“连拍”结果入口收回为“缓存”，并完成 fanxiu/runtime、cluster/runtime、orders、notes-star 三视口复核。"
-audited_commit_count: 42
+last_audited_commit: "4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd"
+last_audited_at: "2026-06-28T00:39:57.1881261+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-28-frontend-design-4fbe1fbf/report.md"
+last_frontend_commit_summary: "完整关闭 358177a3..4fbe1fbf：复核 orders/storage/runtime/annotation/wiki/notes 链路，并把 ListNotes 的 custom_fields 装载语义收敛到和 StarNotes 一致。"
+audited_commit_count: 43
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-28
+
+- 完整范围：`358177a3394d280730a3abc19d3f1d5272cfc0f1..4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd`
+- 覆盖提交：`4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd`
+- 前端入口提交：`4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd`
+- 入口如何牵引到旧问题：这次提交同时触碰了 `orders`、`cluster/storage`、`cluster/runtime`、`fanxiu/data-annotation`、`fanxiu/wiki` 和 `notes/center`。真正牵出需要自动修复的旧问题，是 `notes/center` 这条“后端工作集 -> 前端规则链 -> 列表 / 星系双视图”的同一状态模型：提交已经让 `StarNotes` 只在前端筛选依赖 `custom_fields.* / full_text` 时补拉自定义字段，但 `ListNotes` 仍把 `include_custom_fields` 固定成 `false`，导致同一套规则程序在两个视图里出现不同结果。这不是无关扩散，而是同一业务对象、同一筛选模型下被本轮入口直接暴露出来的旧分叉。
+- 本轮减法：不新增任何按钮、卡片、说明或状态。提交自身已经在多处做减法：`orders` 把 `Handsontable` 改为按需加载，`cluster/storage` 复用根目录预取避免重复取数，`cluster/runtime` 先热身缓存减少空窗，`fanxiu/data-annotation` 继续把“连拍结果入口”明确压成“缓存”，`fanxiu/wiki` 只解析当前可见详情里的链接目标。本轮自动修复继续沿同一个方向，把 `ListNotes` 的字段装载语义收回到和 `StarNotes` 相同的基础模型，减少“同一规则链不同页各自解释”的偶然复杂度。
+- 信息量保持：列表页仍保留后端筛选、前端筛选、分页、批量编辑和节点详情；星系页仍保留相同的规则链和图节点工作台。减少的是字段装载语义的分叉，不是减少筛选能力或编辑能力。`orders`、`storage`、`runtime`、`annotation`、`wiki` 也都保持原有判断和操作能力，只让重依赖、重复入口或无关细节更后置。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-28-frontend-design-4fbe1fbf/report.md`
+- 验证：复用本地 `5173/8000` 开发环境；`attendance/orders`、`cluster/runtime`、`fanxiu/data-annotation`、`fanxiu/wiki`、`notes/center` 列表/星系，以及 `cluster/storage` settled 状态都完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图。`evidence.json` 中 21 组基础截图 `overflowX` 全为 `0`；额外补拍了 `cluster-storage-*-settled.png`、`fanxiu-wiki-wide-settled.png` 和真实 `notes-star-*-real.png`。同时 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`ListNotes` 的问题属于前端状态投影，不是样式 bug，也不是后端 DTO 缺字段。`cluster/storage` 首屏 6 秒左右才从预取态落到目录表，更像真实目录扫描耗时，不构成新的 UI 结构回归。`fanxiu/data-annotation` 与 `fanxiu/wiki` 本轮没有再暴露需要升级为后端数据投影或业务建模交接的新债务。
+- 剩余风险：当前工作树包含用户未提交改动，其中前端有 `frontend/src/standard/fanxiu/data-annotation-runtime/page.vue`；本轮截图基于当前工作树而不是纯净 commit checkout。`ListNotes` 的修复已经通过真实页面 smoke、构建和代码路径复核，但没有额外构造专门命中 `custom_fields.*` 的演示截图样本。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复与前端验证，因此把 `last_audited_commit` 推进到 `4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-06-26
 

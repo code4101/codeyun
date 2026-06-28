@@ -44,7 +44,6 @@ _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_yaozu", "legacy-daily-yaozu", r"妖族袭城|妖族"),
     ("daily_gongfeng", "legacy-daily-gongfeng", r"供奉"),
     ("daily_xianshi", "legacy-daily-xianshi", r"仙市"),
-    ("daily_yihuo", "legacy-daily-yihuo", r"异火"),
 )
 
 _DAILY_AUDIT_COMPLETION_MIN_TOTAL: dict[str, int] = {
@@ -76,6 +75,12 @@ class DailyFoundationTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, _frame = runtime.current_scene(update=True)
         current_text = runtime.ocr_text(_frame)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, current_text)):
+            scene_id, _score, _frame = runtime.current_scene(update=True)
+            current_text = runtime.ocr_text(_frame)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, current_text)):
+            scene_id, _score, _frame = runtime.current_scene(update=True)
+            current_text = runtime.ocr_text(_frame)
         if self._daily_boss_done_text(current_text):
             return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
         if self._daily_boss_combat_in_progress_text(current_text):
@@ -534,6 +539,10 @@ class DailyFoundationTaskMixin:
             return "skipped"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
         if scene_id == 34:
             yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
             return "success"
@@ -572,6 +581,71 @@ class DailyFoundationTaskMixin:
             raise
         return "success"
 
+    def _daily_boss_item_detail_text_matches(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if "描述" not in compact:
+            return False
+        if "境界要求" not in compact and "获取途径" not in compact:
+            return False
+        return any(token in compact for token in ("合成", "获取途径", "使用"))
+
+    def _close_daily_boss_item_detail_if_present(
+        self,
+        ctx: dict[str, Any],
+        runtime: FanxiuRuntime,
+        stop_event: threading.Event,
+        frame: str | None,
+        text: str,
+    ):
+        if not self._daily_boss_item_detail_text_matches(text):
+            return False
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image250 = images.get(250)
+        back_shape = self._find_shape(image250, "返回") if isinstance(image250, dict) else None
+        if not isinstance(image250, dict) or back_shape is None:
+            raise RuntimeError("日常_首领：道具详情弹窗已出现，但缺少 #250「返回」标注，无法安全收尾")
+        box = self._box(back_shape, image250)
+        x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+        y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+        with self._lock:
+            self._set_status_locked("running", "日常_首领：关闭奖励道具详情弹窗", phase="daily_boss_close_item_detail")
+            self._log_locked("action", "日常_首领：检测到道具详情弹窗，点击 #250「返回」")
+        runtime.click_frame_point(image250, x, y)
+        yield from runtime.wait_action_settle(2.0)
+        return True
+
+    def _daily_boss_storage_bag_text_matches(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if "储物袋" not in compact:
+            return False
+        tab_hits = sum(1 for token in ("全部", "书籍", "丹药", "礼物", "日程") if token in compact)
+        return tab_hits >= 3 or "快捷操作" in compact
+
+    def _close_daily_boss_storage_bag_if_present(
+        self,
+        ctx: dict[str, Any],
+        runtime: FanxiuRuntime,
+        stop_event: threading.Event,
+        frame: str | None,
+        text: str,
+    ):
+        if not self._daily_boss_storage_bag_text_matches(text):
+            return False
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image249 = images.get(249)
+        back_shape = self._find_shape(image249, "返回") if isinstance(image249, dict) else None
+        if not isinstance(image249, dict) or back_shape is None:
+            raise RuntimeError("日常_首领：储物袋页已出现，但缺少 #249「返回」标注，无法安全收尾")
+        box = self._box(back_shape, image249)
+        x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+        y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+        with self._lock:
+            self._set_status_locked("running", "日常_首领：关闭储物袋页", phase="daily_boss_close_storage_bag")
+            self._log_locked("action", "日常_首领：检测到储物袋页，点击 #249「返回」")
+        runtime.click_frame_point(image249, x, y)
+        yield from runtime.wait_action_settle(2.0)
+        return True
+
     def _open_daily_boss_list_after_leaving_fight(
         self,
         ctx: dict[str, Any],
@@ -590,6 +664,10 @@ class DailyFoundationTaskMixin:
             except Exception:
                 pass
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
         if scene_id == 178:
             return True
         if scene_id == 181:
@@ -634,6 +712,7 @@ class DailyFoundationTaskMixin:
             scene_id == 177
             or "点击屏幕继续" in compact
             or "点击继续" in compact
+            or "恭喜获得" in compact
             or ("恭喜获得" in compact and "自动关闭" in compact)
         )
         if not is_reward_result:
@@ -1139,16 +1218,17 @@ class DailyFoundationTaskMixin:
                 yield from runtime.wait_click(69, "退出")
                 yield from runtime.wait_action_settle(2.0)
                 continue
-            if scene_id == 86 or self._leave_scene_confirm_text(text):
+            if scene_id in {289, 86} or self._leave_scene_confirm_text(text):
+                confirm_id = int(scene_id) if scene_id in {289, 86} else 86
                 with self._lock:
                     self._set_status_locked(
                         "running",
                         "日常_灵祖：确认离开当前场景",
                         phase="daily_lingzu_leave_confirm",
-                        current_scene=86,
+                        current_scene=confirm_id,
                     )
-                    self._log_locked("action", "日常_灵祖：点击 #86「确认」离开场景")
-                yield from runtime.wait_click(86, "确认")
+                    self._log_locked("action", f"日常_灵祖：点击 #{confirm_id}「确认」离开场景")
+                yield from runtime.wait_click(confirm_id, "确认")
                 yield from runtime.wait_action_settle(2.0)
                 continue
             if time.monotonic() - start >= 20:
@@ -1610,36 +1690,39 @@ class DailyFoundationTaskMixin:
         ref_image = images.get(34) if isinstance(images.get(34), dict) else {"filename": "world_runtime.png", "width": 900, "height": 1600}
         runtime = self._fanxiu_observer(ctx, stop_event, frame_data_url=frame)
         width, height = self._frame_size(ref_image)
-        lines = runtime.ocr_lines(frame)
-        matches = self._world_scene_leave_matches(lines, width=width, height=height)
         click_image = ref_image
+        matches: list[tuple[float, float, str]] = []
+        image85 = images.get(85) if isinstance(images.get(85), dict) else None
+        leave_shape = self._find_shape(image85, "离开") if isinstance(image85, dict) else None
+        if isinstance(image85, dict) and isinstance(leave_shape, dict):
+            score = float(self._shape_score(ctx, image85, leave_shape, frame) or 0.0)
+            if score >= float(getattr(self, "overlay_threshold", 80.0)):
+                x, y = ActionPlanner().shape_center(image85, leave_shape)
+                matches = [(float(x), float(y), f"#85「离开」{score:.0f}%")]
+                click_image = image85
         if not matches:
-            image85 = images.get(85) if isinstance(images.get(85), dict) else None
-            leave_shape = self._find_shape(image85, "离开") if isinstance(image85, dict) else None
-            if isinstance(image85, dict) and isinstance(leave_shape, dict):
-                score = float(self._shape_score(ctx, image85, leave_shape, frame) or 0.0)
-                if score >= float(getattr(self, "overlay_threshold", 80.0)):
-                    x, y = ActionPlanner().shape_center(image85, leave_shape)
-                    matches = [(float(x), float(y), f"#85「离开」{score:.0f}%")]
-                    click_image = image85
-            if not matches:
-                return False
+            lines = runtime.ocr_lines(frame)
+            matches = self._world_scene_leave_matches(lines, width=width, height=height)
+            click_image = ref_image
+        if not matches:
+            return False
         x, y, matched_text = matches[0]
         with self._lock:
                     self._set_status_locked("running", f"{label}：当前在场景内，点击右侧「离开」", phase="world_side_scene_leave", current_scene=None)
                     self._log_locked("action", f"{label}：命中右侧「{matched_text}」，先离开场景")
         runtime.click_frame_point(View(click_image), x, y)
         yield from runtime.wait_action_settle(2.0)
-        confirm_scene_id, _confirm_score, confirm_frame = runtime.current_scene([86], update=True)
+        confirm_scene_id, _confirm_score, confirm_frame = runtime.current_scene([289, 86], update=True)
         confirm_text = runtime.ocr_text(confirm_frame)
-        if confirm_scene_id == 86 or "是否离开" in _sanitize_ocr_text(confirm_text):
-            image86 = images.get(86) if isinstance(images.get(86), dict) else None
-            confirm_shape = self._find_shape(image86, "确认") if isinstance(image86, dict) else None
-            if isinstance(image86, dict) and confirm_shape is not None:
+        if confirm_scene_id in {289, 86} or self._leave_scene_confirm_text(confirm_text):
+            confirm_id = int(confirm_scene_id) if confirm_scene_id in {289, 86} else (289 if isinstance(images.get(289), dict) else 86)
+            confirm_image = images.get(confirm_id) if isinstance(images.get(confirm_id), dict) else None
+            confirm_shape = self._find_shape(confirm_image, "确认") if isinstance(confirm_image, dict) else None
+            if isinstance(confirm_image, dict) and confirm_shape is not None:
                 with self._lock:
-                    self._set_status_locked("running", f"{label}：确认离开当前场景", phase="world_side_scene_leave_confirm", current_scene=86)
-                    self._log_locked("action", f"{label}：点击 #86「确认」离开场景")
-                yield from runtime.wait_click(86, "确认")
+                    self._set_status_locked("running", f"{label}：确认离开当前场景", phase="world_side_scene_leave_confirm", current_scene=confirm_id)
+                    self._log_locked("action", f"{label}：点击 #{confirm_id}「确认」离开场景")
+                yield from runtime.wait_click(confirm_id, "确认")
                 yield from runtime.wait_action_settle(2.0)
         return True
 
@@ -1984,13 +2067,14 @@ class DailyFoundationTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([86, 58, 20, 34], update=True)
+        scene_id, score, frame = runtime.current_scene([289, 86, 58, 20, 34], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id == 86 or self._leave_scene_confirm_text(text):
+        if scene_id in {289, 86} or self._leave_scene_confirm_text(text):
+            confirm_id = int(scene_id) if scene_id in {289, 86} else 86
             with self._lock:
-                self._set_status_locked("running", f"{label}：确认离开场景后继续收尾", phase="cleanup_confirm_leave", current_scene=86)
-                self._log_locked("action", f"{label}：点击 #86「确认」")
-            yield from runtime.wait_click(86, "确认")
+                self._set_status_locked("running", f"{label}：确认离开场景后继续收尾", phase="cleanup_confirm_leave", current_scene=confirm_id)
+                self._log_locked("action", f"{label}：点击 #{confirm_id}「确认」")
+            yield from runtime.wait_click(confirm_id, "确认")
             yield from runtime.wait_action_settle(2.0)
             scene_id, score, frame = runtime.current_scene([58, 20, 34], update=True)
             text = runtime.ocr_text(frame)
@@ -2956,6 +3040,57 @@ class DailyFoundationTaskMixin:
         self._log("success", f"日常_洞天福地：{message}，下次 {next_time}")
         return next_time
 
+    def _daily_dongtian_has_shape(self, ctx: dict[str, Any], scene_id: int, title: str) -> bool:
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image = images.get(scene_id)
+        if not isinstance(image, dict):
+            return False
+        return any(str(shape.get("title") or "") == title for shape in image.get("shapes") or [])
+
+    def _claim_daily_dongtian_profit(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if not isinstance(images.get(284), dict):
+            raise RuntimeError(f"{task_label}：缺少 #284 收益领取页标注，无法把 #279「收益」后的下一步作为场景锚点")
+        if not self._daily_dongtian_has_shape(ctx, 284, "领取"):
+            raise RuntimeError(f"{task_label}：缺少 #284「领取」shape 标注，无法执行下一步领取")
+
+        yield from runtime.wait_click_then_view(
+            279,
+            "收益",
+            284,
+            label=f"{task_label}：点击 #279「收益」后等待 #284 领取页",
+            settle_seconds=float(payload.get("dongtian_profit_settle_seconds") or 2.0),
+        )
+        yield from runtime.wait_click_then_view(
+            284,
+            "领取",
+            279,
+            label=f"{task_label}：点击 #284「领取」后等待 #279 洞天主页",
+            settle_seconds=max(2.0, float(payload.get("dongtian_claim_settle_seconds") or 2.0)),
+        )
+        scene_after, score_after, frame_after = runtime.current_scene([279], update=True)
+        text_after = runtime.ocr_text(frame_after)
+        self._log("success", f"{task_label}：已点击 #284「领取」并回到 #279，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
+        yield from runtime.wait_click_then_view(
+            279,
+            "返回",
+            34,
+            label=f"{task_label}：点击 #279「返回」后等待 #34 世界",
+            settle_seconds=float(payload.get("dongtian_return_settle_seconds") or 2.0),
+        )
+        scene_return, score_return, frame_return = runtime.current_scene([34], update=True)
+        text_return = runtime.ocr_text(frame_return)
+        self._log("success", f"{task_label}：已从 #279 返回 #34，当前 #{scene_return if scene_return is not None else 'unknown'} {score_return:.0f}%，OCR={text_return[:160]}")
+
     def _execute_daily_dongtian_task(
         self,
         ctx: dict[str, Any],
@@ -2975,9 +3110,10 @@ class DailyFoundationTaskMixin:
         scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-            self._record_daily_dongtian_done(payload, message="当前已在洞天福地主页")
+            yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+            self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
             with self._lock:
-                self._set_status_locked("success", "日常_洞天福地：当前已在洞天福地主页", phase="daily_dongtian_done", current_scene=279)
+                self._set_status_locked("success", "日常_洞天福地：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
             return "success"
 
         if scene_id != 69:
@@ -2985,9 +3121,10 @@ class DailyFoundationTaskMixin:
                 scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
                 text = runtime.ocr_text(frame)
                 if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-                    self._record_daily_dongtian_done(payload, message="当前已在洞天福地主页")
+                    yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+                    self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
                     with self._lock:
-                        self._set_status_locked("success", "日常_洞天福地：当前已在洞天福地主页", phase="daily_dongtian_done", current_scene=279)
+                        self._set_status_locked("success", "日常_洞天福地：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
                     return "success"
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
@@ -3011,10 +3148,255 @@ class DailyFoundationTaskMixin:
         if daily_status == "not_found":
             raise RuntimeError("日常_洞天福地：#69 日常列表未找到「收取两万九曜玄墨」入口")
         yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
-        self._record_daily_dongtian_done(payload, message="已从日常进入洞天福地主页")
+        yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+        self._record_daily_dongtian_done(payload, message="已从日常进入洞天福地并领取收益")
         with self._lock:
-            self._set_status_locked("success", "日常_洞天福地：已进入洞天福地主页，收益领取稍后处理", phase="daily_dongtian_done", current_scene=279)
+            self._set_status_locked("success", "日常_洞天福地：已进入洞天福地并领取收益", phase="daily_dongtian_done", current_scene=279)
         return "success"
+
+    def _execute_daily_lingmai_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_灵脉资产树路径，无法执行作业")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if not isinstance(images.get(285), dict):
+            raise RuntimeError("日常_灵脉：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
+
+        task_label = "日常_灵脉"
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, score, frame = runtime.current_scene([288, 286, 285, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 288:
+            self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
+            return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+        if scene_id == 286:
+            self._log("success", f"{task_label}：当前已在 #286 选择空位，场景分 {score:.0f}%，OCR={text[:160]}")
+            return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+        if scene_id == 285:
+            self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
+            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+
+        if scene_id != 69:
+            if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
+                scene_id, score, frame = runtime.current_scene([288, 286, 285, 69, 34], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 288:
+                    self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
+                    return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+                if scene_id == 286:
+                    self._log("success", f"{task_label}：当前已在 #286 选择空位，场景分 {score:.0f}%，OCR={text[:160]}")
+                    return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+                if scene_id == 285:
+                    self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
+                    return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+            if scene_id != 69:
+                scene_id = yield from self._enter_daily_from_world_like(
+                    ctx,
+                    runtime,
+                    stop_event,
+                    frame,
+                    scene_id,
+                    text,
+                    label=task_label,
+                )
+
+        daily_status = yield from self._open_daily_entry_from_daily(
+            ctx,
+            stop_event,
+            payload,
+            task_label=task_label,
+            title_pattern=r"参\s*与?.*灵\s*脉.*(?:争|夺).*?(?:1|一)?.*?(?:小\s*时|时)?|灵\s*脉.*(?:争|夺)|灵\s*脉",
+            progress_can_mark_done=False,
+        )
+        if daily_status == "not_found":
+            raise RuntimeError("日常_灵脉：#69 日常列表未找到「参与灵脉争夺1小时」入口")
+
+        yield from runtime.wait_view(
+            285,
+            timeout=float(payload.get("lingmai_entry_timeout") or 25.0),
+            label=f"{task_label}：点击 #69 入口后等待 #285 造化灵脉",
+        )
+        scene_after, score_after, frame_after = runtime.current_scene([285], update=True)
+        text_after = runtime.ocr_text(frame_after)
+        self._log("success", f"{task_label}：已到达 #285 造化灵脉，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
+        return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
+
+    def _record_daily_lingmai_retry(self, payload: dict[str, Any], *, message: str, seconds: int = 600) -> str:
+        retry_after = (_runtime_runner._now() + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        self._record_scheduler_task_discovered_retry_after(
+            str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai"),
+            retry_after,
+            task_type="daily_lingmai",
+            label="日常_灵脉",
+            last_result="skipped",
+        )
+        self._log("skip", f"日常_灵脉：{message}，{retry_after} 重试")
+        return retry_after
+
+    def _continue_daily_lingmai_from_zaohua(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime: FanxiuRuntime,
+        frame: str | None,
+        *,
+        task_label: str,
+    ) -> str:
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image285 = images.get(285)
+        if not isinstance(image285, dict):
+            raise RuntimeError(f"{task_label}：缺少 #285「造化灵脉」标注，无法读取空位")
+        if self._find_shape(image285, "空位") is None:
+            raise RuntimeError(f"{task_label}：缺少 #285「空位」shape 标注，无法读取剩余空位")
+        if self._find_shape(image285, "返回") is None:
+            raise RuntimeError(f"{task_label}：缺少 #285「返回」shape 标注，无法在无空位时安全返回")
+
+        read_retries = max(1, int(payload.get("lingmai_empty_slot_read_retries") or 3))
+        numbers: list[int] = []
+        slot_text = ""
+        for index in range(read_retries):
+            self._raise_if_stopped(stop_event)
+            numbers, slot_text = runtime.ocr_numbers_in_shapes(285, ("空位",), padding=int(payload.get("lingmai_empty_slot_padding") or 16), frame_data_url=frame)
+            self._log("detail", f"{task_label}：读取 #285「空位」 {index + 1}/{read_retries} OCR={slot_text} nums={numbers}")
+            if numbers:
+                break
+            yield from runtime.wait_action_settle(0.8)
+            frame = runtime.cur_frame(update=True)
+        if not numbers:
+            raise RuntimeError(f"{task_label}：#285「空位」未识别到整数，OCR={slot_text[:120]}")
+
+        remaining_slots = int(numbers[0])
+        total_slots = int(numbers[1]) if len(numbers) >= 2 else None
+        if remaining_slots <= 0:
+            yield from runtime.wait_click(285, "返回")
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_return_settle_seconds") or 2.0))
+            retry_after = self._record_daily_lingmai_retry(
+                payload,
+                message=f"#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，本次不换位置",
+                seconds=int(payload.get("lingmai_no_slot_retry_seconds") or 600),
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "skipped",
+                    f"{task_label}：暂无空位，已返回，{retry_after} 重试",
+                    phase="daily_lingmai_no_slot",
+                    current_scene=285,
+                )
+            return {"result": "skipped", "message": f"{task_label}：暂无空位，已返回，{retry_after} 重试"}
+
+        self._log("success", f"{task_label}：#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，点击「空位」进入下一阶段")
+        yield from runtime.wait_click(285, "空位")
+        yield from runtime.wait_view(
+            286,
+            timeout=float(payload.get("lingmai_select_slot_timeout") or 12.0),
+            label=f"{task_label}：点击 #285「空位」后等待 #286 选择空位",
+        )
+        scene_next, score_next, frame_next = runtime.current_scene([286], update=True)
+        text_next = runtime.ocr_text(frame_next)
+        self._log("success", f"{task_label}：已到达 #286 选择空位，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:160]}")
+        return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame_next, task_label=task_label))
+
+    def _continue_daily_lingmai_from_select_slot(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime: FanxiuRuntime,
+        frame: str | None,
+        *,
+        task_label: str,
+    ) -> str:
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image286 = images.get(286)
+        image287 = images.get(287)
+        image288 = images.get(288)
+        if not isinstance(image286, dict):
+            raise RuntimeError(f"{task_label}：缺少 #286「选择空位」标注，无法进入占领阶段")
+        if not isinstance(image287, dict):
+            raise RuntimeError(f"{task_label}：缺少 #287「前往灵脉」确认弹窗标注，无法确认占领")
+        if not isinstance(image288, dict):
+            raise RuntimeError(f"{task_label}：缺少 #288「占领」过渡后场景标注，无法确认灵脉占领")
+        if self._find_shape(image286, "选择空位") is None:
+            raise RuntimeError(f"{task_label}：缺少 #286「选择空位」shape 标注，无法二次校验")
+        if self._find_shape(image286, "占领") is None:
+            raise RuntimeError(f"{task_label}：缺少 #286「占领」shape 标注，无法点击占领")
+        if self._find_shape(image286, "返回") is None:
+            raise RuntimeError(f"{task_label}：缺少 #286「返回」shape 标注，无法在校验失败时安全返回")
+        if self._find_shape(image287, "前往灵脉") is None:
+            raise RuntimeError(f"{task_label}：缺少 #287「前往灵脉」shape 标注，无法识别占领确认弹窗")
+        if self._find_shape(image287, "确认") is None:
+            raise RuntimeError(f"{task_label}：缺少 #287「确认」shape 标注，无法确认占领")
+        if self._find_shape(image288, "占领") is None:
+            raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
+
+        threshold = float(payload.get("lingmai_select_empty_slot_threshold") or self.overlay_threshold)
+        if not frame:
+            frame = runtime.cur_frame(update=True)
+        score = runtime.shape_score(286, "选择空位", frame_data_url=frame)
+        self._log("detail", f"{task_label}：二次校验 #286「选择空位」score={score:.0f}% threshold={threshold:.0f}%")
+        if score < threshold:
+            self._log("warning", f"{task_label}：#286「选择空位」匹配不足 {score:.0f}%，点击返回")
+            yield from runtime.wait_click(286, "返回")
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_select_return_settle_seconds") or 2.0))
+            raise RuntimeError(f"{task_label}：#286「选择空位」二次校验失败 {score:.0f}%<{threshold:.0f}%，已返回")
+
+        self._log("success", f"{task_label}：#286「选择空位」二次校验通过 {score:.0f}%，点击「占领」")
+        yield from runtime.wait_click(286, "占领")
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_occupy_click_settle_seconds") or 2.0))
+        scene_next, score_next, frame_next = runtime.current_scene([287, 285, 286, 47], update=True)
+        text_next = runtime.ocr_text(frame_next)
+        text_compact = _sanitize_ocr_text(text_next)
+        if scene_next == 287 or "前往灵脉" in text_compact:
+            self._log("success", f"{task_label}：已到达 #287 前往灵脉确认弹窗，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，点击「确认」")
+            yield from runtime.wait_click(287, "确认")
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_confirm_settle_seconds") or 2.0))
+        else:
+            self._log(
+                "warning",
+                f"{task_label}：点击 #286「占领」后未直接识别到 #287，继续等待 #288；"
+                f"当前 {'#' + str(scene_next) if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:120]}",
+            )
+
+        yield from runtime.wait_view(
+            288,
+            timeout=float(payload.get("lingmai_after_confirm_timeout") or 90.0),
+            label=f"{task_label}：点击 #287「确认」后等待 #288 占领页",
+        )
+        scene_after, score_after, frame_after = runtime.current_scene([288], update=True)
+        text_after = runtime.ocr_text(frame_after)
+        self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
+        return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+
+    def _continue_daily_lingmai_from_final_occupy(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime: FanxiuRuntime,
+        *,
+        task_label: str,
+    ) -> str:
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image288 = images.get(288)
+        if not isinstance(image288, dict):
+            raise RuntimeError(f"{task_label}：缺少 #288「占领」过渡后场景标注，无法确认灵脉占领")
+        if self._find_shape(image288, "占领") is None:
+            raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
+        yield from runtime.wait_click(288, "占领")
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_final_occupy_settle_seconds") or 2.0))
+        scene_final, score_final, frame_final = runtime.current_scene([288, 285, 286, 287, 47], update=True)
+        text_final = runtime.ocr_text(frame_final)
+        raise RuntimeError(
+            f"{task_label}：已点击 #288「占领」，但后续业务状态机尚未迁移；"
+            f"当前 {'#' + str(scene_final) if scene_final is not None else 'unknown'} {score_final:.0f}%，OCR={text_final[:160]}"
+        )
 
     def _baiye_payload_target(self, payload: dict[str, Any]) -> str:
         args = payload.get("args")

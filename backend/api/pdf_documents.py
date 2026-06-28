@@ -5,7 +5,10 @@ import os
 import re
 import time
 import html as html_module
+import hashlib
+import shutil
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 import requests
@@ -25,6 +28,7 @@ from backend.core.access.auth import (
     get_optional_current_user_from_token,
 )
 from backend.core.devices.files import ensure_device_file_resource_identity
+from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import (
     DeviceFile,
@@ -42,6 +46,8 @@ from backend.core.resources.identity import RESOURCE_TYPE_PDF, allocate_resource
 router = APIRouter()
 
 PDF_RESOURCE_TYPE = "pdf"
+PDF_HOSTED_ENTRY_ID = "codeyun-pdf-store"
+PDF_HOSTED_DEVICE_ID = "codeyun-pdf-store"
 PDF_CONTENT_TOKEN_SCOPE = "pdf-document-content"
 PDF_CONTENT_TOKEN_EXPIRE_MINUTES = 15
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -59,6 +65,10 @@ class PdfFileSelector(BaseModel):
     root: str | None = None
     path: str = ""
     absolute_path: str = ""
+
+
+class PdfLocalImportRequest(BaseModel):
+    absolute_path: str
 
 
 class PdfAccessCapabilities(BaseModel):
@@ -98,6 +108,10 @@ class PdfDocumentDetail(BaseModel):
     updated_at: float
     access: PdfResourceAccess
     my_state: PdfUserStatePayload | None = None
+
+
+class PdfDocumentSummary(PdfDocumentDetail):
+    pass
 
 
 class PdfContentUrlResponse(BaseModel):
@@ -335,6 +349,17 @@ def _serialize_pdf_detail(
     )
 
 
+def _serialize_pdf_summary(
+    session: Session,
+    document: PdfDocument,
+    *,
+    current_user: User,
+    access: PdfResourceAccess,
+) -> PdfDocumentSummary:
+    detail = _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+    return PdfDocumentSummary(**detail.model_dump())
+
+
 def _get_page_note(
     session: Session,
     document: PdfDocument,
@@ -394,6 +419,54 @@ def _basename(path: str) -> str:
 def _looks_like_pdf(path: str, mime_type: str | None = None) -> bool:
     normalized_mime = (mime_type or "").strip().lower()
     return normalized_mime == "application/pdf" or _basename(path).lower().endswith(".pdf")
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _hosted_pdf_root(user_id: int) -> Path:
+    root = get_settings().data_dir / "pdf-documents" / f"user_{user_id}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_pdf_to_hosted_storage(source_path: Path, current_user: User) -> tuple[str, int, str]:
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="PDF 文件不存在")
+    if not source_path.is_file():
+        raise HTTPException(status_code=400, detail="PDF 来源不是文件")
+    if not _looks_like_pdf(os.fspath(source_path)):
+        raise HTTPException(status_code=400, detail="只能导入 PDF 文件")
+
+    resolved_source = source_path.resolve(strict=True)
+    content_hash = _sha256_file(resolved_source)
+    target_path = _hosted_pdf_root(current_user.id) / f"{content_hash}.pdf"
+    if not target_path.exists():
+        temp_path = target_path.with_suffix(".pdf.tmp")
+        shutil.copy2(os.fspath(resolved_source), os.fspath(temp_path))
+        temp_path.replace(target_path)
+    return os.fspath(target_path.resolve(strict=False)), target_path.stat().st_size, content_hash
+
+
+def _resolve_hosted_pdf_path(document: PdfDocument) -> Path:
+    data_dir = get_settings().data_dir.resolve(strict=False)
+    target_path = Path(document.source_absolute_path).expanduser().resolve(strict=False)
+    if not _is_relative_to(target_path, data_dir):
+        raise HTTPException(status_code=400, detail="PDF 托管路径不在数据目录内")
+    return target_path
 
 
 def _load_device_file(session: Session, device_id: str, absolute_path: str) -> DeviceFile | None:
@@ -511,6 +584,57 @@ def _resolve_pdf_source(
         mime_type=guessed_mime or "application/pdf",
     )
     return entry, record, raw_path, record.mime_type or "application/pdf", record.file_size, record.content_hash, record.hash_algorithm
+
+
+def _create_or_update_hosted_pdf_document(
+    session: Session,
+    *,
+    current_user: User,
+    title: str,
+    hosted_path: str,
+    size_bytes: int,
+    content_hash: str,
+    source_device_file_id: int | None = None,
+) -> PdfDocument:
+    now = time.time()
+    document = session.exec(
+        select(PdfDocument)
+        .where(PdfDocument.owner_user_id == current_user.id)
+        .where(PdfDocument.content_hash == content_hash)
+    ).first()
+    if document is None:
+        document = session.exec(
+            select(PdfDocument)
+            .where(PdfDocument.owner_user_id == current_user.id)
+            .where(PdfDocument.source_device_id == PDF_HOSTED_DEVICE_ID)
+            .where(PdfDocument.source_absolute_path == hosted_path)
+        ).first()
+
+    if document is None:
+        legacy_id = generate_sheet_document_id()
+        numeric_id = _get_next_pdf_numeric_id(session, legacy_id)
+        document = PdfDocument(
+            id=numeric_id,
+            numeric_id=numeric_id,
+            legacy_id=legacy_id,
+            owner_user_id=current_user.id,
+            created_by_user_id=current_user.id,
+            created_at=now,
+        )
+
+    document.title = title or document.title or "未命名 PDF"
+    document.source_device_file_id = source_device_file_id
+    document.source_entry_id = PDF_HOSTED_ENTRY_ID
+    document.source_device_id = PDF_HOSTED_DEVICE_ID
+    document.source_absolute_path = hosted_path
+    document.mime_type = "application/pdf"
+    document.size_bytes = size_bytes
+    document.content_hash = content_hash
+    document.hash_algorithm = "sha256"
+    document.updated_by_user_id = current_user.id
+    document.updated_at = now
+    session.add(document)
+    return document
 
 
 def _save_resource_access_grants(
@@ -701,6 +825,22 @@ def create_pdf_document_from_device_file(
         payload,
         current_user,
     )
+    if entry.mode == "local":
+        hosted_path, hosted_size_bytes, hosted_content_hash = _copy_pdf_to_hosted_storage(Path(absolute_path), current_user)
+        document = _create_or_update_hosted_pdf_document(
+            session,
+            current_user=current_user,
+            title=_basename(absolute_path),
+            hosted_path=hosted_path,
+            size_bytes=hosted_size_bytes,
+            content_hash=hosted_content_hash,
+            source_device_file_id=device_file.id,
+        )
+        session.commit()
+        session.refresh(document)
+        access = _resolve_pdf_resource_access(session, document, current_user)
+        return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+
     now = time.time()
     document = session.exec(
         select(PdfDocument)
@@ -750,6 +890,76 @@ def create_pdf_document_from_device_file(
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 
+@router.post("/import-local-path", response_model=PdfDocumentDetail)
+def import_pdf_document_from_local_path(
+    payload: PdfLocalImportRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    raw_path = str(payload.absolute_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="PDF 路径不能为空")
+    source_path = Path(raw_path).expanduser()
+    if not source_path.is_absolute():
+        raise HTTPException(status_code=400, detail="必须使用本机绝对路径")
+    hosted_path, size_bytes, content_hash = _copy_pdf_to_hosted_storage(source_path, current_user)
+    document = _create_or_update_hosted_pdf_document(
+        session,
+        current_user=current_user,
+        title=_basename(os.fspath(source_path)),
+        hosted_path=hosted_path,
+        size_bytes=size_bytes,
+        content_hash=content_hash,
+    )
+    session.commit()
+    session.refresh(document)
+    access = _resolve_pdf_resource_access(session, document, current_user)
+    return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+
+
+@router.get("", response_model=list[PdfDocumentSummary])
+def list_pdf_documents(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.is_superuser:
+        candidate_documents = session.exec(select(PdfDocument)).all()
+    else:
+        owned_documents = session.exec(
+            select(PdfDocument).where(PdfDocument.owner_user_id == current_user.id)
+        ).all()
+        subject_keys = _current_user_subject_keys(current_user)
+        grants = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == PDF_RESOURCE_TYPE)
+            .where(ResourceAccessGrant.subject_key.in_(subject_keys))
+        ).all()
+        granted_pdf_ids = sorted({int(grant.resource_id) for grant in grants if str(grant.resource_id).isdigit()})
+        granted_documents = session.exec(
+            select(PdfDocument).where(PdfDocument.numeric_id.in_(granted_pdf_ids))
+        ).all() if granted_pdf_ids else []
+        document_map = {document.id: document for document in [*owned_documents, *granted_documents]}
+        candidate_documents = list(document_map.values())
+
+    document_access_items = [
+        (document, _resolve_pdf_resource_access(session, document, current_user))
+        for document in candidate_documents
+    ]
+    document_access_items = [
+        (document, access)
+        for document, access in document_access_items
+        if access.capabilities.can_read
+    ]
+    document_access_items.sort(
+        key=lambda item: (float(item[0].updated_at or 0.0), float(item[0].created_at or 0.0)),
+        reverse=True,
+    )
+    return [
+        _serialize_pdf_summary(session, document, current_user=current_user, access=access)
+        for document, access in document_access_items
+    ]
+
+
 @router.get("/{pdf_id}", response_model=PdfDocumentDetail)
 def get_pdf_document(
     pdf_id: int,
@@ -782,6 +992,19 @@ def get_pdf_content(
     session: Session = Depends(get_session),
 ):
     document = _decode_pdf_content_token(session, pdf_id, token)
+    if document.source_entry_id == PDF_HOSTED_ENTRY_ID:
+        target_path = _resolve_hosted_pdf_path(document)
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="PDF 托管文件不存在")
+        if not target_path.is_file():
+            raise HTTPException(status_code=400, detail="PDF 托管路径不是文件")
+        return FileResponse(
+            path=os.fspath(target_path),
+            media_type=document.mime_type or "application/pdf",
+            filename=document.title or target_path.name,
+            content_disposition_type="inline",
+        )
+
     entry = session.get(UserDevice, document.source_entry_id)
     if entry is None or entry.user_id != document.owner_user_id or not entry.is_active:
         raise HTTPException(status_code=404, detail="PDF 来源设备入口不可用")

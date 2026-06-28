@@ -44,6 +44,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
     create_data_annotation_manual_job,
     data_annotation_manual_jobs_state,
     get_fanxiu_data_annotation_manual_job_definition,
+    is_deprecated_data_annotation_job_type,
     pop_next_data_annotation_manual_job,
     read_data_annotation_manual_jobs,
     requeue_running_data_annotation_manual_jobs,
@@ -1064,6 +1065,8 @@ def submit_manual_job(
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
+    if is_deprecated_data_annotation_job_type(task_type):
+        raise ValueError(f"作业已删除，不再支持：{task_type}")
     definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
     if definition is None:
         raise ValueError(f"暂不支持的任务类型：{task_type}")
@@ -1401,6 +1404,12 @@ def run_due_scheduler_tasks(
         task_due=data_annotation_task_due,
         task_supported=task_supported,
     )
+    if due_tasks:
+        due_tasks = [
+            task
+            for task in due_tasks
+            if not is_deprecated_data_annotation_job_type(str(task.get("task_type") or ""))
+        ]
     if not due_tasks:
         status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         status.update({"message": "没有可执行的到期任务", "updated_at": time.time()})

@@ -202,7 +202,7 @@ CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 300.0
 CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
-CODEX_DIARY_PROMPT_VERSION = "2026-06-04.value-first-diary-v4"
+CODEX_DIARY_PROMPT_VERSION = "2026-06-28.category-bucket-diary-v5"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
 CODEX_DIARY_AUTO_IMPORT_CRON = "0 1 * * *"
 CODEX_DIARY_AUTO_IMPORT_TASK_NAME = "codex_diary_yesterday_import"
@@ -215,6 +215,8 @@ CODEX_DIARY_WORKLOG_FIELD = "__codex_diary_worklog"
 CODEX_DIARY_TARGET_SECONDS = 10 * 60 * 60
 CODEX_DIARY_PROGRESS_BASE_MINUTES = CODEX_DIARY_TARGET_SECONDS // 60
 CODEX_DIARY_TINY_TAIL_SECONDS = 90 * 60
+CODEX_DIARY_CLASSIFICATION_BATCH_SIZE = 12
+CODEX_DIARY_CATEGORY_CANDIDATE_LIMIT = 5
 CODEX_DIARY_DRAFT_BATCH_SIZE = 12
 CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK = 24
 CODEX_DIARY_AI_EDGE_RECORD_COUNT_PER_BLOCK = CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK // 2
@@ -594,6 +596,36 @@ CODEX_DIARY_INPUT_METHOD_FORCE_TERMS = (
 )
 CODEX_DIARY_CODEYUN_NOTE_FORCE_TERMS = (
     "星图笔记",
+    "星图配色",
+    "分类配色",
+    "分类桶",
+    "分类聚合",
+    "分类标签",
+    "分类召回",
+    "候选分类",
+    "事务分类",
+    "按类别",
+    "按分类",
+    "同类别",
+    "同类碎片",
+    "AI 分类",
+    "AI归类",
+    "分类正确性",
+    "分类说明",
+    "分类阶段",
+    "归档边界",
+    "单一分类",
+    "连续问答事务",
+    "问答事务",
+    "日报",
+    "日记",
+    "Codex 日报",
+    "Codex 日记",
+    "Codex 星图日记",
+    "note.category_palette",
+    "NoteSheetWorkspace",
+    "mergeCells",
+    "merged_cells",
     "日历",
     "年视图",
     "月视图",
@@ -618,6 +650,23 @@ CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS = (
     "CodeYun OCR",
     "OCR 集中",
     "OCR集中",
+    "PaddleOCR",
+)
+CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS = (
+    "多机器",
+    "多端",
+    "远端设备",
+    "设备 token",
+    "服务 token",
+    "账号 token",
+    "服务管理",
+    "服务发现",
+    "作业管理",
+    "作业调度",
+    "局域网",
+    "OCR 集中",
+    "OCR集中",
+    "CodeYun OCR",
     "PaddleOCR",
 )
 CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
@@ -699,6 +748,34 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "衣橱",
     "抽卡",
 )
+CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
+    "日常_报备",
+    "日常报备",
+    "日常_报名",
+    "日常报名",
+    "邮件_清理",
+    "邮件清理",
+    "mail.py",
+    "mail-cleanup",
+    "retry_after",
+    "未确认到底",
+    "翻页到上限",
+    "部分清理",
+    "日常助手",
+    "小助手",
+    "due_tasks",
+    "领取/滚动",
+    "领取滚动",
+    "滚动",
+    "packet_worker",
+    "pcap",
+    "has_unconfirmed_gap",
+    "ok=false",
+    "抓包巡检",
+    "链路解码",
+    "目标场景",
+    "场景再操作",
+)
 CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
     "问卷",
     "问卷星",
@@ -709,6 +786,25 @@ CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
 CODEX_DIARY_ATTENDANCE_FORCE_CONTEXT_TERMS = (
     "652",
     "653",
+)
+CODEX_DIARY_CATEGORY_DESIGN_CONTEXT_TERMS = (
+    "分类召回",
+    "候选分类",
+    "事务分类",
+    "按类别",
+    "按分类",
+    "同类别",
+    "同类碎片",
+    "AI 分类",
+    "AI归类",
+    "分类正确性",
+    "分类说明",
+    "分类阶段",
+    "归档边界",
+    "单一分类",
+    "连续问答事务",
+    "问答事务",
+    "分类桶",
 )
 
 codex_diary_import_scheduler = BackgroundScheduler()
@@ -1092,6 +1188,15 @@ def _is_specific_codex_diary_category_key(value: Any) -> bool:
     return bool(key) and key != NOTE_CATEGORY_DEFAULT
 
 
+def _is_codex_diary_hidden_ai_category_item(item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    identity = _normalize_project_palette_token(
+        " ".join(_collect_project_palette_candidates(item.get("key"), item.get("label"), str(item.get("key") or "").removeprefix("custom_")))
+    )
+    return bool(identity and any(marker in identity for marker in ("project", "项目")))
+
+
 def _iter_unique_codex_diary_palette_items(palette_lookup: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     items_by_key: dict[str, dict[str, Any]] = {}
     for item in palette_lookup.values():
@@ -1225,6 +1330,22 @@ def _count_codex_diary_term_hits(text: str, terms: tuple[str, ...]) -> int:
     return hits
 
 
+def _clean_codex_diary_classification_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    objective_parts = [
+        match.strip()
+        for match in re.findall(r"<objective>\s*(.*?)\s*</objective>", text, flags=re.DOTALL | re.IGNORECASE)
+        if match.strip()
+    ]
+    text = re.sub(r"<codex_internal_context\b[^>]*>.*?</codex_internal_context>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<turn_aborted>.*?</turn_aborted>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"# AGENTS\.md instructions\b.*?</INSTRUCTIONS>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = NOTE_AI_WHITESPACE_RE.sub(" ", text).strip()
+    return NOTE_AI_WHITESPACE_RE.sub(" ", " ".join([*objective_parts, cleaned])).strip()
+
+
 def _score_codex_diary_category_texts(
     values: list[Any],
     *,
@@ -1303,8 +1424,12 @@ def _build_codex_diary_category_scores(
     palette_lookup: dict[str, dict[str, Any]],
     title_hints: dict[str, str],
 ) -> dict[str, int]:
+    cleaned_user_request = _clean_codex_diary_classification_text(turn.get("user_request"))
+    cleaned_assistant_result = _clean_codex_diary_classification_text(turn.get("assistant_result"))
+    cleaned_thread_title = _clean_codex_diary_classification_text(turn.get("thread_title"))
+    cleaned_project_label = _clean_codex_diary_classification_text(turn.get("project_label"))
     content_scores = _score_codex_diary_category_texts(
-        [turn.get("user_request"), turn.get("assistant_result")],
+        [cleaned_user_request, cleaned_assistant_result],
         palette_lookup=palette_lookup,
         title_hints=title_hints,
         exact_weight=40,
@@ -1314,7 +1439,7 @@ def _build_codex_diary_category_scores(
         title_hint_token_weight=5,
     )
     context_scores = _score_codex_diary_category_texts(
-        [turn.get("project_label"), turn.get("thread_title"), turn.get("source_root_dir")],
+        [cleaned_project_label, cleaned_thread_title, turn.get("source_root_dir")],
         palette_lookup=palette_lookup,
         title_hints=title_hints,
         exact_weight=10,
@@ -1328,24 +1453,36 @@ def _build_codex_diary_category_scores(
         combined_scores[key] = combined_scores.get(key, 0) + score
     attendance_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("考勤", "attendance", "kq"))
     content_text = _normalize_project_palette_token(
-        " ".join(str(turn.get(key) or "") for key in ("user_request", "assistant_result", "thread_title"))
+        " ".join([cleaned_user_request, cleaned_assistant_result, cleaned_thread_title])
     )
     body_text = _normalize_project_palette_token(
-        " ".join(str(turn.get(key) or "") for key in ("user_request", "assistant_result"))
+        " ".join([cleaned_user_request, cleaned_assistant_result])
     )
+    category_design_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CATEGORY_DESIGN_CONTEXT_TERMS)
     if attendance_key:
-        if any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_TERMS):
+        if (
+            category_design_hits < 1
+            and any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_TERMS)
+        ):
             _add_codex_diary_category_score(combined_scores, attendance_key, 360)
         elif (
+            category_design_hits < 1
+            and
             any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_CONTEXT_TERMS)
             and any(marker in content_text for marker in ("数据", "截图", "核对", "恢复", "记录"))
         ):
             _add_codex_diary_category_score(combined_scores, attendance_key, 260)
 
     fanxiu_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("凡修", "fanxiu"))
+    thread_has_fanxiu_context = bool(fanxiu_key and _normalize_project_palette_token("凡修") in _normalize_project_palette_token(cleaned_thread_title))
+    if fanxiu_key and thread_has_fanxiu_context:
+        _add_codex_diary_category_score(combined_scores, fanxiu_key, 320)
     fanxiu_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_FANXIU_FORCE_TERMS)
     if fanxiu_key and fanxiu_hits:
         _add_codex_diary_category_score(combined_scores, fanxiu_key, 300 + fanxiu_hits * 36)
+    fanxiu_context_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS)
+    if fanxiu_key and (fanxiu_context_hits >= 2 or (thread_has_fanxiu_context and fanxiu_context_hits >= 1)):
+        _add_codex_diary_category_score(combined_scores, fanxiu_key, 420 + min(fanxiu_context_hits, 8) * 48)
 
     input_method_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_INPUT_METHOD_FORCE_TERMS)
     if input_method_hits:
@@ -1359,12 +1496,19 @@ def _build_codex_diary_category_scores(
     codeyun_note_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun笔记", "codeyunnote"))
     codeyun_note_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_NOTE_FORCE_TERMS)
     if codeyun_note_key and codeyun_note_hits:
-        _add_codex_diary_category_score(combined_scores, codeyun_note_key, 240 + codeyun_note_hits * 30)
+        codeyun_note_score = 240 + codeyun_note_hits * 30
+        if codeyun_note_hits >= 2:
+            codeyun_note_score += 240 + min(codeyun_note_hits, 8) * 24
+        if category_design_hits >= 1:
+            codeyun_note_score += 360 + min(category_design_hits, 8) * 36
+        _add_codex_diary_category_score(combined_scores, codeyun_note_key, codeyun_note_score)
 
     codeyun_cluster_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun集群", "集群", "cluster"))
     codeyun_cluster_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS)
     if codeyun_cluster_key and codeyun_cluster_hits:
-        _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 300 + codeyun_cluster_hits * 36)
+        cluster_operation_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS)
+        if category_design_hits < 1 or cluster_operation_hits >= 2:
+            _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 300 + codeyun_cluster_hits * 36)
 
     engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
     has_explicit_domain_hit = any(
@@ -1657,7 +1801,11 @@ def _build_codex_diary_category_lookup(user_id: int, session: Session) -> dict[s
     palette_items = [
         item
         for item in _build_note_type_palette_response(user_id, session).get("items", [])
-        if isinstance(item, dict) and not _is_imported_script_category_key(item.get("key"))
+        if (
+            isinstance(item, dict)
+            and not _is_imported_script_category_key(item.get("key"))
+            and not _is_codex_diary_hidden_ai_category_item(item)
+        )
     ]
     if not any(str(item.get("key") or "").strip() == NOTE_CATEGORY_DEFAULT for item in palette_items):
         palette_items.insert(0, _fallback_note_ai_default_category_item())
@@ -1768,6 +1916,195 @@ def _annotate_codex_diary_record_category(
     record["codex_diary_category_scores"] = scores
     record["codex_diary_category_key"] = primary_category
     record["codex_diary_category"] = category
+
+
+def _codex_diary_category_description(item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    key = str(item.get("key") or "").strip()
+    return str(item.get("description") or "").strip() or NOTE_AI_CATEGORY_DESCRIPTIONS.get(key, "").strip()
+
+
+def _build_codex_diary_record_category_candidates(
+    record: dict[str, Any],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+) -> list[str]:
+    scores = record.get("codex_diary_category_scores") or {}
+    allowed_keys = {
+        str(item.get("key") or "").strip()
+        for item in _iter_unique_codex_diary_palette_items(palette_lookup)
+        if str(item.get("key") or "").strip()
+    }
+    ranked = [
+        key
+        for key, score in sorted(
+            scores.items(),
+            key=lambda item: (
+                -int(item[1] or 0),
+                0 if _is_specific_codex_diary_category_key(item[0]) else 1,
+                str(item[0]),
+            ),
+        )
+        if key in allowed_keys and int(score or 0) > 0
+    ]
+    primary_key = str(record.get("codex_diary_category_key") or NOTE_CATEGORY_DEFAULT)
+    if ranked and ranked[0] == primary_key:
+        primary_score = int(scores.get(primary_key) or 0)
+        second_score = int(scores.get(ranked[1]) or 0) if len(ranked) > 1 else 0
+        if _is_specific_codex_diary_category_key(primary_key) and primary_score >= 240 and primary_score >= max(1, second_score) * 1.35:
+            return [primary_key]
+    candidates: list[str] = []
+    for key in [primary_key, *ranked, NOTE_CATEGORY_DEFAULT]:
+        if key in allowed_keys and key not in candidates:
+            candidates.append(key)
+        if len(candidates) >= CODEX_DIARY_CATEGORY_CANDIDATE_LIMIT:
+            break
+    return candidates or [NOTE_CATEGORY_DEFAULT]
+
+
+def _build_codex_diary_classification_system_prompt() -> str:
+    return "\n".join(
+        [
+            "你在为 CodeYun 的 Codex 星图日记做问答事务分类。",
+            "每条 record 是一组最小问答事务，必须且只能选一个分类。",
+            "只能从该 record 的 candidate_categories 中选择 category_key，不得自造分类，不得返回多个分类。",
+            "优先根据 user_request 和 assistant_result 的实际工作对象判断；thread_title、project_label 只作为上下文提示。",
+            "分类说明比分类名称更重要；遇到多个相关分类时，选择最能代表这组问答主要价值归属的一个。",
+            "如果确实信息不足，选择候选里的 general。",
+            "只返回 JSON 对象，不要 Markdown，不要解释。",
+        ]
+    )
+
+
+def _build_codex_diary_classification_user_prompt(
+    records: list[dict[str, Any]],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+) -> str:
+    payload_records: list[dict[str, Any]] = []
+    for record in records:
+        candidate_keys = list(record.get("codex_diary_category_candidates") or [])
+        candidate_categories = []
+        for key in candidate_keys:
+            item = _codex_diary_category_item_by_key(key, palette_lookup=palette_lookup)
+            candidate_categories.append(
+                {
+                    "key": key,
+                    "label": str((item or {}).get("label") or ("综合" if key == NOTE_CATEGORY_DEFAULT else key)),
+                    "description": _codex_diary_category_description(item),
+                }
+            )
+        payload_records.append(
+            {
+                "record_key": record.get("codex_diary_record_key"),
+                "time_range": record.get("time_range"),
+                "thread_title": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("thread_title")), 120, suffix=""),
+                "project_label": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("project_label")), 80, suffix=""),
+                "user_request": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("user_request")), 280, suffix=""),
+                "assistant_result": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("assistant_result")), 520, suffix=""),
+                "rule_default_category_key": record.get("codex_diary_category_key"),
+                "candidate_categories": candidate_categories,
+            }
+        )
+    return json.dumps(
+        {
+            "rules": {
+                "one_category_per_record": True,
+                "category_key_must_be_in_candidate_categories": True,
+                "confidence_range": "0..1",
+            },
+            "records": payload_records,
+            "expected_response": {
+                "records": [
+                    {
+                        "record_key": "原样返回输入 record_key",
+                        "category_key": "候选分类 key",
+                        "confidence": 0.0,
+                    }
+                ]
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _classify_codex_diary_records_with_ai(
+    records: list[dict[str, Any]],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+    current_user: User,
+    session: Session,
+    run: CodexDiaryImportRun | None = None,
+) -> None:
+    if not records:
+        return
+    from backend.core.settings import get_settings
+
+    if get_settings().is_test:
+        return
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_CODEX_DIARY,
+    )
+    total_batches = (len(records) + CODEX_DIARY_CLASSIFICATION_BATCH_SIZE - 1) // CODEX_DIARY_CLASSIFICATION_BATCH_SIZE
+    for batch_index, offset in enumerate(range(0, len(records), CODEX_DIARY_CLASSIFICATION_BATCH_SIZE), start=1):
+        batch = records[offset : offset + CODEX_DIARY_CLASSIFICATION_BATCH_SIZE]
+        if run is not None:
+            _touch_codex_diary_run(
+                session,
+                run,
+                status="running",
+                stage="classifying",
+                stage_label=f"调用 AI 分类问答事务 {batch_index}/{total_batches}",
+            )
+        try:
+            response = chat_with_provider(
+                provider_id=str(runtime["provider"]),
+                base_url=runtime["base_url"],
+                api_key=runtime["api_key"],
+                model=runtime["model"],
+                system_prompt=_build_codex_diary_classification_system_prompt(),
+                messages=[{"role": "user", "content": _build_codex_diary_classification_user_prompt(batch, palette_lookup=palette_lookup)}],
+                response_format="json",
+                timeout_seconds=CODEX_DIARY_TIMEOUT_SECONDS,
+                extra_providers=runtime["extra_providers"],
+            )
+            payload = _extract_codex_diary_ai_json(response.get("content"))
+            ai_records = payload.get("records")
+            if not isinstance(ai_records, list):
+                raise ValueError("AI 分类结果缺少 records")
+            choice_by_key = {
+                str(item.get("record_key") or "").strip(): str(item.get("category_key") or "").strip()
+                for item in ai_records
+                if isinstance(item, dict)
+            }
+            for record in batch:
+                record_key = str(record.get("codex_diary_record_key") or "").strip()
+                category_key = choice_by_key.get(record_key)
+                candidates = {str(key) for key in (record.get("codex_diary_category_candidates") or [])}
+                if category_key not in candidates:
+                    continue
+                category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
+                record["codex_diary_category_key"] = category_key
+                record["codex_diary_category"] = category
+                record["codex_diary_category_ai"] = {"category_key": category_key}
+        except Exception as exc:
+            if run is not None:
+                events = list((run.result_json or {}).get("classification_fallback_events") or [])
+                events.append(
+                    {
+                        "batch_index": batch_index,
+                        "total_batches": total_batches,
+                        "error": str(getattr(exc, "detail", None) or exc),
+                    }
+                )
+                run.result_json = {**(run.result_json or {}), "classification_fallback_events": events}
+                session.add(run)
+                session.commit()
+            continue
 
 
 def _codex_diary_record_primary_score(record: dict[str, Any]) -> int:
@@ -1961,7 +2298,21 @@ def _codex_diary_duration_minutes(duration_seconds: Any) -> int:
 
 def _build_codex_diary_completion_progress_expr(block: dict[str, Any]) -> str:
     minutes = _codex_diary_duration_minutes(block.get("duration_seconds"))
-    return f"{minutes}/{CODEX_DIARY_PROGRESS_BASE_MINUTES}"
+    try:
+        base_minutes = int(block.get("progress_base_minutes") or 0)
+    except (TypeError, ValueError):
+        base_minutes = 0
+    base_minutes = max(1, base_minutes or minutes)
+    return f"{minutes}/{base_minutes}"
+
+
+def _apply_codex_diary_progress_base_minutes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not blocks:
+        return blocks
+    base_minutes = max(_codex_diary_duration_minutes(block.get("duration_seconds")) for block in blocks)
+    for block in blocks:
+        block["progress_base_minutes"] = base_minutes
+    return blocks
 
 
 def _build_codex_diary_worklog(
@@ -2476,20 +2827,20 @@ def _build_codex_diary_ai_system_prompt() -> str:
         [
             "你在为“星图笔记”生成 Codex 价值日记节点草案。",
             "目标不是复述流水账，也不是全面解释所有细节，而是捕捉今天真正最重要的价值：核心做成了什么、突破了什么、留下了什么可复用成果。",
-            "输入已经先拆成候选事项，再按当天任务语义和累计不超过约 10 小时工作量聚合成 block；你必须逐块输出，不要新增、删除、合并或拆分 block。",
+            "输入已经先拆成问答事务，再按当天分类桶聚合成 block；一个 block 对应当天一个分类，你必须逐块输出，不要新增、删除、合并或拆分 block。",
             "只根据每条记录的 user_request、assistant_result、thread_title 做语义归纳；assistant_result 优先。",
             "不要照搬聊天原文，不要输出工具日志、JSON、堆栈、操作记录、文件大段内容。",
             "先判断这个 block 的主价值是什么，再围绕主价值生成标题和正文；琐碎过程只在能支撑主价值时保留。",
             "标题必须优先体现这一块的核心工作突破、关键结果或主要事宜；不要为了全面覆盖所有琐碎细节而堆叠标题。",
             "一个标题只能表达一件事；不要用“与”“和”“及”“以及”“、”把两个事项并列写进标题。",
-            "如果一个 block 里确实包含多件事，标题只选择最重要的主线事项，其余事项放到正文条目里。",
+            "如果一个分类 block 里确实包含多件事，标题只选择最重要的主线事项，其余事项放到正文条目里；不要因为工作量很大而要求拆成多个标题。",
             "标题必须是信息密度高的短名词短语，保留最关键对象/动作/接口/页面/字段/路径名；不要带分类前缀。",
             "标题不要使用“综合”“杂项”“多项整合”这类笼统词；多个事项并列时只保留最能代表主线的一个或两个具体对象。",
             "标题禁止使用“是的”“可以”“好的”“已改完”“已经删了”这类低信息开头或低信息标题。",
             "正文条目写成总结性价值记录，每条只讲主成果、关键决策、实证结果、风险或后续点；把零散操作合并成少量主线条目。",
             "避免把节点写成“做了 A、看了 B、顺手改了 C”的流水账；低价值细节可以省略。",
             "summary_items 返回纯文本数组，每个数组元素不要自带 1.、2.、一、这类编号；编号由星图笔记编辑器自动生成。",
-            "阶段通常为 done；不要输出进度，进度由后端按块累计时长自动计算。",
+            "阶段通常为 done；不要输出进度，进度由后端按该分类当天累计时长自动计算。",
             "最终只输出 JSON 对象，不要 Markdown，不要解释。",
         ]
     )
@@ -2768,7 +3119,14 @@ def _build_codex_diary_body_html(block: dict[str, Any]) -> str:
     return _repair_codex_diary_body_number_prefixes("\n".join(lines))
 
 
-def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: Session) -> list[dict[str, Any]]:
+def _build_codex_diary_blocks(
+    source: dict[str, Any],
+    *,
+    user_id: int,
+    session: Session,
+    current_user: User | None = None,
+    run: CodexDiaryImportRun | None = None,
+) -> list[dict[str, Any]]:
     palette_lookup = _build_codex_diary_category_lookup(user_id, session)
     allowed_category_keys = {
         str(item.get("key") or "").strip()
@@ -2776,9 +3134,22 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         if str(item.get("key") or "").strip()
     }
     records: list[dict[str, Any]] = []
-    for raw_record in sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
+    for index, raw_record in enumerate(sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or "")))):
         record = dict(raw_record)
         record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
+        record["codex_diary_record_key"] = hashlib.sha1(
+            json.dumps(
+                {
+                    "index": index,
+                    "thread_id": record.get("thread_id"),
+                    "start_at": record.get("start_at"),
+                    "end_at": record.get("end_at"),
+                    "user_request": _truncate_codex_diary_text(record.get("user_request"), 120, suffix=""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
         records.append(record)
     title_hints = _build_codex_diary_note_title_hints(
         user_id,
@@ -2787,44 +3158,55 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         palette_lookup=palette_lookup,
     )
 
-    message_segments = _build_codex_diary_message_segments(
-        records,
-        palette_lookup=palette_lookup,
-        title_hints=title_hints,
-    )
-    for segment in message_segments:
-        note_categories = _resolve_codex_diary_group_categories(
-            segment["records"],
+    records_by_category: dict[str, list[dict[str, Any]]] = {}
+    first_seen_by_category: dict[str, float] = {}
+    for record in records:
+        _annotate_codex_diary_record_category(
+            record,
             palette_lookup=palette_lookup,
             title_hints=title_hints,
         )
-        category_key = derive_primary_category(note_categories, fallback_category=NOTE_CATEGORY_DEFAULT)
+        category_key = str(record.get("codex_diary_category_key") or NOTE_CATEGORY_DEFAULT)
         category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
-        segment["note_categories"] = note_categories
-        segment["category_key"] = category_key
-        segment["category_label"] = str(category.get("label") or category_key)
-        for record in segment["records"]:
-            record["codex_diary_category"] = category
+        record["codex_diary_category"] = category
+        record["codex_diary_category_candidates"] = _build_codex_diary_record_category_candidates(
+            record,
+            palette_lookup=palette_lookup,
+        )
+
+    if current_user is not None:
+        _classify_codex_diary_records_with_ai(
+            records,
+            palette_lookup=palette_lookup,
+            current_user=current_user,
+            session=session,
+            run=run,
+        )
+
+    for record in records:
+        category_key = str(record.get("codex_diary_category_key") or NOTE_CATEGORY_DEFAULT)
+        category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
+        record["codex_diary_category"] = category
+        records_by_category.setdefault(category_key, []).append(record)
+        first_seen_by_category[category_key] = min(
+            float(first_seen_by_category.get(category_key, float("inf"))),
+            float(record.get("start_at") or 0),
+        )
 
     blocks: list[dict[str, Any]] = []
-    current_segments: list[dict[str, Any]] = []
-    current_merge_key = ""
-    current_category_key = ""
-
-    def close_current() -> None:
-        nonlocal current_segments, current_duration, current_merge_key, current_category_key
-        if not current_segments:
-            return
-        current_records = [
-            record
-            for segment in current_segments
-            for record in (segment.get("records") or [])
-        ]
-        start_at = min(float(record.get("start_at") or 0) for record in current_records)
-        end_at = max(float(record.get("end_at") or record.get("start_at") or 0) for record in current_records)
-        category_key = current_category_key or NOTE_CATEGORY_DEFAULT
+    for category_key, category_records in sorted(
+        records_by_category.items(),
+        key=lambda item: (first_seen_by_category.get(item[0], 0), str(item[0])),
+    ):
+        ordered_records = sorted(
+            category_records,
+            key=lambda item: (float(item.get("start_at") or 0), float(item.get("end_at") or 0), str(item.get("thread_id") or "")),
+        )
+        start_at = min(float(record.get("start_at") or 0) for record in ordered_records)
+        end_at = max(float(record.get("end_at") or record.get("start_at") or 0) for record in ordered_records)
+        duration_seconds = sum(float(record.get("duration_seconds") or 0) for record in ordered_records)
         note_categories = _resolve_codex_diary_group_categories(
-            current_records,
+            ordered_records,
             palette_lookup=palette_lookup,
             title_hints=title_hints,
             primary_category_key=category_key,
@@ -2832,77 +3214,21 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
         category_labels = _codex_diary_category_labels_for_weights(note_categories, palette_lookup=palette_lookup)
         block = {
-            "group_key": current_merge_key,
+            "group_key": f"date-category:{source.get('date') or ''}:{category_key}",
             "note_categories": note_categories,
             "category_key": category_key,
             "category_label": " / ".join(category_labels) or str(category.get("label") or category_key),
-            "records": current_records,
-            "duration_seconds": current_duration,
+            "records": ordered_records,
+            "duration_seconds": duration_seconds,
             "start_at": start_at,
             "end_at": end_at,
         }
         block["title"] = _build_codex_diary_title(block)
         block["block_key"] = _build_codex_diary_block_key(block)
-        if (
-            blocks
-            and blocks[-1]["category_key"] == block["category_key"]
-            and blocks[-1].get("group_key") == block.get("group_key")
-            and block["duration_seconds"] < CODEX_DIARY_TINY_TAIL_SECONDS
-        ):
-            previous = blocks[-1]
-            previous["records"].extend(block["records"])
-            previous["duration_seconds"] += block["duration_seconds"]
-            previous["end_at"] = max(previous["end_at"], block["end_at"])
-            previous["note_categories"] = _resolve_codex_diary_group_categories(
-                previous["records"],
-                palette_lookup=palette_lookup,
-                title_hints=title_hints,
-                primary_category_key=previous["category_key"],
-            )
-            previous["category_label"] = " / ".join(
-                _codex_diary_category_labels_for_weights(previous["note_categories"], palette_lookup=palette_lookup)
-            ) or previous["category_label"]
-            previous["title"] = _build_codex_diary_title(previous)
-        else:
-            blocks.append(block)
-        current_segments = []
-        current_duration = 0.0
-        current_merge_key = ""
-        current_category_key = ""
+        blocks.append(block)
 
-    current_duration = 0.0
-    for segment in message_segments:
-        category_key = str(segment.get("category_key") or NOTE_CATEGORY_DEFAULT)
-        segment_duration = float(segment.get("duration_seconds") or 0)
-        can_merge = (
-            current_segments
-            and category_key == current_category_key
-            and _is_specific_codex_diary_category_key(category_key)
-            and _can_merge_codex_diary_segment_into_current(segment, current_segments)
-        )
-        if current_segments and not can_merge:
-            close_current()
-        elif current_segments and current_duration + segment_duration > CODEX_DIARY_TARGET_SECONDS:
-            close_current()
-        if not current_segments:
-            current_merge_key = f"{category_key}:{segment.get('group_key') or ''}"
-            current_category_key = category_key
-        current_segments.append(segment)
-        current_duration += segment_duration
-        if current_duration >= CODEX_DIARY_TARGET_SECONDS:
-            close_current()
-    close_current()
-
-    blocks = sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
-    merged_blocks = _merge_codex_diary_blocks_for_target_duration(
-        blocks,
-        palette_lookup=palette_lookup,
-        title_hints=title_hints,
-    )
-    return _absorb_tiny_codex_diary_blocks(
-        merged_blocks,
-        palette_lookup=palette_lookup,
-        title_hints=title_hints,
+    return _apply_codex_diary_progress_base_minutes(
+        sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
     )
 
 
@@ -3171,8 +3497,8 @@ def _run_codex_diary_import_worker(
                 return
 
             start_heartbeat()
-            _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按主题和时长拆分节点")
-            blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
+            _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按问答事务分类并聚合节点")
+            blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session, current_user=user, run=run)
 
             draft_runtime = resolve_ai_app_runtime_config(
                 session=session,
@@ -3185,16 +3511,20 @@ def _run_codex_diary_import_worker(
             _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
             created_note_ids: list[str] = list(run.created_note_ids or [])
             draft_fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
+            classification_fallback_events = list((run.result_json or {}).get("classification_fallback_events") or [])
             draft_generator = (
-                "deepseek-json-v1+deterministic-fallback-v1"
+                "category-bucket-json-v1+deterministic-fallback-v1"
                 if draft_fallback_events
-                else "deepseek-json-v1"
+                else "category-bucket-json-v1"
             )
             run.result_json = {
                 "prompt_version": CODEX_DIARY_PROMPT_VERSION,
                 "draft_generator": draft_generator,
                 "draft_provider": str(draft_runtime.get("provider") or ""),
                 "draft_model": str(draft_runtime.get("model") or ""),
+                "classification_provider": str(draft_runtime.get("provider") or ""),
+                "classification_model": str(draft_runtime.get("model") or ""),
+                "classification_fallback_events": classification_fallback_events,
                 "draft_fallback_events": draft_fallback_events,
                 "source": _build_codex_diary_source_result(run, source),
                 "blocks": _build_codex_diary_blocks_result(blocks),
@@ -3272,6 +3602,15 @@ def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> di
     if color is None:
         return None
 
+    raw_description = value.get("description")
+    description = str(raw_description).strip() if raw_description is not None else ""
+    if not description:
+        builtin_entry = next((item for item in NOTE_TYPE_BUILTIN_PALETTE if item["key"] == key), None)
+        if builtin_entry:
+            description = str(builtin_entry.get("description") or "").strip()
+    if not description:
+        description = NOTE_AI_CATEGORY_DESCRIPTIONS.get(key, "").strip()
+
     try:
         order = int(value.get("order", fallback_order))
     except (TypeError, ValueError):
@@ -3294,6 +3633,7 @@ def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> di
         "key": key,
         "label": label,
         "color": color,
+        "description": description or None,
         "order": order,
         "builtin": builtin,
         "source": source,
@@ -4106,7 +4446,7 @@ def _build_note_ai_prompt(
     def _format_category_line(item: dict[str, Any]) -> str:
         key = str(item.get("key") or "").strip()
         label = str(item.get("label") or "").strip() or key
-        description = NOTE_AI_CATEGORY_DESCRIPTIONS.get(key, "").strip()
+        description = str(item.get("description") or "").strip() or NOTE_AI_CATEGORY_DESCRIPTIONS.get(key, "").strip()
         if description:
             return f"- {key} | {label} | {description}"
         return f"- {key} | {label}"

@@ -98,13 +98,13 @@ def _assert_daily_assistant_unverified_error(exc_info, *expected_fragments: str)
 @pytest.fixture(autouse=True)
 def _isolate_fanxiu_runtime_state_paths(tmp_path, monkeypatch):
     runtime_dir = tmp_path / "fanxiu" / "data-annotation" / "runtime"
-    asset_tree_dir = tmp_path / "fanxiu" / "data-annotation" / "asset-trees"
+    entry_dir = tmp_path / "fanxiu" / "data-annotation" / "entries"
 
     def runtime_file(name: str) -> Path:
         return runtime_dir / name
 
     def asset_tree_path(entry_id: str) -> Path:
-        return asset_tree_dir / f"{entry_id}.json"
+        return entry_dir / entry_id / "asset-tree.json"
 
     monkeypatch.setattr(fanxiu_api, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_fanxiu_runtime_runner())
     monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
@@ -1260,7 +1260,7 @@ def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeyp
     monkeypatch.setattr(
         runner,
         "_cached_ocr_lines",
-        lambda _ctx, _frame: [{"text": "储物袋 角色 装备 功法书", "x": 0, "y": 0, "w": 100, "h": 20}],
+        lambda _ctx, _frame: [{"text": "大地图 储物袋 角色 装备 功法书", "x": 0, "y": 0, "w": 100, "h": 20}],
     )
     monkeypatch.setattr(
         runner,
@@ -1283,6 +1283,48 @@ def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeyp
     assert result == "success"
     assert clicked == [(34, "日常")]
     assert any("场景强 OCR 命中 #34" in log["message"] for log in runner.status()["logs"])
+
+
+def test_strong_ocr_does_not_treat_world_footer_inside_lingmai_as_world(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{
+            "text": (
+                "圣祖仙煌神脉 剩余空位：0/10 灵脉至尊 聚灵位 离开 探索 "
+                "储物袋 角色 装备 星海 功法书"
+            )
+        }],
+    )
+
+    assert runner._strong_ocr_scene_number(ctx, "frame") is None
+
+
+def test_unknown_promo_offer_page_recovery_uses_existing_return_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image249 = _image("储物袋", "0249.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.05, "y": 0.932, "w": 0.08, "h": 0.047},
+    ])
+    ctx = {"images": {249: image249}}
+    clicked: list[tuple[int | None, float, float]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{"text": "至尊甄选 活动倒计时 限购次数 适度娱乐 理性消费"}],
+    )
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_click_frame_point",
+        lambda _ctx, image, x, y: clicked.append((runner._image_number(image), round(x, 1), round(y, 1))),
+    )
+
+    assert runner._recover_unknown_start_to_world(ctx, "frame", target_scene_id=69) is True
+    assert clicked == [(249, 81.0, 1528.8)]
 
 
 def test_compare_frame_crops_resizes_current_crop_without_mask():
@@ -1474,6 +1516,7 @@ def test_shape_ocr_reuses_existing_full_frame_cache(monkeypatch):
         "entry": type("Entry", (), {"mode": "local"})(),
         "_ocr_lines_cache": {
             "frame": "frame",
+            "options_key": "{}",
             "lines": [{"text": "邮件", "x": 100, "y": 170, "w": 80, "h": 30}],
         },
     }
@@ -1508,6 +1551,7 @@ def test_shape_ocr_cache_miss_does_not_repeat_ocr(monkeypatch):
         "entry": type("Entry", (), {"mode": "local"})(),
         "_ocr_lines_cache": {
             "frame": "frame",
+            "options_key": "{}",
             "lines": [{"text": "邮件", "x": 700, "y": 1400, "w": 80, "h": 30}],
         },
     }
@@ -1521,6 +1565,49 @@ def test_shape_ocr_cache_miss_does_not_repeat_ocr(monkeypatch):
     assert result["similarity"] == 0
     assert result["matches"] == []
     assert result["reason"] == "cached_frame_ocr"
+
+
+def test_shape_ocr_cache_miss_falls_back_to_crop_match_when_image_role_enabled(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("某区域内部", "0085.png")
+    shape = {
+        "id": "leave",
+        "kind": "rect",
+        "title": "离开",
+        "imageMatchRole": "optional",
+        "ocrText": "离|开",
+        "ocrMatchMode": "regex",
+        "ocrMatchRole": "optional",
+        "x": 0.85,
+        "y": 0.48,
+        "w": 0.1,
+        "h": 0.05,
+    }
+    ctx = {
+        "entry": type("Entry", (), {"mode": "local"})(),
+        "_ocr_lines_cache": {
+            "frame": "frame",
+            "options_key": "{}",
+            "lines": [{"text": "其它文字", "x": 100, "y": 170, "w": 80, "h": 30}],
+        },
+    }
+    calls: list[dict] = []
+
+    def fake_run_match(*_args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "similarity": 0,
+            "matches": [{"ocr_text": "+离开", "x": 770, "y": 768, "w": 100, "h": 80}],
+            "fixed_box": {"x": 770, "y": 768, "w": 100, "h": 80},
+        }
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    result = runner._match_shape(ctx, image, shape, "frame", condition="ocr")
+
+    assert calls == [{"scan": False, "match_strategy": "auto", "ocr_enabled": True}]
+    assert result["matched"] is True
+    assert result["ocr_text"] == "+离开"
 
 
 def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypatch):
@@ -1861,7 +1948,7 @@ def test_scene_score_requires_explicit_scene_identity_shape(monkeypatch):
     assert calls == []
 
 
-def test_scene_score_uses_full_frame_similarity_only_for_layer3_without_identity(monkeypatch):
+def test_scene_score_rejects_layer3_without_identity_as_scene(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     layer3_image = _image("素材模板", "0999.jpg")
     layer3_image["layer"] = 3
@@ -1875,9 +1962,20 @@ def test_scene_score_uses_full_frame_similarity_only_for_layer3_without_identity
     monkeypatch.setattr(runtime_runner_core, "_reference_frame_similarity", lambda *_args: 93.0)
     monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 91.0)
 
-    assert runner._scene_score({"entry": object()}, layer3_image, "frame") == 93.0
+    assert runner._scene_score({"entry": object()}, layer3_image, "frame") == 0.0
     assert runner._scene_score({"entry": object()}, layer2_image, "frame") == 0.0
     assert runner._scene_score({"entry": object()}, identified_image, "frame") == 91.0
+
+
+def test_identify_scene_number_does_not_return_layer3_without_identity(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    weak_root = _image("隐藏浮动窗", "0058.png")
+    weak_root["layer"] = 3
+    ctx = {"asset_tree": [weak_root], "images": {58: weak_root}}
+
+    monkeypatch.setattr(runtime_runner_core, "_reference_frame_similarity", lambda *_args: 96.0)
+
+    assert runner._identify_scene_number(ctx, "frame") == (None, 0.0)
 
 
 def test_navigation_scene_id_maps_layer3_weak_child_to_parent_scene():
@@ -1906,6 +2004,91 @@ def test_navigation_scene_id_rejects_top_level_layer3_weak_scene():
     ctx = {"asset_tree": [weak_root], "images": {999: weak_root}}
 
     assert runner._navigation_scene_id(ctx, 999) is None
+
+
+def test_navigation_scene_id_requires_parent_identity_when_frame_is_available(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    parent = _image("世界", "0034.jpg", [
+        {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
+    ])
+    parent["layer"] = 1
+    weak_child = _image("世界-下方动态", "0068.jpg")
+    weak_child["layer"] = 3
+    parent["children"] = [weak_child]
+    ctx = {"asset_tree": [parent], "images": {34: parent, 68: weak_child}}
+
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, _image, _frame: 0.0)
+
+    assert runner._navigation_scene_id(ctx, 68, "not-world-frame") is None
+
+
+def test_go_scene_short_circuits_after_layer3_child_maps_to_target(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    parent = _image("世界", "0034.jpg", [
+        {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
+    ])
+    parent["layer"] = 1
+    weak_child = _image("世界-下方动态", "0068.jpg")
+    weak_child["layer"] = 3
+    parent["children"] = [weak_child]
+    ctx = {"asset_tree": [parent], "images": {34: parent, 68: weak_child}}
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame: (68, 86.0))
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100.0 if image is parent else 86.0)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._go_scene_task(ctx, tmp_path / "asset-tree.json", 34, threading.Event()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+
+
+def test_wait_scene_jump_treats_layer3_child_landing_as_source_stall(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    daily_shape = {"id": "daily", "kind": "rect", "title": "日常", "x": 0.05, "y": 0.2, "w": 0.1, "h": 0.1, "sceneJumpTarget": "69"}
+    parent = _image("世界", "0034.jpg", [
+        {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
+        daily_shape,
+    ])
+    parent["layer"] = 1
+    weak_child = _image("世界-下方动态", "0068.jpg")
+    weak_child["layer"] = 3
+    daily = _image("日常", "0069.jpg")
+    daily["layer"] = 1
+    parent["children"] = [weak_child]
+    tree = [parent, daily]
+    ctx = {"asset_tree": tree, "images": {34: parent, 68: weak_child, 69: daily}}
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, _frame, preferred_scene_ids=None: (
+            (None, 0.0) if preferred_scene_ids else (68, 86.0)
+        ),
+    )
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100.0 if image is parent else 86.0)
+    monkeypatch.setattr(runner, "_scene_jump_source_stall_timeout", lambda **_kwargs: 0.0)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_scene_jump_result(
+            ctx,
+            tmp_path / "asset-tree.json",
+            tree,
+            source_scene_id=34,
+            target_scene_id=69,
+            edge={"source_id": 34, "image": parent, "shape": daily_shape, "target_ids": [69]},
+            stop_event=threading.Event(),
+            return_source_on_stall=True,
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == 34
 
 
 def test_identify_scene_number_for_route_uses_ordered_detect_candidates(monkeypatch):
@@ -2233,6 +2416,82 @@ def test_scene_jump_20_to_34_unknown_clicks_world_blank_once(tmp_path, monkeypat
     assert any("#34「空白」" in log["message"] for log in runner.status()["logs"])
 
 
+def test_go_scene_stops_after_direct_entry_stalls_without_low_risk_recovery(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    entry_shape = {"id": "green", "kind": "rect", "title": "进入绿瓶", "x": 0.1, "y": 0.9, "w": 0.2, "h": 0.08, "sceneJumpTarget": "20"}
+    blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.03, "w": 0.4, "h": 0.05}
+    image34 = _scene_image("世界", "0034.png", [entry_shape, blank_shape])
+    image20 = _scene_image("绿瓶", "0020.png", [])
+    tree = [image34, image20]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": {34: image34, 20: image20}}
+    clicked: list[str] = []
+    saved: dict[str, object] = {}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    def wait_stays_source(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return 34
+
+    def save_unknown(_ctx, _path, _tree, _frame, **kwargs):
+        saved.update(kwargs)
+        raise RuntimeError("direct entry stalled")
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "world")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, preferred_scene_ids=None, trace=None: (34, 100.0))
+    monkeypatch.setattr(runner, "_strong_ocr_scene_number", lambda _ctx, _frame: None)
+    monkeypatch.setattr(runner, "_wait_scene_jump_result", wait_stays_source)
+    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicked.append(shape["title"]))
+    monkeypatch.setattr(runner, "_save_unknown_scene_frame", save_unknown)
+
+    with pytest.raises(RuntimeError, match="direct entry stalled"):
+        _drain_generator(runner._go_scene_task(ctx, path, 20, FakeStopEvent()))
+
+    assert clicked == ["进入绿瓶"]
+    assert saved["current_scene_id"] == 34
+    assert saved["action_shape"] is entry_shape
+    assert "不执行泛化恢复动作" in saved["history"][0]
+
+
+def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _scene_image("世界", "0034.png", [
+        {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
+    ], layer=1)
+    tree = [image34]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": {34: image34}}
+    saved: dict[str, object] = {}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    def save_unknown(_ctx, _path, _tree, _frame, **kwargs):
+        saved.update(kwargs)
+        raise RuntimeError("below threshold")
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "big-map")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, preferred_scene_ids=None, trace=None: (None, 0.0))
+    monkeypatch.setattr(runner, "_identify_scene_number_for_route", lambda *_args, **_kwargs: (34, 77.0))
+    monkeypatch.setattr(runner, "_strong_ocr_scene_number", lambda _ctx, _frame: None)
+    monkeypatch.setattr(runner, "_recover_unknown_start_to_world", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runner, "_recover_unknown_by_matched_existing_route", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runner, "_save_unknown_scene_frame", save_unknown)
+
+    with pytest.raises(RuntimeError, match="below threshold"):
+        _drain_generator(runner._go_scene_task(ctx, path, 34, FakeStopEvent()))
+
+    assert saved["target_scene_id"] == 34
+    assert saved["current_scene_id"] is None
+
+
 def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
@@ -2509,6 +2768,49 @@ def test_auto_close_guard_popup_47_child_86_clicks_confirm(tmp_path, monkeypatch
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == [("离开场景", "确认")]
+
+
+def test_auto_close_guard_popup_47_child_289_clicks_confirm(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.64, "w": 0.18, "h": 0.06}
+    child_289 = _image("0289.png", "0289.png", [
+        {"id": "identity", "kind": "rect", "title": "退出灵脉", "isSceneIdentity": True, "x": 0.3, "y": 0.42, "w": 0.4, "h": 0.08},
+        confirm_shape,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
+    popup_47["children"] = [child_289]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "0289.png"} else 0)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(
+        runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
+        allow_confirm_actions=False,
+    )
+    assert clicked == [("0289.png", "确认")]
+
+
+def test_auto_close_guard_popup_47_child_287_clicks_confirm(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.58, "y": 0.64, "w": 0.2, "h": 0.05}
+    child_287 = _image("0287.png", "0287.png", [
+        {"id": "identity", "kind": "rect", "title": "前往灵脉", "isSceneIdentity": True, "x": 0.36, "y": 0.44, "w": 0.32, "h": 0.04},
+        confirm_shape,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
+    popup_47["children"] = [child_287]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "0287.png"} else 0)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    assert clicked == [("0287.png", "确认")]
 
 
 def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, monkeypatch):
@@ -3934,6 +4236,19 @@ def test_daily_dongtian_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
+def test_daily_lingmai_is_registered_without_default_scheduler_task():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
+    definition = fanxiu_api._data_annotation_manual_job_definition("daily_lingmai")
+
+    assert "legacy-daily-lingmai" not in tasks
+    assert definition is not None
+    assert definition.label == "日常_灵脉"
+    assert definition.scheduler_supported is True
+
+
 def test_daily_lingzu_is_not_independent_scheduler_task():
     tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 
@@ -3953,6 +4268,18 @@ def test_daily_lingta_is_not_independent_scheduler_task():
 
     assert "legacy-daily-lingta" not in tasks
     assert _data_annotation_task_supported({"task_type": "daily_lingta"}) is False
+
+
+def test_daily_green_bottle_baiye_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-green-bottle-baiye")
+
+    assert task["task_type"] == "daily_green_bottle_baiye"
+    assert task["label"] == "日常_绿瓶拜谒"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["enabled"] is True
+    assert task["schedule_times"] == ["05:00"]
+    assert _data_annotation_task_supported(task)
 
 
 def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
@@ -5143,6 +5470,55 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
     assert result == "success"
     assert clicked == [(809.0, 777.5), (615.8333333333334, 1063.3333333333333)]
     assert opened_mail == [True]
+
+
+def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image("邮件", "0121.png", [
+        {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6},
+    ])
+    ctx = {"entry": object(), "asset_tree_path": tmp_path / "asset_tree.json", "images": {121: image121}}
+    retries: list[tuple[str, str, str]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        attrs: dict[str, object] = {}
+
+        def cur_frame(self, update: bool = False):
+            return "mail-list"
+
+        def scroll_shape_content(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return True
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (121, 100.0, "mail-list", ""))
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        runner,
+        "_record_scheduler_task_discovered_retry_after",
+        lambda task_id, retry_after, **kwargs: retries.append((task_id, retry_after, kwargs["last_result"])),
+    )
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(
+            ctx,
+            FakeStopEvent(),
+            {"max_actions": 20, "max_scrolls": 1, "__scheduler_task_id": "mail-cleanup"},
+        ),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result["result"] == "skipped"
+    assert "未确认到底" in result["message"]
+    assert retries and retries[0][0] == "mail-cleanup"
+    assert retries[0][2] == "skipped"
 
 
 def test_xianfu_learn_skill_is_dynamic_runtime_task():
@@ -8192,6 +8568,7 @@ class _FakeSignupRuntime:
         fail_first_reward_view: bool = False,
         claim_return_states: list[str] | None = None,
         initial_scene_id: int | None = None,
+        activity_page: bool = False,
     ):
         self.claim_available = claim_available
         self.row_batches = list(row_batches or [])
@@ -8199,6 +8576,7 @@ class _FakeSignupRuntime:
         self.fail_first_reward_view = fail_first_reward_view
         self.claim_return_states = list(claim_return_states or [])
         self.scene_id = initial_scene_id
+        self.activity_page = activity_page
         self.actions: list[tuple[Any, ...]] = []
 
     def current_scene(self, view_ids=None, **_kwargs):
@@ -8208,6 +8586,8 @@ class _FakeSignupRuntime:
         return "frame"
 
     def ocr_text(self, _frame):
+        if self.activity_page:
+            return "道法争锋 活动将于每周日22:00结算 当前排名:27 剩余挑战次数:5/5"
         if self.scene_id == 23:
             return "报名 活动时间 待报名"
         if self.scene_id == 69:
@@ -8295,6 +8675,9 @@ class _FakeSignupRuntime:
 
     def click_frame_point(self, view_id: int, x: float, y: float):
         self.actions.append(("point", view_id, x, y))
+        if self.activity_page and x <= 120 and y >= 1400:
+            self.activity_page = False
+            self.scene_id = 34
 
     def scroll_shape_content(self, view_id: int, shape: str, **_kwargs):
         self.actions.append(("scroll", view_id, shape))
@@ -8365,6 +8748,16 @@ def test_daily_signup_flow_returns_world_when_already_done():
 
     assert result == {"result": "success", "claimed": 0, "already_done": True}
     assert runtime.actions == [("goto", 69), ("goto", 34)]
+
+
+def test_daily_signup_activity_page_is_successful_idempotent_tail():
+    runner = create_fanxiu_runtime_runner()
+    runtime = _FakeSignupRuntime(activity_page=True)
+
+    result = _drain_generator(runner.日常报名流程(runtime))
+
+    assert result == {"result": "success", "claimed": 1, "activity_opened": True}
+    assert runtime.actions == [("point", 23, 80.0, 1482.0), ("wait_view", 34)]
 
 
 def test_daily_signup_list_scrolls_after_click_without_reward_page():
@@ -9426,6 +9819,88 @@ def test_daily_boss_leave_closes_reward_result_before_rechecking_list(tmp_path, 
 
     assert result is True
     assert calls == ["click:450:1376", "settle:2.0"]
+
+
+def test_daily_boss_cleanup_closes_item_detail_with_frame_250_return(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image250 = _image("道具详情", "0250.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.05, "y": 0.92, "w": 0.08, "h": 0.04},
+    ])
+    ctx = {"asset_tree_path": path, "images": {250: image250}}
+    calls: list[tuple[str, float, float] | tuple[str, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def click_frame_point(self, image, x, y):
+            assert image is image250
+            calls.append(("click", round(x, 3), round(y, 3)))
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("settle", seconds))
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._close_daily_boss_item_detail_if_present(
+            ctx,
+            FakeRuntime(),
+            FakeStopEvent(),
+            "frame",
+            "灵月天缘镜碎片 境界要求：炼虚前期壹层 描述 合成 获取途径 使用",
+        ),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is True
+    assert calls == [("click", 81.0, 1504.0), ("settle", 2.0)]
+
+
+def test_daily_boss_cleanup_closes_storage_bag_with_frame_249_return(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image249 = _image("储物袋", "0249.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.05, "y": 0.932, "w": 0.08, "h": 0.047},
+    ])
+    ctx = {"asset_tree_path": path, "images": {249: image249}}
+    calls: list[tuple[str, float, float] | tuple[str, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def click_frame_point(self, image, x, y):
+            assert image is image249
+            calls.append(("click", round(x, 3), round(y, 3)))
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("settle", seconds))
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._close_daily_boss_storage_bag_if_present(
+            ctx,
+            FakeRuntime(),
+            FakeStopEvent(),
+            "frame",
+            "储物袋 全部 书籍 丹药 礼物 日程 快捷操作",
+        ),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is True
+    assert calls == [("click", 81.0, 1528.8), ("settle", 2.0)]
 
 
 def test_daily_boss_returns_to_world_after_list_completion(tmp_path, monkeypatch):

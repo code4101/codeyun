@@ -165,6 +165,23 @@ def _age_seconds(value: Any) -> float | None:
     return max(0.0, (datetime.now() - parsed).total_seconds())
 
 
+def _worker_substate_age_seconds(worker: dict[str, Any], key: str) -> float | None:
+    substate = worker.get(key) if isinstance(worker.get(key), dict) else {}
+    return _age_seconds(substate.get("updated_at"))
+
+
+def _worker_substate_stale(worker: dict[str, Any], key: str, interval_key: str, minimum_age_seconds: float) -> bool:
+    age_seconds = _worker_substate_age_seconds(worker, key)
+    if age_seconds is None:
+        return False
+    try:
+        interval_seconds = float(worker.get(interval_key) or 0.0)
+    except (TypeError, ValueError):
+        interval_seconds = 0.0
+    stale_after = max(float(minimum_age_seconds), interval_seconds * 2.0 if interval_seconds > 0 else 0.0)
+    return age_seconds > stale_after
+
+
 def _latest_live_capture_summary(capture_runtime: dict[str, Any]) -> dict[str, Any]:
     current_path = Path(str(capture_runtime.get("current_pcap_path") or ""))
     if current_path.is_file():
@@ -188,7 +205,17 @@ def _latest_live_capture_summary(capture_runtime: dict[str, Any]) -> dict[str, A
         candidates = []
     if not candidates:
         return {"path": "", "name": "", "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
-    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    latest_with_stat = None
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if latest_with_stat is None or stat.st_mtime > latest_with_stat[1].st_mtime:
+            latest_with_stat = (path, stat)
+    if latest_with_stat is None:
+        return {"path": "", "name": "", "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
+    latest, stat = latest_with_stat
     try:
         stat = latest.stat()
     except OSError:
@@ -260,6 +287,10 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         issues.append("realtime_worker_not_running")
     if worker and worker.get("updated_at") and (_age_seconds(worker.get("updated_at")) or 0) > 120:
         issues.append("worker_state_stale")
+    if worker and _worker_substate_stale(worker, "realtime", "realtime_interval_seconds", 120.0):
+        issues.append("realtime_result_stale")
+    if worker and _worker_substate_stale(worker, "maintenance", "maintenance_interval_seconds", 600.0):
+        issues.append("maintenance_result_stale")
     if worker and worker.get("skipped") and worker.get("skip_reason"):
         warnings.append(f"worker_skipped:{worker.get('skip_reason')}")
     mail_seen_age = mail.get("latest_seen_age_seconds") if isinstance(mail, dict) else None
@@ -272,6 +303,8 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         "latest_live_capture": latest_capture,
         "mail_database": mail,
         "worker_updated_age_seconds": _age_seconds(worker.get("updated_at")) if worker else None,
+        "worker_realtime_age_seconds": _worker_substate_age_seconds(worker, "realtime") if worker else None,
+        "worker_maintenance_age_seconds": _worker_substate_age_seconds(worker, "maintenance") if worker else None,
         "capture_watchdog_age_seconds": _age_seconds(capture.get("watchdog_last_check_at")) if capture else None,
     }
 

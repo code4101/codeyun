@@ -49,6 +49,7 @@ PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
 PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV = "CODEYUN_PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE"
 PACKET_DECODE_COMMIT_PRESSURE_PERCENT = 90.0
 PACKET_DECODE_COMMIT_PRESSURE_AVAILABLE_MB = 8 * 1024
+PACKET_DECODE_COMMIT_PRESSURE_SMALL_INPUT_BYTES = 16 * 1024 * 1024
 MAIL_SOURCE_PROTOCOL_NAMES = {"SM_MailBox", "SM_NewMail"}
 MAIL_ACTION_PROTOCOL_NAMES = {"CM_ReadMail", "SM_ReadMail", "CM_GetMailReward", "SM_GetMailReward", "CM_DeleteMail", "SM_DeleteMail"}
 
@@ -911,7 +912,23 @@ def sync_fanxiu_capture_paths(
     walking the historical live-capture backlog while keeping decode/upsert
     responsibilities inside the packet service.
     """
+    input_total_bytes = 0
+    for raw_path in paths:
+        try:
+            path = Path(raw_path).expanduser()
+            if path.is_file():
+                input_total_bytes += int(path.stat().st_size)
+        except OSError:
+            continue
     pressure = _host_commit_pressure_for_packet_decode()
+    pressure_skip_allowed = bool(pressure.get("skip")) and input_total_bytes <= PACKET_DECODE_COMMIT_PRESSURE_SMALL_INPUT_BYTES
+    if pressure_skip_allowed:
+        pressure = {
+            **pressure,
+            "skip": False,
+            "small_input_override": True,
+            "input_total_bytes": input_total_bytes,
+        }
     if pressure.get("skip"):
         return {
             "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
@@ -1026,6 +1043,7 @@ def sync_fanxiu_capture_paths(
         "skipped": skipped,
         "errors": errors,
         "mail_packet_sync": mail_sync,
+        "host_commit_pressure": pressure,
     }
     return payload
 

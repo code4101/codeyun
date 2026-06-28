@@ -3594,6 +3594,12 @@ const getErrorMessage = (error: unknown) => {
   return error instanceof Error ? error.message : '请求失败';
 };
 
+const getHttpStatus = (error: unknown) => {
+  if (typeof error !== 'object' || !error || !('response' in error)) return null;
+  const maybeError = error as { response?: { status?: number } };
+  return typeof maybeError.response?.status === 'number' ? maybeError.response.status : null;
+};
+
 const getQueryEntryId = () => {
   const raw = route.query.entry_id;
   return Array.isArray(raw) ? raw[0] || '' : raw || '';
@@ -6810,7 +6816,6 @@ type ImageCompareDragState =
       startOffsetY: number;
     };
 
-const DATA_ANNOTATION_STORAGE_KEY = 'fanxiu.dataAnnotation.assetTree.v1';
 const DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY = 'fanxiu.dataAnnotation.deletedShapes.v1';
 const DATA_ANNOTATION_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.dataAnnotation.discriminatorGroups.v1';
 const DATA_ANNOTATION_UI_STATE_STORAGE_KEY = 'fanxiu.dataAnnotation.uiState.v1';
@@ -7406,18 +7411,6 @@ const loadGlobalOcclusionMaskEnabled = () => {
   return window.localStorage.getItem(DATA_ANNOTATION_OCCLUSION_MASK_ENABLED_KEY) === 'true';
 };
 
-const loadAssetTree = (): DataAnnotationAssetNode[] => {
-  if (typeof window === 'undefined') return createDefaultAssetTree();
-  const raw = window.localStorage.getItem(DATA_ANNOTATION_STORAGE_KEY);
-  if (!raw) return createDefaultAssetTree();
-  try {
-    const parsed = JSON.parse(raw) as DataAnnotationAssetNode[];
-    return Array.isArray(parsed) && parsed.length ? normalizeAssetTree(parsed) : createDefaultAssetTree();
-  } catch {
-    return createDefaultAssetTree();
-  }
-};
-
 const sendRemoteKeyevent = async (key: string) => {
   if (!selectedEntryId.value) return;
   try {
@@ -7444,7 +7437,7 @@ const sendRemoteText = async (text: string) => {
 
 globalOcclusionMaskEnabled.value = loadGlobalOcclusionMaskEnabled();
 
-const assetTree = ref<DataAnnotationAssetNode[]>(loadAssetTree());
+const assetTree = ref<DataAnnotationAssetNode[]>([]);
 const assetTreeBackendHydrating = ref(false);
 const assetTreeBackendUpdatedAt = ref(0);
 let assetTreeLocalVersion = 0;
@@ -7615,6 +7608,11 @@ const mergeAssetTreeNodes = (baseNodes: DataAnnotationAssetNode[], extraNodes: D
   const appendMissing = (target: DataAnnotationAssetNode[], incoming: DataAnnotationAssetNode[]) => {
     for (const node of incoming) {
       const key = assetNodeMergeKey(node);
+      const existing = knownKeys.has(key) ? findAssetNodeByMergeKey(merged, key) : null;
+      if (existing) {
+        mergeDuplicateAssetNode(existing, node);
+        continue;
+      }
       if (node.type === 'folder') {
         const targetFolder = findMergeTargetFolder(merged, node.title);
         if (targetFolder) {
@@ -7641,15 +7639,32 @@ const mergeEntryAssetTrees = (localTree: DataAnnotationAssetNode[], backendTree:
   return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
-const assetTreeJson = (tree: DataAnnotationAssetNode[]) => JSON.stringify(tree);
+const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
+  const response = await getFanxiuDataAnnotationAssetTree(entryId);
+  if (selectedEntryId.value !== entryId) return;
+  assetTreeBackendHydrating.value = true;
+  try {
+    if (response.exists && Array.isArray(response.tree) && response.tree.length) {
+      const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
+      assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+      assetTreeBackendUpdatedAt.value = Number(response.updated_at) || 0;
+    } else {
+      assetTree.value = [];
+      assetTreeBackendUpdatedAt.value = 0;
+    }
+  } finally {
+    assetTreeBackendHydrating.value = false;
+  }
+};
 
 const flushAssetTreeToBackend = async (
   entryId: string,
   tree: DataAnnotationAssetNode[],
   localVersion = assetTreeLocalVersion,
+  baseUpdatedAt = assetTreeBackendUpdatedAt.value,
 ) => {
   try {
-    const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree);
+    const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree, baseUpdatedAt);
     if (Array.isArray(response.tree) && selectedEntryId.value === entryId && localVersion === assetTreeLocalVersion) {
       assetTreeBackendHydrating.value = true;
       try {
@@ -7658,11 +7673,53 @@ const flushAssetTreeToBackend = async (
         assetTreeBackendHydrating.value = false;
       }
     }
-    assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
+    if (selectedEntryId.value === entryId) {
+      assetTreeBackendUpdatedAt.value = Number(response.updated_at) || assetTreeBackendUpdatedAt.value;
+    }
     return true;
   } catch (error) {
+    if (getHttpStatus(error) === 409) {
+      try {
+        const latest = await getFanxiuDataAnnotationAssetTree(entryId);
+        const latestTree = Array.isArray(latest.tree)
+          ? normalizeAssetTree(latest.tree as DataAnnotationAssetNode[])
+          : [];
+        const latestUpdatedAt = Number(latest.updated_at) || 0;
+        const mergedTree = mergeAssetTreeNodes(tree, latestTree);
+        const response = await saveFanxiuDataAnnotationAssetTree(entryId, mergedTree, latestUpdatedAt || undefined);
+        if (Array.isArray(response.tree) && selectedEntryId.value === entryId && localVersion === assetTreeLocalVersion) {
+          assetTreeBackendHydrating.value = true;
+          try {
+            assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
+          } finally {
+            assetTreeBackendHydrating.value = false;
+          }
+        }
+        if (selectedEntryId.value === entryId) {
+          assetTreeBackendUpdatedAt.value = Number(response.updated_at) || latestUpdatedAt || assetTreeBackendUpdatedAt.value;
+        }
+        ElMessage.info('资产树有并发更新，已合并并重新保存');
+        return true;
+      } catch (retryError) {
+        console.error(retryError);
+        try {
+          await reloadAssetTreeFromBackendTruth(entryId);
+          ElMessage.error(`${getErrorMessage(retryError)}；已回读服务端资产树`);
+        } catch (reloadError) {
+          console.error(reloadError);
+          ElMessage.error(getErrorMessage(retryError));
+        }
+        return false;
+      }
+    }
     console.error(error);
-    ElMessage.error(getErrorMessage(error));
+    try {
+      await reloadAssetTreeFromBackendTruth(entryId);
+      ElMessage.error(`${getErrorMessage(error)}；已回读服务端资产树`);
+    } catch (reloadError) {
+      console.error(reloadError);
+      ElMessage.error(getErrorMessage(error));
+    }
     return false;
   }
 };
@@ -7671,32 +7728,28 @@ const scheduleAssetTreeBackendSave = () => {
   if (assetTreeBackendHydrating.value || !selectedEntryId.value) return;
   const entryId = selectedEntryId.value;
   const localVersion = assetTreeLocalVersion;
+  const baseUpdatedAt = assetTreeBackendUpdatedAt.value;
   const tree = JSON.parse(JSON.stringify(assetTree.value)) as DataAnnotationAssetNode[];
   if (assetTreeSaveTimer) window.clearTimeout(assetTreeSaveTimer);
   assetTreeSaveTimer = window.setTimeout(() => {
     assetTreeSaveTimer = null;
-    void flushAssetTreeToBackend(entryId, tree, localVersion);
+    void flushAssetTreeToBackend(entryId, tree, localVersion, baseUpdatedAt);
   }, 400);
 };
 
 const loadEntryAssetTree = async (entryId: string) => {
   if (!entryId) return;
   assetTreeBackendHydrating.value = true;
-  let mergedTreeToFlush: DataAnnotationAssetNode[] | null = null;
+  assetTreeBackendUpdatedAt.value = 0;
   try {
-    const localTree = loadAssetTree();
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-      const mergedTree = mergeEntryAssetTrees(localTree, backendTree);
-      assetTree.value = mergedTree;
-      assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
-      if (assetTreeJson(mergedTree) !== assetTreeJson(filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree)))) {
-        mergedTreeToFlush = mergedTree;
-      }
+      assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+      assetTreeBackendUpdatedAt.value = Number(response.updated_at) || 0;
     } else {
-      assetTree.value = localTree;
-      void flushAssetTreeToBackend(entryId, localTree);
+      assetTree.value = [];
+      assetTreeBackendUpdatedAt.value = 0;
     }
     restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
@@ -7707,7 +7760,6 @@ const loadEntryAssetTree = async (entryId: string) => {
   } finally {
     assetTreeBackendHydrating.value = false;
   }
-  if (mergedTreeToFlush) void flushAssetTreeToBackend(entryId, mergedTreeToFlush);
 };
 
 const refreshEntryAssetTreeIfChanged = async () => {
@@ -7721,13 +7773,9 @@ const refreshEntryAssetTreeIfChanged = async () => {
     if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
     assetTreeBackendHydrating.value = true;
     const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-    const compactBackendTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
     const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
-    if (assetTreeJson(mergedTree) !== assetTreeJson(compactBackendTree)) {
-      void flushAssetTreeToBackend(entryId, mergedTree);
-    }
     expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
     await syncAssetTreeExpansionFromState();
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
@@ -8912,7 +8960,6 @@ const annotationContentStyle = computed(() => ({
 
 watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(DATA_ANNOTATION_STORAGE_KEY, JSON.stringify(value));
   expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
   queueAssetTreeExpansionSync();
   if (!assetTreeBackendHydrating.value) assetTreeLocalVersion += 1;
@@ -14393,7 +14440,7 @@ const finishShapeDrag = () => {
 }
 
 .annotation-workbench {
-  width: max-content;
+  width: 100%;
   max-width: 100%;
   margin-top: 12px;
   border-top: 1px solid #dcdfe6;
@@ -14523,7 +14570,7 @@ const finishShapeDrag = () => {
 
 .shape-tree-scroll {
   flex: 1 1 0;
-  min-width: 180px;
+  min-width: 320px;
   min-height: 0;
   overflow-x: auto;
   overflow-y: scroll;
@@ -14531,7 +14578,11 @@ const finishShapeDrag = () => {
 }
 
 .shape-tree {
-  min-width: max-content;
+  min-width: 100%;
+}
+
+.shape-tree :deep(.el-tree__empty-block) {
+  min-width: 100%;
 }
 
 .shape-tree-node.is-group {

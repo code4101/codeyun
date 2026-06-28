@@ -97,6 +97,12 @@
               </el-button>
             </div>
           </div>
+          <el-input
+            v-model="item.description"
+            size="small"
+            placeholder="分类说明，用于提升 AI 自动分类准确性"
+            class="description-input"
+          />
         </div>
       </div>
     </div>
@@ -327,6 +333,7 @@ const handleSave = async () => {
     .map((item, index) => ({
       ...item,
       label: item.label.trim() || item.key,
+      description: (item.description || '').trim(),
       color: normalizeNodeColor(item.color) ?? getDefaultNodeTypeConfig(item.key).baseColor,
       order: Number.isFinite(item.order) ? item.order : index * 10
     }));
@@ -365,7 +372,7 @@ const handleSave = async () => {
 .manager-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .manager-hint{font-size:12px;color:#909399}
 .manager-list{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto;padding-right:4px}
-.manager-row{display:flex;flex-direction:column;border:1px solid #ebeef5;border-radius:10px;background:#fff;padding:10px 12px}
+.manager-row{display:flex;flex-direction:column;gap:8px;border:1px solid #ebeef5;border-radius:10px;background:#fff;padding:10px 12px}
 .row-line{display:grid;grid-template-columns:max-content 88px minmax(160px,220px) 40px minmax(132px,1fr) 72px;align-items:center;gap:10px;justify-content:start}
 .usage-tag{justify-self:stretch;min-width:0;width:100%;padding:0 6px}
 .label-input{min-width:0;width:100%;max-width:none}
@@ -383,6 +390,9 @@ const handleSave = async () => {
 .mapped-name-chip{display:flex;align-items:center;gap:6px;min-width:0;width:100%;height:32px;padding:0 8px;border:1px solid #ebeef5;border-radius:8px;background:#f8fafc}
 .mapped-name-text{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.2;color:#243046;font-weight:500}
 .row-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;padding-left:6px}
+.description-input{width:100%}
+.description-input :deep(.el-input__wrapper){box-shadow:0 0 0 1px #ebeef5 inset;background:#fbfcfe}
+.description-input :deep(.el-input__inner){font-size:12px;color:#4b5563}
 .merge-btn{justify-self:auto}
 .icon-btn{min-width:0;padding-left:4px;padding-right:4px;justify-self:auto}
 .type-manager-sortable-ghost{opacity:.7;background:#ecf5ff}

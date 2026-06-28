@@ -42,6 +42,7 @@ export interface NoteTypePaletteItem {
   key: string;
   label: string;
   color: string;
+  description?: string;
   order: number;
   builtin: boolean;
   source: 'builtin' | 'custom' | 'legacy' | 'import';
@@ -201,6 +202,7 @@ export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
         key: item.key,
         label: item.label,
         color: item.color,
+        description: item.description || '',
         order: item.order,
         builtin: item.builtin,
         source: item.source,
@@ -223,16 +225,18 @@ export const saveNoteTypePalette = async (items: NoteTypePaletteItem[]) => {
     key: item.key,
     label: item.label,
     color: item.color,
+    description: item.description || null,
     order: item.order,
     builtin: item.builtin,
-      source: item.source,
-      generated_from_color: item.generatedFromColor ?? null,
-      usage_count: item.usageCount ?? 0
-    })));
+    source: item.source,
+    generated_from_color: item.generatedFromColor ?? null,
+    usage_count: item.usageCount ?? 0
+  })));
   const normalized = normalizeNoteTypePaletteItems(response.items.map(item => ({
     key: item.key,
     label: item.label,
     color: item.color,
+    description: item.description || '',
     order: item.order,
     builtin: item.builtin,
     source: item.source,

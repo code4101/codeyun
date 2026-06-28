@@ -42,6 +42,7 @@ const cellLogs = ref<FanxiuDataAnnotationRuntimeCellLog[]>([]);
 const activeCellIndex = ref(0);
 const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
+const logsLoading = ref(false);
 const actionLoading = ref('');
 const tickGuardEnabled = ref(true);
 const tickManualJobEnabled = ref(true);
@@ -508,6 +509,10 @@ const ensureHumanIsolationToken = () => {
   return token;
 };
 
+const warnRefreshFailure = (scope: string, error: unknown) => {
+  console.warn(`${scope} failed`, error);
+};
+
 const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
   const nextIsolation = status.isolation || {};
@@ -528,15 +533,20 @@ const refreshStatus = async () => {
 };
 
 const refreshLogs = async () => {
-  const response = await getFanxiuDataAnnotationRuntimeCellLogs(CELL_LOG_LIMIT, CELL_LOG_ENTRY_LIMIT);
-  const nextCells = response.cells || [];
-  const previousCellId = currentCellLog.value?.id || '';
-  cellLogs.value = nextCells;
-  const retainedIndex = previousCellId ? nextCells.findIndex((cell) => cell.id === previousCellId) : -1;
-  activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
-  const nextLogs = currentCellLog.value?.entries || [];
-  if (!sameLogEntries(logs.value, nextLogs)) {
-    logs.value = nextLogs;
+  logsLoading.value = true;
+  try {
+    const response = await getFanxiuDataAnnotationRuntimeCellLogs(CELL_LOG_LIMIT, CELL_LOG_ENTRY_LIMIT);
+    const nextCells = response.cells || [];
+    const previousCellId = currentCellLog.value?.id || '';
+    cellLogs.value = nextCells;
+    const retainedIndex = previousCellId ? nextCells.findIndex((cell) => cell.id === previousCellId) : -1;
+    activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
+    const nextLogs = currentCellLog.value?.entries || [];
+    if (!sameLogEntries(logs.value, nextLogs)) {
+      logs.value = nextLogs;
+    }
+  } finally {
+    logsLoading.value = false;
   }
 };
 
@@ -595,14 +605,31 @@ const refreshDoctorWatchPanel = async () => {
   ensureDoctorWatchInBackground();
 };
 
+const scheduleLogsRefresh = () => {
+  window.requestAnimationFrame(() => {
+    void refreshLogs().catch((error) => {
+      warnRefreshFailure('refresh logs', error);
+    });
+  });
+};
+
 const refreshAll = async () => {
   loading.value = true;
   try {
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
+    const [statusResult, schedulerResult] = await Promise.allSettled([refreshStatus(), refreshScheduler()]);
+    if (statusResult.status === 'rejected') {
+      warnRefreshFailure('refresh status', statusResult.reason);
+    }
+    if (schedulerResult.status === 'rejected') {
+      warnRefreshFailure('refresh scheduler', schedulerResult.reason);
+    }
   } finally {
     loading.value = false;
   }
-  void refreshDoctorWatchPanel();
+  scheduleLogsRefresh();
+  void refreshDoctorWatchPanel().catch((error) => {
+    warnRefreshFailure('refresh doctor watch', error);
+  });
 };
 
 const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotationRuntimeStatus | void>) => {
@@ -614,7 +641,8 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
   try {
     const status = await action();
     if (status) applyStatus(status);
-    await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+    const followups = [refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+    await Promise.all(followups);
     ensureDoctorWatchInBackground();
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '操作失败');
@@ -651,7 +679,8 @@ const changeSchedulerOwner = async (value: string) => {
       schedulerTasks.value = response.tasks || [];
       schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
     }
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+    const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+    await Promise.all(followups);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -691,7 +720,8 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+    const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+    await Promise.all(followups);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -708,9 +738,20 @@ const startPolling = () => {
     const syncSlowState = pollTick % 2 === 0;
     void (async () => {
       try {
-        await refreshStatus();
+        try {
+          await refreshStatus();
+        } catch (error) {
+          warnRefreshFailure('poll refresh status', error);
+        }
         if (syncSlowState) {
-          await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+          const slowRefreshes = [refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+          const scopes = ['poll refresh logs', 'poll refresh scheduler', 'poll refresh doctor watch'];
+          const results = await Promise.allSettled(slowRefreshes);
+          results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+              warnRefreshFailure(scopes[index], result.reason);
+            }
+          });
           ensureDoctorWatchInBackground();
         }
       } finally {
@@ -1002,15 +1043,18 @@ onUnmounted(() => {
           <pre>{{ currentCellLog.source }}</pre>
         </div>
         <div class="log-list">
-          <div v-for="(entry, index) in logs" :key="logEntryKey(entry, index)" class="log-row" :class="`is-${entry.kind}`">
-            <span>{{ entry.time }}</span>
-            <b>{{ entry.kind }}</b>
-            <p>
-              <code v-if="logSourceText(entry)">{{ logSourceText(entry) }}</code>
-              <span>{{ entry.message }}</span>
-            </p>
-          </div>
-          <div v-if="!logs.length" class="empty-row">暂无 cell 日志</div>
+          <div v-if="logsLoading && !logs.length" class="empty-row">Cell 日志加载中...</div>
+          <template v-else>
+            <div v-for="(entry, index) in logs" :key="logEntryKey(entry, index)" class="log-row" :class="`is-${entry.kind}`">
+              <span>{{ entry.time }}</span>
+              <b>{{ entry.kind }}</b>
+              <p>
+                <code v-if="logSourceText(entry)">{{ logSourceText(entry) }}</code>
+                <span>{{ entry.message }}</span>
+              </p>
+            </div>
+            <div v-if="!logs.length" class="empty-row">暂无 cell 日志</div>
+          </template>
         </div>
       </section>
     </main>

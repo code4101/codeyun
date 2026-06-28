@@ -226,6 +226,7 @@ class NoteCategoryPaletteItem(BaseModel):
     key: str
     label: str
     color: str
+    description: Optional[str] = None
     order: int = 0
     builtin: bool = False
     source: Literal["builtin", "custom", "legacy", "import"] = "custom"

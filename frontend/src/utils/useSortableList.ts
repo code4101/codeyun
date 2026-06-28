@@ -1,5 +1,5 @@
 import { nextTick, onUnmounted, watch, type Ref } from 'vue'
-import Sortable from 'sortablejs'
+import type Sortable from 'sortablejs'
 
 export interface UseSortableListOptions {
   listRef: Ref<HTMLElement | null>
@@ -11,10 +11,18 @@ export interface UseSortableListOptions {
   onReorder: (oldIndex: number, newIndex: number) => void | Promise<void>
 }
 
+let sortableModulePromise: Promise<typeof import('sortablejs')> | null = null
+
+const loadSortableModule = () => {
+  sortableModulePromise ||= import('sortablejs')
+  return sortableModulePromise
+}
+
 export function useSortableList(options: UseSortableListOptions) {
   let sortable: Sortable | null = null
+  let initNonce = 0
 
-  const destroySortable = () => {
+  const disposeSortable = () => {
     if (!sortable) {
       return
     }
@@ -22,8 +30,14 @@ export function useSortableList(options: UseSortableListOptions) {
     sortable = null
   }
 
-  const initSortable = () => {
-    destroySortable()
+  const destroySortable = () => {
+    initNonce += 1
+    disposeSortable()
+  }
+
+  const initSortable = async () => {
+    const nonce = ++initNonce
+    disposeSortable()
     if (!options.listRef.value) {
       return
     }
@@ -31,7 +45,12 @@ export function useSortableList(options: UseSortableListOptions) {
       return
     }
 
-    sortable = Sortable.create(options.listRef.value, {
+    const { default: SortableCtor } = await loadSortableModule()
+    if (nonce !== initNonce || !options.listRef.value || !(options.isEnabled?.() ?? true)) {
+      return
+    }
+
+    sortable = SortableCtor.create(options.listRef.value, {
       handle: options.handle ?? '.sortable-order-handle',
       animation: options.animation ?? 150,
       ghostClass: options.ghostClass,
@@ -48,7 +67,7 @@ export function useSortableList(options: UseSortableListOptions) {
     () => options.getDeps(),
     async () => {
       await nextTick()
-      initSortable()
+      void initSortable()
     },
     { immediate: true },
   )

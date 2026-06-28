@@ -17,7 +17,7 @@
 - 后端 Runtime、Scheduler、守护和调试验证都应使用 `codepc_mf` 入口。
 - 标注资产访问必须走 data-annotation 存储解析层，不要在业务代码里手拼物理路径。上层 API 只传 `entry_id`、`filename`、场景编号、shape 等业务标识；资产树、图片和 sidecar JSON 由 `backend/core/fanxiu/data_annotation/storage.py` 统一解析。
 - 一个 entry 是一个自包含资产目录：`fanxiu/data-annotation/entries/<entry_id>/asset-tree.json` 存帧树；图片位于 `fanxiu/data-annotation/entries/<entry_id>/images/<filename>`；单图 sidecar JSON 与图片放在同一目录并使用同名 stem，例如 `0034.png` 与 `0034.json`。
-- Runtime 不再读取旧 `asset-trees/<entry_id>.json`、共享图片目录或 `m2508凡修/mainwin/截图`。缺资产应迁移/补齐新 entry 目录，不做旧框架兼容。
+- Runtime 不再读取旧 `asset-trees/<entry_id>.json`、共享图片目录或 `m2508凡修/mainwin/截图`。缺资产应迁移/补齐新 entry 目录，不做旧框架兼容；发现旧资产残留时应清理掉，避免形成第二事实源。
 - Runtime/守护截图与点击默认只使用本机 MuMu ADB 通道：优先尝试常规本机端口，例如 `127.0.0.1:7555/16416/5555`，也允许 `MuMuManager.exe info --vmindex all` 返回的当前本机实例 `adb_host_ip:adb_port`。抓包或 Android proxy 服务从普通 `adb devices` 发现的远端设备（如非 MuMuManager 返回的 `192.168.*:5555`）不是凡修 Runtime 的默认截图/点击目标。抓包服务可以使用 ADB 做代理配置或设备发现，但它发现到的设备不能自动进入 Runtime 截图/点击候选。确需调试远端设备时必须显式设置环境变量，不得由抓包服务自动混入。
 - ADB 是 Runtime 的主通道；桌面窗口捕获只允许作为显式调试兜底，目标也必须是本机 `MuMu` 窗口，不再使用向日葵窗口标题或向日葵投屏通道。
 - 桌面窗口捕获、窗口预览和窗口点击兜底必须默认归一到 `900x1600` 标注坐标系；MuMu 恢复后外层窗口尺寸或缩放可能变化，不得让截图输出跟随窗口实际像素漂移。

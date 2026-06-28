@@ -182,6 +182,7 @@ import {
   cloneNoteProgramChannel,
   createDefaultRecentMonthProgram,
   createIncludeAllProgram,
+  noteProgramChannelNeedsCustomFieldsLocally,
   noteKey,
   normalizeNoteProgramChannel
 } from '@/api/notes';
@@ -229,6 +230,7 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 const currentPage = ref(1);
 const pageSize = ref(50);
 const isActive = computed(() => props.active !== false);
+const listViewNeedsCustomFields = computed(() => noteProgramChannelNeedsCustomFieldsLocally(viewProgram.value));
 
 // Computed
 const filteredNotes = computed(() => {
@@ -257,7 +259,7 @@ const runDataProgram = async (program = getAppliedDataProgram(), persist: boolea
     const normalizedProgram = normalizeNoteProgramChannel(program);
     await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
       limit: 1000,
-      include_custom_fields: false,
+      include_custom_fields: listViewNeedsCustomFields.value,
       include_edges: false
     }));
     if (persist) {
@@ -478,9 +480,15 @@ const {
     }),
 });
 
+const currentListQueryIncludesCustomFields = () => {
+  const lastQuery = session.value?.lastQuery as { result?: { include_custom_fields?: boolean } } | null | undefined;
+  return Boolean(lastQuery?.result?.include_custom_fields);
+};
+
 onMounted(() => {
-  if (noteStore.getTabNotes(props.tabId).length === 0) {
-    refreshData();
+  const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
+  if (!hasCachedNotes || (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields())) {
+    void refreshData();
   }
 });
 
@@ -488,6 +496,9 @@ watch(viewProgram, (value) => {
   noteStore.updateTabViewState(props.tabId, {
     viewProgram: normalizeNoteProgramChannel(value)
   });
+  if (isActive.value && listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields()) {
+    void refreshData();
+  }
 }, { deep: true });
 
 const clampCurrentPage = () => {
@@ -521,6 +532,9 @@ watch(filteredNotesVersion, async () => {
 
 watch(isActive, async (active) => {
   if (!active) return;
+  if (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields()) {
+    await refreshData();
+  }
   clampCurrentPage();
   await pruneSelectionToVisibleNotes();
 });

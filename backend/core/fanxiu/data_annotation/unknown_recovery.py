@@ -12,6 +12,8 @@ from pyxllib.autogui import View
 
 
 _EXIT_SHAPE_KEYWORDS = ("返回", "关闭", "离开", "取消", "空白")
+_UNKNOWN_CANDIDATE_MIN_SCENE_SCORE = 50.0
+_UNKNOWN_CANDIDATE_MIN_FRAME_SIMILARITY = 65.0
 
 
 @dataclass(frozen=True)
@@ -238,6 +240,12 @@ def _build_candidates(
         except Exception:
             scene_score = min((item.score for item in identity_scores), default=0.0)
         frame_similarity = _reference_frame_similarity(runner, image, frame_data_url)
+        if (
+            scene_id not in expected_scene_ids
+            and scene_score < _UNKNOWN_CANDIDATE_MIN_SCENE_SCORE
+            and (frame_similarity is None or frame_similarity < _UNKNOWN_CANDIDATE_MIN_FRAME_SIMILARITY)
+        ):
+            continue
         candidates.append(UnknownSceneCandidate(
             scene_id=int(scene_id),
             title=str(image.get("title") or image.get("filename") or ""),

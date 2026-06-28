@@ -5215,6 +5215,82 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         _clear_user_override()
 
 
+def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(client, session):
+    user = _create_user(session, username="note-sheet-attendance-template-skip-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                ],
+                "rows": [
+                    ["念住", "第41届念住", "第41届念住", "如如, 陈坤泽", "每天上午", serial(2026, 6, 1), "=F1+26", "", "620", "1", "=I1*J1"],
+                    ["觉观", "第47届觉观", "第47届觉观", "陈成, 陈坤泽", "每天上午", serial(2026, 6, 1), "=F2+24", "", "499", "1", "=I2*J2"],
+                    ["梵呗初阶", "梵呗初阶", "20260609梵呗初阶", "王秀芹, 陈坤泽", "数据每晚21点更新", serial(2026, 6, 9), serial(2026, 6, 24), "", "550", "1", "=I3*J3"],
+                ],
+                "cell_meta": {},
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
+            json={
+                "base_version": sheet.version,
+                "target_year": 2026,
+                "target_month": 7,
+                "skip_course_types": ["梵呗初阶"],
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert [item["course_name"] for item in payload["generated"]] == ["第42届念住", "第48届觉观"]
+        assert [(item["course_type"], item["reason"]) for item in payload["skipped"]] == [("梵呗初阶", "本月未排课")]
+        rows = payload["sheet"]["document_json"]["rows"]
+        assert not any(row[0] == "梵呗初阶" and row[2] == "20260709梵呗初阶" for row in rows)
+    finally:
+        _clear_user_override()
+
+
 def test_attendance_course_template_uses_column_binding_fallback(client, session):
     user = _create_user(session, username="note-sheet-attendance-binding-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

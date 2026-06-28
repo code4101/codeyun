@@ -1939,6 +1939,68 @@ def test_local_entry_proxy_can_scan_filesystem_recursive_size_over_stale_index(
     assert payload["items"][0]["direct_file_bytes"] == 10
 
 
+def test_local_entry_proxy_reuses_recent_filesystem_recursive_stats_cache(
+    client,
+    auth_user,
+    test_device,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    cached_dir = browse_dir / "cached"
+    cached_dir.mkdir(parents=True)
+    (cached_dir / "data.bin").write_bytes(b"x" * 32)
+
+    monkeypatch.setattr("backend.api.filesystem.get_device_id", lambda: test_device["id"])
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        lambda **_: {},
+    )
+
+    scan_calls: list[str] = []
+    original_scan = filesystem_api._scan_recursive_directory_stats
+
+    def track_scan(path):
+        scan_calls.append(str(path))
+        return original_scan(path)
+
+    monkeypatch.setattr("backend.api.filesystem._scan_recursive_directory_stats", track_scan)
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    payload = {
+        "absolute_path": str(browse_dir),
+        "recursive_stats_source": "filesystem",
+        "sort_program": {
+            "rules": [
+                {
+                    "field": "recursive_total_bytes",
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ]
+        },
+    }
+
+    first = client.post(f"/api/device-entries/{entry_id}/files/list_dir", json=payload)
+    second = client.post(f"/api/device-entries/{entry_id}/files/list_dir", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert scan_calls == [str(cached_dir)]
+    assert first.json()["items"][0]["recursive_total_bytes"] == 32
+    assert second.json()["items"][0]["recursive_total_bytes"] == 32
+
+
 def test_remote_entry_proxy_forwards_files_request(client, session, auth_user, monkeypatch):
     entry = UserDevice(
         user_id=auth_user.id,

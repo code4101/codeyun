@@ -281,6 +281,7 @@
                 collapse-meta-to-tooltip
               />
               <GallerySortProgramBar
+                v-if="mediaTotalCount > 0"
                 v-model="backendSortProgram"
                 title="媒体排序"
                 empty-text=""

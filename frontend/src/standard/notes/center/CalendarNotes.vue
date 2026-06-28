@@ -553,7 +553,8 @@ import { taskStore, type Device } from '@/store/taskStore';
 import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight, Refresh } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
-import { getNodeDisplayStyle } from '@/utils/nodeConfig';
+import { ensureNoteTypePaletteLoaded, getNodeDisplayStyle } from '@/utils/nodeConfig';
+import { noteTypePaletteItemsState } from '@/utils/noteTypePaletteState';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import { formatNoteDateShort } from '@/utils/noteDate';
 import { getNoteWeightScaleFactor, NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
@@ -857,6 +858,16 @@ const calendarVolumeRanges = computed<CalendarVolumeRange[]>(() => (
     startTs: dateFromTuple(volume.start).getTime(),
     endTs: dateFromTuple(volume.endExclusive).getTime(),
   }))
+));
+const notePaletteRenderSignature = computed(() => JSON.stringify(
+  Object.values(noteTypePaletteItemsState.value || {})
+    .map((item: any) => [
+      String(item?.key || ''),
+      String(item?.color || ''),
+      String(item?.label || ''),
+      Number(item?.order ?? 0),
+    ])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0]), 'zh-Hans-CN'))
 ));
 
 const getVolumeForDate = (date: Date) => {
@@ -1656,6 +1667,7 @@ const buildNoteRenderSignature = (note: NoteNode) => {
     rawNote.custom_fields ?? null,
     rawNote.weight ?? 0,
     rawNote.weight_mode ?? '',
+    notePaletteRenderSignature.value,
   ]);
 };
 
@@ -3110,6 +3122,13 @@ const calendarPaneHeight = computed(() => (
 onMounted(() => {
   logCalendarPerfSinceStart('mounted');
   void measureCalendarPerf('nextTick after mounted', () => nextTick());
+  ensureNoteTypePaletteLoaded()
+    .then(() => {
+      clearCalendarRenderCaches();
+    })
+    .catch(error => {
+      console.warn('Failed to load note category palette:', error);
+    });
   void loadYearMonthMemos();
   if (showCodexWorkload.value) {
     const codexWorkloadCache = loadCodexWorkloadStatsCache();

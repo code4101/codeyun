@@ -1021,10 +1021,15 @@ const applyGraphFilters = async (force: boolean = false, relayout: boolean = fal
         : visibleGraphEdges;
     }
 
-    const detailedRenderRefresh = relayout || shouldUseDetailedEdgeRouting(nextNodes, nextEdges);
+    const hasVisibleEdges = nextEdges.length > 0;
+    const detailedRenderRefresh = hasVisibleEdges && (relayout || shouldUseDetailedEdgeRouting(nextNodes, nextEdges));
     edges.value = [];
     nodes.value = nextNodes;
-    await refreshNodeInternals(nextNodes.map(node => String(node.id)));
+    if (hasVisibleEdges) {
+      await refreshNodeInternals(nextNodes.map(node => String(node.id)));
+    } else {
+      await nextTick();
+    }
     edges.value = nextEdges;
     if (detailedRenderRefresh) {
       await refreshNodeInternals(nextNodes.map(node => String(node.id)));

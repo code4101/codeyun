@@ -736,6 +736,7 @@ class NoteSheetAttendanceTemplateGenerationRequest(BaseModel):
     target_year: Optional[int] = Field(default=None, ge=1970, le=9999)
     target_month: Optional[int] = Field(default=None, ge=1, le=12)
     target_date: Optional[str] = None
+    skip_course_types: list[str] = Field(default_factory=list)
 
 
 class NoteSheetAttendanceCourseTemplateGenerationRequest(NoteSheetAttendanceTemplateGenerationRequest):
@@ -10622,6 +10623,27 @@ def _get_attendance_batch_course_targets(target_date: date) -> tuple[tuple[str, 
     return tuple(targets)
 
 
+ATTENDANCE_TEMPLATE_SKIP_MONTHS_SETTING_KEY = "attendance_summary.template_skip_months"
+
+
+def _normalize_attendance_template_skip_course_types(values: Any) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    return {
+        _normalize_sheet_text(value)
+        for value in values
+        if _normalize_sheet_text(value)
+    }
+
+
+def _read_attendance_template_skip_course_types(session: Session, target_date: date) -> set[str]:
+    row = session.get(AppSetting, ATTENDANCE_TEMPLATE_SKIP_MONTHS_SETTING_KEY)
+    if row is None or not isinstance(row.value, dict):
+        return set()
+    month_key = f"{target_date.year:04d}-{target_date.month:02d}"
+    return _normalize_attendance_template_skip_course_types(row.value.get(month_key))
+
+
 def _format_attendance_course_date(value: date) -> str:
     return f"{value.year:04d}{value.month:02d}{value.day:02d}"
 
@@ -11067,6 +11089,7 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
         next_document, generated, skipped = _generate_attendance_next_month_templates(
             current_document,
             target_date=_get_next_month_first_day(),
+            skip_course_types=_read_attendance_template_skip_course_types(session, _get_next_month_first_day()),
         )
         if generated and current_document != next_document:
             document.document_json = next_document
@@ -11419,11 +11442,29 @@ def _generate_attendance_next_month_templates(
     document_json: dict[str, Any],
     *,
     target_date: date,
+    skip_course_types: set[str] | None = None,
 ) -> tuple[dict[str, Any], list[NoteSheetAttendanceTemplateActionItem], list[NoteSheetAttendanceTemplateActionItem]]:
-    return _generate_attendance_course_templates(
+    skipped: list[NoteSheetAttendanceTemplateActionItem] = []
+    normalized_skip_course_types = {
+        _normalize_sheet_text(course_type)
+        for course_type in (skip_course_types or set())
+        if _normalize_sheet_text(course_type)
+    }
+    targets: list[tuple[str, date]] = []
+    for course_type, course_target_date in _get_attendance_batch_course_targets(target_date):
+        if course_type in normalized_skip_course_types:
+            skipped.append(NoteSheetAttendanceTemplateActionItem(
+                course_type=course_type,
+                target_date=course_target_date.isoformat(),
+                reason="本月未排课",
+            ))
+            continue
+        targets.append((course_type, course_target_date))
+    next_document, generated, generated_skipped = _generate_attendance_course_templates(
         document_json,
-        targets=list(_get_attendance_batch_course_targets(target_date)),
+        targets=targets,
     )
+    return next_document, generated, [*skipped, *generated_skipped]
 
 
 def _resolve_attendance_course_template_type(
@@ -16225,6 +16266,7 @@ def generate_attendance_summary_next_month_templates(
     next_document, generated, skipped = _generate_attendance_next_month_templates(
         current_document,
         target_date=target_date,
+        skip_course_types=_normalize_attendance_template_skip_course_types(payload.skip_course_types),
     )
 
     if generated and current_document != next_document:

@@ -17,6 +17,7 @@ from pyxllib.prog import (
     sync_scheduled_tasks_from_facts,
 )
 
+from backend.core.fanxiu.data_annotation.jobs import is_deprecated_data_annotation_job_type
 from backend.core.fanxiu.data_annotation.state import (
     next_data_annotation_scheduler_time,
     normalize_data_annotation_scheduler_task,
@@ -38,6 +39,7 @@ _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
+    "legacy-daily-vip",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-lingta",
@@ -228,6 +230,27 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             fact_result == "success"
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and fact_last_run_at is not None
+            and (last_run_at is None or fact_last_run_at >= last_run_at)
+        ):
+            fact_time = datetime.fromtimestamp(fact_last_run_at)
+            next_time = str(fact.get("discovered_next_time") or fact.get("next_time") or "").strip()
+            if not next_time:
+                next_time = next_data_annotation_scheduler_time(task, fact_time) or ""
+            task["last_result"] = "success"
+            task["last_run_at"] = str(fact.get("last_run_at") or fact_time.strftime("%Y-%m-%d %H:%M:%S"))
+            task["retry_after"] = None
+            task["next_time"] = next_time or None
+            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
+            checkpoint["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
+            task["checkpoint"] = checkpoint
+            audit_completed_changed = True
+            filtered_task_facts.pop(task_id, None)
+            continue
+        if (
+            fact_result == "success"
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and fact_last_run_at is not None
             and last_run_at is not None
             and fact_last_run_at < last_run_at
         ):
@@ -327,6 +350,7 @@ def repair_data_annotation_scheduler_tasks(
     legacy_daily_dungeon_task: dict[str, Any] | None = None
     legacy_daily_yaowang_task: dict[str, Any] | None = None
     legacy_daily_yaozu_task: dict[str, Any] | None = None
+    legacy_daily_vip_task: dict[str, Any] | None = None
     for task in tasks:
         if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
             legacy_mail_cleanup_task = task
@@ -357,6 +381,13 @@ def repair_data_annotation_scheduler_tasks(
             task["legacy_name"] = "日常_首领"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+            task["payload"].setdefault("max_runtime_seconds", 1800)
+        elif str(task.get("id") or "") == "daily-boss" and str(task.get("task_type") or "") == "daily_boss":
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            if int(payload.get("max_runtime_seconds") or 0) < 1800:
+                payload["max_runtime_seconds"] = 1800
+                task["payload"] = payload
+                legacy_daily_boss_task = task
         elif str(task.get("id") or "") == "legacy-dynamic-xianfu-visit":
             legacy_xianfu_visit_task = task
             task["id"] = "xianfu-visit-partner"
@@ -467,6 +498,16 @@ def repair_data_annotation_scheduler_tasks(
             task["legacy_name"] = "日常_妖族袭城"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key not in {"legacy_name", "args"}}
+        elif str(task.get("id") or "") == "legacy-daily-vip" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_vip_task = task
+            task["task_type"] = "daily_vip"
+            task["label"] = "日常_vip"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["00:00"]
+            task["legacy_name"] = "日常_vip"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key not in {"legacy_name", "args"}}
     obsolete_task_ids = {
         "gift-code-real-test",
         "gift-code-test-real",
@@ -485,6 +526,7 @@ def repair_data_annotation_scheduler_tasks(
         for task in tasks
         if str(task.get("id") or "") not in obsolete_task_ids
         and str(task.get("task_type") or "") not in obsolete_task_types
+        and not is_deprecated_data_annotation_job_type(str(task.get("task_type") or ""))
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
     changed = len(tasks) != before_cleanup_count
@@ -513,6 +555,8 @@ def repair_data_annotation_scheduler_tasks(
     if legacy_daily_yaowang_task is not None:
         changed = True
     if legacy_daily_yaozu_task is not None:
+        changed = True
+    if legacy_daily_vip_task is not None:
         changed = True
     defaults_by_id = {
         str(task.get("id") or ""): task
