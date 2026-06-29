@@ -644,6 +644,7 @@ class CodexDiaryImportRun(SQLModel, table=True):
     entry_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     entry_snapshot: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     confirm_duplicate: bool = Field(default=False, index=True)
+    replace_existing: bool = Field(default=False, index=True)
     status: str = Field(default="pending", index=True)
     stage: str = Field(default="pending", index=True)
     stage_label: str = Field(default="等待中")

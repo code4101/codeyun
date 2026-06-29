@@ -3012,8 +3012,23 @@ class DailyFoundationTaskMixin:
         )
         if status == "not_found":
             raise RuntimeError("日常_论道：#69 日常列表未找到「论道」入口")
-        self._log("success", "日常_论道：已点击 #69「论道」入口")
-        return "success"
+        scene_id, score, _frame = runtime.current_scene([299], update=True)
+        if scene_id == 298:
+            yield from runtime.wait_click(298, "入座")
+            yield from runtime.wait_click(301, "入座")
+            yield from runtime.wait_click(302, "确定")
+            yield from runtime.wait_click(303, "对话")
+            yield from runtime.wait_click_then_view(52, "确认", wait_leave=True)
+            runtime.click_shape_center(53, "离开")
+            yield from runtime.wait_action_settle(float(payload.get("lundao_leave_settle_seconds") or 1.5))
+            self._log("success", "日常_论道：已完成听道并点击 #53「离开」")
+            return "success"
+        if scene_id == 297:
+            self._log("skip", "日常_论道：当前 #297 暂未实现让座流程")
+            return "skipped"
+        if scene_id == 299:
+            raise RuntimeError("日常_论道：已到 #299，但未识别到 #297/#298 子帧，请检查子帧标注")
+        raise RuntimeError(f"日常_论道：已点击 #69「论道」入口，但未到达论道页面，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
 
     def _daily_dongtian_text_is_home(self, text: Any) -> bool:
         compact = _sanitize_ocr_text(text)
@@ -3328,6 +3343,9 @@ class DailyFoundationTaskMixin:
 
         self._log("success", f"{task_label}：#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，点击「空位」进入下一阶段")
         yield from runtime.wait_click(285, "空位")
+        if bool(payload.get("stop_after_click_285_empty")):
+            self._log("success", f"{task_label}：试运行已点击 #285「空位」，按 payload 停止")
+            return "success"
         yield from runtime.wait_view(
             286,
             timeout=float(payload.get("lingmai_select_slot_timeout") or 12.0),

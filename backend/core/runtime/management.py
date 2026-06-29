@@ -1089,6 +1089,15 @@ def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None
         "recovering": "恢复中",
         "running": "运行中",
     }.get(state, str(payload.get("state_label") or state))
+    raw_payload = dict(payload)
+    if worker:
+        raw_payload["packet_worker"] = {
+            "updated_at": worker.get("updated_at") or "",
+            "realtime_running": bool(worker.get("realtime_running")),
+            "maintenance_running": bool(worker.get("maintenance_running")),
+            "skipped": bool(worker.get("skipped")),
+            "skip_reason": worker.get("skip_reason") or "",
+        }
     return {
         "id": f"builtin:{FANXIU_CAPTURE_RUNTIME_SERVICE_KEY}",
         "key": FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
@@ -1137,7 +1146,7 @@ def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs"],
-        "raw": payload,
+        "raw": raw_payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
         "timeout_seconds": None,

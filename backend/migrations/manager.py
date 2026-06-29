@@ -4996,6 +4996,22 @@ def v76_add_github_project_created_at(session: Session):
     print("  Added GitHub project created_at column.")
 
 
+def v77_add_codex_diary_replace_existing(session: Session):
+    """
+    Migration V77: Track Codex diary reruns that replace existing day summaries.
+    """
+    print("Running System Upgrade V77: Add Codex diary replace_existing column...")
+    if not _table_exists(session, "codexdiaryimportrun"):
+        print("  codexdiaryimportrun table not found, skipping.")
+        return
+    columns = _get_table_columns(session, "codexdiaryimportrun")
+    if "replace_existing" not in columns:
+        session.exec(text("ALTER TABLE codexdiaryimportrun ADD COLUMN replace_existing BOOLEAN NOT NULL DEFAULT 0"))
+        session.exec(text("CREATE INDEX IF NOT EXISTS ix_codexdiaryimportrun_replace_existing ON codexdiaryimportrun (replace_existing)"))
+    session.commit()
+    print("  Added Codex diary replace_existing column.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5075,6 +5091,7 @@ MIGRATIONS = [
     (74, "Add note node version", v74_add_notenode_version),
     (75, "Add Codex maintenance feedback table", v75_add_codex_maintenance_feedback_table),
     (76, "Add GitHub project creation time", v76_add_github_project_created_at),
+    (77, "Add Codex diary replace existing flag", v77_add_codex_diary_replace_existing),
 ]
 
 def get_current_version(session: Session) -> int:

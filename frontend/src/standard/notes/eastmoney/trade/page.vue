@@ -477,7 +477,12 @@ const renderedTradeReportHtml = computed(() => {
     breaks: true,
     gfm: true,
   })
-  return DOMPurify.sanitize(html)
+  const parsed = new DOMParser().parseFromString(html, 'text/html')
+  const firstHeading = parsed.body.querySelector('h1')
+  if (firstHeading?.textContent?.trim() === '股票操作报告') {
+    firstHeading.remove()
+  }
+  return DOMPurify.sanitize(parsed.body.innerHTML)
 })
 const tradeReportUpdatedText = computed(() => {
   const timestamp = tradeReport.value?.updated_at

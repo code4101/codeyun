@@ -5914,6 +5914,11 @@ class DataAnnotationRuntimeRunner(
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
+                retry_ids = [int(item) for item in self._runtime_scene_candidate_ids(ctx) if int(item) != int(scene_id)]
+                if retry_ids:
+                    retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
+                    if retry_scene_id is not None:
+                        return retry_scene_id, retry_score
                 return None, score
             return scene_id, score
         if preferred_scene_ids is not None:
@@ -5924,14 +5929,23 @@ class DataAnnotationRuntimeRunner(
                         trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
                     return 86, 100.0
             recognizer = self._scene_recognizer()
-            identify = getattr(recognizer, "identify_scene_number", recognizer.identify_scene_tree_number)
             if trace is None:
-                scene_id, score = identify(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
             else:
-                scene_id, score = identify(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
+            if scene_id is None:
+                if trace is None:
+                    scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
+                else:
+                    scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
+                retry_ids = [int(item) for item in self._runtime_scene_candidate_ids(ctx) if int(item) != int(scene_id)]
+                if retry_ids:
+                    retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
+                    if retry_scene_id is not None:
+                        return retry_scene_id, retry_score
                 return None, score
             return scene_id, score
 
@@ -5963,6 +5977,11 @@ class DataAnnotationRuntimeRunner(
         if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
             if trace is not None:
                 trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
+            retry_ids = [int(item) for item in candidate_scene_ids if int(item) != int(scene_id)]
+            if retry_ids:
+                retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
+                if retry_scene_id is not None:
+                    return retry_scene_id, retry_score
             return None, score
         return scene_id, score
 
@@ -5975,13 +5994,31 @@ class DataAnnotationRuntimeRunner(
     ) -> bool:
         if int(scene_id) != 34:
             return True
-        if float(score) >= 80.0:
-            return True
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
-        if self._daily_lingta_text_is_world_like(text):
+        if self._world_scene_ocr_confirmed_text(text):
             return True
-        self._log("detail", f"场景识别降级：#34 图像弱命中但 OCR 不像世界，OCR={text[:120]}")
+        self._log("detail", f"场景识别降级：#34 图像命中 {float(score or 0):.0f}% 但 OCR 不像世界，OCR={text[:120]}")
         return False
+
+    def _world_scene_ocr_confirmed_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        internal_markers = (
+            "灵脉",
+            "聚灵位",
+            "剩余空位",
+            "神脉",
+            "探索",
+            "论道",
+            "道场",
+            "闻道",
+            "剩余座位",
+            "请他让座",
+            "道心",
+        )
+        if any(marker in compact for marker in internal_markers):
+            return False
+        world_markers = ("大地图", "储物袋", "仙市", "仙府", "天机阁", "角色", "装备", "星海", "功法书")
+        return sum(1 for marker in world_markers if marker in compact) >= 2
 
     def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))

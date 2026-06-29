@@ -267,6 +267,15 @@ class PopupGuardMixin:
                 child_score=child_score,
                 allow_confirm_actions=allow_confirm_actions,
             )
+        if child_view.id == 300:
+            return self._handle_auto_close_popup_47_child_confirm(
+                runtime,
+                popup_view,
+                event,
+                child_view=child_view,
+                child_score=child_score,
+                allow_confirm_actions=allow_confirm_actions,
+            )
 
         child_label = f"#{child_view.id}" if child_view.id is not None else child_view.title or "unknown"
         child_event = {
@@ -399,6 +408,35 @@ class PopupGuardMixin:
             return self._close_popup_view_without_confirm(runtime, popup_view, event)
         runtime.click_shape(child_view, confirm_shape)
         self._record_popup_guard_click(287, f"守护处理：#47/#287 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
+        return True
+
+    def _handle_auto_close_popup_47_child_confirm(
+        self,
+        runtime: Any,
+        popup_view: View,
+        event: dict[str, Any],
+        *,
+        child_view: View,
+        child_score: float,
+        allow_confirm_actions: bool = True,
+    ) -> bool:
+        view_id = int(child_view.id or 0)
+        view_label = f"#{view_id}" if view_id else "#?"
+        child_event = {
+            **event,
+            "image": view_label,
+            "title": child_view.title,
+            "score": round(child_score, 1),
+            "parent_score": event.get("score"),
+        }
+        confirm_shape = child_view.get_shape("确认")
+        if not confirm_shape:
+            self._record_popup_guard_missing(view_id or None, f"守护命中：#47/{view_label} {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
+            return True
+        if not allow_confirm_actions:
+            return self._close_popup_view_without_confirm(runtime, popup_view, event)
+        runtime.click_shape(child_view, confirm_shape)
+        self._record_popup_guard_click(view_id or None, f"守护处理：#47/{view_label} 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
         return True
 
     def _record_popup_guard_missing(self, scene_id: int | None, message: str, event: dict[str, Any], action: str) -> None:

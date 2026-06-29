@@ -539,6 +539,15 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "日常任务",
             "daily_foundation.py",
             "daily_foundation",
+            "daily_vip",
+            "日常_vip",
+            "每日限购",
+            "#291",
+            "#292",
+            "#34",
+            "固定标注路径",
+            "真实 Runtime",
+            "真实Runtime",
             "灵兽",
             "妖王",
             "仙花",
@@ -695,6 +704,55 @@ CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "保存shape",
     "保护逻辑",
     "失败提示",
+    "cluster/files",
+    "cluster/treesize",
+    "cluster/view-chan-course",
+    "filesystem.py",
+    "filesystem 热路径",
+    "filesystem热路径",
+    "目录请求",
+    "同路径递归树",
+    "首屏拖慢",
+    "后台统计压力",
+    "随机学习体验",
+    "CodeYun 页面性能优化",
+    "页面性能优化",
+    "CodeYun 前端设计巡检",
+    "前端设计巡检",
+    "frontend/src/standard",
+    "frontend/src/components",
+    "frontend/src/utils",
+    ".vue",
+    "Vue3",
+    "首屏",
+    "首帧",
+    "热路径",
+    "前端加载",
+    "组件渲染",
+    "Promise.allSettled",
+    "cell-logs",
+    "StarNotes.vue",
+    "refreshNodeInternals",
+    "notes/galaxy",
+    "data-annotation-runtime/page.vue",
+    "UI 自主学习",
+    "UI自主学习",
+    "学习 checkpoint",
+    "candidates.json",
+    "ai-2 自动化提示词",
+    "自动化提示词中文化",
+    "巡检状态词本地化",
+    "抓包巡检自动化中文化",
+    "随机提示入口",
+    "随机阅读",
+    "产品心理学",
+    "Tip of the Day",
+    "快捷键提示",
+    "加载页提示",
+    "每日一句",
+    "半夏之神",
+    "开源量化源码",
+    "AlphaGPT",
 )
 CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
     "修复",
@@ -759,6 +817,15 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "仙花",
     "洞天",
     "福地",
+    "daily_vip",
+    "日常_vip",
+    "每日限购",
+    "#291",
+    "#292",
+    "#34",
+    "固定标注路径",
+    "真实 Runtime",
+    "真实Runtime",
     "尊主",
     "侍从",
     "灵脉",
@@ -848,6 +915,7 @@ class CodexDiaryImportRunRequest(BaseModel):
     date: str
     entry_ids: List[str] = Field(default_factory=list)
     confirm_duplicate: bool = False
+    replace_existing: bool = False
 
 
 class CodexDiaryImportRunRead(BaseModel):
@@ -858,6 +926,7 @@ class CodexDiaryImportRunRead(BaseModel):
     entry_ids: List[str] = Field(default_factory=list)
     entry_snapshot: List[dict[str, Any]] = Field(default_factory=list)
     confirm_duplicate: bool = False
+    replace_existing: bool = False
     status: str
     stage: str
     stage_label: str
@@ -1015,10 +1084,16 @@ def _find_existing_codex_diary_notes(
     return duplicate_ids
 
 
-def _codex_diary_public_note_ids(session: Session, user_id: int, note_ids: list[str]) -> list[str]:
+def _soft_delete_codex_diary_notes(
+    session: Session,
+    *,
+    user_id: int,
+    note_ids: list[str],
+) -> int:
     normalized_ids = [str(note_id).strip() for note_id in note_ids if str(note_id).strip()]
     if not normalized_ids:
-        return []
+        return 0
+
     numeric_ids = [int(note_id) for note_id in normalized_ids if note_id.isdecimal()]
     legacy_ids = [note_id for note_id in normalized_ids if not note_id.isdecimal()]
     notes = session.exec(
@@ -1031,6 +1106,51 @@ def _codex_diary_public_note_ids(session: Session, user_id: int, note_ids: list[
             _active_note_condition(),
         )
     ).all()
+    if not notes:
+        return 0
+
+    now = time.time()
+    all_note_refs: set[str] = set()
+    for note in notes:
+        all_note_refs.update(note_ref_aliases(note))
+        note.deleted_at = now
+        note.deleted_by_user_id = user_id
+        note.updated_at = now
+        note.version = max(int(note.version or 1), 1) + 1
+        session.add(note)
+
+    if all_note_refs:
+        session.exec(
+            delete(NoteEdge).where(
+                NoteEdge.user_id == user_id,
+                or_(NoteEdge.source_id.in_(all_note_refs), NoteEdge.target_id.in_(all_note_refs)),
+            )
+        )
+    return len(notes)
+
+
+def _codex_diary_public_note_ids(
+    session: Session,
+    user_id: int,
+    note_ids: list[str],
+    *,
+    include_deleted: bool = False,
+) -> list[str]:
+    normalized_ids = [str(note_id).strip() for note_id in note_ids if str(note_id).strip()]
+    if not normalized_ids:
+        return []
+    numeric_ids = [int(note_id) for note_id in normalized_ids if note_id.isdecimal()]
+    legacy_ids = [note_id for note_id in normalized_ids if not note_id.isdecimal()]
+    query = select(NoteNode).where(
+        NoteNode.user_id == user_id,
+        or_(
+            or_(NoteNode.id.in_(legacy_ids), NoteNode.legacy_id.in_(legacy_ids)) if legacy_ids else False,
+            NoteNode.numeric_id.in_(numeric_ids) if numeric_ids else False,
+        ),
+    )
+    if not include_deleted:
+        query = query.where(_active_note_condition())
+    notes = session.exec(query).all()
     note_by_ref: dict[str, NoteNode] = {}
     for note in notes:
         note_by_ref[str(note.id)] = note
@@ -1041,8 +1161,14 @@ def _codex_diary_public_note_ids(session: Session, user_id: int, note_ids: list[
     return [_note_public_id(note_by_ref[note_id]) for note_id in normalized_ids if note_id in note_by_ref]
 
 
-def _codex_diary_public_note_numeric_ids(session: Session, user_id: int, note_ids: list[str]) -> list[int]:
-    public_note_ids = _codex_diary_public_note_ids(session, user_id, note_ids)
+def _codex_diary_public_note_numeric_ids(
+    session: Session,
+    user_id: int,
+    note_ids: list[str],
+    *,
+    include_deleted: bool = False,
+) -> list[int]:
+    public_note_ids = _codex_diary_public_note_ids(session, user_id, note_ids, include_deleted=include_deleted)
     numeric_ids: list[int] = []
     for note_id in public_note_ids:
         normalized = str(note_id or "").strip()
@@ -1065,7 +1191,12 @@ def _serialize_codex_diary_import_run(
         if note and note.user_id == current_user.id:
             created_notes.append(_serialize_note_read(note, current_user))
     created_note_ids = _codex_diary_public_note_numeric_ids(session, current_user.id, list(run.created_note_ids or []))
-    duplicate_note_ids = _codex_diary_public_note_numeric_ids(session, current_user.id, list(run.duplicate_note_ids or []))
+    duplicate_note_ids = _codex_diary_public_note_numeric_ids(
+        session,
+        current_user.id,
+        list(run.duplicate_note_ids or []),
+        include_deleted=True,
+    )
     return {
         "id": run.id,
         "date": run.diary_date,
@@ -1074,6 +1205,7 @@ def _serialize_codex_diary_import_run(
         "entry_ids": list(run.entry_ids or []),
         "entry_snapshot": list(run.entry_snapshot or []),
         "confirm_duplicate": bool(run.confirm_duplicate),
+        "replace_existing": bool(getattr(run, "replace_existing", False)),
         "status": run.status,
         "stage": run.stage,
         "stage_label": run.stage_label,
@@ -1101,7 +1233,12 @@ def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None, s
     duplicate_note_ids = list(run.duplicate_note_ids or [])
     if session is not None:
         created_note_ids = _codex_diary_public_note_ids(session, int(run.user_id), created_note_ids)
-        duplicate_note_ids = _codex_diary_public_note_ids(session, int(run.user_id), duplicate_note_ids)
+        duplicate_note_ids = _codex_diary_public_note_ids(
+            session,
+            int(run.user_id),
+            duplicate_note_ids,
+            include_deleted=True,
+        )
     return {
         "id": run.id,
         "user_id": run.user_id,
@@ -1111,6 +1248,7 @@ def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None, s
         "scope_key": run.scope_key,
         "entry_ids": list(run.entry_ids or []),
         "confirm_duplicate": bool(run.confirm_duplicate),
+        "replace_existing": bool(getattr(run, "replace_existing", False)),
         "stage": run.stage,
         "stage_label": run.stage_label,
         "source_thread_count": int(run.source_thread_count or 0),
@@ -2010,6 +2148,8 @@ def _build_codex_diary_classification_system_prompt() -> str:
             "只能从该 record 的 candidate_categories 中选择 category_key，不得自造分类，不得返回多个分类。",
             "优先根据 user_request 和 assistant_result 的实际工作对象判断；thread_title、project_label 只作为上下文提示。",
             "分类说明比分类名称更重要；遇到多个相关分类时，选择最能代表这组问答主要价值归属的一个。",
+            "pyxllib 只在 record 直接维护、设计、修复或讲解 pyxllib Python 通用库本身时才可选；依赖、工具、统计口径、技能提示、自动化提示词或测试日志里出现 pyxllib 都是噪声。",
+            "CodeYun 自动化、前端/UI、提示词本地化、开源项目核验、页面性能、星图笔记和仓库治理默认按对应 CodeYun 分类判断，不要因工具库名改判为 pyxllib。",
             "如果确实信息不足，选择候选里的 general。",
             "只返回 JSON 对象，不要 Markdown，不要解释。",
         ]
@@ -2077,6 +2217,13 @@ def _classify_codex_diary_records_with_ai(
     session: Session,
     run: CodexDiaryImportRun | None = None,
 ) -> None:
+    if not records:
+        return
+    records = [
+        record
+        for record in records
+        if len([key for key in (record.get("codex_diary_category_candidates") or []) if str(key or "").strip()]) > 1
+    ]
     if not records:
         return
     from backend.core.settings import get_settings
@@ -3568,6 +3715,14 @@ def _run_codex_diary_import_worker(
                 "source": _build_codex_diary_source_result(run, source),
                 "blocks": _build_codex_diary_blocks_result(blocks),
             }
+            if bool(getattr(run, "replace_existing", False)) and run.duplicate_note_ids:
+                replaced_note_count = _soft_delete_codex_diary_notes(
+                    session,
+                    user_id=user.id,
+                    note_ids=list(run.duplicate_note_ids or []),
+                )
+                run.result_json = {**(run.result_json or {}), "replaced_note_count": replaced_note_count}
+                flag_modified(run, "result_json")
             session.add(run)
             session.commit()
 
@@ -6191,6 +6346,7 @@ def _create_codex_diary_import_run_record(
     diary_date_text: str,
     entry_ids: List[str] | None = None,
     confirm_duplicate: bool = False,
+    replace_existing: bool = False,
     skip_duplicate: bool = False,
     skip_active: bool = False,
 ) -> tuple[CodexDiaryImportRun, list[dict[str, Any]], dict[str, str], bool]:
@@ -6232,7 +6388,7 @@ def _create_codex_diary_import_run_record(
     )
 
     now = time.time()
-    if duplicate_note_ids and not confirm_duplicate:
+    if duplicate_note_ids and not confirm_duplicate and not replace_existing:
         if not skip_duplicate:
             raise _build_codex_diary_duplicate_http_error(
                 duplicate_note_ids,
@@ -6247,6 +6403,7 @@ def _create_codex_diary_import_run_record(
             entry_ids=[str(entry["entry_id"]) for entry in entry_specs],
             entry_snapshot=entry_specs,
             confirm_duplicate=False,
+            replace_existing=False,
             duplicate_note_ids=public_duplicate_note_ids,
             status="skipped",
             stage="duplicate",
@@ -6269,6 +6426,7 @@ def _create_codex_diary_import_run_record(
         entry_ids=[str(entry["entry_id"]) for entry in entry_specs],
         entry_snapshot=entry_specs,
         confirm_duplicate=bool(confirm_duplicate),
+        replace_existing=bool(replace_existing),
         duplicate_note_ids=public_duplicate_note_ids,
         status="running",
         stage="queued",
@@ -6295,6 +6453,7 @@ def create_codex_diary_import_run(
         diary_date_text=req.date,
         entry_ids=req.entry_ids,
         confirm_duplicate=bool(req.confirm_duplicate),
+        replace_existing=bool(req.replace_existing),
     )
 
     if should_run:

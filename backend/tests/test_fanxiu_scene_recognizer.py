@@ -509,6 +509,33 @@ def test_scene_recognizer_uses_preferred_subtree_without_context_filter():
     assert calls == ["法则之主选择页", "法则之主拜谒详情"]
 
 
+def test_scene_recognizer_selects_best_child_score_when_siblings_match():
+    parent = {
+        "type": "image",
+        "filename": "0299.png",
+        "title": "论道",
+        "layer": 1,
+        "children": [
+            {"type": "image", "filename": "0297.png", "title": "三清道场让座"},
+            {"type": "image", "filename": "0298.png", "title": "三清道场空位"},
+        ],
+    }
+    ctx = {"asset_tree": [parent], "images": {299: parent, 297: parent["children"][0], 298: parent["children"][1]}}
+    calls: list[str] = []
+
+    def score_image(_ctx, image, _frame):
+        calls.append(image["title"])
+        return {"论道": 95.0, "三清道场让座": 80.0, "三清道场空位": 100.0}[image["title"]]
+
+    recognizer = SceneRecognizer(
+        score_image=score_image,
+        threshold_for_scene_id=lambda _scene_id: 80.0,
+    )
+
+    assert recognizer.identify_scene_tree_number(ctx, "frame", preferred_scene_ids=[299]) == (298, 95.0)
+    assert calls == ["论道", "三清道场让座", "三清道场空位"]
+
+
 def test_scene_recognizer_falls_back_to_default_layers_after_preferred_layer0_misses():
     parent = {
         "type": "image",
