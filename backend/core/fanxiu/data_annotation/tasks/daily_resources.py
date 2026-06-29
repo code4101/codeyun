@@ -1033,7 +1033,7 @@ class DailyResourceTaskMixin:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_仙市资产树路径，无法执行作业")
+            raise RuntimeError("缺少仙市_秘藏阁资产树路径，无法执行作业")
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image34 = images.get(34)
         image247 = images.get(247)
@@ -1041,7 +1041,7 @@ class DailyResourceTaskMixin:
         image249 = images.get(249)
         image250 = images.get(250)
 
-        task_label = "日常_仙市"
+        task_label = "仙市_秘藏阁"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, frame = runtime.current_scene([34], update=True)
         text = runtime.ocr_text(frame)
@@ -1085,6 +1085,33 @@ class DailyResourceTaskMixin:
         )
         if not completed:
             return "skipped"
+        return "success"
+
+    def _execute_xianshi_weekly_resources_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少仙市_每周资源资产树路径，无法执行作业")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image34 = images.get(34)
+        image247 = images.get(247)
+        if not isinstance(image34, dict) or not isinstance(image247, dict):
+            raise RuntimeError("仙市_每周资源：缺少 #34 或 #247 标注，无法进入仙市")
+
+        task_label = "仙市_每周资源"
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, _frame = runtime.current_scene([247, 34], update=True)
+        if scene_id != 247:
+            if scene_id != 34:
+                yield from runtime.goto_view(34)
+                yield from runtime.wait_view(34)
+            yield from runtime.wait_click_then_shape(34, "仙市", 247, "秘藏阁", settle_seconds=2.0)
+        self._log("success", f"{task_label}：已进入仙市入口页，后续流程待补")
         return "success"
 
     def _execute_daily_vip_task(

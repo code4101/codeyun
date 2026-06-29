@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 import io
@@ -11562,6 +11563,599 @@ def _find_course_template_workbook_by_owner_key(
     return (workbook, attendance) if workbook is not None else None
 
 
+def _copy_resource_access_grants(
+    session: Session,
+    *,
+    source_resource_type: str,
+    source_resource_id: str,
+    target_resource_type: str,
+    target_resource_id: str,
+    now: float,
+) -> None:
+    source_grants = session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == source_resource_type)
+        .where(ResourceAccessGrant.resource_id == source_resource_id)
+    ).all()
+    if not source_grants:
+        return
+
+    existing = {
+        grant.subject_key: grant
+        for grant in session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == target_resource_type)
+            .where(ResourceAccessGrant.resource_id == target_resource_id)
+        ).all()
+    }
+    for source_grant in source_grants:
+        target_grant = existing.get(source_grant.subject_key)
+        if target_grant is None:
+            target_grant = ResourceAccessGrant(
+                resource_type=target_resource_type,
+                resource_id=target_resource_id,
+                subject_key=source_grant.subject_key,
+                subject_type=source_grant.subject_type,
+                subject_user_id=source_grant.subject_user_id,
+                role=source_grant.role,
+                created_at=now,
+                updated_at=now,
+                updated_by_user_id=source_grant.updated_by_user_id,
+            )
+        else:
+            target_grant.subject_type = source_grant.subject_type
+            target_grant.subject_user_id = source_grant.subject_user_id
+            target_grant.role = source_grant.role
+            target_grant.updated_at = now
+            target_grant.updated_by_user_id = source_grant.updated_by_user_id
+        session.add(target_grant)
+
+
+def _should_clear_course_template_sheet_data(source_sheet: SheetDocument) -> bool:
+    sheet_key = _normalize_sheet_text(source_sheet.sheet_key)
+    title = _normalize_sheet_text(source_sheet.title)
+    if sheet_key in {"video_config", "clockin_config"} or title in {"视频配置", "打卡配置"}:
+        return False
+    return True
+
+
+def _clone_course_template_sheet_document_json(source_sheet: SheetDocument) -> dict[str, Any]:
+    if _should_clear_course_template_sheet_data(source_sheet):
+        return _clone_sheet_document_json(
+            dict(source_sheet.document_json or {}),
+            mode="template",
+        )
+    return _clone_sheet_document_json(
+        dict(source_sheet.document_json or {}),
+        mode="duplicate",
+    )
+
+
+def _parse_attendance_course_owner_key_date(owner_key: Any) -> date | None:
+    match = re.match(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})(?:-|$)", _normalize_sheet_text(owner_key))
+    if match is None:
+        return None
+    with contextlib.suppress(ValueError):
+        return date(
+            int(match.group("year")),
+            int(match.group("month")),
+            int(match.group("day")),
+        )
+    return None
+
+
+def _shift_chinese_month_day_text(value: str, *, source_start: date, day_delta: int) -> str:
+    if not value or day_delta == 0:
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        year = source_start.year
+        if source_start.month == 12 and month == 1:
+            year += 1
+        elif source_start.month == 1 and month == 12:
+            year -= 1
+        with contextlib.suppress(ValueError):
+            shifted = date(year, month, day) + timedelta(days=day_delta)
+            return f"{shifted.month}月{shifted.day}日"
+        return match.group(0)
+
+    return re.sub(r"(?P<month>\d{1,2})月(?P<day>\d{1,2})日", replace, value)
+
+
+def _shift_chinese_month_day_cell(value: Any, *, source_start: date, day_delta: int) -> Any:
+    if isinstance(value, dict):
+        next_value = dict(value)
+        if "value" in next_value and isinstance(next_value["value"], str):
+            next_value["value"] = _shift_chinese_month_day_text(
+                next_value["value"],
+                source_start=source_start,
+                day_delta=day_delta,
+            )
+        return next_value
+    if isinstance(value, str):
+        return _shift_chinese_month_day_text(value, source_start=source_start, day_delta=day_delta)
+    return value
+
+
+def _set_cell_display_value_preserving_link(cell: Any, value: Any) -> Any:
+    if isinstance(cell, dict):
+        next_cell = dict(cell)
+        next_cell["value"] = value
+        return next_cell
+    return value
+
+
+def _sync_header_grid_rows_from_entity_cells(document_json: dict[str, Any]) -> dict[str, Any]:
+    grid_rows = _extract_document_grid_rows(document_json)
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    entity_cells = _extract_document_entity_cells(document_json)
+    if not grid_rows or not entity_rows or not entity_columns or not entity_cells:
+        return document_json
+
+    column_count = len(_normalize_document_columns(document_json))
+    data_start_row = min(_normalize_document_data_start_row(document_json), len(grid_rows), len(entity_rows))
+    next_grid_rows: list[Any] = []
+    changed = False
+    for row_index, row in enumerate(grid_rows):
+        if row_index >= data_start_row:
+            next_grid_rows.append(row)
+            continue
+        row_id = _get_document_entity_row_id(entity_rows[row_index])
+        row_cells = entity_cells.get(row_id) if row_id else None
+        if not isinstance(row_cells, dict):
+            next_grid_rows.append(row)
+            continue
+        next_row = _normalize_sheet_row(row, column_count)
+        for column_index, column in enumerate(entity_columns[:column_count]):
+            if not isinstance(column, dict):
+                continue
+            column_id = _normalize_sheet_text(column.get("id"))
+            entry = row_cells.get(column_id) if column_id else None
+            if not isinstance(entry, dict) or "value" not in entry:
+                continue
+            next_cell = _set_cell_display_value_preserving_link(next_row[column_index], entry.get("value"))
+            if next_cell != next_row[column_index]:
+                next_row[column_index] = next_cell
+                changed = True
+        next_grid_rows.append(next_row)
+
+    if not changed:
+        return document_json
+    next_document = dict(document_json)
+    next_document["grid_rows"] = next_grid_rows
+    return next_document
+
+
+def _adapt_course_template_header_dates(
+    document_json: dict[str, Any],
+    *,
+    source_owner_key: Any,
+    target_owner_key: str,
+) -> dict[str, Any]:
+    source_start = _parse_attendance_course_owner_key_date(source_owner_key)
+    target_start = _parse_attendance_course_owner_key_date(target_owner_key)
+    if source_start is None or target_start is None or source_start == target_start:
+        return document_json
+
+    day_delta = (target_start - source_start).days
+    next_document = dict(document_json)
+    data_start_row = _normalize_document_data_start_row(next_document)
+    grid_rows = _extract_document_grid_rows(next_document)
+    if grid_rows:
+        next_grid_rows: list[Any] = []
+        for row_index, row in enumerate(grid_rows):
+            if row_index >= data_start_row:
+                next_grid_rows.append(row)
+                continue
+            if not isinstance(row, list):
+                next_grid_rows.append(row)
+                continue
+            next_grid_rows.append([
+                _shift_chinese_month_day_cell(cell, source_start=source_start, day_delta=day_delta)
+                for cell in row
+            ])
+        next_document["grid_rows"] = next_grid_rows
+
+    header_groups = next_document.get("header_groups")
+    if isinstance(header_groups, list):
+        next_header_groups: list[Any] = []
+        for row in header_groups:
+            if not isinstance(row, list):
+                next_header_groups.append(row)
+                continue
+            next_row: list[Any] = []
+            for cell in row:
+                if not isinstance(cell, dict):
+                    next_row.append(cell)
+                    continue
+                next_cell = dict(cell)
+                if isinstance(next_cell.get("label"), str):
+                    next_cell["label"] = _shift_chinese_month_day_text(
+                        next_cell["label"],
+                        source_start=source_start,
+                        day_delta=day_delta,
+                    )
+                next_row.append(next_cell)
+            next_header_groups.append(next_row)
+        next_document["header_groups"] = next_header_groups
+
+    entity_rows = _extract_document_entity_rows(next_document)
+    entity_columns = _extract_document_entity_columns(next_document)
+    entity_cells = _extract_document_entity_cells(next_document)
+    if entity_rows and entity_columns and entity_cells:
+        header_row_ids = {
+            row_id
+            for row_id in (_get_document_entity_row_id(row) for row in entity_rows[:data_start_row])
+            if row_id
+        }
+        next_entity_cells = dict(entity_cells)
+        changed = False
+        for row_id in header_row_ids:
+            row_cells = entity_cells.get(row_id)
+            if not isinstance(row_cells, dict):
+                continue
+            next_row_cells = dict(row_cells)
+            for column in entity_columns:
+                if not isinstance(column, dict):
+                    continue
+                column_id = _normalize_sheet_text(column.get("id"))
+                entry = next_row_cells.get(column_id)
+                if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
+                    continue
+                next_value = _shift_chinese_month_day_text(
+                    entry["value"],
+                    source_start=source_start,
+                    day_delta=day_delta,
+                )
+                if next_value == entry["value"]:
+                    continue
+                next_entry = dict(entry)
+                next_entry["value"] = next_value
+                next_row_cells[column_id] = next_entry
+                changed = True
+            next_entity_cells[row_id] = next_row_cells
+        if changed:
+            next_document["entity_cells"] = next_entity_cells
+    next_document = _sync_header_grid_rows_from_entity_cells(next_document)
+    return next_document
+
+
+def _attendance_lesson_number_from_text(value: Any) -> int | None:
+    match = re.search(r"第\s*0*(?P<number>\d+)\s*课", _normalize_sheet_text(_extract_cell_value(value)))
+    if match is None:
+        return None
+    with contextlib.suppress(ValueError):
+        return int(match.group("number"))
+    return None
+
+
+def _is_plain_attendance_lesson_header(value: Any) -> bool:
+    return re.fullmatch(r"第\s*0*\d+\s*课", _normalize_sheet_text(_extract_cell_value(value))) is not None
+
+
+def _remove_duplicate_plain_lesson_columns(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(next_document)
+    if not columns:
+        return next_document
+
+    decorated_lesson_numbers: set[int] = set()
+    for column in columns:
+        if _is_plain_attendance_lesson_header(column):
+            continue
+        lesson_number = _attendance_lesson_number_from_text(column)
+        if lesson_number is not None:
+            decorated_lesson_numbers.add(lesson_number)
+
+    if not decorated_lesson_numbers:
+        return next_document
+
+    for index in range(len(columns) - 1, -1, -1):
+        if not _is_plain_attendance_lesson_header(columns[index]):
+            continue
+        lesson_number = _attendance_lesson_number_from_text(columns[index])
+        if lesson_number not in decorated_lesson_numbers:
+            continue
+        next_document = _delete_document_column(next_document, delete_index=index)
+        columns = _normalize_document_columns(next_document)
+    return next_document
+
+
+def _strip_course_template_column_header_colors(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    column_configs = next_document.get("column_configs")
+    if not isinstance(column_configs, dict):
+        return next_document
+
+    next_configs: dict[str, Any] = {}
+    changed = False
+    for column, config in column_configs.items():
+        if not isinstance(config, dict):
+            next_configs[column] = config
+            continue
+        next_config = dict(config)
+        for key in ("header_background_color", "header_text_color"):
+            if key in next_config:
+                next_config.pop(key, None)
+                changed = True
+        if next_config:
+            next_configs[column] = next_config
+        else:
+            changed = True
+    if not changed:
+        return next_document
+    next_document["column_configs"] = next_configs
+    return next_document
+
+
+def _maybe_materialize_zen_course_data_sheets(
+    session: Session,
+    *,
+    workbook: WorkbookDocument,
+    attendance_sheet: SheetDocument,
+    course_name: str,
+) -> None:
+    normalized_course_name = _normalize_sheet_text(course_name)
+    if "念住" not in normalized_course_name and "觉观" not in normalized_course_name:
+        return
+
+    from backend.core.attendance.nianzhu_course_sheets import (
+        CLOCKIN_CONFIG_SHEET_KEY,
+        VIDEO_CONFIG_SHEET_KEY,
+        _course_sheet_documents_from_attendance,
+        materialize_nianzhu_course_sheets,
+    )
+
+    documents = _course_sheet_documents_from_attendance(
+        deepcopy(dict(attendance_sheet.document_json or {})),
+        course_name=normalized_course_name,
+    )
+    video_meta = dict(documents[VIDEO_CONFIG_SHEET_KEY].get("source_meta") or {})
+    clockin_meta = dict(documents[CLOCKIN_CONFIG_SHEET_KEY].get("source_meta") or {})
+    if int(video_meta.get("legacy_lesson_rows") or 0) <= 0:
+        return
+    if int(clockin_meta.get("legacy_clockin_rows") or 0) <= 0:
+        return
+
+    summary = materialize_nianzhu_course_sheets(
+        session,
+        workbook_id=_require_workbook_numeric_id(workbook),
+        attendance_sheet_id=_require_sheet_numeric_id(attendance_sheet),
+        course_name=normalized_course_name,
+        replace=True,
+    )
+    if int(summary.get("legacy_lesson_rows") or 0) > 0:
+        _prune_no_attendance_video_config_rows_for_course_template(
+            session,
+            attendance_sheet=attendance_sheet,
+            owner_key=_normalize_sheet_text(attendance_sheet.owner_key),
+        )
+        attendance_sheet.document_json = _remove_duplicate_plain_lesson_columns(
+            dict(attendance_sheet.document_json or {})
+        )
+        attendance_sheet.document_json = _strip_course_template_column_header_colors(
+            dict(attendance_sheet.document_json or {})
+        )
+        attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
+        attendance_sheet.updated_at = time.time()
+        session.add(attendance_sheet)
+
+
+def _no_attendance_video_column_names(attendance_sheet: SheetDocument) -> set[str]:
+    document = _normalize_document_json(dict(attendance_sheet.document_json or {}))
+    grid_rows = _extract_document_grid_rows(document)
+    if not grid_rows:
+        return set()
+    field_row_index = int(document.get("field_row_index") or 0)
+    note_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
+    if field_row_index < 0 or field_row_index >= len(grid_rows) or note_row_index >= len(grid_rows):
+        return set()
+
+    field_row = grid_rows[field_row_index]
+    note_row = grid_rows[note_row_index]
+    result: set[str] = set()
+    for column_index, header_cell in enumerate(field_row):
+        note_text = _normalize_sheet_text(note_row[column_index] if column_index < len(note_row) else "")
+        if "不做考勤" not in note_text:
+            continue
+        header_text = _normalize_sheet_text(_extract_cell_value(header_cell))
+        if header_text:
+            result.add(header_text)
+    return result
+
+
+def _cell_background_color(cell_meta: dict[str, Any], row_index: int, column_index: int) -> str:
+    meta = cell_meta.get(f"{row_index}:{column_index}")
+    if not isinstance(meta, dict):
+        return ""
+    style = meta.get("style")
+    if not isinstance(style, dict):
+        return ""
+    return _normalize_sheet_text(style.get("background_color"))
+
+
+def _copy_cell_meta_style(
+    cell_meta: dict[str, Any],
+    *,
+    source_row_index: int,
+    source_column_index: int,
+    target_row_index: int,
+    target_column_index: int,
+) -> bool:
+    source_meta = cell_meta.get(f"{source_row_index}:{source_column_index}")
+    if not isinstance(source_meta, dict):
+        return False
+    source_style = source_meta.get("style")
+    if not isinstance(source_style, dict):
+        return False
+
+    target_key = f"{target_row_index}:{target_column_index}"
+    target_meta = deepcopy(cell_meta.get(target_key)) if isinstance(cell_meta.get(target_key), dict) else {}
+    target_style = target_meta.get("style") if isinstance(target_meta.get("style"), dict) else {}
+    if target_style == source_style:
+        return False
+
+    target_meta["style"] = deepcopy(source_style)
+    cell_meta[target_key] = target_meta
+    return True
+
+
+def _copy_entity_cell_style(
+    document: dict[str, Any],
+    *,
+    source_row_index: int,
+    source_column_index: int,
+    target_row_index: int,
+    target_column_index: int,
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document)
+    entity_columns = _extract_document_entity_columns(document)
+    entity_cells = _extract_document_entity_cells(document)
+    if (
+        source_row_index < 0
+        or target_row_index < 0
+        or source_column_index < 0
+        or target_column_index < 0
+        or source_row_index >= len(entity_rows)
+        or target_row_index >= len(entity_rows)
+        or source_column_index >= len(entity_columns)
+        or target_column_index >= len(entity_columns)
+        or not entity_cells
+    ):
+        return False
+
+    source_row_id = _get_document_entity_row_id(entity_rows[source_row_index])
+    target_row_id = _get_document_entity_row_id(entity_rows[target_row_index])
+    source_column = entity_columns[source_column_index]
+    target_column = entity_columns[target_column_index]
+    if not isinstance(source_column, dict) or not isinstance(target_column, dict):
+        return False
+    source_column_id = _normalize_sheet_text(source_column.get("id"))
+    target_column_id = _normalize_sheet_text(target_column.get("id"))
+    if not source_row_id or not target_row_id or not source_column_id or not target_column_id:
+        return False
+
+    source_entry = entity_cells.get(source_row_id, {}).get(source_column_id)
+    if not isinstance(source_entry, dict) or not isinstance(source_entry.get("style"), dict):
+        return False
+
+    next_entity_cells = dict(entity_cells)
+    target_row_cells = dict(next_entity_cells.get(target_row_id) or {})
+    target_entry = dict(target_row_cells.get(target_column_id) or {})
+    if target_entry.get("style") == source_entry["style"]:
+        return False
+    target_entry["style"] = deepcopy(source_entry["style"])
+    target_row_cells[target_column_id] = target_entry
+    next_entity_cells[target_row_id] = target_row_cells
+    document["entity_cells"] = next_entity_cells
+    return True
+
+
+def _normalize_no_attendance_color_boundary(session: Session, attendance_sheet: SheetDocument) -> None:
+    document = _normalize_document_json(dict(attendance_sheet.document_json or {}))
+    grid_rows = _extract_document_grid_rows(document)
+    if not grid_rows:
+        return
+
+    field_row_index = int(document.get("field_row_index") or 0)
+    note_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
+    if field_row_index < 0 or field_row_index >= len(grid_rows) or note_row_index >= len(grid_rows):
+        return
+
+    note_row = grid_rows[note_row_index]
+    no_attendance_indexes = [
+        index
+        for index, cell in enumerate(note_row)
+        if "不做考勤" in _normalize_sheet_text(cell)
+    ]
+    if not no_attendance_indexes:
+        return
+
+    first_no_attendance_index = min(no_attendance_indexes)
+    boundary_previous_index = first_no_attendance_index - 1
+    source_index = boundary_previous_index - 1
+    if boundary_previous_index < 0 or source_index < 0:
+        return
+
+    cell_meta = deepcopy(dict(document.get("cell_meta") or {}))
+    changed = False
+    for row_index in range(0, note_row_index + 1):
+        changed = _copy_cell_meta_style(
+            cell_meta,
+            source_row_index=row_index,
+            source_column_index=source_index,
+            target_row_index=row_index,
+            target_column_index=boundary_previous_index,
+        ) or changed
+        changed = _copy_entity_cell_style(
+            document,
+            source_row_index=row_index,
+            source_column_index=source_index,
+            target_row_index=row_index,
+            target_column_index=boundary_previous_index,
+        ) or changed
+
+    if not changed:
+        return
+    document["cell_meta"] = cell_meta
+    attendance_sheet.document_json = document
+    attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
+    attendance_sheet.updated_at = time.time()
+    session.add(attendance_sheet)
+
+
+def _prune_no_attendance_video_config_rows_for_course_template(
+    session: Session,
+    *,
+    attendance_sheet: SheetDocument,
+    owner_key: str,
+) -> None:
+    if not owner_key:
+        return
+    no_attendance_names = _no_attendance_video_column_names(attendance_sheet)
+    if not no_attendance_names:
+        return
+    video_config = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.scope == "notes")
+        .where(SheetDocument.owner_type == "course_workbook")
+        .where(SheetDocument.owner_key == owner_key)
+        .where(SheetDocument.sheet_key == "video_config")
+        .where(_active_sheet_condition())
+    ).first()
+    if video_config is None:
+        return
+    document = _normalize_document_json(dict(video_config.document_json or {}))
+    columns = _normalize_document_columns(document)
+    if "lesson_id2" not in columns:
+        return
+    lesson_url_index = columns.index("lesson_id2")
+    lesson_name_index = columns.index("lesson_name") if "lesson_name" in columns else None
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(document)]
+    next_rows = [
+        row for row in rows
+        if _normalize_sheet_text(row[lesson_url_index])
+        or lesson_name_index is None
+        or _normalize_sheet_text(row[lesson_name_index]) not in no_attendance_names
+    ]
+    if len(next_rows) == len(rows):
+        return
+    next_document = dict(document)
+    next_document["rows"] = next_rows
+    grid_rows = _extract_document_grid_rows(document)
+    if grid_rows:
+        data_start_row = _normalize_document_data_start_row(document)
+        header_rows = [_normalize_sheet_row(row, len(columns)) for row in grid_rows[:data_start_row]]
+        next_document["grid_rows"] = [*header_rows, *next_rows]
+    video_config.document_json = next_document
+    video_config.version = max(int(video_config.version or 1), 1) + 1
+    video_config.updated_at = time.time()
+    session.add(video_config)
+
+
 def _clone_attendance_course_template_workbook(
     session: Session,
     *,
@@ -11614,11 +12208,26 @@ def _clone_attendance_course_template_workbook(
     session.flush()
     _ensure_workbook_identity(session, workbook)
     _set_workbook_defined_names(session, workbook, _get_workbook_defined_names(session, source_workbook))
+    _copy_resource_access_grants(
+        session,
+        source_resource_type=RESOURCE_TYPE_WORKBOOK,
+        source_resource_id=_workbook_resource_id(source_workbook),
+        target_resource_type=RESOURCE_TYPE_WORKBOOK,
+        target_resource_id=_workbook_resource_id(workbook),
+        now=now,
+    )
 
     attendance_sheet: SheetDocument | None = None
     for link, source_sheet in source_sheets:
         if source_sheet is None:
             continue
+        cloned_document_json = _clone_course_template_sheet_document_json(source_sheet)
+        if _normalize_sheet_text(source_sheet.sheet_key) == "attendance":
+            cloned_document_json = _adapt_course_template_header_dates(
+                cloned_document_json,
+                source_owner_key=source_sheet.owner_key,
+                target_owner_key=owner_key,
+            )
         document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
             id=document_identity.primary_id,
@@ -11630,10 +12239,7 @@ def _clone_attendance_course_template_workbook(
             sheet_key=source_sheet.sheet_key,
             title=source_sheet.title,
             engine=source_sheet.engine,
-            document_json=_clone_sheet_document_json(
-                dict(source_sheet.document_json or {}),
-                mode="template",
-            ),
+            document_json=cloned_document_json,
             version=1,
             owner_user_id=effective_owner_user_id,
             created_by_user_id=effective_owner_user_id,
@@ -11644,6 +12250,14 @@ def _clone_attendance_course_template_workbook(
         session.add(document)
         session.flush()
         ensure_attendance_sheet_anonymous_viewer(session, document)
+        _copy_resource_access_grants(
+            session,
+            source_resource_type=RESOURCE_TYPE_SHEET,
+            source_resource_id=_sheet_resource_id(source_sheet),
+            target_resource_type=RESOURCE_TYPE_SHEET,
+            target_resource_id=_sheet_resource_id(document),
+            now=now,
+        )
         session.add(
             WorkbookSheetLink(
                 workbook_id=_workbook_link_ref(workbook),
@@ -11657,6 +12271,13 @@ def _clone_attendance_course_template_workbook(
 
     if attendance_sheet is None:
         return None
+    _normalize_no_attendance_color_boundary(session, attendance_sheet)
+    _maybe_materialize_zen_course_data_sheets(
+        session,
+        workbook=workbook,
+        attendance_sheet=attendance_sheet,
+        course_name=title,
+    )
     return workbook, attendance_sheet
 
 
@@ -15014,6 +15635,11 @@ def _clear_template_document_data_area(document_json: dict[str, Any]) -> dict[st
             if row_index < data_start_row:
                 next_cell_meta[str(key)] = value
         next_document["cell_meta"] = next_cell_meta
+
+    next_document = _filter_entity_model_for_document_row_prefix(
+        next_document,
+        max_document_row=data_start_row,
+    )
 
     return next_document
 

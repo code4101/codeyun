@@ -129,6 +129,7 @@ export async function fetchCodexOverviewForEntry(
     rootDir?: string;
     threadOffset?: number;
     threadLimit?: number;
+    timeoutMs?: number;
   },
 ) {
   const requestParams: Record<string, string | number> = {};
@@ -143,7 +144,7 @@ export async function fetchCodexOverviewForEntry(
   }
   const response = await api.get<CodexOverviewResponse>(getDeviceEntryPath(entryId, '/codex/overview'), {
     params: Object.keys(requestParams).length ? requestParams : undefined,
-    timeout: CODEX_SESSION_READ_TIMEOUT_MS,
+    timeout: params?.timeoutMs ?? CODEX_SESSION_READ_TIMEOUT_MS,
   });
   return response.data;
 }
@@ -184,6 +185,7 @@ export async function fetchCodexWorkloadForEntry(
     compact?: boolean;
     includeSegments?: boolean;
     historicalDaySummaryBefore?: number;
+    timeoutMs?: number;
   },
 ) {
   const rootDir = typeof options === 'string' ? options : options?.rootDir;
@@ -210,7 +212,7 @@ export async function fetchCodexWorkloadForEntry(
   }
   const response = await api.get<CodexWorkloadResponse>(getDeviceEntryPath(entryId, '/codex/workload'), {
     params: Object.keys(requestParams).length ? requestParams : undefined,
-    timeout: CODEX_WORKLOAD_READ_TIMEOUT_MS,
+    timeout: typeof options === 'string' ? CODEX_WORKLOAD_READ_TIMEOUT_MS : (options?.timeoutMs ?? CODEX_WORKLOAD_READ_TIMEOUT_MS),
   });
   return response.data;
 }

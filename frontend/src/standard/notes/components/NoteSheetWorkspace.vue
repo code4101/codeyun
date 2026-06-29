@@ -1363,6 +1363,7 @@ const columnWidths = ref<number[]>(DEFAULT_SHEET_COLUMNS.map((header) => getAdap
 const editingColumnIndex = ref<number | null>(null)
 const editingColumnTitle = ref('')
 const rows = ref<SheetRow[]>([createEmptyRow(DEFAULT_SHEET_COLUMNS.length)])
+const loadedDocumentDataRowCount = ref(0)
 const sheetTitle = ref('未命名表格')
 const sheetVersion = ref<number>(0)
 const sheetWorkbookItems = ref<WorkbookRefItem[]>([])
@@ -3204,6 +3205,9 @@ const invalidValueHighlightMap = computed(() => {
     }
 
     rows.value.forEach((row, rowIndex) => {
+      if (isSyntheticEmptyDisplayRow(rowIndex)) {
+        return
+      }
       const rawValue = row?.[columnIndex] ?? ''
       const cellValue = getCellSemanticValue(rowIndex, columnIndex, rawValue)
       if (isColumnValueValidByConfig(cellValue, columnConfig)) {
@@ -6147,6 +6151,25 @@ function createEmptyRow(columnCount = columnHeaders.value.length): SheetRow {
   return Array.from({ length: columnCount }, () => '')
 }
 
+function isBlankSheetRow(row: SheetRow | undefined, columnCount = columnHeaders.value.length) {
+  if (!row) {
+    return true
+  }
+  for (let index = 0; index < columnCount; index += 1) {
+    if (normalizeCellValue(row[index] ?? '').trim()) {
+      return false
+    }
+  }
+  return true
+}
+
+function isSyntheticEmptyDisplayRow(rowIndex: number) {
+  return loadedDocumentDataRowCount.value === 0
+    && rows.value.length === 1
+    && rowIndex === 0
+    && isBlankSheetRow(rows.value[0])
+}
+
 function closeColumnNotePopover() {
   columnNotePopover.value.visible = false
   columnNotePopover.value.columnIndex = null
@@ -6780,6 +6803,7 @@ function resetWorkspaceState() {
   sheetViewSettings.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
   columnWidths.value = DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header))
   rows.value = [createEmptyRow(DEFAULT_SHEET_COLUMNS.length)]
+  loadedDocumentDataRowCount.value = 0
   sheetTitle.value = '未命名表格'
   sheetVersion.value = 0
   sheetWorkbookItems.value = []
@@ -15451,7 +15475,12 @@ function handleHeaderMouseDown(event: MouseEvent, coords: { row: number; col: nu
   clearSheetHeaderSelection()
 }
 
-function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, headerLevel: number) {
+function applyHeaderCellStyle(
+  column: number,
+  th: HTMLTableHeaderCellElement,
+  headerLevel: number,
+  explicitCellStyle: SheetCellStyle | null = null,
+) {
   th.style.removeProperty('background-color')
   th.style.removeProperty('color')
   th.style.removeProperty('font-weight')
@@ -15462,6 +15491,17 @@ function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, he
 
   if (isRegistrationStandardUserIdHeaderColumn(column, headerLevel)) {
     th.style.setProperty('background-color', REGISTRATION_STANDARD_USER_ID_HEADER_BACKGROUND, 'important')
+    th.style.setProperty('font-weight', '600')
+    return
+  }
+
+  if (explicitCellStyle?.background_color || explicitCellStyle?.text_color) {
+    if (explicitCellStyle.background_color) {
+      th.style.setProperty('background-color', explicitCellStyle.background_color, 'important')
+    }
+    if (explicitCellStyle.text_color) {
+      th.style.setProperty('color', explicitCellStyle.text_color, 'important')
+    }
     th.style.setProperty('font-weight', '600')
     return
   }
@@ -15700,8 +15740,9 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
       TD.classList.add('sheet-grid-note-header-cell')
     }
     TD.classList.add('sheet-cell-has-action')
-    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
-    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+    const cellStyle = getCellStyleAt(documentRow, column)
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row, cellStyle)
+    applyCellMetaStyle(TD, cellStyle)
     renderCellActionButton(TD, getCellActionDisplayLabel(action, value), action, {
       documentRow,
       column,
@@ -15715,8 +15756,9 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
 
   if (row < normalizedHeaderGroups.value.length) {
     TD.classList.add('sheet-grid-group-header-cell')
-    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
-    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+    const cellStyle = getCellStyleAt(documentRow, column)
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row, cellStyle)
+    applyCellMetaStyle(TD, cellStyle)
     const link = getCellLinkAt(documentRow, column)
     if (link) {
       TD.classList.add('sheet-cell-has-link')
@@ -15737,8 +15779,9 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   if (row === columnHeaderLevel.value) {
     TD.classList.add('sheet-grid-field-header-cell')
     TD.classList.toggle('sheet-grid-field-header-cell-filtered', isColumnFilterActive(column))
-    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
-    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    const cellStyle = getCellStyleAt(documentRow, column)
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row, cellStyle)
+    applyCellMetaStyle(TD, cellStyle)
     renderFieldHeaderCell(TD, column)
     return
   }
@@ -16184,6 +16227,7 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   closeCellRichTextDialog()
   cancelRichTextContentEditor()
   const normalizedHeaders = normalizeHeaders(document.columns)
+  loadedDocumentDataRowCount.value = document.rows.length
   const initialRows = document.rows.length
     ? document.rows.map((row) => normalizeRow(row, normalizedHeaders))
     : [createEmptyRow(normalizedHeaders.length)]
@@ -24240,6 +24284,10 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
     textAlignStyle = cellStyle.text_align
   }
 
+  if (isSyntheticEmptyDisplayRow(dataRow)) {
+    backgroundColor = ''
+  }
+
   const style: SheetResolvedCellValueStyle = {}
   if (backgroundColor) {
     style.backgroundColor = backgroundColor
@@ -25486,6 +25534,9 @@ function resolveCoreCellMeta(row: number, col: number) {
 }
 
 function getCellAccentStyle(rowIndex: number, columnIndex: number) {
+  if (isSyntheticEmptyDisplayRow(rowIndex)) {
+    return null
+  }
   return cellAccentStyleMap.value.get(`${rowIndex}:${columnIndex}`) ?? null
 }
 
@@ -25506,6 +25557,9 @@ function isAttendanceCompletedRow(rowIndex: number) {
 }
 
 function getPluginRowBackgroundColor(rowIndex: number) {
+  if (isSyntheticEmptyDisplayRow(rowIndex)) {
+    return ''
+  }
   if (isAttendanceCompletedRow(rowIndex)) {
     return ATTENDANCE_COMPLETED_ROW_BACKGROUND
   }
@@ -25873,6 +25927,10 @@ function handleAfterRenderer(
     }
     if (cellStyle?.vertical_align) {
       verticalAlignStyle = cellStyle.vertical_align
+    }
+
+    if (isSyntheticEmptyDisplayRow(dataRow)) {
+      backgroundColor = ''
     }
   }
 

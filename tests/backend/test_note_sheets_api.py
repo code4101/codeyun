@@ -5291,8 +5291,9 @@ def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(cl
         _clear_user_override()
 
 
-def test_attendance_summary_next_month_templates_materialize_local_course_workbook(client, session):
+def test_attendance_summary_next_month_templates_materialize_local_course_workbook(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-attendance-template-workbook-user")
+    template_owner = _create_user(session, username="note-sheet-attendance-template-ru-ru")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
 
@@ -5300,6 +5301,49 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
     try:
+        from backend.core.attendance import nianzhu_course_sheets
+
+        monkeypatch.setattr(
+            nianzhu_course_sheets,
+            "_query_legacy_lesson_rows",
+            lambda course_name: (
+                [
+                    {
+                        "lesson_id": 9001,
+                        "start_date": "2026-07-01 05:20:00",
+                        "end_date": "2026-07-08 06:20:00",
+                        "next_update": "9999-12-31 23:59:59",
+                        "lesson_id2": "l_july_nianzhu_01",
+                        "shop_id": 1,
+                        "lesson_name": f"{course_name}-第01课",
+                        "video_duration": 3600,
+                    }
+                ],
+                None,
+            ),
+        )
+        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_data_rows", lambda lesson_ids: ([], None))
+        monkeypatch.setattr(
+            nianzhu_course_sheets,
+            "_query_legacy_clockin_rows",
+            lambda course_name: (
+                [
+                    {
+                        "clockin_id": 7001,
+                        "name": f"{course_name}-打卡数",
+                        "url": "https://example.com/july-clockin",
+                        "start_date": "2026-07-01",
+                        "end_date": "2026-07-27",
+                        "days": 27,
+                        "clockin_user_num": 0,
+                        "total_user_num": 0,
+                    }
+                ],
+                None,
+            ),
+        )
+        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_data_rows", lambda clockin_ids: ([], None))
+
         summary_workbook = WorkbookDocument(
             numeric_id=2,
             title="武陵禅寺网课考勤汇总",
@@ -5399,12 +5443,83 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
             updated_by_user_id=user.id,
             document_json={
                 "schema_version": 1,
-                "columns": ["学号", "姓名", "已返款"],
-                "rows": [["1", "甲", "0"]],
-                "grid_rows": [["学号", "姓名", "已返款"], ["1", "甲", "0"]],
-                "data_start_row": 1,
-                "field_row_index": 0,
-                "cell_meta": {"1:1": {"style": {"background_color": "#D9EAD3"}}},
+                "columns": ["学号", "姓名", "打卡数", "05:20~06:20 第01课", "20:00~22:00 觉观同学会", "第01课", "已返款"],
+                "rows": [["1", "甲", "", "", "", "", "0"]],
+                "header_groups": [[
+                    {"label": "", "colspan": 1},
+                    {"label": "", "colspan": 1},
+                    {"label": "", "colspan": 1},
+                    {"label": "6月1日~6月5日", "colspan": 1},
+                    {"label": "6月22日", "colspan": 1},
+                    {"label": "", "colspan": 1},
+                    {"label": "", "colspan": 1},
+                ]],
+                "grid_rows": [
+                    ["", "", "", "6月1日~6月5日", "6月22日", "", ""],
+                    ["学号", "姓名", "打卡数", "05:20~06:20 第01课", "20:00~22:00 觉观同学会", "第01课", "已返款"],
+                    ["", "", "只统计正课的打卡次数", "", "结营分享+答疑解惑，不做考勤", "", ""],
+                    ["1", "甲", "", "", "", "", "0"],
+                ],
+                "data_start_row": 3,
+                "field_row_index": 1,
+                "cell_meta": {
+                    "0:2": {"style": {"background_color": "#C5E0B4"}},
+                    "1:2": {"style": {"background_color": "#E2F0D9", "text_color": "#0000FF"}},
+                    "2:2": {"style": {"background_color": "#D8D8D8", "text_color": "#FF0000"}},
+                    "0:3": {"style": {"background_color": "#FFE699"}},
+                    "1:3": {"style": {"background_color": "#FFF2CC"}},
+                    "2:3": {"style": {"background_color": "#D8D8D8"}},
+                    "0:4": {"style": {"background_color": "#FFE699"}},
+                    "1:4": {"style": {"background_color": "#FFF2CC"}},
+                    "2:4": {"style": {"background_color": "#D8D8D8"}},
+                },
+                "entity_columns": [
+                    {"id": "col_student_no", "header": "学号"},
+                    {"id": "col_name", "header": "姓名"},
+                    {"id": "col_clockin", "header": "打卡数"},
+                    {"id": "col_lesson_01", "header": "05:20~06:20 第01课"},
+                    {"id": "col_meeting", "header": "20:00~22:00 觉观同学会"},
+                    {"id": "col_plain_01", "header": "第01课"},
+                    {"id": "col_refunded", "header": "已返款"},
+                ],
+                "entity_rows": [
+                    {"id": "header_group", "kind": "header_group"},
+                    {"id": "field", "kind": "field"},
+                    {"id": "field_note", "kind": "field_note"},
+                    {"id": "row_student_1", "kind": "data"},
+                ],
+                "entity_cells": {
+                    "header_group": {
+                        "col_clockin": {"style": {"background_color": "#C5E0B4"}},
+                        "col_lesson_01": {"value": "6月1日~6月5日", "style": {"background_color": "#FFE699"}},
+                        "col_meeting": {"value": "6月22日", "style": {"background_color": "#FFE699"}},
+                    },
+                    "field": {
+                        "col_clockin": {"style": {"background_color": "#E2F0D9", "text_color": "#0000FF"}},
+                        "col_lesson_01": {"value": "05:20~06:20 第01课", "style": {"background_color": "#FFF2CC"}},
+                        "col_meeting": {"value": "20:00~22:00 觉观同学会", "style": {"background_color": "#FFF2CC"}},
+                    },
+                    "field_note": {
+                        "col_clockin": {"style": {"background_color": "#D8D8D8", "text_color": "#FF0000"}},
+                        "col_lesson_01": {"style": {"background_color": "#D8D8D8"}},
+                        "col_meeting": {"value": "结营分享+答疑解惑，不做考勤", "style": {"background_color": "#D8D8D8"}},
+                    },
+                    "row_student_1": {
+                        "col_student_no": {"value": "1"},
+                        "col_name": {"value": "甲"},
+                        "col_refunded": {"value": "0"},
+                    },
+                },
+                "column_configs": {
+                    "05:20~06:20 第01课": {
+                        "header_background_color": "#E2F0D9",
+                        "note": "视频观看说明",
+                    },
+                    "打卡数": {
+                        "header_background_color": "#FFF2CC",
+                        "value_type": "number",
+                    },
+                },
             },
         )
         source_registration = SheetDocument(
@@ -5440,6 +5555,30 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
         session.add(WorkbookSheetLink(workbook_id=summary_workbook.id, sheet_id=summary_sheet.id, order_index=0))
         session.add(WorkbookSheetLink(workbook_id=source_workbook.id, sheet_id=source_attendance.id, order_index=5))
         session.add(WorkbookSheetLink(workbook_id=source_workbook.id, sheet_id=source_registration.id, order_index=10))
+        session.add(ResourceAccessGrant(
+            resource_type="workbook",
+            resource_id=str(source_workbook.numeric_id),
+            subject_key=f"user:{template_owner.id}",
+            subject_type="user",
+            subject_user_id=template_owner.id,
+            role="editor",
+        ))
+        session.add(ResourceAccessGrant(
+            resource_type="sheet",
+            resource_id=str(source_attendance.numeric_id),
+            subject_key=f"user:{template_owner.id}",
+            subject_type="user",
+            subject_user_id=template_owner.id,
+            role="editor",
+        ))
+        session.add(ResourceAccessGrant(
+            resource_type="sheet",
+            resource_id=str(source_registration.numeric_id),
+            subject_key=f"user:{template_owner.id}",
+            subject_type="user",
+            subject_user_id=template_owner.id,
+            role="viewer",
+        ))
         session.commit()
 
         response = client.post(
@@ -5470,9 +5609,71 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
         assert created_workbook.title == "第42届念住"
         assert created_attendance.owner_key == "20260701-nianzhu-42"
         assert created_attendance.sheet_key == "attendance"
-        assert created_attendance.document_json["columns"] == ["学号", "姓名", "已返款"]
+        assert created_attendance.document_json["columns"] == ["学号", "姓名", "打卡数", "05:20~06:20 第01课", "20:00~22:00 觉观同学会", "已返款"]
         assert created_attendance.document_json["rows"] == []
-        assert created_attendance.document_json.get("cell_meta") == {}
+        assert created_attendance.document_json["grid_rows"][0][3] == "7月1日~7月5日"
+        assert created_attendance.document_json["grid_rows"][0][4] == "7月22日"
+        assert created_attendance.document_json["grid_rows"][2][4] == "结营分享+答疑解惑，不做考勤"
+        assert created_attendance.document_json["header_groups"][0][3]["label"] == "7月1日~7月5日"
+        assert created_attendance.document_json["header_groups"][0][4]["label"] == "7月22日"
+        created_cell_meta = created_attendance.document_json.get("cell_meta") or {}
+        assert created_cell_meta["0:3"]["style"]["background_color"] == "#C5E0B4"
+        assert created_cell_meta["1:3"]["style"]["background_color"] == "#E2F0D9"
+        assert created_cell_meta["2:3"]["style"]["background_color"] == "#D8D8D8"
+        assert created_cell_meta["0:4"]["style"]["background_color"] == "#FFE699"
+        entity_rows = created_attendance.document_json["entity_rows"]
+        entity_columns = created_attendance.document_json["entity_columns"]
+        entity_cells = created_attendance.document_json["entity_cells"]
+        assert [row["kind"] for row in entity_rows] == ["header_group", "field", "field_note"]
+        lesson_entity_column = entity_columns[3]["id"]
+        meeting_entity_column = entity_columns[4]["id"]
+        assert entity_cells["header_group"][lesson_entity_column]["value"] == "7月1日~7月5日"
+        assert entity_cells["header_group"][lesson_entity_column]["style"]["background_color"] == "#C5E0B4"
+        assert entity_cells["field"][lesson_entity_column]["style"]["background_color"] == "#E2F0D9"
+        assert entity_cells["field_note"][lesson_entity_column]["style"]["background_color"] == "#D8D8D8"
+        assert entity_cells["header_group"][meeting_entity_column]["value"] == "7月22日"
+        assert entity_cells["header_group"][meeting_entity_column]["style"]["background_color"] == "#FFE699"
+        assert created_attendance.document_json["column_configs"]["05:20~06:20 第01课"] == {"note": "视频观看说明"}
+        assert created_attendance.document_json["column_configs"]["打卡数"] == {"value_type": "number"}
+        created_video_config = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.owner_key == "20260701-nianzhu-42")
+            .where(SheetDocument.sheet_key == "video_config")
+        ).one()
+        created_clockin_config = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.owner_key == "20260701-nianzhu-42")
+            .where(SheetDocument.sheet_key == "clockin_config")
+        ).one()
+        assert created_video_config.document_json["rows"][0][4] == "l_july_nianzhu_01"
+        assert all("同学会" not in str(row[6]) for row in created_video_config.document_json["rows"])
+        assert created_clockin_config.document_json["rows"][0][2] == "https://example.com/july-clockin"
+        created_registration = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.owner_key == "20260701-nianzhu-42")
+            .where(SheetDocument.sheet_key == "registration")
+        ).one()
+        copied_workbook_grant = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == "workbook")
+            .where(ResourceAccessGrant.resource_id == str(created_workbook.numeric_id))
+            .where(ResourceAccessGrant.subject_key == f"user:{template_owner.id}")
+        ).one()
+        copied_attendance_grant = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == "sheet")
+            .where(ResourceAccessGrant.resource_id == str(created_attendance.numeric_id))
+            .where(ResourceAccessGrant.subject_key == f"user:{template_owner.id}")
+        ).one()
+        copied_registration_grant = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == "sheet")
+            .where(ResourceAccessGrant.resource_id == str(created_registration.numeric_id))
+            .where(ResourceAccessGrant.subject_key == f"user:{template_owner.id}")
+        ).one()
+        assert copied_workbook_grant.role == "editor"
+        assert copied_attendance_grant.role == "editor"
+        assert copied_registration_grant.role == "viewer"
     finally:
         _clear_user_override()
 

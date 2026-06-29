@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import math
 import os
 import re
 import threading
@@ -14,7 +16,14 @@ from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+from backend.core.fanxiu.data_annotation.duel_strategy import (
+    best_order_for_enemy_candidates,
+    infer_enemy_candidate_order,
+    parse_slot_value_title,
+    plan_swaps,
+)
 from backend.core.fanxiu.data_annotation import runtime_runner as _runtime_runner
+from backend.core.fanxiu.data_annotation.storage import data_annotation_entry_image_dir
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.runtime_runner import (
     FULLWIDTH_DIGIT_TRANSLATION,
@@ -122,7 +131,10 @@ class DailyFoundationTaskMixin:
                         world_text,
                         label="日常_首领",
                     )
-                yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
+                list_status = yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
+                if list_status == "done":
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "success"
                 scene_id = 178
             detail_status = yield from self._open_watched_daily_boss_detail(ctx, stop_event, payload)
             if detail_status == "done":
@@ -140,10 +152,13 @@ class DailyFoundationTaskMixin:
         status = yield from runtime.open_daily_entry(
             label="日常_首领",
             title_pattern=r"击\s*败\s*首\s*领",
-            progress_can_mark_done=False,
+            progress_can_mark_done=True,
             max_scrolls=10,
             reverse_scrolls=10,
         )
+        if status == "done":
+            self._log("success", "日常_首领：日常列表显示「击败首领」已完成")
+            return "done"
         if status == "not_found":
             raise RuntimeError("日常_首领：#69 日常列表未找到「击败首领」")
         yield from self._wait_daily_boss_list(ctx, stop_event, timeout=20.0, label="日常_首领：等待首领列表 #178")
@@ -510,6 +525,9 @@ class DailyFoundationTaskMixin:
             self._log_locked("action", "日常_首领：点击 #180「离开」")
         leave_shape.click(runtime)
         opened = yield from self._open_daily_boss_list_after_leaving_fight(ctx, runtime, stop_event)
+        if opened == "done":
+            yield from self._return_daily_boss_to_world(ctx, stop_event)
+            return "success"
         if not opened:
             scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
             if scene_id == 181:
@@ -684,8 +702,8 @@ class DailyFoundationTaskMixin:
                     self._set_status_locked("running", "日常_首领：离开战斗后重新进入日常 #69", phase="daily_boss_reopen_daily_after_leave")
                     self._log_locked("action", "日常_首领：离开战斗后按场景图跳转到 #69")
                 yield from runtime.goto_view(69)
-            yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
-            return True
+            status = yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
+            return "done" if status == "done" else True
         except Exception as exc:
             scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
             if scene_id == 34 or self._daily_assistant_text_is_world_like(_text):
@@ -2517,6 +2535,194 @@ class DailyFoundationTaskMixin:
             return (yield from self._run_daily_xianyuan_from_list(ctx, stop_event, payload))
         raise RuntimeError(f"日常_挑战仙缘：入口点击后回到 #{scene_id or 'unknown'}，尚未完成挑战流程，不能按完成处理")
 
+    def _execute_daily_xianyuan_duel_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_仙缘资产树路径，无法执行作业")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id != 69:
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_仙缘")
+        if scene_id != 69:
+            raise RuntimeError("日常_仙缘：未能进入 #69 日常列表")
+        status = yield from runtime.open_daily_entry(
+            label="日常_仙缘",
+            title_pattern=r"斗\s*法",
+            progress_can_mark_done=False,
+            max_scrolls=int(payload.get("max_scrolls") or 30),
+            reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
+        )
+        if status == "not_found":
+            raise RuntimeError("日常_仙缘：#69 日常列表未找到「斗法」入口")
+        yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
+        max_runs = int(payload.get("max_runs") or 7)
+        for index in range(max_runs):
+            self._log("action", f"日常_仙缘：斗法挑战 {index + 1}/{max_runs}")
+            yield from runtime.wait_click(308, "挑战1")
+            yield from self._optimize_daily_xianyuan_duel_formation(runtime, payload)
+            yield from runtime.wait_click(309, "开始挑战")
+            yield from runtime.wait_click(310, "点击继续")
+        self._log("success", f"日常_仙缘：已完成斗法挑战 {max_runs} 次")
+        return "success"
+
+    def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
+        yield from runtime.wait_click_then_view(308, "购买", 311)
+        max_attempts = int(payload.get("purchase_max_attempts") or 6)
+        for _index in range(max_attempts):
+            for _retry in range(3):
+                numbers, text = runtime.ocr_numbers_in_shapes(311, ("价格",), padding=16)
+                if numbers:
+                    break
+                yield from runtime.wait_action_settle(0.8)
+            if not numbers:
+                continue
+            price = numbers[0]
+            if price >= 300:
+                yield from runtime.wait_click_then_view(311, "返回", 308)
+                return
+            self._log("action", f"日常_仙缘：购买斗法次数，价格 {price}")
+            yield from runtime.wait_click(311, "购买")
+            yield from runtime.wait_action_settle(1.0)
+        raise RuntimeError(f"日常_仙缘：购买页价格识别失败或未达到停止价格，最后识别文本：{text if 'text' in locals() else ''}")
+
+    def _optimize_daily_xianyuan_duel_formation(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
+        if bool(payload.get("skip_formation_optimize")):
+            return
+        start_ts = time.monotonic()
+        state = self._read_daily_xianyuan_duel_formation_state(runtime)
+        max_probe_swaps = int(payload.get("formation_probe_max_swaps") or 2)
+        settle_seconds = float(payload.get("formation_drag_settle_seconds") or 1.8)
+        probe_actions = 0
+
+        # 不要把克制结果改成“识别双方职业后自行计算”。
+        # 对方职业位于易遮挡区域，公告喇叭等浮层会挡住内容；且可能出现体/魔/剑/法之外的特殊职业。
+        # #309 上游戏已经渲染出的克制结果三态，才是本界面的权威输入。
+        # 探测拖拽本身也是有效换阵操作，拖完必须重新读当前阵容；如果已经最优，不要为了“还原探测”而回滚。
+        for _ in range(max_probe_swaps):
+            enemy_candidates = infer_enemy_candidate_order(state["my_order"], state["states"])
+            if all(len(candidates) == 1 for candidates in enemy_candidates):
+                break
+            best = best_order_for_enemy_candidates(
+                state["my_order"],
+                enemy_candidates,
+                current_order=state["my_order"],
+                decay=float(payload.get("formation_decay") or 0.5),
+            )
+            swaps = plan_swaps(state["my_order"], best["order"])
+            if not swaps:
+                break
+            start_slot, end_slot = swaps[0]
+            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=0.55, frame_data_url=state["frame"])
+            probe_actions += 1
+            yield from runtime.wait_action_settle(settle_seconds)
+            state = self._read_daily_xianyuan_duel_formation_state(runtime)
+
+        enemy_candidates = infer_enemy_candidate_order(state["my_order"], state["states"])
+        best = best_order_for_enemy_candidates(
+            state["my_order"],
+            enemy_candidates,
+            current_order=state["my_order"],
+            decay=float(payload.get("formation_decay") or 0.5),
+        )
+        final_swaps = plan_swaps(state["my_order"], best["order"])
+        max_final_swaps = int(payload.get("formation_final_max_swaps") or 4)
+        for start_slot, end_slot in final_swaps[:max_final_swaps]:
+            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=0.55, frame_data_url=state["frame"])
+            yield from runtime.wait_action_settle(settle_seconds)
+            state = self._read_daily_xianyuan_duel_formation_state(runtime)
+        elapsed = time.monotonic() - start_ts
+        self._log(
+            "action",
+            "日常_仙缘：阵容优化 "
+            f"{'/'.join(state['my_order'])}，克制={state['states']}，"
+            f"探测{probe_actions}次，调整{min(len(final_swaps), max_final_swaps)}次，耗时{elapsed:.1f}s",
+        )
+
+    def _read_daily_xianyuan_duel_formation_state(self, runtime: FanxiuRuntimeSession) -> dict[str, Any]:
+        from PIL import Image, ImageChops, ImageStat
+
+        scene_id, score, frame = runtime.current_scene([309], update=True)
+        if scene_id != 309:
+            raise RuntimeError(f"日常_仙缘：阵容优化要求当前为 #309，实际为 #{scene_id or 'unknown'} {score:.0f}%")
+        image309 = runtime.view(309).raw
+        entry = runtime.ctx.get("entry") if isinstance(runtime.ctx, dict) else None
+        entry_id = str(getattr(entry, "entry_id", "") or "")
+        filename = str(image309.get("filename") or "")
+        if not entry_id or not filename:
+            raise RuntimeError("日常_仙缘：缺少 #309 参考图，无法识别阵容")
+        ref_path = data_annotation_entry_image_dir(entry_id) / filename
+        ref_image = Image.open(ref_path).convert("RGB")
+        cur_image = Image.open(io.BytesIO(runtime.runner._decode_frame_data_url(frame))).convert("RGB")
+
+        def crop(pil_image: Any, shape: dict[str, Any], *, pad: int = 1):
+            width, height = pil_image.size
+            x = float(shape.get("x") or 0) * width
+            y = float(shape.get("y") or 0) * height
+            w = float(shape.get("w") or 0) * width
+            h = float(shape.get("h") or 0) * height
+            return pil_image.crop((
+                max(0, int(round(x - pad))),
+                max(0, int(round(y - pad))),
+                min(width, int(round(x + w + pad))),
+                min(height, int(round(y + h + pad))),
+            ))
+
+        def similarity(left: Any, right: Any) -> float:
+            right = right.resize(left.size)
+            stat = ImageStat.Stat(ImageChops.difference(left, right))
+            rmse = math.sqrt(sum(value * value for value in stat.rms) / len(stat.rms))
+            return max(0.0, 100.0 * (1.0 - rmse / 255.0))
+
+        career_shapes: list[tuple[int, str, dict[str, Any]]] = []
+        for shape in image309.get("shapes") or []:
+            if str(shape.get("title") or "") != "我方职业":
+                continue
+            for child in shape.get("children") or []:
+                parsed = parse_slot_value_title(str(child.get("title") or ""), "职业")
+                if parsed:
+                    career_shapes.append((parsed[0], parsed[1], child))
+        career_shapes.sort(key=lambda item: item[0])
+        state_shapes: list[tuple[int, int, dict[str, Any]]] = []
+        for shape in image309.get("shapes") or []:
+            parsed = parse_slot_value_title(str(shape.get("title") or ""), "克制")
+            if parsed:
+                state_shapes.append((parsed[0], int(parsed[1]), shape))
+        state_shapes.sort(key=lambda item: item[0])
+        if len(career_shapes) != 5 or len(state_shapes) != 5:
+            raise RuntimeError("日常_仙缘：#309 缺少职业或克制三态标注")
+
+        career_templates: dict[str, list[Any]] = {}
+        for _slot, career, shape in career_shapes:
+            career_templates.setdefault(career, []).append(crop(ref_image, shape))
+        state_templates: dict[int, list[Any]] = {}
+        for _slot, state, shape in state_shapes:
+            state_templates.setdefault(state, []).append(crop(ref_image, shape, pad=0))
+
+        my_order: list[str] = []
+        for _slot, _career, shape in career_shapes:
+            slot_crop = crop(cur_image, shape)
+            scores = {
+                career: max(similarity(slot_crop, template) for template in templates)
+                for career, templates in career_templates.items()
+            }
+            my_order.append(max(scores, key=scores.get))
+        states: list[int] = []
+        for _slot, _state, shape in state_shapes:
+            slot_crop = crop(cur_image, shape, pad=0)
+            scores = {
+                state: max(similarity(slot_crop, template) for template in templates)
+                for state, templates in state_templates.items()
+            }
+            states.append(int(max(scores, key=scores.get)))
+        return {"frame": frame, "my_order": my_order, "states": states}
+
     def _daily_assistant_text_is_list(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         if re.search(r"同游结果|同游消耗|总共获得宝物|查看下一个|点击空白处关闭|本次获得的道具|神物园自动收取|自动兑换", compact):
@@ -3245,16 +3451,73 @@ class DailyFoundationTaskMixin:
                 if scene_id == 285:
                     self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
                     return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+
+        _scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
+            ctx,
+            stop_event,
+            payload,
+            runtime,
+            scene_id,
+            frame,
+            text,
+            task_label=task_label,
+        )
+        return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
+
+    def _execute_daily_lingmai_clear_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_灵脉_清体力资产树路径，无法执行作业")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if not isinstance(images.get(285), dict):
+            raise RuntimeError("日常_灵脉_清体力：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
+
+        task_label = "日常_灵脉_清体力"
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 285:
+            self._log("success", f"{task_label}：已在 #285 造化灵脉，当前先停在入口，OCR={text[:160]}")
+            return "success"
+        yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
+            ctx,
+            stop_event,
+            payload,
+            runtime,
+            scene_id,
+            frame,
+            text,
+            task_label=task_label,
+        )
+        return "success"
+
+    def _enter_daily_lingmai_zaohua_from_world_or_daily(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime: FanxiuRuntimeSession,
+        scene_id: int | None,
+        frame: str | None,
+        text: str,
+        *,
+        task_label: str,
+    ) -> tuple[int | None, float, str | None]:
+        if scene_id != 69:
+            if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
+                scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 285:
+                    self._log("success", f"{task_label}：已到达 #285 造化灵脉，当前 #{scene_id} {score:.0f}%，OCR={text[:160]}")
+                    return scene_id, score, frame
             if scene_id != 69:
-                scene_id = yield from self._enter_daily_from_world_like(
-                    ctx,
-                    runtime,
-                    stop_event,
-                    frame,
-                    scene_id,
-                    text,
-                    label=task_label,
-                )
+                scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label=task_label)
 
         daily_status = yield from self._open_daily_entry_from_daily(
             ctx,
@@ -3265,17 +3528,37 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=False,
         )
         if daily_status == "not_found":
-            raise RuntimeError("日常_灵脉：#69 日常列表未找到「参与灵脉争夺1小时」入口")
-
-        yield from runtime.wait_view(
-            285,
-            timeout=float(payload.get("lingmai_entry_timeout") or 25.0),
-            label=f"{task_label}：点击 #69 入口后等待 #285 造化灵脉",
-        )
+            raise RuntimeError(f"{task_label}：#69 日常列表未找到「参与灵脉争夺1小时」入口")
+        yield from self._wait_daily_lingmai_zaohua_after_entry(runtime, payload, task_label=task_label)
         scene_after, score_after, frame_after = runtime.current_scene([285], update=True)
         text_after = runtime.ocr_text(frame_after)
         self._log("success", f"{task_label}：已到达 #285 造化灵脉，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
+        return scene_after, score_after, frame_after
+
+    def _wait_daily_lingmai_zaohua_after_entry(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        timeout = float(payload.get("lingmai_entry_timeout") or 25.0)
+        deadline = time.monotonic() + max(1.0, timeout)
+        while True:
+            scene_id = yield from runtime.wait_view(
+                285,
+                312,
+                timeout=max(1.0, min(8.0, deadline - time.monotonic())),
+                label=f"{task_label}：点击 #69 入口后等待 #285 造化灵脉",
+            )
+            if int(scene_id.id if isinstance(scene_id, View) else scene_id) == 285:
+                return scene_id
+            yield from runtime.wait_click_then_view(312, "确认", [285, 312], timeout=8.0)
+            scene_after, _score_after, _frame_after = runtime.current_scene([285, 312], update=True)
+            if scene_after == 285:
+                return runtime.view(285)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"{task_label}：处理 #312 确认弹窗后仍未到达 #285")
 
     def _record_daily_lingmai_retry(self, payload: dict[str, Any], *, message: str, seconds: int = 600) -> str:
         retry_after = (_runtime_runner._now() + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
