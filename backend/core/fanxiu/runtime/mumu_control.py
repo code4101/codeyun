@@ -2942,7 +2942,7 @@ def _normalize_tolerance_frames(tolerance_min: Any, tolerance_max: Any, width: i
 def _compare_frame_crops(
     reference_crop: Any,
     current_crop: Any,
-    pixel_tolerance: int = 5,
+    pixel_tolerance: int = 20,
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
@@ -2989,7 +2989,7 @@ def _encode_bgra_data_url(image: Any) -> str:
 def _build_frame_crop_match_debug(
     reference_crop: Any,
     current_crop: Any,
-    pixel_tolerance: int = 5,
+    pixel_tolerance: int = 20,
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
@@ -3359,7 +3359,7 @@ def _match_local_pixel_frame(
     reference_crop: Any,
     current_frame: Any,
     current_box: dict[str, Any],
-    pixel_tolerance: int = 5,
+    pixel_tolerance: int = 20,
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
@@ -3452,7 +3452,7 @@ def _match_scan_frame(
     current_frame: Any,
     current_search_box: dict[str, Any],
     current_box: dict[str, Any],
-    pixel_tolerance: int = 5,
+    pixel_tolerance: int = 20,
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
@@ -3609,7 +3609,7 @@ def match_fanxiu_screenshot_box_frame(
     fixed_width: int | None = None,
     fixed_height: int | None = None,
     quality: int = 82,
-    pixel_tolerance: int = 5,
+    pixel_tolerance: int = 20,
     alpha_mask_data_url: str | None = None,
     tolerance_min_data_url: str | None = None,
     tolerance_max_data_url: str | None = None,
@@ -3715,7 +3715,7 @@ def match_fanxiu_screenshot_box_frame(
             "source_height": source_height,
             "width": current_width,
             "height": current_height,
-            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 20))),
             "match_strategy": "ocr",
             "ocr_text": fixed_match.get("ocr_text") or "",
             "ocr_target": str(ocr_text or ""),
@@ -3756,7 +3756,7 @@ def match_fanxiu_screenshot_box_frame(
             "source_height": source_height,
             "width": current_width,
             "height": current_height,
-            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 20))),
             "match_strategy": "anchor_pixel",
         }
         if debug_match:
@@ -3842,7 +3842,7 @@ def match_fanxiu_screenshot_box_frame(
         "source_height": source_height,
         "width": current_width,
         "height": current_height,
-        "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+        "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 20))),
     }
     if debug_match:
         debug_box = fixed_match.get("box") or current_box

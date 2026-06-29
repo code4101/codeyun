@@ -75,6 +75,8 @@ from backend.core.notes.semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DEFAULT,
+    NOTE_FORM_DOCUMENT,
+    NOTE_FORM_MEMO,
     NOTE_KIND_DEFAULT,
     NOTE_LIFECYCLE_STAGE_DEFAULT,
     NOTE_SCENE_DEFAULT,
@@ -533,11 +535,16 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "祈愿",
             "炼丹",
             "淬体",
+            "日常基础",
+            "日常任务",
+            "daily_foundation.py",
+            "daily_foundation",
             "灵兽",
             "妖王",
             "仙花",
             "洞天",
             "福地",
+            "洞天福地",
             "尊主",
             "侍从",
             "灵脉",
@@ -669,6 +676,26 @@ CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS = (
     "CodeYun OCR",
     "PaddleOCR",
 )
+CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
+    "daily-thread",
+    "automation-daily-thread",
+    "codex-automation-management",
+    "系统级治理",
+    "全局行为治理",
+    "根因修复",
+    "runtime 点击策略",
+    "runtime点击策略",
+    "标注点击 helper",
+    "标注点击helper",
+    "中心点 fallback",
+    "中心点fallback",
+    "asset-tree",
+    "前端缓存",
+    "保存 shape",
+    "保存shape",
+    "保护逻辑",
+    "失败提示",
+)
 CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
     "修复",
     "实现",
@@ -753,6 +780,9 @@ CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
     "日常报备",
     "日常_报名",
     "日常报名",
+    "daily_foundation.py",
+    "daily_foundation",
+    "洞天福地",
     "邮件_清理",
     "邮件清理",
     "mail.py",
@@ -774,7 +804,11 @@ CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
     "抓包巡检",
     "链路解码",
     "目标场景",
+    "场景编号",
+    "世界 步骤",
     "场景再操作",
+    "返回闭环",
+    "稳定回归锚点",
 )
 CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
     "问卷",
@@ -1510,10 +1544,15 @@ def _build_codex_diary_category_scores(
         if category_design_hits < 1 or cluster_operation_hits >= 2:
             _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 300 + codeyun_cluster_hits * 36)
 
+    codeyun_general_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun综合", "codeyun/general"))
+    codeyun_general_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS)
+    if codeyun_general_key and codeyun_general_hits:
+        _add_codex_diary_category_score(combined_scores, codeyun_general_key, 360 + min(codeyun_general_hits, 8) * 36)
+
     engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
     has_explicit_domain_hit = any(
         bool(key) and int(combined_scores.get(key, 0)) >= 180
-        for key in (attendance_key, fanxiu_key, input_method_key if input_method_hits else None, codeyun_note_key, codeyun_cluster_key)
+        for key in (attendance_key, fanxiu_key, input_method_key if input_method_hits else None, codeyun_note_key, codeyun_cluster_key, codeyun_general_key)
     )
     if engineering_hits and not has_explicit_domain_hit:
         engineering_key = (
@@ -3977,17 +4016,30 @@ def _build_legacy_fields_from_taxonomy(
     note_scene: Any,
     lifecycle_stage: Any,
 ) -> dict[str, Any]:
-    normalized_primary_category = str(primary_category or NOTE_CATEGORY_DEFAULT).strip() or NOTE_CATEGORY_DEFAULT
+    has_empty_category = isinstance(note_categories, list) and len(note_categories) == 0
+    normalized_primary_category = str(primary_category or "").strip()
+    allow_empty_category = has_empty_category and not normalized_primary_category
+    if not normalized_primary_category and not allow_empty_category:
+        normalized_primary_category = NOTE_CATEGORY_DEFAULT
     normalized_note_form = normalize_note_form(note_form, default=NOTE_FORM_DEFAULT)
     normalized_note_scene = normalize_note_scene(note_scene, default=NOTE_SCENE_DEFAULT)
     normalized_lifecycle_stage = normalize_lifecycle_stage(lifecycle_stage, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
     legacy = derive_legacy_semantics_from_taxonomy(
         note_categories,
-        primary_category=normalized_primary_category,
+        primary_category=None if allow_empty_category else normalized_primary_category,
         note_form=normalized_note_form,
         note_scene=normalized_note_scene,
         lifecycle_stage=normalized_lifecycle_stage,
     )
+    if allow_empty_category:
+        general_legacy_type = "doc" if normalized_note_form == NOTE_FORM_DOCUMENT else "memo" if normalized_note_form == NOTE_FORM_MEMO else NOTE_TYPE_DEFAULT
+        legacy = {
+            **legacy,
+            "note_categories": [],
+            "primary_category": None,
+            "note_types": [],
+            "node_type": general_legacy_type,
+        }
     return {
         "note_categories": legacy["note_categories"],
         "primary_category": legacy["primary_category"],
@@ -6505,7 +6557,7 @@ def create_note(
     if uses_new_taxonomy_input:
         taxonomy_fields = _build_legacy_fields_from_taxonomy(
             note.note_categories,
-            note.primary_category or NOTE_CATEGORY_DEFAULT,
+            note.primary_category,
             note.note_form or NOTE_FORM_DEFAULT,
             note.note_scene or note.note_kind or NOTE_SCENE_DEFAULT,
             note.lifecycle_stage or note.node_status or NOTE_LIFECYCLE_STAGE_DEFAULT,
@@ -6515,9 +6567,14 @@ def create_note(
         effective_note_kind = str(taxonomy_fields["note_kind"] or NOTE_KIND_DEFAULT).strip() or NOTE_KIND_DEFAULT
         effective_node_status = str(taxonomy_fields["node_status"] or NOTE_LIFECYCLE_STAGE_DEFAULT).strip() or NOTE_LIFECYCLE_STAGE_DEFAULT
     else:
+        uses_legacy_taxonomy_input = bool({
+            "note_types",
+            "node_type",
+            "color",
+        } & set(note.model_fields_set))
         normalized_note_types = normalize_note_types(note.note_types, fallback_type=note.node_type or NOTE_TYPE_DEFAULT)
         fallback_type = note.node_type or NOTE_TYPE_DEFAULT
-        if normalized_note_color and (
+        if uses_legacy_taxonomy_input and normalized_note_color and (
             not note.note_types
             or (
                 len(normalized_note_types) == 1
@@ -6536,7 +6593,13 @@ def create_note(
             primary_node_type,
             effective_note_kind,
             effective_node_status,
-        )
+        ) if uses_legacy_taxonomy_input else {
+            "note_categories": [],
+            "primary_category": None,
+            "note_form": NOTE_FORM_DEFAULT,
+            "note_scene": effective_note_kind,
+            "lifecycle_stage": effective_node_status,
+        }
     current_time = time.time()
     note_identity = allocate_new_note_identity(session)
     db_note = NoteNode(

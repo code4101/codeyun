@@ -242,7 +242,7 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     box: FanxiuGameWindow2MatchBox
     scan: bool = False
     scan_box: Optional[FanxiuGameWindow2MatchBox] = None
-    pixel_tolerance: int = Field(5, ge=0, le=255)
+    pixel_tolerance: int = Field(20, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
     tolerance_max_data_url: Optional[str] = None
@@ -275,7 +275,7 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     box: FanxiuGameWindow2MatchBox
     scan: bool = False
     scan_box: Optional[FanxiuGameWindow2MatchBox] = None
-    pixel_tolerance: int = Field(5, ge=0, le=255)
+    pixel_tolerance: int = Field(20, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
     tolerance_max_data_url: Optional[str] = None

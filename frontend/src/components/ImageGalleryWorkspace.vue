@@ -731,6 +731,7 @@ const handleViewModeChange = (value: 'grid' | 'masonry') => {
 const masonryLoadMoreSentinelRef = ref<HTMLElement | null>(null);
 let preserveNextMasonryReset = false;
 const THUMBNAIL_WARM_CONCURRENCY = 3;
+const MASONRY_THUMBNAIL_WARM_CONCURRENCY = 6;
 const MAX_PREWARM_VISIBLE_MEDIA = 18;
 const MASONRY_INITIAL_ROW_COUNT = 6;
 const MASONRY_LOAD_MORE_ROW_COUNT = 4;
@@ -974,7 +975,7 @@ const appendRenderedMasonryBatch = (images: GalleryImage[]) => {
 
 const warmMasonryBatch = async (images: GalleryImage[], session: number) => {
   const queue = [...images];
-  const workerCount = Math.min(THUMBNAIL_WARM_CONCURRENCY, queue.length);
+  const workerCount = Math.min(MASONRY_THUMBNAIL_WARM_CONCURRENCY, queue.length);
 
   await Promise.all(
     Array.from({ length: workerCount }, async () => {

@@ -178,6 +178,7 @@ class DataAnnotationRuntimeDebugContext:
             "ocrText",
             "ocrMatchMode",
             "pixelTolerance",
+            "locked",
             "floating",
             "jitterEnabled",
             "jitterRadius",

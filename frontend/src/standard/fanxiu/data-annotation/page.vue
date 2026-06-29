@@ -246,7 +246,7 @@
                 </div>
               </div>
 
-              <div class="asset-tree-scroll">
+              <div ref="assetTreeScrollRef" class="asset-tree-scroll">
                 <el-tree
                   ref="assetTreeRef"
                   class="asset-tree"
@@ -397,12 +397,13 @@
                         v-for="shape in annotationShapes"
                         :key="shape.id"
                         class="annotation-shape"
-                        :class="{ 'is-active': isShapeSelected(shape.id) }"
+                        :class="{ 'is-active': isShapeSelected(shape.id), 'is-locked': isShapeLocked(shape) }"
                         :style="shapeBoxStyle(shape)"
                         @pointerdown.stop="startShapeMove($event, shape.id)"
                         @contextmenu.prevent.stop="openShapeContextMenu($event, shape.id)"
                       >
                         <button
+                          v-if="!isShapeLocked(shape)"
                           type="button"
                           class="shape-corner-handle is-top-left"
                           title="拖拽调整左上角"
@@ -410,6 +411,7 @@
                           @pointerdown.stop="startShapeResize($event, shape.id, 'top-left')"
                         />
                         <button
+                          v-if="!isShapeLocked(shape)"
                           type="button"
                           class="shape-corner-handle is-bottom-right"
                           title="拖拽调整右下角"
@@ -434,6 +436,7 @@
                     :props="shapeTreeProps"
                     node-key="id"
                     :default-expanded-keys="expandedShapeNodeIds"
+                    :auto-expand-parent="false"
                     highlight-current
                     draggable
                     :current-node-key="selectedShapeId"
@@ -510,6 +513,9 @@
                   </div>
                   <el-checkbox v-model="selectedShape.floating">
                     浮动
+                  </el-checkbox>
+                  <el-checkbox v-model="selectedShape.locked">
+                    锁定
                   </el-checkbox>
                   <span class="shape-row-break" aria-hidden="true" />
                   <div class="shape-jump-field shape-pixel-tolerance-field">
@@ -1529,6 +1535,7 @@ const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defau
 const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
 const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPixelTolerance';
 const DEFAULT_VISUAL_MACRO_THRESHOLD = 0.8;
+const DEFAULT_SHAPE_PIXEL_TOLERANCE = 20;
 const GAME_MACRO_CONFIG_STORAGE_KEY = 'fanxiu.dataAnnotation.gameMacro.config.v1';
 const GAME_MACRO_CONFIG_VERSION = 2;
 const GAME_MACRO_DEFAULT_DRAG_DURATION_MS = 1500;
@@ -1679,7 +1686,7 @@ const activeVisualMacroCardId = ref<string | null>(null);
 const visualMacroCapturePending = ref(false);
 const visualMacroDefaultThreshold = ref(DEFAULT_VISUAL_MACRO_THRESHOLD);
 const visualMacroDefaultPointRadius = ref(10);
-const visualMacroDefaultPixelTolerance = ref(5);
+const visualMacroDefaultPixelTolerance = ref(DEFAULT_SHAPE_PIXEL_TOLERANCE);
 const selectedVisualInstructionKey = ref('');
 const selectedVisualInstructionSetKey = ref('');
 const visualInstructionTitleDrafts = ref<Record<string, string>>({});
@@ -1868,6 +1875,7 @@ const annotationPanelStyle = computed(() => ({
 }));
 const liveContentStyle = computed(() => ({
   ...liveCanvasStyle.value,
+  transformOrigin: '0 0',
   transform: `translate(${livePanX.value}px, ${livePanY.value}px) scale(${liveContentZoomPercent.value / 100})`,
 }));
 const liveViewportClasses = computed(() => ({
@@ -1887,6 +1895,7 @@ const screenshotCanvasStyle = computed(() => {
 });
 const screenshotContentStyle = computed(() => ({
   ...screenshotCanvasStyle.value,
+  transformOrigin: '0 0',
   transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
 }));
 const screenshotViewportClasses = computed(() => ({
@@ -2120,12 +2129,12 @@ const setVisualMacroDefaultPointRadius = (value: unknown, persist = true) => {
 
 const setVisualMacroDefaultPixelTolerance = (value: unknown, persist = true) => {
   if (value === null || value === undefined || value === '') {
-    visualMacroDefaultPixelTolerance.value = 5;
+    visualMacroDefaultPixelTolerance.value = DEFAULT_SHAPE_PIXEL_TOLERANCE;
     if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY, String(visualMacroDefaultPixelTolerance.value));
     return;
   }
   const nextValue = Math.round(Number(value));
-  visualMacroDefaultPixelTolerance.value = Number.isFinite(nextValue) ? clamp(nextValue, 0, 255) : 5;
+  visualMacroDefaultPixelTolerance.value = Number.isFinite(nextValue) ? clamp(nextValue, 0, 255) : DEFAULT_SHAPE_PIXEL_TOLERANCE;
   if (persist) {
     window.localStorage.setItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY, String(visualMacroDefaultPixelTolerance.value));
   }
@@ -2161,7 +2170,8 @@ const loadVisualMacroDefaults = () => {
     setVisualMacroDefaultThreshold(storedThreshold, false);
   }
   setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
-  setVisualMacroDefaultPixelTolerance(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY), false);
+  const storedPixelTolerance = window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY);
+  setVisualMacroDefaultPixelTolerance(storedPixelTolerance === '5' ? DEFAULT_SHAPE_PIXEL_TOLERANCE : storedPixelTolerance, false);
 };
 
 const normalizeGameMacroConfig = (value: unknown): GameMacroConfig => {
@@ -6698,6 +6708,7 @@ type DataAnnotationShape = {
   kind?: 'shape' | 'group';
   title: string;
   description: string;
+  locked?: boolean;
   floating?: boolean;
   jitterEnabled?: boolean;
   jitterRadius?: number;
@@ -7126,6 +7137,7 @@ type AnnotationTreeRef = {
   filter?: (value: string) => void;
 };
 const assetTreeRef = ref<AnnotationTreeRef | null>(null);
+const assetTreeScrollRef = ref<HTMLElement | null>(null);
 const shapeTreeRef = ref<AnnotationTreeRef | null>(null);
 const shapeContextMenu = ref({
   visible: false,
@@ -7187,7 +7199,7 @@ const normalizeShapeContentDirection = (value: unknown): DataAnnotationShape['co
 
 const normalizeShapePixelTolerance = (value: unknown) => {
   const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 0, 255) : 5;
+  return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 0, 255) : DEFAULT_SHAPE_PIXEL_TOLERANCE;
 };
 
 const normalizeShapeJitterRadius = (value: unknown) => {
@@ -7334,6 +7346,7 @@ const normalizeShapes = (
     description: isDailyTaskBlockTemplate
       ? DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION
       : (typeof shape.description === 'string' ? shape.description : ''),
+    locked: Boolean(shape.locked),
     floating: effectiveFloating,
     jitterEnabled: isDailyTaskBlockField ? false : Boolean(shape.jitterEnabled),
     jitterRadius: normalizeShapeJitterRadius(shape.jitterRadius),
@@ -7639,6 +7652,10 @@ const mergeEntryAssetTrees = (localTree: DataAnnotationAssetNode[], backendTree:
   return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
+const assetTreesEqual = (left: DataAnnotationAssetNode[], right: DataAnnotationAssetNode[]) => (
+  JSON.stringify(left) === JSON.stringify(right)
+);
+
 const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
   const response = await getFanxiuDataAnnotationAssetTree(entryId);
   if (selectedEntryId.value !== entryId) return;
@@ -7665,12 +7682,19 @@ const flushAssetTreeToBackend = async (
 ) => {
   try {
     const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree, baseUpdatedAt);
-    if (Array.isArray(response.tree) && selectedEntryId.value === entryId && localVersion === assetTreeLocalVersion) {
-      assetTreeBackendHydrating.value = true;
-      try {
-        assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
-      } finally {
-        assetTreeBackendHydrating.value = false;
+    if (Array.isArray(response.tree) && selectedEntryId.value === entryId) {
+      if (localVersion === assetTreeLocalVersion) {
+        const nextTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
+        if (!assetTreesEqual(nextTree, assetTree.value)) {
+          assetTreeBackendHydrating.value = true;
+          try {
+            assetTree.value = nextTree;
+          } finally {
+            assetTreeBackendHydrating.value = false;
+          }
+        }
+      } else {
+        scheduleAssetTreeBackendSave();
       }
     }
     if (selectedEntryId.value === entryId) {
@@ -7687,12 +7711,19 @@ const flushAssetTreeToBackend = async (
         const latestUpdatedAt = Number(latest.updated_at) || 0;
         const mergedTree = mergeAssetTreeNodes(tree, latestTree);
         const response = await saveFanxiuDataAnnotationAssetTree(entryId, mergedTree, latestUpdatedAt || undefined);
-        if (Array.isArray(response.tree) && selectedEntryId.value === entryId && localVersion === assetTreeLocalVersion) {
-          assetTreeBackendHydrating.value = true;
-          try {
-            assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
-          } finally {
-            assetTreeBackendHydrating.value = false;
+        if (Array.isArray(response.tree) && selectedEntryId.value === entryId) {
+          if (localVersion === assetTreeLocalVersion) {
+            const nextTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
+            if (!assetTreesEqual(nextTree, assetTree.value)) {
+              assetTreeBackendHydrating.value = true;
+              try {
+                assetTree.value = nextTree;
+              } finally {
+                assetTreeBackendHydrating.value = false;
+              }
+            }
+          } else {
+            scheduleAssetTreeBackendSave();
           }
         }
         if (selectedEntryId.value === entryId) {
@@ -7940,6 +7971,11 @@ const flattenAssetImages = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   ...flattenAssetImages(node.children ?? []),
 ]);
 
+const collectAssetNodeIds = (node: DataAnnotationAssetNode): string[] => [
+  node.id,
+  ...(node.children ?? []).flatMap(collectAssetNodeIds),
+];
+
 const findAssetParentFolder = (
   nodes: DataAnnotationAssetNode[],
   id: string | null,
@@ -8144,9 +8180,10 @@ const syncAssetTreeExpansionFromState = async () => {
   for (const id of collectDisplayedAssetFolderIds()) {
     const treeNode = tree.getNode(id);
     if (!treeNode) continue;
-    if (expandedIds.has(id)) {
+    const shouldExpand = expandedIds.has(id);
+    if (shouldExpand && !treeNode.expanded) {
       treeNode.expand?.();
-    } else {
+    } else if (!shouldExpand && treeNode.expanded) {
       treeNode.collapse?.();
     }
   }
@@ -8165,9 +8202,10 @@ const syncShapeTreeExpansionFromState = async () => {
   for (const id of collectExpandableShapeIds(selectedImageShapes.value)) {
     const treeNode = tree.getNode(id);
     if (!treeNode) continue;
-    if (expandedIds.has(id)) {
+    const shouldExpand = expandedIds.has(id);
+    if (shouldExpand && !treeNode.expanded) {
       treeNode.expand?.();
-    } else {
+    } else if (!shouldExpand && treeNode.expanded) {
       treeNode.collapse?.();
     }
   }
@@ -8401,6 +8439,8 @@ const cloneShapeTreeWithNewIds = (shape: DataAnnotationShape): DataAnnotationSha
   children: (shape.children ?? []).map(cloneShapeTreeWithNewIds),
 });
 const annotationShapes = computed(() => flattenShapes(selectedImageShapes.value).filter(isDrawableShape));
+const isShapeLocked = (shape: DataAnnotationShape | null | undefined) => Boolean(shape?.locked);
+const editableAnnotationShapes = computed(() => annotationShapes.value.filter((shape) => !isShapeLocked(shape)));
 const occlusionMaskShapes = computed(() => (
   collectOcclusionAssetImages(assetTree.value)
     .flatMap((image) => flattenShapes(image.shapes ?? []))
@@ -8955,6 +8995,7 @@ const annotationCanvasStyle = computed(() => {
 });
 const annotationContentStyle = computed(() => ({
   ...annotationCanvasStyle.value,
+  transformOrigin: '0 0',
   transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
 }));
 
@@ -8992,7 +9033,8 @@ watch(selectedRuntimeTaskType, (value) => {
   }
 });
 
-watch(selectedImageNode, (node) => {
+watch(selectedImageNode, (node, previousNode) => {
+  const imageChanged = node?.id !== previousNode?.id;
   const firstShape = node ? flattenShapes(node.shapes ?? [])[0] ?? null : null;
   selectedShapeId.value = node && selectedShapeId.value && findShapeById(node.shapes ?? [], selectedShapeId.value)
     ? selectedShapeId.value
@@ -9004,7 +9046,7 @@ watch(selectedImageNode, (node) => {
   shapeDetectResults.value = {};
   shapeDetectLiveBoxes.value = [];
   drawOverlay();
-  resetScreenshotViewState();
+  if (imageChanged) resetScreenshotViewState();
   void ensureSelectedImagePreview();
 });
 
@@ -9651,6 +9693,7 @@ const createRecordedGameShape = (
     kind: 'shape',
     title: (annotation?.label || '').trim() || (action === 'drag' ? '拖拽' : '点击'),
     description: '',
+    locked: false,
     floating: false,
     jitterEnabled: false,
     jitterRadius: 4,
@@ -9660,7 +9703,7 @@ const createRecordedGameShape = (
     sceneJumpTarget: '',
     contentDirection: action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none',
     imageMatchRole: shouldMarkScene ? 'required' : 'off',
-    pixelTolerance: 5,
+    pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
     ocrEnabled: false,
     ocrText: '',
@@ -9743,8 +9786,18 @@ const deleteSelectedAsset = async () => {
   if (!node || !parent) return;
   await ElMessageBox.confirm('删除“' + node.title + '”？', '删除节点', { type: 'warning' });
   const index = parent.findIndex((item) => item.id === node.id);
-  if (index >= 0) parent.splice(index, 1);
-  selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
+  if (index < 0) return;
+  const scrollTop = assetTreeScrollRef.value?.scrollTop ?? 0;
+  const deletedIds = new Set(collectAssetNodeIds(node));
+  const parentFolder = findAssetParentFolder(assetTree.value, node.id);
+  const fallbackNode = parent[index + 1] ?? parent[index - 1] ?? parentFolder ?? null;
+  parent.splice(index, 1);
+  expandedAssetNodeIds.value = expandedAssetNodeIds.value.filter((id) => !deletedIds.has(id));
+  selectedAssetId.value = fallbackNode?.id ?? null;
+  selectedShapeId.value = null;
+  selectedShapeIds.value = [];
+  await nextTick();
+  if (assetTreeScrollRef.value) assetTreeScrollRef.value.scrollTop = scrollTop;
 };
 
 const toggleAssetFolderNode = (id: string) => {
@@ -10027,6 +10080,7 @@ const addAnnotationShape = () => {
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes).filter(isDrawableShape).length + 1),
     description: '',
+    locked: false,
     floating: false,
     jitterEnabled: false,
     jitterRadius: 4,
@@ -10036,7 +10090,7 @@ const addAnnotationShape = () => {
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: 'off',
-    pixelTolerance: 5,
+    pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
     ocrEnabled: false,
     ocrText: '',
@@ -11573,6 +11627,7 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     kind: 'shape',
     title: label || source?.title || image.title,
     description: '',
+    locked: Boolean(source?.locked),
     floating: Boolean(source?.floating),
     jitterEnabled: Boolean(source?.jitterEnabled),
     jitterRadius: normalizeShapeJitterRadius(source?.jitterRadius),
@@ -11582,7 +11637,7 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: source?.imageMatchRole ?? 'off',
-    pixelTolerance: 5,
+    pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
     ocrEnabled: false,
     ocrText: '',
@@ -12081,6 +12136,7 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   kind: 'shape',
   title: '',
   description: '',
+  locked: false,
   floating: false,
   jitterEnabled: false,
   jitterRadius: 4,
@@ -12090,7 +12146,7 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   sceneJumpTarget: '',
   contentDirection: 'none',
   imageMatchRole: 'off',
-  pixelTolerance: 5,
+  pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
   ocrMatchRole: 'off',
   ocrEnabled: false,
   ocrText: '',
@@ -12166,6 +12222,7 @@ const finishShapeDraft = (event: PointerEvent) => {
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes ?? []).filter(isDrawableShape).length + 1),
     description: '',
+    locked: false,
     floating: false,
     jitterEnabled: false,
     jitterRadius: 4,
@@ -12175,7 +12232,7 @@ const finishShapeDraft = (event: PointerEvent) => {
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: 'off',
-    pixelTolerance: 5,
+    pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
     ocrEnabled: false,
     ocrText: '',
@@ -12226,7 +12283,7 @@ const startShapeDraft = (event: PointerEvent) => {
 
 const startShapeDrag = (event: PointerEvent, shapeId: string, mode: ShapeDragState['mode']) => {
   const shape = findShapeById(selectedImageShapes.value, shapeId);
-  if (!shape) return;
+  if (!shape || isShapeLocked(shape)) return;
   selectedShapeId.value = shapeId;
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   shapeDragState.value = {
@@ -12246,9 +12303,84 @@ const startShapeDrag = (event: PointerEvent, shapeId: string, mode: ShapeDragSta
   window.addEventListener('pointerup', finishShapeDrag, { once: true });
 };
 
-const startShapeMove = (event: PointerEvent, shapeId: string) => startShapeDrag(event, shapeId, 'move');
+const pickShapeAtPoint = (point: { x: number; y: number }, fallbackShapeId: string) => {
+  const candidates = editableAnnotationShapes.value.filter((shape) => (
+    point.x >= shape.x
+    && point.x <= shape.x + shape.w
+    && point.y >= shape.y
+    && point.y <= shape.y + shape.h
+  ));
+  if (!candidates.length) return fallbackShapeId;
+  candidates.sort((a, b) => {
+    const distanceA = Math.hypot(point.x - (a.x + a.w / 2), point.y - (a.y + a.h / 2));
+    const distanceB = Math.hypot(point.x - (b.x + b.w / 2), point.y - (b.y + b.h / 2));
+    if (distanceA !== distanceB) return distanceA - distanceB;
+    return (a.w * a.h) - (b.w * b.h);
+  });
+  return candidates[0]?.id ?? fallbackShapeId;
+};
+
+const pickShapeCornerAtPoint = (
+  point: { x: number; y: number },
+  fallbackShapeId: string,
+  mode: Extract<ShapeDragState['mode'], 'top-left' | 'bottom-right'>,
+) => {
+  const candidates = editableAnnotationShapes.value;
+  if (!candidates.length) return fallbackShapeId;
+  const rect = getAnnotationRect();
+  const scaleX = rect?.width || 1;
+  const scaleY = rect?.height || 1;
+  const ranked = candidates.map((shape) => {
+    const cornerX = mode === 'top-left' ? shape.x : shape.x + shape.w;
+    const cornerY = mode === 'top-left' ? shape.y : shape.y + shape.h;
+    return {
+      shape,
+      distance: Math.hypot((point.x - cornerX) * scaleX, (point.y - cornerY) * scaleY),
+    };
+  });
+  ranked.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    return (a.shape.w * a.shape.h) - (b.shape.w * b.shape.h);
+  });
+  return ranked[0]?.shape.id ?? fallbackShapeId;
+};
+
+const pickShapeCornerHitAtPoint = (point: { x: number; y: number }) => {
+  const rect = getAnnotationRect();
+  if (!rect) return null;
+  const handleRadius = 12;
+  const hits = editableAnnotationShapes.value.flatMap((shape) => ([
+    {
+      shape,
+      mode: 'top-left' as const,
+      distance: Math.hypot((point.x - shape.x) * rect.width, (point.y - shape.y) * rect.height),
+    },
+    {
+      shape,
+      mode: 'bottom-right' as const,
+      distance: Math.hypot((point.x - (shape.x + shape.w)) * rect.width, (point.y - (shape.y + shape.h)) * rect.height),
+    },
+  ])).filter((hit) => hit.distance <= handleRadius);
+  hits.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    return (a.shape.w * a.shape.h) - (b.shape.w * b.shape.h);
+  });
+  const hit = hits[0];
+  return hit ? { shapeId: hit.shape.id, mode: hit.mode } : null;
+};
+
+const startShapeMove = (event: PointerEvent, shapeId: string) => {
+  const point = getAnnotationPoint(event);
+  const cornerHit = point ? pickShapeCornerHitAtPoint(point) : null;
+  if (cornerHit) {
+    startShapeDrag(event, cornerHit.shapeId, cornerHit.mode);
+    return;
+  }
+  startShapeDrag(event, point ? pickShapeAtPoint(point, shapeId) : shapeId, 'move');
+};
 const startShapeResize = (event: PointerEvent, shapeId: string, mode: Extract<ShapeDragState['mode'], 'top-left' | 'bottom-right'>) => {
-  startShapeDrag(event, shapeId, mode);
+  const point = getAnnotationPoint(event);
+  startShapeDrag(event, point ? pickShapeCornerAtPoint(point, shapeId, mode) : shapeId, mode);
 };
 
 const moveShapeDrag = (event: PointerEvent) => {
@@ -14527,6 +14659,12 @@ const finishShapeDrag = () => {
 
 .annotation-shape.is-active {
   border-color: #e6a23c;
+}
+
+.annotation-shape.is-locked {
+  pointer-events: none;
+  border-style: dashed;
+  opacity: 0.72;
 }
 
 .annotation-shape.is-draft {

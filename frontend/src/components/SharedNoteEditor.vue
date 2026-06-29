@@ -448,12 +448,14 @@ import { useAutoSave } from '@/utils/useAutoSave';
 import { derivePrimaryNodeType, getNodeStatusConfig, getNodeTypeConfig, normalizeNoteTypeAssignments } from '@/utils/nodeConfig';
 import { useSortableList } from '@/utils/useSortableList';
 import {
+  derivePrimaryCategory,
   deriveLegacySemanticsFromTaxonomy,
   deriveNoteTaxonomyFromLegacy,
   NOTE_CATEGORY_DEFAULT,
   NOTE_FORM_DEFAULT,
   NOTE_LIFECYCLE_STAGE_DEFAULT,
-  NOTE_SCENE_DEFAULT
+  NOTE_SCENE_DEFAULT,
+  normalizeNoteCategories
 } from '@/utils/noteSemantics';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
@@ -1151,10 +1153,11 @@ const normalizeIncomingNote = (note: NoteNode) => {
   if (cloned.start_at && cloned.start_at < 10000000000) cloned.start_at *= 1000;
   if (cloned.updated_at && cloned.updated_at < 10000000000) cloned.updated_at *= 1000;
   if (cloned.created_at && cloned.created_at < 10000000000) cloned.created_at *= 1000;
+  const hasExplicitCategories = Array.isArray(cloned.note_categories);
   const taxonomy = Array.isArray(cloned.note_categories) || cloned.primary_category || cloned.note_form || cloned.note_scene || cloned.lifecycle_stage
     ? deriveLegacySemanticsFromTaxonomy(
       cloned.note_categories,
-      cloned.primary_category ?? NOTE_CATEGORY_DEFAULT,
+      cloned.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
       cloned.note_form ?? NOTE_FORM_DEFAULT,
       cloned.note_scene ?? cloned.note_kind ?? NOTE_SCENE_DEFAULT,
       cloned.lifecycle_stage ?? cloned.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
@@ -1533,7 +1536,7 @@ const syncLegacyFieldsFromTaxonomy = () => {
   if (!currentNote.value) return;
   const legacy = deriveLegacySemanticsFromTaxonomy(
     currentNote.value.note_categories,
-    currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    currentNote.value.primary_category ?? (currentNote.value.note_categories?.length ? NOTE_CATEGORY_DEFAULT : null),
     currentNote.value.note_form ?? NOTE_FORM_DEFAULT,
     currentNote.value.note_scene ?? currentNote.value.note_kind ?? NOTE_SCENE_DEFAULT,
     currentNote.value.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
@@ -1551,11 +1554,17 @@ const syncLegacyFieldsFromTaxonomy = () => {
 
 const handleNoteCategoriesChange = (value: unknown) => {
   if (!currentNote.value || nodeTypeReadonly.value) return;
-  const nextNoteCategories = normalizeNoteTypeAssignments(value, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
+  const hasIncomingCategories = Array.isArray(value) && value.length > 0;
+  const nextNoteCategories = normalizeNoteCategories(
+    value,
+    hasIncomingCategories ? (currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT) : null
+  );
   if (JSON.stringify(nextNoteCategories) === JSON.stringify(currentNote.value.note_categories ?? [])) return;
   pushLocalUndoSnapshot('note-categories');
   currentNote.value.note_categories = nextNoteCategories;
-  currentNote.value.primary_category = derivePrimaryNodeType(nextNoteCategories, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
+  currentNote.value.primary_category = nextNoteCategories.length
+    ? derivePrimaryCategory(nextNoteCategories, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT)
+    : null;
   syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };

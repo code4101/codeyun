@@ -255,7 +255,8 @@ export const normalizeNoteTypeWeight = (value: unknown, fallback: number = NOTE_
 
 export const normalizeNoteTypeAssignments = (
   value: unknown,
-  fallbackType: string | null | undefined = 'general'
+  fallbackType: string | null | undefined = 'general',
+  options: { allowEmpty?: boolean } = {}
 ): NoteTypeAssignment[] => {
   const list = Array.isArray(value) ? value : [];
   const normalized: NoteTypeAssignment[] = [];
@@ -287,6 +288,8 @@ export const normalizeNoteTypeAssignments = (
   }
 
   if (normalized.length > 0) return normalized;
+
+  if (options.allowEmpty) return [];
 
   const fallback = typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
   return [{ key: fallback, weight: NOTE_TYPE_WEIGHT_DEFAULT }];

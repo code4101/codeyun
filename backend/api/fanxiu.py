@@ -5010,6 +5010,24 @@ def get_fanxiu_data_annotation_asset_tree(
     }
 
 
+def _backup_data_annotation_asset_tree_before_save(path: Path) -> None:
+    if not path.is_file():
+        return
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    backup_path = path.with_name(f"{path.name}.autosave-{stamp}.bak")
+    backup_path.write_bytes(path.read_bytes())
+    backups = sorted(
+        path.parent.glob(f"{path.name}.autosave-*.bak"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    for stale_backup in backups[20:]:
+        try:
+            stale_backup.unlink()
+        except OSError:
+            pass
+
+
 @status_router.put("/data-annotation/asset-tree")
 def save_fanxiu_data_annotation_asset_tree(
     req: FanxiuDataAnnotationAssetTreeRequest,
@@ -5024,6 +5042,7 @@ def save_fanxiu_data_annotation_asset_tree(
         if current_updated_at > float(req.base_updated_at) + 1e-6:
             raise HTTPException(status_code=409, detail="资产树已被其它页面或 Runtime 更新，请重新加载后再保存，避免覆盖最新标注")
     try:
+        _backup_data_annotation_asset_tree_before_save(path)
         tree = save_data_annotation_asset_tree_bundle(path, req.tree, entry_id=req.entry_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

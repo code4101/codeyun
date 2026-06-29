@@ -324,7 +324,7 @@ def _image_target_matches(ctx: VisualMacroRunContext, operation: dict[str, Any])
         **ctx.base_payload,
         "filename": filename,
         "box": _image_box(operation),
-        "pixel_tolerance": max(0, min(255, int(operation.get("pixelTolerance") or 0))),
+        "pixel_tolerance": max(0, min(255, int(operation.get("pixelTolerance") or 20))),
     }
     result = ctx.callbacks.match(payload)
     score = _match_score(operation, result)

@@ -4372,6 +4372,19 @@ def test_daily_lingmai_is_registered_without_default_scheduler_task():
     assert definition.scheduler_supported is True
 
 
+def test_daily_lundao_is_registered_without_default_scheduler_task():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
+    definition = fanxiu_api._data_annotation_manual_job_definition("daily_lundao")
+
+    assert "legacy-daily-lundao" not in tasks
+    assert definition is not None
+    assert definition.label == "日常_论道"
+    assert definition.scheduler_supported is True
+
+
 def test_daily_lingzu_is_not_independent_scheduler_task():
     tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
 

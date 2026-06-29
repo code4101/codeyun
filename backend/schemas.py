@@ -121,7 +121,7 @@ class NoteCreate(BaseModel):
     node_type: Optional[str] = "note"
     note_types: List[Dict[str, Any]] = Field(default_factory=list)
     note_categories: List[Dict[str, Any]] = Field(default_factory=list)
-    primary_category: Optional[str] = "general"
+    primary_category: Optional[str] = None
     note_form: Optional[str] = "note"
     note_kind: Optional[str] = "note"
     note_scene: Optional[str] = "note"

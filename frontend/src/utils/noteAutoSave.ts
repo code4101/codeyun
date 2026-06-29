@@ -1,10 +1,12 @@
 import type { NoteNode } from '@/api/notes';
-import { normalizeNoteTypeAssignments, type NoteTypeAssignment } from './nodeConfig';
+import type { NoteTypeAssignment } from './nodeConfig';
 import {
+  derivePrimaryCategory,
   deriveLegacySemanticsFromTaxonomy,
   NOTE_CATEGORY_DEFAULT,
   NOTE_FORM_DEFAULT,
-  NOTE_LIFECYCLE_STAGE_DEFAULT
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  normalizeNoteCategories
 } from './noteSemantics';
 
 export type NoteCustomFieldType = 'string' | 'number' | 'boolean' | 'richtext';
@@ -210,6 +212,14 @@ export const createEditableNoteSnapshot = (
   customFields?: unknown
 ): EditableNoteSnapshot | null => {
   if (!note?.id) return null;
+  const hasExplicitCategories = Array.isArray(note.note_categories);
+  const normalizedCategories = normalizeNoteCategories(
+    note.note_categories,
+    hasExplicitCategories ? (note.primary_category ?? null) : (note.primary_category ?? NOTE_CATEGORY_DEFAULT)
+  );
+  const primaryCategory = normalizedCategories.length
+    ? derivePrimaryCategory(normalizedCategories, note.primary_category ?? NOTE_CATEGORY_DEFAULT)
+    : (hasExplicitCategories ? null : (note.primary_category ?? NOTE_CATEGORY_DEFAULT));
 
   return {
     id: String(note.id),
@@ -217,8 +227,8 @@ export const createEditableNoteSnapshot = (
     content: normalizeText(note.content),
     weight: typeof note.weight === 'number' && Number.isFinite(note.weight) ? note.weight : 0,
     start_at: normalizeTimestamp(note.start_at),
-    note_categories: normalizeNoteTypeAssignments(note.note_categories, note.primary_category ?? NOTE_CATEGORY_DEFAULT),
-    primary_category: note.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    note_categories: normalizedCategories,
+    primary_category: primaryCategory,
     note_form: note.note_form ?? NOTE_FORM_DEFAULT,
     lifecycle_stage: note.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
     color: note.color ?? null,
@@ -291,7 +301,7 @@ export const applyEditableNoteSnapshot = (note: NoteNode, snapshot: EditableNote
   ...note,
   ...deriveLegacySemanticsFromTaxonomy(
     snapshot.note_categories,
-    snapshot.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    snapshot.primary_category ?? (snapshot.note_categories.length ? NOTE_CATEGORY_DEFAULT : null),
     snapshot.note_form ?? NOTE_FORM_DEFAULT,
     note.note_scene ?? note.note_kind ?? 'note',
     snapshot.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
@@ -317,7 +327,7 @@ export const noteSnapshotToNode = (
   ...(source as NoteNode),
   ...deriveLegacySemanticsFromTaxonomy(
     snapshot.note_categories,
-    snapshot.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    snapshot.primary_category ?? (snapshot.note_categories.length ? NOTE_CATEGORY_DEFAULT : null),
     snapshot.note_form ?? NOTE_FORM_DEFAULT,
     source?.note_scene ?? source?.note_kind ?? 'note',
     snapshot.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
