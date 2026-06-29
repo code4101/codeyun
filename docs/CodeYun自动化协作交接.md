@@ -29,6 +29,20 @@
 
 ## 待代码健康优化接手
 
+### UI-HANDOFF-20260629-001
+
+- 状态：needs-human-decision
+- 来源自动化：CodeYun 前端设计巡检
+- 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-497863ad/report.md`
+- 触发范围：`3c939480007d67a362da7589626873d3dd9e9eac..497863ad1070dd5000a867e53fb37459070d83ae` / `/fanxiu/wiki?tab=mail`
+- 表层症状：邮件列表已经新增 `已处理` 筛选事实，但一级表格里仍把 `已处理` 渲染成和 `锁定 / 留存 / 可领` 同构的可点击主按钮。真实页面可见多枚 `status-processed` 按钮且 `disabled=false`。
+- 非前端根因判断：这不是单纯颜色或文案问题，而是“结果事实”和“可编辑目标”边界没有定清。`已处理` 到底是不可逆结果、还是允许人工恢复到待处理，需要产品语义先定；在结论确定前，前端无法判断它应退成静态 badge，还是拆成“事实 + 单独恢复动作”。
+- 涉及对象：`frontend/src/standard/fanxiu/wiki/page.vue`、`backend/core/fanxiu/data_annotation/tasks/mail.py`、相关邮件状态写回 API
+- 已做前端止血：无。本轮只完成真实页面复现、截图和定性，没有自动改 UI。
+- 建议接手动作：先做只读模型审计和人工决策归纳，明确 `processed` 是否允许回改；若不允许，则把一级 `已处理` 退成静态事实 badge；若允许，则把“恢复”为单独动作，不再与三态目标按钮混排。
+- 验证建议：打开 `http://127.0.0.1:5173/fanxiu/wiki?tab=mail` 复核 `已处理` 行；若后续修改了交互，再补 `npm run typecheck --prefix frontend`、必要的 `npm run build --prefix frontend` 和三视口截图回归。
+- 风险和停手条件：如果邮件状态还承担自动领附件、删除策略或抓包同步语义，不要只在前端把按钮禁用或换样式就草率收口；应先确认后端是否允许恢复、恢复会不会污染自动化事实。
+
 ### UI-HANDOFF-20260623-002
 
 - 状态：accepted
@@ -87,3 +101,4 @@
 - 条目完成后改为 `fixed`，保留验证命令和结果摘要。
 - 如果判断不是模型债务，改为 `wontfix` 并说明依据。
 - 如果需要用户决策，改为 `needs-human-decision`，并把问题压缩成一个明确决策点。
+

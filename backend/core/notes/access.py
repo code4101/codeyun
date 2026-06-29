@@ -66,7 +66,19 @@ def note_to_response_dict(
 ) -> dict[str, Any]:
     payload = note.model_dump()
     payload["id"] = note_public_api_id(note)
-    if payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
+    if isinstance(payload.get("note_categories"), list) and len(payload.get("note_categories") or []) == 0 and payload.get("primary_category") is None:
+        normalized = {
+            "note_categories": [],
+            "primary_category": None,
+            "note_form": payload.get("note_form") or NOTE_FORM_DEFAULT,
+            "note_scene": payload.get("note_scene") or payload.get("note_kind") or NOTE_SCENE_DEFAULT,
+            "lifecycle_stage": payload.get("lifecycle_stage") or payload.get("node_status") or NOTE_LIFECYCLE_STAGE_DEFAULT,
+            "note_types": payload.get("note_types") or [],
+            "node_type": payload.get("node_type"),
+            "note_kind": payload.get("note_kind"),
+            "node_status": payload.get("node_status"),
+        }
+    elif payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
         normalized = derive_legacy_semantics_from_taxonomy(
             payload.get("note_categories"),
             payload.get("primary_category") or NOTE_CATEGORY_DEFAULT,
@@ -155,7 +167,19 @@ def note_list_mapping_to_response_dict(note: Any, current_user: Optional[User]) 
         "deleted_by_user_id": note.get("deleted_by_user_id"),
     }
 
-    if payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
+    if isinstance(payload.get("note_categories"), list) and len(payload.get("note_categories") or []) == 0 and payload.get("primary_category") is None:
+        normalized = {
+            "note_categories": [],
+            "primary_category": None,
+            "note_form": payload.get("note_form") or NOTE_FORM_DEFAULT,
+            "note_scene": payload.get("note_scene") or payload.get("note_kind") or NOTE_SCENE_DEFAULT,
+            "lifecycle_stage": payload.get("lifecycle_stage") or payload.get("node_status") or NOTE_LIFECYCLE_STAGE_DEFAULT,
+            "note_types": payload.get("note_types") or [],
+            "node_type": payload.get("node_type"),
+            "note_kind": payload.get("note_kind"),
+            "node_status": payload.get("node_status"),
+        }
+    elif payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
         normalized = derive_legacy_semantics_from_taxonomy(
             payload.get("note_categories"),
             payload.get("primary_category") or NOTE_CATEGORY_DEFAULT,

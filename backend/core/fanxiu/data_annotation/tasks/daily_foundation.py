@@ -2819,6 +2819,7 @@ class DailyFoundationTaskMixin:
             "淬剑试炼",
             "灵祖",
             "挑战仙缘",
+            "论道",
         )
         return bool(any(marker in compact for marker in daily_row_markers) and re.search(r"\d+/\d+", compact))
 
@@ -2983,6 +2984,36 @@ class DailyFoundationTaskMixin:
             f"当前 {'#' + str(scene_id) if scene_id else 'unknown'} {score:.0f}%，OCR={after_text[:120]}。"
             f"{missing_assets_message}"
         )
+
+    def _execute_daily_lundao_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_论道资产树路径，无法执行作业")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id != 69:
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_论道")
+        if scene_id != 69:
+            raise RuntimeError("日常_论道：未能进入 #69 日常列表")
+        status = yield from self._open_daily_entry_from_daily(
+            ctx,
+            stop_event,
+            payload,
+            task_label="日常_论道",
+            title_pattern="论道",
+            progress_can_mark_done=False,
+        )
+        if status == "not_found":
+            raise RuntimeError("日常_论道：#69 日常列表未找到「论道」入口")
+        self._log("success", "日常_论道：已点击 #69「论道」入口")
+        return "success"
 
     def _daily_dongtian_text_is_home(self, text: Any) -> bool:
         compact = _sanitize_ocr_text(text)
@@ -3463,11 +3494,16 @@ class DailyFoundationTaskMixin:
         reason: str,
     ) -> Iterator[Any]:
         self._log("action", f"日常_拜谒：{reason}，调用通用场景移动返回 #34")
-        yield from runtime.goto_view(34)
-        scene_id, _score, _frame = runtime.current_scene([34], update=True)
-        if scene_id == 34:
-            self._log("success", "日常_拜谒：已通过通用 goto 返回 #34 世界，闭环完成")
-            return "success"
+        for _attempt in range(3):
+            yield from runtime.goto_view(34)
+            yield from runtime.wait_action_settle(1.0)
+            scene_id, _score, _frame = runtime.current_scene([34, 266, 265, 264], update=True)
+            if scene_id == 34:
+                self._log("success", "日常_拜谒：已通过通用 goto 返回 #34 世界，闭环完成")
+                return "success"
+            if scene_id in (266, 265, 264):
+                continue
+            break
         raise RuntimeError(f"日常_拜谒：通用 goto 返回后未能确认 #34，当前 scene={scene_id}")
 
     def _execute_daily_baiye_task(

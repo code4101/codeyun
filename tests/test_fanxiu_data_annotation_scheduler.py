@@ -2838,7 +2838,7 @@ def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(mon
 
 
 def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_support():
-    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi", "daily_xianmeng", "daily_vip"):
+    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi", "daily_xianmeng", "daily_lundao", "daily_vip"):
         fanxiu._DATA_ANNOTATION_MANUAL_JOB_REGISTRY.pop(task_type, None)
 
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_assistant"}) is True
@@ -2851,6 +2851,8 @@ def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_s
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_xianshi"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_xianmeng"}) is True
     assert runtime_runner_core._data_annotation_manual_job_definition("daily_xianmeng") is not None
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_lundao"}) is True
+    assert runtime_runner_core._data_annotation_manual_job_definition("daily_lundao") is not None
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_vip"}) is True
 
 

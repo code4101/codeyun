@@ -1,9 +1,16 @@
 import sqlite3
 from contextlib import contextmanager
 
+import pytest
+
 from backend.api import eastmoney
 from backend.core.stock.akshare_market import AkshareEtfIntraday, AkshareEtfIntradayRow
 from backend.core.stock.market_data import ensure_market_data_schema
+
+
+@pytest.fixture(autouse=True)
+def freeze_intraday_today(monkeypatch):
+    monkeypatch.setattr(eastmoney, "_intraday_today_iso", lambda: "2026-06-13")
 
 
 def _intraday_row(time: str = "2026-06-10 09:31:00") -> AkshareEtfIntradayRow:
@@ -72,6 +79,47 @@ def test_intraday_empty_state_uses_latest_persisted_daily_date(monkeypatch):
     assert data["display_trade_date"] == "2026-06-12"
     assert data["items"] == []
     assert data["error"] == "本地暂无目标交易日 2026-06-12 分时持久化数据；可点补下载尝试拉取并落库"
+
+
+def test_intraday_default_fetches_live_on_weekday_today(monkeypatch):
+    requested_dates: list[str | None] = []
+    persisted: list[AkshareEtfIntraday] = []
+
+    def fake_fetch(**kwargs):
+        requested_dates.append(kwargs["trade_date"])
+        return AkshareEtfIntraday(
+            provider="akshare",
+            market="SZ",
+            symbol="159278",
+            name="机器人PH",
+            period="1",
+            trade_date="2026-06-29",
+            rows=(_intraday_row("2026-06-29 09:31:00"),),
+        )
+
+    monkeypatch.setattr(eastmoney, "_intraday_today_iso", lambda: "2026-06-29")
+    monkeypatch.setattr(eastmoney, "read_persisted_akshare_intraday", lambda **_kwargs: None)
+    monkeypatch.setattr(eastmoney, "read_latest_persisted_history_date", lambda **_kwargs: "2026-06-18")
+    monkeypatch.setattr(eastmoney, "fetch_akshare_etf_intraday", fake_fetch)
+    monkeypatch.setattr(eastmoney, "persist_akshare_intraday", lambda intraday: persisted.append(intraday))
+
+    data = eastmoney.get_akshare_market_intraday(
+        market="SZ",
+        symbol="159278",
+        name="机器人PH",
+        trade_date=None,
+        period="1",
+        day_count=1,
+        refresh=False,
+    )
+
+    assert requested_dates == ["2026-06-29"]
+    assert len(persisted) == 1
+    assert data["provider"] == "akshare"
+    assert data["trade_date"] == "2026-06-29"
+    assert data["target_trade_date"] == "2026-06-29"
+    assert data["display_trade_date"] == "2026-06-29"
+    assert len(data["items"]) == 1
 
 
 def test_intraday_resets_when_daily_date_is_newer_than_persisted_intraday(monkeypatch):

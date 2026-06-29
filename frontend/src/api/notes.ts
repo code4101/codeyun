@@ -406,10 +406,11 @@ const normalizeNoteDocAccessResponse = (raw: NoteDocResourceAccessResponse): Not
 export const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
   ...(() => {
+    const hasExplicitCategories = Array.isArray(raw.note_categories);
     const taxonomy = Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
       ? deriveLegacySemanticsFromTaxonomy(
         raw.note_categories,
-        raw.primary_category ?? NOTE_CATEGORY_DEFAULT,
+        raw.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
         raw.note_form ?? NOTE_FORM_DEFAULT,
         raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
         raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
@@ -2120,7 +2121,7 @@ export const useNoteStore = defineStore('notes', () => {
     note_kind: string | null = 'note',
     note_types: NoteTypeAssignment[] = [],
     note_categories: NoteTypeAssignment[] = [],
-    primary_category: string | null = NOTE_CATEGORY_DEFAULT,
+    primary_category: string | null = null,
     note_form: string | null = NOTE_FORM_DEFAULT,
     note_scene: string | null = NOTE_SCENE_DEFAULT,
     lifecycle_stage: string | null = NOTE_LIFECYCLE_STAGE_DEFAULT,
@@ -2128,10 +2129,10 @@ export const useNoteStore = defineStore('notes', () => {
   ) => {
     bumpPending(1);
     try {
-      const taxonomy = note_categories.length > 0 || primary_category !== NOTE_CATEGORY_DEFAULT || note_form !== NOTE_FORM_DEFAULT || note_scene !== (note_kind ?? NOTE_SCENE_DEFAULT) || lifecycle_stage !== (node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT)
+      const taxonomy = note_categories.length > 0 || primary_category === null || primary_category !== NOTE_CATEGORY_DEFAULT || note_form !== NOTE_FORM_DEFAULT || note_scene !== (note_kind ?? NOTE_SCENE_DEFAULT) || lifecycle_stage !== (node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT)
         ? deriveLegacySemanticsFromTaxonomy(
           note_categories,
-          primary_category ?? NOTE_CATEGORY_DEFAULT,
+          primary_category ?? (note_categories.length ? NOTE_CATEGORY_DEFAULT : null),
           note_form ?? NOTE_FORM_DEFAULT,
           note_scene ?? note_kind ?? NOTE_SCENE_DEFAULT,
           lifecycle_stage ?? node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT

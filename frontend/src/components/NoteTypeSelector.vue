@@ -146,7 +146,7 @@ const showAddOptions = ref(false);
 const replaceDropdownColumns = ref(1);
 const options = computed(() => getOrderedNodeTypes());
 const fallbackType = computed(() => props.legacyType || 'general');
-const normalizedValue = computed(() => normalizeNoteTypeAssignments(props.modelValue, fallbackType.value));
+const normalizedValue = computed(() => normalizeNoteTypeAssignments(props.modelValue, fallbackType.value, { allowEmpty: true }));
 const sortedValue = computed(() => normalizedValue.value
   .map((item, originalIndex) => ({ ...item, originalIndex }))
   .sort((left, right) => {
@@ -162,10 +162,10 @@ const formatSummaryEntry = (item: NoteTypeAssignment) => {
   return item.weight >= 100 ? label : `${label}${item.weight}`;
 };
 
-const summaryText = computed(() => sortedValue.value.map(formatSummaryEntry).join(','));
+const summaryText = computed(() => sortedValue.value.map(formatSummaryEntry).join(',') || '-');
 const mixedColorHex = computed(() => (
   resolveNoteTypesColor(normalizedValue.value, fallbackType.value)
-  ?? getNodeTypeConfig(primaryType.value).baseColor
+  ?? '#FFFFFF'
 ));
 const mixedStandardColor = computed(() => resolveMappedStandardColor(mixedColorHex.value, { range: 2, method: 'cie76' }));
 const mixedColorPrimaryText = computed(() => mixedStandardColor.value.displayName);
@@ -192,6 +192,15 @@ const replaceDropdownStyle = computed(() => {
 
 const triggerStyle = computed(() => {
   const color = mixedColorHex.value;
+  if (normalizedValue.value.length === 0) {
+    return {
+      borderColor: '#dcdfe6',
+      color: '#606266',
+      backgroundColor: '#FFFFFF',
+      borderWidth: '1px',
+      borderStyle: 'solid'
+    };
+  }
   return {
     borderColor: color,
     color: getReadableTextColor(fromHex(color)),
@@ -257,7 +266,7 @@ const addType = (typeKey: string) => {
   const next = [...normalizedValue.value];
   if (next.some(item => item.key === typeKey)) return;
   next.push({ key: typeKey, weight: 100 });
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
   showAddOptions.value = false;
 };
 
@@ -266,7 +275,7 @@ const updateWeight = (typeKey: string, value: unknown) => {
   const next = normalizedValue.value.map(item => item.key === typeKey
     ? { ...item, weight: normalizeNoteTypeWeight(value) }
     : item);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
 };
 
 const replaceType = (currentKey: string, value: unknown) => {
@@ -276,13 +285,13 @@ const replaceType = (currentKey: string, value: unknown) => {
   const next = normalizedValue.value.map(item => item.key === currentKey
     ? { ...item, key: nextKey }
     : item);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
 };
 
 const removeType = (typeKey: string) => {
   if (props.disabled) return;
   const next = normalizedValue.value.filter(item => item.key !== typeKey);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
 };
 
 const handlePaletteSaved = () => {

@@ -5,12 +5,15 @@ import { DataZoomComponent, GridComponent, LegendComponent, TitleComponent, Tool
 import { BarChart, CustomChart, LineChart } from 'echarts/charts'
 import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessage } from 'element-plus'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import {
   exportEastmoneyQlibDataset,
   fetchEastmoneyQlibAnalysis,
   fetchEastmoneyAkshareHistory,
   fetchEastmoneyAkshareIntraday,
   fetchEastmoneyTradeAdvice,
+  fetchEastmoneyTradeReport,
   fetchEastmoneyTradeWorkbench,
   type EastmoneyAkshareHistoryItem,
   type EastmoneyAkshareIntradayItem,
@@ -20,6 +23,7 @@ import {
   type EastmoneyTradeAdviceBacktest,
   type EastmoneyTradeEventEvidence,
   type EastmoneyTradeCandidateAdvice,
+  type EastmoneyTradeReport,
   type EastmoneyTradeWorkbench,
 } from '@/api/eastmoney'
 import { formatChineseCompactNumber } from '@/standard/fanxiu/numberFormat'
@@ -27,6 +31,7 @@ import { formatChineseCompactNumber } from '@/standard/fanxiu/numberFormat'
 echarts.use([DataZoomComponent, GridComponent, LegendComponent, TitleComponent, TooltipComponent, BarChart, CustomChart, LineChart, CanvasRenderer])
 
 const PREFERENCE_STORAGE_KEY = 'codeyun.eastmoney.tradeWorkbench.preferences'
+const showLegacyTradeTools = false
 
 type MainPeriodValue = 'intraday' | 'five_day' | 'daily' | 'weekly' | 'monthly'
 type MorePeriodValue = 'minute_1' | 'minute_5' | 'minute_15' | 'minute_30' | 'minute_60' | 'minute_120' | 'quarterly' | 'yearly'
@@ -195,6 +200,8 @@ const tradeAdviceLoading = ref(false)
 const tradeAdviceResult = ref<EastmoneyTradeAdvice | null>(null)
 const tradeWorkbenchLoading = ref(false)
 const tradeWorkbench = ref<EastmoneyTradeWorkbench | null>(null)
+const tradeReportLoading = ref(false)
+const tradeReport = ref<EastmoneyTradeReport | null>(null)
 const selectedTradeActionKey = ref('')
 const loadedAt = ref('')
 const rows = ref<EastmoneyAkshareHistoryItem[]>([])
@@ -462,6 +469,38 @@ const tradeWorkbenchAccountText = computed(() => {
   const firstLotAsset = formatOptionalPercent(account.first_lot_asset_percent, '未设')
   return `总资产 ${formatCurrency(account.total_asset)} · 可用现金 ${formatCurrency(account.cash_available)} · 单票上限 ${maxSinglePosition} · 首仓不超过现金 ${firstLotCash} / 资产 ${firstLotAsset}`
 })
+const tradeReportMarkdown = computed(() => tradeReport.value?.markdown?.trim() || '')
+const renderedTradeReportHtml = computed(() => {
+  const markdown = tradeReportMarkdown.value || tradeReportPlaceholder.value
+  const html = marked.parse(markdown, {
+    async: false,
+    breaks: true,
+    gfm: true,
+  })
+  return DOMPurify.sanitize(html)
+})
+const tradeReportUpdatedText = computed(() => {
+  const timestamp = tradeReport.value?.updated_at
+  if (!timestamp) return '暂无报告更新'
+  return new Date(timestamp * 1000).toLocaleString('zh-CN', { hour12: false })
+})
+const tradeReportPlaceholder = computed(() => [
+  '# 股票操作报告',
+  '',
+  '暂无 AI 撰写的报告。',
+  '',
+  '有需要时在 Codex 对话里沟通更新，报告会写入本机数据库后在这里展示。',
+].join('\n'))
+const tradeReportHoldingRows = computed(() => tradeWorkbenchActionRows.value.filter((row) => row.kind === 'holding'))
+const compactHoldingFacts = computed(() => tradeReportHoldingRows.value.map((row) => ({
+  key: row.key,
+  name: row.name || `${row.market}.${row.symbol}`,
+  action: row.actionText,
+  position: row.quantityText,
+  price: row.operationPriceText,
+  amount: row.operationAmountText,
+  guardrail: row.operationGuardrailText,
+})))
 const primaryTradeBacktest = computed(() => {
   return tradeAdvice.value.backtests?.[0] ?? selectedTradeAction.value?.item.backtests?.[0] ?? null
 })
@@ -936,6 +975,20 @@ async function loadTradeWorkbench(refresh = false) {
   }
 }
 
+async function loadTradeReport() {
+  tradeReportLoading.value = true
+  try {
+    tradeReport.value = await fetchEastmoneyTradeReport()
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取股票报告失败：${message}`)
+  }
+  finally {
+    tradeReportLoading.value = false
+  }
+}
+
 function returnToWatchTarget() {
   if (!previewTarget.value) return
   previewTarget.value = null
@@ -1262,6 +1315,7 @@ function stopIntradayRefreshTimer() {
 }
 
 onMounted(() => {
+  void loadTradeReport()
   void loadHistory()
   void loadTradeAdvice(false)
   void loadTradeWorkbench(false)
@@ -1384,6 +1438,89 @@ watch([targetKey, period, adjust, startDate, endDate, holdingQuantity, holdingCo
         </div>
       </div>
     </header>
+
+    <section class="trade-workbench-chart-section is-primary-chart" v-loading="loading">
+      <div class="chart-section-head">
+        <div>
+          <span>行情图</span>
+          <strong>{{ activeTarget.name }} · {{ selectedPeriodLabel }}</strong>
+        </div>
+        <div class="chart-controls">
+          <el-segmented v-model="period" :options="periodOptions" />
+          <el-select
+            v-model="morePeriod"
+            class="more-period-select"
+            placeholder="更多"
+            aria-label="更多周期"
+            @change="selectMorePeriod"
+          >
+            <el-option
+              v-for="option in morePeriodOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-select v-if="!isIntraday" v-model="adjust" class="adjust-select" aria-label="复权类型">
+            <el-option
+              v-for="option in adjustOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-date-picker v-if="!isIntraday" v-model="startDate" type="date" value-format="YYYY-MM-DD" />
+          <el-date-picker v-if="!isIntraday" v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="今天" />
+          <el-button v-if="!isIntraday" @click="loadLocalHistoryRange">最近区间</el-button>
+          <el-button v-if="!isIntraday" @click="loadFullHistory">完整历史</el-button>
+          <el-button :loading="qlibExporting" @click="exportQlibDataset">更新评分</el-button>
+          <el-button v-if="isIntraday" :loading="loading" @click="loadHistory(false)">加载分时</el-button>
+          <el-button v-if="isIntraday" type="primary" :loading="loading" @click="loadHistory(true)">补分时</el-button>
+          <el-button v-else type="primary" :loading="loading" @click="loadHistory(false)">加载行情</el-button>
+        </div>
+      </div>
+      <div v-if="chartNotice" class="chart-notice">{{ chartNotice }}</div>
+      <div ref="chartRef" class="trade-workbench-chart" />
+    </section>
+
+    <section class="trade-report-section" v-loading="tradeReportLoading">
+      <div class="trade-report-main">
+        <div class="trade-report-head">
+          <div>
+            <span>AI 撰写报告</span>
+            <strong>股票操作报告</strong>
+            <small>更新：{{ tradeReportUpdatedText }}</small>
+          </div>
+        </div>
+        <article class="trade-report-markdown" v-html="renderedTradeReportHtml"></article>
+      </div>
+      <aside class="trade-report-side">
+        <div>
+          <span>账户约束</span>
+          <strong>{{ tradeWorkbenchAccountText }}</strong>
+        </div>
+        <table v-if="compactHoldingFacts.length" class="compact-holding-table">
+          <thead>
+            <tr>
+              <th>持仓</th>
+              <th>建议</th>
+              <th>数量/价格</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in compactHoldingFacts" :key="row.key">
+              <td>{{ row.name }}</td>
+              <td>{{ row.action }}</td>
+              <td>{{ row.position }} · {{ row.price }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else>等待账户持仓数据。</p>
+      </aside>
+    </section>
+
+    <details v-if="showLegacyTradeTools" class="legacy-trade-tools">
+      <summary>旧版分析工具</summary>
 
     <section class="trade-input-strip">
       <div class="trade-input-summary">
@@ -1749,52 +1886,9 @@ watch([targetKey, period, adjust, startDate, endDate, holdingQuantity, holdingCo
           <strong>{{ loadedAt || '-' }}</strong>
         </div>
       </section>
-
-      <section class="trade-workbench-chart-section" v-loading="loading">
-        <div class="chart-section-head">
-          <div>
-            <span>行情图</span>
-            <strong>{{ selectedPeriodLabel }}</strong>
-          </div>
-          <div class="chart-controls">
-            <el-segmented v-model="period" :options="periodOptions" />
-            <el-select
-              v-model="morePeriod"
-              class="more-period-select"
-              placeholder="更多"
-              aria-label="更多周期"
-              @change="selectMorePeriod"
-            >
-              <el-option
-                v-for="option in morePeriodOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-            <el-select v-if="!isIntraday" v-model="adjust" class="adjust-select" aria-label="复权类型">
-              <el-option
-                v-for="option in adjustOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-            <el-date-picker v-if="!isIntraday" v-model="startDate" type="date" value-format="YYYY-MM-DD" />
-            <el-date-picker v-if="!isIntraday" v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="今天" />
-            <el-button v-if="!isIntraday" @click="loadLocalHistoryRange">最近区间</el-button>
-            <el-button v-if="!isIntraday" @click="loadFullHistory">完整历史</el-button>
-            <el-button :loading="qlibExporting" @click="exportQlibDataset">更新评分</el-button>
-            <el-button v-if="isIntraday" :loading="loading" @click="loadHistory(false)">加载分时</el-button>
-            <el-button v-if="isIntraday" type="primary" :loading="loading" @click="loadHistory(true)">补分时</el-button>
-            <el-button v-else type="primary" :loading="loading" @click="loadHistory(false)">加载行情</el-button>
-          </div>
-        </div>
-        <div v-if="chartNotice" class="chart-notice">{{ chartNotice }}</div>
-        <div ref="chartRef" class="trade-workbench-chart" />
-      </section>
     </details>
 
+    </details>
 
 
   </div>
@@ -1818,6 +1912,192 @@ watch([targetKey, period, adjust, startDate, endDate, holdingQuantity, holdingCo
   gap: 16px;
   margin-bottom: 8px;
   padding: 12px 14px;
+}
+
+.trade-report-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.trade-report-main,
+.trade-report-side {
+  background: #fff;
+  border: 1px solid #e4e9f0;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.trade-report-main {
+  padding: 14px;
+}
+
+.trade-report-side {
+  align-content: start;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.trade-report-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.trade-report-head > div:first-child,
+.trade-report-side > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.trade-report-head span,
+.trade-report-side span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.trade-report-head strong {
+  color: #172033;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.trade-report-head small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.trade-report-markdown {
+  background: #fafbfc;
+  border: 1px solid #edf1f7;
+  border-radius: 6px;
+  color: #202b3c;
+  font-size: 14px;
+  line-height: 1.75;
+  margin: 0;
+  min-height: 420px;
+  overflow: auto;
+  padding: 16px 18px;
+  word-break: break-word;
+}
+
+.trade-report-markdown :deep(h1),
+.trade-report-markdown :deep(h2),
+.trade-report-markdown :deep(h3) {
+  color: #172033;
+  letter-spacing: 0;
+  line-height: 1.35;
+  margin: 18px 0 10px;
+}
+
+.trade-report-markdown :deep(h1:first-child),
+.trade-report-markdown :deep(h2:first-child),
+.trade-report-markdown :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.trade-report-markdown :deep(h1) {
+  font-size: 22px;
+}
+
+.trade-report-markdown :deep(h2) {
+  border-top: 1px solid #edf1f7;
+  font-size: 17px;
+  padding-top: 14px;
+}
+
+.trade-report-markdown :deep(h3) {
+  font-size: 15px;
+}
+
+.trade-report-markdown :deep(p),
+.trade-report-markdown :deep(ul),
+.trade-report-markdown :deep(ol) {
+  margin: 8px 0;
+}
+
+.trade-report-markdown :deep(ul),
+.trade-report-markdown :deep(ol) {
+  padding-left: 22px;
+}
+
+.trade-report-markdown :deep(li) {
+  margin: 5px 0;
+}
+
+.trade-report-markdown :deep(strong) {
+  color: #172033;
+  font-weight: 700;
+}
+
+.trade-report-markdown :deep(code) {
+  background: #eef2f7;
+  border-radius: 4px;
+  color: #172033;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 1px 4px;
+}
+
+.trade-report-side strong {
+  color: #172033;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.trade-report-side p {
+  color: #667085;
+  font-size: 13px;
+  margin: 0;
+}
+
+.compact-holding-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+
+.compact-holding-table th,
+.compact-holding-table td {
+  border-bottom: 1px solid #edf1f7;
+  padding: 8px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.compact-holding-table th {
+  color: #667085;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.compact-holding-table td {
+  color: #283548;
+  line-height: 1.45;
+}
+
+.legacy-trade-tools {
+  background: #fff;
+  border: 1px solid #e4e9f0;
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+}
+
+.legacy-trade-tools > summary {
+  color: #526173;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 28px;
+}
+
+.legacy-trade-tools[open] > summary {
+  margin-bottom: 10px;
 }
 
 .trade-workbench-title {
@@ -2651,10 +2931,17 @@ watch([targetKey, period, adjust, startDate, endDate, holdingQuantity, holdingCo
 }
 
 .trade-workbench-chart-section {
+  background: #fff;
   border: 1px solid #dce5f0;
   border-radius: 6px;
   margin-bottom: 14px;
   padding: 12px 10px 8px;
+}
+
+.trade-workbench-chart-section.is-primary-chart {
+  border-color: #e4e9f0;
+  border-radius: 8px;
+  margin-bottom: 10px;
 }
 
 .chart-section-head {
@@ -2710,6 +2997,15 @@ watch([targetKey, period, adjust, startDate, endDate, holdingQuantity, holdingCo
 
 @media (max-width: 900px) {
   .trade-workbench-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trade-report-section {
+    grid-template-columns: 1fr;
+  }
+
+  .trade-report-head {
     align-items: stretch;
     flex-direction: column;
   }

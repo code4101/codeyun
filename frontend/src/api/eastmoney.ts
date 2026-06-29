@@ -479,6 +479,11 @@ export interface EastmoneyTradeWorkbench {
   candidates: EastmoneyTradeCandidateAdvice[]
 }
 
+export interface EastmoneyTradeReport {
+  markdown: string
+  updated_at: number | null
+}
+
 export interface EastmoneyFundFlowFilterOptions {
   categories: string[]
   security_codes: string[]
@@ -783,5 +788,15 @@ export async function fetchEastmoneyTradeWorkbench(params: {
       timeout: 120000,
     },
   )
+  return response.data
+}
+
+export async function fetchEastmoneyTradeReport() {
+  const response = await api.get<EastmoneyTradeReport>('/eastmoney/trade-report')
+  return response.data
+}
+
+export async function saveEastmoneyTradeReport(markdown: string) {
+  const response = await api.put<EastmoneyTradeReport>('/eastmoney/trade-report', { markdown })
   return response.data
 }

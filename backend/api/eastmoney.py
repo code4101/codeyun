@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import csv
 import json
+import time
 import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
@@ -108,7 +109,7 @@ from backend.core.stock.akshare_market import (
 )
 from backend.core.stock.eastmoney_ocr import parse_mobile_trade_detail_from_ocr_document
 from backend.db import get_session
-from backend.models import User
+from backend.models import AppSetting, User
 
 
 router = APIRouter(
@@ -230,6 +231,52 @@ _hk_pool_strategy_jobs: dict[str, Future] = {}
 class EastmoneySyncRequest(BaseModel):
     start_date: str | None = PydanticField(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str | None = PydanticField(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class EastmoneyTradeReportRequest(BaseModel):
+    markdown: str = PydanticField(default="", max_length=200000)
+
+
+def _trade_report_setting_key(user_id: int) -> str:
+    return f"user:{user_id}:eastmoney.trade_report"
+
+
+@router.get("/trade-report")
+def get_eastmoney_trade_report(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    row = session.get(AppSetting, _trade_report_setting_key(int(current_user.id)))
+    value = row.value if row and isinstance(row.value, dict) else {}
+    markdown = value.get("markdown") if isinstance(value.get("markdown"), str) else ""
+    updated_at = value.get("updated_at") if isinstance(value.get("updated_at"), (int, float)) else None
+    return {
+        "markdown": markdown,
+        "updated_at": updated_at,
+    }
+
+
+@router.put("/trade-report")
+def save_eastmoney_trade_report(
+    payload: EastmoneyTradeReportRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    now = time.time()
+    setting_key = _trade_report_setting_key(int(current_user.id))
+    row = session.get(AppSetting, setting_key)
+    value = {
+        "markdown": payload.markdown,
+        "updated_at": now,
+    }
+    if row is None:
+        row = AppSetting(key=setting_key, value=value, updated_at=now)
+    else:
+        row.value = value
+        row.updated_at = now
+    session.add(row)
+    session.commit()
+    return value
 
 
 @router.get("/strategy-research", include_in_schema=False)
@@ -2287,7 +2334,11 @@ def get_akshare_market_intraday(
         symbol=normalized_symbol,
     )
     requested_trade_date = akshare_date_to_iso(trade_date) if trade_date else ""
-    target_trade_date = requested_trade_date or latest_trade_date
+    today = _intraday_today_iso()
+    target_trade_date = requested_trade_date or (
+        today if _is_intraday_weekday(today) else latest_trade_date
+    )
+    should_fetch_live = bool(refresh or (not requested_trade_date and target_trade_date == today and _is_intraday_weekday(today)))
 
     def serialize_with_target(intraday: AkshareEtfIntraday) -> dict:
         payload = serialize_akshare_etf_intraday(intraday)
@@ -2295,12 +2346,12 @@ def get_akshare_market_intraday(
         payload["display_trade_date"] = intraday.trade_date
         return payload
 
-    if not refresh:
+    if not should_fetch_live:
         cached = read_persisted_akshare_intraday(
             market=market,
             symbol=symbol,
             name=name,
-            trade_date=trade_date,
+            trade_date=requested_trade_date or target_trade_date or trade_date,
             period=period,
             day_count=day_count,
         )
@@ -2341,7 +2392,7 @@ def get_akshare_market_intraday(
             market=market,
             symbol=symbol,
             name=name,
-            trade_date=requested_trade_date or latest_trade_date or None,
+            trade_date=requested_trade_date or target_trade_date or latest_trade_date or None,
             period=period,
             day_count=day_count,
         )
@@ -2367,7 +2418,7 @@ def get_akshare_market_intraday(
             market=market,
             symbol=symbol,
             name=name,
-            trade_date=requested_trade_date or latest_trade_date or trade_date,
+            trade_date=requested_trade_date or target_trade_date or latest_trade_date or trade_date,
             period=period,
             day_count=day_count,
         )
@@ -2414,7 +2465,7 @@ def get_akshare_market_intraday(
                 symbol=normalized_symbol,
                 name=name,
                 period=period,
-                trade_date=requested_trade_date or latest_trade_date or "",
+                trade_date=requested_trade_date or target_trade_date or latest_trade_date or "",
                 rows=(),
                 error=(
                     f"本地暂无目标交易日 {target_trade_date} 分时持久化数据；补下载失败：{exc}"
@@ -2423,6 +2474,17 @@ def get_akshare_market_intraday(
                 ),
             )
         )
+
+
+def _intraday_today_iso() -> str:
+    return dt.date.today().isoformat()
+
+
+def _is_intraday_weekday(value: str) -> bool:
+    try:
+        return dt.date.fromisoformat(value[:10]).weekday() < 5
+    except ValueError:
+        return False
 
 
 def persist_akshare_intraday(intraday: AkshareEtfIntraday) -> None:

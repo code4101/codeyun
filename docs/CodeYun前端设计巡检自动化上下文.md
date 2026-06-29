@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "3c939480007d67a362da7589626873d3dd9e9eac"
-last_audited_at: "2026-06-29T12:34:49.0631324+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-3c939480/report.md"
-last_frontend_commit_summary: "完整关闭 4fbe1fbf..3c939480：复核 PDF / 凡修 runtime / 星图日历 / 订单链路，并把 PDF 阅读器列表页的阅读位置投影收敛为单一概念。"
-audited_commit_count: 44
+last_audited_commit: "497863ad1070dd5000a867e53fb37459070d83ae"
+last_audited_at: "2026-06-29T14:34:25.5644731+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-497863ad/report.md"
+last_frontend_commit_summary: "完整关闭 3c939480..497863ad：复核 PDF / 星图日历 / 凡修邮件链路，确认真正需要用户决策的是凡修图鉴邮件页把已处理结果继续画成可编辑按钮。"
+audited_commit_count: 45
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-29
+
+- 完整范围：`3c939480007d67a362da7589626873d3dd9e9eac..497863ad1070dd5000a867e53fb37459070d83ae`
+- 覆盖提交：`497863ad1070dd5000a867e53fb37459070d83ae`
+- 前端入口提交：`497863ad1070dd5000a867e53fb37459070d83ae`
+- 入口如何牵引到旧问题：这次提交主要是凡修 `data_annotation` 调度与运行保护，但前端实际落点集中在三页：`fanxiu/wiki` 邮件状态、`notes/center?tab=calendar` 年/月备注加载，以及 `notes/pdfs` 列表页阅读位置投影。`pdf` 和 `calendar` 都沿着既有基础模型继续收敛，没有新增概念；真正被入口牵出的旧问题是 `fanxiu/wiki?tab=mail`：提交把 `claimed/deleted/missing_from_list` 从旧的 `可领` 投影里拆出为 `已处理`，减少了状态歧义，但一级列表仍把 `已处理` 画成与 `锁定 / 留存 / 可领` 完全同构的可点击主按钮，于是“处理结果事实”和“可编辑目标”又被揉回同一控件。
+- 本轮减法：本轮没有改源码，避免在语义未定时做错误止血。通过概念建模明确减法方向应该是“把已处理从可编辑主按钮里退出来”，而不是再新增一套解释文案、提示条或额外状态。`CalendarNotes` 的非月视图按需加载和 `PDF 阅读器` 的 `阅读位置` 单一投影继续保持了 UI 概念收敛，没有回退。
+- 信息量保持：三条链路的业务能力都保留。`fanxiu/wiki` 仍完整展示 `锁定 / 留存 / 可领 / 已处理` 的真实分布、邮件内容和附件；`CalendarNotes` 仍保留后端筛选、前端筛选、月/年/卷/纪切换和年标题；`PDF 阅读器` 仍保留搜索、筛选、导入、权限与阅读位置。当前没有减少判断依据，只是识别出 `fanxiu/wiki` 里哪个控件仍在把两个层级的事实混写。
+- 概念图/线框图：报告中的 Mermaid 已把 `邮件状态事实` 与 `可编辑目标` 拆成两层，证明 `已处理` 应位于事实层，而不应继续并列于可编辑三态按钮。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-497863ad/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 打开 `notes/pdfs`、`notes/center?tab=calendar`、`fanxiu/wiki?tab=mail`，完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 9 张截图；`evidence.json` 证明 9 个样本的 `bodyOverflowX/mainOverflowX` 均为 `0`。其中 `CalendarNotes` 年视图正常显示 `2026年 / CodeYun`，`PDF 阅读器` 三视口表头均保持 `阅读位置`，`fanxiu/wiki` 三视口稳定复现 `status-processed` 主按钮且 `disabled=false`。
+- 根因分层：`pdf` 无新问题；`CalendarNotes` 属于前端加载时机收敛；`fanxiu/wiki` 属于前端状态投影问题，但是否允许“已处理”回改需要产品语义判断，因此本轮不自动修。
+- 跨自动化交接：已新增 `docs/CodeYun自动化协作交接.md` 条目 `UI-HANDOFF-20260629-001`，状态为 `needs-human-decision`。
+- 剩余风险：当前工作树含用户未提交改动，尤其 `backend/api/eastmoney.py`、`backend/core/fanxiu/data_annotation/tasks/daily_foundation.py`、`frontend/src/api/eastmoney.ts`、`frontend/src/standard/notes/eastmoney/trade/page.vue` 已修改但不在本轮提交范围内；本轮截图基于当前工作树复用环境，但受影响页面与这些未提交改动无直接链路。另一个风险是 `fanxiu/wiki` 的最终收口方式取决于业务语义，在决策前不应贸然把按钮改禁用或改成静态文案。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图与报告沉淀；没有发现无需语义判断的低风险自动修复项，因此不改前端源码，直接把 `last_audited_commit` 推进到 `497863ad1070dd5000a867e53fb37459070d83ae`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd..3c939480007d67a362da7589626873d3dd9e9eac`
 - 覆盖提交：`3c939480007d67a362da7589626873d3dd9e9eac`

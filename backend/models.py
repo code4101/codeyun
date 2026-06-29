@@ -1221,7 +1221,7 @@ class NoteNode(SQLModel, table=True):
 
     # New naming-aligned category system. Derived from note_types during transition.
     note_categories: List[dict] = Field(default_factory=list, sa_column=Column(JSON))
-    primary_category: Optional[str] = Field(default="general", index=True)
+    primary_category: Optional[str] = Field(default=None, index=True)
 
     # Content form: note / document / memo.
     note_form: Optional[str] = Field(default="note", index=True)

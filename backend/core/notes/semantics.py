@@ -212,6 +212,8 @@ def normalize_note_categories(
     if normalized:
         return normalized
 
+    if fallback_category is None:
+        return []
     fallback = (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip()
     if not fallback:
         return []
@@ -244,9 +246,11 @@ def derive_primary_node_type(note_types, fallback_type: str | None = NOTE_TYPE_D
     return str(key).strip() or ((fallback_type or NOTE_TYPE_DEFAULT or "").strip() or NOTE_TYPE_DEFAULT)
 
 
-def derive_primary_category(note_categories, fallback_category: str | None = NOTE_CATEGORY_DEFAULT) -> str:
+def derive_primary_category(note_categories, fallback_category: str | None = NOTE_CATEGORY_DEFAULT) -> str | None:
     normalized = normalize_note_categories(note_categories, fallback_category=fallback_category)
     if not normalized:
+        if fallback_category is None:
+            return None
         return (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip() or NOTE_CATEGORY_DEFAULT
 
     best_index = 0
@@ -258,7 +262,11 @@ def derive_primary_category(note_categories, fallback_category: str | None = NOT
             best_weight = weight
 
     key = normalized[best_index].get("key")
-    return str(key).strip() or ((fallback_category or NOTE_CATEGORY_DEFAULT or "").strip() or NOTE_CATEGORY_DEFAULT)
+    if key:
+        return str(key).strip()
+    if fallback_category is None:
+        return None
+    return (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip() or NOTE_CATEGORY_DEFAULT
 
 
 def derive_note_taxonomy_from_legacy(
@@ -266,7 +274,7 @@ def derive_note_taxonomy_from_legacy(
     node_type: str | None = NOTE_TYPE_DEFAULT,
     note_kind: str | None = NOTE_KIND_DEFAULT,
     node_status: str | None = NOTE_LIFECYCLE_STAGE_DEFAULT,
-) -> dict[str, str | list[dict[str, int | str]]]:
+) -> dict[str, str | None | list[dict[str, int | str]]]:
     normalized_note_types = normalize_note_types(note_types, fallback_type=node_type or NOTE_TYPE_DEFAULT)
     categories_seed: list[dict[str, int | str]] = []
     resolved_form = NOTE_FORM_DEFAULT
@@ -302,8 +310,9 @@ def derive_legacy_semantics_from_taxonomy(
     note_scene: str | None = NOTE_SCENE_DEFAULT,
     lifecycle_stage: str | None = NOTE_LIFECYCLE_STAGE_DEFAULT,
 ) -> dict[str, str | list[dict[str, int | str]]]:
-    normalized_categories = normalize_note_categories(note_categories, fallback_category=primary_category or NOTE_CATEGORY_DEFAULT)
-    normalized_primary_category = derive_primary_category(normalized_categories, fallback_category=primary_category or NOTE_CATEGORY_DEFAULT)
+    fallback_category = primary_category if primary_category is not None else None
+    normalized_categories = normalize_note_categories(note_categories, fallback_category=fallback_category)
+    normalized_primary_category = derive_primary_category(normalized_categories, fallback_category=fallback_category)
 
     legacy_note_types: list[dict[str, int | str]] = []
     general_legacy_key = get_legacy_general_type_key(note_form)

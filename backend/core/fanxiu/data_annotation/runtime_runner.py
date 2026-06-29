@@ -1708,6 +1708,7 @@ class FanxiuRuntime(Runtime):
             "淬剑试炼",
             "灵祖",
             "挑战仙缘",
+            "论道",
         )
         return bool(any(marker in compact for marker in daily_row_markers) and re.search(r"\d+/\d+", compact))
 
@@ -6908,7 +6909,7 @@ class DataAnnotationRuntimeRunner(
             "filename": filename,
             "box": self._box(shape, image),
             "scan": scan,
-            "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 5),
+            "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 20),
             "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),
             "tolerance_min_data_url": ((shape.get("toleranceRange") or {}).get("minDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
             "tolerance_max_data_url": ((shape.get("toleranceRange") or {}).get("maxDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
