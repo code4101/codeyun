@@ -1897,7 +1897,7 @@ class DailyChallengeTaskMixin:
         *,
         current_scene: int | None,
     ):
-        if not bool(payload.get("assistant_return_after_items")):
+        if not bool(payload.get("assistant_return_after_items", True)):
             if False:
                 yield None
             return

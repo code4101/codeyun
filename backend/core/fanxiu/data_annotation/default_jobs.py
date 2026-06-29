@@ -29,15 +29,18 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_yaowang",
     "daily_yaozu",
     "daily_xianyuan",
+    "daily_xianyuan_duel",
     "daily_baiye",
     "daily_green_bottle_baiye",
     "daily_gongfeng",
     "daily_xianshi",
+    "xianshi_weekly_resources",
     "daily_xianmeng",
     "daily_lundao",
     "daily_vip",
     "daily_dongtian",
     "daily_lingmai",
+    "daily_lingmai_clear",
     "daily_dungeon",
     "daily_assistant",
     "daily_audit",
@@ -323,7 +326,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             flow=runner.日常供奉流程,
         )
 
-    @register_fanxiu_data_annotation_manual_job("daily_xianshi", "日常_仙市", scheduler_supported=True)
+    @register_fanxiu_data_annotation_manual_job("daily_xianshi", "仙市_秘藏阁", scheduler_supported=True)
     def _run_data_annotation_daily_xianshi_manual_job(
         runner: Any,
         ctx: dict[str, Any],
@@ -331,6 +334,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_xianshi_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("xianshi_weekly_resources", "仙市_每周资源", scheduler_supported=True)
+    def _run_data_annotation_xianshi_weekly_resources_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_xianshi_weekly_resources_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_xianmeng", "日常_仙盟", scheduler_supported=True)
     def _run_data_annotation_daily_xianmeng_manual_job(
@@ -349,6 +361,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_lundao_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_xianyuan_duel", "日常_仙缘", scheduler_supported=True)
+    def _run_data_annotation_daily_xianyuan_duel_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_xianyuan_duel_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_vip", "日常_vip", scheduler_supported=True)
     def _run_data_annotation_daily_vip_manual_job(
@@ -376,6 +397,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_lingmai_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_lingmai_clear", "日常_灵脉_清体力", scheduler_supported=True)
+    def _run_data_annotation_daily_lingmai_clear_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_lingmai_clear_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_dungeon", "日常_每日副本", scheduler_supported=True)
     def _run_data_annotation_daily_dungeon_manual_job(

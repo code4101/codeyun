@@ -407,26 +407,47 @@ export const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
   ...(() => {
     const hasExplicitCategories = Array.isArray(raw.note_categories);
-    const taxonomy = Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
-      ? deriveLegacySemanticsFromTaxonomy(
-        raw.note_categories,
-        raw.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
-        raw.note_form ?? NOTE_FORM_DEFAULT,
-        raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
-        raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
-      )
-      : {
-        ...deriveNoteTaxonomyFromLegacy(
-          raw.note_types,
-          raw.node_type ?? 'note',
-          raw.note_kind ?? NOTE_SCENE_DEFAULT,
-          raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
-        ),
+    const hasNormalizedTaxonomyPayload = hasExplicitCategories
+      && ('primary_category' in raw)
+      && ('note_form' in raw)
+      && ('note_scene' in raw || 'note_kind' in raw)
+      && ('lifecycle_stage' in raw || 'node_status' in raw);
+    const taxonomy = hasNormalizedTaxonomyPayload
+      ? {
         note_types: createEffectiveNoteTypes(raw.note_types, raw.node_type ?? 'note', raw.color ?? null),
-        node_type: raw.node_type ?? 'note',
+        note_categories: raw.note_categories,
+        primary_category: raw.primary_category ?? null,
+        note_form: raw.note_form ?? NOTE_FORM_DEFAULT,
         note_kind: raw.note_kind ?? null,
-        node_status: raw.node_status ?? null
-      };
+        note_scene: raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
+        node_type: raw.node_type ?? 'note',
+        node_status: raw.node_status ?? null,
+        lifecycle_stage: raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
+      }
+      : Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
+        ? deriveLegacySemanticsFromTaxonomy(
+          raw.note_categories,
+          raw.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
+          raw.note_form ?? NOTE_FORM_DEFAULT,
+          raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
+          raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+        )
+        : {
+          ...deriveNoteTaxonomyFromLegacy(
+            raw.note_types,
+            raw.node_type ?? 'note',
+            raw.note_kind ?? NOTE_SCENE_DEFAULT,
+            raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+          ),
+          note_types: createEffectiveNoteTypes(raw.note_types, raw.node_type ?? 'note', raw.color ?? null),
+          node_type: raw.node_type ?? 'note',
+          note_kind: raw.note_kind ?? null,
+          node_status: raw.node_status ?? null
+        };
+    const rawCompletionProgressExpr = typeof raw.completion_progress_expr === 'string'
+      ? raw.completion_progress_expr
+      : null;
+    const completionProgressExpr = rawCompletionProgressExpr ?? getCompletionProgressExprFromCustomFields(raw.custom_fields);
 
     return {
       id: normalizeNoteId(raw.id),
@@ -447,19 +468,10 @@ export const normalizeNote = (raw: any): NoteNode => ({
       lifecycle_stage: taxonomy.lifecycle_stage,
       weight_mode: raw.weight_mode ?? null,
       private_level: normalizeInteger(raw.private_level, 0),
-      completion_progress_expr: (() => {
-        const expr = typeof raw.completion_progress_expr === 'string'
-          ? raw.completion_progress_expr
-          : getCompletionProgressExprFromCustomFields(raw.custom_fields);
-        return expr ? expr : null;
-      })(),
+      completion_progress_expr: completionProgressExpr || null,
       completion_progress: isFiniteNumber(raw.completion_progress)
         ? Math.min(1, Math.max(0, Number(raw.completion_progress)))
-        : evaluateCompletionProgressExpr(
-          typeof raw.completion_progress_expr === 'string'
-            ? raw.completion_progress_expr
-            : getCompletionProgressExprFromCustomFields(raw.custom_fields)
-        ),
+        : evaluateCompletionProgressExpr(completionProgressExpr),
       can_edit: Boolean(raw.can_edit),
       access: raw.access ?? null
     };

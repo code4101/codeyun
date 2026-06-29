@@ -4911,9 +4911,9 @@ class DataAnnotationRuntimeRunner(
             str(payload.get("__scheduler_task_id") or "legacy-daily-xianshi"),
             next_time,
             task_type="daily_xianshi",
-            label="日常_仙市",
+            label="仙市_秘藏阁",
         )
-        self._log("success", f"日常_仙市：{message}，下次 {next_time}")
+        self._log("success", f"仙市_秘藏阁：{message}，下次 {next_time}")
         return next_time
 
     def _record_daily_xianshi_retry(self, payload: dict[str, Any], *, message: str, seconds: int) -> str:
@@ -4933,7 +4933,7 @@ class DataAnnotationRuntimeRunner(
             **existing,
             "id": task_id,
             "task_type": "daily_xianshi",
-            "label": "日常_仙市",
+            "label": "仙市_秘藏阁",
             "source": "data_annotation_runtime",
             "schedule_kind": "dynamic",
             "discovered_next_time": None,
@@ -4944,7 +4944,7 @@ class DataAnnotationRuntimeRunner(
             "updated_at": time.time(),
         }
         _write_data_annotation_world_facts(facts)
-        self._log("skip", f"日常_仙市：{message}，{retry_after} 重试")
+        self._log("skip", f"仙市_秘藏阁：{message}，{retry_after} 重试")
         return retry_after
 
     def _record_daily_vip_done(self, payload: dict[str, Any], *, message: str) -> str:

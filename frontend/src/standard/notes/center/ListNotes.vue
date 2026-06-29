@@ -53,14 +53,14 @@
         <div class="list-container">
           <div class="list-summary-bar">
             <span>共 {{ filteredNotes.length }} 条</span>
-            <span v-if="filteredNotes.length > visiblePageNotes.length">
-              当前显示 {{ visiblePageNotes.length }} 条
+            <span v-if="filteredNotes.length > visiblePageRows.length">
+              当前显示 {{ visiblePageRows.length }} 条
             </span>
           </div>
           <el-table
             ref="tableRef"
             v-loading="loading"
-            :data="visiblePageNotes"
+            :data="visiblePageRows"
             class="notes-table"
             highlight-current-row
             @current-change="handleCurrentChange"
@@ -73,7 +73,7 @@
 
             <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="note-title" :style="getTitleStyle(row)">
+                <span class="note-title" :style="row._ui.titleStyle">
                   <NoteFormBadge :form="row.note_form" compact />
                   <span class="note-title-text">{{ row.title || '无标题' }}</span>
                 </span>
@@ -84,9 +84,9 @@
               <template #default="{ row }">
                 <span
                   class="node-type-text"
-                  :style="getTypeTagStyle(row)"
+                  :style="row._ui.typeTagStyle"
                 >
-                  {{ getCategoryLabel(row.primary_category) }}
+                  {{ row._ui.categoryLabel }}
                 </span>
               </template>
             </el-table-column>
@@ -102,23 +102,23 @@
             <el-table-column prop="lifecycle_stage" label="阶段" width="100" sortable>
               <template #default="{ row }">
                 <span
-                  v-if="useSplitStatusBadge(row)"
+                  v-if="row._ui.useSplitStatusBadge"
                   class="node-badge node-badge--split"
-                  :style="getStatusBadgeStyle(row)"
+                  :style="row._ui.statusStyle"
                 >
-                  <span class="node-badge-layer" :style="getStatusBadgeSplitLayerStyle(row, 'fill')">
-                    {{ getLifecycleStageLabel(row.lifecycle_stage) }}
+                  <span class="node-badge-layer" :style="row._ui.statusFillLayerStyle">
+                    {{ row._ui.lifecycleStageLabel }}
                   </span>
-                  <span class="node-badge-layer" :style="getStatusBadgeSplitLayerStyle(row, 'empty')">
-                    {{ getLifecycleStageLabel(row.lifecycle_stage) }}
+                  <span class="node-badge-layer" :style="row._ui.statusEmptyLayerStyle">
+                    {{ row._ui.lifecycleStageLabel }}
                   </span>
                 </span>
                 <span
                   v-else
                   class="node-badge"
-                  :style="getStatusBadgeStyle(row)"
+                  :style="row._ui.statusStyle"
                 >
-                  {{ getLifecycleStageLabel(row.lifecycle_stage) }}
+                  {{ row._ui.lifecycleStageLabel }}
                 </span>
               </template>
             </el-table-column>
@@ -135,8 +135,8 @@
 
             <el-table-column prop="start_at" label="起始时间" width="176" sortable>
               <template #default="{ row }">
-                <span class="start-at-badge" :style="getStartAtBadgeStyle(row.start_at)">
-                  {{ formatDate(row.start_at) }}
+                <span class="start-at-badge" :style="row._ui.startAtBadgeStyle">
+                  {{ row._ui.formattedStartAt }}
                 </span>
               </template>
             </el-table-column>
@@ -241,10 +241,36 @@ const visiblePageNotes = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
   return filteredNotes.value.slice(start, start + pageSize.value);
 });
+const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
+  const statusStyle = getStatusBadgeStyle(note);
+  const ratio = statusStyle.partialFillRatio;
+  const lifecycleStageLabel = getLifecycleStageLabel(note.lifecycle_stage);
+  return {
+    ...note,
+    _ui: {
+      titleStyle: getTitleStyle(note),
+      typeTagStyle: getTypeTagStyle(note),
+      categoryLabel: getCategoryLabel(note.primary_category),
+      lifecycleStageLabel,
+      statusStyle,
+      useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
+      statusFillLayerStyle: {
+        color: statusStyle.fillTextColor,
+        clipPath: `inset(0 ${(100 - (ratio ?? 0) * 100).toFixed(2)}% 0 0)`
+      },
+      statusEmptyLayerStyle: {
+        color: statusStyle.emptyTextColor,
+        clipPath: `inset(0 0 0 ${((ratio ?? 0) * 100).toFixed(2)}%)`
+      },
+      startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
+      formattedStartAt: formatDate(note.start_at),
+    }
+  };
+}));
 const selectedCount = computed(() => selectedNoteIds.value.length);
 const allVisibleSelected = computed(() => (
-  visiblePageNotes.value.length > 0
-  && visiblePageNotes.value.every(note => selectedNoteIds.value.includes(noteKey(note.id)))
+  visiblePageRows.value.length > 0
+  && visiblePageRows.value.every(note => selectedNoteIds.value.includes(noteKey(note.id)))
 ));
 const filteredNotesVersion = computed(() => JSON.stringify([
   session.value?.noteDataVersion ?? 0,
@@ -320,7 +346,7 @@ const handleSelectionChange = (rows: NoteNode[]) => {
 
 const selectAllVisible = async () => {
   await nextTick();
-  visiblePageNotes.value.forEach(note => {
+  visiblePageRows.value.forEach(note => {
     tableRef.value?.toggleRowSelection(note, true);
   });
 };

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "1f786faee97e320efbe06afb5c98fea238151247"
-last_audited_at: "2026-06-29T16:36:00+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-1f786fae/report.md"
-last_frontend_commit_summary: "完整关闭 497863ad..1f786fae：收敛东财交易页重复报告标题，补齐 SharedNoteEditor 的 Loading 图标导入，并复核笔记分类与凡修标注链路。"
-audited_commit_count: 46
+last_audited_commit: "6955ecbe0db382f44b732ad1be8ee5edec5e6d11"
+last_audited_at: "2026-06-29T18:35:18+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-6955ecbe/report.md"
+last_frontend_commit_summary: "完整关闭 1f786fae..6955ecbe：复核 SharedNoteEditor、东财交易建议和凡修标注页，确认三条链路都沿着减少重复表达与唯一事实源收敛，无需追加修复。"
+audited_commit_count: 47
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-29
+
+- 完整范围：`1f786faee97e320efbe06afb5c98fea238151247..6955ecbe0db382f44b732ad1be8ee5edec5e6d11`
+- 覆盖提交：`6955ecbe0db382f44b732ad1be8ee5edec5e6d11`
+- 前端入口提交：`6955ecbe0db382f44b732ad1be8ee5edec5e6d11`
+- 入口如何牵引到旧问题：这次提交同时落在 `SharedNoteEditor`、`notes/eastmoney/trade` 和 `fanxiu/data-annotation` 三条旧链路上，但方向一致，都是把重复表达或双轨事实收回基础模型。`SharedNoteEditor` 继续承载标题/分类/形态/阶段/正文的单层编辑闭环；东财交易页把页面标题、卡头标题和 Markdown H1 的三层重复命名收回成一层；凡修标注页则沿着删除保护这条入口，确认 shape 删除不再依赖 `id + signature + localStorage` 的第二事实源，而是回到“前端临时隐藏 + 后端 asset tree 落盘成功后清理临时键”的更小模型。
+- 本轮减法：不新增任何入口、按钮、说明或状态，也没有再改仓库代码。主要确认提交本身已经完成三处减法：1）补齐 `Loading` 图标导入后，`SharedNoteEditor` 不再为一个不存在的组件名制造运行时噪音；2）东财页只保留一层 `股票操作报告` 命名；3）标注页删除保护不再持久化额外 signature/localStorage 事实。
+- 信息量保持：笔记编辑页仍保留标题、分类、形态、阶段、进度、自定义属性和正文；东财页仍保留行情图、AI 报告正文和账户约束；凡修标注页仍保留画面、帧树和当前 shape 属性。减少的是重复标题、装配噪音和多余事实源，不是减少用户判断依据。
+- 概念图/线框图：报告中的 Mermaid 将三条链路分别收敛为 `节点事实 -> 分类/形态/阶段 -> 继续编辑`、`行情 -> 唯一报告标题 -> 账户约束 -> 卖出或等待`、`画面与帧树 -> 当前 shape 属性 -> 后端 asset tree`，证明本轮入口都在做概念减法而不是新增控件。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-6955ecbe/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 打开 `notes/center?tab=star`、`notes/eastmoney/trade`、`fanxiu/data-annotation`，完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 9 张截图；`evidence.json` 证明三页都无横向溢出，东财页 `.trade-report-markdown h1 = 0`，笔记编辑页控制台 `warn/error = 0`。本轮未改仓库代码，因此未运行 `npm run typecheck --prefix frontend` / `npm run build --prefix frontend`。
+- 根因分层：`SharedNoteEditor` 属于前端运行时装配问题，已在提交内修复；`notes/eastmoney/trade` 属于表现层重复标题问题，已在提交内修复；`fanxiu/data-annotation` 属于前端状态投影收敛问题，已在提交内通过移除持久化双轨事实完成收敛。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的后端数据投影或业务建模债务。
+- 剩余风险：`fanxiu/data-annotation` 本轮只复核了真实入口和事实源收敛方向，未额外构造删除失败回滚实验；`notes/center` 宽屏首屏仍以上部年视图摘要为主，编辑器需要滚动到下方，这属于既有大结构问题，不在本轮入口上继续扩散。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务/交互建模、真实多视口截图和页面复核，且未发现新增待修 UI 问题，因此把 `last_audited_commit` 推进到 `6955ecbe0db382f44b732ad1be8ee5edec5e6d11`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`497863ad1070dd5000a867e53fb37459070d83ae..1f786faee97e320efbe06afb5c98fea238151247`
 - 覆盖提交：`1f786faee97e320efbe06afb5c98fea238151247`

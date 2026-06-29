@@ -70,6 +70,8 @@ const WORKLOAD_CHART_PADDING = {
 };
 const ALL_DEVICES_ENTRY_ID = '__all__';
 const THREAD_PAGE_SIZE = 100;
+const CODEX_REMOTE_OVERVIEW_SOFT_TIMEOUT_MS = 4000;
+const CODEX_REMOTE_WORKLOAD_SOFT_TIMEOUT_MS = 6000;
 const PROJECT_COLOR_PALETTE = [
   '#4f8ff7',
   '#5bb974',
@@ -244,6 +246,14 @@ const selectedSourceDevices = computed<Device[]>(() => {
   if (isAllDevicesMode.value) return devices.value.slice();
   return selectedDevice.value ? [selectedDevice.value] : [];
 });
+
+const getCodexOverviewTimeoutMs = (device: Device) => (
+  device.mode === 'remote' ? CODEX_REMOTE_OVERVIEW_SOFT_TIMEOUT_MS : undefined
+);
+
+const getCodexWorkloadTimeoutMs = (device: Device) => (
+  device.mode === 'remote' ? CODEX_REMOTE_WORKLOAD_SOFT_TIMEOUT_MS : undefined
+);
 
 const toTimestamp = (value?: number | string | null) => {
   if (value === null || value === undefined || value === '') return 0;
@@ -2332,7 +2342,10 @@ const loadWorkload = async () => {
               try {
                 return {
                   device,
-                  workload: await fetchCodexWorkloadForEntry(device.id),
+                  workload: await fetchCodexWorkloadForEntry(device.id, {
+                    rootDir: normalizeRootDirForRequest(),
+                    timeoutMs: getCodexWorkloadTimeoutMs(device),
+                  }),
                 };
               } catch (error) {
                 throw createDeviceRequestFailure(device, error);
@@ -2417,7 +2430,10 @@ const loadOverview = async (preserveThread = true) => {
           const results = await Promise.allSettled(
             sourceDevices.map(async (device) => {
               try {
-                const overviewPayload = await fetchCodexOverviewForEntry(device.id, buildOverviewRequestParams(0, pageEnd));
+                const overviewPayload = await fetchCodexOverviewForEntry(device.id, {
+                  ...buildOverviewRequestParams(0, pageEnd),
+                  timeoutMs: getCodexOverviewTimeoutMs(device),
+                });
                 return {
                   device,
                   overview: overviewPayload,
@@ -2446,10 +2462,9 @@ const loadOverview = async (preserveThread = true) => {
     if (requestId !== latestOverviewRequestId) return;
     overview.value = payload;
     rootDirInput.value = isAllDevicesMode.value ? '' : payload.root_dir;
-    await Promise.all([
-      syncSelectionAfterOverview(preserveThread),
-      loadWorkload(),
-    ]);
+    await syncSelectionAfterOverview(preserveThread);
+    // Workload is best-effort context and should not keep the thread pane under a loading mask.
+    void loadWorkload();
   } catch (error: any) {
     if (requestId !== latestOverviewRequestId) return;
     overview.value = null;
