@@ -4066,6 +4066,60 @@ def test_identify_scene_number_directly_checks_explicit_nested_candidate(monkeyp
     assert runner._identify_scene_number(ctx, "frame", [278]) == (278, 100.0)
 
 
+def test_identify_scene_number_refines_preferred_parent_to_child(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image299 = _image("论道", "0299.png", [
+        {"id": "title", "kind": "rect", "title": "论道", "sceneIdentityRole": "required"},
+    ])
+    image297 = _image("三清道场", "0297.png", [
+        {"id": "seat", "kind": "rect", "title": "请他让座", "sceneIdentityRole": "required"},
+    ])
+    image298 = _image("空位", "0298.png", [
+        {"id": "empty", "kind": "rect", "title": "空位", "sceneIdentityRole": "required"},
+    ])
+    image299["children"] = [image297, image298]
+    image299["layer"] = 1
+    tree = [{"type": "folder", "title": "日常", "children": [image299]}]
+    ctx = {"asset_tree": tree, "images": {297: image297, 298: image298, 299: image299}}
+
+    def fake_scene_score(_ctx, image, _frame):
+        return {299: 96.0, 297: 92.0, 298: 20.0}.get(runner._image_number(image), 0.0)
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+
+    assert runner._identify_scene_number(ctx, "frame", [299]) == (297, 92.0)
+
+
+def test_identify_scene_number_continues_after_rejected_world_match(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "map", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image299 = _image("论道", "0299.png", [
+        {"id": "title", "kind": "rect", "title": "论道", "sceneIdentityRole": "required"},
+    ])
+    image297 = _image("三清道场", "0297.png", [
+        {"id": "seat", "kind": "rect", "title": "请他让座", "sceneIdentityRole": "required"},
+    ])
+    image34["layer"] = 1
+    image299["layer"] = 1
+    image299["children"] = [image297]
+    tree = [{"type": "folder", "title": "世界", "children": [image34]}, {"type": "folder", "title": "日常", "children": [image299]}]
+    ctx = {"asset_tree": tree, "images": {34: image34, 297: image297, 299: image299}}
+
+    def fake_scene_score(_ctx, image, _frame):
+        return {34: 97.0, 299: 96.0, 297: 92.0}.get(runner._image_number(image), 0.0)
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{"text": "三清道场 论道 闻道感悟 剩余座位 请他让座"}],
+    )
+
+    assert runner._identify_scene_number(ctx, "frame") == (297, 92.0)
+
+
 def test_runtime_container_skips_disabled_guards(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"

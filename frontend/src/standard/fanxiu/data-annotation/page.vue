@@ -7476,20 +7476,9 @@ const shapeDeleteIdKey = (shapeId: string) => `id:${shapeId}`;
 
 const shapeDeleteNumberKey = (value: number) => String(Math.round(value * 10000));
 
-const shapeDeleteSignatureKey = (image: DataAnnotationAssetNode, shape: DataAnnotationShape) => [
-  'sig',
-  assetNodeMergeKey(image),
-  (shape.title || '').trim(),
-  shapeDeleteNumberKey(shape.x),
-  shapeDeleteNumberKey(shape.y),
-  shapeDeleteNumberKey(shape.w),
-  shapeDeleteNumberKey(shape.h),
-].join(':');
-
 const isShapeDeletedForImage = (image: DataAnnotationAssetNode, shape: DataAnnotationShape) => (
   deletedShapeIds.value.has(shape.id)
   || deletedShapeIds.value.has(shapeDeleteIdKey(shape.id))
-  || deletedShapeIds.value.has(shapeDeleteSignatureKey(image, shape))
 );
 
 const filterDeletedShapesForImage = (
@@ -7907,17 +7896,13 @@ const normalizeStringIdArray = (value: unknown) => (
 );
 
 const loadDeletedShapeIds = () => {
-  if (typeof window === 'undefined') return new Set<string>();
-  try {
-    return new Set(normalizeStringIdArray(JSON.parse(window.localStorage.getItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY) || '[]')));
-  } catch {
-    return new Set<string>();
-  }
+  if (typeof window !== 'undefined') window.localStorage.removeItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY);
+  return new Set<string>();
 };
 
 const persistDeletedShapeIds = () => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY, JSON.stringify([...deletedShapeIds.value]));
+  window.localStorage.removeItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY);
 };
 
 deletedShapeIds.value = loadDeletedShapeIds();
@@ -10158,11 +10143,11 @@ const deleteSelectedShape = () => {
   if (!image?.shapes) return;
   const targets = selectedShapeRoots();
   if (!targets.length) return;
+  const pendingDeleteKeys: string[] = [];
   for (const shape of flattenShapes(targets)) {
-    deletedShapeIds.value.add(shape.id);
-    deletedShapeIds.value.add(shapeDeleteIdKey(shape.id));
-    deletedShapeIds.value.add(shapeDeleteSignatureKey(image, shape));
+    pendingDeleteKeys.push(shape.id, shapeDeleteIdKey(shape.id));
   }
+  for (const key of pendingDeleteKeys) deletedShapeIds.value.add(key);
   persistDeletedShapeIds();
   removeShapesByIds(image.shapes, new Set(targets.map((shape) => shape.id)));
   image.shapes = filterDeletedShapesForImage(image, image.shapes);
@@ -10177,7 +10162,10 @@ const deleteSelectedShape = () => {
     const entryId = selectedEntryId.value;
     assetTree.value = filterDeletedShapesFromAssetTree(assetTree.value);
     const tree = cloneAssetTree(assetTree.value);
-    void flushAssetTreeToBackend(entryId, tree);
+    void flushAssetTreeToBackend(entryId, tree).finally(() => {
+      for (const key of pendingDeleteKeys) deletedShapeIds.value.delete(key);
+      persistDeletedShapeIds();
+    });
   }
 };
 

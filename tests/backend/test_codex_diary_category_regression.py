@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 
 from backend.api.notes import (
-    _annotate_codex_diary_record_category,
-    _build_codex_diary_record_category_candidates,
     _normalize_project_palette_token,
+    _resolve_codex_diary_group_categories,
 )
+from backend.core.notes.semantics import derive_primary_category
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "codex_diary_category_cases.jsonl"
@@ -29,6 +29,7 @@ def _palette_lookup() -> dict[str, dict]:
         {"key": "custom_mmx3qpfhinvh", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
         {"key": "custom_mmxc75t01g04", "label": "CodeYun/集群", "color": "#0067A5", "order": 40},
         {"key": "custom_mmxdcghtzcw7", "label": "CodeYun/综合", "color": "#00BFFF", "order": 50},
+        {"key": "custom_mmxdyjjkxrsr", "label": "pyxllib", "color": "#2f9fa8", "order": 60},
     ]
     lookup: dict[str, dict] = {}
     for item in items:
@@ -42,19 +43,14 @@ def _palette_lookup() -> dict[str, dict]:
 def test_codex_diary_category_regression_cases():
     palette_lookup = _palette_lookup()
     for case in _load_cases():
-        record = {
-            "thread_title": case.get("thread_title"),
-            "project_label": case.get("project_label"),
-            "source_root_dir": case.get("source_root_dir"),
-            "user_request": case.get("user_request"),
-            "assistant_result": case.get("assistant_result"),
-        }
+        raw_records = case.get("raw_records") or []
+        assert raw_records, case["id"]
 
-        _annotate_codex_diary_record_category(record, palette_lookup=palette_lookup, title_hints={})
-        record["codex_diary_category_candidates"] = _build_codex_diary_record_category_candidates(
-            record,
+        note_categories = _resolve_codex_diary_group_categories(
+            raw_records,
             palette_lookup=palette_lookup,
+            title_hints={},
         )
+        primary_category = derive_primary_category(note_categories)
 
-        assert record["codex_diary_category_key"] == case["expected_category_key"], case["id"]
-        assert record["codex_diary_category_candidates"][0] == case["expected_category_key"], case["id"]
+        assert primary_category == case["expected_category_key"], case["id"]

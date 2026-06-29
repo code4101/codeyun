@@ -408,7 +408,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, onMounted, onUnmounted, ref, watch } from 'vue';
-import { ArrowDown, ArrowRight, Calendar, Clock, Close, List, Plus } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowRight, Calendar, Clock, Close, List, Loading, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';

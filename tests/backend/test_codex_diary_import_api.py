@@ -822,6 +822,166 @@ def test_codex_diary_import_duplicate_requires_confirmation(
     assert confirmed_completed["duplicate_note_ids"] == first_completed["created_note_ids"]
 
 
+def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
+    client,
+    session: Session,
+    auth_user,
+    monkeypatch,
+):
+    entries = _create_device_entries(session, auth_user.id)
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "legacy_color_67c23a", "label": "凡修", "color": "#67c23a", "order": 10},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00bfff", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+
+    old_run, _entry_specs, _root_identity, _should_run = _create_codex_diary_import_run_record(
+        session,
+        current_user=auth_user,
+        diary_date_text="2026-06-28",
+        entry_ids=[],
+    )
+    start_at = _ts(2026, 6, 28, 17, 19)
+    old_codeyun_note = _create_codex_diary_note(
+        session,
+        current_user=auth_user,
+        run=old_run,
+        block={
+            "title": "洞天福地返回闭环",
+            "category_key": "custom_codeyun_general",
+            "note_categories": [{"key": "custom_codeyun_general", "weight": 100}],
+            "records": [
+                {
+                    "thread_id": "fanxiu:dongtian",
+                    "thread_title": "洞天福地返回闭环",
+                    "assistant_result": "洞天福地返回闭环已验证。",
+                    "start_at": start_at,
+                    "end_at": start_at + 3 * 60,
+                    "duration_seconds": 3 * 60,
+                    "source_device_name": "codepc_mf",
+                }
+            ],
+            "duration_seconds": 3 * 60,
+            "start_at": start_at,
+            "end_at": start_at + 3 * 60,
+        },
+    )
+    old_fanxiu_note = _create_codex_diary_note(
+        session,
+        current_user=auth_user,
+        run=old_run,
+        block={
+            "title": "邮件清理链路收敛",
+            "category_key": "legacy_color_67c23a",
+            "note_categories": [{"key": "legacy_color_67c23a", "weight": 100}],
+            "records": [
+                {
+                    "thread_id": "fanxiu:mail",
+                    "thread_title": "邮件清理链路收敛",
+                    "assistant_result": "邮件清理链路已收敛。",
+                    "start_at": start_at + 10 * 60,
+                    "end_at": start_at + 30 * 60,
+                    "duration_seconds": 20 * 60,
+                    "source_device_name": "codepc_mf",
+                }
+            ],
+            "duration_seconds": 20 * 60,
+            "start_at": start_at + 10 * 60,
+            "end_at": start_at + 30 * 60,
+        },
+    )
+    old_run.status = "completed"
+    old_run.stage = "completed"
+    old_run.created_note_ids = [_note_public_id for _note_public_id in [str(old_codeyun_note.numeric_id), str(old_fanxiu_note.numeric_id)]]
+    old_run.created_note_count = 2
+    session.add(old_run)
+    session.commit()
+
+    def fake_collect_source(entry_specs, root_identity, target_date_text, *, user_id, session):
+        return {
+            "date": target_date_text,
+            "timezone": ZoneInfo("Asia/Shanghai"),
+            "turn_records": [
+                {
+                    "thread_id": "fanxiu:dongtian",
+                    "thread_title": "凡修行为树洞天任务",
+                    "project_label": "codeyun",
+                    "user_request": "洞天福地领取后需要补 #279 返回并等待 #34 世界。",
+                    "assistant_result": "在 daily_foundation.py 补 #279[返回] -> 等待 #34 世界，形成稳定回归锚点。",
+                    "start_at": start_at,
+                    "end_at": start_at + 3 * 60,
+                    "source_entry_id": entries[0].entry_id,
+                    "source_device_name": "codepc_mf",
+                },
+                {
+                    "thread_id": "fanxiu:mail",
+                    "thread_title": "邮件清理链路收敛",
+                    "project_label": "codeyun",
+                    "user_request": "继续调试优化邮件清理功能。",
+                    "assistant_result": "在 mail.py 收敛邮件判定流程，复跑验证邮件_清理结果。",
+                    "start_at": start_at + 10 * 60,
+                    "end_at": start_at + 30 * 60,
+                    "source_entry_id": entries[0].entry_id,
+                    "source_device_name": "codepc_mf",
+                },
+            ],
+            "threads": [],
+            "thread_count": 2,
+            "turn_count": 2,
+            "user_message_count": 2,
+            "assistant_message_count": 2,
+        }
+
+    def fake_draft(source, blocks, *args, **kwargs):
+        assert len(blocks) == 1
+        assert blocks[0]["category_key"] == "legacy_color_67c23a"
+        assert len(blocks[0]["records"]) == 2
+        blocks[0]["title"] = "凡修任务闭环整理"
+        blocks[0]["summary_items"] = [
+            "洞天福地返回闭环已补齐并验证。",
+            "邮件清理链路继续收敛。",
+        ]
+        blocks[0]["lifecycle_stage"] = "done"
+        return blocks
+
+    monkeypatch.setattr("backend.api.notes._collect_codex_diary_source", fake_collect_source)
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", fake_draft)
+
+    response = client.post(
+        "/api/notes/codex-diary/import-runs",
+        json={"date": "2026-06-28", "replace_existing": True},
+    )
+    assert response.status_code == 200
+    completed = _wait_for_import_run(client, response.json()["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["replace_existing"] is True
+    assert completed["created_note_count"] == 1
+    assert completed["duplicate_note_ids"] == [old_codeyun_note.numeric_id, old_fanxiu_note.numeric_id]
+    assert completed["result"]["replaced_note_count"] == 2
+
+    session.expire_all()
+    old_notes = _notes_by_public_ids(session, completed["duplicate_note_ids"])
+    assert len(old_notes) == 2
+    assert all(note.deleted_at and note.deleted_at > 0 for note in old_notes)
+
+    new_notes = _notes_by_public_ids(session, completed["created_note_ids"])
+    assert len(new_notes) == 1
+    assert new_notes[0].title == "凡修任务闭环整理"
+    assert new_notes[0].primary_category == "legacy_color_67c23a"
+    assert new_notes[0].note_categories == [{"key": "legacy_color_67c23a", "weight": 100}]
+    assert "洞天福地返回闭环已补齐" in _plain_text(new_notes[0].content)
+    assert "邮件清理链路继续收敛" in _plain_text(new_notes[0].content)
+
+
 def test_codex_diary_import_rejects_active_same_scope_run(
     session: Session,
     auth_user,

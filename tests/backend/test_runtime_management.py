@@ -417,6 +417,50 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
     assert "独立进程" in item["description"]
 
 
+def test_fanxiu_capture_runtime_item_trims_packet_worker_raw_payload():
+    item = runtime_core._serialize_fanxiu_capture_runtime_service_item({
+        "running": True,
+        "state": "running",
+        "state_label": "运行中",
+        "module": "backend.services.fanxiu_packet_daemon",
+        "cwd": "D:/home/chenkunze/slns/codeyun",
+        "log_path": "D:/tmp/fanxiu.log",
+        "state_path": "D:/tmp/fanxiu.json",
+        "process_count": 1,
+        "pids": [1234],
+        "updated_at": "2026-06-29 14:00:00",
+        "capture_runtime": {
+            "running": True,
+            "game_running": True,
+            "adb_connected": True,
+            "root_ready": True,
+            "tcpdump_ready": True,
+            "active_reasons": ["watchdog"],
+            "current_pcap_path": "D:/tmp/demo.pcap",
+            "current_pcap_size": 2048,
+            "started_at": "2026-06-29 13:58:00",
+        },
+        "packet_worker": {
+            "updated_at": "2026-06-29 14:00:00",
+            "realtime_running": True,
+            "maintenance_running": False,
+            "skip_reason": "",
+            "huge_rows": [{"id": index, "payload": "x" * 128} for index in range(32)],
+        },
+    })
+
+    assert item["status"]["realtime_running"] is True
+    assert item["status"]["maintenance_running"] is False
+    assert item["raw"]["packet_worker"] == {
+        "updated_at": "2026-06-29 14:00:00",
+        "realtime_running": True,
+        "maintenance_running": False,
+        "skipped": False,
+        "skip_reason": "",
+    }
+    assert "huge_rows" not in item["raw"]["packet_worker"]
+
+
 def test_trigger_builtin_ocr_runtime_item_starts_external_service(session, monkeypatch):
     captured = {}
 

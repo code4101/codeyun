@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "497863ad1070dd5000a867e53fb37459070d83ae"
-last_audited_at: "2026-06-29T14:34:25.5644731+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-497863ad/report.md"
-last_frontend_commit_summary: "完整关闭 3c939480..497863ad：复核 PDF / 星图日历 / 凡修邮件链路，确认真正需要用户决策的是凡修图鉴邮件页把已处理结果继续画成可编辑按钮。"
-audited_commit_count: 45
+last_audited_commit: "1f786faee97e320efbe06afb5c98fea238151247"
+last_audited_at: "2026-06-29T16:36:00+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-1f786fae/report.md"
+last_frontend_commit_summary: "完整关闭 497863ad..1f786fae：收敛东财交易页重复报告标题，补齐 SharedNoteEditor 的 Loading 图标导入，并复核笔记分类与凡修标注链路。"
+audited_commit_count: 46
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-29
+
+- 完整范围：`497863ad1070dd5000a867e53fb37459070d83ae..1f786faee97e320efbe06afb5c98fea238151247`
+- 覆盖提交：`1f786faee97e320efbe06afb5c98fea238151247`
+- 前端入口提交：`1f786faee97e320efbe06afb5c98fea238151247`
+- 入口如何牵引到旧问题：这次提交把前端入口同时落在 `SharedNoteEditor` 的笔记分类语义、`notes/eastmoney/trade` 的 AI 报告首屏以及 `fanxiu/data-annotation` 的 shape 锁定/asset tree 细节。真实页面里，真正被入口继续牵出的旧问题只有两个：1）东财交易页把外层卡头 `股票操作报告` 和 Markdown 正文首个 `# 股票操作报告` 叠成双标题；2）刚被本次提交改过的 `SharedNoteEditor` 在 `notes/center?tab=list` 仍持续打出 `Failed to resolve component: Loading` 告警。`fanxiu/data-annotation` 则沿着同一标注链路复核，确认新增 `锁定` 仍留在 shape 属性层，没有继续膨胀一级工具条。
+- 本轮减法：不新增任何入口、说明或状态。自动修复只做两件事：1）东财页只保留一层“股票操作报告”命名，去掉正文重复 H1；2）补齐 `SharedNoteEditor` 的 `Loading` 图标导入，清理运行时噪音。凡修标注链路只复核不改，避免把没有问题的工具条再重排一次。
+- 信息量保持：东财页仍保留行情图、AI 报告正文、账户约束和持仓摘要；笔记编辑页仍保留标题、分类、形态、阶段、自动保存和详情编辑；凡修标注页仍保留设备、画面、帧树、shape 属性和锁定开关。减少的是重复标题和无价值告警，不是减少用户判断依据。
+- 概念图/线框图：报告里的 Mermaid 已把东财页拆成“报告卡标题（容器层）”和“AI 报告正文（事实层）”，证明双标题不承载新增语义；笔记编辑链路则保持 `标题 / 分类 / 形态 / 阶段 -> 继续编辑并自动保存` 的单层闭环。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-1f786fae/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 打开 `notes/eastmoney/trade`、`notes/center?tab=list`、`fanxiu/data-annotation`，完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 9 张基础截图，`eastmoney-evidence.json`、`notes-center-evidence.json`、`fanxiu-data-annotation-evidence.json` 均证明 `bodyOverflowX/mainOverflowX = 0`。修复后运行 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 均通过；`notes-center-evidence-after.json` 证明 fresh reload 后 `Loading` 告警为 `0`，`eastmoney-evidence-after.json` 证明报告正文首个 `h1` 已消失、卡头标题仍保留。另一个复验噪音是 fresh tab 下东财相关接口曾出现 `500`，因此 after 截图回到占位态，但不影响“重复标题已被移除”的结构判定。
+- 根因分层：`notes/eastmoney/trade` 属于表现层问题；`SharedNoteEditor` 属于前端运行时装配问题；`fanxiu/data-annotation` 本轮无新增问题。
+- 跨自动化交接：无。本轮问题都可在前端本地小步收口，不需要新增 `CodeYun 代码健康优化` 交接。
+- 剩余风险：当前工作树仍含用户未提交改动，尤其 `backend/api/notes.py`、`backend/models.py`、若干测试文件和 `docs/Codex日记分类标准.md`；本轮未回退它们。东财页 fresh tab 里的接口 `500` 说明当前环境还有独立后端噪音，后续若要继续巡检该页，需优先区分“结构问题”与“服务侧瞬时失败”。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `1f786faee97e320efbe06afb5c98fea238151247`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`3c939480007d67a362da7589626873d3dd9e9eac..497863ad1070dd5000a867e53fb37459070d83ae`
 - 覆盖提交：`497863ad1070dd5000a867e53fb37459070d83ae`

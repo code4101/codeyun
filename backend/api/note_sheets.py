@@ -39,6 +39,8 @@ from backend.core.access.auth import (
 )
 from backend.api.websocket_manager import manager as ws_manager
 from backend.core.attendance.service import (
+    get_attendance_course_data_flow_config,
+    get_attendance_course_data_step_runner_device,
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
 )
@@ -836,6 +838,7 @@ class NoteSheetAttendanceLinkCountUpdateRequest(BaseModel):
     base_version: Optional[int] = Field(default=None, ge=1)
     field_key: Literal["lesson_links", "clockin_links"]
     row_index: Optional[int] = Field(default=None, ge=0)
+    repair_with_remote_browser: bool = True
 
 
 class NoteSheetAttendanceLinkCountUpdateItem(BaseModel):
@@ -845,6 +848,8 @@ class NoteSheetAttendanceLinkCountUpdateItem(BaseModel):
     value: str = ""
     total_count: int = 0
     linked_count: int = 0
+    remote_repair_attempted: bool = False
+    remote_repair_summary: dict[str, Any] | None = None
     reason: str = ""
 
 
@@ -11086,12 +11091,27 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
             _broadcast_sheet_resource_update(document)
             current_document = _normalize_document_json(dict(document.document_json or {}))
 
+        job_target_date = _get_next_month_first_day()
+        skip_course_types = _read_attendance_template_skip_course_types(session, job_target_date)
+        job_targets = [
+            (course_type, course_target_date)
+            for course_type, course_target_date in _get_attendance_batch_course_targets(job_target_date)
+            if course_type not in skip_course_types
+        ]
         next_document, generated, skipped = _generate_attendance_next_month_templates(
             current_document,
-            target_date=_get_next_month_first_day(),
-            skip_course_types=_read_attendance_template_skip_course_types(session, _get_next_month_first_day()),
+            target_date=job_target_date,
+            skip_course_types=skip_course_types,
         )
-        if generated and current_document != next_document:
+        next_document, materialized_count = _materialize_attendance_template_workbooks_for_targets(
+            session,
+            source_document_json=current_document,
+            generated_document_json=next_document,
+            generated=generated,
+            targets=job_targets,
+            owner_user_id=document.owner_user_id,
+        )
+        if (generated or materialized_count) and current_document != next_document:
             document.document_json = next_document
             document.version = max(int(document.version or 1), 1) + 1
             document.updated_by_user_id = document.owner_user_id
@@ -11465,6 +11485,341 @@ def _generate_attendance_next_month_templates(
         targets=targets,
     )
     return next_document, generated, [*skipped, *generated_skipped]
+
+
+def _parse_local_workbook_sheet_url(value: Any) -> tuple[int | None, int | None]:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None, None
+    workbook_match = re.search(r"(?:^|/)workbook(?:s)?/(?P<workbook_id>\d+)", text)
+    if workbook_match is None:
+        return None, None
+    sheet_match = re.search(r"(?:[?&]sheet=|/sheet/)(?P<sheet_id>\d+)", text)
+    return (
+        int(workbook_match.group("workbook_id")),
+        int(sheet_match.group("sheet_id")) if sheet_match else None,
+    )
+
+
+def _attendance_course_slug(course_type: str, course_name: str) -> str:
+    normalized_type = _normalize_sheet_text(course_type)
+    normalized_name = _normalize_sheet_text(course_name)
+    if normalized_type == "念住" or "念住" in normalized_name:
+        return "nianzhu"
+    if normalized_type == "觉观" or "觉观" in normalized_name:
+        return "jueguan"
+    if "梵呗" in normalized_type or "梵呗" in normalized_name:
+        return "fanbei"
+    slug = re.sub(r"[^0-9A-Za-z]+", "-", normalized_type).strip("-").lower()
+    return slug or "course"
+
+
+def _derive_attendance_course_owner_key(
+    *,
+    target_date: date,
+    course_type: str,
+    course_name: str,
+) -> str:
+    parsed = _parse_attendance_template_course(course_name)
+    slug = _attendance_course_slug(course_type, course_name)
+    edition = parsed.get("edition") if parsed else None
+    suffix = f"-{edition}" if edition is not None else ""
+    return f"{target_date:%Y%m%d}-{slug}{suffix}"
+
+
+def _find_course_template_workbook_by_owner_key(
+    session: Session,
+    *,
+    owner_key: str,
+) -> tuple[WorkbookDocument, SheetDocument] | None:
+    attendance = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.scope == "notes")
+        .where(SheetDocument.owner_type == "course_workbook")
+        .where(SheetDocument.owner_key == owner_key)
+        .where(SheetDocument.sheet_key == "attendance")
+        .where(_active_sheet_condition())
+    ).first()
+    if attendance is None:
+        return None
+
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(attendance)))
+        .order_by(WorkbookSheetLink.created_at)
+    ).all()
+    if not links:
+        return None
+    workbook_map = load_workbooks_by_refs(session, [link.workbook_id for link in links])
+    workbook = next(
+        (
+            workbook_map.get(str(link.workbook_id))
+            for link in links
+            if workbook_map.get(str(link.workbook_id)) is not None
+        ),
+        None,
+    )
+    return (workbook, attendance) if workbook is not None else None
+
+
+def _clone_attendance_course_template_workbook(
+    session: Session,
+    *,
+    source_workbook_id: int,
+    title: str,
+    owner_key: str,
+    owner_user_id: int | None,
+) -> tuple[WorkbookDocument, SheetDocument] | None:
+    existing = _find_course_template_workbook_by_owner_key(session, owner_key=owner_key)
+    if existing is not None:
+        return existing
+
+    source_workbook = session.exec(
+        select(WorkbookDocument)
+        .where(WorkbookDocument.numeric_id == int(source_workbook_id))
+        .where(_active_workbook_condition())
+    ).first()
+    if source_workbook is None:
+        return None
+
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(source_workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    source_sheet_map = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    source_sheets = [
+        (link, source_sheet_map.get(str(link.sheet_id)))
+        for link in links
+        if source_sheet_map.get(str(link.sheet_id)) is not None
+    ]
+    if not source_sheets:
+        return None
+
+    now = time.time()
+    effective_owner_user_id = owner_user_id or source_workbook.owner_user_id
+    workbook_identity = allocate_new_workbook_identity(session)
+    workbook = WorkbookDocument(
+        id=workbook_identity.primary_id,
+        numeric_id=workbook_identity.numeric_id,
+        legacy_id=workbook_identity.legacy_id,
+        title=_normalize_title(title, default_value="未命名工作簿"),
+        owner_user_id=effective_owner_user_id,
+        created_by_user_id=effective_owner_user_id,
+        updated_by_user_id=effective_owner_user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(workbook)
+    session.flush()
+    _ensure_workbook_identity(session, workbook)
+    _set_workbook_defined_names(session, workbook, _get_workbook_defined_names(session, source_workbook))
+
+    attendance_sheet: SheetDocument | None = None
+    for link, source_sheet in source_sheets:
+        if source_sheet is None:
+            continue
+        document_identity = allocate_new_sheet_identity(session)
+        document = SheetDocument(
+            id=document_identity.primary_id,
+            numeric_id=document_identity.numeric_id,
+            legacy_id=document_identity.legacy_id,
+            scope=source_sheet.scope,
+            owner_type="course_workbook",
+            owner_key=owner_key,
+            sheet_key=source_sheet.sheet_key,
+            title=source_sheet.title,
+            engine=source_sheet.engine,
+            document_json=_clone_sheet_document_json(
+                dict(source_sheet.document_json or {}),
+                mode="template",
+            ),
+            version=1,
+            owner_user_id=effective_owner_user_id,
+            created_by_user_id=effective_owner_user_id,
+            updated_by_user_id=effective_owner_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(document)
+        session.flush()
+        ensure_attendance_sheet_anonymous_viewer(session, document)
+        session.add(
+            WorkbookSheetLink(
+                workbook_id=_workbook_link_ref(workbook),
+                sheet_id=_sheet_link_ref(document),
+                order_index=link.order_index,
+                created_at=now,
+            )
+        )
+        if _normalize_sheet_text(source_sheet.sheet_key) == "attendance":
+            attendance_sheet = document
+
+    if attendance_sheet is None:
+        return None
+    return workbook, attendance_sheet
+
+
+def _materialize_generated_attendance_template_workbooks(
+    session: Session,
+    *,
+    source_document_json: dict[str, Any],
+    generated_document_json: dict[str, Any],
+    generated: list[NoteSheetAttendanceTemplateActionItem],
+    owner_user_id: int | None,
+) -> tuple[dict[str, Any], int]:
+    if not generated:
+        return generated_document_json, 0
+
+    source_document = _normalize_document_json(source_document_json)
+    source_columns = _normalize_document_columns(source_document)
+    source_rows = _extract_document_rows(source_document)
+    source_formula_row_offset = _get_formula_reference_row_offset(source_document)
+    source_grid_rows = _extract_document_grid_rows(source_document)
+
+    next_document = _normalize_document_json(generated_document_json)
+    next_columns = _normalize_document_columns(next_document)
+    next_rows = list(_extract_document_rows(next_document))
+    online_sheet_index = _find_attendance_column_index(next_columns, "online_sheet")
+    start_date_index = _find_attendance_column_index(next_columns, "start_date")
+    if online_sheet_index is None or start_date_index is None:
+        return next_document, 0
+
+    materialized = 0
+    for item in generated:
+        if item.row_index is None or item.row_index < 0 or item.row_index >= len(next_rows):
+            continue
+        target_row = _normalize_sheet_row(next_rows[item.row_index], len(next_columns))
+        if note_sheet_inline_links.inline_cell_link(target_row[online_sheet_index]):
+            continue
+        target_date = _extract_attendance_row_start_date(
+            target_row,
+            row_index=item.row_index,
+            columns=next_columns,
+            rows=next_rows,
+            start_date_index=start_date_index,
+            reference_row_offset=_get_formula_reference_row_offset(next_document),
+            grid_rows=_extract_document_grid_rows(next_document),
+        )
+        if target_date is None:
+            target_date = _parse_attendance_date_text(item.target_date)
+        if target_date is None:
+            continue
+
+        source = _find_attendance_template_source_row(
+            source_rows,
+            columns=source_columns,
+            course_type=item.course_type,
+            target_date=target_date,
+            reference_row_offset=source_formula_row_offset,
+            grid_rows=source_grid_rows,
+        )
+        if source is None:
+            continue
+        source_row_index, _source_row, _source_info = source
+        source_online_index = _find_attendance_column_index(source_columns, "online_sheet")
+        if source_online_index is None:
+            continue
+        source_url = _get_document_cell_link_url(source_document, source_row_index, source_online_index)
+        source_workbook_id, _source_sheet_id = _parse_local_workbook_sheet_url(source_url)
+        if source_workbook_id is None:
+            continue
+
+        target_title = _normalize_sheet_text(target_row[online_sheet_index]) or item.course_name
+        owner_key = _derive_attendance_course_owner_key(
+            target_date=target_date,
+            course_type=item.course_type,
+            course_name=target_title or item.course_name,
+        )
+        cloned = _clone_attendance_course_template_workbook(
+            session,
+            source_workbook_id=source_workbook_id,
+            title=target_title or item.course_name,
+            owner_key=owner_key,
+            owner_user_id=owner_user_id,
+        )
+        if cloned is None:
+            continue
+        workbook, attendance_sheet = cloned
+        link_url = f"/workbook/{_require_workbook_numeric_id(workbook)}?sheet={_require_sheet_numeric_id(attendance_sheet)}"
+        next_rows[item.row_index] = _set_row_cell_value(
+            next_rows[item.row_index],
+            next_columns,
+            online_sheet_index,
+            _with_inline_cell_link(target_title or item.course_name, link_url),
+        )
+        materialized += 1
+
+    if not materialized:
+        return next_document, 0
+    return _normalize_document_json(_replace_document_data_rows(next_document, next_rows)), materialized
+
+
+def _materialize_attendance_template_workbooks_for_targets(
+    session: Session,
+    *,
+    source_document_json: dict[str, Any],
+    generated_document_json: dict[str, Any],
+    generated: list[NoteSheetAttendanceTemplateActionItem],
+    targets: list[tuple[str, date]],
+    owner_user_id: int | None,
+) -> tuple[dict[str, Any], int]:
+    if not targets and not generated:
+        return generated_document_json, 0
+
+    next_document = _normalize_document_json(generated_document_json)
+    columns = _normalize_document_columns(next_document)
+    rows = _extract_document_rows(next_document)
+    type_index = _find_attendance_column_index(columns, "course_type")
+    online_sheet_index = _find_attendance_column_index(columns, "online_sheet")
+    start_date_index = _find_attendance_column_index(columns, "start_date")
+    if type_index is None or online_sheet_index is None or start_date_index is None:
+        return next_document, 0
+
+    formula_row_offset = _get_formula_reference_row_offset(next_document)
+    grid_rows = _extract_document_grid_rows(next_document)
+    materialize_items = list(generated)
+    existing_keys = {
+        (item.course_type, _parse_attendance_date_text(item.target_date))
+        for item in generated
+    }
+
+    for course_type, target_date in targets:
+        if (course_type, target_date) in existing_keys:
+            continue
+        for row_index, raw_row in enumerate(rows):
+            row = _normalize_sheet_row(raw_row, len(columns))
+            if _normalize_sheet_text(row[type_index]) != course_type:
+                continue
+            row_date = _extract_attendance_row_start_date(
+                row,
+                row_index=row_index,
+                columns=columns,
+                rows=rows,
+                start_date_index=start_date_index,
+                reference_row_offset=formula_row_offset,
+                grid_rows=grid_rows,
+            )
+            if row_date != target_date:
+                continue
+            if note_sheet_inline_links.inline_cell_link(row[online_sheet_index]):
+                break
+            materialize_items.append(NoteSheetAttendanceTemplateActionItem(
+                course_type=course_type,
+                course_name=_normalize_sheet_text(row[online_sheet_index]),
+                target_date=target_date.isoformat(),
+                row_index=row_index,
+                reason="目标课程已存在，补建工作簿",
+            ))
+            break
+
+    return _materialize_generated_attendance_template_workbooks(
+        session,
+        source_document_json=source_document_json,
+        generated_document_json=next_document,
+        generated=materialize_items,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _resolve_attendance_course_template_type(
@@ -12026,11 +12381,111 @@ def _query_attendance_link_count(
     return total_count, linked_count
 
 
+def _attendance_summary_course_type_for_row(row: list[Any], columns: list[Any]) -> str:
+    type_index = _find_attendance_column_index(columns, "course_type")
+    return _normalize_sheet_text(row[type_index]) if type_index is not None and type_index < len(row) else ""
+
+
+def _can_remote_repair_nianzhu_jueguan_links(course_type: str, lookup_name: str) -> bool:
+    normalized_type = _normalize_sheet_text(course_type)
+    normalized_name = _normalize_sheet_text(lookup_name)
+    return normalized_type in {"念住", "觉观"} or "念住" in normalized_name or "觉观" in normalized_name
+
+
+def _remote_device_error_detail(response: Any) -> str:
+    try:
+        detail = response.json().get("detail")
+    except Exception:
+        detail = getattr(response, "text", "").strip()
+    return str(detail or f"远程执行失败，HTTP {getattr(response, 'status_code', '')}").strip()
+
+
+def _post_remote_attendance_device_json(entry: UserDevice, *, path: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
+    token = _normalize_sheet_text(entry.token)
+    if not server_url or not token:
+        raise RuntimeError("远程课程数据浏览器设备缺少后端地址或访问令牌")
+    try:
+        import requests
+
+        with requests.Session() as request_session:
+            request_session.trust_env = False
+            response = request_session.post(
+                f"{server_url}{path}",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-Device-Token": token,
+                },
+                timeout=timeout,
+            )
+    except Exception as exc:
+        raise RuntimeError(f"调用远程课程数据浏览器设备失败：{exc}") from exc
+    if response.status_code >= 400:
+        raise RuntimeError(_remote_device_error_detail(response))
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError("远程课程数据浏览器设备返回了无法解析的响应") from exc
+    return dict(data) if isinstance(data, dict) else {"result": data}
+
+
+def _repair_nianzhu_jueguan_links_with_remote_step1(
+    session: Session,
+    *,
+    course_type: str,
+    lookup_name: str,
+    field_key: Literal["lesson_links", "clockin_links"],
+) -> dict[str, Any]:
+    if not _can_remote_repair_nianzhu_jueguan_links(course_type, lookup_name):
+        return {"attempted": False, "reason": "课程类型不需要念住/觉观远程补抓"}
+
+    config = get_or_create_attendance_service_config(session)
+    entry = get_attendance_course_data_step_runner_device(
+        session,
+        config,
+        step_number=1,
+        data_flow_config=get_attendance_course_data_flow_config(session),
+    )
+    if entry is None:
+        return {"attempted": False, "reason": "课程数据 step1 未配置浏览器设备"}
+    if _normalize_sheet_text(entry.mode) != "remote":
+        return {
+            "attempted": False,
+            "reason": f"课程数据 step1 当前是本机设备 {entry.name or entry.device_id}，已跳过本机爬虫",
+        }
+
+    payload = {
+        "course_name": lookup_name,
+        "shop_id": 1,
+        "update_lessons": field_key == "lesson_links",
+        "update_clockins": field_key == "clockin_links",
+        "clockin_pattern": "",
+        "dynamic_clockin_plugin": "",
+        "close_browser": True,
+    }
+    result = _post_remote_attendance_device_json(
+        entry,
+        path="/api/device-control/attendance/nianzhu/step1",
+        payload=payload,
+        timeout=1200,
+    )
+    return {
+        "attempted": True,
+        "device_entry_id": entry.entry_id,
+        "device_name": entry.name,
+        "device_id": entry.device_id,
+        "result": result,
+    }
+
+
 def _update_attendance_link_counts(
+    session: Session,
     document_json: dict[str, Any],
     *,
     field_key: Literal["lesson_links", "clockin_links"],
     row_index: int | None = None,
+    repair_with_remote_browser: bool = True,
 ) -> tuple[dict[str, Any], list[NoteSheetAttendanceLinkCountUpdateItem], list[NoteSheetAttendanceLinkCountUpdateItem]]:
     normalized = _ensure_attendance_link_count_columns(document_json)
     columns = _normalize_document_columns(normalized)
@@ -12059,6 +12514,7 @@ def _update_attendance_link_counts(
         )
         course_name_index = _find_attendance_column_index(columns, "course_name")
         course_name = _normalize_sheet_text(row[course_name_index]) if course_name_index is not None else ""
+        course_type = _attendance_summary_course_type_for_row(row, columns)
         item = NoteSheetAttendanceLinkCountUpdateItem(
             row_index=source_row_index,
             course_name=course_name,
@@ -12070,6 +12526,26 @@ def _update_attendance_link_counts(
             continue
 
         total_count, linked_count = _query_attendance_link_count(field_key, lookup_name)
+        remote_repair_error = False
+        if repair_with_remote_browser and (total_count <= 0 or linked_count < total_count):
+            try:
+                repair_summary = _repair_nianzhu_jueguan_links_with_remote_step1(
+                    session,
+                    course_type=course_type,
+                    lookup_name=lookup_name,
+                    field_key=field_key,
+                )
+            except Exception as exc:
+                repair_summary = {"attempted": True, "error": str(exc)}
+            item.remote_repair_attempted = bool(repair_summary.get("attempted"))
+            item.remote_repair_summary = repair_summary
+            remote_repair_error = bool(repair_summary.get("attempted") and repair_summary.get("error"))
+            if repair_summary.get("attempted") and not remote_repair_error:
+                total_count, linked_count = _query_attendance_link_count(field_key, lookup_name)
+        if remote_repair_error:
+            item.reason = "远程补抓失败，已保留原链接数"
+            skipped.append(item)
+            continue
         value = _format_attendance_link_count_value(total_count, linked_count)
         item.total_count = total_count
         item.linked_count = linked_count
@@ -16268,8 +16744,22 @@ def generate_attendance_summary_next_month_templates(
         target_date=target_date,
         skip_course_types=_normalize_attendance_template_skip_course_types(payload.skip_course_types),
     )
+    normalized_skip_course_types = _normalize_attendance_template_skip_course_types(payload.skip_course_types)
+    targets = [
+        (course_type, course_target_date)
+        for course_type, course_target_date in _get_attendance_batch_course_targets(target_date)
+        if course_type not in normalized_skip_course_types
+    ]
+    next_document, materialized_count = _materialize_attendance_template_workbooks_for_targets(
+        session,
+        source_document_json=current_document,
+        generated_document_json=next_document,
+        generated=generated,
+        targets=targets,
+        owner_user_id=current_user.id,
+    )
 
-    if generated and current_document != next_document:
+    if (generated or materialized_count) and current_document != next_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -16329,8 +16819,16 @@ def generate_attendance_summary_course_template(
         current_document,
         targets=[(course_type, target_date)],
     )
+    next_document, materialized_count = _materialize_attendance_template_workbooks_for_targets(
+        session,
+        source_document_json=current_document,
+        generated_document_json=next_document,
+        generated=generated,
+        targets=[(course_type, target_date)],
+        owner_user_id=current_user.id,
+    )
 
-    if generated and current_document != next_document:
+    if (generated or materialized_count) and current_document != next_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -16515,9 +17013,11 @@ def update_attendance_summary_link_counts(
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     next_document, updated, skipped = _update_attendance_link_counts(
+        session,
         current_document,
         field_key=payload.field_key,
         row_index=payload.row_index,
+        repair_with_remote_browser=payload.repair_with_remote_browser,
     )
 
     if current_document != next_document:
