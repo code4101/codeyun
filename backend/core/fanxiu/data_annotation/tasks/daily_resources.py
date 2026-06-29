@@ -1151,6 +1151,50 @@ class DailyResourceTaskMixin:
         self._record_daily_vip_done(payload, message="已点击修为免费礼包并返回世界")
         return "success"
 
+    def _execute_daily_xianmeng_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = payload or {}
+        target_rounds = int(payload.get("rounds") or payload.get("max_rounds") or 0)
+        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        attacks = 0
+        while True:
+            if target_rounds > 0 and attacks >= target_rounds:
+                return "success"
+            try:
+                view = yield from runtime.wait_view(293, 295, 294, timeout=5.0)
+            except TimeoutError:
+                continue
+            scene_id = int(view.id) if isinstance(view, View) and view.id is not None else int(view)
+            try:
+                if scene_id == 293:
+                    numbers, _text = runtime.ocr_numbers_in_shapes(293, ("次数",), padding=16)
+                    if numbers and min(numbers) < 3:
+                        return "success"
+                    yield from runtime.wait_click(293, "攻击")
+                    attacks += 1
+                    yield from runtime.wait_action_settle(1.0)
+                    try:
+                        landed = yield from runtime.wait_view(295, 294, 293, timeout=5.0)
+                    except TimeoutError:
+                        pass
+                    else:
+                        landed_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+                        if landed_id == 294:
+                            yield from runtime.wait_click_then_view(294, "确定", [293, 295], timeout=5.0)
+                        elif landed_id == 295:
+                            yield from runtime.wait_click_then_view(295, "点击关闭", 293, timeout=5.0)
+                elif scene_id == 294:
+                    yield from runtime.wait_click_then_view(294, "确定", [293, 295], timeout=5.0)
+                elif scene_id == 295:
+                    yield from runtime.wait_click_then_view(295, "点击关闭", 293, timeout=5.0)
+            except TimeoutError:
+                continue
+        return "success"
+
     def _return_daily_vip_to_world(
         self,
         runtime: Any,
@@ -1159,22 +1203,39 @@ class DailyResourceTaskMixin:
         task_label: str,
         start_scene: int,
     ):
-        route = [(292, 291), (291, 290), (290, 34)]
-        start_index = next((index for index, (scene_id, _target_id) in enumerate(route) if scene_id == int(start_scene)), 0)
+        route = [(292, (291,)), (291, (290, 20, 34)), (290, (34,))]
+        start_index = next((index for index, (scene_id, _target_ids) in enumerate(route) if scene_id == int(start_scene)), 0)
         settle_seconds = float(payload.get("return_click_settle_seconds") or 1.0)
         wait_timeout = float(payload.get("return_world_wait_timeout") or 18.0)
-        for scene_id, target_id in route[start_index:]:
+        for scene_id, target_ids in route[start_index:]:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"{task_label}：点击 #{scene_id}「返回」回到 #{target_id}",
+                    f"{task_label}：点击 #{scene_id}「返回」",
                     phase="daily_vip_return_world",
                     current_scene=scene_id,
                 )
                 self._log_locked("action", f"{task_label}：点击 #{scene_id}「返回」")
             runtime.click_shape_center(scene_id, "返回")
             yield from runtime.wait_action_settle(settle_seconds)
-            yield from runtime.wait_view(target_id, timeout=wait_timeout, label=f"{task_label}：等待返回 #{target_id}")
+            target = yield from runtime.wait_view(*target_ids, timeout=wait_timeout, label=f"{task_label}：等待返回 {'/'.join(f'#{target_id}' for target_id in target_ids)}")
+            target_id = int(target.id) if isinstance(target, View) and target.id is not None else int(target)
+            if target_id == 34:
+                return "success"
+            if target_id == 20:
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"{task_label}：从 #20 回到世界",
+                        phase="daily_vip_return_world",
+                        current_scene=20,
+                    )
+                    self._log_locked("action", f"{task_label}：点击 #20「回到世界」")
+                runtime.click_shape_center(20, "回到世界")
+                yield from runtime.wait_action_settle(settle_seconds)
+                yield from runtime.wait_view(34, timeout=wait_timeout, label=f"{task_label}：等待返回 #34")
+                return "success"
+        return "success"
 
     def _click_daily_vip_free_or_return(
         self,

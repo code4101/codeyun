@@ -808,6 +808,7 @@ const volumeMonthVisibleLimit = ref(normalizeVolumeMonthVisibleLimit(session.val
 const eraYearVisibleLimit = ref(normalizeEraYearVisibleLimit(session.value?.viewState.eraYearVisibleLimit));
 const yearMonthMemos = ref<YearMonthMemoMap>(normalizeYearMonthMemos(session.value?.viewState.yearMonthMemos));
 const yearTitles = ref<YearTitleMap>(normalizeYearTitles(session.value?.viewState.yearTitles));
+const yearMonthMemosLoaded = ref(false);
 const editingYearMonthMemoKey = ref('');
 const yearMonthMemoDraft = ref('');
 const yearMonthMemoTextareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -2219,33 +2220,44 @@ const getYearMonthMemo = (key: string) => yearMonthMemos.value[key]?.trim() || '
 const getYearMonthMemoTitle = (key: string) => getYearMonthMemo(key) || undefined;
 const getYearTitle = (key: string) => yearTitles.value[key]?.trim() || '';
 
-const loadYearMonthMemos = async () => {
-  const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
-  try {
-    const response = await fetchCalendarYearMonthMemos();
-    const remoteMemos = normalizeYearMonthMemos(response.memos);
-    const remoteYearTitles = normalizeYearTitles(response.year_titles);
-    if (Object.keys(remoteMemos).length === 0 && Object.keys(remoteYearTitles).length === 0) return;
+let yearMonthMemosLoadPromise: Promise<void> | null = null;
 
-    const mergedMemos = normalizeYearMonthMemos({
-      ...yearMonthMemos.value,
-      ...remoteMemos
-    });
-    const mergedYearTitles = normalizeYearTitles({
-      ...yearTitles.value,
-      ...remoteYearTitles
-    });
-    yearMonthMemos.value = mergedMemos;
-    yearTitles.value = mergedYearTitles;
-    noteStore.updateTabViewState(props.tabId, {
-      yearMonthMemos: { ...mergedMemos },
-      yearTitles: { ...mergedYearTitles }
-    });
-  } catch (error) {
-    console.warn('Failed to load calendar year-month memos:', error);
-  } finally {
-    logCalendarPerf('loadYearMonthMemos', perfStartedAt);
-  }
+const loadYearMonthMemos = async () => {
+  if (yearMonthMemosLoaded.value) return;
+  if (yearMonthMemosLoadPromise) return yearMonthMemosLoadPromise;
+
+  const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
+  yearMonthMemosLoadPromise = (async () => {
+    try {
+      const response = await fetchCalendarYearMonthMemos();
+      const remoteMemos = normalizeYearMonthMemos(response.memos);
+      const remoteYearTitles = normalizeYearTitles(response.year_titles);
+      yearMonthMemosLoaded.value = true;
+      if (Object.keys(remoteMemos).length === 0 && Object.keys(remoteYearTitles).length === 0) return;
+
+      const mergedMemos = normalizeYearMonthMemos({
+        ...yearMonthMemos.value,
+        ...remoteMemos
+      });
+      const mergedYearTitles = normalizeYearTitles({
+        ...yearTitles.value,
+        ...remoteYearTitles
+      });
+      yearMonthMemos.value = mergedMemos;
+      yearTitles.value = mergedYearTitles;
+      noteStore.updateTabViewState(props.tabId, {
+        yearMonthMemos: { ...mergedMemos },
+        yearTitles: { ...mergedYearTitles }
+      });
+    } catch (error) {
+      console.warn('Failed to load calendar year-month memos:', error);
+    } finally {
+      yearMonthMemosLoadPromise = null;
+      logCalendarPerf('loadYearMonthMemos', perfStartedAt);
+    }
+  })();
+
+  return yearMonthMemosLoadPromise;
 };
 
 const persistCalendarTextSettings = (errorMessage: string) => {
@@ -3129,7 +3141,9 @@ onMounted(() => {
     .catch(error => {
       console.warn('Failed to load note category palette:', error);
     });
-  void loadYearMonthMemos();
+  if (calendarScale.value !== 'month') {
+    void loadYearMonthMemos();
+  }
   if (showCodexWorkload.value) {
     const codexWorkloadCache = loadCodexWorkloadStatsCache();
     applyCachedCodexWorkloadSnapshot(codexWorkloadCache);
@@ -3167,6 +3181,9 @@ watch(calendarScale, (value) => {
   noteStore.updateTabViewState(props.tabId, {
     calendarScale: value
   });
+  if (value !== 'month') {
+    void loadYearMonthMemos();
+  }
 });
 
 watch([calendarScale, periodStartTs, periodEndTs], () => {

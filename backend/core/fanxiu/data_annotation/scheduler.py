@@ -41,6 +41,9 @@ _STANDARD_ENABLED_TASK_IDS = {
     "legacy-daily-xianyuan",
     "legacy-daily-vip",
 }
+_DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS = {
+    "legacy-daily-green-bottle-baiye",
+}
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-lingta",
     "legacy-daily-shuangxiu",
@@ -104,6 +107,8 @@ def _daily_retry_should_defer_to_next_trigger(task: dict[str, Any], current_time
     next_ts = parse_data_annotation_task_time(next_time)
     if not next_time or next_ts is None:
         return None
+    if str(task.get("id") or "") in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS:
+        return next_time
     if retry_ts <= next_ts and next_ts - retry_ts <= _DAILY_RETRY_TO_NEXT_TRIGGER_GRACE.total_seconds():
         return next_time
     return None
@@ -681,6 +686,7 @@ def repair_data_annotation_scheduler_tasks(
             task.get("enabled")
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and task.get("next_time")
+            and str(task.get("id") or "") not in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
         ):
             task["next_time"] = None
             changed = True
@@ -688,6 +694,10 @@ def repair_data_annotation_scheduler_tasks(
             task.get("enabled")
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and not task.get("retry_after")
+            and not (
+                str(task.get("id") or "") in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
+                and task.get("next_time")
+            )
         ):
             cooldown_seconds = int(task.get("cooldown_seconds") or 600)
             task["next_time"] = None

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd"
-last_audited_at: "2026-06-28T00:39:57.1881261+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-28-frontend-design-4fbe1fbf/report.md"
-last_frontend_commit_summary: "完整关闭 358177a3..4fbe1fbf：复核 orders/storage/runtime/annotation/wiki/notes 链路，并把 ListNotes 的 custom_fields 装载语义收敛到和 StarNotes 一致。"
-audited_commit_count: 43
+last_audited_commit: "3c939480007d67a362da7589626873d3dd9e9eac"
+last_audited_at: "2026-06-29T12:34:49.0631324+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-3c939480/report.md"
+last_frontend_commit_summary: "完整关闭 4fbe1fbf..3c939480：复核 PDF / 凡修 runtime / 星图日历 / 订单链路，并把 PDF 阅读器列表页的阅读位置投影收敛为单一概念。"
+audited_commit_count: 44
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-29
+
+- 完整范围：`4fbe1fbf95c8ddd85e9a2f71d362d8db241fb7bd..3c939480007d67a362da7589626873d3dd9e9eac`
+- 覆盖提交：`3c939480007d67a362da7589626873d3dd9e9eac`
+- 前端入口提交：`3c939480007d67a362da7589626873d3dd9e9eac`
+- 入口如何牵引到旧问题：这次提交同时触发了 `notes/pdfs` 新入口、`pdf/:pdfId` 阅读页控制条、`fanxiu/data-annotation` / `runtime` / `cluster/services` 运行链路、`notes/center?tab=calendar` 色板渲染，以及 `attendance/orders` 的退款历史懒加载。真正牵出需要自动修复的旧问题的是新建的 `PDF 阅读器` 列表页：同一列表页把 `my_state.current_page` 渲染成 `第 N 页`，却把列标题写成“上次阅读”，同时标题下又额外挂出一条文档总数摘要。它们都不属于新的业务能力，而是同一页面里被新入口直接放大的错误投影和重复事实。
+- 本轮减法：不新增任何按钮、卡片、说明或状态。自动修复只做三处收敛：1）删除标题下重复的文档总数摘要；2）把“上次阅读”改回真实字段语义“阅读位置”；3）当 `current_page = 1` 时也明确显示 `第 1 页`，不再误投影成 `-`。其余前端改动如 PDF 阅读页随机页/缩放、凡修 runtime 轮询稳态、退款历史按需加载，都保留原能力，不再额外膨胀一级概念。
+- 信息量保持：PDF 列表页仍完整保留搜索、筛选、导入、打开文档、权限判断、阅读位置、大小和更新时间；PDF 阅读页仍保留目录、页面、笔记、信息和缩放；凡修标注 / 行为树 / 服务管理、星图日历、订单页的判断与操作能力也都保持不变。减少的是错误命名和重复汇总，不是减少用户决策依据。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-3c939480/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，并在 in-app Browser 对 `notes/pdfs`、`pdf/58429`、`fanxiu/data-annotation?window=mumu&entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2`、`fanxiu/data-annotation/runtime`、`cluster/services?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2`、`notes/center?tab=calendar`、`attendance/orders` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图。`evidence.json` 中 21 组基础截图的 `bodyOverflowX/mainOverflowX` 全为 `0`；修复后又补拍 `pdf-library-*-after.png`，`pdf-library-after-evidence.json` 证明文档总数摘要已移除、列表列标题已统一为“阅读位置”。同时 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：本轮自动修复的问题属于前端状态投影和信息层级，而不是后端 DTO 缺字段。`fanxiu/data-annotation` 的后端事实源回收、`runtime` / `cluster/services` 的轮询稳态和 `orders` 的懒加载主要是行为与性能侧收敛，真实页面未再暴露需要升级为后端投影或业务建模交接的新 UI 债务。
+- 剩余风险：当前工作树包含用户未提交改动，尤其有多处凡修运行时后端文件和 `frontend/src/standard/fanxiu/wiki/page.vue` 处于修改状态；本轮截图与 PDF 列表页修复均基于当前工作树而非纯净 commit checkout。另一个已知现象是 `notes/pdfs` 在 `820px` 窄屏下仍通过表格内部横向滚动承载字段，这是当前信息密度下的明确取舍，不构成新的结构回归。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图/线框图、真实多视口截图、低风险修复与前端验证，因此把 `last_audited_commit` 推进到 `3c939480007d67a362da7589626873d3dd9e9eac`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-06-28
 

@@ -505,6 +505,38 @@ def test_scheduler_does_not_overwrite_newer_retry_with_stale_success_fact():
     assert tasks[0]["next_time"] is None
 
 
+def test_scheduler_defers_green_bottle_retry_to_5am_reset():
+    tasks = [
+        {
+            "id": "legacy-daily-green-bottle-baiye",
+            "task_type": "daily_green_bottle_baiye",
+            "label": "日常_绿瓶拜谒",
+            "source": "data_annotation_runtime",
+            "enabled": True,
+            "schedule_kind": "daily",
+            "schedule_times": ["05:00"],
+            "next_time": None,
+            "last_run_at": "2026-06-29 00:37:48",
+            "last_result": "error",
+            "retry_after": "2026-06-29 00:48:59",
+            "cooldown_seconds": 600,
+            "payload": {},
+        }
+    ]
+
+    repaired, changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        tasks,
+        default_tasks=[],
+        facts={},
+        task_supported=lambda _task: True,
+        now=datetime(2026, 6, 29, 0, 40, 0),
+    )
+
+    assert changed is True
+    assert repaired[0]["retry_after"] is None
+    assert repaired[0]["next_time"] == "2026-06-29 05:00:00"
+
+
 def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     tasks = fanxiu._default_data_annotation_scheduler_tasks()
 
@@ -2806,7 +2838,7 @@ def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(mon
 
 
 def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_support():
-    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi", "daily_vip"):
+    for task_type in ("daily_assistant", "daily_youli", "daily_baiye", "daily_green_bottle_baiye", "daily_yihuo", "daily_gongfeng", "daily_xianshi", "daily_xianmeng", "daily_vip"):
         fanxiu._DATA_ANNOTATION_MANUAL_JOB_REGISTRY.pop(task_type, None)
 
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_assistant"}) is True
@@ -2817,7 +2849,172 @@ def test_data_annotation_runner_registers_default_scheduler_jobs_when_checking_s
     assert runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo") is None
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_gongfeng"}) is True
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_xianshi"}) is True
+    assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_xianmeng"}) is True
+    assert runtime_runner_core._data_annotation_manual_job_definition("daily_xianmeng") is not None
     assert runtime_runner_core._data_annotation_task_supported({"task_type": "daily_vip"}) is True
+
+
+def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            293: {"shapes": [{"title": "攻击"}]},
+            294: {"shapes": [{"title": "确定"}]},
+            295: {"shapes": [{"title": "点击关闭"}]},
+        },
+    }
+    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        scene = 293
+
+        def wait_view(self, *scene_ids, **kwargs):
+            actions.append(("wait_view", tuple(scene_ids), kwargs))
+            if False:
+                yield None
+            return self.scene
+
+        def wait_click(self, source, shape, **kwargs):
+            actions.append(("wait_click", source, shape, kwargs))
+            self.scene = 295
+            if False:
+                yield None
+            return "success"
+
+        def ocr_numbers_in_shapes(self, view_id, shape_titles, **kwargs):
+            actions.append(("ocr_numbers_in_shapes", view_id, tuple(shape_titles), kwargs))
+            return [], ""
+
+        def wait_click_then_view(self, source, shape, target, **kwargs):
+            actions.append(("wait_click_then_view", source, shape, target, kwargs.get("label")))
+            self.scene = 293
+            if False:
+                yield None
+            return self.scene
+
+        def click_frame_point(self, scene_id, x, y):
+            actions.append(("click_frame_point", scene_id, x, y))
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+            return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {"rounds": 50}))
+
+    assert result == "success"
+    clicks = [action for action in actions if action[0] == "wait_click_then_view"]
+    attacks = [action for action in actions if action[0:3] == ("wait_click", 293, "攻击")]
+    assert len(attacks) == 50
+    assert len(clicks) == 50
+    assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
+    assert actions[1] == ("ocr_numbers_in_shapes", 293, ("次数",), {"padding": 16})
+    assert actions[2] == ("wait_click", 293, "攻击", {})
+    assert clicks[0] == ("wait_click_then_view", 295, "点击关闭", 293, None)
+    assert actions[-1] == ("wait_click_then_view", 295, "点击关闭", 293, None)
+
+
+def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            293: {"shapes": [{"title": "攻击"}]},
+            294: {"shapes": [{"title": "确定"}]},
+            295: {"shapes": [{"title": "点击关闭"}]},
+        },
+    }
+    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        scene = 295
+
+        def wait_view(self, *scene_ids, **kwargs):
+            actions.append(("wait_view", tuple(scene_ids), kwargs))
+            if False:
+                yield None
+            return self.scene
+
+        def wait_click(self, source, shape, **kwargs):
+            actions.append(("wait_click", source, shape, kwargs))
+            self.scene = 295
+            if False:
+                yield None
+            return "success"
+
+        def ocr_numbers_in_shapes(self, view_id, shape_titles, **kwargs):
+            actions.append(("ocr_numbers_in_shapes", view_id, tuple(shape_titles), kwargs))
+            return [], ""
+
+        def wait_click_then_view(self, source, shape, target, **kwargs):
+            actions.append(("wait_click_then_view", source, shape, target, kwargs.get("label")))
+            self.scene = 293 if source == 295 else 295
+            if False:
+                yield None
+            return self.scene
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+            return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {"rounds": 50}))
+
+    assert result == "success"
+    clicks = [action for action in actions if action[0] == "wait_click_then_view"]
+    attacks = [action for action in actions if action[0:3] == ("wait_click", 293, "攻击")]
+    closes = [action for action in clicks if action[1:3] == (295, "点击关闭")]
+    assert len(attacks) == 50
+    assert len(closes) == 51
+    assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
+    assert actions[1] == ("wait_click_then_view", 295, "点击关闭", 293, None)
+
+
+def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            293: {"shapes": [{"title": "攻击"}, {"title": "次数"}]},
+            294: {"shapes": [{"title": "确定"}]},
+            295: {"shapes": [{"title": "点击关闭"}]},
+        },
+    }
+    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        def wait_view(self, *scene_ids, **kwargs):
+            actions.append(("wait_view", tuple(scene_ids), kwargs))
+            if False:
+                yield None
+            return 293
+
+        def ocr_numbers_in_shapes(self, view_id, shape_titles, **kwargs):
+            actions.append(("ocr_numbers_in_shapes", view_id, tuple(shape_titles), kwargs))
+            return [2], "2"
+
+        def wait_click(self, source, shape, **kwargs):
+            actions.append(("wait_click", source, shape, kwargs))
+            if False:
+                yield None
+            return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {}))
+
+    assert result == "success"
+    assert actions == [
+        ("wait_view", (293, 295, 294), {"timeout": 5.0}),
+        ("ocr_numbers_in_shapes", 293, ("次数",), {"padding": 16}),
+    ]
 
 
 def test_daily_green_bottle_baiye_first_step_goto_20(tmp_path, monkeypatch):
@@ -2932,6 +3129,13 @@ def test_daily_green_bottle_baiye_accepts_rank_scene_281(tmp_path, monkeypatch):
     ]
 
 
+def test_daily_green_bottle_baiye_accepts_reward_result_text():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._green_bottle_baiye_text_is_reward_result("恭喜获得 点击屏幕继续 2秒后自动关闭") is True
+    assert runner._green_bottle_baiye_text_is_reward_result("剩余次数：0/1 拜谒") is False
+
+
 def test_daily_gongfeng_law_progress_parser_uses_last_fraction_suffix():
     runner = create_fanxiu_runtime_runner()
 
@@ -2953,6 +3157,9 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert "legacy-daily-yihuo" not in by_id
     assert by_id["legacy-daily-gongfeng"]["task_type"] == "daily_gongfeng"
     assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
+    assert by_id["legacy-daily-xianmeng"]["task_type"] == "daily_xianmeng"
+    assert by_id["legacy-daily-xianmeng"]["label"] == "日常_仙盟"
+    assert by_id["legacy-daily-xianmeng"]["enabled"] is False
     assert by_id["legacy-daily-vip"]["task_type"] == "daily_vip"
     assert by_id["legacy-daily-vip"]["label"] == "日常_vip"
     assert by_id["legacy-daily-vip"]["enabled"] is True
@@ -2988,12 +3195,12 @@ def test_daily_vip_recovers_world_then_claims_free_xiuwei(tmp_path, monkeypatch)
                 yield BehaviorTreeStatus.RUNNING
             return "success"
 
-        def wait_view(self, view_id, **kwargs):
-            actions.append(("wait_view", view_id, kwargs))
-            self.scene = view_id
+        def wait_view(self, *view_ids, **kwargs):
+            actions.append(("wait_view", tuple(view_ids), kwargs))
+            self.scene = view_ids[0]
             if False:
                 yield BehaviorTreeStatus.RUNNING
-            return "success"
+            return view_ids[0]
 
         def wait_click(self, view_id, shape, **kwargs):
             actions.append(("wait_click", view_id, shape, kwargs))
@@ -3030,29 +3237,29 @@ def test_daily_vip_recovers_world_then_claims_free_xiuwei(tmp_path, monkeypatch)
     assert actions == [
         ("current_scene", (34,), {"update": True}),
         ("goto_view", 34),
-        ("wait_view", 34, {"label": "日常_vip：等待世界 #34"}),
+        ("wait_view", (34,), {"label": "日常_vip：等待世界 #34"}),
         ("wait_click", 34, "[vip]", {"timeout": 8.0}),
         ("settle", 2.0),
-        ("wait_view", 290, {"label": "日常_vip：等待 VIP 月卡页 #290"}),
+        ("wait_view", (290,), {"label": "日常_vip：等待 VIP 月卡页 #290"}),
         ("wait_click", 290, "每日限购", {"timeout": 8.0}),
         ("settle", 1.5),
-        ("wait_view", 291, {"label": "日常_vip：等待每日限购页 #291"}),
+        ("wait_view", (291,), {"label": "日常_vip：等待每日限购页 #291"}),
         ("wait_click", 291, "修为", {"timeout": 8.0}),
         ("settle", 1.5),
-        ("wait_view", 292, {"label": "日常_vip：等待修为限购页 #292"}),
+        ("wait_view", (292,), {"label": "日常_vip：等待修为限购页 #292"}),
         ("cur_frame", {"update": True}),
         ("shape_score", 292, "免费", {"frame_data_url": "frame"}),
         ("wait_click", 292, "免费", {"timeout": 8.0}),
         ("settle", 1.5),
         ("click_shape_center", 292, "返回", {}),
         ("settle", 1.0),
-        ("wait_view", 291, {"timeout": 18.0, "label": "日常_vip：等待返回 #291"}),
+        ("wait_view", (291,), {"timeout": 18.0, "label": "日常_vip：等待返回 #291"}),
         ("click_shape_center", 291, "返回", {}),
         ("settle", 1.0),
-        ("wait_view", 290, {"timeout": 18.0, "label": "日常_vip：等待返回 #290"}),
+        ("wait_view", (290, 20, 34), {"timeout": 18.0, "label": "日常_vip：等待返回 #290/#20/#34"}),
         ("click_shape_center", 290, "返回", {}),
         ("settle", 1.0),
-        ("wait_view", 34, {"timeout": 18.0, "label": "日常_vip：等待返回 #34"}),
+        ("wait_view", (34,), {"timeout": 18.0, "label": "日常_vip：等待返回 #34"}),
     ]
     fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-vip"]
     assert fact["task_type"] == "daily_vip"
@@ -4377,6 +4584,47 @@ def test_world_side_leave_falls_back_to_scene85_leave_shape(monkeypatch):
     x, y = clicks[0]
     assert x > 760
     assert 740 < y < 850
+
+
+def test_world_side_leave_ignores_weak_scene85_leave_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "images": {
+            34: {"id": 34, "title": "世界", "width": 900, "height": 1600, "shapes": []},
+            85: {
+                "id": 85,
+                "title": "某区域内部",
+                "width": 900,
+                "height": 1600,
+                "shapes": [{"title": "离开", "x": 0.855, "y": 0.48, "w": 0.11, "h": 0.05}],
+            },
+        }
+    }
+    clicks: list[tuple[float, float]] = []
+
+    class FakeObserver:
+        def ocr_lines(self, _frame):
+            return []
+
+        def click_frame_point(self, _view, x, y):
+            clicks.append((float(x), float(y)))
+
+    monkeypatch.setattr(runner, "_fanxiu_observer", lambda *_args, **_kwargs: FakeObserver())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 55.0)
+
+    result = _drain_generator(
+        runner._leave_world_side_scene_if_present(
+            ctx,
+            fanxiu.threading.Event(),
+            "frame",
+            "韶非烟",
+            label="测试",
+            require_world_like=False,
+        )
+    )
+
+    assert result is False
+    assert clicks == []
 
 
 def test_data_annotation_daily_schedule_uses_nearest_future_time_independent_of_order():

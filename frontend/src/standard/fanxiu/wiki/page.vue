@@ -317,7 +317,7 @@ type ActivityViewMode = 'list' | 'document' | 'period'
 type StaticAssetCatalogView = 'semantic'
 type MailSortKey = 'index' | 'title' | 'time' | 'status'
 type MailStatusFilter = typeof MAIL_STATUS_OPTIONS[number]['key']
-type MailDesiredStatus = typeof MAIL_STATUS_OPTIONS[number]['status']
+type MailDesiredStatus = '锁定' | '留存' | '可领'
 type MailSubTab = 'records' | 'summary'
 type SortOrder = 'asc' | 'desc'
 const ACTIVITY_VIEW_MODE_OPTIONS: Array<{ value: ActivityViewMode, label: string }> = [
@@ -334,6 +334,7 @@ const MAIL_STATUS_OPTIONS = [
   { key: 'locked', label: '锁定', status: '锁定' },
   { key: 'seen', label: '留存', status: '留存' },
   { key: 'claimable', label: '可领', status: '可领' },
+  { key: 'processed', label: '已处理', status: '' },
 ] as const
 const MAIL_STATUS_CYCLE: MailStatusFilter[] = ['locked', 'seen', 'claimable']
 const MAIL_SUB_TABS: Array<{ key: MailSubTab, label: string }> = [
@@ -5368,7 +5369,8 @@ function mailStatusKey(row: FanxiuMailRecord) {
   if (status === '留存') return 'seen'
   if (status === '可领') return 'claimable'
   if (row.locked) return 'locked'
-  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list' || status === 'claim_requested' || status === 'delete_requested') return 'claimable'
+  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list') return 'processed'
+  if (status === 'claim_requested' || status === 'delete_requested') return 'claimable'
   if (String(row.action_policy || '').trim() === 'claim' || String(row.action_policy || '').trim() === 'delete') return 'claimable'
   return 'seen'
 }
@@ -5396,7 +5398,8 @@ function mailStatusLabel(value: string) {
 }
 
 function mailDesiredStatus(row: FanxiuMailRecord): MailDesiredStatus {
-  return MAIL_STATUS_OPTIONS.find(option => option.key === mailStatusKey(row))?.status || '留存'
+  const status = MAIL_STATUS_OPTIONS.find(option => option.key === mailStatusKey(row))?.status
+  return status === '锁定' || status === '留存' || status === '可领' ? status : '留存'
 }
 
 function mailStatusRank(status: MailDesiredStatus) {
@@ -17854,6 +17857,11 @@ onBeforeUnmount(() => {
 .mail-status-filter-claimable {
   --mail-status-bg: #eaf2ff;
   --mail-status-color: #175cd3;
+}
+
+.mail-status-filter-processed {
+  --mail-status-bg: #f2f4f7;
+  --mail-status-color: #475467;
 }
 
 .mail-status-filter-all {

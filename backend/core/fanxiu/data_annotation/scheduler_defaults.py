@@ -191,6 +191,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         runtime_daily_task("legacy-daily-green-bottle-baiye", "daily_green_bottle_baiye", "日常_绿瓶拜谒", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-gongfeng", "daily_gongfeng", "日常_供奉", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-xianshi", "daily_xianshi", "日常_仙市", "05:00", cooldown_seconds=600),
+        runtime_daily_task("legacy-daily-xianmeng", "daily_xianmeng", "日常_仙盟", "05:00", enabled=False, cooldown_seconds=600),
         runtime_daily_task("legacy-daily-xianyuan", "daily_xianyuan", "日常_挑战仙缘", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-dungeon", "daily_dungeon", "日常_每日副本", "05:00", cooldown_seconds=600, payload={"max_runs": 6, "max_purchase_uses": 3}),
         legacy_daily_task("legacy-daily-activity", "日常_活跃度", "05:00"),

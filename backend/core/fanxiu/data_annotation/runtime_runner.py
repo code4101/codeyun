@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import GeneratorType
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta, select_due_scheduled_tasks
 
@@ -696,10 +696,11 @@ class FanxiuRuntime(Runtime):
         self,
         frame: View | int | str | None,
         shape: Shape | str,
-        *target_views: View | int | str,
+        *target_views: View | int | str | Sequence[View | int | str],
         settle_seconds: float = 1.0,
         timeout: float | None = None,
         label: str | None = None,
+        wait_leave: bool = False,
         **options: Any,
     ) -> View:
         source_view = self.resolve_view_selector(frame)
@@ -712,20 +713,33 @@ class FanxiuRuntime(Runtime):
             source_view = current
         target_shape = self.resolve_shape_selector(source_view, shape)
         target_ids: list[int] = []
-        for target_view in target_views:
+
+        def append_target(target_view: View | int | str | Sequence[View | int | str]) -> None:
             if isinstance(target_view, View):
                 if target_view.id is None:
                     raise RuntimeError(f"目标 view 缺少场景编号：{target_view.title}")
                 target_ids.append(int(target_view.id))
+            elif isinstance(target_view, Sequence) and not isinstance(target_view, (str, bytes, bytearray)):
+                for item in target_view:
+                    append_target(item)
             else:
                 target_ids.append(int(str(target_view).lstrip("#")))
+
+        for target_view in target_views:
+            append_target(target_view)
         if not target_ids:
             tree = self.ctx.get("asset_tree")
             target_ids = self.runner._scene_jump_target_ids(tree if isinstance(tree, list) else [], target_shape.raw)
-        if not target_ids:
+        if not target_ids and not wait_leave:
             raise RuntimeError(f"点击 #{source_view.id or '?'}「{self._shape_path(target_shape)}」后缺少目标场景；请显式传入目标或补 sceneJumpTarget")
         yield from self.wait_click(source_view, target_shape, **options)
         yield from self.wait_action_settle(settle_seconds)
+        if not target_ids and wait_leave:
+            return (yield from self.wait_leave_view(
+                source_view,
+                timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
+                label=label or f"点击后等待离开 #{source_view.id or '?'}",
+            ))
         wait_label = label or f"点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
         try:
             return (yield from self.wait_view(
@@ -740,6 +754,48 @@ class FanxiuRuntime(Runtime):
                 f"{wait_label} 失败：源场景=#{source_view.id or '?'}，shape={self._shape_path(target_shape)}，"
                 f"期望目标={target_text}，sceneJumpTarget={jump_target}；{exc}"
             ) from exc
+
+    def wait_leave_view(
+        self,
+        view: View | int,
+        *,
+        timeout: float | None = None,
+        label: str = "等待离开场景",
+    ):
+        source_id = view.id if isinstance(view, View) else int(view)
+        if source_id is None:
+            raise RuntimeError("缺少源场景编号")
+        start = time.monotonic()
+        wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
+        source_info = self._runtime_source_info("wait_leave_view", self._format_runtime_call("wait_leave_view", source_id))
+        self._emit_runtime_action(
+            f"{label}：等待离开 #{source_id}",
+            phase="runtime_wait_leave_view",
+            kind="wait",
+            source_info=source_info,
+            current_scene=source_id,
+        )
+        last_scene_id: int | None = source_id
+        last_score = 0.0
+        while True:
+            if self.stop_event is not None:
+                self.runner._raise_if_stopped(self.stop_event)
+            self.runner._clear_tick_frame(self.ctx)
+            yield BehaviorTreeStatus.RUNNING
+            scene_id, score, _frame = self.current_scene(update=True)
+            last_scene_id, last_score = scene_id, score
+            if scene_id != source_id:
+                self.runner._log("success", f"{label}：已离开 #{source_id}，当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%")
+                return self.get_view(scene_id) if scene_id is not None else view
+            if time.monotonic() - start >= wait_timeout:
+                raise TimeoutError(f"{label} 超时，仍在 #{source_id} {last_score:.0f}%")
+            with self.runner._lock:
+                self.runner._status.update({
+                    "phase": "wait_leave_scene",
+                    "current_scene": last_scene_id,
+                    "message": f"{label}：仍在 #{source_id} {last_score:.0f}%",
+                    "updated_at": time.time(),
+                })
 
     def wait_click_then_any(
         self,
@@ -1679,6 +1735,7 @@ class FanxiuRuntime(Runtime):
         if int(reverse_scrolls) > 0:
             passes.append(("up", int(reverse_scrolls)))
         for direction, scroll_count in passes:
+            unchanged_scrolls = 0
             for scroll_index in range(scroll_count + 1):
                 if self.stop_event is not None:
                     self.runner._raise_if_stopped(self.stop_event)
@@ -1716,7 +1773,15 @@ class FanxiuRuntime(Runtime):
                 self.runner._log("action", f"{label}：未找到入口，{direction} 滚动日常列表 {scroll_index + 1}")
                 changed = yield from self.scroll_shape_content(view69, list_shape, direction=direction)
                 if not changed:
-                    break
+                    unchanged_scrolls += 1
+                    self.runner._log(
+                        "detail",
+                        f"{label}：日常列表 {direction} 滚动后签名未变化 {unchanged_scrolls}/2",
+                    )
+                    if unchanged_scrolls >= 2:
+                        break
+                else:
+                    unchanged_scrolls = 0
         return "not_found"
 
     def popup_score(self, view: View | None) -> float:
@@ -4632,6 +4697,13 @@ class DataAnnotationRuntimeRunner(
         for item in tasks:
             if self._canonical_runtime_task_type(str(item.get("task_type") or "")) != normalized_task_type:
                 continue
+            self._record_scheduler_task_discovered_next_time(
+                str(item.get("id") or ""),
+                _next_data_annotation_scheduler_time(item) or self._next_daily_boss_reset_time_text(),
+                task_type=str(item.get("task_type") or normalized_task_type),
+                label=str(item.get("label") or normalized_task_type),
+                last_result="success",
+            )
             self._mark_scheduler_task(tasks, str(item.get("id") or ""), "success")
             matched = True
         if matched:

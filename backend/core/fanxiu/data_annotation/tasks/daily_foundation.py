@@ -1696,7 +1696,7 @@ class DailyFoundationTaskMixin:
         leave_shape = self._find_shape(image85, "离开") if isinstance(image85, dict) else None
         if isinstance(image85, dict) and isinstance(leave_shape, dict):
             score = float(self._shape_score(ctx, image85, leave_shape, frame) or 0.0)
-            if score >= float(getattr(self, "overlay_threshold", 80.0)):
+            if score >= float(self.scene_threshold):
                 x, y = ActionPlanner().shape_center(image85, leave_shape)
                 matches = [(float(x), float(y), f"#85「离开」{score:.0f}%")]
                 click_image = image85
@@ -1937,6 +1937,10 @@ class DailyFoundationTaskMixin:
                 )
                 if attempt > 0:
                     break
+                if scene_after == 34 or self._daily_assistant_text_is_world_like(text_after):
+                    self._log("detail", f"{label}：进入日常被世界页浮层/活动入口打断后已回到 #34，重试进入 #69")
+                    yield from runtime.wait_action_settle(1.0)
+                    continue
                 if not (yield from self._leave_world_side_scene_if_present(
                     ctx,
                     stop_event,
@@ -3572,7 +3576,15 @@ class DailyFoundationTaskMixin:
             runtime.click_shape_center(baiye_scene_id, "拜谒")
             yield from runtime.wait_action_settle(float(payload.get("green_bottle_baiye_settle_seconds") or 2.0))
             worship_text = runtime.ocr_text(update=True)
-            if not self._baiye_text_is_completed(worship_text):
+            reward_result = self._green_bottle_baiye_text_is_reward_result(worship_text)
+            if reward_result:
+                with self._lock:
+                    self._log_locked("action", "日常_绿瓶拜谒：关闭拜谒奖励结果页")
+                width, height = self._frame_size(images.get(baiye_scene_id) or {})
+                runtime.click_frame_point(baiye_scene_id, width * 0.5, height * 0.86)
+                yield from runtime.wait_action_settle(max(2.0, float(payload.get("green_bottle_reward_settle_seconds") or 2.0)))
+                worship_text = runtime.ocr_text(update=True)
+            if not self._baiye_text_is_completed(worship_text) and not reward_result:
                 raise RuntimeError(f"日常_绿瓶拜谒：点击拜谒后未确认完成，OCR={worship_text[:120]}")
         else:
             raise RuntimeError(f"日常_绿瓶拜谒：未能判断拜谒状态，scene={worship_scene_id} OCR={worship_text[:120]}")
@@ -3594,10 +3606,27 @@ class DailyFoundationTaskMixin:
         final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
         if final_scene_id != 34:
             raise RuntimeError(f"日常_绿瓶拜谒：拜谒已完成，但收尾未回到 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
+        self._record_daily_entry_done(
+            payload,
+            task_id="legacy-daily-green-bottle-baiye",
+            task_type="daily_green_bottle_baiye",
+            label="日常_绿瓶拜谒",
+            message="今日拜谒已确认完成",
+        )
         with self._lock:
             self._set_status_locked("success", "日常_绿瓶拜谒完成，已回到 #34", phase="daily_green_bottle_baiye_done", current_scene=34)
             self._log_locked("success", "日常_绿瓶拜谒完成")
         return "success"
+
+    def _green_bottle_baiye_text_is_reward_result(self, text: Any) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return bool(
+            "点击屏幕继续" in compact
+            or "点击继续" in compact
+            or "自动关闭" in compact
+            or "恭喜获得" in compact
+            or re.search(r"[恭共]喜.{0,3}[获荻]?得", compact)
+        )
 
     def _open_baiye_cross_rule(
         self,

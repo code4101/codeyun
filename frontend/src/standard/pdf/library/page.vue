@@ -97,7 +97,7 @@ function formatFileSize(sizeBytes?: number | null) {
 
 function formatCurrentPage(document: PdfDocumentSummary) {
   const page = document.my_state?.current_page
-  return page && page > 1 ? `第 ${page} 页` : '-'
+  return page && page >= 1 ? `第 ${page} 页` : '-'
 }
 
 function resolvePdfHref(pdfId: number) {
@@ -153,7 +153,6 @@ onMounted(() => {
     <header class="library-header">
       <div class="library-heading">
         <h1>PDF 阅读器</h1>
-        <div class="library-count">{{ documents.length }} 个文档</div>
       </div>
 
       <div class="library-actions">
@@ -185,7 +184,7 @@ onMounted(() => {
             <tr>
               <th scope="col">文档</th>
               <th scope="col">权限</th>
-              <th scope="col">上次阅读</th>
+              <th scope="col">阅读位置</th>
               <th scope="col">大小</th>
               <th scope="col">更新时间</th>
               <th scope="col" class="pdf-spacer-cell" aria-hidden="true"></th>
@@ -261,12 +260,6 @@ onMounted(() => {
   font-size: 22px;
   font-weight: 700;
   line-height: 30px;
-}
-
-.library-count {
-  color: #697386;
-  font-size: 13px;
-  line-height: 20px;
 }
 
 .library-actions {
