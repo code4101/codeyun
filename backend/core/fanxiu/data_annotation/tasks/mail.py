@@ -559,7 +559,11 @@ class MailTaskMixin:
         stop_event = runtime.stop_event or threading.Event()
         recovered_green = yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")
         if recovered_green:
-            return (yield from self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True))
+            result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
+            opened = (yield from result) if isinstance(result, GeneratorType) else result
+            if opened == "blocked_reward_tip":
+                return (yield from self._reopen_mail_from_current_world_like(runtime))
+            return opened
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 34, 35, 20, 58, 227], update=True)
         if scene_id == 121:
             return "success"
@@ -572,7 +576,10 @@ class MailTaskMixin:
         if scene_id not in {34, 35}:
             yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
         result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
-        return (yield from result) if isinstance(result, GeneratorType) else result
+        opened = (yield from result) if isinstance(result, GeneratorType) else result
+        if opened == "blocked_reward_tip":
+            return (yield from self._reopen_mail_from_current_world_like(runtime))
+        return opened
 
     def _leave_green_bottle_to_world_if_present(
         self,
@@ -582,9 +589,12 @@ class MailTaskMixin:
         *,
         label: str,
     ):
-        scene_id, _score, _frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [20, 34, 58], update=True)
+        scene_id, _score, _frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [20, 34, 58, 121, 122, 123], update=True)
+        if scene_id in {34, 121, 122, 123}:
+            return False
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        looks_green_bottle = scene_id == 20 or any(token in compact for token in ("炼丹炉", "神物园", "衣装阁", "丹药"))
+        green_tokens = sum(1 for token in ("炼丹炉", "神物园", "衣装阁", "丹药") if token in compact)
+        looks_green_bottle = scene_id == 20 or (scene_id is None and green_tokens >= 2)
         if not looks_green_bottle:
             return False
         with self._lock:

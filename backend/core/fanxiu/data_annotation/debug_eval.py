@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from types import GeneratorType
-from typing import Any
+from typing import Any, Sequence
 
 from pyxllib.prog import BehaviorTreeStatus
 
@@ -214,7 +214,7 @@ class DataAnnotationRuntimeDebugContext:
         runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
         return (yield from runtime.wait_click(frame, shape, **options))
 
-    def wait_click_then_view(self, frame: int | str, shape: str, *targets: int | str, **options: Any):
+    def wait_click_then_view(self, frame: int | str, shape: str, *targets: int | str | Sequence[int | str], **options: Any):
         self._require_act()
         runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
         return (yield from runtime.wait_click_then_view(frame, shape, *targets, **options))

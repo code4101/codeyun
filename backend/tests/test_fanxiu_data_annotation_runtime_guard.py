@@ -240,6 +240,45 @@ def test_runtime_child_shape_overrides_parent_shape_with_same_title():
     assert found.parent_view.id == 75
 
 
+def test_open_daily_entry_requires_two_unchanged_scrolls_before_boundary(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    daily = _scene_image(
+        "日常",
+        "0069.png",
+        [{"id": "daily-list", "title": "滚动窗口", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6}],
+        layer=1,
+    )
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"asset_tree": [daily], "images": runner._index_images([daily]), "attrs": {}},
+    )
+    scroll_calls: list[str] = []
+
+    monkeypatch.setattr(runtime, "cur_frame", lambda update=False: "frame")
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda ctx, frame: [])
+    monkeypatch.setattr(runtime, "_ensure_daily_list_frame", lambda frame, lines, label: None)
+    monkeypatch.setattr(runtime, "_daily_entry_matches", lambda lines, view, title_pattern, exclude_pattern=None: [])
+    monkeypatch.setattr(runtime, "_emit_runtime_action", lambda *args, **kwargs: None)
+
+    def fake_scroll(view, shape, *, direction=None):
+        scroll_calls.append(str(direction))
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return False
+
+    monkeypatch.setattr(runtime, "scroll_shape_content", fake_scroll)
+
+    result = _drain_generator(runtime.open_daily_entry(
+        label="日常_测试",
+        title_pattern=r"不存在",
+        max_scrolls=5,
+        reverse_scrolls=0,
+    ))
+
+    assert result == "not_found"
+    assert scroll_calls == ["down", "down"]
+
+
 def test_runtime_click_inherited_shape_uses_parent_shape_source(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     parent = _scene_image(
@@ -404,6 +443,90 @@ def test_runtime_wait_click_then_view_infers_scene_jump_target(monkeypatch):
         ("wait_click", 69, "拜谒", {}),
         ("settle", 1.25),
         ("wait_view", (264,), {"timeout": 12.0, "label": "点击后等待目标场景 #264"}),
+    ]
+
+
+def test_runtime_wait_click_then_view_accepts_target_list(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image293 = _image("仙盟", "0293.png", [{"title": "攻击", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}])
+    image294 = _image("确认", "0294.png", [])
+    image295 = _image("备用确认", "0295.png", [])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {293: image293, 294: image294, 295: image295}, "asset_tree": [image293, image294, image295]},
+        stop_event=threading.Event(),
+    )
+    actions: list[tuple] = []
+
+    def fake_wait_click(frame, shape, **kwargs):
+        actions.append(("wait_click", getattr(frame, "id", frame), getattr(shape, "title", shape), kwargs))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(seconds=1.0):
+        actions.append(("settle", seconds))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_view(*views, **kwargs):
+        actions.append(("wait_view", views, kwargs))
+        if False:
+            yield None
+        return runtime.view(294)
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+
+    result = _drain_generator(runtime.wait_click_then_view(293, "攻击", [294, 295]))
+
+    assert result.id == 294
+    assert actions == [
+        ("wait_click", 293, "攻击", {}),
+        ("settle", 1.0),
+        ("wait_view", (294, 295), {"timeout": 12.0, "label": "点击后等待目标场景 #294,#295"}),
+    ]
+
+
+def test_runtime_wait_click_then_view_can_wait_leave_without_target(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image293 = _image("仙盟", "0293.png", [{"title": "攻击", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}])
+    image294 = _image("确认", "0294.png", [])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {293: image293, 294: image294}, "asset_tree": [image293, image294]},
+        stop_event=threading.Event(),
+    )
+    actions: list[tuple] = []
+    scenes = iter([(293, 98.0, "frame-a"), (294, 99.0, "frame-b")])
+
+    def fake_wait_click(frame, shape, **kwargs):
+        actions.append(("wait_click", getattr(frame, "id", frame), getattr(shape, "title", shape), kwargs))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(seconds=1.0):
+        actions.append(("settle", seconds))
+        if False:
+            yield None
+        return None
+
+    def fake_current_scene(*_args, **_kwargs):
+        return next(scenes)
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "current_scene", fake_current_scene)
+
+    result = _drain_generator(runtime.wait_click_then_view(293, "攻击", wait_leave=True, timeout=3.0))
+
+    assert result.id == 294
+    assert actions == [
+        ("wait_click", 293, "攻击", {}),
+        ("settle", 1.0),
     ]
 
 
@@ -5099,6 +5222,74 @@ def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch)
     assert goto_targets == [69]
 
 
+def test_enter_daily_retries_when_promo_interrupt_returns_world(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "daily", "kind": "rect", "title": "日常", "x": 0.04, "y": 0.20, "w": 0.08, "h": 0.07},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": Path("asset-tree.json"),
+        "images": {34: image34},
+    }
+
+    class FakeRuntime:
+        def __init__(self):
+            self.goto_count = 0
+            self.last_frame = "world-frame"
+            self.settles = 0
+
+        def goto_view(self, target_scene_id):
+            self.goto_count += 1
+            self.last_frame = "world-after-promo-frame" if self.goto_count == 1 else "daily-frame"
+            if False:
+                yield None
+            return target_scene_id
+
+        def current_scene(self, *_args, **_kwargs):
+            if self.last_frame == "daily-frame":
+                return 69, 100.0, "daily-frame"
+            return 34, 100.0, self.last_frame
+
+        def ocr_text(self, frame=None, *_args, **_kwargs):
+            if frame == "daily-frame":
+                return "日常 活跃度 击败首领 0/3"
+            return "世界 储物袋 角色 装备 功法书 大地图"
+
+        def wait_action_settle(self, *_args, **_kwargs):
+            self.settles += 1
+            if False:
+                yield None
+            return None
+
+    fake_runtime = FakeRuntime()
+
+    def false_generator():
+        if False:
+            yield None
+        return False
+
+    monkeypatch.setattr(runner, "_leave_world_side_scene_if_present", lambda *_args, **_kwargs: false_generator())
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._enter_daily_from_world_like(
+            ctx,
+            fake_runtime,
+            threading.Event(),
+            "world-frame",
+            34,
+            "世界 储物袋 角色 装备 功法书 大地图",
+            label="日常_首领",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == 69
+    assert fake_runtime.goto_count == 2
+    assert fake_runtime.settles >= 1
+
+
 def test_daily_task_row_progress_repairs_ocr_prefix_glued_to_fraction():
     runner = create_fanxiu_runtime_runner()
     zero_lines = [
@@ -6624,6 +6815,76 @@ def test_mail_stable_entry_returns_reward_tip_blocker_without_retry(monkeypatch,
 
     assert result == "blocked_reward_tip"
     assert visible_calls == ["visible"]
+
+
+def test_mail_cleanup_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"images": {34: _image("世界", "0034.png", [])}}
+    stable_results = iter(["blocked_reward_tip"])
+    reopened: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.ctx = ctx
+            self.stop_event = threading.Event()
+            self.asset_tree_path = tmp_path / "asset_tree.json"
+
+    def fake_green(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def fake_stable(*_args, **_kwargs):
+        return next(stable_results)
+
+    def fake_reopen(_runtime):
+        reopened.append("reopen")
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", fake_green)
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (34, 100.0, "frame", "世界"))
+    monkeypatch.setattr(runner, "_open_mail_stable_entry", fake_stable)
+    monkeypatch.setattr(runner, "_reopen_mail_from_current_world_like", fake_reopen)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_cleanup_entry(FakeRuntime()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert reopened == ["reopen"]
+
+
+def test_mail_cleanup_green_bottle_recovery_ignores_mail_page_danyao_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    clicked: list[tuple[int, float, float]] = []
+
+    class FakeRuntime:
+        def click_frame_point(self, scene_id, x, y):
+            clicked.append((int(scene_id), float(x), float(y)))
+
+        def wait_view(self, *_args, **_kwargs):
+            if False:
+                yield None
+            return None
+
+    monkeypatch.setattr(
+        runner,
+        "_fanxiu_runtime_scene_text",
+        lambda *_args, **_kwargs: (121, 96.0, "frame", "灵鳄丹尊奖励 服用丹药获得属性翻倍"),
+    )
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._leave_green_bottle_to_world_if_present({}, threading.Event(), FakeRuntime(), label="邮件_清理"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result is False
+    assert clicked == []
 
 
 def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_path):
@@ -10697,6 +10958,22 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
         "checkpoint": None,
     }
     fanxiu_api._write_data_annotation_scheduler_tasks([task])
+    fanxiu_api._write_data_annotation_world_facts({
+        "discoveries": {
+            "task": {
+                "legacy-daily-signup": {
+                    "id": "legacy-daily-signup",
+                    "task_type": "daily_signup",
+                    "label": "日常_报名",
+                    "source": "data_annotation_runtime",
+                    "last_result": "success",
+                    "last_run_at": "2026-06-06 10:00:00",
+                    "discovered_next_time": "2026-06-06 05:00:00",
+                    "updated_at": datetime(2026, 6, 6, 10, 0, 0).timestamp(),
+                }
+            }
+        }
+    })
     runner = create_fanxiu_runtime_runner()
     executed: list[str] = []
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
@@ -10723,6 +11000,8 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-signup"]
     assert fact["last_result"] == "success"
     assert fact["retry_after"] is None
+    assert fact["discovered_next_time"] == signup["next_time"]
+    assert fact["discovered_next_time"] != "2026-06-06 05:00:00"
 
 
 def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path, monkeypatch):
