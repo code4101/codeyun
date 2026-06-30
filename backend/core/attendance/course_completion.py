@@ -15,7 +15,8 @@ from backend.models import SheetDocument
 COURSE_COMPLETION_TASK_KEY = "attendance_course_completion"
 COURSE_COMPLETION_RUN_TIME = "06:20"
 ATTENDANCE_SUMMARY_SHEET_ID = 4
-COMPLETABLE_COURSE_TYPES = {"念住", "觉观"}
+MONTHLY_NIANZHU_JUEGUAN_COURSE_TYPES = {"念住", "觉观"}
+FANBEI_COURSE_TYPES = {"梵呗初阶", "梵呗增益"}
 KQMAIN_ACTIVE_LIST_NAME = "觉观念住类型"
 EXCEL_SERIAL_UNIX_EPOCH = 25569
 
@@ -135,11 +136,21 @@ def _course_name_matches_module(course_name: str, module_name: str) -> bool:
 def _is_monthly_nianzhu_jueguan_course(course_type: str, course_name: str) -> bool:
     normalized_type = _normalize_text(course_type)
     normalized_name = _normalize_text(course_name)
-    if normalized_type not in COMPLETABLE_COURSE_TYPES:
+    if normalized_type not in MONTHLY_NIANZHU_JUEGUAN_COURSE_TYPES:
         return False
     if "闯关" in normalized_type or "闯关" in normalized_name:
         return False
     return re.search(r"第\s*\d+\s*届\s*(念住|觉观)", normalized_name) is not None
+
+
+def _is_fanbei_course(course_type: str, course_name: str) -> bool:
+    normalized_type = _normalize_text(course_type)
+    normalized_name = _normalize_text(course_name)
+    return normalized_type in FANBEI_COURSE_TYPES and normalized_type in normalized_name
+
+
+def _is_completable_course(course_type: str, course_name: str) -> bool:
+    return _is_monthly_nianzhu_jueguan_course(course_type, course_name) or _is_fanbei_course(course_type, course_name)
 
 
 def _summary_row_ready_for_completion(row: list[Any], columns: list[str]) -> tuple[bool, str]:
@@ -181,7 +192,11 @@ def _format_number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.2f}".rstrip("0").rstrip(".")
 
 
-def _refresh_summary_stats_from_attendance_sheet(
+def _attendance_summary_paid_rows(attendance_rows: list[list[Any]], order_amount_index: int) -> list[list[Any]]:
+    return [row for row in attendance_rows if _to_number(row[order_amount_index]) > 0]
+
+
+def _refresh_nianzhu_jueguan_summary_stats_from_attendance_sheet(
     session: Session,
     document: dict[str, Any],
     *,
@@ -205,7 +220,58 @@ def _refresh_summary_stats_from_attendance_sheet(
         active_only=True,
         course_name=course_name,
     )
+    return _refresh_summary_money_fields_from_attendance_sheet(
+        session,
+        document,
+        row_index=row_index,
+        attendance_sheet_id=attendance_sheet_id,
+        step2_summary=step2_summary,
+        step3_summary=step3_summary,
+        update_refund_count=True,
+    )
 
+
+def _refresh_fanbei_summary_stats_from_attendance_sheet(
+    session: Session,
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    course_name: str,
+    attendance_sheet_id: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from backend.core.attendance.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
+    from backend.core.attendance.fanbei_schedule import _apply_fanbei_attendance_step3_to_sheet
+
+    step2_summary = rebuild_fanbei_attendance_from_course_sheets(
+        session,
+        attendance_sheet_id=attendance_sheet_id,
+    )
+    step3_summary = _apply_fanbei_attendance_step3_to_sheet(
+        session=session,
+        sheet_id=attendance_sheet_id,
+        course_name=course_name,
+    )
+    return _refresh_summary_money_fields_from_attendance_sheet(
+        session,
+        document,
+        row_index=row_index,
+        attendance_sheet_id=attendance_sheet_id,
+        step2_summary=step2_summary,
+        step3_summary=step3_summary,
+        update_refund_count=False,
+    )
+
+
+def _refresh_summary_money_fields_from_attendance_sheet(
+    session: Session,
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    attendance_sheet_id: int,
+    step2_summary: dict[str, Any],
+    step3_summary: dict[str, Any],
+    update_refund_count: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     attendance = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == attendance_sheet_id)).first()
     if attendance is None:
         raise RuntimeError(f"未找到课程考勤表：{attendance_sheet_id}")
@@ -217,9 +283,10 @@ def _refresh_summary_stats_from_attendance_sheet(
     ]
     refunded_index = _column_index(attendance_columns, "已返款")
     order_amount_index = _column_index(attendance_columns, "订单金额")
-    registration_count = len(attendance_rows)
-    refund_count = sum(1 for row in attendance_rows if _to_number(row[order_amount_index]) <= 0)
-    refunded_total = sum(_to_number(row[refunded_index]) for row in attendance_rows)
+    paid_rows = _attendance_summary_paid_rows(attendance_rows, order_amount_index)
+    registration_count = len(paid_rows)
+    refund_count = 0
+    refunded_total = sum(_to_number(row[refunded_index]) for row in paid_rows)
 
     next_document = dict(document)
     columns = _columns(next_document)
@@ -228,7 +295,8 @@ def _refresh_summary_stats_from_attendance_sheet(
         raise RuntimeError(f"课程汇总行不存在：{row_index}")
     row = list(rows[row_index])
     row[_column_index(columns, "报名人数")] = str(registration_count)
-    row[_column_index(columns, "退课人数")] = "" if refund_count == 0 else str(refund_count)
+    if update_refund_count:
+        row[_column_index(columns, "退课人数")] = "" if refund_count == 0 else str(refund_count)
     row[_column_index(columns, "已返款")] = _format_number(refunded_total)
     rows[row_index] = row
 
@@ -248,9 +316,36 @@ def _refresh_summary_stats_from_attendance_sheet(
         "registration_count": registration_count,
         "refund_count": refund_count,
         "refunded_total": refunded_total,
+        "paid_row_count": len(paid_rows),
         "step2": step2_summary,
         "step3": step3_summary,
     }
+
+
+def _refresh_summary_stats_from_attendance_sheet(
+    session: Session,
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    course_type: str,
+    course_name: str,
+    attendance_sheet_id: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if _is_fanbei_course(course_type, course_name):
+        return _refresh_fanbei_summary_stats_from_attendance_sheet(
+            session,
+            document,
+            row_index=row_index,
+            course_name=course_name,
+            attendance_sheet_id=attendance_sheet_id,
+        )
+    return _refresh_nianzhu_jueguan_summary_stats_from_attendance_sheet(
+        session,
+        document,
+        row_index=row_index,
+        course_name=course_name,
+        attendance_sheet_id=attendance_sheet_id,
+    )
 
 
 def _archive_due_summary_rows(
@@ -282,7 +377,7 @@ def _archive_due_summary_rows(
         if completed_text:
             continue
         course_name = _normalize_text(row[online_sheet_index])
-        if not _is_monthly_nianzhu_jueguan_course(course_type, course_name):
+        if not _is_completable_course(course_type, course_name):
             continue
         start_date = _parse_summary_date(row[start_date_index], course_name=course_name, today=today)
         end_date = _parse_summary_date(row[end_date_index], course_name=course_name, today=today)
@@ -318,6 +413,7 @@ def _archive_due_summary_rows(
             session,
             next_document,
             row_index=current_row_index,
+            course_type=course_type,
             course_name=course_name,
             attendance_sheet_id=attendance_sheet_id,
         )

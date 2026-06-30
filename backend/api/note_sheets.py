@@ -126,10 +126,12 @@ NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
 NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
 NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN = "提交时间"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN = "关联用户ID"
+NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN = "海外"
 NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS = [
     NOTE_SHEET_REGISTRATION_GROUP_COLUMN,
     NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN,
     "备注",
+    NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
     NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN,
     "姓名",
     "微信昵称",
@@ -382,7 +384,8 @@ NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 
 - 区分两类订单字段：“微信支付订单号/交易单号/支付订单号”通常是微信支付交易单号，常见为 420... 等长数字；“商户订单号/商户单号/订单号”通常是商户侧订单号，常见为 MA... 等商户前缀。源表只有“订单号”且值是 MA... 时，必须映射到“商户订单号”，不要放入“微信支付订单号”。
 - 手机号、订单号、微信号必须按文本保留；不要转成科学计数法，不要自行补全未知位。
 - 不要给手机号、订单号、微信号添加用于 Excel 文本识别的反引号、单引号等前缀字符。
-- “备注”只用于源表明确表达退课、退款、国际学生、人工备注等当前报名表备注语义的信息；不要把无法匹配的普通源字段塞进“备注”。
+- 遇到“海外/国外/国际学员/时差”信息，无论源表是单独字段还是写在备注里，都映射到目标“海外”列；目标值输出“是”，不要写进“备注”。
+- “备注”只用于源表明确表达退课、退款、人工备注等当前报名表备注语义的信息；不要把纯“海外/国际学员/时差”当作备注。
 - “参考信息”是目标表人工备用字段；除非用户补充说明明确要求，否则不要自动导入到“参考信息”。
 - 如果源表存在目标表没有的真实业务字段，放入 extra_columns，并在每行对象里用对应字段名保存值；常见如“选择促学金模式/自觉自律完成学修”归为“促学金模式”，“微信号”在目标表没有专门列时归为“微信号”。
 - 如果目标表同时有标准列和源表同名扩展列，例如“微信昵称”和“微信昵称（必填）”、“姓名”和“真实姓名（必填）”，不要只按列名机械映射；要结合具体内容判断哪一个才是用户真实填写的字段。
@@ -1045,6 +1048,18 @@ def _normalize_registration_sheet_header_document(document_json: dict[str, Any])
     next_document = dict(normalized)
     changed = False
 
+    if NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN not in columns and _is_registration_append_sheet(columns):
+        remark_index = _get_column_index(columns, "备注")
+        insert_index = (remark_index + 1) if remark_index >= 0 else min(2, len(columns))
+        next_document = _insert_document_column(
+            next_document,
+            insert_index=insert_index,
+            header=NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
+            width=72,
+        )
+        columns = _normalize_document_columns(next_document)
+        changed = True
+
     if next_document.get("header_groups") != []:
         next_document["header_groups"] = []
         changed = True
@@ -1111,7 +1126,7 @@ def _apply_registration_standard_user_id_column_styles(document_json: dict[str, 
     target_indexes = [
         index
         for index, header in enumerate(columns)
-        if header in {"用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN}
+        if header in {"用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN, NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN}
     ]
     if not target_indexes:
         return normalized, False
@@ -1120,18 +1135,21 @@ def _apply_registration_standard_user_id_column_styles(document_json: dict[str, 
     changed = False
 
     column_configs = dict(next_document.get("column_configs")) if isinstance(next_document.get("column_configs"), dict) else {}
-    for header in ("用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN):
+    for header in ("用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN, NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN):
         if header not in columns:
             continue
         config = dict(column_configs.get(header)) if isinstance(column_configs.get(header), dict) else {}
         previous_config = dict(config)
         config["header_background_color"] = NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND
-        config.setdefault("font_family", "monospace")
         config.setdefault("width_mode", "fixed")
         if header == "用户ID":
+            config.setdefault("font_family", "monospace")
             config.setdefault("duplicate_value_highlight", True)
         if header == NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN:
+            config.setdefault("font_family", "monospace")
             config.setdefault("note", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE)
+        if header == NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN:
+            config.setdefault("note", "海外/时差学员填“是”后，考勤重建会按课程规则将回放天数前移一档")
         if config != previous_config:
             changed = True
         column_configs[header] = config
@@ -6936,6 +6954,80 @@ def _order_attendance_rows_by_dynamic_expiration(
     return next_document, tracking_changed_count + style_repaired_count + (1 if order_changed else 0)
 
 
+def _attendance_group_sequence_sort_key(
+    row: list[Any],
+    columns: list[str],
+    source_index: int,
+) -> tuple[Any, ...]:
+    student_id_index = _get_column_index(columns, "学号")
+    parsed = _parse_registration_group_sequence(row[student_id_index] if student_id_index >= 0 else "")
+    if parsed is not None:
+        group_number, member_number, _width = parsed
+        try:
+            group_value: int | str = int(group_number)
+        except ValueError:
+            group_value = group_number
+        return 0, group_value, member_number, source_index
+    return 1, source_index
+
+
+def _order_attendance_rows_by_group_sequence(document_json: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if _is_attendance_tracking_sheet(columns):
+        return normalized, 0
+    if _get_column_index(columns, "学号") < 0:
+        return normalized, 0
+
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(normalized)
+    ]
+    if not rows:
+        return normalized, 0
+    if not any(_parse_registration_group_sequence(row[_get_column_index(columns, "学号")]) is not None for row in rows):
+        return normalized, 0
+
+    ordered_source_indexes = sorted(
+        range(len(rows)),
+        key=lambda index: _attendance_group_sequence_sort_key(rows[index], columns, index),
+    )
+    if ordered_source_indexes == list(range(len(rows))):
+        return normalized, 0
+
+    row_index_map = {
+        source_index: target_index
+        for target_index, source_index in enumerate(ordered_source_indexes)
+    }
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    next_rows = [
+        _remap_row_formula_cell_references(
+            rows[source_index],
+            columns=columns,
+            row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
+        )
+        for source_index in ordered_source_indexes
+    ]
+    next_document = _replace_document_data_rows({
+        **normalized,
+        "columns": columns,
+    }, next_rows)
+    if isinstance(normalized.get("cell_meta"), dict):
+        next_document["cell_meta"] = _remap_cell_meta_rows(
+            normalized.get("cell_meta"),
+            row_index_map,
+            row_offset=_normalize_document_data_start_row(normalized),
+        )
+    next_document = _remap_document_entity_data_rows(
+        next_document,
+        normalized,
+        row_index_map=row_index_map,
+        data_row_count=len(rows),
+    )
+    return next_document, 1
+
+
 def _is_refunded_registration_row(row: list[Any], columns: list[str]) -> bool:
     remark_index = _get_column_index(columns, "备注")
     if remark_index < 0:
@@ -7268,7 +7360,6 @@ def _normalize_attendance_managed_refund_formulas(
     formula_builders = {
         "禅客": lambda row_number: _build_attendance_zen_guest_formula(columns, row_number=row_number),
         "完成视频数": lambda row_number: _build_attendance_completed_video_formula(columns, row_number=row_number),
-        "视频应返款": lambda row_number: _build_attendance_video_refund_formula(normalized, columns, row_number=row_number),
         "打卡应返款": lambda row_number: _build_attendance_clockin_refund_formula(normalized, columns, row_number=row_number),
         "总应返款": lambda row_number: _build_attendance_total_refund_formula(
             columns,
@@ -8682,17 +8773,23 @@ def _sync_registration_rows_to_attendance_document(
             _normalize_sheet_row(row, len(attendance_columns))
             for row in _extract_document_rows(next_document)
         ]
+    next_document, group_sequence_ordered_count = _order_attendance_rows_by_group_sequence(next_document)
+    if group_sequence_ordered_count:
+        next_rows = [
+            _normalize_sheet_row(row, len(attendance_columns))
+            for row in _extract_document_rows(next_document)
+        ]
     next_document, group_style_repaired_count = _apply_attendance_group_identity_backgrounds(
         next_document,
         next_rows,
         attendance_columns,
     )
     return next_document, _build_registration_match_summary(
-        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
-        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
+        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_sequence_ordered_count + group_style_repaired_count,
+        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_sequence_ordered_count + group_style_repaired_count,
         skipped_count=skipped_count,
         inserted_count=len(inserted_rows),
-        repaired_count=repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
+        repaired_count=repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_sequence_ordered_count + group_style_repaired_count,
     )
 
 
@@ -10037,6 +10134,7 @@ def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[
             ]
         else:
             continue
+        row = _normalize_registration_overseas_cells(row, output_columns)
         if any(_normalize_sheet_text(cell) for cell in row):
             normalized_rows.append(row)
 
@@ -10051,10 +10149,48 @@ def _normalize_excel_import_header_key(value: Any) -> str:
     return _normalize_import_record_key(header)
 
 
+def _is_registration_overseas_marker(value: Any) -> bool:
+    text = _normalize_sheet_text(value).strip().lower()
+    if not text:
+        return False
+    normalized = re.sub(r"[\s,，;；、/]+", "", text)
+    return normalized in {
+        "海外",
+        "国外",
+        "国际",
+        "国际学员",
+        "国际学生",
+        "时差",
+        "海外学员",
+        "海外学生",
+        "国外学员",
+        "国外学生",
+        "yes",
+        "true",
+        "1",
+        "是",
+    }
+
+
+def _normalize_registration_overseas_cells(row: list[Any], columns: list[str]) -> list[Any]:
+    if not _is_registration_append_sheet(columns):
+        return row
+    remark_index = _get_column_index(columns, "备注")
+    overseas_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN)
+    if remark_index < 0 or overseas_index < 0:
+        return row
+    next_row = _normalize_sheet_row(row, len(columns))
+    if _is_registration_overseas_marker(next_row[remark_index]):
+        next_row[overseas_index] = "是"
+        next_row[remark_index] = ""
+    return next_row
+
+
 REGISTRATION_GROUP_SEQUENCE_SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
     "group": ("分组", "组别", "组号"),
     "sequence": ("序号", "编号", "学号"),
     "remark": ("备注", "说明"),
+    "overseas": (NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN, "国外", "国际学员", "国际学生", "时差"),
     "submitted_at": ("提交时间", "提交日期", "报名时间"),
     "name": ("姓名", "真实姓名", "真实姓名（必填）", "提交者", "提交者（自动）"),
     "nickname": ("微信昵称", "昵称", "微信名"),
@@ -10160,6 +10296,9 @@ def _extract_registration_group_sequence_source_rows(workbook_payload: dict[str,
                 for column_index, field in best_fields.items()
             }
             row = _normalize_registration_source_order_fields(row)
+            if _is_registration_overseas_marker(row.get("remark")) and not _normalize_sheet_text(row.get("overseas")):
+                row["overseas"] = "是"
+                row["remark"] = ""
             visible_values = [_normalize_sheet_text(value) for value in row.values()]
             if not any(visible_values):
                 continue
@@ -10237,6 +10376,7 @@ def _prefer_registration_group_sequences_from_workbook(
         "amount": _get_column_index(columns, "订单金额"),
         "submitted_at": _get_column_index(columns, "提交时间"),
         "remark": _get_column_index(columns, "备注"),
+        "overseas": _get_column_index(columns, NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN),
         "name": _get_column_index(columns, "姓名"),
         "nickname": _get_column_index(columns, "微信昵称"),
     }
@@ -10279,6 +10419,7 @@ def _prefer_registration_group_sequences_from_workbook(
         for field, target_column in (
             ("submitted_at", "提交时间"),
             ("remark", "备注"),
+            ("overseas", NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN),
             ("amount", "订单金额"),
         ):
             index = field_indexes.get(field, -1)
@@ -10314,6 +10455,7 @@ def _prefer_registration_group_sequences_from_workbook(
             source_field_changed = True
         if source_field_changed:
             source_field_count += 1
+        row = _normalize_registration_overseas_cells(row, columns)
         next_rows.append(row)
 
     return next_rows, changed_count, source_field_count
@@ -12358,6 +12500,13 @@ def _reset_course_template_runtime_header_values(document_json: dict[str, Any]) 
     column_configs_changed = False
     column_configs = next_document.get("column_configs")
     next_column_configs = dict(column_configs) if isinstance(column_configs, dict) else {}
+    if period_display_index >= 0 and period_display_index < len(columns):
+        period_display_header = str(columns[period_display_index])
+        period_display_config = dict(next_column_configs.get(period_display_header)) if isinstance(next_column_configs.get(period_display_header), dict) else {}
+        if period_display_config.get("value_type") != "number":
+            period_display_config["value_type"] = "number"
+            next_column_configs[period_display_header] = period_display_config
+            column_configs_changed = True
     if current_refund_index >= 0 and current_refund_index < len(columns):
         current_refund_header = str(columns[current_refund_index])
         current_refund_config = next_column_configs.get(current_refund_header)

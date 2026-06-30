@@ -171,6 +171,32 @@ def test_attendance_formula_normalizer_removes_refund_label_without_dual_clockin
     assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
 
 
+def test_attendance_managed_refund_formula_normalizer_keeps_video_refund_materialized() -> None:
+    columns = ["姓名", "完成视频数", "视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款", "打卡数", "第01课"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [["甲", 1, 19, 0, 0, 0, 499, 0, 0, "当堂完成"]],
+        "grid_rows": [
+            [""] * len(columns),
+            columns,
+            ["", "", "", "", "", 0, 499, "", "", ""],
+            ["甲", 1, 19, 0, 0, 0, 499, 0, 0, "当堂完成"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    normalized, changed_count = note_sheets_api._normalize_attendance_managed_refund_formulas(document)
+
+    assert changed_count >= 1
+    row = normalized["rows"][0]
+    assert row[columns.index("完成视频数")] == '=COUNTIF(J4,"*完成*")+COUNTIF(J4,"*回放*")'
+    assert row[columns.index("视频应返款")] == 19
+    assert row[columns.index("总应返款")] == "=MIN(IFERROR(C4+D4+G4-IF($G$3>0,$G$3,G4),0),G4)"
+
+
 def test_course_template_runtime_header_values_reset_entity_and_defined_names() -> None:
     columns = ["已返款", "订单金额", "当前应返款"]
     document = {
@@ -223,6 +249,7 @@ def test_course_template_runtime_header_values_reset_entity_and_defined_names() 
     assert reset["defined_names"][0]["formula"] == "=INT(TODAY()-DATE(2026,6,30))"
     assert reset["grid_rows"][2][0] == '="第"&返款周期&"天"'
     assert reset["grid_rows"][2][2] == ""
+    assert reset["column_configs"]["已返款"] == {"value_type": "number"}
     assert reset["column_configs"]["当前应返款"] == {"value_type": "number"}
     assert reset["entity_cells"]["field_note"]["col_refunded"]["value"] == '="第"&返款周期&"天"'
     assert reset["entity_cells"]["field_note"]["col_current"]["value"] == ""
@@ -1850,6 +1877,49 @@ def test_registration_source_order_field_uses_value_shape_when_payment_header_co
     assert next_rows[0][columns.index("商户订单号")] == "MA2026062711474080039197"
 
 
+def test_registration_source_overseas_remark_becomes_standard_overseas_field():
+    workbook_payload = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "rows": [
+                    {"values": ["组别", "序号", "真实姓名", "微信昵称", "手机号", "备注"]},
+                    {"values": ["一组", "1_02", "吴茂芸", "天地一沙鸥", "17621820336", "海外"]},
+                ],
+            }
+        ]
+    }
+    rows = [["", "2", "", "", "", "吴茂芸", "天地一沙鸥", "17621820336"]]
+    columns = ["分组", "序号", "备注", "海外", "提交时间", "姓名", "微信昵称", "手机号"]
+
+    next_rows, grouped_count, source_field_count = note_sheets_api._prefer_registration_group_sequences_from_workbook(
+        workbook_payload=workbook_payload,
+        rows=rows,
+        columns=columns,
+    )
+
+    assert grouped_count == 1
+    assert source_field_count == 1
+    assert next_rows[0][columns.index("序号")] == "1_02"
+    assert next_rows[0][columns.index("备注")] == ""
+    assert next_rows[0][columns.index("海外")] == "是"
+
+
+def test_registration_ai_import_overseas_remark_becomes_standard_overseas_field():
+    columns = ["分组", "序号", "备注", "海外", "提交时间", "姓名"]
+    rows, extra_columns = note_sheets_api._coerce_note_sheet_excel_import_rows(
+        {
+            "rows": [
+                {"分组": "一组", "序号": "1_02", "备注": "海外", "姓名": "吴茂芸"},
+            ],
+        },
+        columns,
+    )
+
+    assert extra_columns == []
+    assert rows == [["一组", "1_02", "", "是", "", "吴茂芸"]]
+
+
 def test_registration_import_plain_sequences_become_grouped_when_groups_reset():
     columns = ["分组", "序号", "备注", "提交时间", "姓名"]
     rows = note_sheets_api._coerce_registration_import_rows(
@@ -2202,6 +2272,25 @@ def test_registration_standard_user_id_column_styles_include_linked_user_id():
         document["entity_cells"]["field"]["col_linked_user_id"]["style"]["background_color"]
         == "#9DC3E6"
     )
+
+
+def test_registration_header_normalizer_adds_overseas_standard_column():
+    document, changed = note_sheets_api._normalize_registration_sheet_header_document({
+        "schema_version": 1,
+        "columns": ["分组", "序号", "备注", "提交时间", "姓名", "用户ID"],
+        "rows": [["一组", "1_01", "", "2026/6/27", "甲", "u1"]],
+        "grid_rows": [["分组", "序号", "备注", "提交时间", "姓名", "用户ID"], ["一组", "1_01", "", "2026/6/27", "甲", "u1"]],
+        "data_start_row": 1,
+        "field_row_index": 0,
+        "column_configs": {},
+        "cell_meta": {},
+    })
+
+    assert changed is True
+    assert document["columns"] == ["分组", "序号", "备注", "海外", "提交时间", "姓名", "用户ID"]
+    assert document["rows"][0][document["columns"].index("海外")] == ""
+    assert document["column_configs"]["海外"]["header_background_color"] == "#9DC3E6"
+    assert "回放天数前移" in document["column_configs"]["海外"]["note"]
 
 
 def test_ensure_registration_linked_user_id_column_uses_standard_header_style():
@@ -3930,6 +4019,37 @@ def test_note_sheet_registration_attendance_sync_allows_attendance_without_user_
     assert summary["inserted_count"] == 1
     assert next_doc["columns"] == attendance_columns
     assert next_doc["rows"] == [["2026-05-21 09:46", "124", "赵誉博", "赵玉博", "M20260521", ""]]
+
+
+def test_note_sheet_registration_attendance_sync_orders_inserted_group_sequence_rows():
+    registration_columns = ["分组", "序号", "提交时间", "姓名", "微信昵称", "商户订单号", "订单金额", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "商户订单号", "订单金额", "当前应返款"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [
+            ["一组", "1_01", "2026/6/1 08:00:00", "甲", "甲", "M1", "499", "u1"],
+            ["一组", "1_02", "2026/6/2 08:00:00", "乙", "乙", "M2", "499", "u2"],
+            ["一组", "1_03", "2026/6/3 08:00:00", "丙", "丙", "M3", "499", "u3"],
+        ],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 1,
+        "formula_reference_origin": "sheet_v2",
+        "rows": [
+            ["一组", "1_01", "甲", "甲", "M1", "499", "0"],
+            ["一组", "1_03", "丙", "丙", "M3", "499", "0"],
+        ],
+        "grid_rows": [attendance_columns],
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert summary["inserted_count"] == 1
+    assert [row[attendance_columns.index("学号")] for row in next_doc["rows"]] == ["1_01", "1_02", "1_03"]
+    assert [row[attendance_columns.index("姓名")] for row in next_doc["rows"]] == ["甲", "乙", "丙"]
 
 
 def test_note_sheet_registration_attendance_sync_skips_refunded_rows():

@@ -7608,7 +7608,11 @@ class DataAnnotationRuntimeRunner(
                 if bool(ocr_match_result.get("matched")):
                     action_match_result = ocr_match_result
             self._require_shape_match(action_match_result, shape)
-        click_x, click_y = ActionPlanner().shape_center(image, shape)
+        raw_click_x, raw_click_y = ActionPlanner().shape_center(image, shape)
+        click_x, click_y = raw_click_x, raw_click_y
+        resolved_click = self._shape_match_resolved_click_point(image, shape, action_match_result)
+        if resolved_click is not None:
+            click_x, click_y = resolved_click
         if action_match_result is not None:
             self._log(
                 "detail",
@@ -7618,11 +7622,13 @@ class DataAnnotationRuntimeRunner(
                     f"ocr={str(action_match_result.get('ocr_text') or '')[:40]}，"
                     f"fixed_box={action_match_result.get('fixed_box')}，"
                     f"click=({click_x:.1f},{click_y:.1f})，"
-                    f"raw=({click_x:.1f},{click_y:.1f})"
+                    f"raw=({raw_click_x:.1f},{raw_click_y:.1f})"
                 ),
             )
         payload = ActionPlanner().click_shape_payload(image, shape)
         entry: Any = ctx["entry"]
+        payload["x"] = float(click_x)
+        payload["y"] = float(click_y)
         click_x = float(payload.get("x") or 0)
         click_y = float(payload.get("y") or 0)
         self._save_action_trace(
@@ -7643,6 +7649,34 @@ class DataAnnotationRuntimeRunner(
         else:
             _click_remote_game_window2(entry, payload)
         self._clear_tick_frame(ctx)
+
+    def _shape_match_resolved_click_point(
+        self,
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        match_result: dict[str, Any] | None,
+    ) -> tuple[float, float] | None:
+        if not isinstance(match_result, dict):
+            return None
+        reference_box = match_result.get("box")
+        resolved_box = match_result.get("resolved_box") or match_result.get("fixed_box")
+        if not isinstance(reference_box, dict) or not isinstance(resolved_box, dict):
+            return None
+        ref_w = float(reference_box.get("w") or 0)
+        ref_h = float(reference_box.get("h") or 0)
+        dst_w = float(resolved_box.get("w") or 0)
+        dst_h = float(resolved_box.get("h") or 0)
+        if ref_w <= 0 or ref_h <= 0 or dst_w <= 0 or dst_h <= 0:
+            return None
+        raw_x, raw_y = ActionPlanner().shape_center(image, shape)
+        ref_x = float(reference_box.get("x") or 0)
+        ref_y = float(reference_box.get("y") or 0)
+        dst_x = float(resolved_box.get("x") or 0)
+        dst_y = float(resolved_box.get("y") or 0)
+        return (
+            dst_x + (raw_x - ref_x) * dst_w / ref_w,
+            dst_y + (raw_y - ref_y) * dst_h / ref_h,
+        )
 
     def _click_scene_route_shape(
         self,

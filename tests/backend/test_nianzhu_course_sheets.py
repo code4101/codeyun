@@ -939,7 +939,7 @@ def test_rebuild_nianzhu_attendance_can_use_40th_timed_text_refund_rules(session
     row = attendance.document_json["rows"][0]
     assert summary["video_refund_total"] == 40
     assert row[2] == '=COUNTIF(G2:H2,"*完成*")+COUNTIF(G2:H2,"*回放*")'
-    assert row[3] == '=COUNTIF(G2:H2,"*当堂*")*20+COUNTIF(G2:H2,"*第1天*")*15+COUNTIF(G2:H2,"*第2天*")*10+COUNTIF(G2:H2,"*第3天*")*5'
+    assert row[3] == 40
     assert row[6] == "当堂完成/87%"
     assert row[7] == "当堂完成/98%"
 
@@ -1013,7 +1013,149 @@ def test_rebuild_nianzhu_attendance_can_use_custom_timed_text_refund_rules(sessi
     row = attendance.document_json["rows"][0]
     assert summary["video_refund_total"] == 38
     assert row[2] == '=COUNTIF(G2:H2,"*完成*")+COUNTIF(G2:H2,"*回放*")'
-    assert row[3] == '=COUNTIF(G2:H2,"*当堂*")*19+COUNTIF(G2:H2,"*第1天*")*14+COUNTIF(G2:H2,"*第2天*")*9+COUNTIF(G2:H2,"*第3天*")*4'
+    assert row[3] == 38
+
+
+def test_rebuild_nianzhu_attendance_shifts_international_student_replay_days(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance.document_json = _sheet_document(
+        ["姓名", "用户ID", "完成视频数", "视频应返款", "打卡应返款", "打卡数", "第01课"],
+        [["甲", "u1", "", "", "", "", ""]],
+    )
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "lesson_name": "第01课",
+                    "start_date": "2026-07-01 05:20:00",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {
+        "course_name": "d260501第46届觉观",
+        "video_refund_rule_mode": "timed_text",
+        "timed_video_rules": {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0},
+        "international_student_user_ids": ["u1"],
+    }
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "playback_seconds": 3600,
+                    "cum_seconds": 3600,
+                    "progress": 100,
+                    "lesson_id": 1,
+                    "update_time": "2026-07-02 06:30:00",
+                },
+            ),
+        ],
+    )
+
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(attendance)
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, attendance_sheet_id=21)
+    session.commit()
+
+    row = attendance.document_json["rows"][0]
+    assert summary["video_refund_total"] == 19
+    assert row[3] == 19
+    assert row[6] == "当堂完成/100%"
+
+
+def test_rebuild_nianzhu_attendance_uses_registration_overseas_flag_for_replay_shift(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance.document_json = _sheet_document(
+        ["学号", "姓名", "用户ID", "完成视频数", "视频应返款", "打卡应返款", "打卡数", "第01课"],
+        [["101", "甲", "", "", "", "", "", ""]],
+    )
+
+    registration = _find_sheet(session, "registration")
+    registration.document_json = _sheet_document(
+        ["序号", "姓名", "海外", "用户ID", "关联用户ID"],
+        [["101", "甲", "是", "u1", ""]],
+    )
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "lesson_name": "第01课",
+                    "start_date": "2026-07-01 05:20:00",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {
+        "course_name": "d260701第48届觉观",
+        "video_refund_rule_mode": "timed_text",
+        "timed_video_rules": {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0},
+    }
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "playback_seconds": 3600,
+                    "cum_seconds": 3600,
+                    "progress": 100,
+                    "lesson_id": 1,
+                    "update_time": "2026-07-02 06:30:00",
+                },
+            ),
+        ],
+    )
+
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(attendance)
+    session.add(registration)
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, attendance_sheet_id=21)
+    session.commit()
+
+    row = attendance.document_json["rows"][0]
+    assert summary["video_refund_total"] == 19
+    assert row[4] == 19
+    assert row[7] == "当堂完成/100%"
 
 
 def test_rebuild_nianzhu_attendance_uses_challenge_refund_formulas(session: Session) -> None:
@@ -1092,7 +1234,7 @@ def test_rebuild_nianzhu_attendance_uses_challenge_refund_formulas(session: Sess
     row = attendance.document_json["rows"][0]
     assert summary["video_refund_total"] == 40
     assert row[2] == '=COUNTIF(G4:H4,"*遍*")'
-    assert row[3] == '=COUNTIF(G4:H4,"*遍*")*20'
+    assert row[3] == 40
     assert row[6] == "1遍/98%"
     assert row[7] == "2遍/150%"
 
@@ -1173,7 +1315,7 @@ def test_rebuild_nianzhu_attendance_prefers_attendance_video_refund_note_rules(s
     row = attendance.document_json["rows"][0]
     assert summary["video_refund_total"] == 38
     assert row[columns.index("完成视频数")] == '=COUNTIF(G4:H4,"*完成*")+COUNTIF(G4:H4,"*回放*")'
-    assert row[columns.index("视频应返款")] == '=COUNTIF(G4:H4,"*当堂*")*19+COUNTIF(G4:H4,"*第1天*")*14+COUNTIF(G4:H4,"*第2天*")*9+COUNTIF(G4:H4,"*第3天*")*4'
+    assert row[columns.index("视频应返款")] == 38
 
 
 def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Session) -> None:
@@ -1220,7 +1362,7 @@ def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Sess
     summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
     session.commit()
 
-    assert summary["video_refund_total"] == 40
+    assert summary["video_refund_total"] == 0
     session.refresh(attendance)
     rows = attendance.document_json["rows"]
     rebuilt_columns = attendance.document_json["columns"]
@@ -1228,8 +1370,10 @@ def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Sess
     assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
     assert config_row[rebuilt_columns.index("已返款")] == '="第"&返款周期&"天"'
     assert config_row[rebuilt_columns.index("订单金额")] == "620"
+    for header in ["视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款"]:
+        assert attendance.document_json["column_configs"][header]["value_type"] == "number"
     first_row = rows[0]
-    assert first_row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(K4:L4,"*遍*")*20'
+    assert first_row[rebuilt_columns.index("视频应返款")] == 0
     assert first_row[rebuilt_columns.index("打卡应返款")] == "=SWITCH(TRUE,J4>=15,100,J4>=10,60,J4>=5,30,0)"
     assert first_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),H4)"
     assert first_row[rebuilt_columns.index("当前应返款")] == "=(H4>0)*(F4-G4)"
@@ -1360,8 +1504,8 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert "商户订单号" not in rebuilt_columns
     assert row[rebuilt_columns.index("用户ID")] == "u1"
     assert row[rebuilt_columns.index("禅客")] == '=IF(AND(G4>=11,N4>=7),"是","")'
-    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4:P4,"*遍*")'
-    assert row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(O4:P4,"*遍*")*20'
+    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4:O4,"*完成*")+COUNTIF(O4:O4,"*回放*")'
+    assert row[rebuilt_columns.index("视频应返款")] == 0
     assert row[rebuilt_columns.index("打卡应返款")] == '=SWITCH(TRUE,N4>=15,200,N4>=10,150,N4>=5,100,0)'
     assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
     assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),L4)"
@@ -1710,7 +1854,7 @@ def test_rebuild_nianzhu_attendance_merges_linked_user_ids(session: Session) -> 
     row = attendance.document_json["rows"][0]
     assert row[columns.index("第01课")] == "2遍/180%"
     assert row[columns.index("完成视频数")] == '=COUNTIF(H2,"*遍*")'
-    assert row[columns.index("视频应返款")] == '=COUNTIF(H2,"*遍*")*20'
+    assert row[columns.index("视频应返款")] == 20
     assert row[columns.index("打卡数")] == 2
 
 
@@ -1925,6 +2069,34 @@ def test_materialize_video_config_preserves_legacy_lesson_table_fields(
     data_rows = [dict(zip(data_columns, row)) for row in video_data.document_json["rows"]]
     first_lesson_data = next(row for row in data_rows if row["user_id2"] == "u1" and row["lesson_id"] == 1)
     assert first_lesson_data["lesson_id"] == 1
+
+
+def test_ensure_video_progress_columns_matches_prefixed_lesson_name_by_course_key() -> None:
+    document = _sheet_document(
+        ["姓名", "05:20~06:18 第01课"],
+        [["甲", ""]],
+    )
+    item = nianzhu_course_sheets.VideoConfigItem(
+        order_index=1,
+        lesson_id="1",
+        course_key="lesson:1",
+        lesson_name="d260701第48届觉观-第01课",
+        item_type="课次",
+        lesson_number=1,
+        rule_system=nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR,
+        participates_refund=True,
+        participates_score=False,
+        rules_by_version={},
+        text_rules_by_version={},
+        video_duration=3600,
+        lesson_url="",
+    )
+
+    next_document, inserted_headers = nianzhu_course_sheets._ensure_video_progress_columns(document, [item])
+
+    assert next_document["columns"] == ["姓名", "05:20~06:18 第01课"]
+    assert inserted_headers == []
+    assert nianzhu_course_sheets._lesson_header_from_video_item(item) == "第01课"
 
 
 def test_materialize_zen_stage_video_config_sets_first_update_after_week_end(
