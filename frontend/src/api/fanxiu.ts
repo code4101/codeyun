@@ -616,6 +616,7 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
   interruptible: boolean;
   next_time?: string | null;
   schedule_times: string[];
+  weekdays?: number[];
   window?: string[] | null;
   last_run_at?: string | null;
   retry_after?: string | null;

@@ -9,16 +9,18 @@ import {
   fetchAttendanceAccounts,
   fetchAttendanceConfig,
   fetchAttendanceCourseDataFlowConfig,
-  type AttendanceAccount,
-  type AttendanceCourseDataFlowConfigResponse,
-  type AttendanceCourseDataFlowConfigUpdateRequest,
-  type AttendanceConfigResponse,
-  type AttendanceConfigUpdateRequest,
-  type AttendanceOrderLookupMode,
-  type AttendanceCourseDataStepRunnerConfig,
   updateAttendanceAccount,
   updateAttendanceConfig,
   updateAttendanceCourseDataFlowConfig,
+} from '@/api/attendance-configs'
+import type {
+  AttendanceAccount,
+  AttendanceCourseDataFlowConfigResponse,
+  AttendanceCourseDataFlowConfigUpdateRequest,
+  AttendanceConfigResponse,
+  AttendanceConfigUpdateRequest,
+  AttendanceOrderLookupMode,
+  AttendanceCourseDataStepRunnerConfig,
 } from '@/api/attendance'
 import { taskStore, type Device } from '@/store/taskStore'
 

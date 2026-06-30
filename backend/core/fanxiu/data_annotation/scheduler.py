@@ -76,7 +76,7 @@ def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | No
 
 
 def data_annotation_scheduler_group_rank(task: dict[str, Any]) -> int:
-    return schedule_kind_rank(task)
+    return schedule_kind_rank(task, {"daily": 10, "weekly": 10, "dynamic": 20, "manual": 30})
 
 
 def data_annotation_scheduler_due_timestamp(task: dict[str, Any]) -> float:
@@ -356,6 +356,7 @@ def repair_data_annotation_scheduler_tasks(
     legacy_daily_yaowang_task: dict[str, Any] | None = None
     legacy_daily_yaozu_task: dict[str, Any] | None = None
     legacy_daily_vip_task: dict[str, Any] | None = None
+    legacy_daily_xianmeng_task: dict[str, Any] | None = None
     for task in tasks:
         if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
             legacy_mail_cleanup_task = task
@@ -393,6 +394,12 @@ def repair_data_annotation_scheduler_tasks(
                 payload["max_runtime_seconds"] = 1800
                 task["payload"] = payload
                 legacy_daily_boss_task = task
+        elif str(task.get("id") or "") == "legacy-daily-xianmeng" and str(task.get("task_type") or "") == "daily_xianmeng":
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            if int(payload.get("max_runtime_seconds") or 0) < 7200:
+                payload["max_runtime_seconds"] = 7200
+                task["payload"] = payload
+                legacy_daily_xianmeng_task = task
         elif str(task.get("id") or "") == "legacy-dynamic-xianfu-visit":
             legacy_xianfu_visit_task = task
             task["id"] = "xianfu-visit-partner"
@@ -562,6 +569,8 @@ def repair_data_annotation_scheduler_tasks(
     if legacy_daily_yaozu_task is not None:
         changed = True
     if legacy_daily_vip_task is not None:
+        changed = True
+    if legacy_daily_xianmeng_task is not None:
         changed = True
     defaults_by_id = {
         str(task.get("id") or ""): task

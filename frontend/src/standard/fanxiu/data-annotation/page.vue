@@ -6965,6 +6965,7 @@ const runtimeTaskTypeLabel = (taskType: string) => {
 const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.source === 'legacy_behavior_tree') return '旧行为树';
   if (task.schedule_kind === 'daily') return '每日';
+  if (task.schedule_kind === 'weekly') return '每周';
   if (task.schedule_kind === 'dynamic') return '动态';
   return '手动';
 };

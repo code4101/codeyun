@@ -113,6 +113,39 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "checkpoint": None,
         }
 
+    def runtime_weekly_task(
+        task_id: str,
+        task_type: str,
+        label: str,
+        *,
+        weekdays: list[int],
+        schedule_times: list[str],
+        enabled: bool = True,
+        interruptible: bool = True,
+        cooldown_seconds: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": label,
+            "source": "data_annotation_runtime",
+            "schedule_kind": "weekly",
+            "legacy_name": label,
+            "enabled": enabled,
+            "interruptible": interruptible,
+            "next_time": None,
+            "schedule_times": list(schedule_times),
+            "weekdays": list(weekdays),
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": cooldown_seconds,
+            "payload": payload or {},
+            "checkpoint": None,
+        }
+
     def runtime_dynamic_task(
         task_id: str,
         task_type: str,
@@ -191,7 +224,16 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         runtime_daily_task("legacy-daily-green-bottle-baiye", "daily_green_bottle_baiye", "日常_绿瓶拜谒", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-gongfeng", "daily_gongfeng", "日常_供奉", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-xianshi", "daily_xianshi", "仙市_秘藏阁", "05:00", cooldown_seconds=600),
-        runtime_daily_task("legacy-daily-xianmeng", "daily_xianmeng", "日常_仙盟", "05:00", enabled=False, cooldown_seconds=600),
+        runtime_weekly_task(
+            "xianshi-weekly-resources",
+            "xianshi_weekly_resources",
+            "仙市_每周资源",
+            weekdays=[0],
+            schedule_times=["00:05", "05:05"],
+            enabled=False,
+            cooldown_seconds=600,
+        ),
+        runtime_daily_task("legacy-daily-xianmeng", "daily_xianmeng", "日常_仙盟", "05:00", enabled=False, cooldown_seconds=600, payload={"max_runtime_seconds": 7200}),
         runtime_daily_task("legacy-daily-xianyuan", "daily_xianyuan", "日常_挑战仙缘", "05:00", cooldown_seconds=600),
         runtime_daily_task("legacy-daily-dungeon", "daily_dungeon", "日常_每日副本", "05:00", cooldown_seconds=600, payload={"max_runs": 6, "max_purchase_uses": 3}),
         legacy_daily_task("legacy-daily-activity", "日常_活跃度", "05:00"),

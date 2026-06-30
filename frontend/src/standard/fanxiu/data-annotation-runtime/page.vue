@@ -243,7 +243,7 @@ const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
 
 const shouldShowBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (!isBusinessTask(task)) return false;
-  return task.supported !== false || task.enabled || ['daily', 'dynamic'].includes(task.schedule_kind || '');
+  return task.supported !== false || task.enabled || ['daily', 'weekly', 'dynamic'].includes(task.schedule_kind || '');
 };
 
 const businessTasks = computed(() => schedulerTasks.value
@@ -334,6 +334,7 @@ const doctorStaleText = computed(() => {
 const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   const labels: Record<string, string> = {
     daily: '每日',
+    weekly: '每周',
     dynamic: '动态',
     manual: '手动',
   };

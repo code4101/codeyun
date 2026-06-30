@@ -103,7 +103,7 @@ def normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dic
         "mode": mode,
         "call_task": bool(payload.get("call_task", True)),
         "max_output_chars": max(200, min(20000, int(payload.get("max_output_chars") or 4000))),
-        "timeout_seconds": max(30, min(3600, int(payload.get("timeout_seconds") or payload.get("max_runtime_seconds") or 120))),
+        "timeout_seconds": max(30, min(21600, int(payload.get("timeout_seconds") or payload.get("max_runtime_seconds") or 120))),
     }
 
 

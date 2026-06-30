@@ -973,6 +973,11 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
     branch_status = branch_status_lines[0].strip() if branch_status_lines else ""
 
     branch_text = _run_git(repo_root, ["symbolic-ref", "--short", "HEAD"], check=False)
+    last_commit_timestamp_text = _run_git(repo_root, ["log", "-1", "--format=%ct"], check=False)
+    try:
+        last_commit_timestamp = int(last_commit_timestamp_text.strip())
+    except ValueError:
+        last_commit_timestamp = None
     staged_statuses = _read_git_name_status_map(repo_root, ["diff", "--cached", "--name-status", "--find-renames", "--no-color"])
     unstaged_statuses = _read_git_name_status_map(repo_root, ["diff", "--name-status", "--find-renames", "--no-color"])
     untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard", "-z"])
@@ -998,6 +1003,7 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
         "repo_root": str(repo_root),
         "branch": _parse_branch_name(branch_text, branch_status),
         "branch_status": branch_status,
+        "last_commit_timestamp": last_commit_timestamp,
         "clean": not changed_files,
         "status_lines": status_lines,
         "diff_stat": diff_stat,

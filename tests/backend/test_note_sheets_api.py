@@ -59,6 +59,32 @@ def _assert_pagination_contains(actual: dict, expected: dict) -> None:
         assert actual[key] == value
 
 
+def test_registration_sheet_header_normalizer_clears_merged_header_state() -> None:
+    document_json = {
+        "schema_version": 1,
+        "columns": ["分组", "序号", "备注", "提交时间", "姓名", "微信昵称"],
+        "rows": [["一组", "1_01", "", "2026/07/01", "甲", "甲甲"]],
+        "grid_rows": [
+            ["", "", "分组", "", "", "序号"],
+            ["", "", "导入excel", "", "新增学员", ""],
+            ["一组", "1_01", "", "2026/07/01", "甲", "甲甲"],
+        ],
+        "data_start_row": 2,
+        "field_row_index": 0,
+        "header_groups": [[{"label": "分组", "colspan": 5}, {"label": "序号", "colspan": 2}]],
+        "merged_cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 5}],
+    }
+
+    normalized, changed = note_sheets_api._normalize_registration_sheet_header_document(document_json)
+
+    assert changed is True
+    assert normalized["header_groups"] == []
+    assert normalized["merged_cells"] == []
+    assert normalized["grid_rows"][0] == document_json["columns"]
+    assert normalized["data_start_row"] == 2
+    assert normalized["field_row_index"] == 0
+
+
 def test_normalize_attendance_refund_note_removes_duplicate_period_label() -> None:
     assert note_sheets_api._normalize_attendance_current_refund_note(
         "第3天返款\n最近运行更新时间：\n2026/06/03 07:18:34,6"
@@ -143,6 +169,158 @@ def test_attendance_formula_normalizer_removes_refund_label_without_dual_clockin
 
     assert changed_count == 1
     assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
+
+
+def test_course_template_runtime_header_values_reset_entity_and_defined_names() -> None:
+    columns = ["已返款", "订单金额", "当前应返款"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "grid_rows": [
+            ["", "", ""],
+            columns,
+            ["第29天", "499", "2026/06/26 07:34:52,6"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "defined_names": [
+            {
+                "name": "返款周期",
+                "formula": "=INT(TODAY()-DATE(2026,5,31))",
+            },
+        ],
+        "column_configs": {
+            "当前应返款": {
+                "value_type": "number",
+                "note": "2026/06/26 07:34:52,6",
+            },
+        },
+        "entity_columns": [
+            {"id": "col_refunded", "header": "已返款"},
+            {"id": "col_amount", "header": "订单金额"},
+            {"id": "col_current", "header": "当前应返款"},
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "field_note": {
+                "col_refunded": {"value": "第29天", "style": {"background_color": "#D9D9D9"}},
+                "col_current": {"value": "2026/06/26 07:34:52,6", "style": {"background_color": "#D8D8D8"}},
+            },
+        },
+    }
+
+    adapted = note_sheets_api._adapt_course_template_header_dates(
+        document,
+        source_owner_key="20260601-jueguan-47",
+        target_owner_key="20260701-jueguan-48",
+    )
+    reset = note_sheets_api._reset_course_template_runtime_header_values(adapted)
+
+    assert reset["defined_names"][0]["formula"] == "=INT(TODAY()-DATE(2026,6,30))"
+    assert reset["grid_rows"][2][0] == '="第"&返款周期&"天"'
+    assert reset["grid_rows"][2][2] == ""
+    assert reset["column_configs"]["当前应返款"] == {"value_type": "number"}
+    assert reset["entity_cells"]["field_note"]["col_refunded"]["value"] == '="第"&返款周期&"天"'
+    assert reset["entity_cells"]["field_note"]["col_current"]["value"] == ""
+
+
+def test_nianzhu_course_config_falls_back_to_header_links(monkeypatch) -> None:
+    from backend.core.attendance import nianzhu_course_sheets
+
+    monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], None))
+    monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], None))
+
+    document = {
+        "columns": ["学号", "姓名", "打卡数", "05:20~06:43 第01课", "20:00~22:00 答疑分享"],
+        "grid_rows": [
+            ["", "", "打卡", "7月1日~7月7日", "7月22日"],
+            [
+                "学号",
+                "姓名",
+                {
+                    "value": "打卡数",
+                    "link": {"url": "https://admin.xiaoe-tech.com/t/clock_admin/index#/punchDetail/diaryList?activity_id=ac_july"},
+                },
+                {
+                    "value": "05:20~06:43 第01课",
+                    "link": {
+                        "url": "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=l_july_nianzhu_01&tabName=UserManage",
+                    },
+                },
+                "20:00~22:00 答疑分享",
+            ],
+            ["", "", "只统计正课的打卡次数！！！", "视频观看说明", "附加课，不做考勤"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    documents = nianzhu_course_sheets._course_sheet_documents_from_attendance(
+        document,
+        course_name="第42届念住",
+    )
+
+    video_rows = documents[nianzhu_course_sheets.VIDEO_CONFIG_SHEET_KEY]["rows"]
+    clockin_rows = documents[nianzhu_course_sheets.CLOCKIN_CONFIG_SHEET_KEY]["rows"]
+    assert len(video_rows) == 1
+    assert video_rows[0][4] == "l_july_nianzhu_01"
+    assert video_rows[0][5] == 1
+    assert clockin_rows[0][2].endswith("activity_id=ac_july")
+
+
+def test_course_template_refund_header_styles_include_current_refund_entity_cells() -> None:
+    columns = ["完成视频数", "视频应返款", "订单金额", "当前应返款", "打卡数"]
+    document = {
+        "columns": columns,
+        "grid_rows": [
+            ["返款总计", "", "", "", "打卡"],
+            columns,
+            ["", "", "620", "", "只统计正课的打卡次数！！！"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "cell_meta": {
+            "0:3": {"style": {"background_color": "#FFE699"}},
+            "1:3": {"style": {"background_color": "#FFF2CC", "text_color": "#0000FF"}},
+            "2:3": {"style": {"background_color": "#D8D8D8", "text_color": "#FF0000"}},
+        },
+        "entity_columns": [
+            {"id": "col_video_count", "header": "完成视频数"},
+            {"id": "col_video_refund", "header": "视频应返款"},
+            {"id": "col_amount", "header": "订单金额"},
+            {"id": "col_current", "header": "当前应返款"},
+            {"id": "col_clockin", "header": "打卡数"},
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "header_group": {
+                "col_current": {"value": "", "style": {"background_color": "#FFE699"}},
+            },
+            "field": {
+                "col_current": {"value": "当前应返款", "style": {"background_color": "#FFF2CC", "text_color": "#0000FF"}},
+            },
+            "field_note": {
+                "col_current": {"value": "", "style": {"background_color": "#D8D8D8", "text_color": "#FF0000"}},
+            },
+        },
+    }
+
+    normalized = note_sheets_api._normalize_course_template_refund_header_styles(document)
+
+    assert normalized["cell_meta"]["0:3"]["style"] == {"background_color": "#FFBA84"}
+    assert normalized["cell_meta"]["1:3"]["style"] == {"background_color": "#FFDCC4"}
+    assert normalized["cell_meta"]["2:3"]["style"] == {"background_color": "#D8D8D8"}
+    assert normalized["entity_cells"]["header_group"]["col_current"]["style"] == {"background_color": "#FFBA84"}
+    assert normalized["entity_cells"]["field"]["col_current"]["style"] == {"background_color": "#FFDCC4"}
+    assert normalized["entity_cells"]["field_note"]["col_current"]["style"] == {"background_color": "#D8D8D8"}
 
 
 def test_note_sheet_access_user_options_searches_username_and_nickname(client, session):
@@ -1849,6 +2027,21 @@ def test_registration_standard_user_id_column_styles_include_linked_user_id():
         "cell_meta": {
             "0:2": {"style": {"background_color": "#F4B183"}},
         },
+        "entity_columns": [
+            {"id": "col_user_id", "header": "用户ID"},
+            {"id": "col_ref", "header": "参考信息"},
+            {"id": "col_linked_user_id", "header": "关联用户ID"},
+        ],
+        "entity_rows": [
+            {"id": "field", "kind": "field"},
+            {"id": "actions", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "field": {
+                "col_user_id": {"value": "用户ID", "style": {"background_color": "#9DC3E6"}},
+                "col_linked_user_id": {"value": "关联用户ID", "style": {"background_color": "#F4B183"}},
+            },
+        },
     })
 
     assert changed is True
@@ -1861,6 +2054,10 @@ def test_registration_standard_user_id_column_styles_include_linked_user_id():
     )
     assert document["cell_meta"]["0:0"]["style"]["background_color"] == "#9DC3E6"
     assert document["cell_meta"]["0:2"]["style"]["background_color"] == "#9DC3E6"
+    assert (
+        document["entity_cells"]["field"]["col_linked_user_id"]["style"]["background_color"]
+        == "#9DC3E6"
+    )
 
 
 def test_ensure_registration_linked_user_id_column_uses_standard_header_style():

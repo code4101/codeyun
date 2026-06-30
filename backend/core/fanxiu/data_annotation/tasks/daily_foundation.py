@@ -1742,6 +1742,11 @@ class DailyFoundationTaskMixin:
                     self._log_locked("action", f"{label}：点击 #{confirm_id}「确认」离开场景")
                 yield from runtime.wait_click(confirm_id, "确认")
                 yield from runtime.wait_action_settle(2.0)
+        with self._lock:
+            self._set_status_locked("running", f"{label}：等待返回世界 #34", phase="world_side_scene_leave_wait_world", current_scene=34)
+        yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：等待返回世界 #34")
+        self._set_tick_frame(ctx, runtime.cur_frame(update=False))
+        ctx["_go_scene_known_scene_id"] = 34
         return True
 
     def _enter_daily_from_world_like(

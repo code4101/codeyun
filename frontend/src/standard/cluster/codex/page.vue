@@ -2462,7 +2462,8 @@ const loadOverview = async (preserveThread = true) => {
     if (requestId !== latestOverviewRequestId) return;
     overview.value = payload;
     rootDirInput.value = isAllDevicesMode.value ? '' : payload.root_dir;
-    await syncSelectionAfterOverview(preserveThread);
+    // Thread detail owns its own loading state; avoid keeping the whole workspace masked.
+    void syncSelectionAfterOverview(preserveThread);
     // Workload is best-effort context and should not keep the thread pane under a loading mask.
     void loadWorkload();
   } catch (error: any) {

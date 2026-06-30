@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable
 
@@ -30,7 +31,9 @@ AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = 2700
 AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS = 60
 AUTO_GIT_COMMIT_MIN_CHANGED_LINES = 1000
+AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES = 7
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
+PYXLLIB_VERSION_FILE = "src/pyxllib/__init__.py"
 
 auto_git_commit_scheduler = BackgroundScheduler()
 
@@ -486,19 +489,100 @@ def _update_result_from_inspect(result: dict[str, Any], inspect_payload: dict[st
     )
 
 
-def _auto_git_commit_eligibility(inspect_payload: dict[str, Any]) -> tuple[bool, int, str]:
+def _last_commit_age_days(inspect_payload: dict[str, Any], *, now_ts: float | None = None) -> float | None:
+    raw_timestamp = inspect_payload.get("last_commit_timestamp")
+    try:
+        last_commit_ts = float(raw_timestamp)
+    except (TypeError, ValueError):
+        return None
+    if last_commit_ts <= 0:
+        return None
+    return max(0.0, ((time.time() if now_ts is None else now_ts) - last_commit_ts) / 86400)
+
+
+def _auto_git_commit_eligibility(inspect_payload: dict[str, Any]) -> tuple[bool, int, str, str]:
     added_line_count = int(inspect_payload.get("added_line_count") or 0)
     deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
     changed_line_count = int(
         inspect_payload.get("estimated_changed_line_count") or (added_line_count + deleted_line_count)
     )
+    if changed_line_count >= AUTO_GIT_COMMIT_MIN_CHANGED_LINES:
+        return True, changed_line_count, "", "line_threshold"
+
+    last_commit_age_days = _last_commit_age_days(inspect_payload)
+    if last_commit_age_days is not None and last_commit_age_days >= AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES:
+        return True, changed_line_count, "", "stale_changes"
+
     if changed_line_count < AUTO_GIT_COMMIT_MIN_CHANGED_LINES:
         return (
             False,
             changed_line_count,
-            f"有效变更 {changed_line_count} 行，低于自动提交阈值 {AUTO_GIT_COMMIT_MIN_CHANGED_LINES} 行",
+            f"有效变更 {changed_line_count} 行，低于自动提交阈值 {AUTO_GIT_COMMIT_MIN_CHANGED_LINES} 行，"
+            f"且距离上次提交不足 {AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES} 天",
+            "below_line_threshold",
         )
-    return True, changed_line_count, ""
+    return True, changed_line_count, "", "line_threshold"
+
+
+def _update_auto_git_eligibility_result(result: dict[str, Any], inspect_payload: dict[str, Any]) -> tuple[bool, int, str, str]:
+    eligible, changed_line_count, skip_reason, eligibility_reason = _auto_git_commit_eligibility(inspect_payload)
+    result.update(
+        {
+            "auto_commit_eligible": eligible,
+            "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
+            "auto_commit_age_threshold_days": AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES,
+            "auto_commit_eligibility_reason": eligibility_reason,
+        }
+    )
+    last_commit_age_days = _last_commit_age_days(inspect_payload)
+    if last_commit_age_days is not None:
+        result["last_commit_age_days"] = round(last_commit_age_days, 2)
+    return eligible, changed_line_count, skip_reason, eligibility_reason
+
+
+def _bump_decimal_version_text(text: str) -> tuple[str, str | None, str | None]:
+    match = re.search(r"(__version__\s*=\s*)(['\"])(\d+)\.(\d+)(\2)", text)
+    if match is None:
+        return text, None, None
+    old_version = f"{match.group(3)}.{match.group(4)}"
+    new_version = f"{match.group(3)}.{int(match.group(4)) + 1}"
+    next_text = text[: match.start(3)] + new_version + text[match.end(4) :]
+    return next_text, old_version, new_version
+
+
+def _maybe_bump_pyxllib_version(
+    candidate: AutoGitCommitCandidate,
+    result: dict[str, Any],
+    inspect_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    if _normalize_repo_key(candidate.name) != "pyxllib":
+        return None
+    changed_paths = {str(path).replace("\\", "/") for path in inspect_payload.get("changed_paths") or []}
+    if PYXLLIB_VERSION_FILE in changed_paths:
+        return {"status": "skipped", "reason": "version_file_already_changed", "path": PYXLLIB_VERSION_FILE}
+
+    repo_root = Path(str(inspect_payload.get("repo_root") or candidate.cwd))
+    version_path = repo_root / PYXLLIB_VERSION_FILE
+    if not version_path.exists():
+        return {"status": "skipped", "reason": "version_file_missing", "path": PYXLLIB_VERSION_FILE}
+
+    try:
+        text = version_path.read_text(encoding="utf-8")
+        next_text, old_version, new_version = _bump_decimal_version_text(text)
+        if old_version is None or new_version is None or next_text == text:
+            return {"status": "skipped", "reason": "version_pattern_not_found", "path": PYXLLIB_VERSION_FILE}
+        version_path.write_text(next_text, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        raise GitToolError(f"自动更新 pyxllib 版本号失败：{exc}") from exc
+
+    bump_result = {
+        "status": "updated",
+        "path": PYXLLIB_VERSION_FILE,
+        "old_version": old_version,
+        "new_version": new_version,
+    }
+    result["pyxllib_version_bump"] = bump_result
+    return bump_result
 
 
 def _auto_git_summary_only_reason(candidate: AutoGitCommitCandidate) -> str:
@@ -777,13 +861,7 @@ def _run_one_repo(
         result["status"] = "clean"
         return result
 
-    eligible, changed_line_count, skip_reason = _auto_git_commit_eligibility(inspect_payload)
-    result.update(
-        {
-            "auto_commit_eligible": eligible,
-            "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
-        }
-    )
+    eligible, changed_line_count, skip_reason, _ = _update_auto_git_eligibility_result(result, inspect_payload)
     if not eligible:
         result.update(
             {
@@ -796,13 +874,7 @@ def _run_one_repo(
         return result
 
     inspect_payload, precheck = _refresh_after_auto_gitignore(candidate, result, inspect_payload, inspect_func)
-    eligible, changed_line_count, skip_reason = _auto_git_commit_eligibility(inspect_payload)
-    result.update(
-        {
-            "auto_commit_eligible": eligible,
-            "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
-        }
-    )
+    eligible, changed_line_count, skip_reason, _ = _update_auto_git_eligibility_result(result, inspect_payload)
     if not eligible:
         result.update(
             {
@@ -813,6 +885,14 @@ def _run_one_repo(
             }
         )
         return result
+
+    version_bump = _maybe_bump_pyxllib_version(candidate, result, inspect_payload)
+    if version_bump and version_bump.get("status") == "updated":
+        inspect_payload = inspect_func(candidate.cwd)
+        _update_result_from_inspect(result, inspect_payload)
+        _update_auto_git_eligibility_result(result, inspect_payload)
+        precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+
     if bool(precheck.get("has_blocking_issues")):
         result.update(
             {

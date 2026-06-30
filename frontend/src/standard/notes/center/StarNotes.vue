@@ -72,7 +72,7 @@
       </template>
 
       <template #editor>
-        <NoteDetailPanel
+        <AsyncNoteDetailPanel
           :key="`${currentNoteId}:${editorRefreshVersion}`"
           :noteId="currentNoteId"
           editor-layout="fill"
@@ -86,9 +86,8 @@
 </template>
 
 <script setup lang="ts">
-import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { defineAsyncComponent, markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { Plus, Refresh } from '@element-plus/icons-vue';
-import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import { ElMessage } from 'element-plus';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
@@ -125,6 +124,8 @@ const edgeTypes: EdgeTypesObject = {
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
+
+const AsyncNoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 
 const props = defineProps<{
     tabId: string;

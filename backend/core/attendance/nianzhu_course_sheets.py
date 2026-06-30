@@ -339,6 +339,16 @@ def _video_config_url(row: dict[str, Any]) -> str:
     return _normalize_text(row.get("url")) or video_config_url_from_lesson_id2(row.get("lesson_id2"))
 
 
+def _lesson_id2_from_video_url(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if text.startswith("l_"):
+        return text
+    match = re.search(r"(?:[?&#]|^)id=(l_[^&#]+)", text)
+    return match.group(1) if match else ""
+
+
 def _to_float(value: Any) -> float:
     if isinstance(value, int | float):
         return float(value)
@@ -1524,18 +1534,33 @@ def _build_video_config_document(
         config_row = _normalize_initial_zen_stage_next_update(config_row, course_name=course_name)
         rows.append([config_row.get(column, "") for column in VIDEO_CONFIG_COLUMNS])
 
+    field_row_index = max(int(attendance_document.get("field_row_index") or 0), 0)
+    source_grid_rows = attendance_document.get("grid_rows")
+    grid_rows = [
+        note_sheet_inline_links.normalize_row(row, len(columns))
+        for row in source_grid_rows
+    ] if isinstance(source_grid_rows, list) else []
+
     for fallback_index, column_index in enumerate(_progress_column_range(columns), start=1):
         field_name = columns[column_index]
         key, _item_type, _lesson_number_text, _order_index, _local_id = _course_item_parts(field_name)
         if key and key in used_progress_keys:
+            continue
+        header_link = ""
+        if 0 <= field_row_index < len(grid_rows):
+            header_link = note_sheet_inline_links.inline_cell_link_url(grid_rows[field_row_index][column_index])
+        lesson_id2 = _lesson_id2_from_video_url(header_link)
+        if legacy_rows or not lesson_id2:
+            lesson_id2 = ""
+        if not legacy_rows and not lesson_id2:
             continue
         rows.append([
             len(rows) + 1,
             "",
             "",
             "",
-            "",
-            "",
+            lesson_id2,
+            1 if lesson_id2 else "",
             field_name,
             "",
         ])
@@ -1671,7 +1696,17 @@ def _build_clockin_config_document(
             _format_legacy_value(legacy_row.get("total_user_num")),
         ])
     if not rows:
-        rows.append([1, "打卡数" if clockin_index is not None else "", "", "", "", "", "", ""])
+        clockin_url = ""
+        if clockin_index is not None:
+            field_row_index = max(int(attendance_document.get("field_row_index") or 0), 0)
+            source_grid_rows = attendance_document.get("grid_rows")
+            grid_rows = [
+                note_sheet_inline_links.normalize_row(row, len(columns))
+                for row in source_grid_rows
+            ] if isinstance(source_grid_rows, list) else []
+            if 0 <= field_row_index < len(grid_rows):
+                clockin_url = note_sheet_inline_links.inline_cell_link_url(grid_rows[field_row_index][clockin_index])
+        rows.append([1, "打卡数" if clockin_index is not None else "", clockin_url, "", "", "", "", ""])
     document = _create_simple_document(
         columns=CLOCKIN_CONFIG_COLUMNS,
         rows=rows,
