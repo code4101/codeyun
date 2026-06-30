@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "687b8f9f37e35bafc16b9f772866bc7d861f4ca2"
-last_audited_at: "2026-06-30T12:41:28.2201422+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-687b8f9f/report.md"
-last_frontend_commit_summary: "完整关闭 e7ec5047..687b8f9f：沿 fanxiu runtime、data-annotation、attendance、Codex 与工作表链路复核后，只修复了 cluster/runtime 状态表把执行列拉成填充列的问题，其余页面保持概念收敛。"
-audited_commit_count: 49
+last_audited_commit: "39eed15bf5cbccb1870f75e4923db5eb7ab7b94a"
+last_audited_at: "2026-06-30T14:33:56.8210247+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-39eed15b/report.md"
+last_frontend_commit_summary: "完整关闭 687b8f9f..39eed15b：沿 fanxiu 行为树、cluster/runtime 与 note sheet 工作表链路复核，确认 cell 单队列语义、运行表内容驱动宽度与工作表切页缓存都保持概念收敛，无需新增修复。"
+audited_commit_count: 50
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-30
+
+- 完整范围：`687b8f9f37e35bafc16b9f772866bc7d861f4ca2..39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`
+- 覆盖提交：`39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`
+- 前端入口提交：`39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`
+- 入口如何牵引到旧问题：这次提交同时把 `fanxiu/data-annotation/runtime` 的 `framework/engine` 收回到单一 `cell` 概念，继续触达 `cluster/runtime` 的运行状态表，以及 `NoteSheetWorkspace` 的缓存占位与固定列链路。沿同一业务闭环复核后，真正需要重点排除的是两类旧风险：一是行为树页是否又把 `cell / 调度器 / 任务配置` 混成一级解释，二是工作表切 `sheet` 时会不会短暂残留上一张表，或在窄屏横向滚动里丢掉定位基准。真实页面与探针都证明这两类风险本轮没有复现。
+- 本轮减法：不新增任何按钮、说明、标签、入口或状态；保留提交里已经完成的“`framework/engine` -> `cell`”基础模型收敛，并确认 `cluster/runtime` 的内容驱动宽度和 `NoteSheetWorkspace` 的 sheet 身份隔离都没有被新逻辑重新拉复杂。
+- 信息量保持：行为树页仍保留运行内核、当前 cell、调度器和任务配置四段基础事实；运行管理页仍保留服务/作业名称、执行摘要、状态与下次触发；工作表仍保留 tabs、公式栏和当前 sheet 网格。减少的是潜在的重复概念与错误过渡状态，不是减少判断依据。
+- 概念图/线框图：报告中的 Mermaid 把本轮入口统一收回到 `运行内核 -> 当前 cell -> 调度器 -> 服务/作业状态表 -> 工作表` 这条基础闭环；ASCII 线框图则直接约束“切 sheet 只能显示新 sheet 占位或新 sheet 内容，不能借上一张表过渡”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-39eed15b/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `fanxiu/data-annotation/runtime`、`cluster/runtime`、`workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 9 张主截图，并额外补 `note-sheet-narrow-scrolled.png` 证明工作表窄屏横向滚动时左侧定位基准仍由固定 clone 保持；`cluster-runtime-wide-settled.json` 证明稳定态 `loadingMasks = 0`、`rows = 29`，`note-sheet` 切换到 `sheet=58856` 的即时探针也显示 URL、标题和首屏单元格同步切成新表，没有残留旧内容。三页三视口的 `bodyOverflowX` 均为 `0`。
+- 根因分层：本轮未发现需要止血的表现层、前端状态投影、后端数据投影或业务建模问题；提交中的 `cell` 收敛和缓存占位逻辑与现有页面投影保持一致。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的模型债务。
+- 剩余风险：`NoteSheetWorkspace` 窄屏本质仍是宽表浏览场景，继续依赖工作表内部横向滚动；`cluster/runtime` 首次进入仍可能短暂显示 loading 态，但稳定后结构正常。这两点都属于既有交互，不是本轮新增复杂度。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、工作表切换与横向滚动探针，且未发现需要自动修复的低风险 UI 问题，因此不改前端源码，直接把 `last_audited_commit` 推进到 `39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5..687b8f9f37e35bafc16b9f772866bc7d861f4ca2`
 - 覆盖提交：`687b8f9f37e35bafc16b9f772866bc7d861f4ca2`

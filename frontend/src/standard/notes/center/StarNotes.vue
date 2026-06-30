@@ -113,6 +113,9 @@ import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
 import { buildOrthogonalSegments, routeOrthogonalEdge } from '@/utils/orthogonalEdgeRouter';
 import { useResizablePane } from '@/utils/useResizablePane';
+import { getNodeDisplayStyle } from '@/utils/nodeConfig';
+import { getNoteWeightScaleFactor } from '@/utils/noteWeight';
+import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 
 const nodeTypes: NodeTypesObject = {
   custom: markRaw(CustomNode) as NodeTypesObject[string],
@@ -945,21 +948,62 @@ const getFallbackNodePosition = (index: number) => {
   };
 };
 
+const BASE_WIDTH = 150;
+const BASE_HEIGHT = 50;
+
+const buildGraphNodeVisualData = (note: NoteNode) => {
+  const completionProgress = resolveCompletionProgressFillRatio({
+    lifecycleStage: note.lifecycle_stage ?? note.node_status,
+    completionProgress: note.completion_progress,
+    completionProgressExpr: note.completion_progress_expr,
+    customFields: note.custom_fields,
+  });
+  const displayStyle = getNodeDisplayStyle(
+    note.primary_category ?? note.node_type,
+    note.lifecycle_stage ?? note.node_status,
+    note.color,
+    note.note_categories ?? note.note_types,
+    completionProgress
+  );
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
+  const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
+  const fillRatio = displayStyle.partialFillRatio ?? 0;
+
+  return {
+    nodeStyle: {
+      width: `${Math.round(BASE_WIDTH * scale)}px`,
+      height: `${Math.round(BASE_HEIGHT * scale)}px`,
+      borderColor: displayStyle.borderColor,
+      borderWidth: displayStyle.borderWidth,
+      borderStyle: displayStyle.borderStyle,
+      backgroundColor: displayStyle.backgroundColor,
+      backgroundImage: displayStyle.backgroundImage,
+      opacity: displayStyle.opacity,
+    },
+    titleStyle: {
+      fontSize: `${fontSize}px`,
+      color: displayStyle.color,
+      fontWeight: displayStyle.fontWeight,
+      textDecoration: displayStyle.textDecoration,
+    },
+    useSplitTitle: typeof displayStyle.partialFillRatio === 'number'
+      && displayStyle.partialFillRatio > 0
+      && displayStyle.partialFillRatio < 1,
+    filledTitleLayerStyle: {
+      color: displayStyle.fillTextColor,
+      clipPath: `inset(0 ${(100 - fillRatio * 100).toFixed(2)}% 0 0)`,
+    },
+    emptyTitleLayerStyle: {
+      color: displayStyle.emptyTextColor,
+      clipPath: `inset(0 0 0 ${(fillRatio * 100).toFixed(2)}%)`,
+    },
+  };
+};
+
 const buildGraphNodeData = (note: NoteNode) => ({
   title: note.title,
-  weight: note.weight,
-  node_type: note.node_type,
-  note_types: note.note_types,
-  primary_category: note.primary_category,
-  note_categories: note.note_categories,
   note_form: note.note_form,
-  note_kind: note.note_kind,
-  node_status: note.node_status,
-  lifecycle_stage: note.lifecycle_stage,
-  color: note.color,
-  weight_mode: note.weight_mode,
-  completion_progress_expr: note.completion_progress_expr,
-  completion_progress: note.completion_progress,
+  ...buildGraphNodeVisualData(note),
 });
 
 const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {

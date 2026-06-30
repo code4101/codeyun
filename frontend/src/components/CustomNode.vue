@@ -1,34 +1,34 @@
 <template>
-  <div class="custom-note-node" :style="nodeStyle">
+  <div class="custom-note-node" :style="props.data.nodeStyle">
     <!-- 四个方向的句柄，每个方向同时提供 source 和 target，并分配唯一 ID -->
     <!-- Top -->
     <Handle id="t-t" type="target" :position="Position.Top" />
     <Handle id="t-s" type="source" :position="Position.Top" />
-    
+
     <!-- Bottom -->
     <Handle id="b-t" type="target" :position="Position.Bottom" />
     <Handle id="b-s" type="source" :position="Position.Bottom" />
-    
+
     <!-- Left -->
     <Handle id="l-t" type="target" :position="Position.Left" />
     <Handle id="l-s" type="source" :position="Position.Left" />
-    
+
     <!-- Right -->
     <Handle id="r-t" type="target" :position="Position.Right" />
     <Handle id="r-s" type="source" :position="Position.Right" />
 
     <div class="node-content">
-      <div v-if="useSplitTitle" class="node-title node-title--split" :style="titleStyle">
-        <div class="node-title-layer" :style="filledTitleLayerStyle">
+      <div v-if="props.data.useSplitTitle" class="node-title node-title--split" :style="props.data.titleStyle">
+        <div class="node-title-layer" :style="props.data.filledTitleLayerStyle">
           <NoteFormBadge :form="data.note_form" compact />
           <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
         </div>
-        <div class="node-title-layer" :style="emptyTitleLayerStyle">
+        <div class="node-title-layer" :style="props.data.emptyTitleLayerStyle">
           <NoteFormBadge :form="data.note_form" compact />
           <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
         </div>
       </div>
-      <div v-else class="node-title" :style="titleStyle">
+      <div v-else class="node-title" :style="props.data.titleStyle">
         <NoteFormBadge :form="data.note_form" compact />
         <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
       </div>
@@ -38,103 +38,19 @@
 
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { computed } from 'vue'
-import { getNodeDisplayStyle } from '@/utils/nodeConfig'
-import { getNoteWeightScaleFactor } from '@/utils/noteWeight'
 import NoteFormBadge from './NoteFormBadge.vue'
-import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress'
 
 const props = defineProps<{
   data: {
     title: string,
-    weight?: number,
-    node_type?: string | null,
-    note_types?: { key: string; weight: number }[] | null,
-    primary_category?: string | null,
-    note_categories?: { key: string; weight: number }[] | null,
     note_form?: string | null,
-    weight_mode?: string | null,
-    node_status?: string | null,
-    lifecycle_stage?: string | null,
-    color?: string | null,
-    custom_fields?: unknown,
-    completion_progress_expr?: string | null,
-    completion_progress?: number | null,
+    nodeStyle: Record<string, string | number>,
+    titleStyle: Record<string, string | number>,
+    useSplitTitle: boolean,
+    filledTitleLayerStyle: Record<string, string | number>,
+    emptyTitleLayerStyle: Record<string, string | number>,
   }
 }>()
-
-const BASE_WIDTH = 150;
-const BASE_HEIGHT = 50;
-
-const computedStyle = computed(() => {
-    const completionProgress = resolveCompletionProgressFillRatio({
-      lifecycleStage: props.data.lifecycle_stage ?? props.data.node_status,
-      completionProgress: props.data.completion_progress,
-      completionProgressExpr: props.data.completion_progress_expr,
-      customFields: props.data.custom_fields,
-    });
-    return getNodeDisplayStyle(
-      props.data.primary_category ?? props.data.node_type,
-      props.data.lifecycle_stage ?? props.data.node_status,
-      props.data.color,
-      props.data.note_categories ?? props.data.note_types,
-      completionProgress
-    );
-});
-
-const nodeStyle = computed(() => {
-    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type, props.data.weight_mode);
-    
-    const style = computedStyle.value;
-    
-    return {
-        width: `${Math.round(BASE_WIDTH * scale)}px`,
-        height: `${Math.round(BASE_HEIGHT * scale)}px`,
-        borderColor: style.borderColor,
-        borderWidth: style.borderWidth,
-        borderStyle: style.borderStyle,
-        backgroundColor: style.backgroundColor,
-        backgroundImage: style.backgroundImage,
-        opacity: style.opacity,
-    };
-});
-
-const titleStyle = computed(() => {
-    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type, props.data.weight_mode);
-    // Scale font size slightly less aggressively than dimensions
-    // Base font 14px, max 24px, min 10px
-    const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
-    
-    const style = computedStyle.value;
-    
-    return {
-        fontSize: `${fontSize}px`,
-        color: style.color,
-        fontWeight: style.fontWeight,
-        textDecoration: style.textDecoration,
-    };
-});
-
-const useSplitTitle = computed(() => {
-    const ratio = computedStyle.value.partialFillRatio;
-    return typeof ratio === 'number' && ratio > 0 && ratio < 1;
-});
-
-const filledTitleLayerStyle = computed(() => {
-    const ratio = computedStyle.value.partialFillRatio ?? 0;
-    return {
-        color: computedStyle.value.fillTextColor,
-        clipPath: `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`,
-    };
-});
-
-const emptyTitleLayerStyle = computed(() => {
-  const ratio = computedStyle.value.partialFillRatio ?? 0;
-  return {
-    color: computedStyle.value.emptyTextColor,
-    clipPath: `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`,
-  };
-});
 </script>
 
 <style scoped>

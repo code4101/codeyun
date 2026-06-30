@@ -84,6 +84,17 @@ class XianfuTaskMixin:
             raise TimeoutError(f"{task_label}：跳过仙府过场后仍未到 #171，最后 #{last_scene_id or 'unknown'} {last_score:.0f}%")
         return "success"
 
+    def _ensure_xianfu_home_partner_tab(self, runtime: FanxiuRuntime, image171: dict[str, Any], *, task_label: str):
+        frame = runtime.cur_frame(update=True)
+        full_text = _sanitize_ocr_text(runtime.ocr_text(frame))
+        if self._xianfu_partner_entry_ready_text(full_text):
+            return "success"
+        raise RuntimeError(f"{task_label}：#171 未显示「寻仙台」入口，请检查仙府主页标注或当前页状态；当前 OCR={full_text or '空'}")
+
+    def _xianfu_partner_entry_ready_text(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        return "寻仙台" in normalized
+
     def _execute_xianfu_visit_partner_task(
         self,
         ctx: dict[str, Any],
@@ -152,6 +163,9 @@ class XianfuTaskMixin:
                 scene_id = 171
             if scene_id == 171:
                 view171 = runtime.get_view(171)
+                image171 = ctx.get("images", {}).get(171)
+                if isinstance(image171, dict):
+                    self._ensure_xianfu_home_partner_tab(runtime, image171, task_label="仙府_寻访仙侣")
                 shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
                 if shape is None:
                     raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
@@ -494,6 +508,9 @@ class XianfuTaskMixin:
                 scene_id = 171
             if scene_id == 171:
                 view171 = runtime.get_view(171)
+                image171 = images.get(171)
+                if isinstance(image171, dict):
+                    yield from self._ensure_xianfu_home_partner_tab(runtime, image171, task_label="仙府_领悟绝技")
                 platform_shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
                 if platform_shape is None:
                     raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
