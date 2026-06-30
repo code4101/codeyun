@@ -1263,6 +1263,42 @@ class FanxiuRuntime(Runtime):
         self.clear_frame()
         return result
 
+    def click_shape_center_then_view(
+        self,
+        view: View | int | str,
+        shape: Shape | str,
+        *target_views: View | int | str | Sequence[View | int | str],
+        settle_seconds: float = 1.0,
+        timeout: float | None = None,
+        label: str | None = None,
+    ):
+        source_view = self.view(view)
+        target_ids: list[int] = []
+
+        def append_target(target_view: View | int | str | Sequence[View | int | str]) -> None:
+            if isinstance(target_view, View):
+                if target_view.id is None:
+                    raise RuntimeError(f"目标 view 缺少场景编号：{target_view.title}")
+                target_ids.append(int(target_view.id))
+            elif isinstance(target_view, Sequence) and not isinstance(target_view, (str, bytes, bytearray)):
+                for item in target_view:
+                    append_target(item)
+            else:
+                target_ids.append(int(str(target_view).lstrip("#")))
+
+        for target_view in target_views:
+            append_target(target_view)
+        if not target_ids:
+            raise RuntimeError(f"固定点击 #{source_view.id or '?'}「{shape}」后缺少目标场景；请显式传入目标")
+        self.click_shape_center(source_view, shape)
+        yield from self.wait_action_settle(settle_seconds)
+        wait_label = label or f"固定点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
+        return (yield from self.wait_view(
+            *target_ids,
+            timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
+            label=wait_label,
+        ))
+
     def ocr_row_clicks_in_shape(
         self,
         view: View | int | str,
@@ -4474,13 +4510,20 @@ class DataAnnotationRuntimeRunner(
                     break
                 item["last_run_at"] = now_text
                 item["retry_after"] = None
-                if str(item.get("schedule_kind") or "") == "daily":
+                if str(item.get("schedule_kind") or "") in {"daily", "weekly"}:
                     item["next_time"] = fact_next_time if fact_next_time else _next_data_annotation_scheduler_time(item)
                 else:
                     fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
                     item["next_time"] = fact_next_time if fact_next_time else None
             elif result in {"skipped", "unsupported"}:
                 item["last_run_at"] = now_text
+                fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
+                if fact_next_time:
+                    item["next_time"] = fact_next_time
+                    item["retry_after"] = None
+                    item["last_result"] = result
+                    changed = True
+                    break
                 fact_retry_after = self._scheduler_task_fact_retry_after(str(item.get("id") or ""))
                 if fact_retry_after:
                     item["next_time"] = None
@@ -4488,14 +4531,9 @@ class DataAnnotationRuntimeRunner(
                     item["last_result"] = result
                     changed = True
                     break
-                fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
-                if fact_next_time:
-                    item["next_time"] = fact_next_time
-                    item["retry_after"] = None
-                else:
-                    cooldown_seconds = int(item.get("cooldown_seconds") or 600)
-                    item["next_time"] = None
-                    item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+                cooldown_seconds = int(item.get("cooldown_seconds") or 600)
+                item["next_time"] = None
+                item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             elif result in {"error", "stopped"}:
                 cooldown_seconds = int(item.get("cooldown_seconds") or 600)
                 item["next_time"] = None

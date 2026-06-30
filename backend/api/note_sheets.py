@@ -7207,7 +7207,8 @@ def _build_attendance_total_refund_formula(
     clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
     order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
     standard_amount_ref = f"${_excel_column_label(order_amount_index)}${standard_amount_row_number}"
-    return f"=MIN(IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({standard_amount_ref}>0,{standard_amount_ref},{order_ref}),0),{order_ref})"
+    computed_refund = f"IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({standard_amount_ref}>0,{standard_amount_ref},{order_ref}),0)"
+    return f"=IF({order_ref}>0,MIN(MAX({computed_refund},0),{order_ref}),0)"
 
 
 def _build_attendance_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -7326,7 +7327,7 @@ def _build_attendance_current_refund_formula(columns: list[str], *, row_number: 
     total_ref = f"{_excel_column_label(total_index)}{row_number}"
     refunded_ref = f"{_excel_column_label(refunded_index)}{row_number}"
     order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
-    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
+    return f"=IF({order_ref}>0,MAX({total_ref}-{refunded_ref},0),0)"
 
 
 def _build_attendance_refund_config_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -7679,6 +7680,22 @@ def _normalize_attendance_dual_clockin_refund_formulas_persisted(
     document_json: dict[str, Any],
 ) -> dict[str, Any]:
     next_document, changed_count = _normalize_attendance_dual_clockin_refund_formulas(document_json)
+    if not changed_count:
+        return next_document
+    document.document_json = next_document
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+    return dict(document.document_json or {})
+
+
+def _normalize_attendance_managed_refund_formulas_persisted(
+    session: Session,
+    document: SheetDocument,
+    document_json: dict[str, Any],
+) -> dict[str, Any]:
+    next_document, changed_count = _normalize_attendance_managed_refund_formulas(document_json)
     if not changed_count:
         return next_document
     document.document_json = next_document
@@ -15248,14 +15265,31 @@ def _serialize_sheet_summary(
         "owner_user_id": document.owner_user_id,
         "created_by_user_id": document.created_by_user_id,
         "updated_by_user_id": document.updated_by_user_id,
-        "created_at": float(document.created_at or 0.0),
-        "updated_at": float(document.updated_at or 0.0),
+        "created_at": _serialize_sheet_timestamp(document.created_at),
+        "updated_at": _serialize_sheet_timestamp(document.updated_at),
         "deleted_at": document.deleted_at,
         "deleted_by_user_id": document.deleted_by_user_id,
         "parent_workbook_id": parent_workbook_id,
         "workbook_items": workbook_items or [],
         "access": access,
     }
+
+
+def _serialize_sheet_timestamp(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        normalized = value.strip().replace("T", " ")
+        for pattern in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(normalized, pattern).timestamp()
+            except ValueError:
+                continue
+    return 0.0
 
 
 def _serialize_sheet_detail(
@@ -16991,6 +17025,7 @@ def get_note_sheet(
     stored_document = _ensure_sheet_document_identity_persisted(session, document)
     stored_document = _normalize_registration_sheet_header_persisted(session, document, stored_document)
     stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
+    stored_document = _normalize_attendance_managed_refund_formulas_persisted(session, document, stored_document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(
         session,
         document,

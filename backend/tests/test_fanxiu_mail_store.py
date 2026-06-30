@@ -1,12 +1,14 @@
 import os
 import json
 import time
+from pathlib import Path
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from backend.core.fanxiu.packet.tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
 from backend.core.fanxiu.packet.tcp_flow import _resolve_fanxiu_message_text_assets
+from backend.core.fanxiu.packet import tcp_flow as fanxiu_tcp_flow
 from backend.core.fanxiu.mail.store import (
     align_fanxiu_mail_records_claimable_between_times,
     mark_fanxiu_mail_action,
@@ -96,6 +98,106 @@ def test_packet_mail_observation_updates_existing_packet_record():
     assert rows[0].mail_type == "1101"
     assert rows[0].seen_count == 2
     assert rows[0].payload["packet"]["mail_rewards_summary"] == "灵石 x200"
+
+
+def test_iter_decoded_sources_prefers_recent_capture_time_over_meta_mtime(tmp_path):
+    root = tmp_path / "fanxiu" / "tcp-flow"
+    root.mkdir(parents=True)
+    old_pcap = tmp_path / "old.pcap"
+    new_pcap = tmp_path / "new.pcap"
+    old_pcap.write_bytes(b"old")
+    new_pcap.write_bytes(b"new")
+    now = time.time()
+    os.utime(old_pcap, (now - 3600, now - 3600))
+    os.utime(new_pcap, (now - 60, now - 60))
+
+    old_record = root / "old-record"
+    old_record.mkdir()
+    (old_record / "decoded.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+    (old_record / "meta.json").write_text(
+        json.dumps(
+            {
+                "record_id": "old-record",
+                "decoded_path": str(old_record / "decoded.json"),
+                "source_pcap": str(old_pcap),
+                "stored_pcap": str(old_record / "old.pcap"),
+                "stream": 0,
+                "capture_sha256": "old",
+                "pcap_name": "old.pcap",
+                "created_at": "2026-07-01 10:00:00",
+                "pcap_modified_at": "2026-07-01 09:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    new_record = root / "new-record"
+    new_record.mkdir()
+    (new_record / "decoded.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+    (new_record / "meta.json").write_text(
+        json.dumps(
+            {
+                "record_id": "new-record",
+                "decoded_path": str(new_record / "decoded.json"),
+                "source_pcap": str(new_pcap),
+                "stored_pcap": str(new_record / "new.pcap"),
+                "stream": 0,
+                "capture_sha256": "new",
+                "pcap_name": "new.pcap",
+                "created_at": "2026-06-01 10:00:00",
+                "pcap_modified_at": "2026-07-01 09:59:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(old_record / "meta.json", (now, now))
+    os.utime(new_record / "meta.json", (now - 600, now - 600))
+
+    sources = fanxiu_tcp_flow._iter_fanxiu_tcp_decoded_sources(tmp_path)
+
+    assert [item["record_id"] for item in sources[:2]] == ["new-record", "old-record"]
+
+
+def test_mail_packet_sync_uses_pcap_modified_at_for_last_seen_capture(monkeypatch):
+    session = _session()
+    decoded_path = Path("dummy-decoded.json")
+    source = {
+        "decoded_path": str(decoded_path),
+        "record_id": "mail-record",
+        "pcap_name": "mailbox.pcap",
+        "created_at": "2026-07-01 10:30:00",
+        "pcap_modified_at": "2026-07-01 10:05:00",
+    }
+    payload = {
+        "frames": [
+            {
+                "name": "SM_NewMail",
+                "parsed": {
+                    "mailVos": {
+                        "items": [
+                            {
+                                "id": "m1",
+                                "type": "1101",
+                                "title": "测试邮件",
+                                "createTime": 1782867900000,
+                                "rewardGetted": False,
+                            }
+                        ]
+                    }
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "_iter_fanxiu_tcp_decoded_sources", lambda _data_dir=None: [source])
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "_load_json_file", lambda _path: payload)
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+
+    result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
+    session.commit()
+    row = session.exec(select(FanxiuMailRecord)).one()
+
+    assert result["ok"] is True
+    assert row.last_seen_capture_at == "2026-07-01 10:05:00"
 
 
 def test_packet_mail_upsert_creates_id_key():

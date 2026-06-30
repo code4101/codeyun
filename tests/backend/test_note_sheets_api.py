@@ -54,6 +54,23 @@ def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -
     )
 
 
+def test_sheet_summary_serializes_legacy_datetime_string_timestamp():
+    document = SheetDocument(
+        numeric_id=1001,
+        scope="test",
+        sheet_key="timestamp-string",
+        title="时间戳兼容",
+        document_json={"columns": [], "rows": []},
+        created_at="2026-06-30 13:53:24",
+        updated_at="2026-06-30 13:53:24",
+    )
+
+    payload = note_sheets_api._serialize_sheet_summary(document)
+
+    assert payload["created_at"] > 0
+    assert payload["updated_at"] > 0
+
+
 def _assert_pagination_contains(actual: dict, expected: dict) -> None:
     for key, value in expected.items():
         assert actual[key] == value
@@ -194,7 +211,7 @@ def test_attendance_managed_refund_formula_normalizer_keeps_video_refund_materia
     row = normalized["rows"][0]
     assert row[columns.index("完成视频数")] == '=COUNTIF(J4,"*完成*")+COUNTIF(J4,"*回放*")'
     assert row[columns.index("视频应返款")] == 19
-    assert row[columns.index("总应返款")] == "=MIN(IFERROR(C4+D4+G4-IF($G$3>0,$G$3,G4),0),G4)"
+    assert row[columns.index("总应返款")] == "=IF(G4>0,MIN(MAX(IFERROR(C4+D4+G4-IF($G$3>0,$G$3,G4),0),0),G4),0)"
 
 
 def test_course_template_runtime_header_values_reset_entity_and_defined_names() -> None:
@@ -3449,10 +3466,10 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_updated_rows[1][attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
         assert attendance_updated_rows[1][attendance_columns.index("完成视频数")] == '=COUNTIF(R3:S3,"*完成*")+COUNTIF(R3:S3,"*回放*")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡应返款")] == "0"
-        assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),N3)'
+        assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=IF(N3>0,MIN(MAX(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),0),N3),0)'
         assert attendance_updated_rows[1][attendance_columns.index("已返款")] == "0"
         assert attendance_updated_rows[1][attendance_columns.index("订单金额")] == "620"
-        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=(N3>0)*(L3-M3)'
+        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=IF(N3>0,MAX(L3-M3,0),0)'
         assert attendance_updated_rows[1][attendance_columns.index("返款配置")] == '=IF(O3>0,TEXTJOIN(",",TRUE,E3,O3,"念住闯关每日返款",E3&"_day"&$O$1),"")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡数")] == ""
         assert attendance_updated_rows[1][attendance_columns.index("第01课")] == ""
@@ -3697,11 +3714,11 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert repaired_row[attendance_columns.index("报名日期")] == "2026-05-21 09:46"
     assert repaired_row[attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
     assert repaired_row[attendance_columns.index("完成视频数")] == '=COUNTIF(R3,"*完成*")+COUNTIF(R3,"*回放*")'
-    assert repaired_row[attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),N3)'
+    assert repaired_row[attendance_columns.index("总应返款")] == '=IF(N3>0,MIN(MAX(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),0),N3),0)'
     assert repaired_row[attendance_columns.index("已返款")] == "0"
     assert repaired_row[attendance_columns.index("订单金额")] == "620"
     assert repaired_row[attendance_columns.index("关联用户ID")] == "u_linked"
-    assert repaired_row[attendance_columns.index("当前应返款")] == '=(N3>0)*(L3-M3)'
+    assert repaired_row[attendance_columns.index("当前应返款")] == '=IF(N3>0,MAX(L3-M3,0),0)'
     assert repaired_row[attendance_columns.index("打卡数")] == ""
     assert "2:0" not in next_doc["cell_meta"]
     assert next_doc["cell_meta"]["3:0"]["style"]["background_color"] == "#F2F2F2"

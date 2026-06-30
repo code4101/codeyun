@@ -9667,13 +9667,16 @@ def test_daily_xianyuan_duel_waits_formation_before_optimizing(tmp_path, monkeyp
         return value
 
     class FakeRuntime:
+        scene_calls = 0
+
         def current_scene(self, _preferred, *, update=False):
             calls.append(("current_scene", tuple(_preferred), update))
-            return 69, 100.0, "frame"
+            self.scene_calls += 1
+            return (69, 100.0, "frame") if self.scene_calls == 1 else (None, 0.0, "frame326")
 
         def ocr_text(self, _frame):
             calls.append(("ocr_text",))
-            return "日常"
+            return "玉霄天宫 本周剩余奖励次数:3/3 挑战" if _frame == "frame326" else "日常"
 
         def open_daily_entry(self, **kwargs):
             calls.append(("open_daily_entry", kwargs.get("title_pattern")))
@@ -9735,6 +9738,46 @@ def test_runtime_click_translates_child_shape_by_matched_parent_box():
     assert click_y == pytest.approx(153.0)
 
 
+def test_runtime_click_shape_center_then_view_clicks_fixed_shape_before_wait(monkeypatch):
+    from pyxllib.autogui import View
+
+    from backend.core.fanxiu.data_annotation.runtime_runner import FanxiuRuntime
+
+    calls: list[tuple] = []
+
+    class FakeSession:
+        default_wait_condition_timeout = 30.0
+
+        def view(self, view):
+            raw = {"title": "0321.png", "width": 900, "height": 1600}
+            return View(raw | {"id": int(view), "shapes": [{"title": "返回", "x": 0.05, "y": 0.9, "w": 0.1, "h": 0.05}]})
+
+        def click_shape_center(self, view, shape):
+            calls.append(("click_shape_center", view.id, shape))
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            if False:
+                yield None
+            return None
+
+        def wait_view(self, *target_ids, **kwargs):
+            calls.append(("wait_view", target_ids, kwargs))
+            if False:
+                yield None
+            return View({"id": target_ids[0], "title": f"{target_ids[0]}.png", "shapes": []})
+
+    session = FakeSession()
+    result = _drain_generator(FanxiuRuntime.click_shape_center_then_view(session, 321, "返回", 320))
+
+    assert result.id == 320
+    assert calls == [
+        ("click_shape_center", 321, "返回"),
+        ("wait_action_settle", 1.0),
+        ("wait_view", (320,), {"timeout": 30.0, "label": "固定点击后等待目标场景 #320"}),
+    ]
+
+
 def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 
@@ -9751,13 +9794,16 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         return value
 
     class FakeRuntime:
+        scene_calls = 0
+
         def current_scene(self, _preferred, *, update=False):
             calls.append(("current_scene", tuple(_preferred), update))
-            return 69, 100.0, "frame"
+            self.scene_calls += 1
+            return (69, 100.0, "frame") if self.scene_calls == 1 else (None, 0.0, "frame326")
 
         def ocr_text(self, _frame):
             calls.append(("ocr_text",))
-            return "日常"
+            return "玉霄天宫 本周剩余奖励次数:3/3 挑战" if _frame == "frame326" else "日常"
 
         def open_daily_entry(self, **kwargs):
             calls.append((
@@ -9780,9 +9826,29 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
             calls.append(("wait_click", scene_id, shape))
             return done(None)
 
-        def wait_click_then_view(self, scene_id, shape, target_scene_id):
-            calls.append(("wait_click_then_view", scene_id, shape, target_scene_id))
-            return done(target_scene_id)
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs))
+            return done(scene_id)
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def click_shape_center(self, scene_id, shape):
+            calls.append(("click_shape_center", scene_id, shape))
+            return None
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def click_shape_center(self, scene_id, shape):
+            calls.append(("click_shape_center", scene_id, shape))
+            return None
+
+        def click_shape_center_then_view(self, scene_id, shape, *target_scene_ids, **kwargs):
+            calls.append(("click_shape_center_then_view", scene_id, shape, target_scene_ids, kwargs))
+            return done(target_scene_ids[0] if target_scene_ids else scene_id)
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
 
@@ -9800,8 +9866,16 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
         ("wait_view", 319, "日常_奇袭魔界：等待奇袭魔界 #319"),
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
-        ("wait_click_then_view", 319, "参与进攻", 320),
-        ("wait_click", 320, "检索区域/修罗"),
+        ("wait_click_then_view", 319, "参与进攻", (320,), {}),
+        ("wait_click_then_view", 320, "检索区域/修罗", (321,), {}),
+        ("wait_click_then_view", 321, "创建队伍", (322,), {}),
+        ("wait_click_then_view", 322, "下拉选项", (323,), {}),
+        ("wait_click_then_view", 323, "开启", (322,), {}),
+        ("wait_click_then_view", 322, "确定", (324,), {}),
+        ("wait_click_then_view", 324, "返回", (321,), {}),
+        ("click_shape_center_then_view", 321, "返回", (320,), {}),
+        ("wait_click", 320, "返回"),
+        ("wait_click", 319, "返回"),
     ]
 
 
@@ -9848,6 +9922,243 @@ def test_daily_mojie_raid_returns_when_remaining_empty(tmp_path, monkeypatch):
     assert calls == [
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
         ("wait_click", 319, "返回"),
+    ]
+
+
+def test_daily_weekly_dungeon_opens_daily_entry_by_zhouben(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        scene_calls = 0
+
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            self.scene_calls += 1
+            return (69, 100.0, "frame") if self.scene_calls == 1 else (None, 0.0, "frame326")
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "玉霄天宫 本周剩余奖励次数:3/3 挑战" if _frame == "frame326" else "日常"
+
+        def open_daily_entry(self, **kwargs):
+            calls.append((
+                "open_daily_entry",
+                kwargs.get("label"),
+                kwargs.get("title_pattern"),
+                kwargs.get("progress_can_mark_done"),
+            ))
+            return done("open")
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs))
+            return done(scene_id)
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def click_shape_center(self, scene_id, shape):
+            calls.append(("click_shape_center", scene_id, shape))
+            return None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_weekly_dungeon_task(ctx, threading.Event(), {})
+    )
+    definition = fanxiu_api._data_annotation_manual_job_definition("daily_weekly_dungeon")
+
+    assert result == "success"
+    assert definition is not None
+    assert definition.label == "日常_周本"
+    assert definition.scheduler_supported is True
+    assert calls == [
+        ("current_scene", (327, 326, 325, 69, 34), True),
+        ("ocr_text",),
+        ("open_daily_entry", "日常_周本", "周本", False),
+        ("wait_click", 325, "天宫"),
+        ("wait_action_settle", 1.5),
+        ("current_scene", (326, 325, 69), True),
+        ("ocr_text",),
+        ("click_shape_center", 326, "挑战"),
+        ("wait_action_settle", 1.0),
+        ("wait_click", 327, "挑战"),
+        ("wait_view", 34, {"timeout": 600.0, "label": "日常_周本：等待战斗结束回到世界 #34"}),
+    ]
+
+
+def test_daily_weekly_dungeon_clicks_tiangong_when_already_on_scene(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        scene_calls = 0
+
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            self.scene_calls += 1
+            return (325, 100.0, "frame") if self.scene_calls == 1 else (None, 0.0, "frame326")
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "玉霄天宫 本周剩余奖励次数:3/3 挑战" if _frame == "frame326" else "悟道试炼"
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs))
+            return done(scene_id)
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def click_shape_center(self, scene_id, shape):
+            calls.append(("click_shape_center", scene_id, shape))
+            return None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_weekly_dungeon_task(ctx, threading.Event(), {})
+    )
+
+    assert result == "success"
+    assert calls == [
+        ("current_scene", (327, 326, 325, 69, 34), True),
+        ("ocr_text",),
+        ("wait_click", 325, "天宫"),
+        ("wait_action_settle", 1.5),
+        ("current_scene", (326, 325, 69), True),
+        ("ocr_text",),
+        ("click_shape_center", 326, "挑战"),
+        ("wait_action_settle", 1.0),
+        ("wait_click", 327, "挑战"),
+        ("wait_view", 34, {"timeout": 600.0, "label": "日常_周本：等待战斗结束回到世界 #34"}),
+    ]
+
+
+def test_daily_weekly_dungeon_clicks_challenge_when_already_on_scene(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            return 326, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "悟道试炼"
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs))
+            return done(scene_id)
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def click_shape_center(self, scene_id, shape):
+            calls.append(("click_shape_center", scene_id, shape))
+            return None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_weekly_dungeon_task(ctx, threading.Event(), {})
+    )
+
+    assert result == "success"
+    assert calls == [
+        ("current_scene", (327, 326, 325, 69, 34), True),
+        ("ocr_text",),
+        ("click_shape_center", 326, "挑战"),
+        ("wait_action_settle", 1.0),
+        ("wait_click", 327, "挑战"),
+        ("wait_view", 34, {"timeout": 600.0, "label": "日常_周本：等待战斗结束回到世界 #34"}),
+    ]
+
+
+def test_daily_weekly_dungeon_clicks_challenge_when_already_on_second_challenge_scene(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            return 327, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "挑战"
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs))
+            return done(scene_id)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_weekly_dungeon_task(ctx, threading.Event(), {})
+    )
+
+    assert result == "success"
+    assert calls == [
+        ("current_scene", (327, 326, 325, 69, 34), True),
+        ("ocr_text",),
+        ("wait_click", 327, "挑战"),
+        ("wait_view", 34, {"timeout": 600.0, "label": "日常_周本：等待战斗结束回到世界 #34"}),
     ]
 
 
@@ -11733,6 +12044,43 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     assert fact["retry_after"] is None
     assert fact["discovered_next_time"] == signup["next_time"]
     assert fact["discovered_next_time"] != "2026-06-06 05:00:00"
+
+
+def test_scheduler_success_advances_weekly_next_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 30, 8, 0, 0))
+    task = {
+        "id": "daily-weekly-dungeon",
+        "task_type": "daily_weekly_dungeon",
+        "label": "日常_周本",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "weekly",
+        "enabled": True,
+        "interruptible": True,
+        "next_time": None,
+        "schedule_times": ["05:00"],
+        "weekdays": [0],
+        "window": None,
+        "last_run_at": None,
+        "last_result": "",
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "payload": {},
+        "checkpoint": None,
+    }
+    fanxiu_api._write_data_annotation_scheduler_tasks([task])
+    runner = create_fanxiu_runtime_runner()
+
+    runner._mark_scheduler_task([task], "daily-weekly-dungeon", "success")
+
+    tasks = fanxiu_api._read_data_annotation_scheduler_tasks()
+    weekly_dungeon = next(item for item in tasks if item["id"] == "daily-weekly-dungeon")
+    assert weekly_dungeon["last_result"] == "success"
+    assert weekly_dungeon["retry_after"] is None
+    assert weekly_dungeon["next_time"] == "2026-07-06 05:00:00"
 
 
 def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path, monkeypatch):

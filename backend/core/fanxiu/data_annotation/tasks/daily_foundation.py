@@ -37,7 +37,7 @@ from backend.core.fanxiu.data_annotation.runtime_runner import (
     _read_data_annotation_world_facts,
     _write_data_annotation_world_facts,
 )
-from backend.core.fanxiu.data_annotation.state import parse_data_annotation_task_time
+from backend.core.fanxiu.data_annotation.state import parse_data_annotation_daily_clock, parse_data_annotation_task_time
 
 
 _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -2646,10 +2646,16 @@ class DailyFoundationTaskMixin:
             self._log("skip", "日常_奇袭魔界：剩余次数为 0，点击返回结束")
             yield from runtime.wait_click(319, "返回")
             return "skipped"
-        self._log("action", "日常_奇袭魔界：剩余次数可用，点击「参与进攻」")
         yield from runtime.wait_click_then_view(319, "参与进攻", 320)
-        self._log("action", "日常_奇袭魔界：点击 #320「检索区域/修罗」")
-        yield from runtime.wait_click(320, "检索区域/修罗")
+        yield from runtime.wait_click_then_view(320, "检索区域/修罗", 321)
+        yield from runtime.wait_click_then_view(321, "创建队伍", 322)
+        yield from runtime.wait_click_then_view(322, "下拉选项", 323)
+        yield from runtime.wait_click_then_view(323, "开启", 322)
+        yield from runtime.wait_click_then_view(322, "确定", 324)
+        yield from runtime.wait_click_then_view(324, "返回", 321)
+        yield from runtime.click_shape_center_then_view(321, "返回", 320)
+        yield from runtime.wait_click(320, "返回")
+        yield from runtime.wait_click(319, "返回")
         return "success"
 
     def _handle_daily_mojie_raid_open_blocker_placeholder(
@@ -2662,6 +2668,61 @@ class DailyFoundationTaskMixin:
         if False:
             yield None
         return "not_implemented"
+
+    def _execute_daily_weekly_dungeon_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_周本资产树路径，无法执行作业")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([327, 326, 325, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id is None and self._is_daily_weekly_dungeon_tiangong_page_text(text):
+            scene_id = 326
+        if scene_id not in {327, 326, 325, 69}:
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_周本")
+        if scene_id not in {327, 326, 325, 69}:
+            raise RuntimeError("日常_周本：未能进入 #69 日常列表")
+        if scene_id == 69:
+            status = yield from runtime.open_daily_entry(
+                label="日常_周本",
+                title_pattern="周本",
+                progress_can_mark_done=False,
+                max_scrolls=int(payload.get("max_scrolls") or 30),
+                reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
+            )
+            if status == "not_found":
+                raise RuntimeError("日常_周本：#69 日常列表未找到「周本」入口")
+            scene_id = 325
+        if scene_id == 325:
+            yield from runtime.wait_click(325, "天宫")
+            yield from runtime.wait_action_settle(1.5)
+            scene_id, _score, frame = runtime.current_scene([326, 325, 69], update=True)
+            text = runtime.ocr_text(frame)
+            if scene_id is None and self._is_daily_weekly_dungeon_tiangong_page_text(text):
+                scene_id = 326
+            if scene_id != 326:
+                raise RuntimeError(f"日常_周本：点击天宫后未到达 #326，OCR={text[:120]}")
+        if scene_id == 326:
+            runtime.click_shape_center(326, "挑战")
+            yield from runtime.wait_action_settle(1.0)
+        yield from runtime.wait_click(327, "挑战")
+        yield from runtime.wait_view(
+            34,
+            timeout=float(payload.get("battle_return_world_timeout") or 600.0),
+            label="日常_周本：等待战斗结束回到世界 #34",
+        )
+        self._log("success", "日常_周本：战斗结束，已回到 #34")
+        return "success"
+
+    def _is_daily_weekly_dungeon_tiangong_page_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(str(text or "")))
+        return "玉霄天宫" in compact and "本周剩余奖励次数" in compact and "挑战" in compact
 
     def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
         yield from runtime.wait_click_then_view(308, "购买", 311)
@@ -3756,6 +3817,20 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
+        outside_window_next_time = self._runtime_daily_window_next_time(
+            str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai-clear"),
+            "daily_lingmai_clear",
+        )
+        if outside_window_next_time:
+            self._record_scheduler_task_discovered_next_time(
+                str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai-clear"),
+                outside_window_next_time,
+                task_type="daily_lingmai_clear",
+                label="日常_灵脉_清体力",
+                last_result="skipped",
+            )
+            self._log("skip", f"日常_灵脉_清体力：当前不在运行窗口内，下次 {outside_window_next_time}")
+            return "skipped"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_灵脉_清体力资产树路径，无法执行作业")
@@ -3781,6 +3856,41 @@ class DailyFoundationTaskMixin:
             task_label=task_label,
         )
         return "success"
+
+    def _runtime_daily_window_next_time(self, task_id: str, task_type: str, now: datetime | None = None) -> str | None:
+        now = now or _runtime_runner._now()
+        task = next(
+            (
+                item
+                for item in _read_data_annotation_scheduler_tasks()
+                if str(item.get("id") or "") == str(task_id or "")
+                or str(item.get("task_type") or "") == str(task_type or "")
+            ),
+            None,
+        )
+        if not isinstance(task, dict):
+            return None
+        window = task.get("window")
+        if not isinstance(window, list) or len(window) != 2:
+            return None
+        start_clock = parse_data_annotation_daily_clock(window[0])
+        end_clock = parse_data_annotation_daily_clock(window[1])
+        if start_clock is None or end_clock is None:
+            return None
+        start_at = datetime.combine(now.date(), start_clock)
+        end_at = datetime.combine(now.date(), end_clock)
+        if end_at <= start_at:
+            if now < end_at:
+                start_at -= timedelta(days=1)
+            else:
+                end_at += timedelta(days=1)
+        if start_at <= now < end_at:
+            return None
+        if now < start_at:
+            next_start = start_at
+        else:
+            next_start = start_at + timedelta(days=1)
+        return next_start.strftime("%Y-%m-%d %H:%M:%S")
 
     def _enter_daily_lingmai_zaohua_from_world_or_daily(
         self,

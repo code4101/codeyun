@@ -1703,16 +1703,6 @@ onUnmounted(() => {
       class="runtime-load-alert"
     />
 
-    <section ref="systemMonitorAnchorRef" class="runtime-section">
-      <RuntimeSystemMetricsChart v-if="currentDeviceId && systemMonitorActivated" :entry-id="currentDeviceId" />
-      <div v-else-if="currentDeviceId" class="system-monitor-placeholder">
-        <div class="runtime-section-title">
-          <span>资源监控</span>
-        </div>
-        <div class="system-monitor-placeholder-body">滚动到此区域后加载</div>
-      </div>
-    </section>
-
     <section class="runtime-section">
       <div class="runtime-section-title">
         <span>服务</span>
@@ -1938,6 +1928,16 @@ onUnmounted(() => {
         暂无作业队列记录
       </div>
     </div>
+
+    <section ref="systemMonitorAnchorRef" class="runtime-section">
+      <RuntimeSystemMetricsChart v-if="currentDeviceId && systemMonitorActivated" :entry-id="currentDeviceId" />
+      <div v-else-if="currentDeviceId" class="system-monitor-placeholder">
+        <div class="runtime-section-title">
+          <span>资源监控</span>
+        </div>
+        <div class="system-monitor-placeholder-body">滚动到此区域后加载</div>
+      </div>
+    </section>
 
     <!-- Create Runtime Command Dialog -->
     <el-dialog v-model="jobCatalogDialogVisible" title="添加作业" width="640px">

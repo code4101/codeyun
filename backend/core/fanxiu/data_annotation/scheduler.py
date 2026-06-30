@@ -137,6 +137,11 @@ def _daily_task_success_today(task: dict[str, Any], current_time: datetime) -> b
     return datetime.fromtimestamp(last_run_ts).date() == current_time.date()
 
 
+def _task_has_synced_world_fact_next_time(task: dict[str, Any]) -> bool:
+    checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
+    return bool(task.get("next_time") and checkpoint.get("world_fact_synced_at") and checkpoint.get("world_fact_updated_at"))
+
+
 def _daily_audit_row_is_valid_completed(row: dict[str, Any]) -> bool:
     task_type = str(row.get("task_type") or "")
     progress = row.get("progress") if isinstance(row.get("progress"), dict) else {}
@@ -217,16 +222,34 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         if not isinstance(fact, dict):
             continue
         fact_result = str(fact.get("last_result") or "")
-        if fact_result in {"error", "stopped", "skipped", "unsupported"} and (fact.get("discovered_retry_after") or fact.get("retry_after")):
+        fact_next_time = data_annotation_fact_time_text(fact, "discovered_next_time", "next_time")
+        fact_retry_after = data_annotation_fact_time_text(fact, "discovered_retry_after", "retry_after")
+        if fact_next_time and fact_result not in _UNSCHEDULED_MANUAL_RESULTS:
+            fact = dict(fact)
+            fact.pop("discovered_retry_after", None)
+            fact.pop("retry_after", None)
+            filtered_task_facts[task_id] = fact
+        elif fact_result in {"error", "stopped", "skipped", "unsupported"} and fact_retry_after:
             fact = dict(fact)
             fact.pop("discovered_next_time", None)
             fact.pop("next_time", None)
+            filtered_task_facts[task_id] = fact
         if fact_result in _UNSCHEDULED_MANUAL_RESULTS:
             fact = dict(fact)
             fact.pop("discovered_next_time", None)
             fact.pop("next_time", None)
             fact.pop("discovered_retry_after", None)
             fact.pop("retry_after", None)
+            filtered_task_facts[task_id] = fact
+        if (
+            task_id == "legacy-daily-xianmeng"
+            and str(task.get("task_type") or "") == "daily_xianmeng"
+            and str(task.get("schedule_kind") or "") == "dynamic"
+            and fact_result == "success"
+        ):
+            fact = dict(fact)
+            fact.pop("discovered_next_time", None)
+            fact.pop("next_time", None)
             filtered_task_facts[task_id] = fact
         fact_updated_at = float(fact.get("updated_at") or 0)
         last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
@@ -399,6 +422,11 @@ def repair_data_annotation_scheduler_tasks(
             if int(payload.get("max_runtime_seconds") or 0) < 7200:
                 payload["max_runtime_seconds"] = 7200
                 task["payload"] = payload
+                legacy_daily_xianmeng_task = task
+            if str(task.get("schedule_kind") or "") != "dynamic" or task.get("schedule_times") or task.get("next_time"):
+                task["schedule_kind"] = "dynamic"
+                task["schedule_times"] = []
+                task["next_time"] = None
                 legacy_daily_xianmeng_task = task
         elif str(task.get("id") or "") == "legacy-dynamic-xianfu-visit":
             legacy_xianfu_visit_task = task
@@ -658,8 +686,12 @@ def repair_data_annotation_scheduler_tasks(
     current_ts = current_time.timestamp()
     for task in tasks:
         daily_retry_deferred = False
+        explicit_world_fact_next_time = _task_has_synced_world_fact_next_time(task)
         if str(task.get("schedule_kind") or "") == "manual" and task.get("enabled"):
             task["enabled"] = False
+            changed = True
+        if explicit_world_fact_next_time and task.get("retry_after"):
+            task["retry_after"] = None
             changed = True
         if (
             task.get("enabled")
@@ -696,6 +728,7 @@ def repair_data_annotation_scheduler_tasks(
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and task.get("next_time")
             and str(task.get("id") or "") not in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
+            and not explicit_world_fact_next_time
         ):
             task["next_time"] = None
             changed = True
@@ -707,6 +740,7 @@ def repair_data_annotation_scheduler_tasks(
                 str(task.get("id") or "") in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
                 and task.get("next_time")
             )
+            and not explicit_world_fact_next_time
         ):
             cooldown_seconds = int(task.get("cooldown_seconds") or 600)
             task["next_time"] = None

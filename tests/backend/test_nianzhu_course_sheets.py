@@ -1375,11 +1375,11 @@ def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Sess
     first_row = rows[0]
     assert first_row[rebuilt_columns.index("视频应返款")] == 0
     assert first_row[rebuilt_columns.index("打卡应返款")] == "=SWITCH(TRUE,J4>=15,100,J4>=10,60,J4>=5,30,0)"
-    assert first_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),H4)"
-    assert first_row[rebuilt_columns.index("当前应返款")] == "=(H4>0)*(F4-G4)"
+    assert first_row[rebuilt_columns.index("总应返款")] == "=IF(H4>0,MIN(MAX(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),0),H4),0)"
+    assert first_row[rebuilt_columns.index("当前应返款")] == "=IF(H4>0,MAX(F4-G4,0),0)"
     second_row = rows[1]
-    assert second_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D5+E5+H5-IF($H$3>0,$H$3,H5),0),H5)"
-    assert second_row[rebuilt_columns.index("当前应返款")] == "=(H5>0)*(F5-G5)"
+    assert second_row[rebuilt_columns.index("总应返款")] == "=IF(H5>0,MIN(MAX(IFERROR(D5+E5+H5-IF($H$3>0,$H$3,H5),0),0),H5),0)"
+    assert second_row[rebuilt_columns.index("当前应返款")] == "=IF(H5>0,MAX(F5-G5,0),0)"
 
 
 def test_rebuild_nianzhu_attendance_uses_clockin_note_rules_for_color(session: Session) -> None:
@@ -1475,7 +1475,7 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
             "=I4+J4+L4-M4",
             499,
             0,
-            "=(L4>0)*(K4-M4)",
+            "=IF(L4>0,MAX(K4-M4,0),0)",
             5,
             "当堂/100%",
         ],
@@ -1508,8 +1508,8 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert row[rebuilt_columns.index("视频应返款")] == 0
     assert row[rebuilt_columns.index("打卡应返款")] == '=SWITCH(TRUE,N4>=15,200,N4>=10,150,N4>=5,100,0)'
     assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
-    assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),L4)"
-    assert row[rebuilt_columns.index("当前应返款")] == "=(L4>0)*(J4-K4)"
+    assert row[rebuilt_columns.index("总应返款")] == "=IF(L4>0,MIN(MAX(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),0),L4),0)"
+    assert row[rebuilt_columns.index("当前应返款")] == "=IF(L4>0,MAX(J4-K4,0),0)"
 
 
 def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Session) -> None:
@@ -2019,7 +2019,7 @@ def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: S
     row = attendance.document_json["rows"][1]
     assert row[columns.index("打卡数")] == 10
     assert row[columns.index("打卡应返款")] == 150
-    assert row[columns.index("总应返款")] == "=MIN(IFERROR(I5+J5+L5-IF($K$3>0,$K$3,L5),0),L5)"
+    assert row[columns.index("总应返款")] == "=IF(R5>0,MIN(MAX(IFERROR(F5+G5+R5-IF($R$3>0,$R$3,R5),0),0),R5),0)"
     assert row[columns.index("当前应返款")] == 0
 
 

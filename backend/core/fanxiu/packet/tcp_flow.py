@@ -38,6 +38,43 @@ def _ttl_cache_set(key: str, value: Any) -> None:
             oldest = min(_TTL_CACHE.items(), key=lambda item: item[1][0])
             del _TTL_CACHE[oldest[0]]
 
+
+def _parse_local_time_to_epoch(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return float(time.mktime(time.strptime(text, fmt)))
+        except ValueError:
+            continue
+    try:
+        return float(time.mktime(time.strptime(text, "%Y-%m-%dT%H:%M:%S")))
+    except ValueError:
+        return 0.0
+
+
+def _decoded_source_sort_epoch(source: dict[str, Any]) -> float:
+    if not isinstance(source, dict):
+        return 0.0
+    source_pcap = Path(str(source.get("source_pcap") or source.get("stored_pcap") or "")).expanduser()
+    try:
+        if source_pcap.is_file():
+            return float(source_pcap.stat().st_mtime)
+    except OSError:
+        pass
+    for key in ("pcap_modified_at", "created_at"):
+        epoch = _parse_local_time_to_epoch(source.get(key))
+        if epoch > 0:
+            return epoch
+    decoded_path = Path(str(source.get("decoded_path") or "")).expanduser()
+    try:
+        if decoded_path.is_file():
+            return float(decoded_path.stat().st_mtime)
+    except OSError:
+        pass
+    return 0.0
+
 from pyxllib.file.packetstream import (
     LuaPacketSchemaIndex,
     PacketDecodeError,
@@ -2166,6 +2203,7 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
                     "capture_sha256": meta.get("capture_sha256") or "",
                     "pcap_name": meta.get("pcap_name") or (stored_pcap.name if stored_pcap else ""),
                     "created_at": meta.get("created_at") or "",
+                    "pcap_modified_at": meta.get("pcap_modified_at") or "",
                 }
             )
 
@@ -2185,6 +2223,7 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
                 "record_id": record.get("record_id") or "",
                 "pcap_name": record.get("pcap_name") or "",
                 "created_at": record.get("created_at") or "",
+                "pcap_modified_at": record.get("pcap_modified_at") or "",
                 "source_kind": "record",
                 "source_pcap": record.get("source_pcap") or "",
                 "stored_pcap": record.get("stored_pcap") or "",
@@ -2210,12 +2249,24 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
                     "record_id": data.get("record_id") or "",
                     "pcap_name": Path(str(data.get("pcap") or decoded_path.name)).name,
                     "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                    "pcap_modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(Path(str(data.get("pcap") or "")).stat().st_mtime))
+                    if str(data.get("pcap") or "").strip() and Path(str(data.get("pcap") or "")).is_file()
+                    else "",
                     "source_kind": "live",
                     "source_pcap": str(data.get("pcap") or ""),
                     "stored_pcap": "",
                     "stream": int(data.get("stream") or 0),
                 }
             )
+    sources.sort(
+        key=lambda item: (
+            _decoded_source_sort_epoch(item),
+            str(item.get("pcap_name") or ""),
+            str(item.get("record_id") or ""),
+            int(item.get("stream") or 0),
+        ),
+        reverse=True,
+    )
     return sources
 
 
