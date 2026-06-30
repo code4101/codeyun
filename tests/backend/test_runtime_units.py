@@ -4,6 +4,7 @@ from backend.core.runtime.units import (
     DEFAULT_JOB_CONCURRENCY_KEY,
     DEFAULT_JOB_RESOURCE_LOCK,
     command_runtime_queue_name,
+    command_runtime_group,
     command_runtime_resource_lock,
     infer_command_runtime_kind,
     is_legacy_codeyun_command_task,
@@ -95,10 +96,16 @@ def test_command_job_policy_marks_gui_resource_lock():
     assert command_runtime_resource_lock(task, "job") == "resource:gui-automation"
 
 
-def test_legacy_codeyun_command_task_is_superseded_by_watchdog():
+def test_legacy_codeyun_command_task_is_hidden_from_runtime_list():
     assert is_legacy_codeyun_command_task(_task(name="codeyun", command="uv run dev.py"))
     assert is_legacy_codeyun_command_task(
         _task(name="codeyun", command=r"D:\home\chenkunze\slns\codeyun\.venv\Scripts\python.exe dev.py")
     )
     assert not is_legacy_codeyun_command_task(_task(name="capture", command="uv run dev.py"))
     assert not is_legacy_codeyun_command_task(_task(name="codeyun", command="uv run python scripts/job.py"))
+
+
+def test_codeyun_name_is_not_a_normal_base_service_group():
+    task = _task(name="codeyun", command="uv run python scripts/job.py")
+
+    assert command_runtime_group(task, "service") == ("service:default", "默认服务组")

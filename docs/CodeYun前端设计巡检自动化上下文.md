@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "e3acd95d7bddb56cde8e665b0dadd0e0a938c029"
-last_audited_at: "2026-06-30T22:32:53.7817540+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-e3acd95d/report.md"
-last_frontend_commit_summary: "完整关闭 079ecc19..e3acd95d：沿 cluster/runtime 与 fanxiu/data-annotation 两条入口复核后，确认真正的 UI 回退只在运行管理页资源监控层级顺序；已把资源监控后置回服务/作业/队列之后，保持 data-annotation 本轮仅做行为补强而不新增 UI 概念。"
-audited_commit_count: 53
+last_audited_commit: "31b691883a4991c5b582aad3eb82ac69d8a547b9"
+last_audited_at: "2026-07-01T00:35:57.0740204+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-31b69188/report.md"
+last_frontend_commit_summary: "完整关闭 e3acd95d..31b69188：沿 cluster/runtime、fanxiu/data-annotation/runtime 与 NoteSheetWorkspace 链路复核后，仅在 fanxiu/runtime 收敛了新右键动作的语义投影，去掉手动作业的无效入口，并把名词化的“下次触发”改成动词化的“推进到下次”。"
+audited_commit_count: 54
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-01
+
+- 完整范围：`e3acd95d7bddb56cde8e665b0dadd0e0a938c029..31b691883a4991c5b582aad3eb82ac69d8a547b9`
+- 覆盖提交：`31b691883a4991c5b582aad3eb82ac69d8a547b9`
+- 前端入口提交：`31b691883a4991c5b582aad3eb82ac69d8a547b9`
+- 入口如何牵引到旧问题：该提交同时触达 `cluster/runtime`、`fanxiu/data-annotation/runtime` 与 `NoteSheetWorkspace`。`cluster/runtime` 这条链路主要用来确认运行管理页此前压回的主闭环顺序没有被新联动带回退；`NoteSheetWorkspace` 入口则用 `freebill` 代表页复核复制/剪切增强没有额外增殖常驻解释；真正需要收敛的问题出现在 `fanxiu/data-annotation/runtime`，新加的右键动作把“推进调度到下一次”的命令直接写成了状态名词 `下次触发`，并且对手动作业也暴露了无效入口。
+- 本轮减法：不新增任何按钮、说明、状态或新入口；只把 `fanxiu/runtime` 右键菜单里的 `下次触发` 收敛成动词短语 `推进到下次`，并且只保留在可计算下一次触发的非手动作业上。这样一级界面继续只保留“触发一次 / 推进调度 / 日志”三类必要动作，不让状态列名和命令入口混成同一层语义。
+- 信息量保持：定时作业仍能手动触发、推进调度和查看日志；手动作业仍能触发一次并查看日志；`cluster/runtime` 仍保留 `服务 -> 作业 -> 队列记录 -> 资源监控` 四段信息；`NoteSheetWorkspace` 仍保留表格、筛选和复制剪切链路。减少的是无效命令和名词化动作，不是减少判断依据。
+- 概念图/线框图：报告中的 Mermaid 把本轮入口收回到 `cluster/runtime`、`fanxiu/runtime`、`NoteSheetWorkspace` 三条相关页面链路；ASCII 线框图直接对比了 `触发一次 / 下次触发 / 日志` 与修复后的 `触发一次 / 推进到下次 / 日志`。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-31b69188/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `/cluster/runtime`、`/fanxiu/data-annotation/runtime`、`/notes/freebill` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`evidence.json` 记录三条链路当前 `overflowX = 0`，且 `cluster/runtime` 区块顺序稳定为 `服务 -> 作业 -> 队列记录 -> 资源监控`。`fanxiu/runtime` 修复后，定时作业右键菜单按钮为 `触发一次 / 推进到下次 / 日志`，手动作业右键菜单按钮只剩 `触发一次 / 日志`。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：`fanxiu/runtime` 属于前端状态投影问题，根因是把命令动作投影成状态名词，并把对手动作业无意义的命令暴露成常驻入口；`cluster/runtime` 与 `NoteSheetWorkspace` 本轮未发现新的表现层、后端数据投影或业务建模问题。
+- 跨自动化交接：无。本轮问题可在前端页面层直接收敛，不需要转交 `CodeYun 代码健康优化`。
+- 剩余风险：`NoteSheetWorkspace` 本轮主要复核了代表页布局、横向溢出和主阅读路径，没有在可编辑工作表里逐项手动演练新的剪切行视觉反馈；当前只确认该增强没有把主页面再包装成更复杂的常驻结构。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `31b691883a4991c5b582aad3eb82ac69d8a547b9`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-06-30
 

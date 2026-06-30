@@ -24,8 +24,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run CodeYun uvicorn without a Windows console.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--reload", action="store_true")
-    parser.add_argument("--reload-dir", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -44,8 +42,7 @@ def main(argv: list[str] | None = None) -> None:
         "backend.app:app",
         host=args.host,
         port=args.port,
-        reload=args.reload,
-        reload_dirs=args.reload_dir or None,
+        reload=False,
     )
 
 

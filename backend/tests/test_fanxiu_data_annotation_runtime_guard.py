@@ -8262,6 +8262,150 @@ def test_packet_claim_policy_clicks_claim_detail(monkeypatch):
     assert updates == [("仙财福礼", "claim_requested")]
 
 
+def test_packet_mail_action_update_tolerates_sqlite_lock(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+    warnings: list[str] = []
+
+    def fake_update(*_args, **_kwargs):
+        raise OperationalError("UPDATE fanxiumailrecord", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(mail_tasks, "update_packet_mail_action", fake_update)
+    monkeypatch.setattr(runner, "_log", lambda level, message: warnings.append(f"{level}:{message}"))
+
+    runner._update_packet_mail_action_for_row(
+        {"mail_key": "id:locked"},
+        status="claim_requested",
+        evidence={"runtime_requested_action": "claim"},
+    )
+
+    assert warnings
+    assert "database is locked" in warnings[0] or "数据库锁" in warnings[0]
+
+
+def test_packet_mail_action_update_reraises_other_db_errors(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+
+    def fake_update(*_args, **_kwargs):
+        raise OperationalError("UPDATE fanxiumailrecord", {}, Exception("no such table"))
+
+    monkeypatch.setattr(mail_tasks, "update_packet_mail_action", fake_update)
+
+    with pytest.raises(OperationalError):
+        runner._update_packet_mail_action_for_row(
+            {"mail_key": "id:broken"},
+            status="claim_requested",
+            evidence={"runtime_requested_action": "claim"},
+        )
+
+
+def test_mark_pending_packet_mail_actions_skips_sqlite_lock(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+    locked = FanxiuMailRecord(
+        mail_key="id:locked",
+        mail_id="locked",
+        title="锁住的邮件",
+        normalized_title="锁住的邮件",
+        create_time_text="2026年07月01日00:00",
+        source="packet",
+        status="claim_pending",
+        payload={"mail_rewards": [{"item_name": "灵石", "amount": 1}]},
+    )
+    ok = FanxiuMailRecord(
+        mail_key="id:ok",
+        mail_id="ok",
+        title="正常邮件",
+        normalized_title="正常邮件",
+        create_time_text="2026年07月01日00:01",
+        source="packet",
+        status="claim_pending",
+        payload={"mail_rewards": [{"item_name": "灵石", "amount": 2}]},
+    )
+    marked: list[str] = []
+
+    monkeypatch.setattr(mail_tasks, "pending_packet_mail_action_candidates", lambda *_args, **_kwargs: [locked, ok])
+    monkeypatch.setattr(mail_tasks, "fanxiu_mail_action_policy_for_record", lambda _record: "claim")
+
+    def fake_mark(_engine, record, **_kwargs):
+        if record.mail_key == "id:locked":
+            raise OperationalError("UPDATE fanxiumailrecord", {}, Exception("database is locked"))
+        marked.append(record.mail_key)
+
+    monkeypatch.setattr(mail_tasks, "mark_packet_mail_record_missing_from_list", fake_mark)
+
+    assert runner._mark_pending_packet_mail_actions_not_visible(reason="full_scan") == 1
+    assert marked == ["id:ok"]
+
+
+def test_align_mail_records_from_visible_adjacency_skips_sqlite_lock(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+    rows = [
+        {"visual_slot_index": 0, "time_text": "2026年07月01日05:00"},
+        {"visual_slot_index": 1, "time_text": "2026年06月30日23:59"},
+    ]
+
+    def fake_align(*_args, **_kwargs):
+        raise OperationalError("UPDATE fanxiumailrecord", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(mail_tasks, "align_packet_mail_records_claimable_between_visible_neighbors", fake_align)
+
+    result = runner._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup")
+
+    assert result["ok"] is True
+    assert result["interval_count"] == 1
+    assert result["updated"] == 0
+    assert result["matched"] == 0
+
+
+def test_find_packet_mail_record_skips_schema_changed(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+
+    def fake_find(*_args, **_kwargs):
+        raise OperationalError("SELECT fanxiumailrecord", {}, Exception("database schema has changed"))
+
+    monkeypatch.setattr(mail_tasks, "find_packet_mail_record_exact", fake_find)
+
+    record = runner._find_packet_mail_record("鬼道八便个八仿天厕", "2026年06月21日23:59")
+
+    assert record is None
+
+
+def test_find_visible_packet_mail_records_skips_schema_changed(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+
+    def fake_find(*_args, **_kwargs):
+        raise OperationalError("SELECT fanxiumailrecord", {}, Exception("database schema has changed"))
+
+    monkeypatch.setattr(mail_tasks, "packet_mail_records_for_visible_row_exact", fake_find)
+
+    records = runner._find_packet_mail_records_for_visible_row("鬼道八便个八仿天厕", "2026年06月21日23:59")
+
+    assert records == []
+
+
 def test_packet_claim_requested_retries_after_cooldown(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     requested_at = datetime.fromtimestamp(time.time() - 120).strftime("%Y-%m-%d %H:%M:%S")
@@ -8919,7 +9063,7 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
         "asset_tree_path": Path("assets.json"),
     }
     runtime_calls: list[tuple] = []
-    identify_calls = iter([(121, 100.0), (34, 100.0)])
+    identify_calls = iter([(121, 100.0), (34, 100.0), (34, 100.0)])
 
     class FakeStopEvent:
         def is_set(self):
@@ -8958,6 +9102,15 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
                 yield None
             return view_ids[0]
 
+        def click_frame_point(self, view_id, x, y):
+            runtime_calls.append(("click_frame_point", view_id, x, y))
+
+        def wait_action_settle(self, seconds):
+            runtime_calls.append(("settle", seconds))
+            if False:
+                yield None
+            return "success"
+
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [])
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(identify_calls))
@@ -8975,11 +9128,69 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
             tick_seconds=0.01,
         )
 
-    action_calls = [call for call in runtime_calls if call[0] in {"wait_click", "wait_view"}]
-    assert action_calls == [
-        ("wait_click", 121, "空白-返回", {}),
-        ("wait_view", (34,), {"label": "日常_助手：等待返回世界 #34"}),
-    ]
+    assert ("click_frame_point", 121, 1, 1) in runtime_calls
+    assert any(call[0] == "current_scene" and 34 in call[1] and 121 in call[1] for call in runtime_calls)
+
+
+def test_daily_assistant_leaves_mail_detail_via_reward_and_mail_list():
+    runner = create_fanxiu_runtime_runner()
+    image122 = _image("邮件内容", "0122.png", [
+        {"id": "back", "kind": "rect", "title": "空白-返回", "x": 0.05, "y": 0.88, "w": 0.15, "h": 0.08},
+    ])
+    ctx = {
+        "images": {122: image122},
+        "asset_tree_path": Path("assets.json"),
+    }
+    runtime_calls: list[tuple] = []
+    list_checks = iter([(121, 100.0, "frame", "邮件 已阅 一键删除"), (34, 100.0, "frame", "世界 大地图")])
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    class FakeRuntime:
+        def wait_click(self, view_id, shape, **kwargs):
+            runtime_calls.append(("wait_click", view_id, shape, kwargs))
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            runtime_calls.append(("wait_view", view_ids, kwargs))
+            if False:
+                yield None
+            if view_ids == (34, 121, 227):
+                return fanxiu_api.View({"id": 227})
+            if view_ids == (34, 121):
+                return fanxiu_api.View({"id": 121})
+            return fanxiu_api.View({"id": view_ids[0]})
+
+        def click_frame_point(self, view_id, x, y):
+            runtime_calls.append(("click_frame_point", view_id, x, y))
+
+        def wait_action_settle(self, seconds):
+            runtime_calls.append(("settle", seconds))
+            if False:
+                yield None
+            return "success"
+
+    def fake_scene_text(*_args, **_kwargs):
+        return next(list_checks)
+
+    runner._fanxiu_runtime_scene_text = fake_scene_text
+    result = runner._run_direct_runtime_action(
+        lambda: runner._leave_mail_scene_to_world(ctx, FakeStopEvent(), FakeRuntime(), 122, label="日常_助手"),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is None
+    assert ("wait_click", 122, "空白-返回", {}) in runtime_calls
+    assert ("wait_click", 227, "继续", {"timeout": 8.0}) in runtime_calls
+    assert ("click_frame_point", 121, 1, 1) in runtime_calls
 
 
 def test_mail_list_lock_hint_skips_delete_probe(monkeypatch):

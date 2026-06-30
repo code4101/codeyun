@@ -11,6 +11,20 @@ def _headers(test_device):
     return {"Authorization": f"Bearer {test_device['token']}"}
 
 
+def test_codeyun_watchdog_description_is_fallback_not_dev_owner():
+    item = runtime_core._serialize_codeyun_watchdog_service_item(
+        {
+            "running": True,
+            "state": "running",
+            "interval_seconds": 60,
+            "startup": {"enabled": False},
+        }
+    )
+
+    assert "无命令行主控时兜底恢复" in item["description"]
+    assert "异常时重启 dev.py" not in item["description"]
+
+
 def test_runtime_system_metrics_endpoint_collects_recent_sample(client, session, test_device, monkeypatch):
     calls = {"count": 0}
 
@@ -211,6 +225,58 @@ def test_trigger_command_service_runtime_item_starts_service(client, session, te
         "replace_running": True,
         "trigger_reason": "manual_runtime",
     }
+
+
+def test_legacy_codeyun_command_runtime_item_cannot_be_triggered(client, session, test_device, monkeypatch):
+    task = Task(
+        id="legacy-codeyun",
+        name="codeyun",
+        command="uv run dev.py",
+        device_id=test_device["id"],
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    monkeypatch.setattr(
+        runtime_core.task_manager,
+        "start_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy codeyun task must stay disabled")),
+    )
+
+    response = client.post(
+        "/api/runtime/items/command/legacy-codeyun/trigger",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 404
+    assert "旧 CodeYun 命令任务已停用" in response.json()["detail"]
+
+
+def test_legacy_codeyun_command_runtime_item_cannot_be_stopped(client, session, test_device, monkeypatch):
+    task = Task(
+        id="legacy-codeyun-stop",
+        name="codeyun",
+        command="uv run dev.py",
+        device_id=test_device["id"],
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    monkeypatch.setattr(
+        runtime_core.task_manager,
+        "stop_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy codeyun task must stay disabled")),
+    )
+
+    response = client.post(
+        "/api/runtime/items/command/legacy-codeyun-stop/stop",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 404
+    assert "旧 CodeYun 命令任务已停用" in response.json()["detail"]
 
 
 def test_local_device_entry_runtime_item_trigger_uses_same_runtime_kernel(

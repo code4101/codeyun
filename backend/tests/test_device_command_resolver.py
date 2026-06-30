@@ -5,7 +5,7 @@ import os
 from backend.core.devices import device
 
 
-def test_windows_command_resolver_rewrites_uv_dev_to_pythonw(monkeypatch, tmp_path):
+def test_windows_background_command_resolver_rewrites_uv_dev_to_pythonw(monkeypatch, tmp_path):
     scripts_dir = tmp_path / ".venv" / "Scripts"
     scripts_dir.mkdir(parents=True)
     pythonw = scripts_dir / "pythonw.exe"

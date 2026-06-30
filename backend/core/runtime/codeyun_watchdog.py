@@ -21,7 +21,6 @@ CODEYUN_WATCHDOG_TITLE = "CodeYun 本机守护"
 CODEYUN_WATCHDOG_STARTUP_TASK_NAME = "CodeYun Watchdog"
 WATCHDOG_SCRIPT = ROOT_DIR / "scripts" / "codeyun_watchdog.py"
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
-LEGACY_WATCHDOG_LOCK_PATH = ROOT_DIR / ".codex-run" / "codeyun-watchdog.pid"
 
 
 class CodeYunWatchdogError(RuntimeError):
@@ -56,17 +55,13 @@ def _temp_runtime_dir() -> Path:
 
 
 def _read_lock_pid() -> int | None:
-    paths = [get_codeyun_watchdog_lock_path()]
-    if not (os.getenv("CODEYUN_WATCHDOG_LOCK") or "").strip():
-        paths.append(LEGACY_WATCHDOG_LOCK_PATH.resolve(strict=False))
-
-    for path in paths:
-        try:
-            value = int(path.read_text(encoding="utf-8").strip() or "0")
-        except (OSError, ValueError):
-            continue
-        if value > 0 and psutil.pid_exists(value):
-            return value
+    path = get_codeyun_watchdog_lock_path()
+    try:
+        value = int(path.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        return None
+    if value > 0 and psutil.pid_exists(value):
+        return value
     return None
 
 
@@ -200,8 +195,6 @@ def get_codeyun_watchdog_status(
     processes = list_codeyun_watchdog_processes(full_scan=full_scan)
     running = bool(processes)
     interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60")
-    reload_enabled = str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() not in {"0", "false", "no", "off"}
-    reload_quiet_seconds = float(os.getenv("CODEYUN_WATCHDOG_RELOAD_QUIET_SECONDS") or "120")
     settings = get_settings()
     active_pid = _read_lock_pid()
     launcher_pids = _ancestor_pids(active_pid)
@@ -220,8 +213,6 @@ def get_codeyun_watchdog_status(
         "state": "running" if running else "stopped",
         "state_label": "运行中" if running else "已停止",
         "interval_seconds": interval_seconds,
-        "reload_enabled": reload_enabled,
-        "reload_quiet_seconds": reload_quiet_seconds,
         "backend_url": os.getenv("CODEYUN_WATCHDOG_BACKEND_URL") or "http://127.0.0.1:8000/api/health",
         "frontend_url": os.getenv("CODEYUN_WATCHDOG_FRONTEND_URL") or "http://127.0.0.1:5173/",
         "script_path": os.fspath(WATCHDOG_SCRIPT),
@@ -370,8 +361,6 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
         "--interval",
         str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60"),
     ]
-    if str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() in {"0", "false", "no", "off"}:
-        command_args.append("--no-reload")
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -439,8 +428,6 @@ def build_codeyun_watchdog_log_lines(limit: int = 200) -> list[str]:
         f"名称：{CODEYUN_WATCHDOG_TITLE}",
         f"状态：{status.get('state_label') or '-'}",
         f"间隔：{status.get('interval_seconds')} 秒",
-        f"热加载：{'启用' if status.get('reload_enabled') else '关闭'}",
-        f"静默期：{status.get('reload_quiet_seconds')} 秒",
         f"后端：{status.get('backend_url')}",
         f"前端：{status.get('frontend_url')}",
         f"脚本：{status.get('script_path')}",

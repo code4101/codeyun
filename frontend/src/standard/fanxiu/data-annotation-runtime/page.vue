@@ -482,10 +482,10 @@ const runContextTaskNow = () => {
 const advanceContextTaskNext = () => {
   const task = contextMenu.value.task;
   closeLogMenu();
-  if (!task) return;
+  if (!task || task.schedule_kind === 'manual') return;
   void runAction(`advance-next:${task.id}`, async () => {
     await advanceNextFanxiuDataAnnotationSchedulerTask(entryId.value, task.id);
-    ElMessage.success('已推进到下次触发');
+    ElMessage.success('已推进到下一次触发');
   });
 };
 
@@ -1079,7 +1079,11 @@ onUnmounted(() => {
       @click.stop
     >
       <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">触发一次</button>
-      <button v-if="contextMenu.task" type="button" @click="advanceContextTaskNext">下次触发</button>
+      <button
+        v-if="contextMenu.task && contextMenu.task.schedule_kind !== 'manual'"
+        type="button"
+        @click="advanceContextTaskNext"
+      >推进到下次</button>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>

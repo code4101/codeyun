@@ -1229,11 +1229,26 @@ class DailyResourceTaskMixin:
         )
         yield from runtime.wait_action_settle(float(payload.get("xiuwei_settle_seconds") or 1.5))
 
-        yield from runtime.wait_view(292, label=f"{task_label}：等待修为限购页 #292")
+        xiuwei_view = yield from runtime.wait_view(292, 291, label=f"{task_label}：等待修为限购页 #292")
+        xiuwei_scene_id = int(xiuwei_view.id) if isinstance(xiuwei_view, View) and xiuwei_view.id is not None else int(xiuwei_view)
+        if xiuwei_scene_id == 291:
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"{task_label}：点击「修为」后仍在 #291，未见 #292 免费礼包页，按今日无免费可领处理",
+                    phase="daily_vip_xiuwei_no_free",
+                    current_scene=291,
+                )
+                self._log_locked("skip", f"{task_label}：点击「修为」后仍在 #291，未见 #292 免费礼包页")
+            yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=291)
+            self._record_daily_vip_done(payload, message="修为页未见免费礼包，已返回世界")
+            return "success"
+
         free_status = yield from self._click_daily_vip_free_or_return(ctx, stop_event, payload, task_label=task_label)
         if free_status != "success":
             yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=291)
-            return "skipped"
+            self._record_daily_vip_done(payload, message="修为免费礼包未匹配，已返回世界")
+            return "success"
 
         yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=292)
 

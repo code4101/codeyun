@@ -28,7 +28,6 @@ COMMAND_JOB_NAME_HINTS = (
 
 COMMAND_SERVICE_NAME_HINTS = {
     "capture",
-    "codeyun",
     "frpc",
     "nginx",
     "server",
@@ -40,7 +39,12 @@ COMMAND_SERVICE_NAME_HINTS = {
 
 
 def is_legacy_codeyun_command_task(task: Any) -> bool:
-    """Return True for the old local CodeYun service row superseded by the watchdog."""
+    """Return True for the obsolete local CodeYun command row.
+
+    CodeYun itself is now started from the user's console via ``uv run dev.py``.
+    Old database rows named ``codeyun`` are hidden from the runtime list so the
+    app does not present the main program as a managed command task.
+    """
 
     name = _normalized_task_text(task, "name").lower()
     command = _normalized_task_text(task, "command").lower().replace("\\", "/")
@@ -119,7 +123,7 @@ def command_runtime_group(task: Any, kind: RuntimeKind) -> tuple[str, str]:
         return "service:network", "网络服务"
     if name in {"sync", "syncthing"}:
         return "service:sync", "同步服务"
-    if name in {"server", "codeyun", "xlserver", "xlproject-jupyter", "capture"}:
+    if name in {"server", "xlserver", "xlproject-jupyter", "capture"}:
         return "service:base", "基础服务"
     return "service:default", "默认服务组"
 

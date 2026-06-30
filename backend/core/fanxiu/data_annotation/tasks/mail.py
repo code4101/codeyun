@@ -9,6 +9,8 @@ from typing import Any
 from pathlib import Path
 from types import GeneratorType
 
+from sqlalchemy.exc import OperationalError
+
 from backend.core.fanxiu.runtime.capture_runtime import (
     FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON,
     ensure_fanxiu_capture_runtime_backstop,
@@ -657,13 +659,22 @@ class MailTaskMixin:
         updated = 0
         matched = 0
         for interval in intervals:
-            result = align_packet_mail_records_claimable_between_visible_neighbors(
-                _db_engine,
-                newer_time_text=str(interval.get("newer_time_text") or ""),
-                older_time_text=str(interval.get("older_time_text") or ""),
-                source=source,
-                dry_run=dry_run,
-            )
+            try:
+                result = align_packet_mail_records_claimable_between_visible_neighbors(
+                    _db_engine,
+                    newer_time_text=str(interval.get("newer_time_text") or ""),
+                    older_time_text=str(interval.get("older_time_text") or ""),
+                    source=source,
+                    dry_run=dry_run,
+                )
+            except OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                self._log(
+                    "warning",
+                    "邮件_清理：可见相邻断层校准遇到数据库锁，跳过本次校准写入",
+                )
+                continue
             results.append(result)
             updated += int(result.get("updated") or 0)
             matched += int(result.get("matched") or 0)
@@ -1780,7 +1791,16 @@ class MailTaskMixin:
         for record in records:
             if fanxiu_mail_action_policy_for_record(record) not in policies:
                 continue
-            mark_packet_mail_record_missing_from_list(_db_engine, record, reason=reason, marked_at=now_text)
+            try:
+                mark_packet_mail_record_missing_from_list(_db_engine, record, reason=reason, marked_at=now_text)
+            except OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                self._log(
+                    "warning",
+                    "邮件_历史扫描：标记未出现在列表中的邮件时遇到数据库锁，跳过本条状态标记",
+                )
+                continue
             marked += 1
         return marked
 
@@ -1910,10 +1930,16 @@ class MailTaskMixin:
         normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
             return []
-        exact = packet_mail_records_for_visible_row_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
-        if exact:
-            return list(exact)
-        same_time = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+        try:
+            exact = packet_mail_records_for_visible_row_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
+            if exact:
+                return list(exact)
+            same_time = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+        except OperationalError as exc:
+            if not self._mail_packet_store_operational_error_is_transient(exc):
+                raise
+            self._log("warning", f"邮件_历史扫描：packet 查找遇到瞬态数据库异常，跳过本行匹配：{exc}")
+            return []
         observed_key = self._mail_title_similarity_key(title)
         if len(observed_key) < 3:
             return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
@@ -1938,13 +1964,25 @@ class MailTaskMixin:
         normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
         if not normalized_title:
             return []
-        exact = packet_mail_records_by_normalized_title(_db_engine, normalized_title, limit=20)
-        if exact:
-            return list(exact)
+        try:
+            exact = packet_mail_records_by_normalized_title(_db_engine, normalized_title, limit=20)
+            if exact:
+                return list(exact)
+        except OperationalError as exc:
+            if not self._mail_packet_store_operational_error_is_transient(exc):
+                raise
+            self._log("warning", f"邮件_历史扫描：packet 标题查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
+            return []
         observed_key = self._mail_title_similarity_key(title)
         if len(observed_key) < 5:
             return []
-        recent = recent_packet_mail_records(_db_engine, limit=200)
+        try:
+            recent = recent_packet_mail_records(_db_engine, limit=200)
+        except OperationalError as exc:
+            if not self._mail_packet_store_operational_error_is_transient(exc):
+                raise
+            self._log("warning", f"邮件_历史扫描：packet 近期记录查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
+            return []
         scored: list[tuple[float, Any]] = []
         for record in recent:
             score = self._mail_title_similarity(title, str(record.title or record.normalized_title or ""))
@@ -1967,13 +2005,19 @@ class MailTaskMixin:
         normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
             return None
-        record = find_packet_mail_record_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
-        if record:
-            return record
-        record = find_packet_mail_record_by_raw_title(_db_engine, title=title, normalized_time=normalized_time)
-        if record:
-            return record
-        time_candidates = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+        try:
+            record = find_packet_mail_record_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
+            if record:
+                return record
+            record = find_packet_mail_record_by_raw_title(_db_engine, title=title, normalized_time=normalized_time)
+            if record:
+                return record
+            time_candidates = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+        except OperationalError as exc:
+            if not self._mail_packet_store_operational_error_is_transient(exc):
+                raise
+            self._log("warning", f"邮件_历史扫描：packet 记录查找遇到瞬态数据库异常，跳过状态回写匹配：{exc}")
+            return None
         fuzzy = self._select_packet_mail_record_by_fuzzy_title(
             title,
             time_candidates,
@@ -1982,6 +2026,11 @@ class MailTaskMixin:
         if fuzzy:
             return fuzzy
         return None
+
+    @staticmethod
+    def _mail_packet_store_operational_error_is_transient(exc: OperationalError) -> bool:
+        message = str(exc).lower()
+        return "database is locked" in message or "database schema has changed" in message
 
     def _visible_packet_mail_action_policy(self, record: Any | None) -> str:
         if record is None:
@@ -2096,7 +2145,12 @@ class MailTaskMixin:
             )
         if not mail_key:
             return
-        update_packet_mail_action(_db_engine, mail_key=mail_key, status=status, evidence=evidence)
+        try:
+            update_packet_mail_action(_db_engine, mail_key=mail_key, status=status, evidence=evidence)
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            self._log("warning", f"邮件_历史扫描：邮件状态写入遇到数据库锁，跳过本次状态标记：{mail_key}")
 
     def _process_mail_row_by_detail(
         self,

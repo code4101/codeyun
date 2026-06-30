@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlmodel import Session
 
+from backend.core.runtime.process_launcher import run_quiet
 from backend.core.settings import get_settings
 from backend.models import AppSetting
 
@@ -209,11 +210,12 @@ def run_fanxiu_tianjige_quiz_worker(
     _update_run(run, db_bind, stage="running_crawler", stage_label="运行天机阁抢答爬虫")
 
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             command,
             cwd=root,
             env=_build_subprocess_env(root),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",

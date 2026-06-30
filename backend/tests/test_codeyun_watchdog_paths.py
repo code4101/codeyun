@@ -4,18 +4,18 @@ import os
 import tempfile
 from pathlib import Path
 
-from backend.core import codeyun_watchdog_runtime
 from backend.core import runtime_management
+from backend.core.runtime import codeyun_watchdog
 
 
 def test_codeyun_watchdog_default_paths_stay_outside_repo(monkeypatch):
     monkeypatch.delenv("CODEYUN_WATCHDOG_LOG", raising=False)
     monkeypatch.delenv("CODEYUN_WATCHDOG_LOCK", raising=False)
 
-    log_path = codeyun_watchdog_runtime.get_codeyun_watchdog_log_path()
-    lock_path = codeyun_watchdog_runtime.get_codeyun_watchdog_lock_path()
+    log_path = codeyun_watchdog.get_codeyun_watchdog_log_path()
+    lock_path = codeyun_watchdog.get_codeyun_watchdog_lock_path()
     temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
-    repo_root = codeyun_watchdog_runtime.ROOT_DIR.resolve(strict=False)
+    repo_root = codeyun_watchdog.ROOT_DIR.resolve(strict=False)
 
     assert log_path.is_relative_to(temp_root)
     assert lock_path.is_relative_to(temp_root)
@@ -32,12 +32,21 @@ def test_codeyun_watchdog_status_uses_quick_scan_by_default(monkeypatch):
         calls.append(full_scan)
         return []
 
-    monkeypatch.setattr(codeyun_watchdog_runtime, "list_codeyun_watchdog_processes", fake_list_processes)
+    monkeypatch.setattr(codeyun_watchdog, "list_codeyun_watchdog_processes", fake_list_processes)
 
-    status = codeyun_watchdog_runtime.get_codeyun_watchdog_status()
+    status = codeyun_watchdog.get_codeyun_watchdog_status()
 
     assert calls == [False]
     assert status["running"] is False
+
+
+def test_codeyun_watchdog_lock_pid_uses_current_temp_lock_only(monkeypatch, tmp_path):
+    lock_path = tmp_path / "codeyun-watchdog.pid"
+    lock_path.write_text("123", encoding="utf-8")
+    monkeypatch.setenv("CODEYUN_WATCHDOG_LOCK", os.fspath(lock_path))
+    monkeypatch.setattr(codeyun_watchdog.psutil, "pid_exists", lambda pid: pid == 123)
+
+    assert codeyun_watchdog._read_lock_pid() == 123
 
 
 def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):

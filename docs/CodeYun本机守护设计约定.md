@@ -8,8 +8,9 @@ CodeYun 需要在本机长期运行，并且不能因为后端导入失败、前
 
 - CodeYun 每次启动时都确认本机守护存在；没有则启动。
 - 守护独立于 CodeYun 主进程；CodeYun 崩溃不能带死守护。
-- 守护负责恢复 CodeYun 可用性，并在代码稳定、检查通过后触发重启。
-- 启动器负责单实例收敛；守护只决定何时调用启动器。
+- 日常开发以用户打开的 `uv run dev.py` 命令行窗口作为主控。
+- 守护负责恢复 CodeYun 可用性；当命令行主控仍存活时，守护只观测，不接管热加载或重启。
+- 启动器负责单实例收敛和本窗口内的后端热加载；守护只在没有主控时兜底调用启动器。
 - 后台运行不得弹出控制台窗口。
 
 ## 总体设计
@@ -27,16 +28,18 @@ Windows 登录自启
 
 CodeYun 本机守护
   -> 独立进程，使用系统临时目录中的 pid/log
-  -> 确认可见控制台弹窗监控器存活
+  -> 如果发现命令行 console host 心跳新鲜，只记录状态，不重启 dev.py
   -> 定期检查后端和前端健康状态
-  -> 服务不可用时调用 dev.py 重新拉起
-  -> 服务健康时监控源码变化
-  -> 变化稳定且预检查通过后调用 dev.py 重启
+  -> 没有命令行主控且服务不可用时调用 dev.py 重新拉起
+  -> 不承担热加载重启；源码变化由 dev.py 命令行主控处理
+  -> 不承担本机常驻命令服务自检；sync/frpc/nginx 等由后端启动和后台任务负责
 
 dev.py
-  -> 单次启动器
+  -> 命令行开发主控
   -> 启动前清理当前仓库旧 CodeYun 服务组
   -> 启动一个后端和一个前端
+  -> 默认使用 outer backend watcher，在当前进程内完成后端延迟热加载
+  -> 写入系统临时目录中的 console host 心跳，告知守护不要接管
 ```
 
 ## 职责边界
@@ -58,23 +61,26 @@ CodeYun 后端只负责自举守护：
 
 - 使用本地进程、锁文件、日志和 HTTP 探针判断状态。
 - 不依赖 CodeYun 后端 API 管理自己。
-- 后端或前端异常时负责恢复 CodeYun。
-- 代码变化时负责判断是否适合重启。
-- 24 小时弹窗观察期内负责保持可见控制台监控器存活；监控器消失时重新拉起。
+- 没有命令行主控时，后端或前端异常由守护恢复 CodeYun。
+- 存在命令行主控时，后端/前端异常和热加载由 `dev.py` 在原控制台内处理；守护不得杀掉主控后新建隐藏实例。
+- 代码变化不再由守护判断是否适合重启。
+- sync、frpc、nginx 等本机常驻命令服务不由守护循环托管；它们通过 CodeYun 后端启动钩子和“常驻服务自检”后台任务处理。
 - 自身必须足够保守，避免重启风暴。
 
 ### dev.py
 
-`dev.py` 是单次启动器：
+`dev.py` 是命令行开发主控：
 
 - 启动前清理当前仓库的旧 CodeYun dev runner、uvicorn、Vite 和端口占用。
 - 只清理命令行或工作目录明确指向当前仓库的进程。
-- 不负责长期判断“何时该重启”。
+- 默认负责后端源码变化后的延迟热加载，保持在用户打开的同一个控制台窗口里运行。
+- 后端热加载只有 `outer` 和 `off` 两种模式；不再保留 `uvicorn --reload` 这条第二套热加载路径。
+- 启动时写入 `%TEMP%\codeyun\codeyun-console-host.json` 心跳；守护据此退让。
 - 不默认关闭守护自启动。
 
 ## 重启策略
 
-守护区分两种重启。
+守护只保留恢复型重启作为默认能力。热加载由命令行 `dev.py` 主控承担。
 
 ### 恢复型重启
 
@@ -88,30 +94,7 @@ CodeYun 后端只负责自举守护：
 
 - 如果服务仍在启动宽限期内，等待。
 - 超过宽限期仍不可用，则调用 `dev.py` 拉起。
-- 不要求源码静默期，也不执行热加载预检查。
-
-### 热加载型重启
-
-触发条件：
-
-- CodeYun 当前健康。
-- 被监控源码文件发生变化。
-
-行为：
-
-1. 等待静默期，默认 120 秒。
-2. 静默期内又有变化则重新计时。
-3. 静默期结束后执行预检查。
-4. 预检查通过才调用 `dev.py` 重启。
-5. 预检查失败则保留旧服务，记录日志，并重新等待下一个静默期。
-
-默认预检查：
-
-```bash
-pythonw.exe -m compileall -q backend scripts dev.py
-```
-
-可通过 `CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND` 覆盖；设为空字符串表示跳过预检查。
+- 不要求源码静默期，也不执行额外源码预检查。
 
 ## 后台子进程启动规范
 
@@ -119,7 +102,7 @@ pythonw.exe -m compileall -q backend scripts dev.py
 不要把它理解成一套按业务分类的复杂框架，也不要为 adb、tshark、uv、npm、Python 作业分别发明启动方案。
 新增路径应先判断能否进入统一 launcher；不能进入时，应优先修 launcher 的覆盖能力，而不是在业务代码里补一份窗口隐藏逻辑。
 
-CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和公网前端构建，必须统一使用
+CodeYun 常驻服务、守护、ADB/MuMu/tshark 调用和公网前端构建，必须统一使用
 `backend.core.runtime.process_launcher`：
 
 - `run_quiet(...)`：一次性短命令，默认禁止 Windows 控制台弹出。
@@ -161,9 +144,10 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
   `PYTHONPATH` 前置 CodeYun 的 `sitecustomize.py`，并设置 `CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT=1`。这会让
   被托管的外部 Python 进程在解释器启动时安装同样的 `subprocess.Popen` 无窗口兜底，覆盖 adb、git、
   tshark 等由外部项目二次启动的短命令。
-- `dev.py` 监督器本身属于后台 Python 服务，必须用 `pythonw.exe dev.py` 启动，避免 Windows Terminal 为监督器分配伪控制台。
-- `dev.py` 内部拉起 `uvicorn` 后端时例外：必须用 `resolve_python(ROOT_DIR, sys.executable)` 选择 `python.exe`，
-  再通过隐藏启动 flags 和断开的 stdio 禁止弹窗。不要用 `pythonw.exe` 运行 uvicorn；它可能丢失正常 stdio 语义并卡在启动期。
+- 用户手动运行的 `uv run dev.py` 是唯一允许长期可见的开发控制台，默认不再重定向到 `pythonw.exe`。
+- 守护或作业系统后台拉起 `dev.py` 时仍属于后台 Python 服务，必须用 `pythonw.exe dev.py` 启动，避免额外弹出控制台。
+- `dev.py` 内部拉起后端时使用 `pythonw.exe -m backend.core.runtime.uvicorn_hidden`，由包装模块负责运行 uvicorn
+  并把日志写入系统临时目录，避免为后端额外弹出控制台窗口。
 - 后台 npm 不直接执行 `npm.cmd`；使用 `node_npm_command(...)`，Windows 下优先转成 `node.exe npm-cli.js ...`。
 
 新增后台调用时，不要在业务文件里重新手写 `subprocess.run/Popen`、`STARTUPINFO`、`CREATE_NO_WINDOW`、
@@ -180,14 +164,15 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 - `backend/tests/test_subprocess_usage_policy.py` 会审计后端、`dev.py` 和本机守护脚本，阻止运行时路径重新绕回
   裸 `subprocess` 或底层 `subprocess_utils`。
 
-## 可见控制台监控
+## 可见控制台审计
 
-弹窗问题的 24 小时观察不能只看“日志里没有事件”，还必须证明监控器本身持续有效。
+弹窗问题不再是本机守护的常驻职责。日常开发接受一个用户手动打开的 `uv run dev.py`
+控制台窗口；额外弹窗排查只作为按需审计工具运行。
 
 - 正式监控脚本为 `scripts/codeyun_visible_console_monitor.py`。
 - 审计入口为 `scripts/codeyun_popup_audit.py --ensure-monitor`。
-- 审计状态中的 `coverage_valid=true` 才表示监控覆盖有效。
-- 如果监控器死亡，审计入口和 CodeYun 本机守护都会用无窗口方式重新拉起。
+- 审计状态中的 `coverage_valid=true` 只表示本次审计覆盖有效。
+- 如果监控器死亡，审计入口会用无窗口方式重新拉起。
 - 监控器死亡后重新拉起时，24 小时无弹窗的有效观察窗口必须重新计算；不能把监控断档前后的时间拼起来当作连续证据。
 - 当前 24 小时基线写在系统临时目录 `codeyun/visible-console-monitor/codeyun_popup_24h_baseline.json`。
 
@@ -218,9 +203,6 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 
 - `CODEYUN_WATCHDOG_AUTOSTART`：是否在 CodeYun 启动时自举守护，默认启用。
 - `CODEYUN_WATCHDOG_INTERVAL_SECONDS`：守护检查间隔，默认 60 秒。
-- `CODEYUN_WATCHDOG_RELOAD`：是否启用守护式热加载，默认启用。
-- `CODEYUN_WATCHDOG_RELOAD_QUIET_SECONDS`：热加载静默期，默认 120 秒。
-- `CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND`：热加载预检查命令。
 - `CODEYUN_WATCHDOG_LOG`：守护日志路径，默认位于系统临时目录。
 - `CODEYUN_WATCHDOG_LOCK`：守护 pid 文件路径，默认位于系统临时目录。
 
@@ -231,6 +213,6 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 
 - 手动启动 CodeYun 后，守护存在。
 - 杀掉 CodeYun 服务组后，守护能重新拉起。
-- 修改后端源码后，守护等待静默期再尝试重启。
-- 预检查失败时旧服务继续可用。
+- 修改后端源码后，由用户打开的 `uv run dev.py` 控制台在原窗口内完成热加载；守护只观测 console host 心跳。
+- 命令行主控存活时，即使健康探针短暂失败，守护也不杀掉主控或新建隐藏实例。
 - 守护和 CodeYun 后台启动均不弹控制台窗口。
