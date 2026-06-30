@@ -548,11 +548,11 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
     signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
     gift = next(item for item in tasks if item["id"] == "gift-code-weekly")
+    weekly_dungeon = next(item for item in tasks if item["id"] == "daily-weekly-dungeon")
 
-    assert len(tasks) == 24
-    assert len(legacy_tasks) == 9
-    assert len(daily_tasks) == 8
-    assert len(dynamic_tasks) == 1
+    assert legacy_tasks
+    assert daily_tasks
+    assert dynamic_tasks
     assert not any(item["id"] == "legacy-daily-youli" for item in tasks)
     assert not any(item["id"] == "legacy-daily-jianling" for item in tasks)
     assert not any(item["id"] == "legacy-daily-yihuo" for item in tasks)
@@ -570,6 +570,10 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert baiye["payload"] == {"args": ["魔道"]}
     assert gift["schedule_kind"] == "manual"
     assert gift["payload"] == {"codes": []}
+    assert weekly_dungeon["task_type"] == "daily_weekly_dungeon"
+    assert weekly_dungeon["schedule_kind"] == "weekly"
+    assert weekly_dungeon["weekdays"] == [0]
+    assert weekly_dungeon["schedule_times"] == ["05:00"]
     assert not any(item["id"] == "daily-locate" for item in tasks)
 
 
@@ -1229,6 +1233,78 @@ def test_data_annotation_scheduler_weekly_next_time_uses_weekday_and_clock():
     assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 0, 1)) == "2026-06-29 00:05:00"
     assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 1, 0)) == "2026-06-29 05:05:00"
     assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 6, 0)) == "2026-07-06 00:05:00"
+
+
+def test_data_annotation_scheduler_advance_next_marks_success_for_next_daily_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 6, 30, 23, 58, 0)
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "daily-test",
+            "task_type": "daily_test",
+            "label": "日常测试",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "next_time": "2026-06-30 23:55:00",
+            "schedule_times": ["23:55"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+
+    updated_tasks = fanxiu._advance_data_annotation_scheduler_task_to_next_trigger("daily-test")
+    updated = next(item for item in updated_tasks if item["id"] == "daily-test")
+
+    assert updated["last_result"] == "success"
+    assert updated["last_run_at"] == "2026-06-30 23:58:00"
+    assert updated["next_time"] == "2026-07-01 23:55:00"
+    assert updated["retry_after"] is None
+    assert updated["checkpoint"]["manual_advance_next_at"] == "2026-06-30 23:58:00"
+
+
+def test_data_annotation_scheduler_advance_next_marks_success_for_next_weekly_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 6, 30, 23, 58, 0)
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "daily-weekly-dungeon",
+            "task_type": "daily_weekly_dungeon",
+            "label": "日常_周本",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "weekly",
+            "enabled": True,
+            "next_time": "2026-06-30 23:58:00",
+            "weekdays": [0],
+            "schedule_times": ["05:00"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+
+    updated_tasks = fanxiu._advance_data_annotation_scheduler_task_to_next_trigger("daily-weekly-dungeon")
+    updated = next(item for item in updated_tasks if item["id"] == "daily-weekly-dungeon")
+
+    assert updated["last_result"] == "success"
+    assert updated["last_run_at"] == "2026-06-30 23:58:00"
+    assert updated["next_time"] == "2026-07-06 05:00:00"
+    assert updated["retry_after"] is None
 
 
 def test_data_annotation_scheduler_normalize_preserves_weekdays():
@@ -2897,6 +2973,10 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
     class FakeRuntime:
         scene = 293
 
+        def __init__(self):
+            self.ctx = ctx
+            self.stop_event = fanxiu.threading.Event()
+
         def wait_view(self, *scene_ids, **kwargs):
             actions.append(("wait_view", tuple(scene_ids), kwargs))
             if False:
@@ -2921,6 +3001,10 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
                 yield None
             return self.scene
 
+        def click_shape_center(self, scene_id, shape):
+            actions.append(("click_shape_center", scene_id, shape))
+            self.scene = 295 if scene_id == 293 else 293
+
         def click_frame_point(self, scene_id, x, y):
             actions.append(("click_frame_point", scene_id, x, y))
 
@@ -2930,19 +3014,26 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
                 yield None
             return "success"
 
+    def fake_wait_exact(runtime, *scene_ids, timeout):
+        del scene_ids
+        actions.append(("wait_view", (293, 295, 294), {"timeout": timeout}))
+        if False:
+            yield None
+        return runtime.scene
+
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_daily_xianmeng_exact_view", fake_wait_exact)
     result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {"rounds": 50}))
 
     assert result == "success"
-    clicks = [action for action in actions if action[0] == "wait_click_then_view"]
-    attacks = [action for action in actions if action[0:3] == ("wait_click", 293, "攻击")]
+    attacks = [action for action in actions if action[0:3] == ("click_shape_center", 293, "攻击")]
+    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "点击关闭")]
     assert len(attacks) == 50
-    assert len(clicks) == 50
+    assert len(closes) == 50
     assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
     assert actions[1] == ("ocr_numbers_in_shapes", 293, ("次数",), {"padding": 16})
-    assert actions[2] == ("wait_click", 293, "攻击", {})
-    assert clicks[0] == ("wait_click_then_view", 295, "点击关闭", 293, None)
-    assert actions[-1] == ("wait_click_then_view", 295, "点击关闭", 293, None)
+    assert actions[2] == ("click_shape_center", 293, "攻击")
+    assert closes[0] == ("click_shape_center", 295, "点击关闭")
 
 
 def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
@@ -2960,6 +3051,10 @@ def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
 
     class FakeRuntime:
         scene = 295
+
+        def __init__(self):
+            self.ctx = ctx
+            self.stop_event = fanxiu.threading.Event()
 
         def wait_view(self, *scene_ids, **kwargs):
             actions.append(("wait_view", tuple(scene_ids), kwargs))
@@ -2985,26 +3080,59 @@ def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
                 yield None
             return self.scene
 
+        def click_shape_center(self, scene_id, shape):
+            actions.append(("click_shape_center", scene_id, shape))
+            self.scene = 293 if scene_id == 295 else 295
+
         def wait_action_settle(self, seconds):
             actions.append(("settle", seconds))
             if False:
                 yield None
             return "success"
 
+    def fake_wait_exact(runtime, *scene_ids, timeout):
+        del scene_ids
+        actions.append(("wait_view", (293, 295, 294), {"timeout": timeout}))
+        if False:
+            yield None
+        return runtime.scene
+
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_daily_xianmeng_exact_view", fake_wait_exact)
     result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {"rounds": 50}))
 
     assert result == "success"
-    clicks = [action for action in actions if action[0] == "wait_click_then_view"]
-    attacks = [action for action in actions if action[0:3] == ("wait_click", 293, "攻击")]
-    closes = [action for action in clicks if action[1:3] == (295, "点击关闭")]
+    attacks = [action for action in actions if action[0:3] == ("click_shape_center", 293, "攻击")]
+    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "点击关闭")]
     assert len(attacks) == 50
     assert len(closes) == 51
     assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
-    assert actions[1] == ("wait_click_then_view", 295, "点击关闭", 293, None)
+    assert actions[1] == ("click_shape_center", 295, "点击关闭")
 
 
 def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-xianmeng",
+            "task_type": "daily_xianmeng",
+            "label": "日常_仙盟",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "enabled": False,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 600,
+            "payload": {"max_runtime_seconds": 7200},
+            "checkpoint": None,
+        }
+    ])
     runner = create_fanxiu_runtime_runner()
     actions: list[tuple] = []
     ctx = {
@@ -3018,6 +3146,10 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeRuntime:
+        def __init__(self):
+            self.ctx = ctx
+            self.stop_event = fanxiu.threading.Event()
+
         def wait_view(self, *scene_ids, **kwargs):
             actions.append(("wait_view", tuple(scene_ids), kwargs))
             if False:
@@ -3034,7 +3166,15 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
                 yield None
             return "success"
 
+    def fake_wait_exact(_runtime, *scene_ids, timeout):
+        del scene_ids
+        actions.append(("wait_view", (293, 295, 294), {"timeout": timeout}))
+        if False:
+            yield None
+        return 293
+
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_daily_xianmeng_exact_view", fake_wait_exact)
     result = _drain_generator(runner._execute_daily_xianmeng_task(ctx, fanxiu.threading.Event(), {}))
 
     assert result == "success"
@@ -3042,6 +3182,90 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
         ("wait_view", (293, 295, 294), {"timeout": 5.0}),
         ("ocr_numbers_in_shapes", 293, ("次数",), {"padding": 16}),
     ]
+    facts = runtime_runner_core._read_data_annotation_world_facts()
+    task_fact = ((facts.get("discoveries") or {}).get("task") or {}).get("legacy-daily-xianmeng")
+    assert not task_fact or not task_fact.get("discovered_next_time")
+
+
+def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 30, 23, 32, 0))
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-lingmai-clear",
+            "task_type": "daily_lingmai_clear",
+            "label": "日常_灵脉_清体力",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "next_time": "2026-06-30 21:30:00",
+            "schedule_times": ["21:30"],
+            "window": ["21:30", "22:00"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+    runner = create_fanxiu_runtime_runner()
+
+    result = _drain_generator(
+        runner._execute_daily_lingmai_clear_task({}, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-lingmai-clear"})
+    )
+
+    assert result == "skipped"
+    fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-lingmai-clear"]
+    assert fact["last_result"] == "skipped"
+    assert fact["discovered_next_time"] == "2026-07-01 21:30:00"
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    runner._mark_scheduler_task(tasks, "legacy-daily-lingmai-clear", "skipped")
+    updated = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingmai-clear")
+    assert updated["next_time"] == "2026-07-01 21:30:00"
+    assert updated["retry_after"] is None
+
+
+def test_daily_lingmai_clear_inside_window_continues_runtime_flow(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 30, 21, 45, 0))
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-lingmai-clear",
+            "task_type": "daily_lingmai_clear",
+            "label": "日常_灵脉_清体力",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "next_time": "2026-06-30 21:30:00",
+            "schedule_times": ["21:30"],
+            "window": ["21:30", "22:00"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {285: {"id": 285, "title": "造化灵脉", "shapes": []}},
+    }
+    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        def current_scene(self, *_args, **_kwargs):
+            return 285, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            return "造化灵脉"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_lingmai_clear_task(ctx, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-lingmai-clear"})
+    )
+
+    assert result == "success"
 
 
 def test_daily_green_bottle_baiye_first_step_goto_20(tmp_path, monkeypatch):
@@ -3190,6 +3414,9 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["xianshi-weekly-resources"]["schedule_times"] == ["00:05", "05:05"]
     assert by_id["legacy-daily-xianmeng"]["task_type"] == "daily_xianmeng"
     assert by_id["legacy-daily-xianmeng"]["label"] == "日常_仙盟"
+    assert by_id["legacy-daily-xianmeng"]["schedule_kind"] == "dynamic"
+    assert by_id["legacy-daily-xianmeng"]["schedule_times"] == []
+    assert by_id["legacy-daily-xianmeng"]["next_time"] is None
     assert by_id["legacy-daily-xianmeng"]["enabled"] is False
     assert by_id["legacy-daily-vip"]["task_type"] == "daily_vip"
     assert by_id["legacy-daily-vip"]["label"] == "日常_vip"

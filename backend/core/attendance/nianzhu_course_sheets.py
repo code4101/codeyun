@@ -4760,7 +4760,8 @@ def _build_total_refund_formula(
     clockin_ref = _formula_cell_ref(clockin_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
     baseline_ref = _formula_absolute_cell_ref(order_amount_index, config_row_number)
-    return f"=MIN(IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({baseline_ref}>0,{baseline_ref},{order_ref}),0),{order_ref})"
+    computed_refund = f"IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({baseline_ref}>0,{baseline_ref},{order_ref}),0)"
+    return f"=IF({order_ref}>0,MIN(MAX({computed_refund},0),{order_ref}),0)"
 
 
 def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -4772,7 +4773,7 @@ def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str
     total_ref = _formula_cell_ref(total_index, row_number)
     refunded_ref = _formula_cell_ref(refunded_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
-    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
+    return f"=IF({order_ref}>0,MAX({total_ref}-{refunded_ref},0),0)"
 
 
 def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -4969,7 +4970,9 @@ def _formula_total_refund_amount(
     baseline_amount: float,
 ) -> float:
     deduction = baseline_amount if baseline_amount > 0 else order_amount
-    return min(video_refund + clockin_refund + order_amount - deduction, order_amount)
+    if order_amount <= 0:
+        return 0.0
+    return min(max(video_refund + clockin_refund + order_amount - deduction, 0.0), order_amount)
 
 
 def repair_nianzhu_clockin_refunds_from_course_sheets(
@@ -5049,6 +5052,7 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
     for row_index, row in enumerate(rows):
         next_row = list(row)
         document_row = data_start_row + row_index
+        row_number = _formula_row_number(current_document, row_index)
         if not _is_active_tracking_row(next_row, columns, active_only=active_only):
             skipped_rows += 1
             next_rows.append(next_row)
@@ -5158,6 +5162,20 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
         current_index = indexes["当前应返款"]
         order_amount_index = indexes["订单金额"]
         computed_total_refund: float | None = None
+        total_refund_formula = (
+            _build_total_refund_formula(
+                columns,
+                row_number=row_number,
+                config_row_number=_formula_config_row_number(current_document),
+            )
+            if total_index is not None
+            else None
+        )
+        current_refund_formula = (
+            _build_current_refund_formula(columns, row_number=row_number)
+            if current_index is not None
+            else None
+        )
         if order_amount_index is not None:
             computed_total_refund = _formula_total_refund_amount(
                 video_refund=_to_float(next_row[indexes["视频应返款"]]) if indexes["视频应返款"] is not None else 0.0,
@@ -5167,8 +5185,29 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
             )
         if (
             total_index is not None
+            and total_refund_formula
+            and _is_formula_expression(next_row[total_index])
+        ):
+            old_total_refund = next_row[total_index]
+            if _set_row_value(
+                current_document,
+                next_row,
+                document_row=document_row,
+                column_index=total_index,
+                value=total_refund_formula,
+            ):
+                updated_cells += 1
+                row_changed = True
+                row_change = row_change or {
+                    "row": row_index + 1,
+                    "student_id": next_row[indexes["学号"]] if indexes["学号"] is not None else "",
+                    "name": next_row[indexes["姓名"]] if indexes["姓名"] is not None else "",
+                }
+                row_change["total_refund_before"] = old_total_refund
+                row_change["total_refund_after"] = next_row[total_index]
+        elif (
+            total_index is not None
             and computed_total_refund is not None
-            and not _is_formula_expression(next_row[total_index])
         ):
             old_total_refund = next_row[total_index]
             if _set_row_value(
@@ -5190,8 +5229,29 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
 
         if (
             current_index is not None
+            and current_refund_formula
+            and _is_formula_expression(next_row[current_index])
+        ):
+            old_current_refund = next_row[current_index]
+            if _set_row_value(
+                current_document,
+                next_row,
+                document_row=document_row,
+                column_index=current_index,
+                value=current_refund_formula,
+            ):
+                updated_cells += 1
+                row_changed = True
+                row_change = row_change or {
+                    "row": row_index + 1,
+                    "student_id": next_row[indexes["学号"]] if indexes["学号"] is not None else "",
+                    "name": next_row[indexes["姓名"]] if indexes["姓名"] is not None else "",
+                }
+                row_change["current_refund_before"] = old_current_refund
+                row_change["current_refund_after"] = next_row[current_index]
+        elif (
+            current_index is not None
             and computed_total_refund is not None
-            and not _is_formula_expression(next_row[current_index])
         ):
             old_current_refund = next_row[current_index]
             refunded_amount = _to_float(next_row[indexes["已返款"]]) if indexes["已返款"] is not None else 0.0

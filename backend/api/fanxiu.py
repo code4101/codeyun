@@ -401,6 +401,7 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationSchedulerTasksResponse,
     FanxiuDataAnnotationSchedulerPlanItem,
     FanxiuDataAnnotationSchedulerPlanResponse,
+    FanxiuDataAnnotationSchedulerAdvanceNextRequest,
     FanxiuDataAnnotationSchedulerRunDueRequest,
     FanxiuDataAnnotationSchedulerRunNowRequest,
     FanxiuDataAnnotationSchedulerSettingsRequest,
@@ -6253,6 +6254,34 @@ def _run_due_fanxiu_data_annotation_scheduler_tasks(
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
+def _advance_data_annotation_scheduler_task_to_next_trigger(task_id: str) -> list[dict[str, Any]]:
+    tasks = _read_data_annotation_scheduler_tasks()
+    now = datetime.now()
+    now_text = now.strftime("%Y-%m-%d %H:%M:%S")
+    changed = False
+    for item in tasks:
+        if str(item.get("id") or "") != task_id:
+            continue
+        next_time = _next_data_annotation_scheduler_time(item, now)
+        if not next_time:
+            raise ValueError("该作业没有可计算的下次触发时间")
+        item["last_run_at"] = now_text
+        item["last_result"] = "success"
+        item["retry_after"] = None
+        item["next_time"] = next_time
+        checkpoint = item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else {}
+        checkpoint = dict(checkpoint)
+        checkpoint["manual_advance_next_at"] = now_text
+        item["checkpoint"] = checkpoint
+        _record_data_annotation_scheduler_task_fact(item, "success")
+        changed = True
+        break
+    if not changed:
+        raise LookupError(task_id)
+    _write_data_annotation_scheduler_tasks(tasks)
+    return _read_data_annotation_scheduler_tasks()
+
+
 @status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuDataAnnotationRuntimeStatus)
 def run_now_fanxiu_data_annotation_scheduler_task(
     req: FanxiuDataAnnotationSchedulerRunNowRequest,
@@ -6263,6 +6292,34 @@ def run_now_fanxiu_data_annotation_scheduler_task(
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
     return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
+
+
+@status_router.post("/data-annotation/scheduler/task/advance-next", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
+def advance_next_fanxiu_data_annotation_scheduler_task(
+    req: FanxiuDataAnnotationSchedulerAdvanceNextRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    try:
+        tasks = _advance_data_annotation_scheduler_task_to_next_trigger(req.task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings = _runtime_control.read_scheduler_settings(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    )
+    fanxiu_runtime_runner_wake()
+    return FanxiuDataAnnotationSchedulerTasksResponse(
+        tasks=[
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
+            for item in tasks
+        ],
+        job_group_enabled=bool(settings.get("job_group_enabled", True)),
+        path=str(_data_annotation_scheduler_state_path()),
+    )
 
 
 @status_router.post(

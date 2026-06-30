@@ -220,6 +220,11 @@ class FanxiuDataAnnotationSchedulerRunDueRequest(BaseModel):
     entry_id: str
 
 
+class FanxiuDataAnnotationSchedulerAdvanceNextRequest(BaseModel):
+    entry_id: str
+    task_id: str
+
+
 class FanxiuDataAnnotationSchedulerSettingsRequest(BaseModel):
     job_group_enabled: bool
 

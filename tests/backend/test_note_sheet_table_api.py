@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import date
 
 from sqlmodel import select
@@ -373,10 +374,10 @@ def test_note_sheet_formula_evaluates_sum_of_products_before_refund_cap():
             '=COUNTIF(O4:AI4,"*完成*")+COUNTIF(O4:AI4,"*回放*")',
             '=COUNTIF(O4:AI4,"*当堂*")*19+COUNTIF(O4:AI4,"*第1天*")*14+COUNTIF(O4:AI4,"*第2天*")*9+COUNTIF(O4:AI4,"*第3天*")*4',
             "=SWITCH(TRUE,N4>=15,100,N4>=10,60,N4>=5,30,0)",
-            "=MIN(IFERROR(H4+I4+K4-IF($L$3>0,$L$3,K4),0),K4)",
+            "=IF(K4>0,MIN(MAX(IFERROR(H4+I4+K4-IF($L$3>0,$L$3,K4),0),0),K4),0)",
             499,
             0,
-            "=(K4>0)*(J4-L4)",
+            "=IF(K4>0,MAX(J4-L4,0),0)",
             1,
             "当堂完成/98%",
         ],
@@ -386,6 +387,14 @@ def test_note_sheet_formula_evaluates_sum_of_products_before_refund_cap():
     assert note_sheets._get_formula_grid_cell(grid_rows, 3, 7, cache, {}) == 19
     assert note_sheets._get_formula_grid_cell(grid_rows, 3, 9, cache, {}) == 19
     assert note_sheets._get_formula_grid_cell(grid_rows, 3, 12, cache, {}) == 19
+
+    zero_amount_grid_rows = copy.deepcopy(grid_rows)
+    zero_amount_grid_rows[3][9] = "=IF(K4>0,MIN(MAX(IFERROR(H4+I4+K4-IF($L$3>0,$L$3,K4),0),0),K4),0)"
+    zero_amount_grid_rows[3][10] = 0
+    zero_amount_grid_rows[3][12] = "=IF(K4>0,MAX(J4-L4,0),0)"
+    zero_cache = {}
+    assert note_sheets._get_formula_grid_cell(zero_amount_grid_rows, 3, 9, zero_cache, {}) == 0
+    assert note_sheets._get_formula_grid_cell(zero_amount_grid_rows, 3, 12, zero_cache, {}) == 0
 
 
 def test_note_sheet_defined_names_support_workbook_and_sheet_scope(client, session, auth_user):

@@ -74,6 +74,10 @@ def _mail_action_status_from_protocol(name: str) -> str:
     return ""
 
 
+def _source_observed_at(source: dict[str, Any]) -> str:
+    return str(source.get("pcap_modified_at") or source.get("created_at") or "").strip()
+
+
 def _mail_evidence_has_server_action(evidence: Any, status: str) -> bool:
     if not isinstance(evidence, dict):
         return False
@@ -1044,7 +1048,7 @@ def trace_fanxiu_mail_packet_gap(
         start = target_dt - timedelta(minutes=window)
         end = target_dt + timedelta(minutes=window)
         for source in _iter_fanxiu_tcp_decoded_sources(data_dir):
-            captured_at = _parse_capture_time(source.get("created_at"))
+            captured_at = _parse_capture_time(_source_observed_at(source))
             if captured_at is None or captured_at < start or captured_at > end:
                 continue
             decoded_path = Path(str(source.get("decoded_path") or ""))
@@ -1083,7 +1087,7 @@ def trace_fanxiu_mail_packet_gap(
                                     {
                                         "id": mail_id,
                                         "protocol": name,
-                                        "created_at": source.get("created_at") or "",
+                                        "created_at": _source_observed_at(source),
                                         "pcap_name": source.get("pcap_name") or "",
                                     }
                                 )
@@ -1104,7 +1108,7 @@ def trace_fanxiu_mail_packet_gap(
             if hit_terms and len(decoded_text_hits) < 8:
                 decoded_text_hits.append(
                     {
-                        "created_at": source.get("created_at") or "",
+                        "created_at": _source_observed_at(source),
                         "pcap_name": source.get("pcap_name") or "",
                         "decoded_path": str(decoded_path),
                         "terms": hit_terms,
@@ -1113,7 +1117,7 @@ def trace_fanxiu_mail_packet_gap(
             if len(decoded_sources) < max_source_count:
                 decoded_sources.append(
                     {
-                        "created_at": source.get("created_at") or "",
+                        "created_at": _source_observed_at(source),
                         "pcap_name": source.get("pcap_name") or "",
                         "source_kind": source.get("source_kind") or "",
                         "decoded_path": str(decoded_path),
@@ -1314,7 +1318,7 @@ def sync_fanxiu_mail_packets(
                         locked=(mail_id in lock_ids) if name == "SM_MailBox" else None,
                         payload=payload,
                         evidence=_packet_evidence(source, frame, index),
-                        seen_capture_at=str(source.get("created_at") or ""),
+                        seen_capture_at=_source_observed_at(source),
                     )
                     if created:
                         inserted += 1
@@ -1329,7 +1333,7 @@ def sync_fanxiu_mail_packets(
                 status = _mail_action_status_from_protocol(name)
                 evidence = _packet_evidence(source, frame, index)
                 evidence["action_protocol"] = name
-                evidence["action_observed_at"] = source.get("created_at") or ""
+                evidence["action_observed_at"] = _source_observed_at(source)
                 for mail_id in ids:
                     status_events.setdefault(mail_id, []).append({"status": status, "evidence": evidence})
 
@@ -1403,7 +1407,7 @@ def sync_fanxiu_mail_packets(
                 continue
             evidence = _packet_evidence(source, frame, index)
             evidence["lock_protocol"] = name
-            evidence["lock_observed_at"] = source.get("created_at") or ""
+            evidence["lock_observed_at"] = _source_observed_at(source)
             if mark_fanxiu_mail_locked(session, mail_id, locked=locked, evidence=evidence):
                 lock_updated += 1
 

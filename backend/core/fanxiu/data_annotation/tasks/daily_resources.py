@@ -1325,20 +1325,20 @@ class DailyResourceTaskMixin:
             return None
         return hours * 3600 + minutes * 60 + seconds
 
-    def _record_daily_xianmeng_done(self, payload: dict[str, Any], *, message: str) -> str:
+    def _record_daily_xianmeng_done(self, payload: dict[str, Any], *, message: str) -> str | None:
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianmeng")
-        next_time = (
-            self._scheduler_task_next_time_from_schedule(scheduler_task_id, "daily_xianmeng")
-            or self._next_daily_boss_reset_time_text()
-        )
-        self._record_scheduler_task_discovered_next_time(
-            scheduler_task_id,
-            next_time,
-            task_type="daily_xianmeng",
-            label="日常_仙盟",
-            last_result="success",
-        )
-        self._log("success", f"日常_仙盟：{message}，下次 {next_time}")
+        next_time = self._scheduler_task_next_time_from_schedule(scheduler_task_id, "daily_xianmeng")
+        if next_time:
+            self._record_scheduler_task_discovered_next_time(
+                scheduler_task_id,
+                next_time,
+                task_type="daily_xianmeng",
+                label="日常_仙盟",
+                last_result="success",
+            )
+            self._log("success", f"日常_仙盟：{message}，下次 {next_time}")
+            return next_time
+        self._log("success", f"日常_仙盟：{message}，未设置下次触发时间")
         return next_time
 
     def _record_daily_xianmeng_immunity_cd(self, runtime: Any, payload: dict[str, Any]) -> str:

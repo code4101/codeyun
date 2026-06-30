@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
+  advanceNextFanxiuDataAnnotationSchedulerTask,
   ensureFanxiuDataAnnotationDoctorWatch,
   getFanxiuDataAnnotationDoctorWatchLatest,
   getFanxiuDataAnnotationRuntimeCellLogs,
@@ -476,6 +477,16 @@ const runContextTaskNow = () => {
   closeLogMenu();
   if (!task) return;
   void runAction(`run-now:${task.id}`, () => runNowFanxiuDataAnnotationSchedulerTask(entryId.value, task.id, {}, true));
+};
+
+const advanceContextTaskNext = () => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task) return;
+  void runAction(`advance-next:${task.id}`, async () => {
+    await advanceNextFanxiuDataAnnotationSchedulerTask(entryId.value, task.id);
+    ElMessage.success('已推进到下次触发');
+  });
 };
 
 const openDoctorAnnotationTarget = () => {
@@ -1068,6 +1079,7 @@ onUnmounted(() => {
       @click.stop
     >
       <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">触发一次</button>
+      <button v-if="contextMenu.task" type="button" @click="advanceContextTaskNext">下次触发</button>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>

@@ -373,6 +373,8 @@ def _start_external_fanxiu_behavior_tree_service(
             return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": read_fanxiu_behavior_tree_service_owner()}
     env = os.environ.copy()
     env[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     process = popen_python_script_service(
         script_path,
         "--entry-id",

@@ -5251,6 +5251,16 @@ export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId:
     .then(res => res.data);
 };
 
+export const advanceNextFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string) => {
+  return api
+    .post<FanxiuDataAnnotationSchedulerTasksResponse>(
+      '/fanxiu/data-annotation/scheduler/task/advance-next',
+      { entry_id: entryId, task_id: taskId },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
+    )
+    .then(res => res.data);
+};
+
 export const runDueFanxiuDataAnnotationSchedulerTasks = (entryId: string) => {
   return api
     .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })

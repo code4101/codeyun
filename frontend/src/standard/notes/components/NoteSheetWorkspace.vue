@@ -1237,12 +1237,16 @@ type SheetCopyPasteRange = {
   endColumn: number
 }
 
+type SheetClipboardMode = 'copy' | 'cut'
+
 type SheetInternalClipboard = {
   sheetId: number | null
+  mode: SheetClipboardMode
   sourceStartRow: number
   sourceStartColumn: number
   rawData: string[][]
   displayData: string[][]
+  linkMetaData: Array<Array<SheetCellMeta | null>>
   createdAt: number
 }
 
@@ -1709,6 +1713,7 @@ let restoringStudentLookupSelection = false
 let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
 let sheetInternalClipboard: SheetInternalClipboard | null = null
+let pendingClipboardLinkMetaPatchResults: SheetCellMetaPatchResult[] = []
 let sheetRenderEnhancementFrame: number | null = null
 let sheetHiddenFrameSize: SheetFrameSize | null = null
 let sheetOverlayAlignmentFrame: number | null = null
@@ -18242,6 +18247,7 @@ function isImmediateCellPatchSource(source?: string) {
   return (
     source == null
     || source === 'edit'
+    || source === 'CopyPaste.cut'
     || source === 'CopyPaste.paste'
     || source === 'Autofill.fill'
     || source === 'formula-bar'
@@ -18603,7 +18609,11 @@ function handleAfterChange(_changes: unknown, source?: string) {
   const immediateCellPatchOperations = buildImmediateCellPatchOperations(changeRecords, source)
   finishFormulaReferenceRange()
   clearFormulaReferencePreviewRange()
-  const metaPatchResults = clearRichTextForGridChanges(_changes, source)
+  const metaPatchResults = [
+    ...clearRichTextForGridChanges(_changes, source),
+    ...clearLinksForCutGridChanges(changeRecords, source),
+    ...consumePendingClipboardLinkMetaPatchResults(),
+  ]
   syncRowsFromGrid()
   const mergedAnchorSynced = syncCoveredMergedCellChangesToAnchors(_changes)
   const registrationDefaultsUpdated = handleRegistrationSubmittedAtUserChanges(_changes, source)
@@ -18614,12 +18624,12 @@ function handleAfterChange(_changes: unknown, source?: string) {
   } else {
     getHotInstance()?.render()
   }
-  if (hasEffectiveChanges) {
+  if (hasEffectiveChanges || metaPatchResults.length) {
     if (immediateCellPatchOperations && !mergedAnchorSynced && !registrationDefaultsUpdated) {
       suppressNextRemoteSaveWatcher = true
       queueImmediateCellPatchSave([
         ...immediateCellPatchOperations,
-        ...buildCellMetaPatchOperations(canEditConfig.value ? metaPatchResults : []),
+        ...buildCellMetaPatchOperations(metaPatchResults),
       ])
     } else if (source === 'rich-text-inline' || source === 'rich-text-dialog') {
       // Rich text commit paths explicitly save value + meta as one patch.
@@ -18681,21 +18691,106 @@ function areCopyPasteMatricesEqual(left: string[][], right: unknown[][]) {
   })
 }
 
-function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
-  if (!isMatrix(data) || data.length <= 0 || !Array.isArray(coords) || coords.length <= 0) {
+function cloneClipboardLinkMeta(documentRow: number, columnIndex: number): SheetCellMeta | null {
+  const link = getCellLinkAt(documentRow, columnIndex)
+  return link ? { link: { ...link } } : null
+}
+
+function consumePendingClipboardLinkMetaPatchResults() {
+  const results = pendingClipboardLinkMetaPatchResults
+  pendingClipboardLinkMetaPatchResults = []
+  return results
+}
+
+function clearLinksForCutGridChanges(records: SheetGridChangeRecord[], source?: string) {
+  if (source !== 'CopyPaste.cut') {
+    return []
+  }
+
+  const results: SheetCellMetaPatchResult[] = []
+  records.forEach((record) => {
+    if (normalizeCellValue(record.nextValue)) {
+      return
+    }
+    const documentRow = getDocumentGridRowIndex(record.rowIndex)
+    if (!getCellLinkAt(documentRow, record.columnIndex)) {
+      return
+    }
+    const result = updateCellMetaEntry(documentRow, record.columnIndex, (entry) => {
+      const nextEntry = { ...entry }
+      delete nextEntry.link
+      return nextEntry
+    })
+    if (result) {
+      results.push(result)
+    }
+  })
+  return results
+}
+
+function applyClipboardLinksToPasteTarget(clipboard: SheetInternalClipboard, targetDataStartRow: number, targetStartColumn: number, data: unknown[][]) {
+  const results: SheetCellMetaPatchResult[] = []
+  data.forEach((row, rowOffset) => {
+    if (!Array.isArray(row)) {
+      return
+    }
+    row.forEach((_, columnOffset) => {
+      const sourceMeta = clipboard.linkMetaData[rowOffset]?.[columnOffset] ?? null
+      const targetDataRow = targetDataStartRow + rowOffset
+      const targetColumn = targetStartColumn + columnOffset
+      if (targetColumn < 0 || targetColumn >= columnHeaders.value.length) {
+        return
+      }
+      const targetDocumentRow = getDocumentGridRowIndexForDataRow(targetDataRow)
+      if (targetDocumentRow < sheetHeaderRowCount.value) {
+        return
+      }
+      const currentLink = getCellLinkAt(targetDocumentRow, targetColumn)
+      if (!sourceMeta?.link && !currentLink) {
+        return
+      }
+      if (
+        sourceMeta?.link
+        && currentLink
+        && currentLink.url === sourceMeta.link.url
+        && normalizeCellValue(currentLink.title) === normalizeCellValue(sourceMeta.link.title)
+      ) {
+        return
+      }
+      const result = updateCellMetaEntry(targetDocumentRow, targetColumn, (entry) => {
+        const nextEntry = { ...entry }
+        if (sourceMeta?.link) {
+          nextEntry.link = { ...sourceMeta.link }
+        } else {
+          delete nextEntry.link
+        }
+        return nextEntry
+      })
+      if (result) {
+        results.push(result)
+      }
+    })
+  })
+  return results
+}
+
+function handleBeforeCopy(data: unknown[][], coords: unknown[], mode: SheetClipboardMode = 'copy') {
+  const rejectCut = () => {
     sheetInternalClipboard = null
-    return
+    return mode === 'cut' ? false : undefined
+  }
+
+  if (!isMatrix(data) || data.length <= 0 || !Array.isArray(coords) || coords.length <= 0) {
+    return rejectCut()
   }
 
   const range = normalizeCopyPasteRange(coords[0])
   if (!range) {
-    sheetInternalClipboard = null
-    return
+    return rejectCut()
   }
   const sheetColumnRange = getSheetColumnRangeFromHotRange(range.startColumn, range.endColumn)
   if (!sheetColumnRange) {
-    sheetInternalClipboard = null
-    return
+    return rejectCut()
   }
   const documentRange = {
     startRow: getDocumentGridRowIndex(range.startRow),
@@ -18726,7 +18821,10 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
     || hotRangeIncludesRowMarker(range.startColumn, range.endColumn)
     || rangePartiallyIntersectsMergedCells(documentRange)
   ) {
-    sheetInternalClipboard = null
+    if (mode === 'cut') {
+      sheetInternalClipboard = null
+      return false
+    }
     visibleData.forEach((row, rowIndex) => {
       row.forEach((cell, columnIndex) => {
         if (Array.isArray(data[rowIndex])) {
@@ -18751,13 +18849,23 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
       return getCellDisplayText(sourceRow, sourceColumn, rawValue)
     })
   ))
+  const linkMetaData = rawData.map((row, rowOffset) => (
+    row.map((_, columnOffset) => (
+      cloneClipboardLinkMeta(
+        getDocumentGridRowIndex(range.startRow + rowOffset),
+        sheetColumnRange.start + columnOffset,
+      )
+    ))
+  ))
 
   sheetInternalClipboard = {
     sheetId: props.sheetId,
+    mode,
     sourceStartRow: getDataRowIndex(range.startRow),
     sourceStartColumn: sheetColumnRange.start,
     rawData,
     displayData,
+    linkMetaData,
     createdAt: Date.now(),
   }
 
@@ -18769,6 +18877,7 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
       data[rowIndex][columnIndex] = cell
     })
   })
+  return true
 }
 
 function getInternalClipboardForPaste(data: unknown[][]) {
@@ -18786,6 +18895,14 @@ function getInternalClipboardForPaste(data: unknown[][]) {
     return null
   }
   return sheetInternalClipboard
+}
+
+function handleBeforeCut(data: unknown[][], coords: unknown[]) {
+  if (!canEditData.value && !canEditPartialData.value) {
+    warnReadOnlyAction()
+    return false
+  }
+  return handleBeforeCopy(data, coords, 'cut')
 }
 
 function getGridRowCountForExpansionGuard() {
@@ -18876,6 +18993,7 @@ function areChangedColumnsEditable(changes: unknown[]) {
 }
 
 function handleBeforePaste(data: unknown[][], coords: unknown[]) {
+  pendingClipboardLinkMetaPatchResults = []
   if (!canEditData.value && !canEditPartialData.value) {
     warnReadOnlyAction()
     return false
@@ -18934,6 +19052,12 @@ function handleBeforePaste(data: unknown[][], coords: unknown[]) {
   if (!clipboard) {
     return
   }
+  pendingClipboardLinkMetaPatchResults = applyClipboardLinksToPasteTarget(
+    clipboard,
+    targetDataStartRow,
+    targetSheetRange.startColumn,
+    data,
+  )
 
   clipboard.rawData.forEach((row, rowOffset) => {
     if (!Array.isArray(data[rowOffset])) {
@@ -19793,6 +19917,25 @@ function getDataRowIndex(gridRowIndex: number) {
 
 function getGridRowIndex(dataRowIndex: number) {
   return dataRowIndex + sheetHeaderRowCount.value
+}
+
+function joinSheetCellClassNames(...classes: Array<string | null | undefined | false>) {
+  return classes.filter(Boolean).join(' ') || undefined
+}
+
+function getCutRowClassName(row: number) {
+  if (!cutRowBounds || isSheetHeaderGridRow(row)) {
+    return null
+  }
+  const dataRow = getDataRowIndex(row)
+  if (dataRow < cutRowBounds.start || dataRow > cutRowBounds.end) {
+    return null
+  }
+  return joinSheetCellClassNames(
+    'sheet-cut-row-cell',
+    dataRow === cutRowBounds.start && 'sheet-cut-row-cell--start',
+    dataRow === cutRowBounds.end && 'sheet-cut-row-cell--end',
+  )
 }
 
 function getSheetCellDocumentRow(rowIndex: number) {
@@ -24289,6 +24432,7 @@ function cutSelectedRows() {
     return
   }
   cutRowBounds = { start: bounds.start, end: bounds.end }
+  getHotInstance()?.render()
   ElMessage.success(`已剪切${getDataRowRangeLabel(cutRowBounds)}`)
 }
 
@@ -24329,6 +24473,7 @@ function pasteCutRowsFromSelection(side: 'above' | 'below') {
   }
 
   cutRowBounds = null
+  getHotInstance()?.render()
   ElMessage.success(`已移动到${getDataRowRangeLabel(targetBounds)}${side === 'above' ? '上方' : '下方'}`)
 }
 
@@ -25691,7 +25836,7 @@ function resolveCellMeta(row: number, col: number) {
         wordWrap: false,
         textEllipsis: false,
         readOnly: true,
-        className: 'sheet-row-marker-cell',
+        className: joinSheetCellClassNames('sheet-row-marker-cell', getCutRowClassName(row)),
       }
     }
 
@@ -25721,6 +25866,7 @@ function resolveCellMeta(row: number, col: number) {
         wordWrap: false,
         textEllipsis: true,
         readOnly: !!action || !canEditDataColumn(column),
+        className: getCutRowClassName(row),
       }
     }
 
@@ -25728,6 +25874,7 @@ function resolveCellMeta(row: number, col: number) {
       wordWrap: true,
       textEllipsis: false,
       readOnly: !!action || !canEditDataColumn(column),
+      className: getCutRowClassName(row),
     }
   } finally {
     recordSheetPerfRenderCallback('cellMeta', perfStart)
@@ -25742,7 +25889,7 @@ function resolveCoreCellMeta(row: number, col: number) {
         wordWrap: false,
         textEllipsis: false,
         readOnly: true,
-        className: 'sheet-row-marker-cell',
+        className: joinSheetCellClassNames('sheet-row-marker-cell', getCutRowClassName(row)),
       }
     }
 
@@ -25768,6 +25915,7 @@ function resolveCoreCellMeta(row: number, col: number) {
       wordWrap: false,
       textEllipsis: true,
       readOnly: true,
+      className: getCutRowClassName(row),
     }
   } finally {
     recordSheetPerfRenderCallback('cellMeta', perfStart)
@@ -27000,6 +27148,7 @@ defineExpose({
         :before-change="handleBeforeChange"
         :before-autofill="handleBeforeAutofill"
         :before-copy="handleBeforeCopy"
+        :before-cut="handleBeforeCut"
         :before-paste="handleBeforePaste"
         :after-change="handleAfterChange"
         :before-create-row="handleBeforeCreateRow"
@@ -29848,6 +29997,51 @@ defineExpose({
   box-shadow:
     inset -2px 0 0 #8f8f8f,
     inset 0 -2px 0 #7f9b70;
+}
+
+@keyframes sheet-cut-row-dash {
+  to {
+    background-position-x: 12px;
+  }
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cut-row-cell),
+.sheet-frame :deep(.handsontable tbody th.sheet-cut-row-cell) {
+  background-color: #fff7d6 !important;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cut-row-cell--start),
+.sheet-frame :deep(.handsontable tbody th.sheet-cut-row-cell--start) {
+  background-image: linear-gradient(90deg, #2563eb 50%, transparent 50%);
+  background-position: 0 0;
+  background-repeat: repeat-x;
+  background-size: 12px 2px;
+  animation: sheet-cut-row-dash 0.8s linear infinite;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cut-row-cell--end),
+.sheet-frame :deep(.handsontable tbody th.sheet-cut-row-cell--end) {
+  background-image: linear-gradient(90deg, #2563eb 50%, transparent 50%);
+  background-position: 0 100%;
+  background-repeat: repeat-x;
+  background-size: 12px 2px;
+  animation: sheet-cut-row-dash 0.8s linear infinite;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cut-row-cell--start.sheet-cut-row-cell--end),
+.sheet-frame :deep(.handsontable tbody th.sheet-cut-row-cell--start.sheet-cut-row-cell--end) {
+  background-image:
+    linear-gradient(90deg, #2563eb 50%, transparent 50%),
+    linear-gradient(90deg, #2563eb 50%, transparent 50%);
+  background-position:
+    0 0,
+    0 100%;
+  background-repeat:
+    repeat-x,
+    repeat-x;
+  background-size:
+    12px 2px,
+    12px 2px;
 }
 
 .sheet-frame :deep(th.sheet-col-marker) {

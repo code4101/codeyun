@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -1110,6 +1117,9 @@ def _ensure_doctor_watch_background(
         startupinfo.wShowWindow = subprocess.SW_HIDE
     stdout_fh = stdout_path.open("ab")
     stderr_fh = stderr_path.open("ab")
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
     try:
         process = subprocess.Popen(
             command,
@@ -1117,6 +1127,7 @@ def _ensure_doctor_watch_background(
             stdin=subprocess.DEVNULL,
             stdout=stdout_fh,
             stderr=stderr_fh,
+            env=child_env,
             close_fds=(os.name != "nt"),
             creationflags=creationflags,
             startupinfo=startupinfo,

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "079ecc19378922bcc89d568a1a48c92a08913789"
-last_audited_at: "2026-06-30T20:27:58.4487484+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-0c842214/report.md"
-last_frontend_commit_summary: "完整关闭 0c842214..079ecc19：note_sheets API、daily_foundation 运行时保护测试和规范文档变更均未触达前端页面或前端可感知 API 投影，已完成无关提交判定并安静推进游标。"
-audited_commit_count: 52
+last_audited_commit: "e3acd95d7bddb56cde8e665b0dadd0e0a938c029"
+last_audited_at: "2026-06-30T22:32:53.7817540+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-e3acd95d/report.md"
+last_frontend_commit_summary: "完整关闭 079ecc19..e3acd95d：沿 cluster/runtime 与 fanxiu/data-annotation 两条入口复核后，确认真正的 UI 回退只在运行管理页资源监控层级顺序；已把资源监控后置回服务/作业/队列之后，保持 data-annotation 本轮仅做行为补强而不新增 UI 概念。"
+audited_commit_count: 53
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-30
+
+- 完整范围：`079ecc19378922bcc89d568a1a48c92a08913789..e3acd95d7bddb56cde8e665b0dadd0e0a938c029`
+- 覆盖提交：`e3acd95d7bddb56cde8e665b0dadd0e0a938c029`
+- 前端入口提交：`e3acd95d7bddb56cde8e665b0dadd0e0a938c029`
+- 入口如何牵引到旧问题：这次提交同时触达 `cluster/runtime` 与 `fanxiu/data-annotation`。`data-annotation` 的改动本质是把浮动子标注的匹配计算回收到“父框匹配 -> 子框相对换算”这条基础模型，没有新增新控件；真正被牵出来的旧 UI 问题发生在 `cluster/runtime`，提交把 `资源监控` 区块重新挪回 `服务/作业` 之前，直接复活了该页之前已经压掉的首屏层级回退。
+- 本轮减法：不新增任何按钮、说明、标签、入口或状态；只把 `cluster/runtime` 的 `资源监控` 区块从首屏主闭环后置回 `队列记录` 之后，恢复 `服务 -> 作业 -> 队列记录 -> 资源监控` 的基础顺序。`fanxiu/data-annotation` 维持既有 `画面区 + 右侧目录/工具` 基础模型，不因行为补强继续扩 UI。
+- 信息量保持：运行管理页仍保留服务、作业、队列记录与资源监控四类信息；凡修标注页仍保留入口、画面、目录和工具链。减少的是错误层级与诊断信息抢占一级注意力，不是减少判断依据。
+- 概念图/线框图：报告中的 Mermaid 收回到 `设备 -> 服务状态表 -> 作业状态表 -> 队列记录 -> 资源监控` 这条闭环；ASCII 线框图直接对比了错误回退顺序 `设备 -> 资源监控 -> 服务/作业` 与修复后的主闭环顺序。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-e3acd95d/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `cluster/runtime` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 的修复前后截图，对 `fanxiu/data-annotation` 完成三视口截图与基础结构复核；`evidence-before.json` 记录修复前宽屏/普通桌面下 `sectionTitles = [资源监控, 服务, 作业]`，修复后 DOM 顺序恢复为 `服务 -> 作业 -> 队列记录 -> 资源监控`，且所有截图 `overflowX = 0`；`console-logs.json` 记录两页本轮均无 `warn/error`。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：`cluster/runtime` 属于前端状态投影问题，根因是把诊断区错误提升到一级主闭环；`fanxiu/data-annotation` 本轮未发现新的表现层、前端状态投影、后端数据投影或业务建模问题。
+- 跨自动化交接：无。本轮问题可在前端页面层直接收敛，不需要转交 `CodeYun 代码健康优化`。
+- 剩余风险：`fanxiu/data-annotation` 这次提交主要补强运行时匹配逻辑；本轮前端设计巡检只验证了真实页面结构和基础可用性，没有在真实游戏画面里复现“浮动子标注跟随父框匹配”的运行结果。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `e3acd95d7bddb56cde8e665b0dadd0e0a938c029`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`0c84221402525cb9c9810e5df05aeb0ec53e6dac..079ecc19378922bcc89d568a1a48c92a08913789`
 - 覆盖提交：`079ecc19378922bcc89d568a1a48c92a08913789`
