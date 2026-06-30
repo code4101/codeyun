@@ -3276,6 +3276,11 @@ class DailyFoundationTaskMixin:
             scene_id, score, _frame = runtime.current_scene([301, 302, 303], update=True)
         if scene_id in {301, 302}:
             scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(runtime, stop_event, scene_id)
+        if scene_id == 186:
+            frame = runtime.cur_frame(update=True)
+            if self._daily_lundao_text_is_seated(runtime.ocr_text(frame)):
+                self._log("success", "日常_论道：已进入道场听道中")
+                return "success"
         if scene_id == 303:
             yield from runtime.wait_click_then_view(303, "对话", [52, 53], settle_seconds=1.5, timeout=30.0)
             scene_id, score, _frame = runtime.current_scene([52, 53, 303], update=True)
@@ -3337,15 +3342,19 @@ class DailyFoundationTaskMixin:
         for _index in range(4):
             self._raise_if_stopped(stop_event)
             if scene_id == 301:
-                yield from runtime.wait_click_then_view(301, "入座", 302, timeout=12.0)
-                scene_id = 302
+                yield from runtime.wait_click_then_view(301, "入座", wait_leave=True, timeout=12.0)
             if scene_id == 302:
                 yield from runtime.wait_click(302, "确定")
                 yield from runtime.wait_action_settle(2.0)
-            scene_id, score, _frame = runtime.current_scene([303, 301, 302, 52, 53], update=True)
+            scene_id, score, _frame = runtime.current_scene([303, 301, 302, 52, 53, 186], update=True)
             last_scene_id, last_score = scene_id, float(score)
+            if self._daily_lundao_text_is_seated(runtime.ocr_text(_frame)):
+                return 186, float(score)
             if scene_id in {303, 52, 53}:
                 return scene_id, float(score)
+            if scene_id is None:
+                yield from runtime.wait_action_settle(1.0)
+                continue
             if scene_id == 301:
                 continue
             if scene_id == 302:
@@ -3628,8 +3637,14 @@ class DailyFoundationTaskMixin:
 
         task_label = "日常_灵脉"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([288, 286, 285, 69, 34], update=True)
+        scene_id, score, frame = runtime.current_scene([318, 305, 288, 286, 285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 318:
+            self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
+            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+        if scene_id == 305:
+            self._log("success", f"{task_label}：当前已在 #305 灵脉聚灵确认弹窗，场景分 {score:.0f}%，OCR={text[:160]}")
+            return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
         if scene_id == 288:
             self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
@@ -3642,8 +3657,14 @@ class DailyFoundationTaskMixin:
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, score, frame = runtime.current_scene([288, 286, 285, 69, 34], update=True)
+                scene_id, score, frame = runtime.current_scene([318, 305, 288, 286, 285, 69, 34], update=True)
                 text = runtime.ocr_text(frame)
+                if scene_id == 318:
+                    self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
+                    return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+                if scene_id == 305:
+                    self._log("success", f"{task_label}：当前已在 #305 灵脉聚灵确认弹窗，场景分 {score:.0f}%，OCR={text[:160]}")
+                    return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
                 if scene_id == 288:
                     self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
                     return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
@@ -3774,6 +3795,76 @@ class DailyFoundationTaskMixin:
         self._log("skip", f"日常_灵脉：{message}，{retry_after} 重试")
         return retry_after
 
+    def _daily_lingmai_slot_candidates(self, lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text")).translate(FULLWIDTH_DIGIT_TRANSLATION)
+            compact = re.sub(r"\s+", "", text)
+            match = re.search(r"(?:剩余空位|余空位|空位)[:：]?(\d+)/(\d+)", compact)
+            if match is None:
+                continue
+            try:
+                remaining = int(match.group(1))
+                total = int(match.group(2))
+            except ValueError:
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            candidates.append({
+                "remaining": remaining,
+                "total": total,
+                "text": text,
+                "x": x + w / 2 if w > 0 else None,
+                "y": y + h / 2 if h > 0 else None,
+            })
+        return candidates
+
+    def _confirm_daily_lingmai_gather(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ) -> str:
+        yield from runtime.wait_click_then_view(
+            305,
+            "确定",
+            wait_leave=True,
+            timeout=float(payload.get("lingmai_gather_confirm_timeout") or 20.0),
+        )
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_gather_confirm_settle_seconds") or 3.0))
+        scene_after, score_after, frame_after = runtime.current_scene([318, 285, 288, 289, 305, 34], update=True)
+        text_after = runtime.ocr_text(frame_after)
+        if scene_after == 305:
+            raise RuntimeError(f"{task_label}：点击 #305「确定」后仍停留在灵脉聚灵确认弹窗，OCR={text_after[:160]}")
+        if scene_after == 318:
+            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+        self._log("success", f"{task_label}：已确认聚灵，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
+        return "success"
+
+    def _confirm_daily_lingmai_reward(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ) -> str:
+        yield from runtime.wait_click_then_view(
+            318,
+            "确认",
+            wait_leave=True,
+            timeout=float(payload.get("lingmai_reward_confirm_timeout") or 20.0),
+        )
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_reward_confirm_settle_seconds") or 2.0))
+        scene_after, score_after, frame_after = runtime.current_scene([303, 285, 34, 318], update=True)
+        text_after = runtime.ocr_text(frame_after)
+        if scene_after == 318:
+            raise RuntimeError(f"{task_label}：点击 #318「确认」后仍停留在灵脉奖励确认，OCR={text_after[:160]}")
+        self._log("success", f"{task_label}：已关闭 #318 灵脉奖励确认，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
+        return "success"
+
     def _continue_daily_lingmai_from_zaohua(
         self,
         ctx: dict[str, Any],
@@ -3809,32 +3900,52 @@ class DailyFoundationTaskMixin:
 
         remaining_slots = int(numbers[0])
         total_slots = int(numbers[1]) if len(numbers) >= 2 else None
+        lines = self._cached_ocr_lines(ctx, frame or runtime.cur_frame(update=True))
+        candidates = self._daily_lingmai_slot_candidates(lines)
+        available = next((item for item in candidates if int(item["remaining"]) > 0), None)
+        clicked_slot_label = "「空位」"
         if remaining_slots <= 0:
-            yield from runtime.wait_click(285, "返回")
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_return_settle_seconds") or 2.0))
-            retry_after = self._record_daily_lingmai_retry(
-                payload,
-                message=f"#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，本次不换位置",
-                seconds=int(payload.get("lingmai_no_slot_retry_seconds") or 600),
-            )
-            with self._lock:
-                self._set_status_locked(
-                    "skipped",
-                    f"{task_label}：暂无空位，已返回，{retry_after} 重试",
-                    phase="daily_lingmai_no_slot",
-                    current_scene=285,
+            if available is not None:
+                click_x = available.get("x")
+                click_y = available.get("y")
+                if click_x is None or click_y is None:
+                    raise RuntimeError(
+                        f"{task_label}：#285 标注「空位」为 {remaining_slots}/{total_slots if total_slots is not None else '?'}，"
+                        f"但 OCR 发现可用候选 {available['remaining']}/{available['total']}，缺少可点击坐标；请检查 #285 标注"
+                    )
+                self._log(
+                    "success",
+                    f"{task_label}：#285 标注行无空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，"
+                    f"OCR 发现候选 {available['remaining']}/{available['total']}，点击该候选行",
                 )
-            return {"result": "skipped", "message": f"{task_label}：暂无空位，已返回，{retry_after} 重试"}
-
-        self._log("success", f"{task_label}：#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，点击「空位」进入下一阶段")
-        yield from runtime.wait_click(285, "空位")
+                runtime.click_frame_point(285, float(click_x), float(click_y))
+                clicked_slot_label = "可用候选行"
+            else:
+                yield from runtime.wait_click(285, "返回")
+                yield from runtime.wait_action_settle(float(payload.get("lingmai_return_settle_seconds") or 2.0))
+                retry_after = self._record_daily_lingmai_retry(
+                    payload,
+                    message=f"#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，本次不换位置",
+                    seconds=int(payload.get("lingmai_no_slot_retry_seconds") or 600),
+                )
+                with self._lock:
+                    self._set_status_locked(
+                        "skipped",
+                        f"{task_label}：暂无空位，已返回，{retry_after} 重试",
+                        phase="daily_lingmai_no_slot",
+                        current_scene=285,
+                    )
+                return {"result": "skipped", "message": f"{task_label}：暂无空位，已返回，{retry_after} 重试"}
+        else:
+            self._log("success", f"{task_label}：#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，点击「空位」进入下一阶段")
+            yield from runtime.wait_click(285, "空位")
         if bool(payload.get("stop_after_click_285_empty")):
-            self._log("success", f"{task_label}：试运行已点击 #285「空位」，按 payload 停止")
+            self._log("success", f"{task_label}：试运行已点击 #285{clicked_slot_label}，按 payload 停止")
             return "success"
         yield from runtime.wait_view(
             286,
             timeout=float(payload.get("lingmai_select_slot_timeout") or 12.0),
-            label=f"{task_label}：点击 #285「空位」后等待 #286 选择空位",
+            label=f"{task_label}：点击 #285{clicked_slot_label}后等待 #286 选择空位",
         )
         scene_next, score_next, frame_next = runtime.current_scene([286], update=True)
         text_next = runtime.ocr_text(frame_next)
@@ -3929,8 +4040,12 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
         yield from runtime.wait_click(288, "占领")
         yield from runtime.wait_action_settle(float(payload.get("lingmai_final_occupy_settle_seconds") or 2.0))
-        scene_final, score_final, frame_final = runtime.current_scene([288, 285, 286, 287, 47], update=True)
+        scene_final, score_final, frame_final = runtime.current_scene([318, 305, 288, 285, 286, 287, 47], update=True)
         text_final = runtime.ocr_text(frame_final)
+        if scene_final == 318:
+            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+        if scene_final == 305:
+            return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
         raise RuntimeError(
             f"{task_label}：已点击 #288「占领」，但后续业务状态机尚未迁移；"
             f"当前 {'#' + str(scene_final) if scene_final is not None else 'unknown'} {score_final:.0f}%，OCR={text_final[:160]}"

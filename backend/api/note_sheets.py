@@ -1080,6 +1080,8 @@ def _normalize_registration_sheet_header_document(document_json: dict[str, Any])
 
     next_document, style_changed = _apply_registration_standard_user_id_column_styles(next_document)
     changed = changed or style_changed
+    next_document, order_visibility_changed = _apply_registration_standard_order_column_visibility(next_document)
+    changed = changed or order_visibility_changed
     return next_document, changed
 
 
@@ -1193,6 +1195,37 @@ def _apply_registration_standard_user_id_column_styles(document_json: dict[str, 
             next_document["entity_cells"] = next_entity_cells
 
     return next_document, changed
+
+
+def _apply_registration_standard_order_column_visibility(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if not any(header in columns for header in NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS):
+        return normalized, False
+
+    column_configs = dict(normalized.get("column_configs")) if isinstance(normalized.get("column_configs"), dict) else {}
+    if not column_configs:
+        return normalized, False
+
+    next_configs = dict(column_configs)
+    changed = False
+    for header in NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS:
+        config = next_configs.get(header)
+        if not isinstance(config, dict) or config.get("hidden") is not True:
+            continue
+        next_config = dict(config)
+        next_config.pop("hidden", None)
+        if next_config:
+            next_configs[header] = next_config
+        else:
+            next_configs.pop(header, None)
+        changed = True
+
+    if not changed:
+        return normalized, False
+    next_document = dict(normalized)
+    next_document["column_configs"] = next_configs
+    return next_document, True
 
 
 def _canonicalize_sheet_document_links(
@@ -5697,6 +5730,13 @@ def _derive_registration_order_month(order_id: Any) -> str:
     normalized = _strip_legacy_text_prefix(order_id)
     if not normalized:
         return ""
+    merchant_timestamp_match = re.search(r"\bMA(20\d{2})(\d{2})(\d{2})", normalized, re.I)
+    if merchant_timestamp_match:
+        year = int(merchant_timestamp_match.group(1))
+        month = int(merchant_timestamp_match.group(2))
+        day = int(merchant_timestamp_match.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return f"{year:04d}{month:02d}"
     for match in re.finditer(r"(\d{6})", normalized):
         value = match.group(1)
         year = int(value[:2])
@@ -5716,6 +5756,32 @@ def _registration_order_lookup_id(row: list[Any], indexes: dict[str, int]) -> st
         if value:
             return value
     return ""
+
+
+def _registration_row_has_identity_payload(row: list[Any], columns: list[str]) -> bool:
+    """Return whether a registration row contains real learner/source data.
+
+    Order fields alone are not enough to make a row active: blank template rows
+    can accidentally retain merchant order ids or amounts. Those rows must not
+    be sent through order matching or attendance synchronization.
+    """
+
+    indexes = {column: index for index, column in enumerate(columns)}
+    identity_columns = (
+        "序号",
+        "提交时间",
+        "姓名",
+        "微信昵称",
+        "手机号",
+        "错误手机号",
+        "用户ID",
+        NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+    )
+    for column in identity_columns:
+        index = indexes.get(column)
+        if index is not None and index < len(row) and _normalize_sheet_text(row[index]):
+            return True
+    return False
 
 
 def _registration_row_has_completed_refund_remark(row: list[Any], indexes: dict[str, int]) -> bool:
@@ -5871,10 +5937,16 @@ def _update_registration_order_match_document(
     next_rows: list[list[Any]] = []
     browser_candidates: list[dict[str, Any]] = []
     fill_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS if column in indexes]
+    required_completeness_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS if column in indexes]
     completeness_columns = fill_columns[1:]
 
     for source_row in rows:
         row = list(source_row)
+        if not _registration_row_has_identity_payload(row, columns):
+            skipped_count += 1
+            invalid_count += 1
+            next_rows.append(row)
+            continue
         order_id = _registration_order_lookup_id(row, indexes)
         if len(order_id) < 8:
             skipped_count += 1
@@ -5883,7 +5955,7 @@ def _update_registration_order_match_document(
             continue
 
         needs_refund_audit = _registration_row_needs_refund_payment_audit(row, indexes)
-        has_complete_order_info = all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns)
+        has_complete_order_info = all(_normalize_sheet_text(row[indexes[column]]) for column in required_completeness_columns)
         if has_complete_order_info and not needs_refund_audit:
             skipped_count += 1
             already_complete_count += 1
@@ -6660,6 +6732,46 @@ def _is_archived_attendance_row(row: list[Any], columns: list[str]) -> bool:
     return False
 
 
+def _attendance_row_has_identity_payload(row: list[Any], columns: list[str]) -> bool:
+    indexes = {column: index for index, column in enumerate(columns)}
+    identity_columns = (
+        "报名日期",
+        "分组",
+        "学号",
+        "姓名",
+        "昵称",
+        "用户ID",
+        NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+        "商户订单号",
+    )
+    for column in identity_columns:
+        index = indexes.get(column)
+        if index is not None and index < len(row) and _normalize_sheet_text(row[index]):
+            return True
+    return False
+
+
+def _remove_empty_attendance_identity_rows(document_json: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(normalized)
+    ]
+    if not rows:
+        return normalized, 0
+    next_rows: list[list[Any]] = []
+    removed_count = 0
+    for row in rows:
+        if not _is_archived_attendance_row(row, columns) and not _attendance_row_has_identity_payload(row, columns):
+            removed_count += 1
+            continue
+        next_rows.append(row)
+    if removed_count <= 0:
+        return normalized, 0
+    return _replace_document_data_rows(normalized, next_rows), removed_count
+
+
 def _parse_attendance_registration_datetime(value: Any, *, now: date | None = None) -> datetime | None:
     parsed = _parse_registration_submitted_at_datetime(value)
     if parsed is not None:
@@ -7003,7 +7115,7 @@ def _build_attendance_total_refund_formula(
     clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
     order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
     standard_amount_ref = f"${_excel_column_label(order_amount_index)}${standard_amount_row_number}"
-    return f"=IFERROR({video_ref}+{clockin_ref}+{order_ref}-{standard_amount_ref},0)"
+    return f"=MIN(IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({standard_amount_ref}>0,{standard_amount_ref},{order_ref}),0),{order_ref})"
 
 
 def _build_attendance_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -7014,6 +7126,187 @@ def _build_attendance_zen_guest_formula(columns: list[str], *, row_number: int) 
     completed_video_ref = f"{_excel_column_label(completed_video_index)}{row_number}"
     clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
     return f'=IF(AND({completed_video_ref}>=11,{clockin_ref}>=7),"是","")'
+
+
+def _formula_row_ranges(column_indexes: list[int], row_number: int) -> list[str]:
+    sorted_indexes = sorted({index for index in column_indexes if index >= 0})
+    if not sorted_indexes:
+        return []
+
+    ranges: list[str] = []
+    start = previous = sorted_indexes[0]
+    for index in sorted_indexes[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        start_ref = f"{_excel_column_label(start)}{row_number}"
+        previous_ref = f"{_excel_column_label(previous)}{row_number}"
+        ranges.append(start_ref if start == previous else f"{start_ref}:{previous_ref}")
+        start = previous = index
+    start_ref = f"{_excel_column_label(start)}{row_number}"
+    previous_ref = f"{_excel_column_label(previous)}{row_number}"
+    ranges.append(start_ref if start == previous else f"{start_ref}:{previous_ref}")
+    return ranges
+
+
+def _attendance_video_progress_column_indexes(columns: list[str]) -> list[int]:
+    return [
+        index
+        for index, header in enumerate(columns)
+        if _is_attendance_video_progress_column(header)
+    ]
+
+
+def _build_attendance_completed_video_formula(
+    columns: list[str],
+    *,
+    row_number: int,
+) -> str | None:
+    ranges = _formula_row_ranges(_attendance_video_progress_column_indexes(columns), row_number)
+    if not ranges:
+        return None
+    parts = [f'COUNTIF({range_ref},"*完成*")' for range_ref in ranges]
+    parts.extend(f'COUNTIF({range_ref},"*回放*")' for range_ref in ranges)
+    return "=" + "+".join(parts)
+
+
+def _build_attendance_video_refund_formula(
+    document_json: dict[str, Any],
+    columns: list[str],
+    *,
+    row_number: int,
+) -> str | None:
+    ranges = _formula_row_ranges(_attendance_video_progress_column_indexes(columns), row_number)
+    if not ranges:
+        return None
+    rules = {
+        key: amount
+        for key, amount in _attendance_video_refund_rules(document_json).items()
+        if key and amount > 0
+    }
+    if not rules:
+        return None
+    parts: list[str] = []
+    for key, amount in rules.items():
+        amount_text = _format_registration_match_cell(amount)
+        parts.extend(f'COUNTIF({range_ref},"*{key}*")*{amount_text}' for range_ref in ranges)
+    return "=" + "+".join(parts)
+
+
+def _build_attendance_clockin_refund_formula(
+    document_json: dict[str, Any],
+    columns: list[str],
+    *,
+    row_number: int,
+) -> str | None:
+    clockin_index = _get_column_index(columns, "打卡数")
+    refund_index = _get_column_index(columns, "打卡应返款")
+    if clockin_index < 0 or refund_index < 0:
+        return None
+    rules = _attendance_clockin_rules_by_column(document_json, columns).get(clockin_index)
+    if not rules:
+        grid_rows = _extract_document_grid_rows(document_json)
+        data_start_row = _normalize_document_data_start_row(document_json)
+        for raw_row in reversed(grid_rows[:data_start_row]):
+            row = _normalize_sheet_row(raw_row, len(columns))
+            rules = parse_threshold_refund_rules(row[refund_index])
+            if rules:
+                break
+    if not rules:
+        return None
+    clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
+    parts: list[str] = []
+    for rule in sorted(rules, key=lambda item: item.threshold, reverse=True):
+        parts.extend([
+            f"{clockin_ref}>={_format_registration_match_cell(rule.threshold)}",
+            _format_registration_match_cell(rule.refund_amount),
+        ])
+    parts.append("0")
+    return "=SWITCH(TRUE," + ",".join(parts) + ")"
+
+
+def _build_attendance_current_refund_formula(columns: list[str], *, row_number: int) -> str | None:
+    total_index = _get_column_index(columns, "总应返款")
+    refunded_index = _get_column_index(columns, "已返款")
+    order_amount_index = _get_column_index(columns, "订单金额")
+    if total_index < 0 or refunded_index < 0 or order_amount_index < 0:
+        return None
+    total_ref = f"{_excel_column_label(total_index)}{row_number}"
+    refunded_ref = f"{_excel_column_label(refunded_index)}{row_number}"
+    order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
+    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
+
+
+def _build_attendance_refund_config_formula(columns: list[str], *, row_number: int) -> str | None:
+    merchant_order_index = _get_column_index(columns, "商户订单号")
+    current_refund_index = _get_column_index(columns, "当前应返款")
+    if merchant_order_index < 0 or current_refund_index < 0:
+        return None
+    merchant_order_ref = f"{_excel_column_label(merchant_order_index)}{row_number}"
+    current_refund_ref = f"{_excel_column_label(current_refund_index)}{row_number}"
+    period_ref = f"${_excel_column_label(current_refund_index)}$1"
+    return (
+        f'=IF({current_refund_ref}>0,TEXTJOIN(",",TRUE,{merchant_order_ref},{current_refund_ref},'
+        f'"念住闯关每日返款",{merchant_order_ref}&"_day"&{period_ref}),"")'
+    )
+
+
+def _normalize_attendance_managed_refund_formulas(
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(normalized)
+    ]
+    if not rows:
+        return document_json, 0
+
+    row_reference_offset = _get_formula_reference_row_offset(normalized)
+    standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
+    formula_builders = {
+        "禅客": lambda row_number: _build_attendance_zen_guest_formula(columns, row_number=row_number),
+        "完成视频数": lambda row_number: _build_attendance_completed_video_formula(columns, row_number=row_number),
+        "视频应返款": lambda row_number: _build_attendance_video_refund_formula(normalized, columns, row_number=row_number),
+        "打卡应返款": lambda row_number: _build_attendance_clockin_refund_formula(normalized, columns, row_number=row_number),
+        "总应返款": lambda row_number: _build_attendance_total_refund_formula(
+            columns,
+            row_number=row_number,
+            standard_amount_row_number=standard_amount_row_number,
+        ),
+        "当前应返款": lambda row_number: _build_attendance_current_refund_formula(columns, row_number=row_number),
+        "返款配置": lambda row_number: _build_attendance_refund_config_formula(columns, row_number=row_number),
+    }
+    changed_cells: list[tuple[int, int]] = []
+    for row_index, row in enumerate(rows):
+        if _is_archived_attendance_row(row, columns) or not _attendance_row_has_identity_payload(row, columns):
+            continue
+        row_number = row_reference_offset + row_index + 1
+        for header, builder in formula_builders.items():
+            column_index = _get_column_index(columns, header)
+            if column_index < 0:
+                continue
+            formula = builder(row_number)
+            if not formula:
+                continue
+            if row[column_index] != formula:
+                row[column_index] = formula
+                changed_cells.append((row_index, column_index))
+
+    if not changed_cells:
+        return document_json, 0
+
+    next_document = _replace_document_data_rows(normalized, rows)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    for row_index, column_index in changed_cells:
+        next_document = _set_document_entity_cell_value(
+            next_document,
+            document_row=data_start_row + row_index,
+            column_index=column_index,
+            value=rows[row_index][column_index],
+        )
+    return next_document, len(changed_cells)
 
 
 def _is_legacy_nianzhu_zen_guest_formula(value: Any) -> bool:
@@ -8163,6 +8456,8 @@ def _sync_registration_rows_to_attendance_document(
     if "用户ID" not in registration_columns:
         return attendance_document, _build_registration_match_summary(error_count=1)
 
+    attendance_document, empty_attendance_rows_removed = _remove_empty_attendance_identity_rows(attendance_document)
+    attendance_columns = _normalize_document_columns(attendance_document)
     registration_rows = [
         _normalize_sheet_row(row, len(registration_columns))
         for row in _extract_document_rows(registration_document)
@@ -8172,6 +8467,8 @@ def _sync_registration_rows_to_attendance_document(
         for row in _extract_document_rows(attendance_document)
     ]
     attendance_document, formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(attendance_document)
+    attendance_document, managed_formula_repaired_count = _normalize_attendance_managed_refund_formulas(attendance_document)
+    formula_repaired_count += managed_formula_repaired_count
     if formula_repaired_count:
         attendance_rows = [
             _normalize_sheet_row(row, len(attendance_columns))
@@ -8200,13 +8497,16 @@ def _sync_registration_rows_to_attendance_document(
     existing_merchant_order_ids = set(existing_merchant_order_id_rows)
 
     skipped_count = 0
-    repaired_count = 0
+    repaired_count = empty_attendance_rows_removed
     repair_meta_targets: list[tuple[int, int | None]] = []
     pending_registration_rows: list[list[Any]] = []
     cell_meta_row_offset = _normalize_document_data_start_row(attendance_document) if _extract_document_grid_rows(attendance_document) else 0
     cell_meta_column_limit = _attendance_cell_meta_template_column_limit(attendance_columns)
     progress_style_start_column, progress_style_end_column = _attendance_progress_style_column_range(attendance_columns)
     for row in registration_rows:
+        if not _registration_row_has_identity_payload(row, registration_columns):
+            skipped_count += 1
+            continue
         if _is_archived_registration_row(row, registration_columns):
             skipped_count += 1
             continue
@@ -8376,17 +8676,23 @@ def _sync_registration_rows_to_attendance_document(
             )
         next_document["cell_meta"] = next_cell_meta
     next_document = _repair_attendance_student_id_column_config(next_document)
+    next_document, managed_formula_repaired_count = _normalize_attendance_managed_refund_formulas(next_document)
+    if managed_formula_repaired_count:
+        next_rows = [
+            _normalize_sheet_row(row, len(attendance_columns))
+            for row in _extract_document_rows(next_document)
+        ]
     next_document, group_style_repaired_count = _apply_attendance_group_identity_backgrounds(
         next_document,
         next_rows,
         attendance_columns,
     )
     return next_document, _build_registration_match_summary(
-        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
-        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
+        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
+        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
         skipped_count=skipped_count,
         inserted_count=len(inserted_rows),
-        repaired_count=repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
+        repaired_count=repaired_count + formula_repaired_count + tracking_repaired_count + managed_formula_repaired_count + group_style_repaired_count,
     )
 
 
@@ -9795,6 +10101,19 @@ def _registration_group_sequence_row_keys(row: dict[str, str]) -> list[tuple[str
     return keys
 
 
+def _normalize_registration_source_order_fields(row: dict[str, str]) -> dict[str, str]:
+    next_row = dict(row)
+    payment_order = _strip_legacy_text_prefix(next_row.get("payment_order"))
+    merchant_order = _strip_legacy_text_prefix(next_row.get("merchant_order"))
+    if payment_order and not merchant_order and re.match(r"^MA\d{8,}", payment_order, re.I):
+        next_row["merchant_order"] = payment_order
+        next_row["payment_order"] = ""
+    elif merchant_order and not payment_order and re.match(r"^42\d{16,}", merchant_order):
+        next_row["payment_order"] = merchant_order
+        next_row["merchant_order"] = ""
+    return next_row
+
+
 def _extract_registration_group_sequence_source_rows(workbook_payload: dict[str, Any]) -> list[dict[str, str]]:
     source_rows: list[dict[str, str]] = []
     sheets = workbook_payload.get("sheets")
@@ -9840,6 +10159,7 @@ def _extract_registration_group_sequence_source_rows(workbook_payload: dict[str,
                 field: _normalize_excel_import_cell(values[column_index] if column_index < len(values) else "")
                 for column_index, field in best_fields.items()
             }
+            row = _normalize_registration_source_order_fields(row)
             visible_values = [_normalize_sheet_text(value) for value in row.values()]
             if not any(visible_values):
                 continue
@@ -9978,7 +10298,10 @@ def _prefer_registration_group_sequences_from_workbook(
             if (
                 payment_index >= 0
                 and not source_payment_order
-                and _strip_legacy_text_prefix(row[payment_index]) == source_merchant_order
+                and (
+                    _strip_legacy_text_prefix(row[payment_index]) == source_merchant_order
+                    or re.match(r"^MA\d{8,}", _strip_legacy_text_prefix(row[payment_index]), re.I)
+                )
             ):
                 row[payment_index] = ""
                 source_field_changed = True

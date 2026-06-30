@@ -2570,6 +2570,54 @@ def test_scene_route_candidates_include_leave_confirmation_popup():
     assert 86 in runner._scene_route_candidate_ids(tree, 34)
 
 
+def test_scene_jump_confirms_leave_popup_before_replanning(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    leave_shape = {"id": "leave", "kind": "rect", "title": "离开", "x": 0.8, "y": 0.45, "w": 0.1, "h": 0.08, "sceneJumpTarget": "34"}
+    confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
+    image180 = _scene_image("挑战中", "0180.png", [leave_shape])
+    image86 = _scene_image("离开场景", "0086.png", [confirm_shape])
+    image34 = _scene_image("世界", "0034.png", [])
+    tree = [image180, image86, image34]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": runner._index_images(tree)}
+    frames = iter(["popup", "world"])
+    clicked: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    def identify(_ctx, frame, preferred_scene_ids=None):
+        if frame == "popup" and (preferred_scene_ids is None or 86 in preferred_scene_ids):
+            return 86, 100.0
+        if frame == "world" and (preferred_scene_ids is None or 34 in preferred_scene_ids):
+            return 34, 100.0
+        return None, 0.0
+
+    def click_shape(_ctx, _image, shape, _frame=None):
+        clicked.append(str(shape.get("title") or ""))
+        runner._clear_tick_frame(_ctx)
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", identify)
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+
+    result = _drain_generator(runner._wait_scene_jump_result(
+        ctx,
+        path,
+        tree,
+        source_scene_id=180,
+        target_scene_id=69,
+        edge={"source_id": 180, "image": image180, "shape": leave_shape, "target_ids": [34]},
+        stop_event=FakeStopEvent(),
+    ))
+
+    assert result == 34
+    assert clicked == ["确认"]
+    assert "observedLanding" not in leave_shape
+
+
 def test_scene_jump_20_to_34_unknown_clicks_world_blank_once(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     back_shape = {"id": "back", "kind": "rect", "title": "回到世界", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
@@ -4498,6 +4546,84 @@ def test_daily_lingmai_is_registered_without_default_scheduler_task():
     assert definition.scheduler_supported is True
 
 
+def test_daily_lingmai_slot_candidates_keep_positive_rows():
+    runner = create_fanxiu_runtime_runner()
+
+    candidates = runner._daily_lingmai_slot_candidates([
+        {"text": "剩余空位:0/10", "x": 700, "y": 430, "w": 150, "h": 40},
+        {"text": "当前已方阵营:2人 剩余空位:8/20", "x": 610, "y": 790, "w": 250, "h": 40},
+    ])
+
+    assert [(item["remaining"], item["total"]) for item in candidates] == [(0, 10), (8, 20)]
+    assert next(item for item in candidates if item["remaining"] > 0)["y"] == 810
+
+
+def test_daily_lingmai_gather_confirm_uses_scene_305():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def current_scene(self, *_args, **_kwargs):
+            return 303, 100.0, "after"
+
+        def ocr_text(self, _frame):
+            return "此处灵脉绵延悠远"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._confirm_daily_lingmai_gather(runtime, {}, task_label="日常_灵脉"))
+
+    assert result == "success"
+    assert runtime.actions[0] == (
+        "wait_click_then_view",
+        (305, "确定"),
+        {"wait_leave": True, "timeout": 20.0},
+    )
+
+
+def test_daily_lingmai_reward_confirm_uses_scene_318():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def current_scene(self, *_args, **_kwargs):
+            return 303, 100.0, "after"
+
+        def ocr_text(self, _frame):
+            return "此处灵脉绵延悠远"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._confirm_daily_lingmai_reward(runtime, {}, task_label="日常_灵脉"))
+
+    assert result == "success"
+    assert runtime.actions[0] == (
+        "wait_click_then_view",
+        (318, "确认"),
+        {"wait_leave": True, "timeout": 20.0},
+    )
+
+
 def test_daily_lundao_is_registered_without_default_scheduler_task():
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 
@@ -4509,6 +4635,80 @@ def test_daily_lundao_is_registered_without_default_scheduler_task():
     assert definition is not None
     assert definition.label == "日常_论道"
     assert definition.scheduler_supported is True
+
+
+def test_daily_lundao_seat_confirmation_retries_transient_unknown():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.scenes = iter([(None, 0.0, "unknown"), (301, 100.0, "seat"), (303, 100.0, "dialog")])
+            self.actions = []
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def wait_click(self, *args, **kwargs):
+            self.actions.append(("wait_click", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def current_scene(self, *_args, **_kwargs):
+            return next(self.scenes)
+
+        def ocr_text(self, _frame):
+            return ""
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._advance_daily_lundao_seat_confirmation(runtime, FakeStopEvent(), 302))
+
+    assert result == (303, 100.0)
+    assert [action[0] for action in runtime.actions] == [
+        "wait_click",
+        "settle",
+        "settle",
+        "wait_click_then_view",
+    ]
+
+
+def test_daily_lundao_seat_confirmation_accepts_direct_seated_scene():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def current_scene(self, *_args, **_kwargs):
+            return 186, 100.0, "seated"
+
+        def ocr_text(self, _frame):
+            return "闻道感悟+20/分 剩余座位：224/240 离开"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._advance_daily_lundao_seat_confirmation(runtime, FakeStopEvent(), 301))
+
+    assert result == (186, 100.0)
+    assert runtime.actions[0][0] == "wait_click_then_view"
+    assert runtime.actions[0][2]["wait_leave"] is True
 
 
 def test_daily_lingzu_is_not_independent_scheduler_task():
