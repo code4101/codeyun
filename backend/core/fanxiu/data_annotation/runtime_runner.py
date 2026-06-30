@@ -2885,7 +2885,7 @@ class DataAnnotationRuntimeRunner(
         if context is None or not self._service_paths_still_current():
             self._mark_service_heartbeat("waiting_context")
             status = self.status()
-            status["engine_tick"] = {
+            status["cell_tick"] = {
                 "ran": False,
                 "reason": "waiting_context",
                 "guard": bool(guard),
@@ -2931,7 +2931,7 @@ class DataAnnotationRuntimeRunner(
             self._persist_status()
             raise
         status = self.status()
-        status["engine_tick"] = {
+        status["cell_tick"] = {
             "ran": True,
             "action": action,
             "guard": bool(guard),
@@ -2961,7 +2961,7 @@ class DataAnnotationRuntimeRunner(
         if mode == "current_job" and self.status().get("running"):
             completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
             status = self.status()
-            status["engine_tick"] = {
+            status["cell_tick"] = {
                 "ran": False,
                 "reason": "current_job_done" if completed else "timeout",
                 "run_mode": mode,
@@ -2983,7 +2983,7 @@ class DataAnnotationRuntimeRunner(
                 scheduled_job=scheduled_job,
             )
             statuses.append(status)
-            tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
+            tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
             action = str(tick.get("action") or "")
             if mode == "tick_once":
                 break
@@ -2991,8 +2991,8 @@ class DataAnnotationRuntimeRunner(
                 if status.get("running"):
                     completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
                     status = self.status()
-                    tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
-                    status["engine_tick"] = {
+                    tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
+                    status["cell_tick"] = {
                         **tick,
                         "ran": True,
                         "action": action,
@@ -3007,8 +3007,8 @@ class DataAnnotationRuntimeRunner(
                 break
 
         status = statuses[-1] if statuses else self.status()
-        tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
-        status["engine_tick"] = {
+        tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
+        status["cell_tick"] = {
             **tick,
             "run_mode": mode,
             "ticks": len(statuses),
@@ -5685,8 +5685,12 @@ class DataAnnotationRuntimeRunner(
     def _return_xianfu_learn_skill_to_world(self, runtime: FanxiuRuntime):
         with self._lock:
             self._set_status_locked("running", "仙府_领悟绝技：返回世界 #34", phase="xianfu_skill_return_world")
-            self._log_locked("action", "仙府_领悟绝技：按场景图返回 #34")
-        yield from runtime.goto_view(34)
+            self._log_locked("action", "仙府_领悟绝技：按仙府收尾链路返回 #34")
+        yield from self._return_xianfu_pages_to_world(
+            runtime,
+            task_label="仙府_领悟绝技",
+            current_candidates=(177, 176, 172, 171, 86, 34),
+        )
         return "success"
 
     def _ensure_xianfu_learn_skill_xianpin_tab(self, runtime: FanxiuRuntime, image176: dict[str, Any]):
@@ -8957,6 +8961,19 @@ class DataAnnotationRuntimeRunner(
                     })
                 self._log("success", f"已在目标场景 #{target_scene_id}")
                 return "success"
+            if int(current_scene_id) == 34 and int(target_scene_id) != 34:
+                text = self._ocr_text(self._cached_ocr_lines(ctx, frame))
+                runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame, stop_event=stop_event)
+                if self._world_reward_tip_detected(ctx, frame, text):
+                    yield from self._close_world_reward_tip_stack_if_present(
+                        ctx,
+                        runtime,
+                        stop_event,
+                        label="场景移动",
+                        max_attempts=30,
+                    )
+                    yield BehaviorTreeStatus.RUNNING
+                    continue
             current_scene_id = self._navigation_scene_id(ctx, current_scene_id, frame)
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):

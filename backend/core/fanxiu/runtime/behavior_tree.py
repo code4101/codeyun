@@ -23,7 +23,6 @@ from pyxllib.prog import (
     read_json_lease,
     read_json_object_status,
     release_json_lease,
-    should_enqueue_local_run,
     write_json_command,
 )
 
@@ -980,38 +979,65 @@ def fanxiu_resident_owner_active_for_other_process() -> bool:
     return owner_active_for_other_process(read_fanxiu_behavior_tree_service_owner(), current_pid=os.getpid())
 
 
-def fanxiu_local_task_should_enqueue(run_mode: str = "auto") -> bool:
-    try:
-        return should_enqueue_local_run(
-            run_mode,
-            owner_active_elsewhere=fanxiu_resident_owner_active_for_other_process(),
-        )
-    except ValueError as exc:
-        raise ValueError("run_mode 只支持 auto/direct/enqueue") from exc
+def normalize_fanxiu_local_run_mode(run_mode: str = "auto") -> str:
+    mode = str(run_mode or "auto").strip().lower()
+    if mode not in {"auto", "direct", "enqueue"}:
+        raise ValueError("run_mode 只支持 auto/direct/enqueue")
+    return mode
+
+
+def _fanxiu_task_wait_timeout_seconds(payload: dict[str, Any], *, fallback: float = 300.0) -> float:
+    budgets: list[float] = []
+    for key in ("max_runtime_seconds", "timeout_seconds"):
+        try:
+            value = float((payload or {}).get(key) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            budgets.append(value)
+    if budgets:
+        return max(float(fallback), max(budgets) + 30.0)
+    return float(fallback)
+
+
+def _fanxiu_completed_runtime_status(
+    submitted_status: dict[str, Any],
+    wait_result: dict[str, Any],
+) -> dict[str, Any]:
+    runtime_status = wait_result.get("runtime_status") if isinstance(wait_result.get("runtime_status"), dict) else {}
+    status = dict(runtime_status or submitted_status)
+    status["queued_job"] = submitted_status.get("queued_job") or status.get("queued_job") or {}
+    status["wait_result"] = {
+        key: value
+        for key, value in wait_result.items()
+        if key not in {"runtime_status", "submitted_status"}
+    }
+    if not bool(wait_result.get("done")):
+        status["status"] = "error"
+        status["phase"] = "manual_job_wait_failed"
+        status["error"] = str(wait_result.get("result") or "manual_job_wait_failed")
+        status["message"] = f"queued job 未完成：{status['error']}"
+    return status
 
 
 def run_fanxiu_local_task(request: FanxiuLocalRunRequest) -> dict[str, Any]:
-    """Run a Fanxiu behavior-tree task from local developer code.
-
-    This is the stable local entrypoint. It deliberately keeps CLI/dev callers
-    out of the FastAPI layer. A fresh Python process can import the core runner
-    implementation directly without waiting for CodeYun/FastAPI startup.
-    """
-    ensure_fanxiu_runtime_jobs_registered()
-    entry = resolve_fanxiu_entry(request.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or request.entry_id or DEFAULT_FANXIU_ENTRY_ID)
-    asset_tree_path = data_annotation_asset_tree_path(entry_id)
-    if not asset_tree_path.is_file():
-        raise FileNotFoundError(f"资产树不存在：{asset_tree_path}")
-    return get_fanxiu_runtime_runner().start_local_runtime_task(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=str(request.task_type or ""),
-        payload=dict(request.payload or {}),
-        asset_tree_path=asset_tree_path,
-        isolate_jobs=bool(request.isolate_jobs),
-        tick_seconds=float(request.tick_seconds or 0.2),
+    """Submit a behavior-tree task to the single resident kernel and wait."""
+    payload = dict(request.payload or {})
+    submitted = enqueue_fanxiu_local_manual_job(
+        FanxiuLocalEnqueueRequest(
+            task_type=str(request.task_type or ""),
+            payload=payload,
+            entry_id=str(request.entry_id or DEFAULT_FANXIU_ENTRY_ID),
+            label="",
+            isolate_jobs=bool(request.isolate_jobs),
+        )
     )
+    wait_result = wait_fanxiu_queued_status(
+        submitted,
+        timeout_seconds=_fanxiu_task_wait_timeout_seconds(payload),
+        poll_seconds=max(0.1, float(request.tick_seconds or 0.5)),
+    )
+    return _fanxiu_completed_runtime_status(submitted, wait_result)
 
 
 def run_fanxiu_task(
@@ -1045,31 +1071,32 @@ def submit_fanxiu_task(
     wait_timeout_seconds: float = 300.0,
     wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
-    if fanxiu_local_task_should_enqueue(run_mode):
-        status = enqueue_fanxiu_local_manual_job(
-            FanxiuLocalEnqueueRequest(
-                task_type=str(task_type or ""),
-                payload=dict(payload or {}),
-                entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
-                label=str(label or ""),
-                interruptible=interruptible,
-                isolate_jobs=bool(isolate_jobs),
-                isolation_ttl_seconds=float(isolation_ttl_seconds or 300.0),
-            )
+    mode = normalize_fanxiu_local_run_mode(run_mode)
+    payload_dict = dict(payload or {})
+    status = enqueue_fanxiu_local_manual_job(
+        FanxiuLocalEnqueueRequest(
+            task_type=str(task_type or ""),
+            payload=payload_dict,
+            entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
+            label=str(label or ""),
+            interruptible=interruptible,
+            isolate_jobs=bool(isolate_jobs),
+            isolation_ttl_seconds=float(isolation_ttl_seconds or 300.0),
         )
-        if wait:
-            return wait_fanxiu_queued_status(
-                status,
-                timeout_seconds=float(wait_timeout_seconds or 300.0),
-                poll_seconds=float(wait_poll_seconds or 0.5),
-            )
-        return status
-    return run_fanxiu_task(
-        str(task_type or ""),
-        dict(payload or {}),
-        entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
-        isolate_jobs=bool(isolate_jobs),
     )
+    if wait or mode == "direct":
+        effective_timeout = float(wait_timeout_seconds or 300.0)
+        if mode == "direct" and wait_timeout_seconds == 300.0:
+            effective_timeout = _fanxiu_task_wait_timeout_seconds(payload_dict)
+        wait_result = wait_fanxiu_queued_status(
+            status,
+            timeout_seconds=effective_timeout,
+            poll_seconds=float(wait_poll_seconds or 0.5),
+        )
+        if mode == "direct":
+            return _fanxiu_completed_runtime_status(status, wait_result)
+        return wait_result
+    return status
 
 
 def go_fanxiu_scene(

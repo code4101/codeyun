@@ -323,6 +323,123 @@ def test_course_template_refund_header_styles_include_current_refund_entity_cell
     assert normalized["entity_cells"]["field_note"]["col_current"]["style"] == {"background_color": "#D8D8D8"}
 
 
+def test_attendance_refund_faq_cell_gets_standard_link() -> None:
+    document = {
+        "columns": ["分组", "学号", "姓名"],
+        "grid_rows": [
+            ["用户信息", "", ""],
+            ["分组", "学号", "姓名"],
+            ["", "考勤返款常见问题解答", ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "entity_columns": [
+            {"id": "col_group", "header": "分组"},
+            {"id": "col_student_id", "header": "学号"},
+            {"id": "col_name", "header": "姓名"},
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "field_note": {
+                "col_student_id": {
+                    "value": "考勤返款常见问题解答",
+                    "style": {"background_color": "#D9D9D9"},
+                },
+            },
+        },
+    }
+
+    normalized = note_sheets_api._normalize_attendance_refund_faq_link(document)
+
+    assert normalized["grid_rows"][2][1] == {
+        "value": "考勤返款常见问题解答",
+        "link": {"url": "https://kdocs.cn/l/cmMznDf1i3ye"},
+        "style": {"text_color": "#FF0000", "underline": True},
+    }
+    assert normalized["entity_cells"]["field_note"]["col_student_id"]["value"] == "考勤返款常见问题解答"
+    assert normalized["entity_cells"]["field_note"]["col_student_id"]["link"] == {
+        "url": "https://kdocs.cn/l/cmMznDf1i3ye",
+    }
+    assert normalized["entity_cells"]["field_note"]["col_student_id"]["style"] == {
+        "background_color": "#D9D9D9",
+        "text_color": "#FF0000",
+        "underline": True,
+    }
+
+
+def test_attendance_total_refund_note_gets_feedback_link() -> None:
+    document = {
+        "columns": ["视频应返款", "打卡应返款", "总应返款", "已返款"],
+        "grid_rows": [
+            ["返款总计", "", "", ""],
+            ["视频应返款", "打卡应返款", "总应返款", "已返款"],
+            ["视频说明", "打卡说明", "点击我-反馈考勤返款数据问题。义工会在下个返款周期前统一处理。", "第1天"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "entity_columns": [
+            {"id": "col_video", "header": "视频应返款"},
+            {"id": "col_clockin", "header": "打卡应返款"},
+            {"id": "col_total", "header": "总应返款"},
+            {"id": "col_refunded", "header": "已返款"},
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "field_note": {
+                "col_total": {
+                    "value": "点击我-反馈考勤返款数据问题。义工会在下个返款周期前统一处理。",
+                    "style": {"background_color": "#D8D8D8"},
+                },
+            },
+        },
+    }
+
+    normalized = note_sheets_api._normalize_attendance_feedback_link(document)
+
+    assert normalized["grid_rows"][2][2] == {
+        "value": "反馈问题",
+        "link": {"url": "/attendance-feedback"},
+        "style": {"text_color": "#0000FF", "underline": True},
+    }
+    assert normalized["entity_cells"]["field_note"]["col_total"]["value"] == "反馈问题"
+    assert normalized["entity_cells"]["field_note"]["col_total"]["link"] == {"url": "/attendance-feedback"}
+    assert normalized["entity_cells"]["field_note"]["col_total"]["style"] == {
+        "background_color": "#D8D8D8",
+        "text_color": "#0000FF",
+        "underline": True,
+    }
+
+
+def test_attendance_template_source_uses_nearest_previous_same_course_type() -> None:
+    columns = ["课程类型", "课程名称", "在线考勤表", "课程开始日期"]
+    rows = [
+        ["念住", "第41届念住", {"value": "第41届念住", "link": {"url": "/workbook/10?sheet=54605"}}, "2026-06-01"],
+        ["觉观", "第48届觉观", {"value": "第48届觉观", "link": {"url": "/workbook/14?sheet=58855"}}, "2026-07-01"],
+        ["念住", "第42届念住", {"value": "第42届念住", "link": {"url": "/workbook/13?sheet=58848"}}, "2026-07-01"],
+    ]
+
+    source = note_sheets_api._find_attendance_template_source_row(
+        rows,
+        columns=columns,
+        course_type="念住",
+        target_date=date(2026, 8, 1),
+    )
+
+    assert source is not None
+    row_index, row, info = source
+    assert row_index == 2
+    assert row[1] == "第42届念住"
+    assert info["date"] == date(2026, 7, 1)
+
+
 def test_note_sheet_access_user_options_searches_username_and_nickname(client, session):
     manager = _create_user(session, username="sheet-manager", nickname="表格负责人")
     alice = _create_user(session, username="alice", nickname="陈坤泽")
@@ -5875,7 +5992,7 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
         _clear_user_override()
 
 
-def test_attendance_summary_existing_next_month_template_can_materialize_workbook(client, session):
+def test_attendance_summary_existing_next_month_template_can_materialize_workbook(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-attendance-existing-template-workbook-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -5884,6 +6001,11 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
     try:
+        from backend.core.attendance import nianzhu_course_sheets
+
+        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], None))
+        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], None))
+
         summary_workbook = WorkbookDocument(numeric_id=2, title="武陵禅寺网课考勤汇总", owner_user_id=user.id)
         source_workbook = WorkbookDocument(numeric_id=10, title="第41届念住", owner_user_id=user.id)
         summary_sheet = SheetDocument(
@@ -5934,9 +6056,59 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
             owner_user_id=user.id,
             document_json={
                 "schema_version": 1,
-                "columns": ["学号", "姓名"],
+                "columns": ["学号", "姓名", "打卡数", "05:20~06:20 第01课"],
                 "rows": [["1", "甲"]],
-                "grid_rows": [["学号", "姓名"], ["1", "甲"]],
+                "grid_rows": [
+                    ["", "", "", "6月1日~6月5日"],
+                    [
+                        "学号",
+                        "姓名",
+                        {"value": "打卡数", "link": {"url": "https://example.com/june-clockin"}},
+                        {"value": "05:20~06:20 第01课", "link": {"url": "https://example.com/june-lesson"}},
+                    ],
+                    ["", "", "", ""],
+                    ["1", "甲", "", ""],
+                ],
+                "data_start_row": 3,
+                "field_row_index": 1,
+            },
+        )
+        source_video_config = SheetDocument(
+            numeric_id=54618,
+            scope="notes",
+            owner_type="course_workbook",
+            owner_key="20260601-nianzhu-41",
+            sheet_key="video_config",
+            title="视频配置",
+            owner_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": ["lesson_id", "start_date", "end_date", "next_update", "lesson_id2", "shop_id", "lesson_name", "video_duration"],
+                "rows": [[1, "", "", "", "l_june_01", 1, "第01课", 3600]],
+                "grid_rows": [
+                    ["lesson_id", "start_date", "end_date", "next_update", "lesson_id2", "shop_id", "lesson_name", "video_duration"],
+                    [1, "", "", "", "l_june_01", 1, "第01课", 3600],
+                ],
+                "data_start_row": 1,
+                "field_row_index": 0,
+            },
+        )
+        source_clockin_config = SheetDocument(
+            numeric_id=54620,
+            scope="notes",
+            owner_type="course_workbook",
+            owner_key="20260601-nianzhu-41",
+            sheet_key="clockin_config",
+            title="打卡配置",
+            owner_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": ["clockin_id", "name", "url", "start_date", "end_date", "days", "clockin_user_num", "total_user_num"],
+                "rows": [[1, "打卡数", "https://example.com/june-clockin", "", "", "", "", ""]],
+                "grid_rows": [
+                    ["clockin_id", "name", "url", "start_date", "end_date", "days", "clockin_user_num", "total_user_num"],
+                    [1, "打卡数", "https://example.com/june-clockin", "", "", "", "", ""],
+                ],
                 "data_start_row": 1,
                 "field_row_index": 0,
             },
@@ -5945,13 +6117,19 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
         session.add(source_workbook)
         session.add(summary_sheet)
         session.add(source_attendance)
+        session.add(source_video_config)
+        session.add(source_clockin_config)
         session.commit()
         session.refresh(summary_workbook)
         session.refresh(source_workbook)
         session.refresh(summary_sheet)
         session.refresh(source_attendance)
+        session.refresh(source_video_config)
+        session.refresh(source_clockin_config)
         session.add(WorkbookSheetLink(workbook_id=summary_workbook.id, sheet_id=summary_sheet.id, order_index=0))
         session.add(WorkbookSheetLink(workbook_id=source_workbook.id, sheet_id=source_attendance.id, order_index=5))
+        session.add(WorkbookSheetLink(workbook_id=source_workbook.id, sheet_id=source_video_config.id, order_index=15))
+        session.add(WorkbookSheetLink(workbook_id=source_workbook.id, sheet_id=source_clockin_config.id, order_index=35))
         session.commit()
 
         response = client.post(
@@ -5974,6 +6152,20 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
         created_attendance = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
         assert created_attendance.owner_key == "20260701-nianzhu-42"
         assert created_attendance.document_json["rows"] == []
+        assert created_attendance.document_json["grid_rows"][1][2] == "打卡数"
+        assert created_attendance.document_json["grid_rows"][1][3] == "05:20~06:20 第01课"
+        created_video_config = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.owner_key == "20260701-nianzhu-42")
+            .where(SheetDocument.sheet_key == "video_config")
+        ).one()
+        created_clockin_config = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.owner_key == "20260701-nianzhu-42")
+            .where(SheetDocument.sheet_key == "clockin_config")
+        ).one()
+        assert created_video_config.document_json["rows"] == []
+        assert created_clockin_config.document_json["rows"] == []
     finally:
         _clear_user_override()
 
@@ -6912,15 +7104,52 @@ def test_workbook_save_as_template_preserves_linked_user_id_as_standard_field(cl
         columns = [
             "分组",
             "序号",
+            "备注",
             "提交时间",
             "姓名",
+            "微信昵称",
+            "手机号",
+            "错误手机号",
+            "微信支付订单号",
+            "订单日期",
+            "商户订单号",
+            "订单金额",
             "用户ID",
             "匹配得分",
             "参考信息",
             "关联用户ID",
+            "报名项目（必填）",
+            "性别（必填）",
+            "微信昵称（必填）",
+            "出生年月（必填）",
             "追踪状态",
             "冻结时间",
             "规则版本",
+        ]
+        row = [
+            "5月4日",
+            "1",
+            "",
+            "06/01 08:00",
+            "阿紫",
+            "阿紫",
+            "18800000000",
+            "",
+            "420000000000",
+            "",
+            "",
+            "",
+            "u_old",
+            "90",
+            "",
+            "u_new",
+            "第42届念住",
+            "女",
+            "问卷昵称",
+            "1990-01",
+            "追踪中",
+            "",
+            "当前规则",
         ]
         create_sheet_response = client.post(
             "/api/note-sheets/sheets",
@@ -6930,21 +7159,22 @@ def test_workbook_save_as_template_preserves_linked_user_id_as_standard_field(cl
                 "document_json": {
                     "schema_version": 1,
                     "columns": columns,
-                    "rows": [["5月4日", "1", "06/01 08:00", "阿紫", "u_old", "90", "", "u_new", "追踪中", "", "当前规则"]],
+                    "rows": [row],
                     "data_start_row": 2,
                     "grid_rows": [
                         columns,
-                        ["", "", "", "", "", "综合更新", "其他备注", "", "", "", ""],
-                        ["5月4日", "1", "06/01 08:00", "阿紫", "u_old", "90", "", "u_new", "追踪中", "", "当前规则"],
+                        [""] * len(columns),
+                        row,
                     ],
                     "column_configs": {
                         "用户ID": {"header_background_color": "#9DC3E6"},
                         "关联用户ID": {"header_background_color": "#F4B183", "width_mode": "fixed"},
+                        "报名项目（必填）": {"hidden": True},
                         "追踪状态": {"hidden": True},
                         "规则版本": {"hidden": True},
                     },
                     "cell_meta": {
-                        "0:7": {"style": {"background_color": "#F4B183"}},
+                        "0:15": {"style": {"background_color": "#F4B183"}},
                         "2:0": {"style": {"background_color": "#FFFF00"}},
                     },
                 },
@@ -6968,6 +7198,10 @@ def test_workbook_save_as_template_preserves_linked_user_id_as_standard_field(cl
         assert document["rows"] == []
         assert len(document["grid_rows"]) == 2
         assert "关联用户ID" in document["columns"]
+        assert "报名项目（必填）" not in document["columns"]
+        assert "性别（必填）" not in document["columns"]
+        assert "微信昵称（必填）" not in document["columns"]
+        assert "出生年月（必填）" not in document["columns"]
         assert "追踪状态" not in document["columns"]
         assert "冻结时间" not in document["columns"]
         assert "规则版本" not in document["columns"]

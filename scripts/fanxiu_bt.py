@@ -21,7 +21,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     FANXIU_EMBEDDED_SERVICE_ENV,
     FanxiuLocalEnqueueRequest,
-    FanxiuLocalRunRequest,
     FanxiuLocalServiceRequest,
     acquire_fanxiu_job_group_isolation,
     cancel_fanxiu_local_manual_job,
@@ -33,7 +32,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_manual_jobs,
     fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status,
-    fanxiu_local_task_should_enqueue,
     fanxiu_data_annotation_dir,
     data_annotation_asset_tree_path,
     read_fanxiu_job_group_isolation,
@@ -42,9 +40,9 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     request_fanxiu_behavior_tree_stop,
     resolve_fanxiu_entry,
     run_fanxiu_local_service,
-    run_fanxiu_local_task,
     start_fanxiu_local_service,
     stop_fanxiu_local_service,
+    submit_fanxiu_task,
     wait_fanxiu_local_manual_job,
 )
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
@@ -143,10 +141,6 @@ def _print_status(status: dict[str, Any]) -> None:
     ))
     logs = [item for item in status.get("logs") or [] if isinstance(item, dict)]
     _print_log_entries(logs[-12:])
-
-
-def _task_should_enqueue(run_mode: str) -> bool:
-    return fanxiu_local_task_should_enqueue(run_mode)
 
 
 def _print_owner(owner: dict[str, Any]) -> None:
@@ -780,8 +774,6 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
         return False
-    if bool(owner.get("active")):
-        return False
     if [item for item in (report.get("manual_jobs") or []) if isinstance(item, dict)]:
         return False
     if bool(isolation.get("active")):
@@ -1279,7 +1271,7 @@ def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
         "--run-mode",
         choices=["auto", "direct", "enqueue"],
         default=argparse.SUPPRESS,
-        help="执行方式：auto 在已有 resident owner 时排队，否则直跑",
+        help="执行方式：auto/enqueue 只提交到 resident kernel；direct 提交并等待完成",
     )
     parser.add_argument("--wait", action="store_true", default=argparse.SUPPRESS, help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=argparse.SUPPRESS)
@@ -1288,7 +1280,7 @@ def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
 
 def main() -> int:
     _configure_stdout()
-    parser = argparse.ArgumentParser(description="本地运行凡修行为树任务，不经过前端手动作业队列。")
+    parser = argparse.ArgumentParser(description="本地提交凡修行为树任务到 resident kernel。")
     parser.add_argument("--entry-id", default=os.environ.get("FANXIU_ENTRY_ID") or DEFAULT_FANXIU_ENTRY_ID)
     parser.add_argument("--no-isolate-jobs", action="store_true", help="本次运行期间不隔离普通作业组")
     parser.add_argument("--timeout-seconds", type=float, default=0)
@@ -1299,7 +1291,7 @@ def main() -> int:
         "--run-mode",
         choices=["auto", "direct", "enqueue"],
         default="auto",
-        help="go-scene/mail-check/task 的执行方式：auto 在已有 resident owner 时排队，否则直跑",
+        help="go-scene/mail-check/task 的执行方式：auto/enqueue 只提交；direct 提交并等待完成",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1607,27 +1599,25 @@ def main() -> int:
         return 0 if str(status.get("status") or "") not in {"error"} else 1
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
-    if _task_should_enqueue(str(args.run_mode)):
-        status = enqueue_fanxiu_local_manual_job(FanxiuLocalEnqueueRequest(
-            task_type=task_type,
-            payload=payload,
-            entry_id=str(args.entry_id),
-            label="",
-            isolate_jobs=not bool(args.no_isolate_jobs),
-        ))
-        _print_status(status)
-        if bool(args.wait):
-            return _wait_and_print_queued_job(status, float(args.wait_timeout_seconds or 300.0))
-        return 0 if str(status.get("status") or "") not in {"error"} else 1
-    status = run_fanxiu_local_task(FanxiuLocalRunRequest(
-        task_type=task_type,
-        payload=payload,
+    run_mode = str(args.run_mode or "auto")
+    wait = bool(args.wait) or run_mode == "direct"
+    status = submit_fanxiu_task(
+        task_type,
+        payload,
         entry_id=str(args.entry_id),
+        run_mode=run_mode,
         isolate_jobs=not bool(args.no_isolate_jobs),
-        tick_seconds=float(getattr(args, "tick_seconds", 0.2) or 0.2),
-    ))
+        wait=wait,
+        wait_timeout_seconds=float(args.wait_timeout_seconds or 300.0),
+    )
+    if wait and run_mode != "direct":
+        print(json.dumps(status, ensure_ascii=False, indent=2, default=str))
+        runtime_status = status.get("runtime_status") if isinstance(status.get("runtime_status"), dict) else {}
+        return 0 if bool(status.get("done")) and str(runtime_status.get("status") or "") not in {"error", "stopped"} else 1
     _print_status(status)
-    return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
+    if run_mode == "direct":
+        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
+    return 0 if str(status.get("status") or "") not in {"error"} else 1
 
 
 if __name__ == "__main__":

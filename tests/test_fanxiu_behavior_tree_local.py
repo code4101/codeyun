@@ -24,6 +24,22 @@ from backend.core.fanxiu.data_annotation import runner as runner_core
 from backend.models import UserDevice
 
 
+def _run_inline_runtime_task_for_test(request: bt.FanxiuLocalRunRequest) -> dict:
+    bt.ensure_fanxiu_runtime_jobs_registered()
+    entry = bt.resolve_fanxiu_entry(request.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or request.entry_id or bt.DEFAULT_FANXIU_ENTRY_ID)
+    asset_tree_path = bt.data_annotation_asset_tree_path(entry_id)
+    return bt.get_fanxiu_runtime_runner().start_local_runtime_task(
+        entry=entry,
+        entry_id=entry_id,
+        task_type=str(request.task_type or ""),
+        payload=dict(request.payload or {}),
+        asset_tree_path=asset_tree_path,
+        isolate_jobs=bool(request.isolate_jobs),
+        tick_seconds=float(request.tick_seconds or 0.2),
+    )
+
+
 def test_core_behavior_tree_facade_does_not_import_codeyun_db_at_module_top():
     source = Path("backend/core/fanxiu/runtime/behavior_tree.py").read_text(encoding="utf-8")
     header = source.split("DEFAULT_FANXIU_ENTRY_ID", 1)[0]
@@ -810,7 +826,7 @@ def test_local_behavior_tree_entrypoint_initializes_default_jobs(tmp_path, monke
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: calls.append("registered"))
 
-    status = bt.run_fanxiu_local_task(bt.FanxiuLocalRunRequest(task_type="go_scene", entry_id="entry"))
+    status = _run_inline_runtime_task_for_test(bt.FanxiuLocalRunRequest(task_type="go_scene", entry_id="entry"))
 
     assert status["status"] == "success"
     assert calls == ["registered"]
@@ -819,18 +835,17 @@ def test_local_behavior_tree_entrypoint_initializes_default_jobs(tmp_path, monke
 def test_core_local_python_helpers_wrap_local_task(monkeypatch):
     calls = []
 
-    def fake_run(request):
-        calls.append(request)
-        return {"status": "success", "task_type": request.task_type}
+    def fake_submit(task_type, payload=None, **kwargs):
+        calls.append((task_type, dict(payload or {}), kwargs))
+        return {"status": "success", "task_type": task_type}
 
-    monkeypatch.setattr(bt, "run_fanxiu_local_task", fake_run)
-    monkeypatch.setattr(bt, "fanxiu_local_task_should_enqueue", lambda _run_mode="auto": False)
+    monkeypatch.setattr(bt, "submit_fanxiu_task", fake_submit)
 
     assert bt.go_fanxiu_scene("#121", entry_id="entry", timeout_seconds=3)["task_type"] == "go_scene"
-    assert calls[-1].task_type == "go_scene"
-    assert calls[-1].payload == {"target_scene_id": 121, "timeout_seconds": 3.0}
-    assert calls[-1].entry_id == "entry"
-    assert calls[-1].isolate_jobs is True
+    assert calls[-1][0] == "go_scene"
+    assert calls[-1][1] == {"target_scene_id": 121, "timeout_seconds": 3.0}
+    assert calls[-1][2]["entry_id"] == "entry"
+    assert calls[-1][2]["isolate_jobs"] is True
 
     assert bt.run_fanxiu_mail_claim_check(
         entry_id="entry",
@@ -840,36 +855,46 @@ def test_core_local_python_helpers_wrap_local_task(monkeypatch):
         max_actions=2,
         isolate_jobs=False,
     )["task_type"] == "mail_cleanup"
-    assert calls[-1].task_type == "mail_cleanup"
-    assert calls[-1].payload == {
+    assert calls[-1][0] == "mail_cleanup"
+    assert calls[-1][1] == {
         "observe_only": True,
         "scan_mode": "full",
         "skip_capture": True,
         "max_actions": 2,
     }
-    assert calls[-1].isolate_jobs is False
+    assert calls[-1][2]["isolate_jobs"] is False
+
+    run_calls = []
+
+    def fake_run(request):
+        run_calls.append(request)
+        return {"status": "success", "task_type": request.task_type}
+
+    monkeypatch.setattr(bt, "run_fanxiu_local_task", fake_run)
 
     assert bt.run_fanxiu_task("detect_scene", entry_id="entry")["task_type"] == "detect_scene"
-    assert calls[-1].task_type == "detect_scene"
-    assert calls[-1].payload == {}
+    assert run_calls[-1].task_type == "detect_scene"
+    assert run_calls[-1].payload == {}
 
 
-def test_core_submit_fanxiu_task_auto_queues_when_other_owner_active(monkeypatch):
+def test_core_submit_fanxiu_task_always_queues_through_kernel(monkeypatch):
     calls = []
-
-    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", lambda: {"active": True, "pid": 11})
-    monkeypatch.setattr(bt.os, "getpid", lambda: 10)
 
     def fake_enqueue(request):
         calls.append(("enqueue", request))
-        return {"status": "queued", "phase": "manual_job_queued"}
-
-    def fake_run(request):
-        calls.append(("run", request))
-        return {"status": "success"}
+        return {"status": "queued", "phase": "manual_job_queued", "queued_job": {"id": "manual-1"}}
 
     monkeypatch.setattr(bt, "enqueue_fanxiu_local_manual_job", fake_enqueue)
-    monkeypatch.setattr(bt, "run_fanxiu_local_task", fake_run)
+    monkeypatch.setattr(
+        bt,
+        "wait_fanxiu_queued_status",
+        lambda status, **kwargs: {
+            "done": True,
+            "result": "completed",
+            "job_id": "manual-1",
+            "runtime_status": {"status": "success", "task_type": calls[-1][1].task_type},
+        },
+    )
 
     queued = bt.submit_fanxiu_task("go_scene", {"target_scene_id": 121}, entry_id="entry", run_mode="auto")
 
@@ -881,12 +906,22 @@ def test_core_submit_fanxiu_task_auto_queues_when_other_owner_active(monkeypatch
     direct = bt.submit_fanxiu_task("detect_scene", entry_id="entry", run_mode="direct")
 
     assert direct["status"] == "success"
-    assert calls[-1][0] == "run"
+    assert calls[-1][0] == "enqueue"
     assert calls[-1][1].task_type == "detect_scene"
 
 
+def test_core_run_mode_validation_keeps_direct_on_kernel_path():
+    assert bt.normalize_fanxiu_local_run_mode("auto") == "auto"
+    assert bt.normalize_fanxiu_local_run_mode("DIRECT") == "direct"
+    try:
+        bt.normalize_fanxiu_local_run_mode("inline")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("inline run mode should be rejected")
+
+
 def test_core_submit_fanxiu_task_waits_for_queued_job(monkeypatch):
-    monkeypatch.setattr(bt, "fanxiu_local_task_should_enqueue", lambda _run_mode: True)
     monkeypatch.setattr(
         bt,
         "enqueue_fanxiu_local_manual_job",
@@ -1373,7 +1408,7 @@ def test_fanxiu_bt_script_uses_core_entrypoint_only():
     assert "--run-mode" in source
     assert "--wait" in source
     assert "_add_task_run_options" in source
-    assert "fanxiu_local_task_should_enqueue" in source
+    assert "submit_fanxiu_task" in source
     assert "def _resident_owner_active_for_other_process" not in source
     assert "owner" in source
     assert "clear-logs" in source
@@ -1384,16 +1419,24 @@ def test_fanxiu_bt_script_uses_core_entrypoint_only():
     assert "backend.api.fanxiu" not in source
 
 
-def test_fanxiu_bt_auto_run_mode_queues_when_other_owner_active(monkeypatch):
+def test_fanxiu_bt_task_uses_submit_entrypoint(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-    monkeypatch.setattr(fanxiu_bt, "fanxiu_local_task_should_enqueue", lambda mode: calls.append(mode) or mode != "direct")
 
-    assert fanxiu_bt._task_should_enqueue("auto") is True
-    assert fanxiu_bt._task_should_enqueue("enqueue") is True
-    assert fanxiu_bt._task_should_enqueue("direct") is False
-    assert calls == ["auto", "enqueue", "direct"]
+    def fake_submit(task_type, payload=None, **kwargs):
+        calls.append((task_type, dict(payload or {}), kwargs))
+        return {"status": "queued", "phase": "manual_job_queued"}
+
+    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task", fake_submit)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        ["fanxiu_bt.py", "--entry-id", "entry", "task", "xianfu_visit_partner", "--run-mode", "auto"],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert calls == [("xianfu_visit_partner", {}, {"entry_id": "entry", "run_mode": "auto", "isolate_jobs": True, "wait": False, "wait_timeout_seconds": 300.0})]
 
 
 def test_fanxiu_bt_go_scene_accepts_hash_scene_id(monkeypatch):
@@ -1401,11 +1444,11 @@ def test_fanxiu_bt_go_scene_accepts_hash_scene_id(monkeypatch):
 
     calls = []
 
-    def fake_run(request):
-        calls.append(request)
+    def fake_submit(task_type, payload=None, **kwargs):
+        calls.append((task_type, dict(payload or {}), kwargs))
         return {"status": "success", "message": "ok"}
 
-    monkeypatch.setattr(fanxiu_bt, "run_fanxiu_local_task", fake_run)
+    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task", fake_submit)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1413,30 +1456,23 @@ def test_fanxiu_bt_go_scene_accepts_hash_scene_id(monkeypatch):
     )
 
     assert fanxiu_bt.main() == 0
-    assert calls[0].task_type == "go_scene"
-    assert calls[0].payload == {"target_scene_id": 121}
-    assert calls[0].entry_id == "entry"
+    assert calls[0][0] == "go_scene"
+    assert calls[0][1] == {"target_scene_id": 121}
+    assert calls[0][2]["entry_id"] == "entry"
+    assert calls[0][2]["run_mode"] == "direct"
+    assert calls[0][2]["wait"] is True
 
 
 def test_fanxiu_bt_auto_queued_task_waits_when_requested(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
-    waits = []
+    calls = []
 
-    def fake_enqueue(request):
-        return {
-            "status": "idle",
-            "phase": "manual_job_queued",
-            "queued_job": {"id": "manual-1", "task_type": request.task_type},
-        }
+    def fake_submit(task_type, payload=None, **kwargs):
+        calls.append((task_type, dict(payload or {}), kwargs))
+        return {"done": True, "runtime_status": {"status": "success"}}
 
-    def fake_wait(status, timeout_seconds):
-        waits.append((status, timeout_seconds))
-        return 0
-
-    monkeypatch.setattr(fanxiu_bt, "fanxiu_local_task_should_enqueue", lambda mode: True)
-    monkeypatch.setattr(fanxiu_bt, "enqueue_fanxiu_local_manual_job", fake_enqueue)
-    monkeypatch.setattr(fanxiu_bt, "_wait_and_print_queued_job", fake_wait)
+    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task", fake_submit)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1455,9 +1491,9 @@ def test_fanxiu_bt_auto_queued_task_waits_when_requested(monkeypatch):
     )
 
     assert fanxiu_bt.main() == 0
-    assert len(waits) == 1
-    assert waits[0][0]["queued_job"]["id"] == "manual-1"
-    assert waits[0][1] == 42.0
+    assert calls[0][0] == "xianfu_visit_partner"
+    assert calls[0][2]["wait"] is True
+    assert calls[0][2]["wait_timeout_seconds"] == 42.0
 
 
 def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
@@ -1465,12 +1501,11 @@ def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
 
     calls = []
 
-    def fake_run(request):
-        calls.append(request)
-        return {"status": "success", "message": "ok"}
+    def fake_submit(task_type, payload=None, **kwargs):
+        calls.append((task_type, dict(payload or {}), kwargs))
+        return {"done": True, "runtime_status": {"status": "success", "message": "ok"}}
 
-    monkeypatch.setattr(fanxiu_bt, "fanxiu_local_task_should_enqueue", lambda _mode: False)
-    monkeypatch.setattr(fanxiu_bt, "run_fanxiu_local_task", fake_run)
+    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task", fake_submit)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1489,7 +1524,9 @@ def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
     )
 
     assert fanxiu_bt.main() == 0
-    assert calls[0].payload["timeout_seconds"] == 900.0
+    assert calls[0][1]["timeout_seconds"] == 900.0
+    assert calls[0][2]["wait"] is True
+    assert calls[0][2]["wait_timeout_seconds"] == 900.0
 
 
 def test_fanxiu_bt_doctor_json_reports_runtime_scheduler_and_logs(monkeypatch, capsys):
@@ -3449,7 +3486,7 @@ def test_local_behavior_tree_entrypoint_lazily_creates_core_runner(tmp_path, mon
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     bt.register_fanxiu_runtime_runner_class(FakeRunner)
 
-    status = bt.run_fanxiu_local_task(
+    status = _run_inline_runtime_task_for_test(
         bt.FanxiuLocalRunRequest(
             task_type="go_scene",
             payload={"target_scene_id": 121},
@@ -3491,7 +3528,7 @@ def test_local_behavior_tree_entrypoint_uses_registered_runner(tmp_path, monkeyp
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     bt.register_fanxiu_runtime_runner(FakeRunner())
 
-    status = bt.run_fanxiu_local_task(
+    status = _run_inline_runtime_task_for_test(
         bt.FanxiuLocalRunRequest(task_type="go_scene", payload={"target_scene_id": 121}, entry_id="entry")
     )
 

@@ -582,12 +582,10 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   current_task_id?: string;
   interruptible?: boolean;
   kernel_status?: Record<string, unknown>;
-  framework_status?: Record<string, unknown>;
-  engine_status?: Record<string, unknown>;
+  cell_status?: Record<string, unknown>;
   scheduler_status?: Record<string, unknown>;
   orchestration_status?: Record<string, unknown>;
-  framework_tick?: Record<string, unknown>;
-  engine_tick?: Record<string, unknown>;
+  cell_tick?: Record<string, unknown>;
   kernel_restart?: Record<string, unknown>;
   isolation?: Record<string, unknown>;
   started_at: number;
@@ -5163,7 +5161,7 @@ export const tickFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType = 
     .then(res => res.data);
 };
 
-export const tickFanxiuDataAnnotationRuntimeFramework = (
+export const tickFanxiuDataAnnotationRuntimeCell = (
   entryId: string,
   options: {
     guard?: boolean;
@@ -5176,7 +5174,7 @@ export const tickFanxiuDataAnnotationRuntimeFramework = (
 ) => {
   return api
     .post<FanxiuDataAnnotationRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/framework/tick',
+      '/fanxiu/data-annotation/runtime/cell/tick',
       {
         entry_id: entryId,
         guard: options.guard ?? true,
@@ -5190,8 +5188,6 @@ export const tickFanxiuDataAnnotationRuntimeFramework = (
     )
     .then(res => res.data);
 };
-
-export const tickFanxiuDataAnnotationRuntimeEngine = tickFanxiuDataAnnotationRuntimeFramework;
 
 export const getFanxiuDataAnnotationRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
   return api

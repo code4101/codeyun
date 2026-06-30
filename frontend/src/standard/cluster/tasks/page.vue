@@ -2293,7 +2293,8 @@ onUnmounted(() => {
 }
 
 .runtime-table {
-  width: 100%;
+  width: max-content;
+  max-width: 100%;
 }
 
 .runtime-order-badge {

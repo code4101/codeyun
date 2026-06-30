@@ -57,11 +57,32 @@ class XianfuTaskMixin:
         skip_shape = view185.get_shape("跳过") if isinstance(view185, View) else None
         if skip_shape is None:
             raise RuntimeError(f"{task_label}：缺少 #185「跳过」标注，无法跳过仙府过场")
-        with self._lock:
-            self._set_status_locked("running", f"{task_label}：跳过仙府过场", phase="xianfu_cutscene_skip", current_scene=185)
-            self._log_locked("action", f"{task_label}：点击 #185「跳过」")
-        skip_shape.click(runtime)
-        yield from runtime.wait_view(171, timeout=30.0, label=f"{task_label}：等待仙府主页 #171")
+        for attempt in range(5):
+            with self._lock:
+                self._set_status_locked("running", f"{task_label}：跳过仙府过场", phase="xianfu_cutscene_skip", current_scene=185)
+                self._log_locked("action", f"{task_label}：点击 #185「跳过」")
+            skip_shape.click(runtime)
+            yield from runtime.wait_action_settle(1.5)
+            start = time.monotonic()
+            last_scene_id: int | None = 185
+            last_score = 0.0
+            while time.monotonic() - start < 6.0:
+                scene_id, score, frame = runtime.current_scene([171, 185], update=True)
+                last_scene_id, last_score = scene_id, score
+                text = runtime.ocr_text(frame)
+                if scene_id == 171 or self._xianfu_home_text_is_scene(text):
+                    with self._lock:
+                        self._set_status_locked("running", f"{task_label}：已到仙府主页 #171", phase="xianfu_cutscene_done", current_scene=171)
+                    self._log("success", f"{task_label}：已跳过仙府过场，进入 #171")
+                    return "success"
+                if scene_id != 185:
+                    break
+                yield BehaviorTreeStatus.RUNNING
+            if attempt < 4:
+                self._log("warning", f"{task_label}：点击跳过后仍在 #{last_scene_id or 'unknown'} {last_score:.0f}%，重试跳过")
+                continue
+            raise TimeoutError(f"{task_label}：跳过仙府过场后仍未到 #171，最后 #{last_scene_id or 'unknown'} {last_score:.0f}%")
+        return "success"
 
     def _execute_xianfu_visit_partner_task(
         self,
@@ -288,6 +309,22 @@ class XianfuTaskMixin:
         normalized = _sanitize_ocr_text(text)
         return "继续寻访" in normalized and "关闭" in normalized
 
+    def _xianfu_leave_confirm_text_is_scene(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        return "离开当前场景" in normalized and "确认" in normalized and "取消" in normalized
+
+    def _confirm_xianfu_leave_to_world(self, runtime: FanxiuRuntime, *, task_label: str):
+        view86 = runtime.get_view(86)
+        confirm_shape = view86.get_shape("确认") if isinstance(view86, View) else None
+        if confirm_shape is None:
+            raise RuntimeError(f"{task_label}：当前在 #86 离开确认弹窗，但缺少 #86「确认」标注，无法返回世界")
+        with self._lock:
+            self._set_status_locked("running", f"{task_label}：确认离开当前场景", phase="xianfu_return_confirm_leave", current_scene=86)
+            self._log_locked("action", f"{task_label}：点击 #86「确认」")
+        confirm_shape.click(runtime)
+        yield from runtime.wait_view(34, timeout=30.0, label=f"{task_label}：确认离开后等待世界 #34")
+        return "success"
+
     def _wait_xianfu_visit_juepin(self, runtime: FanxiuRuntime, *, timeout: float, label: str):
         return (yield from runtime.wait_any(
             {
@@ -305,7 +342,7 @@ class XianfuTaskMixin:
         yield from self._return_xianfu_pages_to_world(
             runtime,
             task_label="仙府_寻访仙侣",
-            current_candidates=(175, 174, 173, 172, 171, 34),
+            current_candidates=(175, 174, 173, 172, 171, 86, 34),
         )
         return "success"
 
@@ -314,7 +351,7 @@ class XianfuTaskMixin:
         runtime: FanxiuRuntime,
         *,
         task_label: str,
-        current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 34),
+        current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 86, 34),
     ):
         for _attempt in range(6):
             scene_id, score, _frame = runtime.current_scene(current_candidates, update=True)
@@ -324,13 +361,42 @@ class XianfuTaskMixin:
                     scene_id = 175
                 elif self._xianfu_visit_text_is_juepin(text):
                     scene_id = 174
+                elif self._xianfu_leave_confirm_text_is_scene(text):
+                    scene_id = 86
                 elif self._daily_assistant_text_is_world_like(text):
                     scene_id = 34
+            elif scene_id == 34 and self._xianfu_leave_confirm_text_is_scene(text):
+                scene_id = 86
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
             if scene_id == 34:
                 self._log("success", f"{task_label}：已返回世界 #34")
                 return "success"
+            if scene_id == 86:
+                yield from self._confirm_xianfu_leave_to_world(runtime, task_label=task_label)
+                continue
+            if scene_id == 177:
+                view177 = runtime.get_view(177)
+                continue_shape = view177.get_shape("继续") if isinstance(view177, View) else None
+                if continue_shape is None:
+                    raise RuntimeError(f"{task_label}：缺少 #177「继续」标注，无法关闭领悟结果弹窗")
+                with self._lock:
+                    self._set_status_locked("running", f"{task_label}：关闭领悟结果弹窗", phase="xianfu_return_close_skill_result", current_scene=177)
+                    self._log_locked("action", f"{task_label}：点击 #177「继续」")
+                continue_shape.click(runtime)
+                yield from runtime.wait_view(176, 171, 34, timeout=18.0, label=f"{task_label}：关闭 #177 后等待绝技页")
+                continue
+            if scene_id == 176:
+                view176 = runtime.get_view(176)
+                exit_shape = view176.get_shape("退出") if isinstance(view176, View) else None
+                if exit_shape is None:
+                    raise RuntimeError(f"{task_label}：缺少 #176「退出」标注，无法离开绝技页")
+                with self._lock:
+                    self._set_status_locked("running", f"{task_label}：退出绝技页", phase="xianfu_return_exit_skill", current_scene=176)
+                    self._log_locked("action", f"{task_label}：点击 #176「退出」")
+                exit_shape.click(runtime)
+                yield from runtime.wait_view(171, 172, 34, timeout=18.0, label=f"{task_label}：退出 #176 后等待仙府页")
+                continue
             if scene_id == 175:
                 view175 = runtime.get_view(175)
                 close_shape = view175.get_shape("关闭") if isinstance(view175, View) else None
