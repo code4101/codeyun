@@ -683,6 +683,10 @@ type SheetHotWithInternalView = Handsontable & {
   view?: SheetHotInternalView
 }
 
+type SheetHotMergeCellsPlugin = {
+  clearCollections?: () => void
+}
+
 type SheetPerfInputMarker = {
   kind: 'mouse' | 'keyboard'
   at: number
@@ -3659,7 +3663,11 @@ const sheetGridRows = computed<SheetRow[]>(() => {
   const headerRows = normalizedHeaderGroups.value.map((row) => expandHeaderGroupLabels(row, headers.length))
   headerRows.push([...headers])
   if (hasColumnNoteEntityRow.value) {
-    headerRows.push(headers.map((_, index) => getColumnNote(index) || getColumnNoteFromHeaderPrefixRow(index, headers)))
+    headerRows.push(headers.map((_, index) => (
+      hasMaterializedColumnNoteRow.value
+        ? getColumnNoteFromHeaderPrefixRow(index, headers)
+        : getColumnNote(index)
+    )))
   }
   return [
     ...headerRows,
@@ -3676,6 +3684,8 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
     ...row,
   ])
 })
+
+const hotTableInstanceKey = computed(() => `sheet-${props.sheetId ?? 'empty'}`)
 
 const rowMarkerColumnWidth = computed(() => {
   if (rowMarkerColumnCount.value <= 0) {
@@ -5174,6 +5184,36 @@ function getCurrentSheetHotRenderSettings() {
   }
 }
 
+function clearHotMergeCellsPlugin(hot: Handsontable | null | undefined) {
+  if (!hot) {
+    return
+  }
+  try {
+    const plugin = (hot as unknown as { getPlugin?: (name: string) => unknown }).getPlugin?.('mergeCells') as SheetHotMergeCellsPlugin | undefined
+    plugin?.clearCollections?.()
+  } catch (error) {
+    console.warn('Failed to clear sheet merged cells plugin state:', error)
+  }
+}
+
+function shouldClearHotMergeCellsBeforeSettings(settings: Record<string, unknown>) {
+  if (!Object.prototype.hasOwnProperty.call(settings, 'mergeCells')) {
+    return false
+  }
+  const mergeCellsSetting = settings.mergeCells
+  return mergeCellsSetting === false || (Array.isArray(mergeCellsSetting) && mergeCellsSetting.length === 0)
+}
+
+function updateHotSettingsWithMergeReset(hot: Handsontable, settings: Record<string, unknown>) {
+  if (shouldClearHotMergeCellsBeforeSettings(settings)) {
+    clearHotMergeCellsPlugin(hot)
+  }
+  hot.updateSettings(settings)
+  if (shouldClearHotMergeCellsBeforeSettings(settings)) {
+    clearHotMergeCellsPlugin(hot)
+  }
+}
+
 function isSheetDocumentHidden() {
   return typeof document !== 'undefined' && document.hidden
 }
@@ -5272,7 +5312,7 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
 
     const hot = getHotInstance()
     if (hot) {
-      hot.updateSettings(getCurrentSheetHotRenderSettings())
+      updateHotSettingsWithMergeReset(hot, getCurrentSheetHotRenderSettings())
       trace?.mark('update-settings')
       void updateSheetViewportHeight('renderEnhancement')
     }
@@ -14016,7 +14056,7 @@ function refreshGridStructure() {
     return
   }
 
-  hot.updateSettings({
+  updateHotSettingsWithMergeReset(hot, {
     data: sheetHotGridRows.value,
     colHeaders: sheetColumnHeaders.value,
     colWidths: [...sheetHotColumnWidths.value],
@@ -14717,7 +14757,7 @@ function handleBeforeColumnMove(
   const movedRangeEnd = effectiveFinalIndex + effectiveMovedColumns.length - 1
   const hot = getHotInstance()
   if (hot) {
-    hot.updateSettings({
+    updateHotSettingsWithMergeReset(hot, {
       data: sheetHotGridRows.value,
       colHeaders: sheetColumnHeaders.value,
       colWidths: [...sheetHotColumnWidths.value],
@@ -15787,7 +15827,7 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   }
 
   TD.classList.add('sheet-grid-note-header-cell')
-  const note = value || getColumnNote(column)
+  const note = value || (hasMaterializedColumnNoteRow.value ? '' : getColumnNote(column))
   const renderedNote = formulaText ?? note
   applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
   const link = getCellLinkAt(documentRow, column)
@@ -16236,7 +16276,8 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   headerGroups.value = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length)
   columnConfigs.value = normalizeColumnConfigs(document.column_configs, normalizedHeaders)
   sheetDefinedNames.value = normalizeDefinedNameItems(document.defined_names, 'worksheet')
-  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, sheetHeaderRowCount.value)
+  const documentHeaderRowFallback = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length).length + 1
+  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, documentHeaderRowFallback)
   const fieldRowIndex = normalizeNonNegativeInt(document.field_row_index, Math.max(0, dataStartRow - 1))
   sheetHeaderPrefixRows.value = Array.isArray(document.grid_rows)
     ? document.grid_rows
@@ -16302,7 +16343,8 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   if (hot) {
     const nextHotGridRows = sheetHotGridRows.value
     hot.batchRender(() => {
-      hot.updateSettings({
+      clearHotMergeCellsPlugin(hot)
+      updateHotSettingsWithMergeReset(hot, {
         colHeaders: sheetColumnHeaders.value,
         colWidths: [...sheetHotColumnWidths.value],
         rowHeaders: false,
@@ -26711,6 +26753,7 @@ defineExpose({
     >
       <HotTable
         v-if="isOriginalSheetViewActive && shouldRenderSheetContent"
+        :key="hotTableInstanceKey"
         ref="hotTableRef"
         class="ht-theme-main"
         :data="sheetHotGridRows"

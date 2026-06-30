@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -483,7 +483,21 @@ def normalize_data_annotation_runtime_guard_items(
 
 
 def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None:
-    return normalize_scheduled_task_record(item, default_source="manual", default_schedule_kind="manual")
+    task = normalize_scheduled_task_record(item, default_source="manual", default_schedule_kind="manual")
+    if task is None:
+        return None
+    weekdays = item.get("weekdays") if isinstance(item, dict) else None
+    if isinstance(weekdays, list):
+        parsed_weekdays: list[int] = []
+        for value in weekdays:
+            try:
+                weekday = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= weekday <= 6 and weekday not in parsed_weekdays:
+                parsed_weekdays.append(weekday)
+        task["weekdays"] = parsed_weekdays
+    return task
 
 
 def data_annotation_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
@@ -512,9 +526,40 @@ def parse_data_annotation_daily_clock(value: Any) -> dt_time | None:
 
 
 def next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
-    if str(task.get("schedule_kind") or "") != "daily":
+    schedule_kind = str(task.get("schedule_kind") or "")
+    if schedule_kind == "daily":
+        return next_daily_time(task.get("schedule_times", []), base_time=now)
+    if schedule_kind == "weekly":
+        return next_weekly_time(task.get("weekdays", []), task.get("schedule_times", []), base_time=now)
+    return None
+
+
+def next_weekly_time(weekdays: Any, times: Any, *, base_time: datetime | None = None) -> str | None:
+    parsed_weekdays = []
+    if isinstance(weekdays, list):
+        for value in weekdays:
+            try:
+                weekday = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= weekday <= 6:
+                parsed_weekdays.append(weekday)
+    clocks = [clock for value in (times if isinstance(times, list) else []) if (clock := parse_daily_clock(value)) is not None]
+    if not parsed_weekdays or not clocks:
         return None
-    return next_daily_time(task.get("schedule_times", []), base_time=now)
+    base = base_time or datetime.now()
+    candidates: list[datetime] = []
+    for day_offset in range(8):
+        current_date = base.date() + timedelta(days=day_offset)
+        if current_date.weekday() not in parsed_weekdays:
+            continue
+        for clock in clocks:
+            candidate = datetime.combine(current_date, clock)
+            if candidate > base:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    return min(candidates).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def data_annotation_task_due(task: dict[str, Any]) -> bool:

@@ -3974,7 +3974,7 @@ class DataAnnotationRuntimeRunner(
             value = float(raw_value)
         except (TypeError, ValueError):
             value = 600.0
-        return max(30.0, min(3600.0, value))
+        return max(30.0, min(21600.0, value))
 
     def _run_direct_runtime_action(
         self,
@@ -6132,7 +6132,7 @@ class DataAnnotationRuntimeRunner(
         for item in tree:
             if not isinstance(item, dict) or str(item.get("type") or "image") != "image":
                 continue
-            source_id = self._scene_jump_label_number(item.get("id"))
+            source_id = self._image_number(item)
             if source_id is None:
                 continue
             edge_list = edges.setdefault(source_id, [])
@@ -8884,7 +8884,11 @@ class DataAnnotationRuntimeRunner(
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
-            current_scene_id, score = self._identify_scene_number(ctx, frame)
+            known_scene_id = ctx.pop("_go_scene_known_scene_id", None)
+            if known_scene_id is not None:
+                current_scene_id, score = int(known_scene_id), float(self.scene_threshold)
+            else:
+                current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
                 strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
                 if strong_scene_id is not None:
@@ -9046,8 +9050,40 @@ class DataAnnotationRuntimeRunner(
                             "warning",
                             f"场景移动：#{current_scene_id} 无到 #{target_scene_id} 的路径，先点击低风险「{title}」恢复",
                         )
+                        edge = {
+                            "source_id": int(current_scene_id),
+                            "image": current_image,
+                            "shape": safe_exit_shape,
+                            "target_ids": self._scene_jump_target_ids(tree, safe_exit_shape),
+                        }
                         self._click_scene_route_shape(ctx, current_image, safe_exit_shape, frame)
-                        yield BehaviorTreeStatus.RUNNING
+                        actual_scene_id = yield from self._wait_scene_jump_result(
+                            ctx,
+                            asset_tree_path,
+                            tree,
+                            source_scene_id=current_scene_id,
+                            target_scene_id=target_scene_id,
+                            edge=edge,
+                            stop_event=stop_event,
+                            return_source_on_stall=True,
+                        )
+                        if actual_scene_id == target_scene_id:
+                            with self._lock:
+                                self._status.update({
+                                    "current_scene": target_scene_id,
+                                    "updated_at": time.time(),
+                                })
+                            self._log("success", f"到达目标场景 #{target_scene_id}")
+                            return "success"
+                        if actual_scene_id == current_scene_id:
+                            self._log(
+                                "warning",
+                                f"场景移动：低风险「{title}」恢复后仍停在 #{current_scene_id}，继续尝试其它恢复动作",
+                            )
+                            yield BehaviorTreeStatus.RUNNING
+                            continue
+                        self._log("detail", f"场景移动：低风险「{title}」实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
+                        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
                         continue
                 if not recovered_unknown_side_leave:
                     text = self._ocr_text(self._cached_ocr_lines(ctx, frame))

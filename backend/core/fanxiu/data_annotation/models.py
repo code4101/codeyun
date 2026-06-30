@@ -177,6 +177,7 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     interruptible: bool = True
     next_time: Optional[str] = None
     schedule_times: list[str] = Field(default_factory=list)
+    weekdays: list[int] = Field(default_factory=list)
     window: Optional[list[str]] = None
     last_run_at: Optional[str] = None
     last_result: str = ""

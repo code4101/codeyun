@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "6955ecbe0db382f44b732ad1be8ee5edec5e6d11"
-last_audited_at: "2026-06-29T18:35:18+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-6955ecbe/report.md"
-last_frontend_commit_summary: "完整关闭 1f786fae..6955ecbe：复核 SharedNoteEditor、东财交易建议和凡修标注页，确认三条链路都沿着减少重复表达与唯一事实源收敛，无需追加修复。"
-audited_commit_count: 47
+last_audited_commit: "e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5"
+last_audited_at: "2026-06-29T22:44:44.4423840+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-e7ec5047/report.md"
+last_frontend_commit_summary: "完整关闭 6955ecbe..e7ec5047：沿 Codex 线程页、笔记列表和笔记单工作区复核新链路，只修复了总览 loading 误遮罩整个线程工作区的问题，其余两页保持概念收敛。"
+audited_commit_count: 48
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-29
+
+- 完整范围：`6955ecbe0db382f44b732ad1be8ee5edec5e6d11..e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5`
+- 覆盖提交：`e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5`
+- 前端入口提交：`e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5`
+- 入口如何牵引到旧问题：这次提交同时把新增链路接进 `cluster/codex`、`notes/center?tab=list` 和 `NoteSheetWorkspace`。真实页面里真正被牵出来的旧问题只发生在 `cluster/codex`：线程列表已经可读时，首个详情请求仍借用总览 loading 继续遮住整块工作区，把“列表已可判断”和“详情仍在读取”两个事实混成一个全局状态。这个问题和本轮入口同页、同一状态链路，属于典型的旧投影债务被新接线放大。`ListNotes` 与 `NoteSheetWorkspace` 则沿着同一入口复核，确认新的 `_ui` 行投影和显式表头样式都没有再引入额外控件或重复解释。
+- 本轮减法：不新增任何按钮、说明、标签或常驻状态，只把 Codex 线程页里错误的全局 loading 概念删掉一层。修复后，总览只负责把线程列表加载出来，线程详情回到自己的 `读取中` 状态，工作负载仍留在局部面板里做补充上下文。
+- 信息量保持：线程列表、线程详情、工作负载、远端失败提示、笔记列表摘要和工作表表头语义都仍保留。减少的是“同一页面两个加载阶段共用一个全局蒙层”的重复状态表达，不是减少用户判断依据。
+- 概念图/线框图：报告中的 Mermaid 把这三条链路统一收回到 `总览 -> 可读列表 -> 当前详情`、`结果集 -> 列表投影`、`表头事实 -> 表头投影` 三段基础模型；ASCII 线框图则明确对比了修复前后 `cluster/codex` 的 loading 作用域，证明本轮是在删状态概念，不是在加解释。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-e7ec5047/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，以真实登录态在独立 Playwright 会话完成 `cluster/codex`、`notes/center?tab=list`、`workbook/14?sheet=58855` 的宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 9 张截图；`probes.json` 证明 `cluster/codex` 在三种视口下都满足 `threadItems=100` 且 `hasWorkspaceMask=false`，`notes-list` 保持 `50` 行结果摘要，`note-sheet` 表头颜色正确渲染。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：`cluster/codex` 属于前端状态投影问题，根因是把“总览加载”和“详情加载”混进同一遮罩范围；`ListNotes` 与 `NoteSheetWorkspace` 本轮改动方向都仍然成立，未发现需要继续止血的表现层或模型问题。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的后端数据投影或业务建模债务。
+- 剩余风险：`cluster/codex` 的工作负载面板仍可能因远端设备慢或超时而局部 loading，这符合它的次级上下文定位；`note-sheet` 窄屏本质仍是宽表浏览场景，当前依赖横向浏览能力，但这不是本轮新增复杂度。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务/交互建模、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`1f786faee97e320efbe06afb5c98fea238151247..6955ecbe0db382f44b732ad1be8ee5edec5e6d11`
 - 覆盖提交：`6955ecbe0db382f44b732ad1be8ee5edec5e6d11`

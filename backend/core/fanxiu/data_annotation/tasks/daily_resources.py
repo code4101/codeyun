@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
+from pyxllib.prog import BehaviorTreeStatus
 
+from backend.core.fanxiu.prayer_cycle import PRAYER_CYCLE_NAMES, PRAYER_CYCLE_TIMEZONE, current_prayer_cycle, next_prayer_cycle
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.runtime_runner import (
@@ -1104,6 +1106,11 @@ class DailyResourceTaskMixin:
             raise RuntimeError("仙市_每周资源：缺少 #34 或 #247 标注，无法进入仙市")
 
         task_label = "仙市_每周资源"
+        phase = self._xianshi_weekly_resources_phase(payload)
+        if phase == "skip":
+            self._log("skip", f"{task_label}：当前不在周一 00:00-05:00 或 05:00 后领取窗口，跳过")
+            return "skipped"
+
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, _frame = runtime.current_scene([247, 34], update=True)
         if scene_id != 247:
@@ -1111,8 +1118,63 @@ class DailyResourceTaskMixin:
                 yield from runtime.goto_view(34)
                 yield from runtime.wait_view(34)
             yield from runtime.wait_click_then_shape(34, "仙市", 247, "秘藏阁", settle_seconds=2.0)
-        self._log("success", f"{task_label}：已进入仙市入口页，后续流程待补")
+
+        claimed: list[str] = []
+        if phase == "midnight":
+            target = current_prayer_cycle()
+            for _ in range(2):
+                claimed.append((yield from self._claim_xianshi_weekly_resource_slot(runtime, "第1个物品", target)))
+        else:
+            skipped_groups = 0
+            skipped_group = next_prayer_cycle()
+            for group in PRAYER_CYCLE_NAMES:
+                if group == skipped_group:
+                    skipped_groups += 1
+                    continue
+                slot = "第3个物品" if skipped_groups else "第1个物品"
+                for _ in range(2):
+                    claimed.append((yield from self._claim_xianshi_weekly_resource_slot(runtime, slot, group)))
+
+        yield from runtime.wait_click_then_view(247, "返回", 47, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
+        suffix = f"，跳过 {next_prayer_cycle()} 资源" if phase == "after_reset" else ""
+        self._log("success", f"{task_label}：已领取 {', '.join(claimed)}{suffix}")
         return "success"
+
+    def _xianshi_weekly_resources_phase(self, payload: dict[str, Any]) -> str:
+        override = str(payload.get("phase") or "").strip()
+        if override in {"midnight", "after_reset"}:
+            return override
+        now = datetime.now(PRAYER_CYCLE_TIMEZONE)
+        if now.weekday() != 0:
+            return "skip"
+        if now.hour < 5:
+            return "midnight"
+        return "after_reset"
+
+    def _classify_xianshi_weekly_resource_name(self, name: str) -> str | None:
+        text = _sanitize_ocr_text(name)
+        if "洗灵" in text:
+            return "洗灵"
+        if "花神" in text:
+            return "仙花"
+        if "灵草" in text:
+            return "炼丹"
+        if "御兽" in text or "兽" in text:
+            return "灵兽"
+        if "玄魄" in text or "玄" in text:
+            return "淬体"
+        return None
+
+    def _claim_xianshi_weekly_resource_slot(self, runtime: Any, slot: str, expected_group: str):
+        yield from runtime.wait_click_then_view(247, slot, 316)
+        name_text = runtime.ocr_text_in_shapes(316, ("物品名称",), padding=8)
+        group = self._classify_xianshi_weekly_resource_name(str(name_text or ""))
+        if group != expected_group:
+            raise RuntimeError(f"仙市_每周资源：{slot} 识别到「{name_text}」={group or '未知'}，预期 {expected_group}，停止领取")
+        yield from runtime.wait_click(316, "领取")
+        yield from runtime.wait_action_settle(1.2)
+        self._log("success", f"仙市_每周资源：已领取 {name_text}")
+        return str(name_text or expected_group)
 
     def _execute_daily_vip_task(
         self,
@@ -1192,35 +1254,136 @@ class DailyResourceTaskMixin:
             if target_rounds > 0 and attacks >= target_rounds:
                 return "success"
             try:
-                view = yield from runtime.wait_view(293, 295, 294, timeout=5.0)
+                scene_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, 295, 294, timeout=5.0)
             except TimeoutError:
                 continue
-            scene_id = int(view.id) if isinstance(view, View) and view.id is not None else int(view)
             try:
+                if scene_id == 317:
+                    retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                    return "skipped"
                 if scene_id == 293:
                     numbers, _text = runtime.ocr_numbers_in_shapes(293, ("次数",), padding=16)
                     if numbers and min(numbers) < 3:
+                        self._record_daily_xianmeng_done(payload, message=f"剩余攻击次数 {min(numbers)}，今日硬停止")
                         return "success"
-                    yield from runtime.wait_click(293, "攻击")
+                    runtime.click_shape_center(293, "攻击")
                     attacks += 1
-                    yield from runtime.wait_action_settle(1.0)
+                    yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
                     try:
-                        landed = yield from runtime.wait_view(295, 294, 293, timeout=5.0)
+                        landed_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 295, 294, 293, timeout=8.0)
                     except TimeoutError:
                         pass
                     else:
-                        landed_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+                        if landed_id == 317:
+                            retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                            return "skipped"
                         if landed_id == 294:
-                            yield from runtime.wait_click_then_view(294, "确定", [293, 295], timeout=5.0)
+                            runtime.click_shape_center(294, "确定")
+                            yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
+                            next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, 295, timeout=8.0)
+                            if next_id == 317:
+                                retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                                return "skipped"
                         elif landed_id == 295:
-                            yield from runtime.wait_click_then_view(295, "点击关闭", 293, timeout=5.0)
+                            runtime.click_shape_center(295, "点击关闭")
+                            yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
+                            next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, timeout=8.0)
+                            if next_id == 317:
+                                retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                                return "skipped"
                 elif scene_id == 294:
-                    yield from runtime.wait_click_then_view(294, "确定", [293, 295], timeout=5.0)
+                    runtime.click_shape_center(294, "确定")
+                    yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
+                    next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, 295, timeout=8.0)
+                    if next_id == 317:
+                        retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                        return "skipped"
                 elif scene_id == 295:
-                    yield from runtime.wait_click_then_view(295, "点击关闭", 293, timeout=5.0)
+                    runtime.click_shape_center(295, "点击关闭")
+                    yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
+                    next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, timeout=8.0)
+                    if next_id == 317:
+                        retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                        return "skipped"
             except TimeoutError:
                 continue
         return "success"
+
+    def _parse_daily_xianmeng_immunity_cd_seconds(self, text: Any) -> int | None:
+        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        normalized = normalized.replace("：", ":").replace("O", "0").replace("o", "0")
+        match = re.search(r"免战\D*((?:\d\D*){6})", normalized)
+        if not match:
+            return None
+        digits = "".join(re.findall(r"\d", match.group(1)))[:6]
+        if len(digits) != 6:
+            return None
+        hours = int(digits[0:2])
+        minutes = int(digits[2:4])
+        seconds = int(digits[4:6])
+        if minutes >= 60 or seconds >= 60:
+            return None
+        return hours * 3600 + minutes * 60 + seconds
+
+    def _record_daily_xianmeng_done(self, payload: dict[str, Any], *, message: str) -> str:
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianmeng")
+        next_time = (
+            self._scheduler_task_next_time_from_schedule(scheduler_task_id, "daily_xianmeng")
+            or self._next_daily_boss_reset_time_text()
+        )
+        self._record_scheduler_task_discovered_next_time(
+            scheduler_task_id,
+            next_time,
+            task_type="daily_xianmeng",
+            label="日常_仙盟",
+            last_result="success",
+        )
+        self._log("success", f"日常_仙盟：{message}，下次 {next_time}")
+        return next_time
+
+    def _record_daily_xianmeng_immunity_cd(self, runtime: Any, payload: dict[str, Any]) -> str:
+        frame = runtime.cur_frame(update=True)
+        status_text = runtime.ocr_text_in_shapes(317, ("免战",), padding=10, frame_data_url=frame)
+        cd_seconds = self._parse_daily_xianmeng_immunity_cd_seconds(status_text)
+        if cd_seconds is None:
+            raise RuntimeError(f"日常_仙盟：识别到免战但无法解析 CD：{status_text or '空'}")
+        buffer_seconds = int(payload.get("immunity_cd_buffer_seconds") or 5)
+        retry_after = (datetime.now() + timedelta(seconds=max(1, cd_seconds + buffer_seconds))).strftime("%Y-%m-%d %H:%M:%S")
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianmeng")
+        self._record_scheduler_task_discovered_retry_after(
+            scheduler_task_id,
+            retry_after,
+            task_type="daily_xianmeng",
+            label="日常_仙盟",
+            last_result="skipped",
+        )
+        self._log("skip", f"日常_仙盟：免战 CD {status_text or cd_seconds}，{retry_after} 重试")
+        return retry_after
+
+    def _wait_daily_xianmeng_exact_view(self, runtime: Any, *scene_ids: int, timeout: float) -> int:
+        images = runtime.ctx.get("images")
+        target_views_by_id: dict[int, View] = {}
+        if isinstance(images, dict):
+            for scene_id in scene_ids:
+                image = images.get(int(scene_id))
+                if isinstance(image, dict):
+                    target_views_by_id[int(scene_id)] = View(image)
+        start = time.monotonic()
+        while True:
+            self._raise_if_stopped(runtime.stop_event or threading.Event())
+            self._clear_tick_frame(runtime.ctx)
+            yield BehaviorTreeStatus.RUNNING
+            runtime.cur_frame(update=True)
+            for scene_id in scene_ids:
+                view = target_views_by_id.get(int(scene_id))
+                if isinstance(view, View) and view.is_match(runtime):
+                    with self._lock:
+                        self._status.update({"current_scene": int(scene_id), "updated_at": time.time()})
+                    self._log("success", f"日常_仙盟：精确命中 #{int(scene_id)}")
+                    return int(scene_id)
+            if time.monotonic() - start >= float(timeout):
+                expected = "/".join(f"#{int(scene_id)}" for scene_id in scene_ids)
+                raise TimeoutError(f"日常_仙盟：精确等待 {expected} 超时")
 
     def _return_daily_vip_to_world(
         self,

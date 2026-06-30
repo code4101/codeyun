@@ -189,6 +189,7 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 - `source=legacy_behavior_tree` 表示来自旧版行为树任务目录。
 - `schedule_kind=dynamic` 表示旧版动态时间任务，真实下次时间后续由 Runtime 读取游戏状态后回写。
 - `schedule_kind=daily` 表示每日定时任务，执行后 Scheduler 会推进到下一次 `schedule_times`。
+- `schedule_kind=weekly` 表示每周定时任务，按 `weekdays`（周一为 0）和 `schedule_times` 生成下一次 `next_time`。
 - 尚未迁移的旧任务使用 `legacy_daily_task` / `legacy_dynamic_task` 占位，但不允许作为 Runtime 任务启动。
 - 未验收任务不应在 Runtime 中保留可调用执行函数；需要迁移时先补齐帧树/shape 验证，再新增对应执行函数和测试。
 - 当前默认清单只把旧版任务导入为占位，不默认启用具体日常任务。具体迁移必须等对应帧树和 shape 数据确认充分后再逐项打开。

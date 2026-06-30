@@ -199,7 +199,8 @@ class MailTaskMixin:
                 self._log_locked("error", f"邮件_抓包：清理入口兜底失败：{exc}")
             raise
         self._wait_mail_capture_runtime_ready("清理入口", stop_event=stop_event)
-        max_actions = max(1, int(payload.get("max_actions") or 20))
+        raw_max_actions = int(payload.get("max_actions") or 0)
+        max_actions = raw_max_actions if raw_max_actions > 0 else None
         max_scrolls = max(1, int(payload.get("max_scrolls") or 24))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
@@ -246,6 +247,18 @@ class MailTaskMixin:
                 yield from self._open_mail_cleanup_entry(runtime)
             else:
                 self._log("error", "邮件_清理：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
+        elif scene_id in {122, 123}:
+            action_title = "领取" if scene_id == 122 else "删除"
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"邮件_清理：恢复遗留详情页 #{scene_id}",
+                    phase="mail_cleanup_resume_detail",
+                    current_scene=scene_id,
+                )
+                self._log_locked("action", f"邮件_清理：启动时位于 #{scene_id}，点击「{action_title}」后继续扫描")
+            yield from runtime.wait_click(scene_id, action_title, timeout=8.0)
+            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_清理：遗留详情页处理后返回邮件 #121")
         else:
             with self._lock:
                 self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
@@ -264,7 +277,7 @@ class MailTaskMixin:
         seen_count = 0
         scroll_count = 0
         scanned_to_end = False
-        while processed_count < max_actions and scroll_count < max_scrolls:
+        while (max_actions is None or processed_count < max_actions) and scroll_count < max_scrolls:
             self._raise_if_stopped(stop_event)
             if (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")):
                 scanned_to_end = True
@@ -284,7 +297,7 @@ class MailTaskMixin:
             page_rows_summary: list[str] = []
             for mail in rows:
                 seen_count += 1
-                self._prepare_mail_row_policy(mail.raw, action_enabled=True, action_policies={"claim"})
+                self._prepare_mail_row_policy(mail.raw, action_enabled=True, action_policies={"claim", "delete"})
                 packet_match = str(mail.raw.get("packet_match") or "-")
                 page_packet_counts[packet_match] = page_packet_counts.get(packet_match, 0) + 1
                 if len(page_rows_summary) < 5:
@@ -294,7 +307,7 @@ class MailTaskMixin:
                     )
                 if mail.status == "已阅":
                     continue
-                if mail.raw.get("policy") == "claim":
+                if mail.raw.get("policy") in {"claim", "delete"}:
                     action_row = mail
                     break
                 if (
@@ -329,7 +342,7 @@ class MailTaskMixin:
                     stop_event,
                     image121,
                     detail_probe_row.raw,
-                    allowed_policies={"claim"},
+                    allowed_policies={"claim", "delete"},
                 )
                 probe_elapsed = time.monotonic() - probe_started_at
                 self._log(
@@ -358,7 +371,8 @@ class MailTaskMixin:
                 break
             scroll_count += 1
 
-        reached_scroll_limit = not scanned_to_end and processed_count < max_actions
+        action_limit_reached = max_actions is not None and processed_count >= max_actions
+        reached_scroll_limit = not scanned_to_end and not action_limit_reached
         if reached_scroll_limit:
             self._log("info", f"邮件_清理：达到 max_scrolls={max_scrolls} 仍未确认到底，继续一键删除已阅")
 
@@ -398,7 +412,7 @@ class MailTaskMixin:
                     raise RuntimeError("邮件_清理：#121「一键删除」后未进入确认弹窗，也未回到邮件页")
             elif delete_result_scene is None:
                 self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
-        elif processed_count >= max_actions:
+        elif action_limit_reached:
             self._log("info", f"邮件_清理：达到 max_actions={max_actions}，跳过一键删除已阅")
 
         final_scene = 34 if delete_result_scene == 34 else 121

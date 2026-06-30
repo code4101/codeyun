@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick, computed, watch, defineAsyncComponent } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
-import RuntimeSystemMetricsChart from '@/components/RuntimeSystemMetricsChart.vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -26,6 +25,10 @@ import {
 } from '@/api/runtime';
 import Sortable from 'sortablejs';
 
+const RuntimeSystemMetricsChart = defineAsyncComponent(
+  () => import('@/components/RuntimeSystemMetricsChart.vue')
+);
+
 const router = useRouter();
 const route = useRoute();
 const devices = computed(() => taskStore.devices);
@@ -48,6 +51,8 @@ const runtimeNameColumnWidth = computed(() => (viewportWidth.value < 960 ? 88 : 
 const runtimeCommandColumnMinWidth = computed(() => (viewportWidth.value < 960 ? 240 : 520));
 const runtimeNextColumnWidth = computed(() => (viewportWidth.value < 960 ? 96 : 130));
 const runtimeLoadIssue = ref('');
+const systemMonitorAnchorRef = ref<HTMLElement | null>(null);
+const systemMonitorActivated = ref(false);
 const getDeviceEntryMeta = (device: Device) => {
   if (device.mode === 'local') {
     return '本地入口';
@@ -349,6 +354,8 @@ const updateDeviceConfig = async () => {
 };
 
 let taskPollTimer: number | null = null;
+let systemMonitorObserver: IntersectionObserver | null = null;
+let systemMonitorWarmupTimer: number | null = null;
 const taskFetchInFlight = new Set<string>();
 const taskFetchVersions = new Map<string, number>();
 
@@ -367,6 +374,50 @@ const startTaskPolling = (entryId: string) => {
       fetchTasks(entryId, true);
     }
   }, 3000);
+};
+
+const activateSystemMonitor = () => {
+  if (systemMonitorActivated.value) return;
+  if (systemMonitorWarmupTimer !== null) {
+    window.clearTimeout(systemMonitorWarmupTimer);
+    systemMonitorWarmupTimer = null;
+  }
+  systemMonitorActivated.value = true;
+  systemMonitorObserver?.disconnect();
+  systemMonitorObserver = null;
+};
+
+const scheduleSystemMonitorActivation = () => {
+  if (systemMonitorActivated.value || typeof window === 'undefined') return;
+  if (systemMonitorWarmupTimer !== null) {
+    window.clearTimeout(systemMonitorWarmupTimer);
+  }
+  systemMonitorWarmupTimer = window.setTimeout(() => {
+    systemMonitorWarmupTimer = null;
+    activateSystemMonitor();
+  }, 900);
+};
+
+const initSystemMonitorObserver = () => {
+  if (systemMonitorActivated.value || typeof window === 'undefined') return;
+  const anchor = systemMonitorAnchorRef.value;
+  if (!anchor) return;
+  if (!('IntersectionObserver' in window)) {
+    activateSystemMonitor();
+    return;
+  }
+  systemMonitorObserver?.disconnect();
+  systemMonitorObserver = new IntersectionObserver((entries) => {
+    if (entries.some(entry => entry.isIntersecting)) {
+      activateSystemMonitor();
+    }
+  }, {
+    root: null,
+    rootMargin: '240px 0px',
+    threshold: 0.01,
+  });
+  systemMonitorObserver.observe(anchor);
+  scheduleSystemMonitorActivation();
 };
 
 const syncDeviceConfig = () => {
@@ -1541,6 +1592,7 @@ onMounted(async () => {
   }
   
   nextTick(() => {
+    initSystemMonitorObserver();
     initSortable();
     initDeviceSortable();
   });
@@ -1551,6 +1603,12 @@ onUnmounted(() => {
   window.removeEventListener('click', closeRuntimeContextMenu);
   window.removeEventListener('resize', updateViewportWidth);
   stopTaskPolling();
+  if (systemMonitorWarmupTimer !== null) {
+    window.clearTimeout(systemMonitorWarmupTimer);
+    systemMonitorWarmupTimer = null;
+  }
+  systemMonitorObserver?.disconnect();
+  systemMonitorObserver = null;
   if (serviceSortableInstance) serviceSortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
 });
@@ -1871,7 +1929,15 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <RuntimeSystemMetricsChart v-if="currentDeviceId" :entry-id="currentDeviceId" />
+    <section ref="systemMonitorAnchorRef" class="runtime-section">
+      <RuntimeSystemMetricsChart v-if="currentDeviceId && systemMonitorActivated" :entry-id="currentDeviceId" />
+      <div v-else-if="currentDeviceId" class="system-monitor-placeholder">
+        <div class="runtime-section-title">
+          <span>资源监控</span>
+        </div>
+        <div class="system-monitor-placeholder-body">滚动到此区域后加载</div>
+      </div>
+    </section>
 
     <!-- Create Runtime Command Dialog -->
     <el-dialog v-model="jobCatalogDialogVisible" title="添加作业" width="640px">
@@ -2524,6 +2590,18 @@ onUnmounted(() => {
 }
 .add-device-btn:hover {
   color: #409EFF !important;
+}
+
+.system-monitor-placeholder-body {
+  min-height: 190px;
+  border-top: 1px solid #ebeef5;
+  border-bottom: 1px solid #ebeef5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  font-size: 13px;
+  background: #fff;
 }
 
 @media (max-width: 960px) {

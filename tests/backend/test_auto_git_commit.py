@@ -1,5 +1,6 @@
+import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlmodel import select
 
@@ -21,10 +22,11 @@ from backend.core.ai.auto_git_commit import (
 from backend.models import AppSetting, AutoGitCommitRun
 
 
-def _run_git(repo_path, *args):
+def _run_git(repo_path, *args, env=None):
     completed = subprocess.run(
         ["git", *args],
         cwd=str(repo_path),
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -44,6 +46,15 @@ def _init_git_repo(repo_path):
     (repo_path / "README.md").write_text("# demo\n", encoding="utf-8")
     _run_git(repo_path, "add", "README.md")
     _run_git(repo_path, "commit", "-m", "init")
+
+
+def _amend_last_commit_date(repo_path, value: datetime):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": value.isoformat(),
+        "GIT_COMMITTER_DATE": value.isoformat(),
+    }
+    _run_git(repo_path, "commit", "--amend", "--no-edit", f"--date={value.isoformat()}", env=env)
 
 
 def _save_auto_commit_repos(session, user_id, items):
@@ -390,6 +401,108 @@ def test_auto_git_commit_worker_skips_dirty_repo_below_line_threshold(session, a
     assert repo_result["estimated_changed_line_count"] < AUTO_GIT_COMMIT_MIN_CHANGED_LINES
     assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "init"
     assert "feature.txt" in _run_git(dirty_repo, "status", "--short")
+
+
+def test_auto_git_commit_worker_commits_stale_dirty_repo_below_line_threshold(session, auth_user, tmp_path, monkeypatch):
+    dirty_repo = tmp_path / "stale-dirty-repo"
+    _init_git_repo(dirty_repo)
+    _amend_last_commit_date(dirty_repo, datetime.now().astimezone() - timedelta(days=8))
+    (dirty_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    monkeypatch.setattr(
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
+        lambda **_: ("ollama", None, None, ()),
+    )
+
+    def fake_draft_generator(**kwargs):
+        return {
+            "subject": "提交超过一周的小改动",
+            "body": ["小改动距离上次提交超过 7 天，自动提交。"],
+            "model": "fake-model",
+            "needs_split": False,
+            "reason": "",
+        }
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        draft_generator=fake_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    repo_result = updated.result_json["repos"][0]
+    assert updated.status == "completed"
+    assert updated.committed_repo_count == 1
+    assert repo_result["status"] == "committed"
+    assert repo_result["estimated_changed_line_count"] < AUTO_GIT_COMMIT_MIN_CHANGED_LINES
+    assert repo_result["auto_commit_eligibility_reason"] == "stale_changes"
+    assert repo_result["last_commit_age_days"] >= 7
+    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "提交超过一周的小改动"
+    assert _run_git(dirty_repo, "status", "--short") == ""
+
+
+def test_auto_git_commit_worker_bumps_pyxllib_version_before_commit(session, auth_user, tmp_path, monkeypatch):
+    dirty_repo = tmp_path / "pyxllib"
+    _init_git_repo(dirty_repo)
+    version_file = dirty_repo / "src" / "pyxllib" / "__init__.py"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_text("__version__ = '4.53'\n", encoding="utf-8")
+    _run_git(dirty_repo, "add", "src/pyxllib/__init__.py")
+    _run_git(dirty_repo, "commit", "-m", "add version")
+    (dirty_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "py", "name": "pyxllib", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    monkeypatch.setattr(
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
+        lambda **_: ("ollama", None, None, ()),
+    )
+    monkeypatch.setattr("backend.core.ai.auto_git_commit.AUTO_GIT_COMMIT_MIN_CHANGED_LINES", 1)
+
+    def fake_draft_generator(**kwargs):
+        return {
+            "subject": "v4.54 自动提交 pyxllib 改动",
+            "body": ["提交 pyxllib 改动并递增版本号。"],
+            "model": "fake-model",
+            "needs_split": False,
+            "reason": "",
+        }
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        draft_generator=fake_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    repo_result = updated.result_json["repos"][0]
+    assert updated.status == "completed"
+    assert repo_result["status"] == "committed"
+    assert repo_result["pyxllib_version_bump"] == {
+        "status": "updated",
+        "path": "src/pyxllib/__init__.py",
+        "old_version": "4.53",
+        "new_version": "4.54",
+    }
+    assert _run_git(dirty_repo, "show", "HEAD:src/pyxllib/__init__.py") == "__version__ = '4.54'"
+    assert "src/pyxllib/__init__.py" in _run_git(dirty_repo, "show", "--name-only", "--pretty=", "HEAD")
+    assert _run_git(dirty_repo, "status", "--short") == ""
 
 
 def test_auto_git_commit_worker_uses_lightweight_ai_for_large_codeyun(session, auth_user, tmp_path, monkeypatch):

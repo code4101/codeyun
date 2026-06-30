@@ -14,6 +14,7 @@ from backend.api import fanxiu
 from backend.core.fanxiu.runtime import behavior_tree as fanxiu_behavior_tree
 from backend.core.fanxiu.data_annotation import default_jobs as data_annotation_default_jobs
 from backend.core.fanxiu.data_annotation import scheduler as scheduler_core
+from backend.core.fanxiu.data_annotation import state as data_annotation_state
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
@@ -1216,6 +1217,30 @@ def test_data_annotation_scheduler_daily_next_time_uses_next_clock():
 
     assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 2, 4, 0)) == "2026-06-02 05:00:00"
     assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 2, 6, 0)) == "2026-06-03 00:00:00"
+
+
+def test_data_annotation_scheduler_weekly_next_time_uses_weekday_and_clock():
+    task = {
+        "schedule_kind": "weekly",
+        "weekdays": [0],
+        "schedule_times": ["00:05", "05:05"],
+    }
+
+    assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 0, 1)) == "2026-06-29 00:05:00"
+    assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 1, 0)) == "2026-06-29 05:05:00"
+    assert fanxiu._next_data_annotation_scheduler_time(task, datetime(2026, 6, 29, 6, 0)) == "2026-07-06 00:05:00"
+
+
+def test_data_annotation_scheduler_normalize_preserves_weekdays():
+    task = data_annotation_state.normalize_data_annotation_scheduler_task({
+        "id": "xianshi-weekly-resources",
+        "task_type": "xianshi_weekly_resources",
+        "schedule_kind": "weekly",
+        "weekdays": ["0", 7, "bad", 2],
+        "schedule_times": ["00:05"],
+    })
+
+    assert task["weekdays"] == [0, 2]
 
 
 def test_reset_scheduler_task_runs_clears_runtime_fields_and_world_facts(tmp_path, monkeypatch):
@@ -3159,6 +3184,10 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert "legacy-daily-yihuo" not in by_id
     assert by_id["legacy-daily-gongfeng"]["task_type"] == "daily_gongfeng"
     assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
+    assert by_id["xianshi-weekly-resources"]["task_type"] == "xianshi_weekly_resources"
+    assert by_id["xianshi-weekly-resources"]["schedule_kind"] == "weekly"
+    assert by_id["xianshi-weekly-resources"]["weekdays"] == [0]
+    assert by_id["xianshi-weekly-resources"]["schedule_times"] == ["00:05", "05:05"]
     assert by_id["legacy-daily-xianmeng"]["task_type"] == "daily_xianmeng"
     assert by_id["legacy-daily-xianmeng"]["label"] == "日常_仙盟"
     assert by_id["legacy-daily-xianmeng"]["enabled"] is False

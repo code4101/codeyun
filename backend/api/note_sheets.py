@@ -1011,6 +1011,77 @@ def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     return _canonicalize_sheet_document_links(dict(value), migrate_legacy_links=True)
 
 
+def _is_registration_sheet(document: SheetDocument) -> bool:
+    return (
+        _normalize_sheet_text(document.sheet_key) == "registration"
+        or _normalize_sheet_text(document.title) == "报名表"
+    )
+
+
+def _normalize_registration_sheet_header_document(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    next_document = dict(normalized)
+    changed = False
+
+    if next_document.get("header_groups") != []:
+        next_document["header_groups"] = []
+        changed = True
+    if next_document.get("merged_cells") != []:
+        next_document["merged_cells"] = []
+        changed = True
+
+    data_start_row = _normalize_document_data_start_row(next_document)
+    if data_start_row <= 0:
+        data_start_row = 1
+        next_document["data_start_row"] = data_start_row
+        changed = True
+    field_row_index = next_document.get("field_row_index")
+    if not isinstance(field_row_index, int) or field_row_index < 0 or field_row_index >= data_start_row:
+        next_document["field_row_index"] = 0
+        changed = True
+
+    grid_rows = _extract_document_grid_rows(next_document)
+    if not grid_rows:
+        grid_rows = [list(columns)]
+        changed = True
+    else:
+        grid_rows = [_normalize_sheet_row(row, len(columns)) for row in grid_rows]
+        if grid_rows[0] != columns:
+            grid_rows[0] = list(columns)
+            changed = True
+    while len(grid_rows) < data_start_row:
+        grid_rows.append([""] * len(columns))
+        changed = True
+    if next_document.get("grid_rows") != grid_rows:
+        next_document["grid_rows"] = grid_rows
+        changed = True
+
+    next_document, style_changed = _apply_registration_standard_user_id_column_styles(next_document)
+    changed = changed or style_changed
+    return next_document, changed
+
+
+def _normalize_registration_sheet_header_persisted(
+    session: Session,
+    document: SheetDocument,
+    document_json: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_document = dict(document_json if document_json is not None else (document.document_json or {}))
+    if not _is_registration_sheet(document):
+        return _normalize_document_json(source_document)
+    next_document, changed = _normalize_registration_sheet_header_document(source_document)
+    if changed:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        _broadcast_sheet_resource_update(document)
+    return dict(document.document_json or next_document)
+
+
 def _apply_registration_standard_user_id_column_styles(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -1063,6 +1134,42 @@ def _apply_registration_standard_user_id_column_styles(document_json: dict[str, 
                 changed = True
             cell_meta[key] = meta
     next_document["cell_meta"] = cell_meta
+
+    entity_rows = _extract_document_entity_rows(next_document)
+    entity_columns = _extract_document_entity_columns(next_document)
+    entity_cells = _extract_document_entity_cells(next_document)
+    if entity_rows and entity_columns and entity_cells:
+        target_index_set = set(target_indexes)
+        next_entity_cells = dict(entity_cells)
+        for row_index in header_rows:
+            if row_index < 0 or row_index >= len(entity_rows):
+                continue
+            row_id = _get_document_entity_row_id(entity_rows[row_index])
+            if not row_id:
+                continue
+            source_row_cells = next_entity_cells.get(row_id)
+            next_row_cells = dict(source_row_cells) if isinstance(source_row_cells, dict) else {}
+            row_changed = False
+            for column_index in target_index_set:
+                if column_index < 0 or column_index >= len(entity_columns):
+                    continue
+                column_id = _get_document_entity_column_id(entity_columns[column_index])
+                if not column_id:
+                    continue
+                source_cell = next_row_cells.get(column_id)
+                next_cell = dict(source_cell) if isinstance(source_cell, dict) else {}
+                style = dict(next_cell.get("style")) if isinstance(next_cell.get("style"), dict) else {}
+                previous_style = dict(style)
+                style["background_color"] = NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND
+                next_cell["style"] = style
+                if next_cell != source_cell or style != previous_style:
+                    next_row_cells[column_id] = next_cell
+                    row_changed = True
+            if row_changed:
+                next_entity_cells[row_id] = next_row_cells
+                changed = True
+        if changed:
+            next_document["entity_cells"] = next_entity_cells
 
     return next_document, changed
 
@@ -11679,6 +11786,55 @@ def _shift_chinese_month_day_cell(value: Any, *, source_start: date, day_delta: 
     return value
 
 
+def _shift_date_function_text(value: str, *, day_delta: int) -> str:
+    if not value or day_delta == 0:
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        with contextlib.suppress(ValueError):
+            shifted = date(
+                int(match.group("year")),
+                int(match.group("month")),
+                int(match.group("day")),
+            ) + timedelta(days=day_delta)
+            return f"DATE({shifted.year},{shifted.month},{shifted.day})"
+        return match.group(0)
+
+    return re.sub(
+        r"DATE\(\s*(?P<year>\d{4})\s*,\s*(?P<month>\d{1,2})\s*,\s*(?P<day>\d{1,2})\s*\)",
+        replace,
+        value,
+        flags=re.IGNORECASE,
+    )
+
+
+def _adapt_course_template_defined_names(document_json: dict[str, Any], *, day_delta: int) -> dict[str, Any]:
+    defined_names = document_json.get(NOTE_SHEET_DEFINED_NAMES_KEY)
+    if not isinstance(defined_names, list) or day_delta == 0:
+        return document_json
+
+    next_names: list[Any] = []
+    changed = False
+    for item in defined_names:
+        if not isinstance(item, dict):
+            next_names.append(item)
+            continue
+        next_item = dict(item)
+        formula = next_item.get("formula")
+        if isinstance(formula, str):
+            next_formula = _shift_date_function_text(formula, day_delta=day_delta)
+            if next_formula != formula:
+                next_item["formula"] = next_formula
+                changed = True
+        next_names.append(next_item)
+
+    if not changed:
+        return document_json
+    next_document = dict(document_json)
+    next_document[NOTE_SHEET_DEFINED_NAMES_KEY] = next_names
+    return next_document
+
+
 def _set_cell_display_value_preserving_link(cell: Any, value: Any) -> Any:
     if isinstance(cell, dict):
         next_cell = dict(cell)
@@ -11819,7 +11975,148 @@ def _adapt_course_template_header_dates(
             next_entity_cells[row_id] = next_row_cells
         if changed:
             next_document["entity_cells"] = next_entity_cells
+    next_document = _adapt_course_template_defined_names(next_document, day_delta=day_delta)
     next_document = _sync_header_grid_rows_from_entity_cells(next_document)
+    return next_document
+
+
+def _reset_course_template_runtime_header_values(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(next_document)
+    grid_rows = _extract_document_grid_rows(next_document)
+    data_start_row = _normalize_document_data_start_row(next_document)
+    config_row_index = data_start_row - 1
+    field_row_index = int(next_document.get("field_row_index") or 0)
+    if config_row_index < 0 or config_row_index <= field_row_index:
+        return next_document
+
+    period_display_index = _get_column_index(columns, "已返款")
+    current_refund_index = _get_column_index(columns, "当前应返款")
+    if period_display_index < 0 and current_refund_index < 0:
+        return next_document
+
+    next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+    while len(next_grid_rows) <= config_row_index:
+        next_grid_rows.append([])
+    config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
+    changed_cells: list[int] = []
+    if period_display_index >= 0:
+        period_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"天"'
+        if _normalize_sheet_text(config_row[period_display_index]) != period_formula:
+            config_row[period_display_index] = period_formula
+            changed_cells.append(period_display_index)
+    if current_refund_index >= 0 and _normalize_sheet_text(config_row[current_refund_index]):
+        config_row[current_refund_index] = ""
+        changed_cells.append(current_refund_index)
+
+    column_configs_changed = False
+    column_configs = next_document.get("column_configs")
+    next_column_configs = dict(column_configs) if isinstance(column_configs, dict) else {}
+    if current_refund_index >= 0 and current_refund_index < len(columns):
+        current_refund_header = str(columns[current_refund_index])
+        current_refund_config = next_column_configs.get(current_refund_header)
+        if isinstance(current_refund_config, dict) and "note" in current_refund_config:
+            next_config = dict(current_refund_config)
+            next_config.pop("note", None)
+            if next_config:
+                next_column_configs[current_refund_header] = next_config
+            else:
+                next_column_configs.pop(current_refund_header, None)
+            column_configs_changed = True
+
+    if not changed_cells and not column_configs_changed:
+        return next_document
+
+    next_grid_rows[config_row_index] = config_row
+    next_document = dict(next_document)
+    next_document["grid_rows"] = next_grid_rows
+    if column_configs_changed:
+        if next_column_configs:
+            next_document["column_configs"] = next_column_configs
+        else:
+            next_document.pop("column_configs", None)
+    for column_index in changed_cells:
+        next_document = _set_document_entity_cell_value(
+            next_document,
+            document_row=config_row_index,
+            column_index=column_index,
+            value=config_row[column_index],
+        )
+    return next_document
+
+
+def _normalize_course_template_refund_header_styles(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(next_document)
+    start_index = _get_column_index(columns, "完成视频数")
+    end_index = _get_column_index(columns, "当前应返款")
+    if start_index < 0 or end_index < start_index:
+        return next_document
+
+    field_row_index = int(next_document.get("field_row_index") or 0)
+    note_row_index = max(_normalize_document_data_start_row(next_document) - 1, 0)
+    styles_by_row = {
+        max(field_row_index - 1, 0): {"background_color": "#FFBA84"},
+        field_row_index: {"background_color": "#FFDCC4"},
+        note_row_index: {"background_color": "#D8D8D8"},
+    }
+
+    cell_meta = deepcopy(dict(next_document.get("cell_meta") or {}))
+    changed = False
+    for row_index, style in styles_by_row.items():
+        for column_index in range(start_index, end_index + 1):
+            key = f"{row_index}:{column_index}"
+            meta = deepcopy(cell_meta.get(key)) if isinstance(cell_meta.get(key), dict) else {}
+            previous_style = meta.get("style") if isinstance(meta.get("style"), dict) else {}
+            next_style = dict(previous_style)
+            for stale_key in ("background_color", "text_color"):
+                next_style.pop(stale_key, None)
+            next_style.update(style)
+            if next_style != previous_style:
+                meta["style"] = next_style
+                cell_meta[key] = meta
+                changed = True
+
+    if changed:
+        next_document = dict(next_document)
+        next_document["cell_meta"] = cell_meta
+
+    entity_rows = _extract_document_entity_rows(next_document)
+    entity_columns = _extract_document_entity_columns(next_document)
+    entity_cells = _extract_document_entity_cells(next_document)
+    if entity_rows and entity_columns and entity_cells:
+        next_entity_cells = deepcopy(entity_cells)
+        for row_index, style in styles_by_row.items():
+            if row_index < 0 or row_index >= len(entity_rows):
+                continue
+            row_id = _get_document_entity_row_id(entity_rows[row_index])
+            if not row_id:
+                continue
+            row_cells = dict(next_entity_cells.get(row_id) or {})
+            for column_index in range(start_index, min(end_index + 1, len(entity_columns))):
+                column = entity_columns[column_index]
+                if not isinstance(column, dict):
+                    continue
+                column_id = _normalize_sheet_text(column.get("id"))
+                if not column_id:
+                    continue
+                entry = dict(row_cells.get(column_id) or {})
+                previous_style = entry.get("style") if isinstance(entry.get("style"), dict) else {}
+                next_style = dict(previous_style)
+                for stale_key in ("background_color", "text_color"):
+                    next_style.pop(stale_key, None)
+                next_style.update(style)
+                if next_style == previous_style:
+                    continue
+                entry["style"] = next_style
+                row_cells[column_id] = entry
+                changed = True
+            if row_cells:
+                next_entity_cells[row_id] = row_cells
+        if changed:
+            next_document = dict(next_document)
+            next_document["entity_cells"] = next_entity_cells
+
     return next_document
 
 
@@ -11915,9 +12212,19 @@ def _maybe_materialize_zen_course_data_sheets(
     )
     video_meta = dict(documents[VIDEO_CONFIG_SHEET_KEY].get("source_meta") or {})
     clockin_meta = dict(documents[CLOCKIN_CONFIG_SHEET_KEY].get("source_meta") or {})
-    if int(video_meta.get("legacy_lesson_rows") or 0) <= 0:
+    video_rows = _extract_document_rows(documents[VIDEO_CONFIG_SHEET_KEY])
+    clockin_rows = _extract_document_rows(documents[CLOCKIN_CONFIG_SHEET_KEY])
+    has_video_source = int(video_meta.get("legacy_lesson_rows") or 0) > 0 or any(
+        _normalize_sheet_text(row[4] if isinstance(row, list) and len(row) > 4 else "")
+        for row in video_rows
+    )
+    has_clockin_source = int(clockin_meta.get("legacy_clockin_rows") or 0) > 0 or any(
+        _normalize_sheet_text(row[2] if isinstance(row, list) and len(row) > 2 else "")
+        for row in clockin_rows
+    )
+    if not has_video_source:
         return
-    if int(clockin_meta.get("legacy_clockin_rows") or 0) <= 0:
+    if not has_clockin_source:
         return
 
     summary = materialize_nianzhu_course_sheets(
@@ -11927,7 +12234,7 @@ def _maybe_materialize_zen_course_data_sheets(
         course_name=normalized_course_name,
         replace=True,
     )
-    if int(summary.get("legacy_lesson_rows") or 0) > 0:
+    if int(summary.get("legacy_lesson_rows") or 0) > 0 or has_video_source:
         _prune_no_attendance_video_config_rows_for_course_template(
             session,
             attendance_sheet=attendance_sheet,
@@ -11939,9 +12246,13 @@ def _maybe_materialize_zen_course_data_sheets(
         attendance_sheet.document_json = _strip_course_template_column_header_colors(
             dict(attendance_sheet.document_json or {})
         )
+        attendance_sheet.document_json = _normalize_course_template_refund_header_styles(
+            dict(attendance_sheet.document_json or {})
+        )
         attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
         attendance_sheet.updated_at = time.time()
         session.add(attendance_sheet)
+        _normalize_no_attendance_color_boundary(session, attendance_sheet)
 
 
 def _no_attendance_video_column_names(attendance_sheet: SheetDocument) -> set[str]:
@@ -12228,6 +12539,8 @@ def _clone_attendance_course_template_workbook(
                 source_owner_key=source_sheet.owner_key,
                 target_owner_key=owner_key,
             )
+            cloned_document_json = _reset_course_template_runtime_header_values(cloned_document_json)
+            cloned_document_json = _normalize_course_template_refund_header_styles(cloned_document_json)
         document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
             id=document_identity.primary_id,
@@ -14940,6 +15253,8 @@ def _build_note_sheet_table_response(
     defined_names: dict[str, str] | None = None,
 ) -> NoteSheetTableResponse:
     normalized = _normalize_document_json(dict(document.document_json or {}))
+    if _is_registration_sheet(document):
+        normalized, _registration_header_changed = _normalize_registration_sheet_header_document(normalized)
     normalized, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(normalized)
     columns = _normalize_document_columns(normalized)
     rows = _extract_document_rows(normalized)
@@ -15935,6 +16250,7 @@ def get_note_sheet(
     )
     _sync_attendance_questionnaire_sheet_document_if_needed(session, document)
     stored_document = _ensure_sheet_document_identity_persisted(session, document)
+    stored_document = _normalize_registration_sheet_header_persisted(session, document, stored_document)
     stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(
         session,
@@ -15989,6 +16305,7 @@ def query_note_sheet(
         workbook_id=workbook_id,
     )
     _sync_attendance_questionnaire_sheet_document(session, document)
+    full_document = _normalize_registration_sheet_header_persisted(session, document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(
         session,
         document,
@@ -15996,7 +16313,6 @@ def query_note_sheet(
         workbook=workbook,
         include_workbook_context=payload.include_workbook_context,
     )
-    full_document = dict(document.document_json or {})
     full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
     full_document = _normalize_document_json(full_document)
     full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
@@ -16222,6 +16538,8 @@ def patch_note_sheet_table(
         current_document,
         payload.operations,
     )
+    if _is_registration_sheet(document):
+        next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
     next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
     if next_document != current_document:
         document.document_json = next_document
@@ -16317,6 +16635,8 @@ def patch_note_sheet_cells(
         next_document = _strip_formula_cell_rich_text(next_document)
         next_document = _remove_orphan_document_entity_cells(next_document)
         next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+        if _is_registration_sheet(document):
+            next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
         if _is_attendance_questionnaire_data_sheet(document):
             next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
         document.document_json = next_document
@@ -16374,6 +16694,8 @@ def patch_note_sheet(
     next_document = _strip_formula_cell_rich_text(next_document)
     next_document = _remove_orphan_document_entity_cells(next_document)
     next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+    if _is_registration_sheet(document):
+        next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
 
@@ -16584,6 +16906,8 @@ def update_note_sheet(
     next_document = _strip_formula_cell_rich_text(next_document)
     next_document = _remove_orphan_document_entity_cells(next_document)
     next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+    if _is_registration_sheet(document):
+        next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
 
     if _is_attendance_summary_document(session, document):
         next_document, _online_links_preserved_count = _preserve_attendance_summary_online_sheet_links(
