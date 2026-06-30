@@ -529,7 +529,7 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
         for part in (
             f"每 {interval} 秒巡检",
             "独立进程",
-            "异常时重启 dev.py",
+            "无命令行主控时兜底恢复",
             "开机自启" if (payload.get("startup") or {}).get("enabled") else "",
         )
         if part
@@ -1694,7 +1694,7 @@ def trigger_command_runtime_item(task_key: str, session: Session) -> dict[str, A
     if task is None:
         raise HTTPException(status_code=404, detail="运行单元不存在")
     if task.device_id == get_device_id() and is_legacy_codeyun_command_task(task):
-        return trigger_builtin_runtime_item(CODEYUN_WATCHDOG_SERVICE_KEY, session)
+        raise HTTPException(status_code=404, detail="旧 CodeYun 命令任务已停用，请使用命令行 uv run dev.py 启动主程序")
     policy = resolve_command_runtime_policy(task)
     if policy.kind == "job":
         return task_manager.enqueue_task_run(task_key, trigger_reason="manual_runtime")
@@ -1709,6 +1709,8 @@ def stop_command_runtime_item(task_key: str, session: Session) -> dict[str, Any]
     task = session.get(TaskModel, task_key)
     if task is None:
         raise HTTPException(status_code=404, detail="运行单元不存在")
+    if task.device_id == get_device_id() and is_legacy_codeyun_command_task(task):
+        raise HTTPException(status_code=404, detail="旧 CodeYun 命令任务已停用，请使用运行页的 CodeYun 本机守护项管理兜底守护")
     return task_manager.stop_task(task_key)
 
 

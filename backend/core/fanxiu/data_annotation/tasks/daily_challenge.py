@@ -2012,7 +2012,7 @@ class DailyChallengeTaskMixin:
                 self._log_locked("action", f"{label}：点击 #121 外侧空白恢复到世界")
             else:
                 self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
-        if scene_id == 121:
+        def close_mail_list_to_world():
             for attempt in range(3):
                 runtime.click_frame_point(121, 1, 1)
                 yield from runtime.wait_action_settle(1.0)
@@ -2024,9 +2024,25 @@ class DailyChallengeTaskMixin:
                     return
                 self._log("info", f"{label}：第 {attempt + 1} 次关闭后仍像邮件页，继续点击外侧空白")
             raise RuntimeError(f"{label}：点击外侧空白后仍未关闭 #121 邮件页")
+        if scene_id == 121:
+            yield from close_mail_list_to_world()
         else:
             yield from runtime.wait_click(scene_id, "空白-返回")
-        yield from runtime.wait_view(34, label=f"{label}：等待返回世界 #34")
+            view = yield from runtime.wait_view(34, 121, 227, timeout=18.0, label=f"{label}：等待离开邮件详情")
+            landed_scene_id = view.id if isinstance(view, View) else None
+            if landed_scene_id == 227:
+                self._log("action", f"{label}：邮件详情返回后出现奖励页，点击 #227「继续」")
+                yield from runtime.wait_click(227, "继续", timeout=8.0)
+                view = yield from runtime.wait_view(34, 121, timeout=12.0, label=f"{label}：奖励页关闭后等待邮件或世界")
+                landed_scene_id = view.id if isinstance(view, View) else None
+            if landed_scene_id == 34:
+                self._log("success", f"{label}：已从邮件详情回到 #34")
+                return
+            if landed_scene_id == 121:
+                self._log("action", f"{label}：邮件详情已返回 #121，继续关闭邮件列表")
+                yield from close_mail_list_to_world()
+                return
+            yield from runtime.wait_view(34, label=f"{label}：等待返回世界 #34")
 
     def _open_daily_xianyuan_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         image69 = ctx.get("images", {}).get(69)

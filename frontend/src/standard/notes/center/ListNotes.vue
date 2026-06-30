@@ -74,7 +74,6 @@
             <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="note-title" :style="row._ui.titleStyle">
-                  <NoteFormBadge :form="row.note_form" compact />
                   <span class="note-title-text">{{ row.title || '无标题' }}</span>
                 </span>
               </template>

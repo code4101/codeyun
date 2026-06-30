@@ -1,11 +1,13 @@
 import argparse
 import ctypes
+import json
 import os
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -32,20 +34,19 @@ except ImportError:
     dotenv_values = None
 
 
-BACKEND_RELOAD_MODES = ("off", "outer", "uvicorn")
+BACKEND_RELOAD_MODES = ("outer", "off")
 BACKEND_RELOAD_MODE_ENV = "CODEYUN_DEV_BACKEND_RELOAD_MODE"
-LEGACY_BACKEND_RELOAD_MODE_ENV = "CODEYUN_BACKEND_RELOAD_MODE"
 CHECK_INTERVAL_ENV = "CODEYUN_DEV_CHECK_INTERVAL_SECONDS"
 BACKEND_RELOAD_COOLDOWN_ENV = "CODEYUN_DEV_BACKEND_RELOAD_COOLDOWN_SECONDS"
-DEV_REEXEC_ENV = "CODEYUN_DEV_PYTHONW_REEXEC"
-DEV_ALLOW_CONSOLE_ENV = "CODEYUN_DEV_ALLOW_CONSOLE"
+DEV_CONSOLE_HOST_ENV = "CODEYUN_DEV_CONSOLE_HOST"
 
-DEFAULT_BACKEND_RELOAD_MODE = "off"
+DEFAULT_BACKEND_RELOAD_MODE = "outer"
 DEFAULT_CHECK_INTERVAL_SECONDS = 5.0
 DEFAULT_BACKEND_RELOAD_COOLDOWN_SECONDS = 60.0
 DEFAULT_BACKEND_HOST = "0.0.0.0"
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 5173
+CONSOLE_HOST_STATUS_FILENAME = "codeyun-console-host.json"
 
 BACKEND_WATCH_TARGETS = ("backend", "pyproject.toml", "uv.lock", ".env")
 BACKEND_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
@@ -75,30 +76,50 @@ def log(message):
             pass
 
 
-def reexec_windows_dev_runner_to_pythonw():
-    """Delegate Windows console launches to the hidden pythonw service runner."""
+def console_host_status_path():
+    return os.path.join(tempfile.gettempdir(), "codeyun", CONSOLE_HOST_STATUS_FILENAME)
 
-    if os.name != "nt":
-        return False
-    if _env_flag_value(os.environ.get(DEV_ALLOW_CONSOLE_ENV), default=False):
-        return False
-    if os.environ.get(DEV_REEXEC_ENV) == "1":
-        return False
-    if os.path.basename(sys.executable).lower() == "pythonw.exe":
-        return False
 
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    pythonw = resolve_pythonw(root_dir, sys.executable)
-    if os.path.abspath(pythonw).lower() == os.path.abspath(sys.executable).lower():
+def is_console_host_enabled():
+    if not _env_flag_value(os.environ.get(DEV_CONSOLE_HOST_ENV), default=True):
         return False
-
-    env = os.environ.copy()
-    env[DEV_REEXEC_ENV] = "1"
-    command = [pythonw, os.path.abspath(__file__), *sys.argv[1:]]
-    popen_service(command, cwd=root_dir, env=env)
-    log(f"Delegated CodeYun dev runner to hidden pythonw service: {pythonw}")
-    os._exit(0)
+    if os.name == "nt" and os.path.basename(sys.executable).lower() == "pythonw.exe":
+        return False
     return True
+
+
+def write_console_host_status(root_dir, backend_host, backend_port, frontend_port, backend_reload_mode):
+    path = console_host_status_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    now = time.time()
+    payload = {
+        "pid": os.getpid(),
+        "root_dir": os.path.abspath(root_dir),
+        "started_at": getattr(write_console_host_status, "_started_at", now),
+        "heartbeat_at": now,
+        "backend_host": backend_host,
+        "backend_port": backend_port,
+        "frontend_port": frontend_port,
+        "backend_reload_mode": backend_reload_mode,
+    }
+    write_console_host_status._started_at = payload["started_at"]
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def clear_console_host_status():
+    path = console_host_status_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            payload = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return
+    if int(payload.get("pid") or 0) != os.getpid():
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 class PortInUseError(RuntimeError):
@@ -565,7 +586,7 @@ def ensure_backend_port_available(host, port):
 
 def parse_args(argv):
     default_reload_mode = read_env_choice(
-        (BACKEND_RELOAD_MODE_ENV, LEGACY_BACKEND_RELOAD_MODE_ENV),
+        (BACKEND_RELOAD_MODE_ENV,),
         default=DEFAULT_BACKEND_RELOAD_MODE,
         choices=BACKEND_RELOAD_MODES,
     )
@@ -779,9 +800,7 @@ def create_process_guard():
 def start_backend(root_dir, env, python_executable, reload_mode, backend_host, backend_port):
     ensure_backend_port_available(backend_host, backend_port)
 
-    if reload_mode == "uvicorn":
-        log("Launching backend with uvicorn --reload ...")
-    elif reload_mode == "outer":
+    if reload_mode == "outer":
         log("Launching backend with uvicorn (outer-supervised delayed reload) ...")
     else:
         log("Launching backend with uvicorn (reload disabled) ...")
@@ -807,14 +826,6 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
             "--port",
             str(backend_port),
         ]
-    if reload_mode == "uvicorn":
-        cmd.extend(
-            [
-                "--reload",
-                "--reload-dir",
-                "backend",
-            ]
-        )
     return popen_service(cmd, cwd=root_dir, env=env)
 
 
@@ -1081,9 +1092,6 @@ def restart_backend(root_dir, env, python_executable, process_guard, reload_mode
 
 
 def main():
-    if reexec_windows_dev_runner_to_pythonw():
-        return
-
     args = parse_args(sys.argv[1:])
     config = load_config(args)
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1099,6 +1107,10 @@ def main():
     log(f"Supervisor check interval: {config.check_interval_seconds:.1f}s")
     if config.backend_reload_mode == "outer":
         log(f"Backend reload cooldown: {config.backend_reload_cooldown_seconds:.1f}s")
+    console_host_enabled = is_console_host_enabled()
+    if console_host_enabled:
+        write_console_host_status(root_dir, backend_host, backend_port, DEFAULT_FRONTEND_PORT, config.backend_reload_mode)
+        log(f"Console host heartbeat: {console_host_status_path()}")
 
     cleanup_stale_dev_environment((backend_port, DEFAULT_FRONTEND_PORT))
 
@@ -1139,6 +1151,14 @@ def main():
         while True:
             loop_started_at = time.monotonic()
             change_reason = None
+            if console_host_enabled:
+                write_console_host_status(
+                    root_dir,
+                    backend_host,
+                    backend_port,
+                    DEFAULT_FRONTEND_PORT,
+                    config.backend_reload_mode,
+                )
 
             if backend_watcher is not None:
                 change_reason = backend_watcher.poll()
@@ -1220,6 +1240,8 @@ def main():
         stop_process(frontend_proc, process_guard=process_guard)
         stop_process(backend_proc, process_guard=process_guard)
         process_guard.close()
+        if console_host_enabled:
+            clear_console_host_status()
         log("Goodbye.")
 
 

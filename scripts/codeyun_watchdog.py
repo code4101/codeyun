@@ -3,10 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import socket
-import subprocess
 import sys
 import time
 import tempfile
@@ -20,9 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if os.fspath(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, os.fspath(PROJECT_ROOT))
 
-from backend.core.runtime.process_launcher import popen_service, resolve_pythonw, run_quiet
-from scripts.codeyun_popup_audit import ensure_monitor_running
-from scripts.codeyun_visible_console_monitor import read_status as read_visible_console_monitor_status
+from backend.core.runtime.process_launcher import popen_service, resolve_pythonw
 
 try:
     import psutil
@@ -35,20 +31,8 @@ DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
 DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_STARTUP_GRACE_SECONDS = 180.0
-DEFAULT_RELOAD_QUIET_SECONDS = 120.0
-DEFAULT_VISIBLE_CONSOLE_MONITOR_ENABLED = True
+DEFAULT_CONSOLE_HOST_STALE_SECONDS = 20.0
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
-RELOAD_WATCH_TARGETS = ("backend", "scripts", "dev.py", "pyproject.toml", "uv.lock", ".env")
-RELOAD_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
-IGNORED_WATCH_DIRS = {
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "__pycache__",
-    "node_modules",
-}
 
 
 @dataclass(frozen=True)
@@ -57,14 +41,6 @@ class ProcessInfo:
     name: str
     cmdline: str
     started_at: float | None = None
-
-
-@dataclass
-class WatchdogState:
-    reload_snapshot: dict[str, tuple[int, int]] | None = None
-    pending_reload_reason: str | None = None
-    pending_reload_since: float | None = None
-    last_restart_at: float | None = None
 
 
 def _now() -> str:
@@ -85,6 +61,10 @@ def _default_dev_stderr_path() -> Path:
 
 def _default_lock_path() -> Path:
     return _temp_runtime_dir() / "codeyun-watchdog.pid"
+
+
+def _console_host_status_path() -> Path:
+    return Path(tempfile.gettempdir()) / "codeyun" / "codeyun-console-host.json"
 
 
 def _temp_runtime_dir() -> Path:
@@ -277,7 +257,7 @@ def terminate_stale_watchdog_processes(lock_path: Path, log_path: Path, timeout:
     return stopped
 
 
-def list_dev_processes() -> list[dict[str, Any]]:
+def list_dev_component_processes() -> list[dict[str, Any]]:
     current_pid = os.getpid()
     items: list[ProcessInfo] = []
     for proc in _iter_processes():
@@ -310,29 +290,16 @@ def _dev_process_role(item: dict[str, Any]) -> str:
     return "other"
 
 
-def summarize_codeyun_dev_instance(dev_processes: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize raw component processes as the single local CodeYun instance.
-
-    Windows pythonw/uvicorn launchers can appear as parent/child pairs, so raw
-    process count is not the same thing as instance count.
-    """
-
+def summarize_codeyun_dev_instance(dev_component_processes: list[dict[str, Any]]) -> dict[str, Any]:
     role_pids: dict[str, list[int]] = {}
-    for item in dev_processes:
+    for item in dev_component_processes:
         role = _dev_process_role(item)
         role_pids.setdefault(role, []).append(int(item["pid"]))
 
     return {
-        "running": bool(dev_processes),
-        "instance_count": 1 if dev_processes else 0,
-        "single_instance_ok": bool(dev_processes),
-        "raw_component_process_count": len(dev_processes),
+        "running": bool(dev_component_processes),
+        "instance_count": 1 if dev_component_processes else 0,
         "component_pids": role_pids,
-        "note": (
-            "raw_component_process_count includes dev.py wrappers, backend uvicorn workers, "
-            "and the Vite frontend; use instance_count to decide whether CodeYun is single-instance. "
-            "Do not count component PIDs as separate CodeYun instances."
-        ),
     }
 
 
@@ -340,7 +307,7 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
     if psutil is None:
         _log(log_path, "psutil is unavailable; cannot clean stale dev processes.")
         return []
-    targets = [psutil.Process(item["pid"]) for item in list_dev_processes()]
+    targets = [psutil.Process(item["pid"]) for item in list_dev_component_processes()]
     if not targets:
         return []
 
@@ -378,10 +345,10 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
     return stopped
 
 
-def _dev_process_startup_age(dev_processes: list[dict[str, Any]]) -> float | None:
+def _dev_process_startup_age(dev_component_processes: list[dict[str, Any]]) -> float | None:
     started_at_values = [
         float(item["started_at"])
-        for item in dev_processes
+        for item in dev_component_processes
         if item.get("started_at") is not None
     ]
     if not started_at_values:
@@ -389,10 +356,7 @@ def _dev_process_startup_age(dev_processes: list[dict[str, Any]]) -> float | Non
     return max(0.0, time.time() - max(started_at_values))
 
 
-def _resolve_uv_command() -> list[str]:
-    configured = os.getenv("CODEYUN_WATCHDOG_DEV_COMMAND")
-    if configured and configured.strip():
-        return shlex.split(configured, posix=os.name != "nt")
+def _resolve_dev_start_command() -> list[str]:
     python_executable = resolve_pythonw(PROJECT_ROOT, sys.executable)
     if os.name == "nt" and Path(python_executable).name.lower() == "pythonw.exe":
         return [python_executable, "dev.py"]
@@ -400,17 +364,8 @@ def _resolve_uv_command() -> list[str]:
     return [uv_path, "run", "dev.py"]
 
 
-def _resolve_reload_check_command() -> list[str]:
-    configured = os.getenv("CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND")
-    if configured is not None:
-        if not configured.strip():
-            return []
-        return shlex.split(configured, posix=os.name != "nt")
-    return [resolve_pythonw(PROJECT_ROOT, sys.executable), "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
-
-
 def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> int:
-    command = _resolve_uv_command()
+    command = _resolve_dev_start_command()
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -429,86 +384,6 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
     return int(proc.pid)
 
 
-def _watch_file_candidate(path: Path) -> bool:
-    name = path.name
-    if name.startswith(".env"):
-        return True
-    return path.suffix.lower() in RELOAD_WATCH_EXTENSIONS
-
-
-def _iter_reload_watch_files(root: Path = PROJECT_ROOT):
-    for rel_target in RELOAD_WATCH_TARGETS:
-        target = root / rel_target
-        if target.is_dir():
-            for current_root, dirnames, filenames in os.walk(target):
-                dirnames[:] = [name for name in dirnames if name not in IGNORED_WATCH_DIRS]
-                for filename in filenames:
-                    path = Path(current_root) / filename
-                    if _watch_file_candidate(path):
-                        yield path.resolve(strict=False)
-            continue
-        if target.is_file() and _watch_file_candidate(target):
-            yield target.resolve(strict=False)
-
-
-def build_reload_snapshot(root: Path = PROJECT_ROOT) -> dict[str, tuple[int, int]]:
-    snapshot: dict[str, tuple[int, int]] = {}
-    for path in _iter_reload_watch_files(root):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        snapshot[os.fspath(path)] = (int(stat.st_mtime_ns), int(stat.st_size))
-    return snapshot
-
-
-def describe_reload_snapshot_change(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> str:
-    before_keys = set(before)
-    after_keys = set(after)
-    changed = sorted(path for path in before_keys & after_keys if before[path] != after[path])
-    added = sorted(after_keys - before_keys)
-    removed = sorted(before_keys - after_keys)
-    if changed:
-        return f"changed: {os.path.relpath(changed[0], PROJECT_ROOT)}"
-    if added:
-        return f"added: {os.path.relpath(added[0], PROJECT_ROOT)}"
-    if removed:
-        return f"removed: {os.path.relpath(removed[0], PROJECT_ROOT)}"
-    return "watched files changed"
-
-
-def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
-    command = _resolve_reload_check_command()
-    if not command:
-        _log(log_path, "Reload precheck skipped because CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND is empty.")
-        return True
-    _log(log_path, f"Reload precheck: {' '.join(command)}")
-    try:
-        result = run_quiet(
-            command,
-            cwd=os.fspath(PROJECT_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=max(1.0, float(args.reload_check_timeout)),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _log(log_path, f"Reload precheck failed to run: {exc}")
-        return False
-    output = (result.stdout or "").strip()
-    if output:
-        for line in output.splitlines()[-40:]:
-            _log(log_path, f"precheck> {line}")
-    if result.returncode != 0:
-        _log(log_path, f"Reload precheck failed with exit code {result.returncode}; keeping current service.")
-        return False
-    _log(log_path, "Reload precheck passed.")
-    return True
-
-
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -519,6 +394,32 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def read_console_host_status(*, max_age_seconds: float = DEFAULT_CONSOLE_HOST_STALE_SECONDS) -> dict[str, Any]:
+    path = _console_host_status_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"running": False, "status_path": os.fspath(path)}
+    status = data if isinstance(data, dict) else {}
+    pid = int(status.get("pid") or 0)
+    heartbeat_at = float(status.get("heartbeat_at") or 0.0)
+    age_seconds = max(0.0, time.time() - heartbeat_at) if heartbeat_at else None
+    root_matches = _path_in_project(str(status.get("root_dir") or ""))
+    alive = _pid_alive(pid)
+    fresh = age_seconds is not None and age_seconds <= max(1.0, float(max_age_seconds))
+    status.update(
+        {
+            "running": bool(alive and fresh and root_matches),
+            "alive": alive,
+            "fresh": fresh,
+            "root_matches": root_matches,
+            "heartbeat_age_seconds": age_seconds,
+            "status_path": os.fspath(path),
+        }
+    )
+    return status
 
 
 def acquire_lock(lock_path: Path, log_path: Path) -> bool:
@@ -559,124 +460,34 @@ def _restart_dev_runner(args: argparse.Namespace, log_path: Path, reason: str) -
     return {"stopped_pids": stopped_pids, "started_pid": started_pid}
 
 
-def _ensure_visible_console_monitor(args: argparse.Namespace, log_path: Path) -> dict[str, Any] | None:
-    if not getattr(args, "visible_console_monitor", DEFAULT_VISIBLE_CONSOLE_MONITOR_ENABLED):
-        return None
-    try:
-        status = ensure_monitor_running()
-    except Exception as exc:
-        _log(log_path, f"Visible console monitor check failed: {exc}")
-        return {"ok": False, "error": str(exc)}
-    if status.get("started_now"):
-        _log(log_path, f"Visible console monitor started: PID {status.get('pid')}")
-    return {"ok": True, **status}
-
-
-def _ensure_critical_command_services(log_path: Path) -> dict[str, Any] | None:
-    try:
-        from backend.core.runtime.management import ensure_local_critical_command_services
-
-        result = ensure_local_critical_command_services()
-    except Exception as exc:
-        _log(log_path, f"Critical command service guard failed: {exc}")
-        return {"ok": False, "error": str(exc)}
-
-    for item in result.get("started") or []:
-        name = item.get("name") or item.get("id")
-        pid = ((item.get("result") or {}) if isinstance(item, dict) else {}).get("pid")
-        _log(log_path, f"Critical command service started: {name} PID {pid}")
-    for item in result.get("errors") or []:
-        _log(log_path, f"Critical command service error: {item.get('name') or item.get('id')} {item.get('error')}")
-    return {"ok": not bool(result.get("errors")), **result}
-
-
-def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, log_path: Path) -> dict[str, Any] | None:
-    if not args.reload:
-        return None
-
-    latest_snapshot = build_reload_snapshot()
-    if state.reload_snapshot is None:
-        state.reload_snapshot = latest_snapshot
-        return None
-
-    now = time.time()
-    if latest_snapshot != state.reload_snapshot:
-        reason = describe_reload_snapshot_change(state.reload_snapshot, latest_snapshot)
-        state.reload_snapshot = latest_snapshot
-        state.pending_reload_reason = reason
-        state.pending_reload_since = now
+def run_once(args: argparse.Namespace) -> dict[str, Any]:
+    log_path = Path(args.log_path).resolve(strict=False)
+    console_host = read_console_host_status(max_age_seconds=max(DEFAULT_CONSOLE_HOST_STALE_SECONDS, float(args.interval) * 2.5))
+    health = check_health(args.backend_url, args.frontend_url, args.timeout)
+    if console_host.get("running"):
         _log(
             log_path,
-            "Watched files changed "
-            f"({reason}); waiting {float(args.reload_quiet):.1f}s of quiet time before restart.",
+            "Console host is alive; watchdog will not restart or hot-reload dev runner. "
+            f"pid={console_host.get('pid')} health={'ok' if health['healthy'] else 'failed'}",
         )
         return {
-            "status": "reload_pending",
-            "reason": reason,
-            "quiet_seconds": 0.0,
+            "status": "console_host_observed",
+            "health": health,
+            "console_host": console_host,
             "started_pid": None,
         }
-
-    if state.pending_reload_since is None:
-        return None
-
-    quiet_seconds = now - state.pending_reload_since
-    if quiet_seconds < float(args.reload_quiet):
-        return {
-            "status": "reload_pending",
-            "reason": state.pending_reload_reason,
-            "quiet_seconds": quiet_seconds,
-            "started_pid": None,
-        }
-
-    reason = state.pending_reload_reason or "watched files changed"
-    _log(log_path, f"Reload quiet period reached after {quiet_seconds:.1f}s for {reason}.")
-    if not run_reload_precheck(args, log_path):
-        state.pending_reload_since = time.time()
-        return {
-            "status": "reload_precheck_failed",
-            "reason": reason,
-            "started_pid": None,
-        }
-
-    restart = _restart_dev_runner(args, log_path, f"Reload precheck passed for {reason}")
-    state.pending_reload_reason = None
-    state.pending_reload_since = None
-    state.reload_snapshot = build_reload_snapshot()
-    state.last_restart_at = time.time()
-    return {
-        "status": "reloaded",
-        "reason": reason,
-        **restart,
-    }
-
-
-def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> dict[str, Any]:
-    log_path = Path(args.log_path).resolve(strict=False)
-    monitor_status = _ensure_visible_console_monitor(args, log_path)
-    critical_services = _ensure_critical_command_services(log_path)
-    health = check_health(args.backend_url, args.frontend_url, args.timeout)
     if health["healthy"]:
-        reload_result = _maybe_handle_stable_reload(args, state, log_path) if state is not None else None
-        if reload_result is not None:
-            return {
-                "health": health,
-                "visible_console_monitor": monitor_status,
-                "critical_command_services": critical_services,
-                **reload_result,
-            }
         _log(log_path, "Health check ok; no restart needed.")
         return {
             "status": "healthy",
             "health": health,
-            "visible_console_monitor": monitor_status,
-            "critical_command_services": critical_services,
+            "console_host": console_host,
             "started_pid": None,
         }
 
-    dev_processes = list_dev_processes()
-    startup_age = _dev_process_startup_age(dev_processes)
-    if dev_processes and startup_age is not None and startup_age < args.startup_grace:
+    dev_component_processes = list_dev_component_processes()
+    startup_age = _dev_process_startup_age(dev_component_processes)
+    if dev_component_processes and startup_age is not None and startup_age < args.startup_grace:
         _log(
             log_path,
             "Health check failed, but CodeYun dev runner is still starting; "
@@ -686,9 +497,8 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
         return {
             "status": "starting",
             "health": health,
-            "visible_console_monitor": monitor_status,
-            "critical_command_services": critical_services,
-            "dev_processes": dev_processes,
+            "console_host": console_host,
+            "dev_component_processes": dev_component_processes,
             "startup_age": startup_age,
             "started_pid": None,
         }
@@ -699,16 +509,10 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
         "Health check failed "
         f"(backend={health['backend']['message']} frontend={health['frontend']['message']})",
     )
-    if state is not None:
-        state.reload_snapshot = build_reload_snapshot()
-        state.pending_reload_reason = None
-        state.pending_reload_since = None
-        state.last_restart_at = time.time()
     return {
         "status": "restarted",
         "health": health,
-        "visible_console_monitor": monitor_status,
-        "critical_command_services": critical_services,
+        "console_host": console_host,
         **restart,
     }
 
@@ -718,16 +522,11 @@ def run_loop(args: argparse.Namespace) -> int:
     log_path = Path(args.log_path).resolve(strict=False)
     if not acquire_lock(lock_path, log_path):
         return 0
-    state = WatchdogState(reload_snapshot=build_reload_snapshot() if args.reload else None)
-    _log(
-        log_path,
-        f"CodeYun watchdog loop started. interval={args.interval}s "
-        f"reload={'on' if args.reload else 'off'} quiet={float(args.reload_quiet):.1f}s",
-    )
+    _log(log_path, f"CodeYun watchdog loop started. interval={args.interval}s")
     terminate_stale_watchdog_processes(lock_path, log_path)
     try:
         while True:
-            run_once(args, state)
+            run_once(args)
             time.sleep(max(1, int(args.interval)))
     finally:
         release_lock(lock_path)
@@ -741,32 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_REQUEST_TIMEOUT", DEFAULT_TIMEOUT_SECONDS)))
     parser.add_argument("--stop-timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_STOP_TIMEOUT", "8")))
     parser.add_argument(
-        "--reload",
-        action=argparse.BooleanOptionalAction,
-        default=str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() not in {"0", "false", "no", "off"},
-        help="Watch backend/dev files and restart after a quiet period when precheck passes.",
-    )
-    parser.add_argument(
-        "--reload-quiet",
-        type=float,
-        default=float(os.getenv("CODEYUN_WATCHDOG_RELOAD_QUIET_SECONDS", DEFAULT_RELOAD_QUIET_SECONDS)),
-    )
-    parser.add_argument(
-        "--reload-check-timeout",
-        type=float,
-        default=float(os.getenv("CODEYUN_WATCHDOG_RELOAD_CHECK_TIMEOUT_SECONDS", "120")),
-    )
-    parser.add_argument(
         "--startup-grace",
         type=float,
         default=float(os.getenv("CODEYUN_WATCHDOG_STARTUP_GRACE_SECONDS", DEFAULT_STARTUP_GRACE_SECONDS)),
-    )
-    parser.add_argument(
-        "--visible-console-monitor",
-        action=argparse.BooleanOptionalAction,
-        default=str(os.getenv("CODEYUN_VISIBLE_CONSOLE_MONITOR", "1")).strip().lower()
-        not in {"0", "false", "no", "off"},
-        help="Keep the visible console popup monitor alive while the watchdog is running.",
     )
     parser.add_argument("--log-path", default=os.getenv("CODEYUN_WATCHDOG_LOG", os.fspath(_default_log_path())))
     parser.add_argument("--dev-stdout", default=os.getenv("CODEYUN_DEV_STDOUT_LOG", os.fspath(_default_dev_stdout_path())))
@@ -786,8 +562,8 @@ def main(argv: list[str] | None = None) -> int:
         active_pid = _read_lock_pid(lock_path)
         launcher_pids = _watchdog_ancestor_pids(active_pid)
         watchdog_processes = list_watchdog_processes()
-        dev_processes = list_dev_processes()
-        codeyun_instance = summarize_codeyun_dev_instance(dev_processes)
+        dev_component_processes = list_dev_component_processes()
+        codeyun_instance = summarize_codeyun_dev_instance(dev_component_processes)
         status = {
             "watchdog": {
                 "active_pid": active_pid,
@@ -803,15 +579,9 @@ def main(argv: list[str] | None = None) -> int:
                 "processes": watchdog_processes,
                 "note": "launcher_pids are wrapper parents of the active watchdog, not extra watchdog instances.",
             },
-            "visible_console_monitor": read_visible_console_monitor_status(),
+            "console_host": read_console_host_status(),
             "codeyun_instance": codeyun_instance,
-            "dev_component_processes": dev_processes,
-            "dev_processes": {
-                "deprecated": True,
-                "summary": codeyun_instance,
-                "raw_list_field": "dev_component_processes",
-                "note": "This is an instance summary, not a raw process list.",
-            },
+            "dev_component_processes": dev_component_processes,
         }
         print(json.dumps(status, ensure_ascii=False))
         return 0
