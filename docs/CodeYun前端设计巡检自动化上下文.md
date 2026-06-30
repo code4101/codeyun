@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "39eed15bf5cbccb1870f75e4923db5eb7ab7b94a"
-last_audited_at: "2026-06-30T14:33:56.8210247+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-39eed15b/report.md"
-last_frontend_commit_summary: "完整关闭 687b8f9f..39eed15b：沿 fanxiu 行为树、cluster/runtime 与 note sheet 工作表链路复核，确认 cell 单队列语义、运行表内容驱动宽度与工作表切页缓存都保持概念收敛，无需新增修复。"
-audited_commit_count: 50
+last_audited_commit: "0c84221402525cb9c9810e5df05aeb0ec53e6dac"
+last_audited_at: "2026-06-30T18:35:16.1372940+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-0c842214/report.md"
+last_frontend_commit_summary: "完整关闭 39eed15b..0c842214：沿 notes/center 星系图的筛选-图谱-详情闭环复核，确认节点视觉计算迁移未增加 UI 概念；仅记录窄屏工具条遮挡首行节点的旧表现层风险，未保留未复验修复。"
+audited_commit_count: 51
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-30
+
+- 完整范围：`39eed15bf5cbccb1870f75e4923db5eb7ab7b94a..0c84221402525cb9c9810e5df05aeb0ec53e6dac`
+- 覆盖提交：`0c84221402525cb9c9810e5df05aeb0ec53e6dac`
+- 前端入口提交：`0c84221402525cb9c9810e5df05aeb0ec53e6dac`
+- 入口如何牵引到旧问题：这次提交同时更新了 `StarNotes` 与 `CustomNode`，把节点视觉计算从节点组件内收回到父层 `StarNotes`，因此本轮必须沿同一页面的“筛选规则 -> 图谱节点 -> 选中节点详情”闭环复核真实页面。提交本身没有新增控件或状态，但在同页窄屏截图里自然牵出了一个旧表现层风险：右上 `graph-toolbar` 仍直接悬浮在 graph canvas 上，会压住首行右侧节点内容。
+- 本轮减法：不新增任何按钮、说明、标签、入口或状态；确认提交里的 `CustomNode` 已回到纯渲染职责，节点宽高、标题样式、分段填充文本颜色等视觉事实都由 `StarNotes` 一次性投影，不再在子组件里重复推断。
+- 信息量保持：星系页仍只保留 `后端筛选 / 前端筛选 / 节点图谱 / 选中节点详情` 四段基础结构。减少的是样式计算分散在两层组件的潜在重复复杂度，不是减少用户判断依据。
+- 概念图/线框图：报告中的 Mermaid 收回到 `后端筛选 -> 前端筛选 -> StarNotes 构建图节点数据 -> CustomNode 纯渲染 -> 选中节点详情` 这条基础闭环；ASCII 线框图则约束“右上工具条不应遮挡图谱首行节点”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-0c842214/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `notes/center?tab=star` 的 `星系` 视图完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 6 张截图，并选中 `考勤 Workbook 月度模板重构` 节点复核下方详情链路；`evidence.json` 记录三种视口下 `selectedTab = 星系`、`nodeCount = 590`、`bodyOverflowX = 0`、`editorVisible = true`。尝试对窄屏遮挡问题做最小 CSS 修复后，post-fix 真实页面截图复验被 in-app Browser 的本地 URL policy 阻断，因此撤回未复验样式改动。
+- 根因分层：提交本身未暴露新的前端状态投影或业务建模问题；唯一记录的风险属于 `表现层问题`，即窄屏工具条遮挡首行节点。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的模型债务。
+- 剩余风险：`StarNotes` 的窄屏图谱目前仍允许右上工具条压住首行右侧节点，属于既有布局风险；由于 post-fix 真实截图复验被浏览器策略阻断，本轮只记录风险，不保留源码修改。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务/交互建模、真实多视口截图与节点详情链路复核。提交本身无新的前端复杂度回退，因此不改前端源码，直接把 `last_audited_commit` 推进到 `0c84221402525cb9c9810e5df05aeb0ec53e6dac`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`687b8f9f37e35bafc16b9f772866bc7d861f4ca2..39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`
 - 覆盖提交：`39eed15bf5cbccb1870f75e4923db5eb7ab7b94a`

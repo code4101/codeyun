@@ -1823,6 +1823,33 @@ def test_note_sheet_excel_import_prefers_grouped_sequence_from_source_workbook(c
         _clear_user_override()
 
 
+def test_registration_source_order_field_uses_value_shape_when_payment_header_contains_merchant_order():
+    workbook_payload = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "rows": [
+                    {"values": ["序号", "真实姓名", "微信昵称", "手机号", "微信支付订单号"]},
+                    {"values": ["1_01", "黄凌燕", "燕慈", "15959516658", "MA2026062711474080039197"]},
+                ],
+            }
+        ]
+    }
+    rows = [["", "1", "", "", "黄凌燕", "燕慈", "15959516658", "MA2026060711181729284333", "", ""]]
+    columns = ["分组", "序号", "备注", "提交时间", "姓名", "微信昵称", "手机号", "微信支付订单号", "商户订单号", "订单金额"]
+
+    next_rows, grouped_count, source_field_count = note_sheets_api._prefer_registration_group_sequences_from_workbook(
+        workbook_payload=workbook_payload,
+        rows=rows,
+        columns=columns,
+    )
+
+    assert grouped_count == 1
+    assert source_field_count == 1
+    assert next_rows[0][columns.index("微信支付订单号")] == ""
+    assert next_rows[0][columns.index("商户订单号")] == "MA2026062711474080039197"
+
+
 def test_registration_import_plain_sequences_become_grouped_when_groups_reset():
     columns = ["分组", "序号", "备注", "提交时间", "姓名"]
     rows = note_sheets_api._coerce_registration_import_rows(
@@ -2310,6 +2337,132 @@ def test_note_sheet_registration_order_match_updates_order_columns(client, sessi
         assert calls[0]["use_browser"] is False
     finally:
         _clear_user_override()
+
+
+def test_note_sheet_registration_order_match_fills_payment_order_from_merchant_order(monkeypatch):
+    target_columns = [
+        "分组",
+        "序号",
+        "备注",
+        "提交时间",
+        "姓名",
+        "微信昵称",
+        "手机号",
+        "微信支付订单号",
+        "订单日期",
+        "商户订单号",
+        "订单金额",
+        "用户ID",
+    ]
+    payment_index = target_columns.index("微信支付订单号")
+    merchant_index = target_columns.index("商户订单号")
+
+    calls: list[str] = []
+
+    def fake_get_kqdb():
+        return object()
+
+    def fake_lookup_order(order_id, **kwargs):
+        calls.append(order_id)
+        return {
+            "微信支付订单号": "`4200003083202605074817502982",
+            "订单日期": "202605",
+            "商户订单号": "MA2026050712350910796457",
+            "订单金额": 499,
+        }
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
+
+    row = [""] * len(target_columns)
+    row[target_columns.index("姓名")] = "李媛"
+    row[target_columns.index("微信昵称")] = "李喵喵"
+    row[merchant_index] = "MA2026050712350910796457"
+
+    document, summary = note_sheets_api._update_registration_order_match_document(
+        {
+            "schema_version": 1,
+            "columns": target_columns,
+            "rows": [row],
+            "grid_rows": [target_columns, row],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        }
+    )
+
+    updated_row = document["rows"][0]
+    assert calls == ["MA2026050712350910796457"]
+    assert summary["matched_count"] == 1
+    assert updated_row[payment_index] == "4200003083202605074817502982"
+    assert updated_row[merchant_index] == "MA2026050712350910796457"
+
+
+def test_registration_standard_order_columns_are_visible():
+    columns = ["姓名", "微信支付订单号", "订单日期", "商户订单号", "订单金额"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [columns],
+        "column_configs": {
+            "微信支付订单号": {"hidden": True, "font_family": "monospace"},
+            "订单日期": {"hidden": True, "value_type": "number"},
+            "商户订单号": {"hidden": True, "font_family": "monospace"},
+            "订单金额": {"hidden": True, "value_type": "number"},
+        },
+    }
+
+    normalized, changed = note_sheets_api._apply_registration_standard_order_column_visibility(document)
+
+    assert changed is True
+    for header in ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]:
+        assert normalized["column_configs"][header].get("hidden") is None
+
+
+def test_note_sheet_registration_order_match_does_not_treat_missing_payment_order_as_complete(monkeypatch):
+    target_columns = ["姓名", "微信支付订单号", "订单日期", "商户订单号", "订单金额"]
+    payment_index = target_columns.index("微信支付订单号")
+    date_index = target_columns.index("订单日期")
+    merchant_index = target_columns.index("商户订单号")
+
+    calls: list[str] = []
+
+    def fake_get_kqdb():
+        return object()
+
+    def fake_lookup_order(order_id, **kwargs):
+        calls.append(order_id)
+        return {
+            "微信支付订单号": "`4200003127202605117972157495",
+            "订单日期": "202605",
+            "商户订单号": order_id,
+            "订单金额": 499,
+        }
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
+
+    document, summary = note_sheets_api._update_registration_order_match_document(
+        {
+            "schema_version": 1,
+            "columns": target_columns,
+            "rows": [["赵小娟", "", "202605", "MA2026052710091501899627", "499"]],
+            "grid_rows": [target_columns, ["赵小娟", "", "202605", "MA2026052710091501899627", "499"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        }
+    )
+
+    updated_row = document["rows"][0]
+    assert calls == ["MA2026052710091501899627"]
+    assert summary["already_complete_count"] == 0
+    assert updated_row[payment_index] == "4200003127202605117972157495"
+    assert updated_row[date_index] == "202605"
+    assert updated_row[merchant_index] == "MA2026052710091501899627"
+
+
+def test_derive_registration_order_month_prefers_merchant_order_timestamp_prefix():
+    assert note_sheets_api._derive_registration_order_month("MA2026052710091501899627") == "202605"
 
 
 def test_note_sheet_registration_order_match_allows_missing_optional_refund_column(client, session, monkeypatch):
@@ -3186,7 +3339,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
 
         assert final is not None
         assert final["status"] == "completed"
-        assert final["updated_count"] == 4
+        assert final["updated_count"] == 7
         registration_updated = final["sheet"]["document_json"]["rows"][0]
         assert registration_updated[registration_columns.index("商户订单号")] == "M20260521"
         assert registration_updated[registration_columns.index("用户ID")] == "u_new"
@@ -3205,11 +3358,12 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_updated_rows[1][attendance_columns.index("商户订单号")] == "M20260521"
         assert attendance_updated_rows[1][attendance_columns.index("用户ID")] == "u_new"
         assert attendance_updated_rows[1][attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
+        assert attendance_updated_rows[1][attendance_columns.index("完成视频数")] == '=COUNTIF(R3:S3,"*完成*")+COUNTIF(R3:S3,"*回放*")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡应返款")] == "0"
-        assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-$N$1,0),N3)'
+        assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),N3)'
         assert attendance_updated_rows[1][attendance_columns.index("已返款")] == "0"
         assert attendance_updated_rows[1][attendance_columns.index("订单金额")] == "620"
-        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=OR(LEN(E3)=19,LEN(E3)=24)*(L3-M3)'
+        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=(N3>0)*(L3-M3)'
         assert attendance_updated_rows[1][attendance_columns.index("返款配置")] == '=IF(O3>0,TEXTJOIN(",",TRUE,E3,O3,"念住闯关每日返款",E3&"_day"&$O$1),"")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡数")] == ""
         assert attendance_updated_rows[1][attendance_columns.index("第01课")] == ""
@@ -3225,6 +3379,103 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_cell_meta["3:0"]["style"]["background_color"] == "#F2F2F2"
     finally:
         _clear_user_override()
+
+
+def test_note_sheet_registration_order_match_skips_rows_without_registration_payload(monkeypatch):
+    columns = [
+        "分组",
+        "序号",
+        "备注",
+        "提交时间",
+        "姓名",
+        "微信昵称",
+        "手机号",
+        "错误手机号",
+        "微信支付订单号",
+        "订单日期",
+        "商户订单号",
+        "订单金额",
+        "已返款",
+        "用户ID",
+        "匹配得分",
+    ]
+    rows = [
+        ["", "", "", "", "", "", "", "", "", "", "MA2026062507164532425798", "", "", "", ""],
+        ["一组", "1_01", "", "2026/6/25 10:00:00", "张三", "三三", "13800138000", "", "", "", "MA2026062507164532425798", "", "", "", ""],
+    ]
+
+    calls: list[str] = []
+
+    def fake_get_kqdb():
+        return object()
+
+    def fake_lookup_order(order_id, **kwargs):
+        calls.append(order_id)
+        return {
+            "微信支付订单号": "4200000000000000000",
+            "订单日期": "202606",
+            "商户订单号": order_id,
+            "订单金额": 499,
+            "已返款": 0,
+        }
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
+
+    document, summary = note_sheets_api._update_registration_order_match_document(
+        {
+            "schema_version": 1,
+            "columns": columns,
+            "rows": rows,
+            "grid_rows": [columns, *rows],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        }
+    )
+
+    updated_rows = document["rows"]
+    assert calls == ["MA2026062507164532425798"]
+    assert updated_rows[0][columns.index("订单金额")] == ""
+    assert updated_rows[0][columns.index("订单日期")] == ""
+    assert updated_rows[1][columns.index("订单金额")] == "499"
+    assert summary["invalid_count"] == 1
+    assert summary["matched_count"] == 1
+
+
+def test_note_sheet_registration_attendance_sync_removes_empty_identity_rows():
+    registration_columns = ["分组", "序号", "提交时间", "姓名", "微信昵称", "手机号", "商户订单号", "订单金额", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "禅客", "商户订单号", "订单金额", "当前应返款"]
+    registration_rows = [
+        ["一组", "1_01", "2026/6/25 10:00:00", "张三", "三三", "13800138000", "MA-1", "499", "u1"],
+    ]
+    attendance_rows = [
+        ["一组", "1_01", "张三", "三三", "0", "MA-1", "499", "0"],
+        ["", "", "", "", "0", "", "499", "0"],
+        ["", "", "", "", "0", "", "499", "0"],
+    ]
+
+    document, summary = note_sheets_api._sync_registration_rows_to_attendance_document(
+        {
+            "schema_version": 1,
+            "columns": registration_columns,
+            "rows": registration_rows,
+            "grid_rows": [registration_columns, *registration_rows],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+        {
+            "schema_version": 1,
+            "columns": attendance_columns,
+            "rows": attendance_rows,
+            "grid_rows": [attendance_columns, *attendance_rows],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+
+    assert document["rows"] == [["一组", "1_01", "张三", "三三", "0", "MA-1", "499", "0"]]
+    assert summary["repaired_count"] >= 2
+    assert summary["updated_count"] >= 2
 
 
 def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row():
@@ -3352,15 +3603,16 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
 
     assert summary["inserted_count"] == 0
-    assert summary["repaired_count"] == 2
+    assert summary["repaired_count"] >= 10
     repaired_row = next_doc["rows"][1]
     assert repaired_row[attendance_columns.index("报名日期")] == "2026-05-21 09:46"
     assert repaired_row[attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
-    assert repaired_row[attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-$N$1,0),N3)'
+    assert repaired_row[attendance_columns.index("完成视频数")] == '=COUNTIF(R3,"*完成*")+COUNTIF(R3,"*回放*")'
+    assert repaired_row[attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),N3)'
     assert repaired_row[attendance_columns.index("已返款")] == "0"
     assert repaired_row[attendance_columns.index("订单金额")] == "620"
     assert repaired_row[attendance_columns.index("关联用户ID")] == "u_linked"
-    assert repaired_row[attendance_columns.index("当前应返款")] == '=OR(LEN(E3)=19,LEN(E3)=24)*(L3-M3)'
+    assert repaired_row[attendance_columns.index("当前应返款")] == '=(N3>0)*(L3-M3)'
     assert repaired_row[attendance_columns.index("打卡数")] == ""
     assert "2:0" not in next_doc["cell_meta"]
     assert next_doc["cell_meta"]["3:0"]["style"]["background_color"] == "#F2F2F2"
