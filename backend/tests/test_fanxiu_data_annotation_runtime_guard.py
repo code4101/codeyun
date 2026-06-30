@@ -446,6 +446,55 @@ def test_runtime_wait_click_then_view_infers_scene_jump_target(monkeypatch):
     ]
 
 
+def test_runtime_wait_click_then_view_records_landing_frequency(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    baiye_shape = {"title": "拜谒", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1, "sceneJumpTarget": "264"}
+    image69 = _image("日常", "0069.png", [baiye_shape])
+    image264 = _image("拜谒", "0264.png", [])
+    tree = [image69, image264]
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {69: image69, 264: image264}, "asset_tree": tree, "asset_tree_path": tmp_path / "asset-tree.json"},
+        stop_event=threading.Event(),
+    )
+    writes: list[list[dict]] = []
+
+    def fake_wait_click(_frame, _shape, **_kwargs):
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(_seconds=1.0):
+        if False:
+            yield None
+        return None
+
+    def fake_wait_view(*_views, **_kwargs):
+        if False:
+            yield None
+        return runtime.view(264)
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runner, "_write_asset_tree", lambda _path, written_tree: writes.append(written_tree))
+
+    result = _drain_generator(runtime.wait_click_then_view(69, "拜谒", 264))
+
+    assert result.id == 264
+    assert baiye_shape["sceneJumpTarget"] == "264(1)"
+    assert writes == [tree]
+
+
+def test_runtime_observed_landing_counts_are_sorted_descending():
+    runner = create_fanxiu_runtime_runner()
+    shape = {"title": "随机跳", "observedLanding": "277(3),85(2),186(5)"}
+
+    assert runner._increment_observed_landing(shape, 1) is True
+
+    assert shape["observedLanding"] == "186(5),277(3),85(2),1(1)"
+
+
 def test_runtime_wait_click_then_view_accepts_target_list(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image293 = _image("仙盟", "0293.png", [{"title": "攻击", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}])
@@ -1356,6 +1405,30 @@ def test_default_scene_identification_prefers_strong_world_ocr_over_false_activi
     scene_id, score = runner._identify_scene_number(ctx, "frame")
 
     assert (scene_id, score) == (34, runner.scene_threshold)
+
+
+def test_strong_ocr_scene_number_detects_game_cover_before_route_candidates(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [
+        {"text": "AppVer:2.46.700211 ResVer:cecdbe"},
+        {"text": "账号 公告 协议 修仙传 人界篇"},
+        {"text": "进入游戏 适龄提示"},
+    ])
+
+    assert runner._strong_ocr_scene_number(ctx, "frame") == 18
+
+
+def test_strong_ocr_scene_number_detects_calendar_schedule(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [
+        {"text": "日程 06月29日 今天 07月01日"},
+        {"text": "凡人历 第2458年 第2459年"},
+        {"text": "仙盟争霸 虚天殿 常规 瑶池花会"},
+    ])
+
+    assert runner._strong_ocr_scene_number(ctx, "frame") == 66
 
 
 def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeypatch):
@@ -4264,10 +4337,9 @@ def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkey
 def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
-    second_shape = {"id": "jump23", "kind": "rect", "title": "去三", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
         _scene_image("一", "0001.jpg", [first_shape]),
-        _scene_image("二", "0002.jpg", [second_shape]),
+        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
     ]
     path = tmp_path / "asset_tree.json"
@@ -4305,13 +4377,13 @@ def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatc
             label="到场景",
         )
     except RuntimeError as exc:
-        assert "未声明落点" in str(exc) or "不在" in str(exc)
+        assert "未声明落点" in str(exc) or "不在" in str(exc) or "缺少可靠标注" in str(exc)
     else:
         raise AssertionError("go_scene should stop when actual result is not declared in sceneJumpTarget")
 
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved[0]["shapes"][0]["sceneJumpTarget"] == "3"
-    assert saved[1]["shapes"][0]["sceneJumpTarget"] == "3"
+    assert saved[0]["shapes"][0]["observedLanding"] == "2(1)"
 
 
 def test_daily_signup_scheduler_task_is_runtime_daily_task():

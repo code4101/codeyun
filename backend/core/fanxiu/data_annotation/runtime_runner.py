@@ -742,11 +742,13 @@ class FanxiuRuntime(Runtime):
             ))
         wait_label = label or f"点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
         try:
-            return (yield from self.wait_view(
+            target_view = yield from self.wait_view(
                 *target_ids,
                 timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
                 label=wait_label,
-            ))
+            )
+            self._record_wait_click_then_view_landing(source_view, target_shape, target_view)
+            return target_view
         except TimeoutError as exc:
             target_text = ",".join(f"#{target_id}" for target_id in target_ids)
             jump_target = str(target_shape.raw.get("sceneJumpTarget") or "").strip() or "未声明"
@@ -754,6 +756,24 @@ class FanxiuRuntime(Runtime):
                 f"{wait_label} 失败：源场景=#{source_view.id or '?'}，shape={self._shape_path(target_shape)}，"
                 f"期望目标={target_text}，sceneJumpTarget={jump_target}；{exc}"
             ) from exc
+
+    def _record_wait_click_then_view_landing(self, source_view: View, shape: Shape, target_view: View) -> None:
+        if target_view.id is None:
+            return
+        asset_tree_path = self.ctx.get("asset_tree_path")
+        tree = self.ctx.get("asset_tree")
+        if not isinstance(asset_tree_path, Path) or not isinstance(tree, list):
+            return
+        if self.runner._increment_scene_jump_target(shape.raw, int(target_view.id)):
+            self.runner._write_asset_tree(asset_tree_path, tree)
+            self.ctx["images"] = self.runner._index_images(tree)
+            self.runner._log(
+                "detail",
+                (
+                    f"场景跳转频数：#{source_view.id or '?'}「{self._shape_path(shape)}」"
+                    f" -> #{int(target_view.id)} 已记录"
+                ),
+            )
 
     def wait_leave_view(
         self,
@@ -875,8 +895,11 @@ class FanxiuRuntime(Runtime):
             for view_id in view_ids:
                 target_view = target_views_by_id.get(int(view_id))
                 if isinstance(target_view, View) and target_view.is_match(self):
-                    scene_id, score = int(view_id), float(self.runner.scene_threshold)
-                    break
+                    matched_scene_id = int(view_id)
+                    matched_score = float(self.runner.scene_threshold)
+                    if self.runner._scene_number_ocr_confirmed(self.ctx, frame, matched_scene_id, matched_score):
+                        scene_id, score = matched_scene_id, matched_score
+                        break
             else:
                 scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
             identify_elapsed = time.monotonic() - identify_started_at
@@ -5803,6 +5826,59 @@ class DataAnnotationRuntimeRunner(
     def _increment_scene_jump_target(self, shape: dict[str, Any], target_scene_id: int) -> bool:
         return SceneNavigator([]).increment_scene_jump_target(shape, target_scene_id)
 
+    def _increment_observed_landing(self, shape: dict[str, Any], target_scene_id: int) -> bool:
+        entries = self._parse_scene_jump_entries(shape.get("observedLanding"))
+        target_label = str(int(target_scene_id))
+        for entry in entries:
+            if str(entry.get("label") or "") == target_label:
+                entry["count"] = int(entry.get("count") or 0) + 1
+                break
+        else:
+            entries.append({"label": target_label, "count": 1})
+        serialized = self._serialize_scene_jump_entries(entries)
+        if str(shape.get("observedLanding") or "") == serialized:
+            return False
+        shape["observedLanding"] = serialized
+        return True
+
+    def _record_observed_landing(
+        self,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        tree: list[dict[str, Any]],
+        shape: dict[str, Any],
+        target_scene_id: int,
+        *,
+        reason: str,
+    ) -> None:
+        if self._increment_observed_landing(shape, target_scene_id):
+            self._write_asset_tree(asset_tree_path, tree)
+            ctx["images"] = self._index_images(tree)
+            self._log(
+                "detail",
+                f"场景跳转观察：记录「{shape.get('title') or '未命名'}」意外落点 #{target_scene_id}（{reason}）",
+            )
+
+    def _record_unexpected_landing(
+        self,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        tree: list[dict[str, Any]],
+        shape: dict[str, Any],
+        landing_scene_id: int | None,
+        *,
+        source_scene_id: int | None = None,
+        reason: str,
+    ) -> None:
+        if landing_scene_id is None:
+            return
+        landing_scene_id = int(landing_scene_id)
+        if source_scene_id is not None and landing_scene_id == int(source_scene_id):
+            return
+        if landing_scene_id in self._scene_jump_target_ids(tree, shape):
+            return
+        self._record_observed_landing(ctx, asset_tree_path, tree, shape, landing_scene_id, reason=reason)
+
     def _scene_jump_label_number(self, label: Any) -> int | None:
         return SceneNavigator([]).scene_jump_label_number(label)
 
@@ -6027,6 +6103,16 @@ class DataAnnotationRuntimeRunner(
     def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if (
+            "进入游戏" in compact
+            and ("AppVer" in compact or "ResVer" in compact or "适龄提示" in compact)
+            and ("账号" in compact or "公告" in compact or "协议" in compact)
+        ):
+            self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过局部标题候选")
+            return 18
+        if "日程" in compact and "凡人历" in compact and re.search(r"\d{2}月\d{2}日", compact):
+            self._log("detail", "场景强 OCR 命中 #66 日程，跳过活动素材候选")
+            return 66
         internal_markers = ("灵脉", "聚灵位", "剩余空位", "神脉", "探索")
         world_markers = ("储物袋", "仙市", "仙府", "天机阁", "角色", "装备", "星海", "功法书")
         if (
@@ -8541,7 +8627,7 @@ class DataAnnotationRuntimeRunner(
     ) -> float:
         title = str(shape.get("title") or "")
         if source_scene_id == 34 and (target_scene_id == 171 or 171 in expected_ids) and "仙府" in title:
-            return 30.0
+            return 60.0
         return 8.0
 
     def _wait_scene_jump_result(
@@ -8586,6 +8672,9 @@ class DataAnnotationRuntimeRunner(
             elapsed = time.monotonic() - start
 
             matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
+            if matched_expected == source_scene_id and source_scene_id not in expected_ids:
+                history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
+                matched_expected = None
             if matched_expected is not None:
                 if not left_source and matched_expected != source_scene_id:
                     global_scene_id, global_score = self._identify_scene_number(ctx, frame)
@@ -8625,6 +8714,24 @@ class DataAnnotationRuntimeRunner(
                 if navigation_scene_id is not None:
                     scene_id = navigation_scene_id
             last_scene_id, last_score, last_frame = scene_id, score, frame
+            if scene_id is not None and scene_id not in handled_intermediate_scene_ids:
+                current_image = (ctx.get("images") or {}).get(scene_id)
+                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
+                if confirm_shape is not None:
+                    confirm_title = str(confirm_shape.get("title") or "确认")
+                    handled_intermediate_scene_ids.add(scene_id)
+                    with self._lock:
+                        self._status.update({
+                            "phase": "go_scene_confirm",
+                            "current_scene": scene_id,
+                            "message": f"跳转确认：#{source_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
+                            "updated_at": time.time(),
+                        })
+                    self._log("action", f"场景跳转确认：#{scene_id}，点击 {confirm_title}")
+                    self._click_shape(ctx, current_image, confirm_shape, frame)
+                    left_source = True
+                    start = time.monotonic()
+                    continue
             if (target_scene_id == 171 or 171 in expected_ids) and self._is_xianfu_entry_cutscene(ctx, scene_id):
                 left_source = True
                 history.append(f"{elapsed:.1f}s #{scene_id} 仙府过场 {score:.0f}% left={left_source}")
@@ -8664,6 +8771,15 @@ class DataAnnotationRuntimeRunner(
                 if dynamic_landing:
                     self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，由上层重新规划")
                     return scene_id
+                self._record_unexpected_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    scene_id,
+                    source_scene_id=source_scene_id,
+                    reason="未声明目标落点",
+                )
                 raise RuntimeError(
                     f"场景跳转实际到达 #{scene_id}，但这是「{shape.get('title') or '未命名'}」的未声明落点，"
                     "不在 sceneJumpTarget 中；"
@@ -8704,6 +8820,15 @@ class DataAnnotationRuntimeRunner(
                 if dynamic_landing:
                     self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，重新规划到 #{target_scene_id}")
                     return scene_id
+                self._record_unexpected_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    scene_id,
+                    source_scene_id=source_scene_id,
+                    reason=f"未声明可恢复中间场景，目标 #{target_scene_id}",
+                )
                 raise RuntimeError(
                     f"场景跳转实际到达 #{scene_id}，可继续规划到 #{target_scene_id}，"
                     f"但这是「{shape.get('title') or '未命名'}」的未声明落点，不在 sceneJumpTarget 中；"
@@ -8760,22 +8885,6 @@ class DataAnnotationRuntimeRunner(
                     left_source = True
                     start = time.monotonic()
                     history.append(f"{elapsed:.1f}s unknown #34 空白已点击")
-                    continue
-            if scene_id is not None and scene_id not in handled_intermediate_scene_ids:
-                current_image = (ctx.get("images") or {}).get(scene_id)
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
-                if confirm_shape is not None:
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    handled_intermediate_scene_ids.add(scene_id)
-                    with self._lock:
-                        self._status.update({
-                            "phase": "go_scene_confirm",
-                            "current_scene": scene_id,
-                            "message": f"跳转确认：#{source_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
-                            "updated_at": time.time(),
-                        })
-                    self._log("action", f"场景跳转确认：#{scene_id}，点击 {confirm_title}")
-                    self._click_shape(ctx, current_image, confirm_shape, frame)
                     continue
             if scene_id is None and not handled_world_side_leave:
                 text = self._ocr_text(self._ocr_lines(frame))
@@ -8862,6 +8971,15 @@ class DataAnnotationRuntimeRunner(
                     history=history,
                 )
 
+            self._record_unexpected_landing(
+                ctx,
+                asset_tree_path,
+                tree,
+                shape,
+                last_scene_id,
+                source_scene_id=source_scene_id,
+                reason="超时稳定未声明落点",
+            )
             raise RuntimeError(
                 f"场景跳转实际到达 #{last_scene_id}，但该落点不在「{shape.get('title') or '未命名'}」的 sceneJumpTarget 中；"
                 "Runtime 已中断，请人工确认并修正标注后重试"
@@ -8944,7 +9062,7 @@ class DataAnnotationRuntimeRunner(
                     history=[f"起点识别 unknown {score:.0f}%"],
                 )
             strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
-            if strong_scene_id is not None and int(strong_scene_id) == int(target_scene_id):
+            if strong_scene_id is not None:
                 current_scene_id = int(strong_scene_id)
                 score = float(self.scene_threshold)
             if current_scene_id is not None and not self._scene_matches_id(int(current_scene_id), float(score or 0.0)):
@@ -9029,13 +9147,19 @@ class DataAnnotationRuntimeRunner(
             )
             if decision is None:
                 direct_failed_targets: set[int] = set()
+                last_failed_source_id: int | None = None
                 if last_failed_edge is not None:
+                    try:
+                        last_failed_source_id = int(last_failed_edge.get("source_id"))
+                    except (TypeError, ValueError):
+                        last_failed_source_id = None
+                if last_failed_edge is not None and last_failed_source_id == int(current_scene_id):
                     for item in last_failed_edge.get("target_ids") or []:
                         try:
                             direct_failed_targets.add(int(item))
                         except (TypeError, ValueError):
                             continue
-                if last_failed_edge is not None and int(target_scene_id) in direct_failed_targets:
+                if last_failed_edge is not None and last_failed_source_id == int(current_scene_id) and int(target_scene_id) in direct_failed_targets:
                     return self._save_unknown_scene_frame(
                         ctx,
                         asset_tree_path,
@@ -9116,6 +9240,17 @@ class DataAnnotationRuntimeRunner(
                         yield BehaviorTreeStatus.RUNNING
                         continue
                 if last_failed_edge is not None:
+                    failed_shape = last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None
+                    if isinstance(failed_shape, dict):
+                        self._record_unexpected_landing(
+                            ctx,
+                            asset_tree_path,
+                            tree,
+                            failed_shape,
+                            current_scene_id,
+                            source_scene_id=target_scene_id,
+                            reason=f"点击后到达无路由场景，目标 #{target_scene_id}",
+                        )
                     return self._save_unknown_scene_frame(
                         ctx,
                         asset_tree_path,
@@ -9123,7 +9258,7 @@ class DataAnnotationRuntimeRunner(
                         frame,
                         target_scene_id=target_scene_id,
                         current_scene_id=current_scene_id,
-                        action_shape=last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None,
+                        action_shape=failed_shape,
                         elapsed_seconds=0.0,
                         history=[f"#{current_scene_id} 已尝试 {len(failed_edge_keys)} 个候选仍未离开源场景"],
                     )
@@ -9175,6 +9310,17 @@ class DataAnnotationRuntimeRunner(
                 )
                 yield BehaviorTreeStatus.RUNNING
                 continue
+            if int(actual_scene_id) not in self._scene_jump_target_ids(tree, shape):
+                self._record_unexpected_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    actual_scene_id,
+                    source_scene_id=current_scene_id,
+                    reason=f"重规划前未声明落点，目标 #{target_scene_id}",
+                )
+                last_failed_edge = edge
             self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
             yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
 

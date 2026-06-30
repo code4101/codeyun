@@ -255,6 +255,23 @@ def _local_address_uses_port(local_address, port):
 
 
 def find_tcp_listener_pids(port):
+    if os.name == "nt":
+        pids = set()
+        output = _run_text_command(["netstat", "-ano", "-p", "tcp"])
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) < 5 or parts[0].upper() != "TCP":
+                continue
+            local_address = parts[1]
+            state = parts[-2].upper()
+            if state != "LISTENING" or not _local_address_uses_port(local_address, port):
+                continue
+            try:
+                pids.add(int(parts[-1]))
+            except ValueError:
+                continue
+        return sorted(pids)
+
     try:
         import psutil
     except ImportError:
@@ -493,9 +510,16 @@ def terminate_pids(pids, reason):
 
 
 def cleanup_stale_dev_environment(ports):
-    terminate_pids(find_stale_dev_process_pids(), "dev runner processes")
+    full_scan = _env_flag_value(os.environ.get("CODEYUN_DEV_CLEANUP_STALE_PROCESS_SCAN"), default=False)
+    if full_scan:
+        terminate_pids(find_stale_dev_process_pids(), "dev runner processes")
+    else:
+        log(
+            "Skipping stale dev process scan; cleaning only known port listeners. "
+            "Set CODEYUN_DEV_CLEANUP_STALE_PROCESS_SCAN=1 to enable the full scan."
+        )
 
-    protected_pids = _current_process_tree_pids()
+    protected_pids = _current_process_tree_pids() if full_scan else {os.getpid()}
     port_pids = set()
     for port in ports:
         for pid in find_tcp_listener_pids(port):
@@ -508,7 +532,7 @@ def cleanup_stale_dev_environment(ports):
 
 
 def cleanup_port_listeners(port):
-    protected_pids = _current_process_tree_pids()
+    protected_pids = {os.getpid()}
     pids = [pid for pid in find_tcp_listener_pids(port) if pid not in protected_pids]
     terminate_pids(pids, f"listeners on port {port}")
 
@@ -868,6 +892,24 @@ def stop_process(proc, process_guard=None):
             proc.kill()
 
 
+def process_tree_pids(proc):
+    if proc is None or proc.poll() is not None:
+        return set()
+
+    pids = {int(proc.pid)}
+    try:
+        import psutil
+    except ImportError:
+        return pids
+
+    try:
+        parent = psutil.Process(proc.pid)
+        pids.update(int(child.pid) for child in parent.children(recursive=True))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        pass
+    return pids
+
+
 def should_watch_backend_file(path):
     name = os.path.basename(path)
     if name.startswith(".env"):
@@ -1101,7 +1143,7 @@ def main():
             if backend_watcher is not None:
                 change_reason = backend_watcher.poll()
 
-            frontend_service_pids = {frontend_proc.pid} if frontend_proc.poll() is None else set()
+            frontend_service_pids = process_tree_pids(frontend_proc)
             cleanup_unmanaged_port_listeners(DEFAULT_FRONTEND_PORT, frontend_service_pids)
 
             now = time.monotonic()

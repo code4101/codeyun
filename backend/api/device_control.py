@@ -24,7 +24,10 @@ from backend.core.devices.device import (
 from backend.core.runtime.process_launcher import popen_service
 from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
 from backend.core.devices.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
-from backend.core.attendance.clockin_link_detector import detect_clockin_links_browser
+from backend.core.attendance.clockin_link_detector import (
+    detect_clockin_links_browser,
+    detect_xiaoe_attendance_clockin_activities_browser,
+)
 from backend.core.attendance.fanbei_schedule import (
     FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
     FANBEI_ATTENDANCE_COURSE_NAME,
@@ -368,6 +371,12 @@ class AttendanceClockinLinkDetectRequest(BaseModel):
     close_tabs: bool = True
 
 
+class AttendanceXiaoeClockinActivityDetectRequest(BaseModel):
+    target_keywords: List[str] = Field(default_factory=list)
+    shop_name: str = "5034山中薪"
+    close_browser: bool = False
+
+
 @router.post("/attendance/order/execute")
 def execute_attendance_order(req: AttendanceOrderExecuteRequest):
     try:
@@ -654,6 +663,19 @@ def detect_attendance_clockin_links(req: AttendanceClockinLinkDetectRequest):
                 provider_id=req.provider_id,
                 model=req.model,
                 close_tabs=req.close_tabs,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/xiaoe-clockin-activities/detect")
+def detect_attendance_xiaoe_clockin_activities(req: AttendanceXiaoeClockinActivityDetectRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            return detect_xiaoe_attendance_clockin_activities_browser(
+                target_keywords=req.target_keywords,
+                shop_name=req.shop_name,
+                close_browser=req.close_browser,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

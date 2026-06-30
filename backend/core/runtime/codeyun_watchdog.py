@@ -107,8 +107,8 @@ def _ancestor_pids(pid: int | None) -> set[int]:
         return set()
 
 
-def _matches_watchdog_process(proc: psutil.Process) -> bool:
-    cmdline = " ".join(_safe_cmdline(proc)).lower().replace("/", "\\")
+def _matches_watchdog_cmdline(cmdline_parts: list[str]) -> bool:
+    cmdline = " ".join(cmdline_parts).lower().replace("/", "\\")
     script = str(WATCHDOG_SCRIPT).lower().replace("/", "\\")
     return (
         "--loop" in cmdline
@@ -117,33 +117,87 @@ def _matches_watchdog_process(proc: psutil.Process) -> bool:
     )
 
 
-def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
+def _matches_watchdog_process(proc: psutil.Process) -> bool:
+    return _matches_watchdog_cmdline(_safe_cmdline(proc))
+
+
+def _watchdog_process_payload(
+    proc: psutil.Process,
+    cmdline_parts: list[str] | None = None,
+) -> CodeYunWatchdogProcess:
+    cmdline = cmdline_parts if cmdline_parts is not None else _safe_cmdline(proc)
+    return CodeYunWatchdogProcess(
+        pid=int(proc.pid),
+        parent_pid=_safe_ppid(proc),
+        name=_safe_name(proc),
+        cmdline=" ".join(cmdline),
+        started_at=_safe_started_at(proc),
+    )
+
+
+def _watchdog_process_from_pid(pid: int | None) -> CodeYunWatchdogProcess | None:
+    if not pid:
+        return None
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return None
+    cmdline = _safe_cmdline(proc)
+    if not _matches_watchdog_cmdline(cmdline):
+        return None
+    return _watchdog_process_payload(proc, cmdline)
+
+
+def _quick_watchdog_processes(lock_pid: int | None) -> list[CodeYunWatchdogProcess]:
+    active = _watchdog_process_from_pid(lock_pid)
+    if active is None:
+        return []
+    items = [active]
+    try:
+        parents = psutil.Process(active.pid).parents()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        parents = []
+    for parent in parents:
+        cmdline = _safe_cmdline(parent)
+        if _matches_watchdog_cmdline(cmdline):
+            items.append(_watchdog_process_payload(parent, cmdline))
+    return items
+
+
+def list_codeyun_watchdog_processes(*, full_scan: bool = False) -> list[dict[str, Any]]:
     current_pid = os.getpid()
     lock_pid = _read_lock_pid()
+    if not full_scan:
+        items = [item for item in _quick_watchdog_processes(lock_pid) if item.pid != current_pid]
+        items.sort(key=lambda item: (0 if lock_pid and item.pid == lock_pid else 1, item.started_at or 0, item.pid))
+        return [asdict(item) for item in items]
+
     items: list[CodeYunWatchdogProcess] = []
-    for proc in psutil.process_iter(["pid", "name"]):
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time", "ppid"]):
         if int(proc.pid) == current_pid:
             continue
-        proc_name = str((getattr(proc, "info", {}) or {}).get("name") or "").strip().lower()
-        if proc_name not in PYTHON_PROCESS_NAMES:
-            continue
-        if not _matches_watchdog_process(proc):
+        cmdline = [str(part) for part in (proc.info.get("cmdline") or [])]
+        if not _matches_watchdog_cmdline(cmdline):
             continue
         items.append(
             CodeYunWatchdogProcess(
                 pid=int(proc.pid),
-                parent_pid=_safe_ppid(proc),
-                name=_safe_name(proc),
-                cmdline=" ".join(_safe_cmdline(proc)),
-                started_at=_safe_started_at(proc),
+                parent_pid=proc.info.get("ppid"),
+                name=str(proc.info.get("name") or ""),
+                cmdline=" ".join(cmdline),
+                started_at=proc.info.get("create_time"),
             )
         )
     items.sort(key=lambda item: (0 if lock_pid and item.pid == lock_pid else 1, item.started_at or 0, item.pid))
     return [asdict(item) for item in items]
 
 
-def get_codeyun_watchdog_status() -> dict[str, Any]:
-    processes = list_codeyun_watchdog_processes()
+def get_codeyun_watchdog_status(
+    *,
+    full_scan: bool = False,
+    include_startup: bool = True,
+) -> dict[str, Any]:
+    processes = list_codeyun_watchdog_processes(full_scan=full_scan)
     running = bool(processes)
     interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60")
     reload_enabled = str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() not in {"0", "false", "no", "off"}
@@ -192,7 +246,7 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
             and item.get("pid") not in launcher_pids
         ],
         "last_error": "" if WATCHDOG_SCRIPT.is_file() else f"脚本不存在：{WATCHDOG_SCRIPT}",
-        "startup": get_codeyun_watchdog_startup_status(),
+        "startup": get_codeyun_watchdog_startup_status() if include_startup else {},
         "external": True,
         "controllable": True,
     }
@@ -303,7 +357,7 @@ def _resolve_watchdog_python_executable() -> str:
 
 
 def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
-    status = get_codeyun_watchdog_status()
+    status = get_codeyun_watchdog_status(full_scan=False, include_startup=False)
     if status.get("running"):
         return {"status": "started", "service": status}
     if not WATCHDOG_SCRIPT.is_file():
@@ -341,7 +395,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
 
     deadline = time.monotonic() + max(0.0, float(wait_seconds))
     while time.monotonic() <= deadline:
-        status = get_codeyun_watchdog_status()
+        status = get_codeyun_watchdog_status(full_scan=False, include_startup=False)
         if status.get("running"):
             status["started_pid"] = proc.pid
             return {"status": "started", "service": status}
@@ -349,7 +403,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
             break
         time.sleep(0.1)
 
-    status = get_codeyun_watchdog_status()
+    status = get_codeyun_watchdog_status(full_scan=False, include_startup=False)
     status["started_pid"] = proc.pid
     if status.get("process_count"):
         return {"status": "starting", "service": status}
@@ -357,7 +411,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
 
 
 def stop_codeyun_watchdog(timeout: float = 5.0) -> dict[str, Any]:
-    targets = [psutil.Process(item["pid"]) for item in list_codeyun_watchdog_processes()]
+    targets = [psutil.Process(item["pid"]) for item in list_codeyun_watchdog_processes(full_scan=True)]
     for proc in targets:
         try:
             proc.terminate()
