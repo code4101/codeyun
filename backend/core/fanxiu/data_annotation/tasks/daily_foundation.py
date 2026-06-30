@@ -1556,7 +1556,7 @@ class DailyFoundationTaskMixin:
         compact = _sanitize_ocr_text(text).replace(" ", "")
         if "点击查看" not in compact and "点击使用" not in compact:
             return False
-        return any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励", "灵玉", "天尊", "仙玉"))
+        return any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励", "灵玉", "天尊", "仙玉", "随机匣", "兽渊"))
 
     def _world_reward_tip_detected(
         self,
@@ -1707,6 +1707,30 @@ class DailyFoundationTaskMixin:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         ref_image = images.get(34) if isinstance(images.get(34), dict) else {"filename": "world_runtime.png", "width": 900, "height": 1600}
         runtime = self._fanxiu_observer(ctx, stop_event, frame_data_url=frame)
+        baiye_scene_id = self._baiye_stack_scene_from_text(text)
+        baiye_score = 100.0 if baiye_scene_id is not None else 0.0
+        if baiye_scene_id is None:
+            candidate_scene_id, candidate_score = self._identify_scene_number(ctx, frame, [266, 265, 264])
+            if candidate_scene_id in {266, 265, 264} and self._scene_matches_id(int(candidate_scene_id), float(candidate_score or 0.0)):
+                baiye_scene_id = int(candidate_scene_id)
+                baiye_score = float(candidate_score or 0.0)
+        if baiye_scene_id in {266, 265, 264}:
+            action_runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+            if baiye_scene_id == 266:
+                self._log("action", f"{label}：当前实际为 #266 {baiye_score:.0f}%，优先点击拜谒详情「返回」")
+                action_runtime.click_shape_center(266, "返回")
+                yield from action_runtime.wait_view(265, 264, 34, timeout=18.0, label=f"{label}：等待 #266 返回")
+            elif baiye_scene_id == 265:
+                self._log("action", f"{label}：当前实际为 #265 {baiye_score:.0f}%，优先点击法则之主「返回」")
+                action_runtime.click_shape_center(265, "返回")
+                yield from action_runtime.wait_view(264, 34, timeout=18.0, label=f"{label}：等待 #265 返回")
+            else:
+                self._log("action", f"{label}：当前实际为 #264 {baiye_score:.0f}%，优先点击三千大道「返回」")
+                action_runtime.click_shape_center(264, "返回")
+                yield from action_runtime.wait_view(34, timeout=18.0, label=f"{label}：等待 #264 返回世界")
+                ctx["_go_scene_known_scene_id"] = 34
+            yield from action_runtime.wait_action_settle(1.0)
+            return True
         width, height = self._frame_size(ref_image)
         click_image = ref_image
         matches: list[tuple[float, float, str]] = []
@@ -3771,6 +3795,18 @@ class DailyFoundationTaskMixin:
         target_text = _sanitize_ocr_text(target).translate(FULLWIDTH_DIGIT_TRANSLATION)
         return bool(target_text and target_text in compact and self._baiye_text_can_worship(compact))
 
+    def _baiye_stack_scene_from_text(self, text: Any) -> int | None:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        if not compact:
+            return None
+        if "剩余次数" in compact or "本次拜谒" in compact or "已拜谒" in compact:
+            return 266
+        if "可旋转" in compact or "选择法则之主" in compact or "进行拜谒" in compact:
+            return 265
+        if "三千大道" in compact or "跨法则" in compact or "跨洪则" in compact:
+            return 264
+        return None
+
     def _click_baiye_worship_button(
         self,
         runtime: Any,
@@ -3799,16 +3835,44 @@ class DailyFoundationTaskMixin:
         *,
         reason: str,
     ) -> Iterator[Any]:
-        self._log("action", f"日常_拜谒：{reason}，调用通用场景移动返回 #34")
-        for _attempt in range(3):
+        wait_timeout = float((payload or {}).get("baiye_return_wait_timeout") or 18.0)
+        settle_seconds = float((payload or {}).get("baiye_return_settle_seconds") or 1.0)
+        self._log("action", f"日常_拜谒：{reason}，按拜谒页面栈返回 #34")
+        for _attempt in range(4):
+            frame = runtime.cur_frame(update=True)
+            text = runtime.ocr_text(frame)
+            scene_id = self._baiye_stack_scene_from_text(text)
+            score = 100.0 if scene_id is not None else 0.0
+            if scene_id is None:
+                scene_id, score, _frame = runtime.current_scene([266, 265, 264, 34], frame_data_url=frame)
+            if scene_id == 34:
+                self._log("success", "日常_拜谒：已返回 #34 世界，闭环完成")
+                return "success"
+            if scene_id == 266:
+                self._log("action", f"日常_拜谒：当前 #266 {score:.0f}%，点击「返回」回法则之主选择页")
+                runtime.click_shape_center(266, "返回")
+                yield from runtime.wait_view(265, 264, 34, timeout=wait_timeout, label="日常_拜谒：等待 #266 返回")
+                yield from runtime.wait_action_settle(settle_seconds)
+                continue
+            if scene_id == 265:
+                self._log("action", f"日常_拜谒：当前 #265 {score:.0f}%，点击「返回」回三千大道")
+                runtime.click_shape_center(265, "返回")
+                yield from runtime.wait_view(264, 34, timeout=wait_timeout, label="日常_拜谒：等待 #265 返回")
+                yield from runtime.wait_action_settle(settle_seconds)
+                continue
+            if scene_id == 264:
+                self._log("action", f"日常_拜谒：当前 #264 {score:.0f}%，点击「返回」回世界")
+                runtime.click_shape_center(264, "返回")
+                yield from runtime.wait_view(34, timeout=wait_timeout, label="日常_拜谒：等待 #264 返回世界")
+                yield from runtime.wait_action_settle(settle_seconds)
+                continue
+            self._log("warning", f"日常_拜谒：页面栈返回未识别到 #264/#265/#266/#34，当前 scene={scene_id}，回退通用 goto #34")
             yield from runtime.goto_view(34)
-            yield from runtime.wait_action_settle(1.0)
+            yield from runtime.wait_action_settle(settle_seconds)
             scene_id, _score, _frame = runtime.current_scene([34, 266, 265, 264], update=True)
             if scene_id == 34:
                 self._log("success", "日常_拜谒：已通过通用 goto 返回 #34 世界，闭环完成")
                 return "success"
-            if scene_id in (266, 265, 264):
-                continue
             break
         raise RuntimeError(f"日常_拜谒：通用 goto 返回后未能确认 #34，当前 scene={scene_id}")
 

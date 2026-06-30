@@ -941,7 +941,7 @@ def execute_runtime_tick(
         world_facts_path=world_facts_path,
     )
     if not bool(ensure_status.get("behavior_tree_enabled", True)):
-        ensure_status["engine_tick"] = {
+        ensure_status["cell_tick"] = {
             "ran": False,
             "reason": "kernel_disabled",
             "guard": bool(guard),

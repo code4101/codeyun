@@ -9578,9 +9578,9 @@ def test_data_annotation_service_kernel_restart_endpoint_uses_service_entry_and_
     assert calls["world_facts_path"] == tmp_path / "world_facts.json"
 
 
-def test_data_annotation_service_framework_tick_endpoint_uses_service_entry_and_shared_paths(tmp_path, monkeypatch):
+def test_data_annotation_service_cell_tick_endpoint_uses_service_entry_and_shared_paths(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-framework-entry"})()
+    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-cell-entry"})()
     calls = {}
     recorded = {}
 
@@ -9594,7 +9594,7 @@ def test_data_annotation_service_framework_tick_endpoint_uses_service_entry_and_
             "running": False,
             "status": "idle",
             "entry_id": kwargs["entry_id"],
-            "message": "service framework tick",
+            "message": "service cell tick",
             "logs": [],
         }
 
@@ -9607,9 +9607,9 @@ def test_data_annotation_service_framework_tick_endpoint_uses_service_entry_and_
     monkeypatch.setattr(fanxiu._runtime_framework, "execute_tick", fake_execute_tick)
     monkeypatch.setattr(fanxiu, "_record_runtime_cell_log", fake_record_runtime_cell_log)
 
-    response = fanxiu.tick_fanxiu_data_annotation_runtime_service_framework(
-        fanxiu.FanxiuDataAnnotationRuntimeFrameworkTickRequest(
-            entry_id="request-framework-entry",
+    response = fanxiu.tick_fanxiu_data_annotation_runtime_service_cell(
+        fanxiu.FanxiuDataAnnotationRuntimeCellTickRequest(
+            entry_id="request-cell-entry",
             guard=False,
             manual_job=True,
             scheduled_job=False,
@@ -9620,22 +9620,22 @@ def test_data_annotation_service_framework_tick_endpoint_uses_service_entry_and_
         session=object(),
     )
 
-    assert response.entry_id == "resolved-framework-entry"
+    assert response.entry_id == "resolved-cell-entry"
     assert calls["entry"] is service_entry
-    assert calls["entry_id"] == "resolved-framework-entry"
+    assert calls["entry_id"] == "resolved-cell-entry"
     assert calls["guard"] is False
     assert calls["manual_job"] is True
     assert calls["scheduled_job"] is False
     assert calls["run_mode"] == "until_idle"
     assert calls["max_ticks"] == 13
     assert calls["timeout_seconds"] == 9.5
-    assert calls["asset_tree_path"] == tmp_path / "resolved-framework-entry.json"
+    assert calls["asset_tree_path"] == tmp_path / "resolved-cell-entry.json"
     assert calls["scheduler_settings_path"] == _scheduler_settings_path(tmp_path)
     assert calls["runtime_state_path"] == tmp_path / "runtime_state.json"
     assert calls["world_facts_path"] == tmp_path / "world_facts.json"
     assert recorded["title"] == "服务提交 tick：until_idle"
-    assert recorded["source"]["cmd"] == "framework.tick"
-    assert recorded["source"]["entry_id"] == "resolved-framework-entry"
+    assert recorded["source"]["cmd"] == "cell.tick"
+    assert recorded["source"]["entry_id"] == "resolved-cell-entry"
     assert recorded["source"]["source"] == "service"
     assert recorded["source"]["policy"]["max_ticks"] == 13
     assert recorded["before_keys"] == set()

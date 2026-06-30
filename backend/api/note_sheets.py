@@ -107,6 +107,12 @@ NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = "registration_user_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = "registration_composite_update"
 NOTE_SHEET_CELL_ACTION_ATTENDANCE_EXPORT = "attendance_export"
 NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = "clockin_link_detect"
+NOTE_SHEET_ATTENDANCE_REFUND_FAQ_TEXT = "考勤返款常见问题解答"
+NOTE_SHEET_ATTENDANCE_REFUND_FAQ_URL = "https://kdocs.cn/l/cmMznDf1i3ye"
+NOTE_SHEET_ATTENDANCE_FEEDBACK_TEXT = "反馈问题"
+NOTE_SHEET_ATTENDANCE_FEEDBACK_URL = "/attendance-feedback"
+NOTE_SHEET_INLINE_LINK_STYLE = {"text_color": "#0000FF", "underline": True}
+NOTE_SHEET_ATTENDANCE_REFUND_FAQ_LINK_STYLE = {"text_color": "#FF0000", "underline": True}
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]
 NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS = ["已返款"]
@@ -120,6 +126,21 @@ NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
 NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
 NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN = "提交时间"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN = "关联用户ID"
+NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS = [
+    NOTE_SHEET_REGISTRATION_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN,
+    "备注",
+    NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN,
+    "姓名",
+    "微信昵称",
+    "手机号",
+    "错误手机号",
+    *NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
+    "用户ID",
+    "匹配得分",
+    "参考信息",
+    NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+]
 NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND = "#9DC3E6"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE = (
     "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
@@ -10823,6 +10844,8 @@ def _find_attendance_template_source_row(
     reference_row_offset: int = 0,
     grid_rows: list[Any] | None = None,
 ) -> tuple[int, list[Any], dict[str, Any]] | None:
+    # Monthly course workbooks evolve in real use. The next workbook must inherit
+    # the nearest previous workbook of the same course type, not a fixed old base.
     column_count = len(columns)
     type_index = _find_attendance_column_index(columns, "course_type")
     name_index = _find_attendance_column_index(columns, "course_name")
@@ -11719,10 +11742,10 @@ def _copy_resource_access_grants(
 
 
 def _should_clear_course_template_sheet_data(source_sheet: SheetDocument) -> bool:
-    sheet_key = _normalize_sheet_text(source_sheet.sheet_key)
-    title = _normalize_sheet_text(source_sheet.title)
-    if sheet_key in {"video_config", "clockin_config"} or title in {"视频配置", "打卡配置"}:
-        return False
+    # This is currently used by the monthly 念住/觉观 workbook generator, where
+    # runtime video/clockin URLs must come from the target month. 禅宗/修道班 have
+    # different inheritance rules and should get an explicit course-type policy
+    # before they reuse this path.
     return True
 
 
@@ -12120,6 +12143,221 @@ def _normalize_course_template_refund_header_styles(document_json: dict[str, Any
     return next_document
 
 
+def _set_header_grid_cell_inline_link(
+    document_json: dict[str, Any],
+    *,
+    row_index: int,
+    column_index: int,
+    text: str,
+    url: str,
+    style: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    columns = _normalize_document_columns(document_json)
+    if row_index < 0 or column_index < 0 or column_index >= len(columns):
+        return document_json, False
+
+    next_document = deepcopy(document_json)
+    grid_rows = _extract_document_grid_rows(next_document)
+    if row_index >= len(grid_rows):
+        return next_document, False
+
+    changed = False
+    next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+    target_row = _normalize_sheet_row(next_grid_rows[row_index], len(columns))
+    source_grid_cell = target_row[column_index]
+    linked_cell = _with_inline_cell_link(text, url)
+    link_style = style or NOTE_SHEET_INLINE_LINK_STYLE
+    if isinstance(linked_cell, dict):
+        source_style = source_grid_cell.get("style") if isinstance(source_grid_cell, dict) else None
+        linked_cell["style"] = {
+            **(source_style if isinstance(source_style, dict) else {}),
+            **link_style,
+        }
+    if target_row[column_index] != linked_cell:
+        target_row[column_index] = linked_cell
+        next_grid_rows[row_index] = target_row
+        next_document = dict(next_document)
+        next_document["grid_rows"] = next_grid_rows
+        changed = True
+
+    entity_rows = _extract_document_entity_rows(next_document)
+    entity_columns = _extract_document_entity_columns(next_document)
+    entity_cells = _extract_document_entity_cells(next_document)
+    if (
+        entity_rows
+        and entity_columns
+        and row_index < len(entity_rows)
+        and column_index < len(entity_columns)
+    ):
+        row_id = _get_document_entity_row_id(entity_rows[row_index])
+        column_id = _get_document_entity_column_id(entity_columns[column_index])
+        if row_id and column_id:
+            next_entity_cells = dict(entity_cells)
+            row_cells = dict(next_entity_cells.get(row_id) or {})
+            source_entry = row_cells.get(column_id)
+            next_entry = dict(source_entry) if isinstance(source_entry, dict) else {}
+            next_entry["value"] = text
+            next_entry["link"] = {"url": url}
+            source_style = next_entry.get("style")
+            next_entry["style"] = {
+                **(source_style if isinstance(source_style, dict) else {}),
+                **link_style,
+            }
+            if next_entry != source_entry:
+                row_cells[column_id] = next_entry
+                next_entity_cells[row_id] = row_cells
+                next_document = dict(next_document)
+                next_document["entity_cells"] = next_entity_cells
+                changed = True
+
+    return next_document, changed
+
+
+def _normalize_attendance_refund_faq_link(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = deepcopy(document_json)
+    columns = _normalize_document_columns(next_document)
+    grid_rows = _extract_document_grid_rows(next_document)
+    data_start_row = _normalize_document_data_start_row(next_document)
+    if not columns or not grid_rows or data_start_row <= 0:
+        return next_document
+
+    target_row_index = -1
+    target_column_index = -1
+    for row_index, row in enumerate(grid_rows[:data_start_row]):
+        if not isinstance(row, list):
+            continue
+        normalized_row = _normalize_sheet_row(row, len(columns))
+        for column_index, cell in enumerate(normalized_row):
+            if _normalize_sheet_text(_extract_cell_value(cell)) == NOTE_SHEET_ATTENDANCE_REFUND_FAQ_TEXT:
+                target_row_index = row_index
+                target_column_index = column_index
+                break
+        if target_row_index >= 0:
+            break
+    if target_row_index < 0 or target_column_index < 0:
+        return next_document
+
+    next_document, changed = _set_header_grid_cell_inline_link(
+        next_document,
+        row_index=target_row_index,
+        column_index=target_column_index,
+        text=NOTE_SHEET_ATTENDANCE_REFUND_FAQ_TEXT,
+        url=NOTE_SHEET_ATTENDANCE_REFUND_FAQ_URL,
+        style=NOTE_SHEET_ATTENDANCE_REFUND_FAQ_LINK_STYLE,
+    )
+    return next_document if changed else document_json
+
+
+def _normalize_attendance_feedback_link(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = deepcopy(document_json)
+    columns = _normalize_document_columns(next_document)
+    total_refund_index = _get_column_index(columns, "总应返款")
+    config_row_index = _normalize_document_data_start_row(next_document) - 1
+    field_row_index = int(next_document.get("field_row_index") or 0)
+    if total_refund_index < 0 or config_row_index < 0 or config_row_index <= field_row_index:
+        return next_document
+
+    next_document, changed = _set_header_grid_cell_inline_link(
+        next_document,
+        row_index=config_row_index,
+        column_index=total_refund_index,
+        text=NOTE_SHEET_ATTENDANCE_FEEDBACK_TEXT,
+        url=NOTE_SHEET_ATTENDANCE_FEEDBACK_URL,
+    )
+    return next_document if changed else document_json
+
+
+def _cell_without_inline_link(cell: Any) -> Any:
+    if not isinstance(cell, dict):
+        return cell
+    next_cell = dict(cell)
+    next_cell.pop("link", None)
+    if set(next_cell) == {"value"}:
+        return next_cell.get("value")
+    return next_cell
+
+
+def _strip_course_runtime_header_links(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = deepcopy(document_json)
+    columns = _normalize_document_columns(next_document)
+    field_row_index = int(next_document.get("field_row_index") or 0)
+    if not columns or field_row_index < 0:
+        return next_document
+
+    target_indexes = {
+        index
+        for index, column in enumerate(columns)
+        if _normalize_sheet_text(column) == "打卡数" or _attendance_lesson_number_from_text(column) is not None
+    }
+    if not target_indexes:
+        return next_document
+
+    changed = False
+    grid_rows = _extract_document_grid_rows(next_document)
+    if field_row_index < len(grid_rows):
+        next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+        row = _normalize_sheet_row(next_grid_rows[field_row_index], len(columns))
+        for column_index in target_indexes:
+            source_cell = row[column_index]
+            next_cell = _cell_without_inline_link(source_cell)
+            if next_cell != source_cell:
+                row[column_index] = next_cell
+                changed = True
+        if changed:
+            next_grid_rows[field_row_index] = row
+            next_document["grid_rows"] = next_grid_rows
+
+    cell_meta = deepcopy(dict(next_document.get("cell_meta") or {}))
+    cell_meta_changed = False
+    for column_index in target_indexes:
+        key = f"{field_row_index}:{column_index}"
+        meta = cell_meta.get(key)
+        if not isinstance(meta, dict) or "link" not in meta:
+            continue
+        next_meta = dict(meta)
+        next_meta.pop("link", None)
+        if next_meta:
+            cell_meta[key] = next_meta
+        else:
+            cell_meta.pop(key, None)
+        cell_meta_changed = True
+    if cell_meta_changed:
+        if cell_meta:
+            next_document["cell_meta"] = cell_meta
+        else:
+            next_document.pop("cell_meta", None)
+        changed = True
+
+    entity_rows = _extract_document_entity_rows(next_document)
+    entity_columns = _extract_document_entity_columns(next_document)
+    entity_cells = _extract_document_entity_cells(next_document)
+    if entity_rows and entity_columns and entity_cells and field_row_index < len(entity_rows):
+        row_id = _get_document_entity_row_id(entity_rows[field_row_index])
+        if row_id:
+            next_entity_cells = deepcopy(entity_cells)
+            row_cells = dict(next_entity_cells.get(row_id) or {})
+            row_changed = False
+            for column_index in target_indexes:
+                if column_index >= len(entity_columns):
+                    continue
+                column_id = _get_document_entity_column_id(entity_columns[column_index])
+                if not column_id:
+                    continue
+                entry = row_cells.get(column_id)
+                if not isinstance(entry, dict) or "link" not in entry:
+                    continue
+                next_entry = dict(entry)
+                next_entry.pop("link", None)
+                row_cells[column_id] = next_entry
+                row_changed = True
+            if row_changed:
+                next_entity_cells[row_id] = row_cells
+                next_document["entity_cells"] = next_entity_cells
+                changed = True
+
+    return next_document if changed else document_json
+
+
 def _attendance_lesson_number_from_text(value: Any) -> int | None:
     match = re.search(r"第\s*0*(?P<number>\d+)\s*课", _normalize_sheet_text(_extract_cell_value(value)))
     if match is None:
@@ -12194,6 +12432,7 @@ def _maybe_materialize_zen_course_data_sheets(
     workbook: WorkbookDocument,
     attendance_sheet: SheetDocument,
     course_name: str,
+    allow_header_link_fallback: bool = True,
 ) -> None:
     normalized_course_name = _normalize_sheet_text(course_name)
     if "念住" not in normalized_course_name and "觉观" not in normalized_course_name:
@@ -12214,14 +12453,14 @@ def _maybe_materialize_zen_course_data_sheets(
     clockin_meta = dict(documents[CLOCKIN_CONFIG_SHEET_KEY].get("source_meta") or {})
     video_rows = _extract_document_rows(documents[VIDEO_CONFIG_SHEET_KEY])
     clockin_rows = _extract_document_rows(documents[CLOCKIN_CONFIG_SHEET_KEY])
-    has_video_source = int(video_meta.get("legacy_lesson_rows") or 0) > 0 or any(
+    has_video_source = int(video_meta.get("legacy_lesson_rows") or 0) > 0 or (allow_header_link_fallback and any(
         _normalize_sheet_text(row[4] if isinstance(row, list) and len(row) > 4 else "")
         for row in video_rows
-    )
-    has_clockin_source = int(clockin_meta.get("legacy_clockin_rows") or 0) > 0 or any(
+    ))
+    has_clockin_source = int(clockin_meta.get("legacy_clockin_rows") or 0) > 0 or (allow_header_link_fallback and any(
         _normalize_sheet_text(row[2] if isinstance(row, list) and len(row) > 2 else "")
         for row in clockin_rows
-    )
+    ))
     if not has_video_source:
         return
     if not has_clockin_source:
@@ -12247,6 +12486,12 @@ def _maybe_materialize_zen_course_data_sheets(
             dict(attendance_sheet.document_json or {})
         )
         attendance_sheet.document_json = _normalize_course_template_refund_header_styles(
+            dict(attendance_sheet.document_json or {})
+        )
+        attendance_sheet.document_json = _normalize_attendance_feedback_link(
+            dict(attendance_sheet.document_json or {})
+        )
+        attendance_sheet.document_json = _normalize_attendance_refund_faq_link(
             dict(attendance_sheet.document_json or {})
         )
         attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
@@ -12539,8 +12784,11 @@ def _clone_attendance_course_template_workbook(
                 source_owner_key=source_sheet.owner_key,
                 target_owner_key=owner_key,
             )
+            cloned_document_json = _strip_course_runtime_header_links(cloned_document_json)
             cloned_document_json = _reset_course_template_runtime_header_values(cloned_document_json)
             cloned_document_json = _normalize_course_template_refund_header_styles(cloned_document_json)
+            cloned_document_json = _normalize_attendance_feedback_link(cloned_document_json)
+            cloned_document_json = _normalize_attendance_refund_faq_link(cloned_document_json)
         document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
             id=document_identity.primary_id,
@@ -12590,6 +12838,7 @@ def _clone_attendance_course_template_workbook(
         workbook=workbook,
         attendance_sheet=attendance_sheet,
         course_name=title,
+        allow_header_link_fallback=False,
     )
     return workbook, attendance_sheet
 
@@ -15989,6 +16238,23 @@ def _clean_template_runtime_derived_columns(document_json: dict[str, Any]) -> di
     return next_document
 
 
+def _clean_registration_template_import_source_columns(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(next_document)
+    if not _is_registration_append_sheet(columns):
+        return next_document
+
+    base_columns = set(NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS)
+    for index in range(len(columns) - 1, -1, -1):
+        if columns[index] in base_columns:
+            continue
+        next_document = _delete_document_column(next_document, delete_index=index)
+        columns = _normalize_document_columns(next_document)
+
+    next_document, _changed = _apply_registration_standard_user_id_column_styles(next_document)
+    return next_document
+
+
 def _clone_sheet_document_json(
     document_json: dict[str, Any],
     *,
@@ -15998,6 +16264,7 @@ def _clone_sheet_document_json(
     if mode == "template":
         cloned = _clear_template_document_data_area(cloned)
         cloned = _clean_template_runtime_derived_columns(cloned)
+        cloned = _clean_registration_template_import_source_columns(cloned)
     return cloned
 
 

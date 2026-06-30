@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5"
-last_audited_at: "2026-06-29T22:44:44.4423840+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-29-frontend-design-e7ec5047/report.md"
-last_frontend_commit_summary: "完整关闭 6955ecbe..e7ec5047：沿 Codex 线程页、笔记列表和笔记单工作区复核新链路，只修复了总览 loading 误遮罩整个线程工作区的问题，其余两页保持概念收敛。"
-audited_commit_count: 48
+last_audited_commit: "687b8f9f37e35bafc16b9f772866bc7d861f4ca2"
+last_audited_at: "2026-06-30T12:41:28.2201422+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-687b8f9f/report.md"
+last_frontend_commit_summary: "完整关闭 e7ec5047..687b8f9f：沿 fanxiu runtime、data-annotation、attendance、Codex 与工作表链路复核后，只修复了 cluster/runtime 状态表把执行列拉成填充列的问题，其余页面保持概念收敛。"
+audited_commit_count: 49
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-06-30
+
+- 完整范围：`e7ec5047b38dc4ca3a31336e4e5d5a4f0ceb7dd5..687b8f9f37e35bafc16b9f772866bc7d861f4ca2`
+- 覆盖提交：`687b8f9f37e35bafc16b9f772866bc7d861f4ca2`
+- 前端入口提交：`687b8f9f37e35bafc16b9f772866bc7d861f4ca2`
+- 入口如何牵引到旧问题：这次提交同时扩展了 `fanxiu/data-annotation` 调度链、触达 `cluster/runtime`、`cluster/codex`、`attendance/configs`、`StarNotes` 和 `NoteSheetWorkspace`。真实页面里真正被牵出来的旧问题只发生在 `cluster/runtime`：新增的资源监控延迟加载让状态表再次成为首屏主结构，但遗留的 `runtime-table { width: 100%; }` 仍把右侧空白误投影进 `执行` 列，导致 `状态 / 下次触发` 两个高价值字段在宽屏和窄屏都要依赖表内横向滚动才能看全。这个问题和本轮入口同页、同一状态表闭环，属于典型的旧宽度模型被新链路放大。
+- 本轮减法：不新增任何按钮、说明、标签或状态，只把 `cluster/runtime` 的表格宽度模型从拉伸式收回到内容驱动。修复后，`执行` 列回到补充上下文角色，`状态 / 下次触发` 重新回到首屏主判断区。
+- 信息量保持：服务/作业名称、命令摘要、状态按钮、下次触发、日志与配置入口都保留。减少的是“把空白当成执行列业务宽度”的隐性复杂度，不是减少用户判断依据。
+- 概念图/线框图：报告中的 Mermaid 把本轮入口统一收回到 `新增调度/运行状态 -> cluster/runtime 状态表 -> 用户先看 状态 / 下次触发` 这条基础闭环；ASCII 线框图则直接说明 `执行` 列应是补充上下文，不应继续吞掉首屏宽度。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-687b8f9f/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `cluster/runtime`、`cluster/codex`、`fanxiu/data-annotation/runtime`、`fanxiu/data-annotation`、`attendance/configs`、`notes/center?tab=star`、`workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 21 张截图；`evidence.json` 证明所有样本 `overflowX = 0` 且 `warn/error = 0`。修复后补拍 `cluster-runtime-*-after.png` 与 `cluster-runtime-after.json`，确认三种视口下 `状态 / 下次触发` 已回到首屏。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：`cluster/runtime` 属于表现层问题，根因是表格宽度模型不正交；其余入口页面本轮未发现需要继续止血的表现层、前端状态投影或后端投影问题。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的后端数据投影或业务建模债务。
+- 剩余风险：`cluster/codex` 仍可能因远端设备超时显示局部失败提示，但当前页面已经把失败限定在局部提示里；`note-sheet` 窄屏本质仍是宽表浏览场景，当前继续依赖工作表内部横向滚动，但这不是本轮新增复杂度。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `687b8f9f37e35bafc16b9f772866bc7d861f4ca2`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-06-29
 

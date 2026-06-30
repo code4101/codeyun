@@ -19,7 +19,7 @@ import {
   setFanxiuDataAnnotationRuntimeGuardGroup,
   setFanxiuDataAnnotationRuntimeIsolation,
   stopFanxiuDataAnnotationRuntimeCurrentTask,
-  tickFanxiuDataAnnotationRuntimeFramework,
+  tickFanxiuDataAnnotationRuntimeCell,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
   type FanxiuDataAnnotationRuntimeCellLog,
   type FanxiuDataAnnotationRuntimeLogEntry,
@@ -127,7 +127,7 @@ const taskProgressText = computed(() => {
   if (!status || !status.total) return '';
   return `${status.current_index}/${status.total}`;
 });
-type RuntimeLayerStatusKey = 'kernel_status' | 'framework_status' | 'scheduler_status' | 'orchestration_status';
+type RuntimeLayerStatusKey = 'kernel_status' | 'cell_status' | 'scheduler_status' | 'orchestration_status';
 
 const statusText = (section: RuntimeLayerStatusKey, key: string, fallback = '-') => {
   const value = runtimeStatus.value?.[section]?.[key];
@@ -148,10 +148,11 @@ const runtimeSecondaryMessage = computed(() => {
   if (!message || message === '-') return '';
   return message === kernelMessageText.value.trim() ? '' : message;
 });
-const frameworkLabelText = computed(() => statusText('framework_status', 'label', runtimeStateText.value));
-const frameworkPhaseText = computed(() => statusText('framework_status', 'phase', runtimePhaseText.value));
-const frameworkTaskText = computed(() => statusText('framework_status', 'current_task', '无'));
-const frameworkProgressText = computed(() => statusText('framework_status', 'progress', taskProgressText.value || '-'));
+const cellStatusText = (key: string, fallback = '-') => statusText('cell_status', key, fallback);
+const cellLabelText = computed(() => cellStatusText('label', runtimeStateText.value));
+const cellPhaseText = computed(() => cellStatusText('phase', runtimePhaseText.value));
+const cellTaskText = computed(() => cellStatusText('current_task', '无'));
+const cellProgressText = computed(() => cellStatusText('progress', taskProgressText.value || '-'));
 const tickGroupSelected = computed(() => tickGuardEnabled.value || tickManualJobEnabled.value || tickScheduledJobEnabled.value);
 const cellSubmitActionText = computed(() => {
   const labels: Record<string, string> = {
@@ -161,8 +162,8 @@ const cellSubmitActionText = computed(() => {
   };
   return labels[cellRunMode.value] || '手动提交';
 });
-const frameworkTickText = computed(() => {
-  const tick = runtimeStatus.value?.framework_tick || runtimeStatus.value?.engine_tick || {};
+const cellTickText = computed(() => {
+  const tick = runtimeStatus.value?.cell_tick || {};
   const ran = tick.ran;
   const labels: Record<string, string> = {
     idle: '空转',
@@ -693,7 +694,7 @@ const restartKernel = () => runAction('kernel-restart', () => restartFanxiuDataA
 
 const stopCurrentCell = () => runAction('cell-stop', () => stopFanxiuDataAnnotationRuntimeCurrentTask(entryId.value));
 
-const submitSchedulerCell = () => runAction('scheduler-submit', () => tickFanxiuDataAnnotationRuntimeFramework(entryId.value, {
+const submitSchedulerCell = () => runAction('scheduler-submit', () => tickFanxiuDataAnnotationRuntimeCell(entryId.value, {
   guard: tickGuardEnabled.value,
   manual_job: tickManualJobEnabled.value,
   scheduled_job: tickScheduledJobEnabled.value,
@@ -803,8 +804,8 @@ onUnmounted(() => {
               </el-button>
             </template>
             <div class="runtime-help-doc">
-              <h4>分层运行</h4>
-              <p>运行内核保存设备连接、当前画面和运行上下文；凡修框架定义 task、guard、tick 和 ctx 协议。</p>
+              <h4>单内核运行</h4>
+              <p>运行内核保存设备连接、当前画面和运行上下文；所有入口只向同一个队列提交 cell。</p>
               <p>调度器按触发来源分为定时调度器和 AI 调度器；执行方式如单步、到空闲、本作业只是提交 cell 时的运行参数。</p>
               <p>前端只提交明确动作，例如重启内核、中断当前 cell、暂停调度、提交一次 tick，不再把这些语义混在一个开关里。</p>
             </div>
@@ -836,14 +837,14 @@ onUnmounted(() => {
           </div>
           <div class="runtime-layer">
             <div class="runtime-layer-head">
-              <strong>凡修框架</strong>
-              <span>{{ frameworkLabelText }}</span>
+              <strong>当前 cell</strong>
+              <span>{{ cellLabelText }}</span>
             </div>
             <div class="runtime-facts">
-              <span>阶段 {{ frameworkPhaseText }}</span>
-              <span>任务 {{ frameworkTaskText }}</span>
-              <span v-if="frameworkProgressText !== '-'">进度 {{ frameworkProgressText }}</span>
-              <span v-if="frameworkTickText">上轮 {{ frameworkTickText }}</span>
+              <span>阶段 {{ cellPhaseText }}</span>
+              <span>任务 {{ cellTaskText }}</span>
+              <span v-if="cellProgressText !== '-'">进度 {{ cellProgressText }}</span>
+              <span v-if="cellTickText">上轮 {{ cellTickText }}</span>
             </div>
           </div>
           <div class="runtime-layer">

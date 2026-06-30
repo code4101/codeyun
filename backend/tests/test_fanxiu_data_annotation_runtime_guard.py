@@ -686,7 +686,7 @@ def test_runtime_cell_logs_prefers_persisted_cell_and_falls_back_to_runtime_logs
                     "id": "cell-new",
                     "title": "调度器提交 tick：tick_once",
                     "source_kind": "command",
-                    "source": json.dumps({"cmd": "framework.tick", "entry_id": "mumu"}, ensure_ascii=False),
+                    "source": json.dumps({"cmd": "cell.tick", "entry_id": "mumu"}, ensure_ascii=False),
                     "started_at": "10:00:01",
                     "ended_at": "10:00:02",
                     "entries": [
@@ -6812,6 +6812,37 @@ def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
     assert clicked == []
 
 
+def test_go_scene_closes_world_click_use_tip_before_world_entry_click(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "xianfu", "kind": "rect", "title": "仙府", "sceneJumpTarget": "171", "x": 0.88, "y": 0.68, "w": 0.08, "h": 0.08},
+    ])
+    image171 = _image("仙府主页", "0171.png", [])
+    tree = [image34, image171]
+    ctx = {"entry": object(), "asset_tree": tree, "images": {34: image34, 171: image171}}
+    clicked: list[tuple[float, float]] = []
+    scenes = iter([(34, 100.0), (171, 100.0)])
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame: next(scenes))
+    monkeypatch.setattr(runner, "_strong_ocr_scene_number", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda *_args, **_kwargs: [{"text": "哪吒兽渊随机匣 点击使用"}] if not clicked else [{"text": "世界 仙府 大地图"}],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(float(x), 1), round(float(y), 1))))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._go_scene_task(ctx, tmp_path / "asset_tree.json", 171, threading.Event()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(690.3, 968.0)]
+
+
 def test_mail_stable_entry_clicks_open_shape_center_after_visible_miss(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = _image(
@@ -8283,20 +8314,43 @@ def test_baiye_completed_text_wins_over_lord_map_text():
 
 
 class _BaiyeReturnRuntimeMixin:
+    def _baiye_return_ocr_text(self) -> str | None:
+        scene_id = getattr(self, "_scene_id", 266)
+        if scene_id == 265:
+            return "可旋转并选择法则之主进行拜谒"
+        if scene_id == 264:
+            return "三千大道 拜谒排行 16跨法则"
+        if scene_id == 34:
+            return "世界 日常 仙府 邮件"
+        return None
+
     def current_scene(self, *_args, **_kwargs):
         self._actions.append(("current_scene", _args, _kwargs))
-        if getattr(self, "_goto_world", False):
-            return 34, 100.0, "frame"
-        return 266, 100.0, "frame"
+        return getattr(self, "_scene_id", 266), 100.0, "frame"
 
     def click_shape_center(self, *_args):
         self._actions.append(("click_shape_center", _args))
+        scene_id = _args[0] if _args else None
+        title = _args[1] if len(_args) > 1 else None
+        if title == "返回":
+            if scene_id == 266:
+                self._scene_id = 265
+            elif scene_id == 265:
+                self._scene_id = 264
+            elif scene_id == 264:
+                self._scene_id = 34
 
     def wait_any(self, *_args, **_kwargs):
         self._actions.append(("wait_any", _kwargs.get("label")))
         if False:
             yield None
         return "returned"
+
+    def wait_view(self, *_args, **_kwargs):
+        self._actions.append(("wait_view", _args, _kwargs.get("label")))
+        if False:
+            yield None
+        return getattr(self, "_scene_id", 266)
 
     def view_visible(self, *_args):
         return lambda *_a, **_k: True
@@ -8312,7 +8366,7 @@ class _BaiyeReturnRuntimeMixin:
 
     def goto_view(self, scene_id: int):
         self._actions.append(("goto_view", scene_id))
-        self._goto_world = scene_id == 34
+        self._scene_id = scene_id
         if False:
             yield None
         return "success"
@@ -8331,6 +8385,8 @@ def test_baiye_lord_selection_short_circuits_when_already_completed(monkeypatch)
             return "frame"
 
         def ocr_text(self, *_args, **_kwargs):
+            if text := self._baiye_return_ocr_text():
+                return text
             return "历史记录 魔道法则之主 剩余次数：0/1 已拜谒"
 
         def ocr_words_in_shapes(self, *_args, **_kwargs):
@@ -8355,10 +8411,10 @@ def test_baiye_lord_selection_short_circuits_when_already_completed(monkeypatch)
     assert ("cur_frame", True) in actions
     assert not any(action[0] == "ocr_words_in_shapes" for action in actions)
     assert not any(action[0] == "click_frame_point" for action in actions)
-    assert ("goto_view", 34) in actions
-    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert ("click_shape_center", (266, "返回")) in actions
+    assert ("click_shape_center", (265, "返回")) in actions
+    assert ("click_shape_center", (264, "返回")) in actions
+    assert ("goto_view", 34) not in actions
     assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
 
 
@@ -8380,6 +8436,8 @@ def test_baiye_lord_selection_clicks_worship_button_after_target_selected(monkey
             return "frame"
 
         def ocr_text(self, *_args, **_kwargs):
+            if text := self._baiye_return_ocr_text():
+                return text
             return next(ocr_texts, "法则之主 魔道 剩余次数：0/1 已拜谒")
 
         def ocr_words_in_shapes(self, *_args, **_kwargs):
@@ -8402,10 +8460,10 @@ def test_baiye_lord_selection_clicks_worship_button_after_target_selected(monkey
     assert result == "success"
     assert any(action[0] == "click_frame_point" for action in actions)
     assert ("click_shape_center", (266, "拜谒")) in actions
-    assert ("goto_view", 34) in actions
-    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert ("click_shape_center", (266, "返回")) in actions
+    assert ("click_shape_center", (265, "返回")) in actions
+    assert ("click_shape_center", (264, "返回")) in actions
+    assert ("goto_view", 34) not in actions
     assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
 
 
@@ -8426,6 +8484,8 @@ def test_baiye_lord_selection_clicks_worship_when_already_on_target_page(monkeyp
             return "frame"
 
         def ocr_text(self, *_args, **_kwargs):
+            if text := self._baiye_return_ocr_text():
+                return text
             return next(ocr_texts, "法则之主 魔道法则之主 剩余次数：0/1 已拜谒")
 
         def ocr_words_in_shapes(self, *_args, **_kwargs):
@@ -8445,10 +8505,10 @@ def test_baiye_lord_selection_clicks_worship_when_already_on_target_page(monkeyp
 
     assert result == "success"
     assert ("click_shape_center", (266, "拜谒")) in actions
-    assert ("goto_view", 34) in actions
-    assert not any(action == ("click_shape_center", (266, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (265, "返回")) for action in actions)
-    assert not any(action == ("click_shape_center", (264, "返回")) for action in actions)
+    assert ("click_shape_center", (266, "返回")) in actions
+    assert ("click_shape_center", (265, "返回")) in actions
+    assert ("click_shape_center", (264, "返回")) in actions
+    assert ("goto_view", 34) not in actions
     assert not any(action == ("click_shape_center", (69, "退出")) for action in actions)
     assert not any(action[0] == "ocr_words_in_shapes" for action in actions)
 
@@ -10648,6 +10708,141 @@ def test_xianfu_visit_partner_max_continue_zero_closes_popup(tmp_path, monkeypat
     assert wait_calls == [(175,)]
 
 
+def test_xianfu_return_confirms_leave_popup_even_when_base_scene_is_world(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image86 = _image("离开场景", "0086.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05},
+    ])
+    image171 = _image("仙府主页", "0171.png", [
+        {"id": "leave", "kind": "rect", "title": "离开", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.8, "y": 0.5, "w": 0.1, "h": 0.08},
+    ])
+    ctx = {"entry": object(), "images": {34: image34, 86: image86, 171: image171}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json")
+    clicked: list[str] = []
+    scenes = iter([
+        (171, 100.0, "home"),
+        (34, 100.0, "leave-confirm"),
+        (34, 100.0, "world"),
+    ])
+
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: next(scenes))
+    monkeypatch.setattr(
+        runtime,
+        "ocr_text",
+        lambda frame: "是否离开当前场景 取消 确认" if frame == "leave-confirm" else "世界 大地图 仙府",
+    )
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    def fake_wait_view(*views, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        for view_id in views:
+            if int(view_id) == 34:
+                return runtime_runner_core.View(image34)
+        return runtime_runner_core.View(image171)
+
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._return_xianfu_pages_to_world(runtime, task_label="仙府_寻访仙侣", current_candidates=(171, 86, 34)),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["离开", "确认"]
+
+
+def test_xianfu_cutscene_skip_retries_until_home(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image171 = _image("仙府主页", "0171.png", [])
+    image185 = _image("仙府过场", "0185.png", [
+        {"id": "skip", "kind": "rect", "title": "跳过", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.88, "y": 0.07, "w": 0.1, "h": 0.06},
+    ])
+    ctx = {"entry": object(), "images": {171: image171, 185: image185}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json")
+    clicked: list[str] = []
+    scenes = iter([(None, 0.0, "still-transition"), (171, 100.0, "home")])
+
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: next(scenes))
+    monkeypatch.setattr(runtime, "ocr_text", lambda frame: "仙府功能区 寻仙台 离开" if frame == "home" else "")
+    monkeypatch.setattr(runtime, "wait_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._advance_xianfu_cutscene_to_home(runtime, task_label="仙府_寻访仙侣"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["跳过", "跳过"]
+
+
+def test_xianfu_learn_skill_return_uses_explicit_xianfu_chain(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image86 = _image("离开场景", "0086.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05},
+    ])
+    image171 = _image("仙府主页", "0171.png", [
+        {"id": "leave", "kind": "rect", "title": "离开", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.8, "y": 0.5, "w": 0.1, "h": 0.08},
+    ])
+    image176 = _image("绝技", "0176.png", [
+        {"id": "exit", "kind": "rect", "title": "退出", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.08, "y": 0.48, "w": 0.1, "h": 0.08},
+    ])
+    ctx = {"entry": object(), "images": {34: image34, 86: image86, 171: image171, 176: image176}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json")
+    clicked: list[str] = []
+    goto_targets: list[int] = []
+    scenes = iter([
+        (176, 100.0, "skill"),
+        (171, 100.0, "home"),
+        (34, 100.0, "leave-confirm"),
+        (34, 100.0, "world"),
+    ])
+
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: next(scenes))
+    monkeypatch.setattr(
+        runtime,
+        "ocr_text",
+        lambda frame: "是否离开当前场景 取消 确认" if frame == "leave-confirm" else "世界 大地图 仙府",
+    )
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    def fake_wait_view(*views, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        for view_id in views:
+            if int(view_id) == 34:
+                return runtime_runner_core.View(image34)
+            if int(view_id) == 171:
+                return runtime_runner_core.View(image171)
+            if int(view_id) == 176:
+                return runtime_runner_core.View(image176)
+        return None
+
+    def fake_goto_view(target, *_args, **_kwargs):
+        goto_targets.append(int(target))
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return runtime_runner_core.View(image34)
+
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runtime, "goto_view", fake_goto_view)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._return_xianfu_learn_skill_to_world(runtime),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["退出", "离开", "确认"]
+    assert goto_targets == []
+
+
 def test_xianfu_learn_skill_cd_parser_reuses_free_draw_cd_text():
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("06:33:27后可免费抽取") == 23607
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("12分05秒后可免费抽取") == 725
@@ -11427,6 +11622,9 @@ def test_runtime_display_adds_layered_status_projection():
             "close_popups": {"enabled": False},
         },
         "message": "行为树执行器已由后端进程 2664 持有：idle_guard",
+        "engine_tick": {"ran": True, "action": "idle"},
+        "framework_status": {"label": "old"},
+        "engine_status": {"label": "old"},
         "logs": [
             {"kind": "info", "message": "行为树执行器已由后端进程 2664 持有：idle_guard"},
             {"kind": "info", "message": "local"},
@@ -11447,12 +11645,14 @@ def test_runtime_display_adds_layered_status_projection():
         "can_restart": True,
         "can_interrupt": True,
     }
-    assert status["engine_status"]["phase"] == "空闲巡检中"
-    assert status["engine_status"]["current_task"] == "日常小助手"
-    assert status["engine_status"]["progress"] == "2/5"
-    assert status["framework_status"]["phase"] == "空闲巡检中"
-    assert status["framework_status"]["current_task"] == "日常小助手"
-    assert status["framework_status"]["progress"] == "2/5"
+    assert status["cell_status"]["phase"] == "空闲巡检中"
+    assert status["cell_status"]["current_task"] == "日常小助手"
+    assert status["cell_status"]["progress"] == "2/5"
+    assert "framework_status" not in status
+    assert "engine_status" not in status
+    assert status["cell_tick"] == {"ran": True, "action": "idle"}
+    assert "framework_tick" not in status
+    assert "engine_tick" not in status
     assert status["scheduler_status"]["job_group_enabled"] is False
     assert status["scheduler_status"]["guard_group_enabled"] is False
     assert status["orchestration_status"]["entry_id"] == "mf-entry"
@@ -11516,7 +11716,7 @@ def test_idle_recovery_runs_device_health_and_bounded_popup_ticks(tmp_path, monk
     assert status["phase"] == "idle_tick"
     assert status["message"] == "空闲复原识别：#34 world 100%"
 
-def test_runtime_engine_tick_respects_group_flags(monkeypatch):
+def test_runtime_cell_tick_respects_group_flags(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -11540,7 +11740,7 @@ def test_runtime_engine_tick_respects_group_flags(monkeypatch):
     status = runner.run_service_tick_once(guard=True, manual_job=False, scheduled_job=True)
 
     assert events == ["device_health", "idle_guard", "scheduled_job"]
-    assert status["engine_tick"] == {
+    assert status["cell_tick"] == {
         "ran": True,
         "action": "guard_checked",
         "guard": True,
@@ -11549,7 +11749,7 @@ def test_runtime_engine_tick_respects_group_flags(monkeypatch):
     }
 
 
-def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup_without_pending_manual_job(monkeypatch):
+def test_runtime_cell_tick_pauses_lower_groups_when_guard_handles_popup_without_pending_manual_job(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -11574,7 +11774,7 @@ def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup_withou
     status = runner.run_service_tick_once(guard=True, manual_job=True, scheduled_job=True)
 
     assert events == ["device_health", "idle_guard"]
-    assert status["engine_tick"] == {
+    assert status["cell_tick"] == {
         "ran": True,
         "action": "guard_checked",
         "guard": True,
@@ -11583,7 +11783,7 @@ def test_runtime_engine_tick_pauses_lower_groups_when_guard_handles_popup_withou
     }
 
 
-def test_runtime_engine_tick_starts_pending_manual_job_after_guard_handles_popup(monkeypatch):
+def test_runtime_cell_tick_starts_pending_manual_job_after_guard_handles_popup(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -11608,7 +11808,7 @@ def test_runtime_engine_tick_starts_pending_manual_job_after_guard_handles_popup
     status = runner.run_service_tick_once(guard=True, manual_job=True, scheduled_job=True)
 
     assert events == ["device_health", "idle_guard", "manual_job"]
-    assert status["engine_tick"] == {
+    assert status["cell_tick"] == {
         "ran": True,
         "action": "manual_job_started",
         "guard": True,
@@ -11617,21 +11817,20 @@ def test_runtime_engine_tick_starts_pending_manual_job_after_guard_handles_popup
     }
 
 
-def test_runtime_engine_tick_request_rejects_ambiguous_run_mode():
+def test_runtime_cell_tick_request_rejects_ambiguous_run_mode():
     from pydantic import ValidationError
 
     from backend.core.fanxiu.data_annotation.models import (
-        FanxiuDataAnnotationRuntimeEngineTickRequest,
-        FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+        FanxiuDataAnnotationRuntimeCellTickRequest,
     )
 
     with pytest.raises(ValidationError):
-        FanxiuDataAnnotationRuntimeEngineTickRequest(entry_id="mf-entry", run_mode="run")
+        FanxiuDataAnnotationRuntimeCellTickRequest(entry_id="mf-entry", run_mode="run")
 
     with pytest.raises(ValidationError):
-        FanxiuDataAnnotationRuntimeEngineTickRequest(entry_id="mf-entry", max_ticks=0)
+        FanxiuDataAnnotationRuntimeCellTickRequest(entry_id="mf-entry", max_ticks=0)
 
-    request = FanxiuDataAnnotationRuntimeFrameworkTickRequest(
+    request = FanxiuDataAnnotationRuntimeCellTickRequest(
         entry_id="mf-entry",
         guard=False,
         manual_job=True,
@@ -11643,7 +11842,7 @@ def test_runtime_engine_tick_request_rejects_ambiguous_run_mode():
     assert request.scheduled_job is False
 
 
-def test_runtime_engine_run_until_idle_stops_after_no_progress(monkeypatch):
+def test_runtime_cell_run_until_idle_stops_after_no_progress(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     actions = iter(["manual_job_started", "scheduler_started", "guard_checked"])
     calls: list[dict[str, bool]] = []
@@ -11656,7 +11855,7 @@ def test_runtime_engine_run_until_idle_stops_after_no_progress(monkeypatch):
         })
         return {
             "running": False,
-            "engine_tick": {
+            "cell_tick": {
                 "ran": True,
                 "action": next(actions),
             },
@@ -11679,12 +11878,12 @@ def test_runtime_engine_run_until_idle_stops_after_no_progress(monkeypatch):
         {"guard": True, "manual_job": True, "scheduled_job": False},
         {"guard": True, "manual_job": True, "scheduled_job": False},
     ]
-    assert status["engine_tick"]["action"] == "guard_checked"
-    assert status["engine_tick"]["run_mode"] == "until_idle"
-    assert status["engine_tick"]["ticks"] == 3
+    assert status["cell_tick"]["action"] == "guard_checked"
+    assert status["cell_tick"]["run_mode"] == "until_idle"
+    assert status["cell_tick"]["ticks"] == 3
 
 
-def test_runtime_engine_current_job_waits_after_start(monkeypatch):
+def test_runtime_cell_current_job_waits_after_start(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -11692,7 +11891,7 @@ def test_runtime_engine_current_job_waits_after_start(monkeypatch):
         events.append("tick")
         return {
             "running": True,
-            "engine_tick": {
+            "cell_tick": {
                 "ran": True,
                 "action": "manual_job_started",
             },
@@ -11700,7 +11899,7 @@ def test_runtime_engine_current_job_waits_after_start(monkeypatch):
 
     monkeypatch.setattr(runner, "run_service_tick_once", fake_tick_once)
     monkeypatch.setattr(runner, "wait_until_idle", lambda timeout_seconds=5.0: events.append("wait") or True)
-    monkeypatch.setattr(runner, "status", lambda: {"running": False, "engine_tick": {}})
+    monkeypatch.setattr(runner, "status", lambda: {"running": False, "cell_tick": {}})
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
 
     status = runner.run_service_ticks(
@@ -11713,10 +11912,10 @@ def test_runtime_engine_current_job_waits_after_start(monkeypatch):
     )
 
     assert events == ["tick", "wait"]
-    assert status["engine_tick"]["action"] == "manual_job_started"
-    assert status["engine_tick"]["reason"] == "current_job_done"
-    assert status["engine_tick"]["run_mode"] == "current_job"
-    assert status["engine_tick"]["ticks"] == 1
+    assert status["cell_tick"]["action"] == "manual_job_started"
+    assert status["cell_tick"]["reason"] == "current_job_done"
+    assert status["cell_tick"]["run_mode"] == "current_job"
+    assert status["cell_tick"]["ticks"] == 1
 
 
 def test_runtime_kernel_restart_stops_service_before_ensure(monkeypatch):
@@ -11770,7 +11969,7 @@ def test_execute_runtime_tick_returns_layer_status(monkeypatch):
                 "status": "idle",
                 "phase": "service_owned_by_other",
                 "message": "行为树执行器已由后端进程 2664 持有：idle_guard",
-                "engine_tick": {
+                "cell_tick": {
                     "ran": True,
                     "action": "idle",
                     "guard": kwargs["guard"],
@@ -11796,7 +11995,7 @@ def test_execute_runtime_tick_returns_layer_status(monkeypatch):
     )
 
     assert status["message"] == "后台服务正在运行（进程 2664），空闲巡检中"
-    assert status["engine_tick"]["guard"] is False
+    assert status["cell_tick"]["guard"] is False
     assert status["kernel_status"]["label"] == "后台接管"
     assert status["kernel_status"]["running"] is True
     assert status["scheduler_status"]["label"] == "运行中"

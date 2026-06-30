@@ -386,11 +386,10 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationDoctorWatchLatestResponse,
     FanxiuDataAnnotationRuntimeCellLog,
     FanxiuDataAnnotationRuntimeCellLogResponse,
+    FanxiuDataAnnotationRuntimeCellTickRequest,
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
     FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
-    FanxiuDataAnnotationRuntimeEngineTickRequest,
-    FanxiuDataAnnotationRuntimeFrameworkTickRequest,
     FanxiuDataAnnotationRuntimeKernelRestartRequest,
     FanxiuDataAnnotationRuntimeStatus,
     FanxiuDataAnnotationRuntimeTaskRequest,
@@ -5620,10 +5619,10 @@ def set_fanxiu_data_annotation_runtime_service_isolation(
     return _set_fanxiu_data_annotation_runtime_isolation(entry, entry_id, req)
 
 
-def _tick_fanxiu_data_annotation_runtime_framework(
+def _tick_fanxiu_data_annotation_runtime_cell(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+    req: FanxiuDataAnnotationRuntimeCellTickRequest,
     *,
     source: str = "",
 ) -> FanxiuDataAnnotationRuntimeStatus:
@@ -5644,7 +5643,7 @@ def _tick_fanxiu_data_annotation_runtime_framework(
         world_facts_path=_data_annotation_world_facts_path(),
     )
     log_source = {
-        "cmd": "framework.tick",
+        "cmd": "cell.tick",
         "entry_id": entry_id,
         "policy": {
             "guard": req.guard,
@@ -5666,36 +5665,30 @@ def _tick_fanxiu_data_annotation_runtime_framework(
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
-@status_router.post("/data-annotation/runtime/framework/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-@status_router.post("/data-annotation/runtime/engine/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-def tick_fanxiu_data_annotation_runtime_framework(
-    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+@status_router.post("/data-annotation/runtime/cell/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
+def tick_fanxiu_data_annotation_runtime_cell(
+    req: FanxiuDataAnnotationRuntimeCellTickRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_framework(entry, entry_id, req)
+    return _tick_fanxiu_data_annotation_runtime_cell(entry, entry_id, req)
 
 
 @status_router.post(
-    "/data-annotation/runtime/service/framework/tick",
+    "/data-annotation/runtime/service/cell/tick",
     response_model=FanxiuDataAnnotationRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-@status_router.post(
-    "/data-annotation/runtime/service/engine/tick",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
-)
-def tick_fanxiu_data_annotation_runtime_service_framework(
-    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+def tick_fanxiu_data_annotation_runtime_service_cell(
+    req: FanxiuDataAnnotationRuntimeCellTickRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_framework(entry, entry_id, req, source="service")
+    return _tick_fanxiu_data_annotation_runtime_cell(entry, entry_id, req, source="service")
 
 
 def _tick_fanxiu_data_annotation_runtime_task(
@@ -5854,7 +5847,7 @@ def _runtime_cell_source(payload: dict[str, Any]) -> str:
         return payload["code"].strip()
     cmd = str(payload.get("cmd") or "")
     prefix = "# 由后端服务提交\n" if payload.get("source") == "service" else ""
-    if cmd == "framework.tick":
+    if cmd in {"cell.tick", "framework.tick"}:
         policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
         mode_name = {
             "tick_once": "单步",

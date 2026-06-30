@@ -213,7 +213,7 @@ def test_trigger_command_service_runtime_item_starts_service(client, session, te
     }
 
 
-def test_local_device_entry_runtime_item_trigger_uses_same_runtime_engine(
+def test_local_device_entry_runtime_item_trigger_uses_same_runtime_kernel(
     client,
     session,
     auth_user,

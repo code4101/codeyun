@@ -466,7 +466,7 @@ def test_preflight_report_not_ok_when_manual_queue_not_empty(monkeypatch, tmp_pa
     assert report["manual_jobs"][0]["id"] == "manual-1"
 
 
-def test_run_runtime_after_install_can_use_direct_without_wait(monkeypatch):
+def test_run_runtime_after_install_direct_always_waits(monkeypatch):
     calls: list[dict] = []
 
     class Result:
@@ -485,6 +485,7 @@ def test_run_runtime_after_install_can_use_direct_without_wait(monkeypatch):
     command = calls[0]["command"]
     assert result["ok"] is True
     assert command[command.index("--run-mode") + 1] == "direct"
-    assert "--wait" not in command
-    assert "--wait-timeout-seconds" not in command
+    assert "--wait" in command
+    assert "--wait-timeout-seconds" in command
+    assert command[command.index("--wait-timeout-seconds") + 1] == "123.0"
     assert command[-2:] == ["task", "xianfu_visit_partner"]

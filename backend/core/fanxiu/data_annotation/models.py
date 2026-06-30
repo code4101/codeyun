@@ -95,12 +95,10 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     interruptible: bool = True
     last_guard_event: dict[str, Any] = Field(default_factory=dict)
     kernel_status: dict[str, Any] = Field(default_factory=dict)
-    framework_status: dict[str, Any] = Field(default_factory=dict)
-    engine_status: dict[str, Any] = Field(default_factory=dict)
+    cell_status: dict[str, Any] = Field(default_factory=dict)
     scheduler_status: dict[str, Any] = Field(default_factory=dict)
     orchestration_status: dict[str, Any] = Field(default_factory=dict)
-    framework_tick: dict[str, Any] = Field(default_factory=dict)
-    engine_tick: dict[str, Any] = Field(default_factory=dict)
+    cell_tick: dict[str, Any] = Field(default_factory=dict)
     kernel_restart: dict[str, Any] = Field(default_factory=dict)
     isolation: dict[str, Any] = Field(default_factory=dict)
     started_at: float = 0
@@ -118,7 +116,7 @@ class FanxiuDataAnnotationRuntimeTaskRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuDataAnnotationRuntimeEngineTickRequest(BaseModel):
+class FanxiuDataAnnotationRuntimeCellTickRequest(BaseModel):
     entry_id: str
     guard: bool = True
     manual_job: bool = True
@@ -126,10 +124,6 @@ class FanxiuDataAnnotationRuntimeEngineTickRequest(BaseModel):
     run_mode: Literal["tick_once", "until_idle", "current_job"] = "tick_once"
     max_ticks: int = Field(10, ge=1, le=100)
     timeout_seconds: float = Field(30.0, ge=0.1, le=300.0)
-
-
-class FanxiuDataAnnotationRuntimeFrameworkTickRequest(FanxiuDataAnnotationRuntimeEngineTickRequest):
-    pass
 
 
 class FanxiuDataAnnotationRuntimeKernelRestartRequest(BaseModel):

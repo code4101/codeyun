@@ -296,7 +296,8 @@ def _run_xianfu_runtime_task(
         "--timeout-seconds",
         str(timeout),
     ]
-    if wait:
+    effective_wait = bool(wait) or str(run_mode or "").strip().lower() == "direct"
+    if effective_wait:
         command.extend(["--wait", "--wait-timeout-seconds", str(timeout)])
     command.extend([
         "task",

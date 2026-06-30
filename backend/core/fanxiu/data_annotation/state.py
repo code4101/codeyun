@@ -78,10 +78,14 @@ def normalize_data_annotation_runtime_display(status: dict[str, Any]) -> None:
     logs = status.get("logs")
     if isinstance(logs, list):
         status["logs"] = normalize_data_annotation_runtime_logs_for_display([item for item in logs if isinstance(item, dict)])
-    if isinstance(status.get("engine_tick"), dict) and not isinstance(status.get("framework_tick"), dict):
-        status["framework_tick"] = dict(status["engine_tick"])
-    if isinstance(status.get("framework_tick"), dict) and not isinstance(status.get("engine_tick"), dict):
-        status["engine_tick"] = dict(status["framework_tick"])
+    if not isinstance(status.get("cell_tick"), dict):
+        old_tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else status.get("framework_tick")
+        if isinstance(old_tick, dict):
+            status["cell_tick"] = dict(old_tick)
+    status.pop("framework_status", None)
+    status.pop("engine_status", None)
+    status.pop("framework_tick", None)
+    status.pop("engine_tick", None)
     status.update(data_annotation_runtime_layer_status(status))
 
 
@@ -110,7 +114,7 @@ def data_annotation_runtime_layer_status(status: dict[str, Any]) -> dict[str, di
     guard_enabled_count = sum(1 for item in guard_items.values() if isinstance(item, dict) and bool(item.get("enabled")))
     service_owned_by_other = phase == "service_owned_by_other"
     scheduler_enabled = bool(status.get("behavior_tree_enabled", True)) and bool(status.get("job_group_enabled", True))
-    framework_status = {
+    cell_status = {
         "label": "执行中" if bool(status.get("running")) else "空闲",
         "phase": data_annotation_runtime_phase_label(phase) if phase else "",
         "task_type": task_type,
@@ -130,8 +134,7 @@ def data_annotation_runtime_layer_status(status: dict[str, Any]) -> dict[str, di
             "can_restart": True,
             "can_interrupt": bool(status.get("running")),
         },
-        "framework_status": framework_status,
-        "engine_status": dict(framework_status),
+        "cell_status": cell_status,
         "scheduler_status": {
             "label": "运行中" if scheduler_enabled else "已暂停",
             "enabled": scheduler_enabled,

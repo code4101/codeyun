@@ -1008,6 +1008,22 @@ type SheetDraftPayload = {
   pageState?: SheetPagePatchState | null
 }
 
+type SheetDocumentCacheEntry = {
+  workbookId: number | null
+  sheetId: number
+  queryKey: string
+  version: number
+  updatedAt: number
+  cachedAt: number
+  title: string
+  document: SheetDocument
+  sourceDocument: unknown
+  pagination?: NoteSheetPaginationState | null
+  accessCapabilities?: NoteSheetAccessCapabilities | null
+  parentWorkbookId: number | null
+  workbookItems: WorkbookRefItem[]
+}
+
 type SheetWorkspaceSyncPayload = {
   id: number
   title: string
@@ -1341,6 +1357,7 @@ const cellDisplayTextCache = new Map<string, string>()
 const duplicateHighlightStyleCache = new Map<string, { backgroundColor: string }>()
 const cellHashColorStyleCache = new Map<string, HashColorStyle | null>()
 const columnFilterGlobalOptionsCache = new Map<string, ColumnFilterGlobalOptionsCacheEntry>()
+const sheetDocumentCache = new Map<string, SheetDocumentCacheEntry>()
 
 const hotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const sheetFrameRef = ref<HTMLElement | null>(null)
@@ -3685,7 +3702,7 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   ])
 })
 
-const hotTableInstanceKey = computed(() => `sheet-${props.sheetId ?? 'empty'}`)
+const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'sheet'}-${props.sheetId ?? 'empty'}`)
 
 const rowMarkerColumnWidth = computed(() => {
   if (rowMarkerColumnCount.value <= 0) {
@@ -3745,7 +3762,7 @@ const sheetWorkspaceStyle = computed(() => (
 ))
 
 const fixedHotColumnsStart = computed(() => (
-  fixedColumnsStart.value > 0
+  rowMarkerColumnCount.value > 0 || fixedColumnsStart.value > 0
     ? rowMarkerColumnCount.value + fixedColumnsStart.value
     : 0
 ))
@@ -4348,6 +4365,7 @@ let sheetRemoteConflictActive = false
 let cellPatchQueue: Promise<void> = Promise.resolve()
 let cellPatchInFlight = false
 let suppressNextRemoteSaveWatcher = false
+let loadedSheetContentIdentity = ''
 let sheetResourceSocket: WebSocket | null = null
 let sheetResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let sheetResourceReconnectAttempt = 0
@@ -6444,12 +6462,14 @@ function connectSheetResourceSocket(options: { reconnect?: boolean } = {}) {
     if (!Number.isFinite(remoteVersion) || remoteVersion <= Number(sheetVersion.value || 1)) {
       return
     }
+    invalidateSheetDocumentCache(socketSheetId, props.workbookId ?? null)
     if (saveInFlight || cellPatchInFlight) {
       return
     }
     if (isSheetLocallyDirty()) {
       sheetRemoteConflictActive = true
       persistDraftDocument(buildCurrentDocument())
+      invalidateSheetDocumentCache(socketSheetId, props.workbookId ?? null)
       ElMessage.warning('工作表已被其他人更新，已保留本地草稿')
       return
     }
@@ -6812,6 +6832,7 @@ function handleGlobalMouseDown(event: MouseEvent) {
 
 function resetWorkspaceState() {
   finishSheetRenderEnhancement()
+  loadedSheetContentIdentity = ''
   resetLocalUndoHistory()
   clearEditingColumnState()
   clearFormulaBarSelection()
@@ -16548,6 +16569,7 @@ function applyRemoteSheetDetail(
   options?: { applyInitialWorkspaceView?: boolean },
 ) {
   const effectiveDetail = buildClientPagedSheetDetail(detail)
+  const effectiveDocument = normalizeSheetDocument(effectiveDetail.document_json, {}, getDefaultSheetHeightMode())
   suppressPersistence = true
   try {
     remoteAccessCapabilities.value = effectiveDetail.access?.capabilities ?? null
@@ -16559,10 +16581,16 @@ function applyRemoteSheetDetail(
     emitSheetSync(effectiveDetail)
     beginSheetCoreRenderPhase()
     loadSheetDocument(
-      normalizeSheetDocument(effectiveDetail.document_json, {}, getDefaultSheetHeightMode()),
+      effectiveDocument,
       effectiveDetail.document_json,
     )
     sheetContentReady.value = true
+    loadedSheetContentIdentity = getSheetContentIdentity(effectiveDetail.id, props.workbookId ?? null)
+    cacheRemoteSheetDetail(effectiveDetail, {
+      workbookId: props.workbookId ?? null,
+      document: effectiveDocument,
+      sourceDocument: effectiveDetail.document_json,
+    })
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -16606,6 +16634,7 @@ function applyInlineSheetDocument() {
     applyPaginationState(null)
     pendingDeletedPageRowIndexes.value = []
     sheetContentReady.value = true
+    loadedSheetContentIdentity = ''
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -16770,6 +16799,9 @@ async function flushRemoteSave() {
         }
       }
       emitSheetSync(saved)
+      cacheRemoteSheetDetail(saved, {
+        workbookId: props.workbookId ?? null,
+      })
       savedChangeSerial = Math.max(savedChangeSerial, serial)
       sheetRemoteConflictActive = false
 
@@ -16782,6 +16814,7 @@ async function flushRemoteSave() {
       if (getNoteSheetApiErrorStatus(error) === 409) {
         sheetRemoteConflictActive = true
         persistDraftDocument(document)
+        invalidateSheetDocumentCache(props.sheetId, props.workbookId ?? null)
         ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
         return
       }
@@ -17587,6 +17620,136 @@ function isCurrentSheetFilterPaginationReady(filters = buildActiveSheetQueryFilt
   return filters.active ? pageRowIndexes.value !== null : pageRowIndexes.value === null
 }
 
+function cloneJsonValue<T>(value: T): T {
+  if (value === undefined) {
+    return value
+  }
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function getSheetContentIdentity(sheetId: number | null | undefined, workbookId: number | null | undefined) {
+  return sheetId == null ? '' : `${workbookId ?? 'sheet'}:${sheetId}`
+}
+
+function buildSheetDocumentCacheQueryKey(options: {
+  sheetId: number
+  workbookId: number | null
+  page?: number
+  pageSize?: number
+  paginate?: boolean
+  includeWorkbookContext?: boolean
+}) {
+  return JSON.stringify({
+    sheetId: options.sheetId,
+    workbookId: options.workbookId,
+    page: options.paginate ? (options.page ?? currentPage.value) : null,
+    pageSize: options.paginate ? (options.pageSize ?? pageSize.value) : null,
+    paginate: options.paginate === true,
+    includeWorkbookContext: options.includeWorkbookContext === true,
+    filters: buildActiveSheetQueryFilters(),
+  })
+}
+
+function getSheetDocumentCacheEntry(queryKey: string, sheetId: number, workbookId: number | null) {
+  const entry = sheetDocumentCache.get(queryKey)
+  if (!entry || entry.sheetId !== sheetId || entry.workbookId !== workbookId) {
+    return null
+  }
+  return entry
+}
+
+function getLatestSheetDocumentCacheEntry(sheetId: number, workbookId: number | null) {
+  let latest: SheetDocumentCacheEntry | null = null
+  for (const entry of sheetDocumentCache.values()) {
+    if (entry.sheetId !== sheetId || entry.workbookId !== workbookId) {
+      continue
+    }
+    if (!latest || entry.cachedAt > latest.cachedAt) {
+      latest = entry
+    }
+  }
+  return latest
+}
+
+function invalidateSheetDocumentCache(sheetId?: number | null, workbookId?: number | null) {
+  if (sheetId == null) {
+    sheetDocumentCache.clear()
+    return
+  }
+  for (const [key, entry] of sheetDocumentCache.entries()) {
+    if (entry.sheetId === sheetId && (workbookId === undefined || entry.workbookId === workbookId)) {
+      sheetDocumentCache.delete(key)
+    }
+  }
+}
+
+function cacheRemoteSheetDetail(
+  detail: NoteSheetDetail,
+  options: {
+    queryKey?: string
+    workbookId?: number | null
+    document?: SheetDocument
+    sourceDocument?: unknown
+  } = {},
+) {
+  const sheetId = Number(detail.id)
+  if (!Number.isInteger(sheetId)) {
+    return
+  }
+  const workbookId = options.workbookId ?? props.workbookId ?? null
+  const queryKey = options.queryKey ?? buildSheetDocumentCacheQueryKey({
+    sheetId,
+    workbookId,
+    page: detail.pagination?.page,
+    pageSize: detail.pagination?.page_size,
+    paginate: !!detail.pagination,
+    includeWorkbookContext: workbookId == null,
+  })
+  const normalizedDocument = options.document
+    ? cloneSheetDocumentSnapshot(options.document)
+    : normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode())
+  sheetDocumentCache.set(queryKey, {
+    workbookId,
+    sheetId,
+    queryKey,
+    version: Number(detail.version || 1),
+    updatedAt: Number(detail.updated_at || 0),
+    cachedAt: Date.now(),
+    title: detail.title || '未命名表格',
+    document: cloneSheetDocumentSnapshot(normalizedDocument),
+    sourceDocument: cloneJsonValue(options.sourceDocument ?? detail.document_json ?? normalizedDocument),
+    pagination: detail.pagination ? cloneJsonValue(detail.pagination) : null,
+    accessCapabilities: detail.access?.capabilities ? cloneJsonValue(detail.access.capabilities) : null,
+    parentWorkbookId: Number.isInteger(detail.parent_workbook_id) ? Number(detail.parent_workbook_id) : null,
+    workbookItems: cloneJsonValue(detail.workbook_items ?? []),
+  })
+}
+
+function applySheetDocumentCacheEntry(entry: SheetDocumentCacheEntry) {
+  suppressPersistence = true
+  try {
+    remoteAccessCapabilities.value = entry.accessCapabilities ?? null
+    sheetTitle.value = entry.title || '未命名表格'
+    sheetVersion.value = Number(entry.version || 1)
+    applyPaginationState(entry.pagination)
+    pendingDeletedPageRowIndexes.value = []
+    sheetWorkbookItems.value = cloneJsonValue(entry.workbookItems)
+    beginSheetCoreRenderPhase()
+    loadSheetDocument(
+      cloneSheetDocumentSnapshot(entry.document),
+      cloneJsonValue(entry.sourceDocument),
+    )
+    sheetContentReady.value = true
+    sheetLoadSettled.value = false
+    loadedSheetContentIdentity = getSheetContentIdentity(entry.sheetId, entry.workbookId)
+    scheduleSheetRenderEnhancement()
+    resetLocalUndoHistory()
+    invalidateColumnFilterGlobalOptionsCache()
+  } finally {
+    suppressPersistence = false
+  }
+}
+
 async function fetchNoteSheetForCurrentView(
   options?: {
     page?: number
@@ -17727,25 +17890,51 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   const requestSheetId = props.sheetId
   const requestWorkbookId = props.workbookId ?? null
   const includeWorkbookContext = requestWorkbookId == null
-  const shouldPreserveContent = options?.preserveContent === true && sheetContentReady.value
+  const requestContentIdentity = getSheetContentIdentity(requestSheetId, requestWorkbookId)
+  const alreadyRenderingRequestedSheet = loadedSheetContentIdentity === requestContentIdentity
+  let localDraft = readDraftPayload()
+  const initialCacheQueryKey = buildSheetDocumentCacheQueryKey({
+    sheetId: requestSheetId,
+    workbookId: requestWorkbookId,
+    page: currentPage.value,
+    pageSize: pageSize.value,
+    paginate: paginationEnabled.value,
+    includeWorkbookContext,
+  })
+  const cachedEntry = !localDraft && !alreadyRenderingRequestedSheet
+    ? (
+      getSheetDocumentCacheEntry(initialCacheQueryKey, requestSheetId, requestWorkbookId)
+      ?? getLatestSheetDocumentCacheEntry(requestSheetId, requestWorkbookId)
+    )
+    : null
+  const shouldPreserveContent = (
+    options?.preserveContent === true
+    && sheetContentReady.value
+    && alreadyRenderingRequestedSheet
+  )
   const shouldClearOnError = options?.clearOnError === true
   const initialDetail = getUsableInitialSheetDetail(options?.initialDetail ?? props.initialDetail)
   const traceDetail = {
     requestSheetId,
     requestWorkbookId,
     preserveContent: shouldPreserveContent,
+    cachedPlaceholder: !!cachedEntry,
     hasInitialDetail: !!initialDetail,
   }
   const trace = startSheetPerfTrace('sheet.load')
   workspaceLoading.value = true
   if (!shouldPreserveContent) {
-    sheetContentReady.value = false
-    sheetLoadSettled.value = false
+    if (cachedEntry) {
+      applySheetDocumentCacheEntry(cachedEntry)
+    } else {
+      sheetContentReady.value = false
+      loadedSheetContentIdentity = ''
+      sheetLoadSettled.value = false
+    }
   }
   sheetLoadErrorText.value = ''
   suppressPersistence = true
   try {
-    let localDraft = readDraftPayload()
     trace?.mark('draft')
     const activeFilters = buildActiveSheetQueryFilters()
     const shouldUseInitialDetail = !!initialDetail && sheetVersion.value <= 0 && !localDraft && !activeFilters.active
@@ -17771,6 +17960,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (!remote) {
       if (!shouldPreserveContent || shouldClearOnError) {
         sheetContentReady.value = false
+        loadedSheetContentIdentity = ''
       }
       emit('missing', requestSheetId)
       return
@@ -17810,6 +18000,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       if (!remote) {
         if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
+          loadedSheetContentIdentity = ''
         }
         emit('missing', requestSheetId)
         return
@@ -17834,6 +18025,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       if (!remote) {
         if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
+          loadedSheetContentIdentity = ''
         }
         emit('missing', requestSheetId)
         return
@@ -17910,6 +18102,12 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     loadSheetDocument(activeDocument, activeSourceDocument)
     trace?.mark('load-document')
     sheetContentReady.value = true
+    loadedSheetContentIdentity = requestContentIdentity
+    cacheRemoteSheetDetail(remote, {
+      workbookId: requestWorkbookId,
+      document: remoteDocument,
+      sourceDocument: remote.document_json,
+    })
     sheetLoadErrorText.value = ''
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -17947,6 +18145,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     }
     if (!shouldPreserveContent || shouldClearOnError) {
       sheetContentReady.value = false
+      loadedSheetContentIdentity = ''
     }
     sheetLoadErrorText.value = message
     console.warn('Failed to load note sheet document:', error)
@@ -26133,6 +26332,14 @@ watch(
 )
 
 watch(
+  () => props.accessCapabilities,
+  () => {
+    invalidateSheetDocumentCache(props.sheetId, props.workbookId ?? null)
+  },
+  { deep: true },
+)
+
+watch(
   () => props.sheetId,
   (nextSheetId, previousSheetId) => {
     sheetWorkspaceView.value = getDefaultSheetWorkspaceView()
@@ -26176,12 +26383,15 @@ watch(
     totalRowCount.value = 0
     unfilteredTotalRowCount.value = 0
     sheetVersion.value = 0
+    sheetContentReady.value = false
+    loadedSheetContentIdentity = ''
+    clearHotMergeCellsPlugin(getHotInstance())
     pageRowOffset.value = 0
     pageLoadedRowCount.value = 0
     pageRowIndexes.value = null
     pendingDeletedPageRowIndexes.value = []
     void restoreInitialDocument({
-      preserveContent: sheetContentReady.value,
+      preserveContent: false,
       clearOnError: true,
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
@@ -29486,9 +29696,6 @@ defineExpose({
 }
 
 .sheet-frame :deep(.handsontable td.sheet-row-marker-cell) {
-  position: sticky;
-  left: 0;
-  z-index: 4;
   padding: 0;
   color: var(--ht-header-row-foreground-color);
   background: var(--ht-header-row-background-color, #f7f7f7) !important;
@@ -29499,14 +29706,7 @@ defineExpose({
 }
 
 .sheet-frame :deep(.handsontable th.sheet-row-marker-col-header) {
-  position: sticky;
-  left: 0;
-  z-index: 7;
   background: var(--ht-header-background-color, #f7f7f7) !important;
-}
-
-.sheet-frame :deep(.handsontable .ht_clone_top td.sheet-row-marker-cell) {
-  z-index: 8;
 }
 
 .sheet-frame :deep(.handsontable tbody th .relative) {
