@@ -8493,6 +8493,37 @@ const shapeToMatchBox = (shape: DataAnnotationShape, image: DataAnnotationAssetN
   };
 };
 
+const shapeFloatingScanBox = (shape: DataAnnotationShape, image: DataAnnotationAssetNode): FanxiuGameWindow2MatchBox | undefined => {
+  const parent = findShapeParentShape(image.shapes ?? [], shape.id);
+  if (!parent || !isDrawableShape(parent)) return undefined;
+  return shapeToMatchBox(parent, image);
+};
+
+const shapeFloatingParentShape = (shape: DataAnnotationShape, image: DataAnnotationAssetNode): DataAnnotationShape | null => {
+  const parent = findShapeParentShape(image.shapes ?? [], shape.id);
+  return parent && isDrawableShape(parent) ? parent : null;
+};
+
+const resolveFloatingChildBoxFromParentMatch = (
+  shape: DataAnnotationShape,
+  image: DataAnnotationAssetNode,
+  matchedParentBox: FanxiuGameWindow2MatchBox,
+): FanxiuGameWindow2MatchBox => {
+  const parent = shapeFloatingParentShape(shape, image);
+  if (!parent || parent.w <= 0 || parent.h <= 0) return matchedParentBox;
+  const relativeX = (shape.x - parent.x) / parent.w;
+  const relativeY = (shape.y - parent.y) / parent.h;
+  const relativeW = shape.w / parent.w;
+  const relativeH = shape.h / parent.h;
+  return {
+    name: shape.title || matchedParentBox.name || 'shape',
+    x: Math.round(matchedParentBox.x + matchedParentBox.w * relativeX),
+    y: Math.round(matchedParentBox.y + matchedParentBox.h * relativeY),
+    w: Math.round(matchedParentBox.w * relativeW),
+    h: Math.round(matchedParentBox.h * relativeH),
+  };
+};
+
 const shapePixelTolerance = (shape: DataAnnotationShape) => normalizeShapePixelTolerance(shape.pixelTolerance);
 const shapeImageMatchRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.imageMatchRole);
 const shapeOcrMatchRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
@@ -8709,7 +8740,6 @@ const buildRuntimeShapeMatchPayload = (
   options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr'; debugMatch?: boolean } = {},
 ): FanxiuGameWindow2MatchPayload | null => {
   if (!selectedEntryId.value || !image.filename) return null;
-  const box = shapeToMatchBox(shape, image);
   const ocrText = (shape.ocrText || '').trim();
   const forceImage = options.condition === 'image';
   const forceOcr = options.condition === 'ocr';
@@ -8718,12 +8748,16 @@ const buildRuntimeShapeMatchPayload = (
   const toleranceMinDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl || '' : '';
   const toleranceMaxDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl || '' : '';
   const scanEnabled = Boolean(shape.floating && !ocrEnabled);
+  const floatingParent = scanEnabled ? shapeFloatingParentShape(shape, image) : null;
+  const box = shapeToMatchBox(floatingParent ?? shape, image);
+  const scanBox = scanEnabled && !floatingParent ? shapeFloatingScanBox(shape, image) : undefined;
   const jitterEnabled = Boolean(shape.jitterEnabled && !scanEnabled && !ocrEnabled);
   return {
     entry_id: selectedEntryId.value,
     filename: image.filename,
     box,
     scan: scanEnabled,
+    scan_box: scanBox,
     pixel_tolerance: shapePixelTolerance(shape),
     alpha_mask_data_url: alphaMaskDataUrl || buildOcclusionAlphaMaskDataUrl(image, shape, box) || undefined,
     tolerance_min_data_url: toleranceMinDataUrl || undefined,
@@ -8785,7 +8819,9 @@ const bestRuntimeShapeMatchOf = (
   const box = isOcrCondition && shape.sceneJumpTarget?.trim()
     ? (response.current_box ?? response.box ?? fixedBox ?? (image ? shapeToMatchBox(shape, image) : response.box))
     : shape.floating
-    ? firstMatch?.box ?? fixedBox ?? response.current_box ?? response.box
+    ? (image && (firstMatch?.box || fixedBox || response.current_box || response.box)
+      ? resolveFloatingChildBoxFromParentMatch(shape, image, firstMatch?.box ?? fixedBox ?? response.current_box ?? response.box)
+      : firstMatch?.box ?? fixedBox ?? response.current_box ?? response.box)
     : (image ? shapeToMatchBox(shape, image) : response.box);
   const score = Number(
     firstMatch?.similarity

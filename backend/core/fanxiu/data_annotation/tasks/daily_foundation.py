@@ -2594,12 +2594,74 @@ class DailyFoundationTaskMixin:
         max_runs = int(payload.get("max_runs") or 7)
         for index in range(max_runs):
             self._log("action", f"日常_仙缘：斗法挑战 {index + 1}/{max_runs}")
-            yield from runtime.wait_click(308, "挑战1")
+            yield from runtime.wait_click_then_view(308, "挑战1", 309)
             yield from self._optimize_daily_xianyuan_duel_formation(runtime, payload)
-            yield from runtime.wait_click(309, "开始挑战")
-            yield from runtime.wait_click(310, "点击继续")
+            yield from runtime.wait_click_then_view(309, "开始挑战", 310)
+            yield from runtime.wait_click_then_view(310, "点击继续", [308, 316])
         self._log("success", f"日常_仙缘：已完成斗法挑战 {max_runs} 次")
         return "success"
+
+    def _execute_daily_mojie_raid_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id != 69:
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
+        if scene_id != 69:
+            raise RuntimeError("日常_奇袭魔界：未能进入 #69 日常列表")
+        status = yield from runtime.open_daily_entry(
+            label="日常_奇袭魔界",
+            title_pattern="魔界",
+            progress_can_mark_done=False,
+            max_scrolls=int(payload.get("max_scrolls") or 30),
+            reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
+        )
+        if status == "not_found":
+            raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
+        try:
+            yield from runtime.wait_view(319, label="日常_奇袭魔界：等待奇袭魔界 #319")
+        except TimeoutError as exc:
+            yield from self._handle_daily_mojie_raid_open_blocker_placeholder(runtime, payload)
+            raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
+        self._log("success", "日常_奇袭魔界：已到达 #319")
+        numbers, text = runtime.ocr_numbers_in_shapes(
+            319,
+            ("剩余次数",),
+            padding=int(payload.get("mojie_raid_remaining_padding") or 16),
+        )
+        if not numbers:
+            raise RuntimeError(f"日常_奇袭魔界：未能读取 #319「剩余次数」，OCR={text[:120]}")
+        remaining = int(numbers[0])
+        self._log("detail", f"日常_奇袭魔界：剩余次数 {remaining}，OCR={text[:80]}")
+        if remaining <= 0:
+            self._log("skip", "日常_奇袭魔界：剩余次数为 0，点击返回结束")
+            yield from runtime.wait_click(319, "返回")
+            return "skipped"
+        self._log("action", "日常_奇袭魔界：剩余次数可用，点击「参与进攻」")
+        yield from runtime.wait_click_then_view(319, "参与进攻", 320)
+        self._log("action", "日常_奇袭魔界：点击 #320「检索区域/修罗」")
+        yield from runtime.wait_click(320, "检索区域/修罗")
+        return "success"
+
+    def _handle_daily_mojie_raid_open_blocker_placeholder(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+    ):
+        del runtime, payload
+        self._log("warning", "日常_奇袭魔界：特殊弹窗处理占位，等待后续补标/补流程")
+        if False:
+            yield None
+        return "not_implemented"
 
     def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
         yield from runtime.wait_click_then_view(308, "购买", 311)

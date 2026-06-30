@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "0c84221402525cb9c9810e5df05aeb0ec53e6dac"
-last_audited_at: "2026-06-30T18:35:16.1372940+08:00"
+last_audited_commit: "079ecc19378922bcc89d568a1a48c92a08913789"
+last_audited_at: "2026-06-30T20:27:58.4487484+08:00"
 last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-30-frontend-design-0c842214/report.md"
-last_frontend_commit_summary: "完整关闭 39eed15b..0c842214：沿 notes/center 星系图的筛选-图谱-详情闭环复核，确认节点视觉计算迁移未增加 UI 概念；仅记录窄屏工具条遮挡首行节点的旧表现层风险，未保留未复验修复。"
-audited_commit_count: 51
+last_frontend_commit_summary: "完整关闭 0c842214..079ecc19：note_sheets API、daily_foundation 运行时保护测试和规范文档变更均未触达前端页面或前端可感知 API 投影，已完成无关提交判定并安静推进游标。"
+audited_commit_count: 52
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,11 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-06-30
+
+- 完整范围：`0c84221402525cb9c9810e5df05aeb0ec53e6dac..079ecc19378922bcc89d568a1a48c92a08913789`
+- 覆盖提交：`079ecc19378922bcc89d568a1a48c92a08913789`
+- 判定：无前端相关提交。该提交只改了 `backend/api/note_sheets.py`、`backend/core/fanxiu/data_annotation/tasks/daily_foundation.py`、对应后端测试，以及 `docs/CodeYun前端设计巡检自动化上下文.md`、`docs/凡修行为树运行框架约定.md`、`docs/考勤课程工作簿月度生成规范.md` 三份规范文档；未改 `frontend/src/**`、路由、菜单、权限，也没有同步改变前端可感知的 `note-sheets` API 形状或页面投影。
+- 处理结果：不启动开发环境、不生成新截图、不写新报告；本轮完成完整增量范围的提交归类和“无关提交”判定后，将 `last_audited_commit` 推进到 `079ecc19378922bcc89d568a1a48c92a08913789`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`39eed15bf5cbccb1870f75e4923db5eb7ab7b94a..0c84221402525cb9c9810e5df05aeb0ec53e6dac`
 - 覆盖提交：`0c84221402525cb9c9810e5df05aeb0ec53e6dac`

@@ -9654,6 +9654,203 @@ def test_daily_xianyuan_not_found_does_not_mark_success(tmp_path, monkeypatch):
     assert len(dragged) == 2
 
 
+def test_daily_xianyuan_duel_waits_formation_before_optimizing(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "日常"
+
+        def open_daily_entry(self, **kwargs):
+            calls.append(("open_daily_entry", kwargs.get("title_pattern")))
+            return done("open")
+
+        def wait_click_then_view(self, scene, shape, *targets):
+            calls.append(("wait_click_then_view", scene, shape, targets))
+            return done(scene)
+
+    fake_runtime = FakeRuntime()
+
+    def prepare(_runtime, _payload):
+        calls.append(("prepare_purchase",))
+        return done(None)
+
+    def optimize(_runtime, _payload):
+        calls.append(("optimize_formation",))
+        return done(None)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_prepare_daily_xianyuan_duel_purchases", prepare)
+    monkeypatch.setattr(runner, "_optimize_daily_xianyuan_duel_formation", optimize)
+
+    result = _drain_generator(
+        runner._execute_daily_xianyuan_duel_task(ctx, threading.Event(), {"max_runs": 1})
+    )
+
+    assert result == "success"
+    assert calls == [
+        ("current_scene", (69, 34), True),
+        ("ocr_text",),
+        ("open_daily_entry", r"斗\s*法"),
+        ("prepare_purchase",),
+        ("wait_click_then_view", 308, "挑战1", (309,)),
+        ("optimize_formation",),
+        ("wait_click_then_view", 309, "开始挑战", (310,)),
+        ("wait_click_then_view", 310, "点击继续", ([308, 316],)),
+    ]
+
+
+def test_runtime_click_translates_child_shape_by_matched_parent_box():
+    runner = create_fanxiu_runtime_runner()
+    image = {"width": 900, "height": 1600}
+    child_shape = {
+        "title": "修罗",
+        "x": 341 / 900,
+        "y": 158 / 1600,
+        "w": 79 / 900,
+        "h": 80 / 1600,
+    }
+    match_result = {
+        "box": {"name": "检索区域", "x": 48, "y": 71, "w": 757, "h": 266},
+        "fixed_box": {"name": "检索区域", "x": 141, "y": 26, "w": 757, "h": 266},
+    }
+
+    click_x, click_y = runner._shape_match_resolved_click_point(image, child_shape, match_result)
+
+    assert click_x == pytest.approx(473.5)
+    assert click_y == pytest.approx(153.0)
+
+
+def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "日常"
+
+        def open_daily_entry(self, **kwargs):
+            calls.append((
+                "open_daily_entry",
+                kwargs.get("label"),
+                kwargs.get("title_pattern"),
+                kwargs.get("progress_can_mark_done"),
+            ))
+            return done("open")
+
+        def wait_view(self, scene_id, **kwargs):
+            calls.append(("wait_view", scene_id, kwargs.get("label")))
+            return done(scene_id)
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, **kwargs):
+            calls.append(("ocr_numbers_in_shapes", scene_id, tuple(shape_titles), kwargs))
+            return [7], "本周剩余进攻次数：7"
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+        def wait_click_then_view(self, scene_id, shape, target_scene_id):
+            calls.append(("wait_click_then_view", scene_id, shape, target_scene_id))
+            return done(target_scene_id)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
+    )
+    definition = fanxiu_api._data_annotation_manual_job_definition("daily_mojie_raid")
+
+    assert result == "success"
+    assert definition is not None
+    assert definition.label == "日常_奇袭魔界"
+    assert calls == [
+        ("current_scene", (69, 34), True),
+        ("ocr_text",),
+        ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
+        ("wait_view", 319, "日常_奇袭魔界：等待奇袭魔界 #319"),
+        ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
+        ("wait_click_then_view", 319, "参与进攻", 320),
+        ("wait_click", 320, "检索区域/修罗"),
+    ]
+
+
+def test_daily_mojie_raid_returns_when_remaining_empty(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            return "日常"
+
+        def open_daily_entry(self, **_kwargs):
+            return done("open")
+
+        def wait_view(self, scene_id, **_kwargs):
+            return done(scene_id)
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, **kwargs):
+            calls.append(("ocr_numbers_in_shapes", scene_id, tuple(shape_titles), kwargs))
+            return [0], "本周剩余进攻次数：0"
+
+        def wait_click(self, scene_id, shape):
+            calls.append(("wait_click", scene_id, shape))
+            return done(None)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
+    )
+
+    assert result == "skipped"
+    assert calls == [
+        ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
+        ("wait_click", 319, "返回"),
+    ]
+
+
 def test_daily_xianyuan_after_entry_returns_people_list_scene(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}

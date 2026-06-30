@@ -24,6 +24,7 @@ from backend.api.note_sheets import (
     _normalize_document_columns,
     _normalize_document_data_start_row,
     _replace_document_data_rows,
+    NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
 )
 from backend.core.attendance.progress_style import (
     PercentageRefundRule,
@@ -445,6 +446,89 @@ def _highlight_video_refund_for_item(
     return refund_amount, color
 
 
+def _normalize_source_meta_user_id_set(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        items = re.split(r"[\s,，;；]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    return {_normalize_text(item) for item in items if _normalize_text(item)}
+
+
+def _international_video_shift_user_ids(source_meta: dict[str, Any]) -> set[str]:
+    user_ids: set[str] = set()
+    for key in (
+        "international_student_user_ids",
+        "overseas_student_user_ids",
+        "time_shift_student_user_ids",
+    ):
+        user_ids.update(_normalize_source_meta_user_id_set(source_meta.get(key)))
+    return user_ids
+
+
+def _shift_international_video_progress_text(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    match = re.match(r"^第\s*(\d+)\s*天回放(?P<suffix>.*)$", text)
+    if not match:
+        return text
+    day = int(match.group(1))
+    suffix = match.group("suffix") or ""
+    if day <= 1:
+        return f"当堂完成{suffix}"
+    return f"第{day - 1}天回放{suffix}"
+
+
+def _apply_international_video_progress_shift(
+    value: Any,
+    *,
+    identity_keys: list[str],
+    user_ids: set[str],
+) -> str:
+    if not user_ids:
+        return _normalize_text(value)
+    for identity_key in identity_keys:
+        if not identity_key.startswith("user:"):
+            continue
+        user_id = identity_key.removeprefix("user:")
+        if user_id in user_ids:
+            return _shift_international_video_progress_text(value)
+    return _normalize_text(value)
+
+
+def _is_truthy_overseas_registration_value(value: Any) -> bool:
+    text = _normalize_text(value).strip().lower()
+    if not text:
+        return False
+    if text in {"是", "yes", "y", "true", "1", "海外", "国外", "国际", "国际学员", "国际学生", "时差"}:
+        return True
+    if text in {"否", "no", "n", "false", "0", "不是", "非海外"}:
+        return False
+    return False
+
+
+def _registration_overseas_student_user_ids(
+    session: Session,
+    *,
+    attendance: SheetDocument,
+) -> set[str]:
+    owner_key = _normalize_text(attendance.owner_key) or NIANZHU_OWNER_KEY
+    registration = _find_course_sheet(session, owner_key=owner_key, sheet_key="registration")
+    if registration is None:
+        return set()
+
+    user_ids: set[str] = set()
+    for row in _sheet_rows_as_dicts(dict(registration.document_json or {})):
+        if not _is_truthy_overseas_registration_value(row.get(NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN)):
+            continue
+        user_ids.update(attendance_row_user_ids(row))
+    return {user_id for user_id in user_ids if user_id}
+
+
 def _strip_progress_title(value: Any) -> str:
     text = _normalize_text(value)
     return re.sub(r"^\d{1,2}:\d{2}\s*[~～-]\s*\d{1,2}:\d{2}\s*", "", text).strip()
@@ -736,6 +820,14 @@ NIANZHU_ATTENDANCE_MANAGED_FORMULA_COLUMNS = {
     "总应返款",
     "当前应返款",
 }
+NIANZHU_ATTENDANCE_NUMERIC_REFUND_COLUMNS = {
+    "视频应返款",
+    "打卡应返款",
+    "总应返款",
+    "已返款",
+    "订单金额",
+    "当前应返款",
+}
 
 
 def _find_nianzhu_refund_insert_index(columns: list[str], header: str) -> int:
@@ -830,6 +922,29 @@ def _ensure_nianzhu_refund_column_order(document: dict[str, Any]) -> tuple[dict[
         from_index=refunded_index,
         to_index=order_amount_index,
     ), True
+
+
+def _ensure_nianzhu_refund_numeric_column_configs(document: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    columns = _normalize_document_columns(document)
+    if not columns:
+        return document, False
+    column_configs = dict(document.get("column_configs")) if isinstance(document.get("column_configs"), dict) else {}
+    next_configs = dict(column_configs)
+    changed = False
+    for header in NIANZHU_ATTENDANCE_NUMERIC_REFUND_COLUMNS:
+        if _find_column_index(columns, header) is None:
+            continue
+        config = dict(next_configs.get(header)) if isinstance(next_configs.get(header), dict) else {}
+        if config.get("value_type") == "number":
+            continue
+        config["value_type"] = "number"
+        next_configs[header] = config
+        changed = True
+    if not changed:
+        return document, False
+    next_document = dict(document)
+    next_document["column_configs"] = next_configs
+    return next_document, True
 
 
 def _find_nianzhu_meta_insert_index(columns: list[str], header: str) -> int:
@@ -1023,11 +1138,13 @@ def _ensure_nianzhu_attendance_schema(
         next_document,
         inserted_columns=set(inserted_columns),
     )
+    next_document, numeric_configs_repaired = _ensure_nianzhu_refund_numeric_column_configs(next_document)
     return next_document, {
         "schema_changed": next_document != document,
         "schema_inserted_columns": inserted_columns,
         "schema_removed_columns": removed_columns,
         "schema_refund_columns_reordered": refund_columns_reordered,
+        "schema_refund_numeric_configs_repaired": numeric_configs_repaired,
         "schema_defaulted_cells": defaulted_cells,
     }
 
@@ -1036,6 +1153,10 @@ def _lesson_header_from_video_item(item: VideoConfigItem) -> str:
     text = _normalize_text(item.lesson_name)
     if "=" in text:
         text = text.rsplit("=", 1)[1].strip()
+    if "-" in text:
+        local_text = text.rsplit("-", 1)[1].strip()
+        if _course_item_key(local_text):
+            text = local_text
     return text
 
 
@@ -1071,11 +1192,17 @@ def _ensure_video_progress_columns(
     next_document = document
     inserted_headers: list[str] = []
     seen_headers = {_normalize_text(column) for column in _normalize_document_columns(next_document)}
+    seen_keys = {
+        key
+        for key in (_course_item_key(column) for column in _normalize_document_columns(next_document))
+        if key
+    }
     for item in video_config:
         if not item.participates_refund:
             continue
         header = _lesson_header_from_video_item(item)
-        if not header or _normalize_text(header) in seen_headers:
+        header_key = item.course_key or _course_item_key(header)
+        if not header or _normalize_text(header) in seen_headers or (header_key and header_key in seen_keys):
             continue
         columns = _normalize_document_columns(next_document)
         next_document = _insert_nianzhu_attendance_column(
@@ -1085,6 +1212,8 @@ def _ensure_video_progress_columns(
             width=96,
         )
         seen_headers.add(_normalize_text(header))
+        if header_key:
+            seen_keys.add(header_key)
         inserted_headers.append(header)
     return next_document, inserted_headers
 
@@ -3909,6 +4038,9 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
     legacy_zen_video_refund_amount = _attendance_legacy_zen_video_refund_amount(current_document, columns)
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
+    video_source_meta = dict(video_config_document.get("source_meta") or {})
+    international_shift_user_ids = _international_video_shift_user_ids(video_source_meta)
+    international_shift_user_ids.update(_registration_overseas_student_user_ids(session, attendance=attendance))
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
     clockin_output_fields = _clockin_output_fields(clockin_config_document, columns)
@@ -4023,6 +4155,13 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             if column_index is None:
                 continue
             value = _select_video_progress_for_identity_keys(video_data, identity_keys, item, rule_version)
+            shifted_value = _apply_international_video_progress_shift(
+                value,
+                identity_keys=identity_keys,
+                user_ids=international_shift_user_ids,
+            )
+            if shifted_value != _normalize_text(value):
+                value = shifted_value
             if _is_no_video_progress_text(value) and not _is_no_video_progress_text(next_row[column_index]):
                 value = _normalize_text(next_row[column_index])
             if manual_video_progress_overrides:
@@ -4108,13 +4247,6 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             row_number=row_number,
             rule_version=rule_version,
         )
-        video_refund_formula = _build_video_refund_formula(
-            video_config,
-            video_column_indexes,
-            row_number=row_number,
-            rule_version=rule_version,
-            legacy_zen_refund_amount=legacy_zen_video_refund_amount,
-        )
         clockin_refund_formula = (
             _build_clockin_refund_formula(
                 columns,
@@ -4139,7 +4271,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         scalar_updates = {
             "优秀学员评分": score,
             "完成视频数": completed_video_formula or completed_video_count,
-            "视频应返款": video_refund_formula or _format_numeric_cell(video_refund),
+            "视频应返款": _format_numeric_cell(video_refund),
             "打卡应返款": clockin_refund_formula or _format_numeric_cell(clockin_refund),
         }
         if zen_guest_formula:
@@ -4154,7 +4286,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             if column_index is None:
                 continue
             managed_formula = field_name in NIANZHU_ATTENDANCE_MANAGED_FORMULA_COLUMNS and _is_formula_expression(value)
-            if _is_formula_expression(next_row[column_index]) and not managed_formula:
+            if field_name != "视频应返款" and _is_formula_expression(next_row[column_index]) and not managed_formula:
                 continue
             if _set_row_value(
                 current_document,
