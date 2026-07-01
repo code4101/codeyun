@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "31b691883a4991c5b582aad3eb82ac69d8a547b9"
-last_audited_at: "2026-07-01T00:35:57.0740204+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-31b69188/report.md"
-last_frontend_commit_summary: "完整关闭 e3acd95d..31b69188：沿 cluster/runtime、fanxiu/data-annotation/runtime 与 NoteSheetWorkspace 链路复核后，仅在 fanxiu/runtime 收敛了新右键动作的语义投影，去掉手动作业的无效入口，并把名词化的“下次触发”改成动词化的“推进到下次”。"
-audited_commit_count: 54
+last_audited_commit: "bcc40826fa23de6be619166195890b2b2e846138"
+last_audited_at: "2026-07-01T06:35:27.8040501+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-bcc40826/report.md"
+last_frontend_commit_summary: "完整关闭 31b69188..bcc40826：沿 fanxiu/data-annotation/runtime 与 notes/center?tab=list 复核后，确认提交已把手动作业右键菜单收回到有效动作，并删除列表标题列里与“形态”列重复的 NoteFormBadge。"
+audited_commit_count: 55
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-01
+
+- 完整范围：`31b691883a4991c5b582aad3eb82ac69d8a547b9..bcc40826fa23de6be619166195890b2b2e846138`
+- 覆盖提交：`bcc40826fa23de6be619166195890b2b2e846138`
+- 前端入口提交：`bcc40826fa23de6be619166195890b2b2e846138`
+- 入口如何牵引到旧问题：该提交本体主要重构本机守护运行时，但它在前端上同时触达 `fanxiu/data-annotation/runtime` 与 `notes/center/ListNotes`。两处变化都指向同一个设计原则：同一事实只保留一个表达面。`fanxiu/runtime` 里右键命令不应把“推进调度”误写成状态名词，也不应对手动作业暴露无效动作；`ListNotes` 里标题列不应继续重复 `形态` 列已经表达的 NoteFormBadge。
+- 本轮减法：不新增任何按钮、说明、状态或入口；只确认本次提交已经完成两处有效减法。第一，`fanxiu/runtime` 手动作业右键菜单只保留 `触发一次 / 日志`，定时作业才保留 `推进到下次`。第二，`ListNotes` 标题列去掉重复的 `NoteFormBadge`，把 `形态` 事实收回到独立列。
+- 信息量保持：`fanxiu/runtime` 仍保留手动触发、推进调度与日志三类必要操作，但按作业类型过滤无效动作；`ListNotes` 仍保留标题、分类、形态、阶段、权重、私密与起始时间完整判断面，只删除标题列内的重复形态提示。
+- 概念图/线框图：报告中的 Mermaid 把本轮入口收回到“作业状态表 -> 作业类型 -> 有效命令集合”和“标题列 -> 形态列 -> 去重事实”两条简化链路；ASCII 线框图直接对比了提交前后的右键菜单与列表列职责。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-bcc40826/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 打开 `/fanxiu/data-annotation/runtime?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2` 与 `/notes/center?tab=list`，完成宽屏 `1600x1000`、窄屏 `820x1180` 实图复核；`runtime-manual-context-menu-1600x1000.png` 证明手动作业右键菜单只剩 `触发一次 / 日志`；`evidence.json` 记录两页宽屏/窄屏都满足 `bodyScrollWidth == bodyClientWidth`。本轮未改仓库代码，因此未运行 `npm run typecheck --prefix frontend` 或 `npm run build --prefix frontend`。
+- 根因分层：`fanxiu/runtime` 属于前端状态投影问题，根因是把命令入口写成状态名词并暴露给不支持该动作的手动作业；`ListNotes` 属于表现层/信息架构去重问题，根因是标题列和形态列同时表达同一事实。两处都不涉及新的后端数据投影或业务建模债务。
+- 跨自动化交接：无。本轮没有发现需要转交 `CodeYun 代码健康优化` 的模型层问题。
+- 剩余风险：`fanxiu/runtime` 顶部阻塞告警仍然较长，但当前已通过单行截断保持主布局稳定；它不是本次提交引入的问题，也没有因为本轮入口出现新的复杂度回退。`ListNotes` 本轮主要复核列表首屏与窄屏密度，没有在编辑态继续做无关扩散验证。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务/交互建模、概念图与真实多视口截图复核，且未发现需要追加自动修复的低风险 UI 回退，因此直接把 `last_audited_commit` 推进到 `bcc40826fa23de6be619166195890b2b2e846138`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`e3acd95d7bddb56cde8e665b0dadd0e0a938c029..31b691883a4991c5b582aad3eb82ac69d8a547b9`
 - 覆盖提交：`31b691883a4991c5b582aad3eb82ac69d8a547b9`

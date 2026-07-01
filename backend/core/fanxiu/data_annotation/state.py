@@ -240,7 +240,41 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
     return facts
 
 
-def write_data_annotation_world_facts(path: Path, facts: dict[str, Any]) -> None:
+def _task_fact_updated_at(fact: Any) -> float:
+    if not isinstance(fact, dict):
+        return 0.0
+    try:
+        return float(fact.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _merge_existing_scheduler_task_facts(path: Path, facts: dict[str, Any]) -> None:
+    existing = read_data_annotation_world_facts(path)
+    existing_discoveries = existing.get("discoveries") if isinstance(existing.get("discoveries"), dict) else {}
+    existing_tasks = existing_discoveries.get("task") if isinstance(existing_discoveries.get("task"), dict) else {}
+    if not existing_tasks:
+        return
+    task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
+    for task_id, existing_fact in existing_tasks.items():
+        if not isinstance(existing_fact, dict):
+            continue
+        incoming_fact = task_facts.get(task_id)
+        if (
+            not isinstance(incoming_fact, dict)
+            or _task_fact_updated_at(existing_fact) > _task_fact_updated_at(incoming_fact)
+        ):
+            task_facts[task_id] = dict(existing_fact)
+
+
+def write_data_annotation_world_facts(
+    path: Path,
+    facts: dict[str, Any],
+    *,
+    preserve_existing_task_facts: bool = True,
+) -> None:
+    if preserve_existing_task_facts:
+        _merge_existing_scheduler_task_facts(path, facts)
     facts["version"] = 1
     facts["updated_at"] = time.time()
     trim_fact_events(facts)

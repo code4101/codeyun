@@ -23,6 +23,7 @@ from pyxllib.prog import (
     read_json_lease,
     read_json_object_status,
     release_json_lease,
+    should_enqueue_local_run,
     write_json_command,
 )
 
@@ -612,6 +613,7 @@ def fanxiu_data_annotation_runtime_status(
     *,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
+    include_cell_logs: bool = True,
 ) -> dict[str, Any]:
     runner = get_fanxiu_runtime_runner()
     persisted = read_fanxiu_runtime_status(runtime_state_path) if runtime_state_path is not None else read_fanxiu_runtime_status()
@@ -641,7 +643,7 @@ def fanxiu_data_annotation_runtime_status(
             status["task_type"] = ""
             status["updated_at"] = time.time()
     else:
-        status = runner.status()
+        status = runner.status(include_cell_logs=include_cell_logs)
     owner_error = str(owner.get("error") or "") if isinstance(owner, dict) else ""
     if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
@@ -725,6 +727,8 @@ def fanxiu_data_annotation_runtime_status(
     normalize_data_annotation_runtime_guard_items(status, runner.guard_definitions)
     normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
+    if not include_cell_logs:
+        status.pop("cell_logs", None)
     if owner_active_elsewhere:
         return status
     if runtime_state_path is None and world_facts_path is None:
@@ -979,6 +983,16 @@ def enqueue_fanxiu_local_manual_job(request: FanxiuLocalEnqueueRequest) -> dict[
 
 def fanxiu_resident_owner_active_for_other_process() -> bool:
     return owner_active_for_other_process(read_fanxiu_behavior_tree_service_owner(), current_pid=os.getpid())
+
+
+def fanxiu_local_task_should_enqueue(run_mode: str = "auto") -> bool:
+    try:
+        return should_enqueue_local_run(
+            run_mode,
+            owner_active_elsewhere=fanxiu_resident_owner_active_for_other_process(),
+        )
+    except ValueError as exc:
+        raise ValueError("run_mode 只支持 auto/direct/enqueue") from exc
 
 
 def normalize_fanxiu_local_run_mode(run_mode: str = "auto") -> str:

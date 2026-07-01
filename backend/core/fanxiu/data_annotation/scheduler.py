@@ -65,6 +65,19 @@ _OBSOLETE_ASSISTANT_COVERED_TASK_LABELS = {
     "日常_妖王来袭",
     "日常_妖族袭城",
 }
+_SCHEDULER_RUNTIME_STATE_FIELDS = (
+    "last_run_at",
+    "last_result",
+    "last_message",
+    "next_time",
+    "retry_after",
+    "checkpoint",
+    "queued_at",
+    "started_at",
+    "finished_at",
+    "world_fact_synced_at",
+    "world_fact_updated_at",
+)
 
 
 def _xianfu_initial_check_time(current_time: datetime) -> str:
@@ -73,6 +86,59 @@ def _xianfu_initial_check_time(current_time: datetime) -> str:
 
 def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
     return first_valid_schedule_time_text(fact, *keys)
+
+
+def _scheduler_task_has_runtime_state(task: dict[str, Any]) -> bool:
+    for key in _SCHEDULER_RUNTIME_STATE_FIELDS:
+        value = task.get(key)
+        if value is None or value == "" or value == {}:
+            continue
+        return True
+    return False
+
+
+def preserve_data_annotation_scheduler_runtime_state(
+    incoming_tasks: list[dict[str, Any]],
+    existing_tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    existing_by_id = {
+        str(task.get("id") or ""): task
+        for task in existing_tasks
+        if isinstance(task, dict) and str(task.get("id") or "")
+    }
+    if not existing_by_id:
+        return incoming_tasks
+    preserved: list[dict[str, Any]] = []
+    for task in incoming_tasks:
+        if not isinstance(task, dict):
+            preserved.append(task)
+            continue
+        existing = existing_by_id.get(str(task.get("id") or ""))
+        if not isinstance(existing, dict) or not _scheduler_task_has_runtime_state(existing):
+            preserved.append(task)
+            continue
+        incoming_last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
+        existing_last_run_at = parse_data_annotation_task_time(existing.get("last_run_at"))
+        incoming_has_runtime = _scheduler_task_has_runtime_state(task)
+        existing_is_newer = (
+            existing_last_run_at is not None
+            and (incoming_last_run_at is None or existing_last_run_at > incoming_last_run_at)
+        )
+        incoming_is_default_backfill = not incoming_has_runtime or (
+            not task.get("last_run_at")
+            and not task.get("last_result")
+            and existing_last_run_at is not None
+        )
+        if not incoming_is_default_backfill and not existing_is_newer:
+            preserved.append(task)
+            continue
+        merged = dict(task)
+        for key in _SCHEDULER_RUNTIME_STATE_FIELDS:
+            value = existing.get(key)
+            if value is not None and value != "" and value != {}:
+                merged[key] = value
+        preserved.append(merged)
+    return preserved
 
 
 def data_annotation_scheduler_group_rank(task: dict[str, Any]) -> int:
@@ -293,13 +359,36 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         ):
             filtered_task_facts.pop(task_id, None)
             continue
+        fact_retry_after = data_annotation_fact_time_text(fact, "discovered_retry_after", "retry_after")
+        if (
+            fact_result in {"error", "stopped", "skipped", "unsupported"}
+            and fact_retry_after
+            and fact_last_run_at is not None
+            and (last_run_at is None or fact_last_run_at >= last_run_at)
+        ):
+            task["last_result"] = fact_result
+            task["last_run_at"] = str(fact.get("last_run_at") or datetime.fromtimestamp(fact_last_run_at).strftime("%Y-%m-%d %H:%M:%S"))
+            task["next_time"] = None
+            task["retry_after"] = fact_retry_after
+            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
+            checkpoint["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
+            task["checkpoint"] = checkpoint
+            audit_completed_changed = True
+            filtered_task_facts.pop(task_id, None)
+            continue
         fact_has_success_next_time = (
             fact_result == "success"
             and bool(fact.get("discovered_next_time") or fact.get("next_time"))
             and (not task.get("next_time") or bool(task.get("retry_after")))
             and (not fact_updated_at or not last_run_at or fact_updated_at >= last_run_at)
         )
-        if fact_updated_at and last_run_at and fact_updated_at <= last_run_at + 1.0 and not fact_has_success_next_time:
+        if (
+            fact_updated_at
+            and last_run_at
+            and fact_updated_at <= last_run_at + 1.0
+            and not fact_has_success_next_time
+        ):
             filtered_task_facts.pop(task_id, None)
     if not filtered_task_facts:
         return audit_completed_changed

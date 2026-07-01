@@ -1,12 +1,24 @@
 import datetime as dt
 from pathlib import Path
 
-from backend.core.attendance.course_completion import run_attendance_course_completion_job
+from backend.core.attendance.course_completion import default_kqmain_path, run_attendance_course_completion_job
 from backend.models import SheetDocument
 
 
 def _cell_text(value):
     return str(value.get("value") if isinstance(value, dict) else value)
+
+
+def test_default_kqmain_path_prefers_attendance_service_project_root(monkeypatch):
+    monkeypatch.setattr("backend.core.settings.get_settings", lambda: type("S", (), {"kqmain_path": ""})())
+    monkeypatch.setattr(
+        "backend.core.attendance_behavior_tree_service.get_attendance_project_root",
+        lambda: Path(r"C:\home\chenkunze\slns\xlproject\src\xlsln\kq5034"),
+    )
+
+    path = default_kqmain_path()
+
+    assert path == Path(r"C:\home\chenkunze\slns\xlproject\src\xlsln\kq5034\kqmain.py")
 
 
 def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(session, tmp_path: Path, monkeypatch):

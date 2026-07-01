@@ -3262,6 +3262,8 @@ def get_fanxiu_behavior_tree_service(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    # Legacy external-service status endpoint kept for older pages/tools.
+    # Main service operations for new work should prefer runtime management actions.
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuBehaviorTreeServiceStatus.model_validate(get_behavior_tree_status())
 
@@ -3271,6 +3273,7 @@ def start_fanxiu_behavior_tree(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    # Legacy external-service start endpoint; prefer runtime item actions for new tooling.
     ensure_fanxiu_write_permission(current_user, session)
     try:
         return FanxiuBehaviorTreeServiceResponse.model_validate(start_behavior_tree_service(replace_existing=True))
@@ -3283,6 +3286,7 @@ def stop_fanxiu_behavior_tree(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    # Legacy external-service stop endpoint; prefer runtime item actions for new tooling.
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuBehaviorTreeServiceResponse.model_validate(stop_behavior_tree_service())
 
@@ -4002,11 +4006,12 @@ def _repair_orphaned_data_annotation_scheduler_runs(tasks: list[dict[str, Any]])
     )
 
 
-def _data_annotation_runtime_status() -> dict[str, Any]:
+def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
     status = _core_data_annotation_runtime_status(
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
+        include_cell_logs=include_cell_logs,
     )
     status["isolation"] = clear_stale_fanxiu_job_group_isolation(_data_annotation_job_group_isolation_path())
     settings = _runtime_control.read_scheduler_settings(
@@ -5314,6 +5319,7 @@ def get_fanxiu_game_window2_match_image_service(
 @status_router.get("/data-annotation/runtime/status", response_model=FanxiuDataAnnotationRuntimeStatus)
 def get_fanxiu_data_annotation_runtime_status(
     entry_id: str = Query("", max_length=128),
+    include_cell_logs: bool = Query(True),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -5330,7 +5336,10 @@ def get_fanxiu_data_annotation_runtime_status(
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
+    payload = dict(_data_annotation_runtime_status(include_cell_logs=include_cell_logs))
+    if not include_cell_logs:
+        payload.pop("cell_logs", None)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
 
 
 @status_router.get(
@@ -5479,6 +5488,10 @@ def stop_fanxiu_data_annotation_runtime_task(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    """Compatibility endpoint: stop only the current business task.
+
+    This endpoint must not be treated as resident behavior-tree service shutdown.
+    """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     return _stop_data_annotation_runtime_task(req)
 
@@ -5724,7 +5737,7 @@ def _tick_fanxiu_data_annotation_runtime_task(
         log_source["source"] = source
     status = _record_runtime_cell_log(
         status,
-        title=f"{'服务任务' if source == 'service' else '兼容任务'} tick：{req.task_type}",
+        title=f"{'服务任务' if source == 'service' else '兼容手动作业'} tick：{req.task_type}",
         source=log_source,
         before_keys=before_keys,
     )
@@ -5737,6 +5750,10 @@ def tick_fanxiu_data_annotation_runtime_task(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    """Compatibility endpoint: submit a manual tick/task into the resident loop.
+
+    This is a business execution entry, not a service restart/diagnosis entry.
+    """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
@@ -6288,6 +6305,10 @@ def run_now_fanxiu_data_annotation_scheduler_task(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    """Submit one concrete scheduler task instance for resident-loop execution.
+
+    This is not the primary service-level behavior-tree operation entry.
+    """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)

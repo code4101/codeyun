@@ -16,7 +16,15 @@
     </div>
 
     <div class="filter-section front-filter-section">
+      <div v-if="!frontFilterExpanded" class="front-filter-collapsed">
+        <div class="front-filter-collapsed__meta">
+          <div class="front-filter-collapsed__title">前端筛选</div>
+          <div class="front-filter-collapsed__summary">{{ frontFilterSummary }}</div>
+        </div>
+        <el-button size="small" @click="expandFrontFilter">编辑规则</el-button>
+      </div>
       <NoteProgramBar
+        v-else
         v-model="viewProgram"
         title="前端筛选"
         help-text="基于后端筛选的数据源实时筛选并渲染，修改后立即生效并保存。"
@@ -212,6 +220,13 @@ const getAppliedDataProgram = () => normalizeNoteProgramChannel(
 const getViewProgram = () => normalizeNoteProgramChannel(
   session.value?.viewState.viewProgram ?? createIncludeAllProgram()
 );
+const isIncludeAllProgram = (channel: NoteProgramChannel) => {
+  const normalized = normalizeNoteProgramChannel(channel);
+  return normalized.default === false
+    && normalized.rules.length === 1
+    && normalized.rules[0]?.action === 'include'
+    && normalized.rules[0]?.matcher.kind === 'all';
+};
 
 // State
 const dataProgram = ref(normalizeNoteProgramChannel(
@@ -220,6 +235,7 @@ const dataProgram = ref(normalizeNoteProgramChannel(
 const viewProgram = ref(normalizeNoteProgramChannel(
   getViewProgram()
 ));
+const frontFilterExpanded = ref(!isIncludeAllProgram(getViewProgram()));
 const currentNoteId = ref('');
 const loading = ref(false);
 const tableRef = ref<any>(null);
@@ -230,6 +246,11 @@ const currentPage = ref(1);
 const pageSize = ref(50);
 const isActive = computed(() => props.active !== false);
 const listViewNeedsCustomFields = computed(() => noteProgramChannelNeedsCustomFieldsLocally(viewProgram.value));
+const frontFilterSummary = computed(() => (
+  isIncludeAllProgram(viewProgram.value)
+    ? '默认显示当前已加载的全部节点。'
+    : `已配置 ${normalizeNoteProgramChannel(viewProgram.value).rules.length} 条规则。`
+));
 
 // Computed
 const filteredNotes = computed(() => {
@@ -309,9 +330,14 @@ const resetDataProgram = () => {
   dataProgram.value = createDefaultRecentMonthProgram('start_at');
 };
 
+const expandFrontFilter = () => {
+  frontFilterExpanded.value = true;
+};
+
 const applyViewProgram = () => {
   const normalizedProgram = cloneNoteProgramChannel(viewProgram.value);
   viewProgram.value = normalizedProgram;
+  frontFilterExpanded.value = true;
   noteStore.updateTabViewState(props.tabId, {
     viewProgram: normalizedProgram
   });
@@ -319,6 +345,7 @@ const applyViewProgram = () => {
 
 const resetViewProgram = () => {
   viewProgram.value = createIncludeAllProgram();
+  frontFilterExpanded.value = false;
 };
 
 const createNewNote = async () => {
@@ -518,6 +545,9 @@ onMounted(() => {
 });
 
 watch(viewProgram, (value) => {
+  if (!isIncludeAllProgram(value)) {
+    frontFilterExpanded.value = true;
+  }
   noteStore.updateTabViewState(props.tabId, {
     viewProgram: normalizeNoteProgramChannel(value)
   });
@@ -585,6 +615,35 @@ watch(isActive, async (active) => {
 
 .front-filter-section {
   padding-top: 0;
+}
+
+.front-filter-collapsed {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #e4e7ed;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f5f7fa 100%);
+}
+
+.front-filter-collapsed__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.front-filter-collapsed__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.front-filter-collapsed__summary {
+  font-size: 12px;
+  color: #606266;
 }
 
 .notes-workspace {

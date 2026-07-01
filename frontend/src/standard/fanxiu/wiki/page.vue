@@ -3224,6 +3224,26 @@ type ProgressionStepRunPlan = {
   variableKind: ProgressionStepVariable['kind'];
 }
 
+type ItemEffectStageBlock = {
+  stage: number;
+  title: string;
+  body: string;
+  tokens: ReturnType<typeof getNumericTokens>;
+}
+
+type ItemEffectFormulaGroup = {
+  kind: 'formula' | 'raw';
+  key: string;
+  rangeLabel: string;
+  countLabel: string;
+  text: string;
+}
+
+type ItemEffectCompressedDetail = {
+  introParts: string[];
+  groups: ItemEffectFormulaGroup[];
+}
+
 type ProgressionDisplayGroup = {
   key: string;
   rows: FanxiuGongfaProgressionRow[];
@@ -9153,6 +9173,251 @@ function buildProgressionStepFormulaText(
   })
   merged += text.slice(cursor)
   return normalizeMergedFormulaText(merged, variableSymbol)
+}
+
+const ITEM_EFFECT_STAGE_PREFIX_RE = /^([零〇一二三四五六七八九十百千万\d]+)阶[:：]\s*/
+const itemEffectCompressionCache = new WeakMap<FanxiuItemEffectDetail, ItemEffectCompressedDetail | null>()
+const CHINESE_NUMERAL_VALUES: Record<string, number> = {
+  零: 0,
+  '〇': 0,
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
+const CHINESE_NUMERAL_UNITS: Record<string, number> = {
+  十: 10,
+  百: 100,
+  千: 1000,
+  万: 10000,
+}
+
+function parseChineseStageNumber(value: string) {
+  const text = value.trim()
+  if (/^\d+$/.test(text)) return Number(text)
+  if (!text) return null
+
+  let total = 0
+  let section = 0
+  let number = 0
+  for (const char of text) {
+    const digit = CHINESE_NUMERAL_VALUES[char]
+    if (digit !== undefined) {
+      number = digit
+      continue
+    }
+    const unit = CHINESE_NUMERAL_UNITS[char]
+    if (unit === undefined) return null
+    if (unit === 10000) {
+      total += (section + number) * unit
+      section = 0
+      number = 0
+      continue
+    }
+    section += (number || 1) * unit
+    number = 0
+  }
+  return total + section + number
+}
+
+function getItemEffectDetailText(detail: FanxiuItemEffectDetail | null | undefined) {
+  return String(detail?.description || detail?.plain_description || '').trim()
+}
+
+function normalizeItemEffectFormulaText(value: string) {
+  return value.replace(/%{2,}/g, '%')
+}
+
+function parseItemEffectStageBlocks(text: string) {
+  const introLines: string[] = []
+  const stageBlocks: ItemEffectStageBlock[] = []
+  let currentStage: { stage: number; title: string; bodyLines: string[] } | null = null
+
+  const pushCurrentStage = () => {
+    if (!currentStage) return true
+    const body = normalizeItemEffectFormulaText(currentStage.bodyLines.join('\n').trim())
+    if (!body) return null
+    stageBlocks.push({
+      stage: currentStage.stage,
+      title: currentStage.title,
+      body,
+      tokens: getNumericTokens(body),
+    })
+    return true
+  }
+
+  for (const line of text.split(/\n/)) {
+    const match = line.match(ITEM_EFFECT_STAGE_PREFIX_RE)
+    if (!match) {
+      if (currentStage) currentStage.bodyLines.push(line)
+      else introLines.push(line)
+      continue
+    }
+
+    if (!pushCurrentStage()) return null
+    const stage = parseChineseStageNumber(match[1])
+    if (!stage || !Number.isFinite(stage)) return null
+    currentStage = {
+      stage,
+      title: `${match[1]}阶`,
+      bodyLines: [line.slice(match[0].length)],
+    }
+  }
+
+  if (!pushCurrentStage()) return null
+  if (!stageBlocks.length) return null
+  const introParts = splitProgressionParagraphs(introLines.join('\n').trim())
+  return { introParts, stageBlocks }
+}
+
+function getItemEffectFormulaSignature(block: ItemEffectStageBlock) {
+  return getProgressionParagraphTemplateSignature(block.body)
+}
+
+function buildItemEffectFormulaGroup(blocks: ItemEffectStageBlock[]): ItemEffectFormulaGroup | null {
+  if (blocks.length < 3) return null
+  const stages = blocks.map(block => block.stage)
+  const stageStep = stages[1] - stages[0]
+  if (!Number.isFinite(stageStep) || nearlyEqual(stageStep, 0)) return null
+  if (!stages.every((stage, index) => index === 0 || nearlyEqual(stage - stages[index - 1], stageStep))) return null
+
+  const firstTokens = blocks[0].tokens
+  if (!firstTokens.length) return null
+  if (blocks.some(block => block.tokens.length !== firstTokens.length)) return null
+
+  const varyingIndexes: number[] = []
+  for (let tokenIndex = 0; tokenIndex < firstTokens.length; tokenIndex += 1) {
+    const suffix = firstTokens[tokenIndex].suffix
+    if (blocks.some(block => block.tokens[tokenIndex].suffix !== suffix)) return null
+    const values = blocks.map(block => block.tokens[tokenIndex].value)
+    if (values.every(value => nearlyEqual(value, values[0]))) continue
+    const formula = buildLinearFormula(stages, values, 'N')
+    if (!formula) return null
+    varyingIndexes.push(tokenIndex)
+  }
+
+  const text = varyingIndexes.length
+    ? buildProgressionStepFormulaText(
+        blocks[0].body,
+        blocks.map(block => block.tokens),
+        varyingIndexes,
+        'N',
+        stages,
+      )
+    : blocks[0].body
+  if (!text) return null
+
+  const start = stages[0]
+  const end = stages[stages.length - 1]
+  const rangeLabel = nearlyEqual(stageStep, 1)
+    ? `N=${formatFormulaNumber(start)}-${formatFormulaNumber(end)}阶`
+    : `N=${formatFormulaNumber(start)}-${formatFormulaNumber(end)}阶，每${formatFormulaNumber(stageStep)}阶`
+  return {
+    kind: 'formula',
+    key: `${start}-${end}-${getItemEffectFormulaSignature(blocks[0])}`,
+    rangeLabel,
+    countLabel: varyingIndexes.length ? `${blocks.length}阶公式` : `${blocks.length}阶同值`,
+    text,
+  }
+}
+
+function buildItemEffectRawGroup(block: ItemEffectStageBlock): ItemEffectFormulaGroup {
+  return {
+    kind: 'raw',
+    key: `raw-${block.stage}-${getItemEffectFormulaSignature(block)}`,
+    rangeLabel: block.title,
+    countLabel: '原文',
+    text: block.body,
+  }
+}
+
+function buildItemEffectFormulaGroups(blocks: ItemEffectStageBlock[]) {
+  const groups: ItemEffectFormulaGroup[] = []
+  const usedIndexes = new Set<number>()
+  const signatures = blocks.map(block => getItemEffectFormulaSignature(block))
+  let index = 0
+  while (index < blocks.length) {
+    if (usedIndexes.has(index)) {
+      index += 1
+      continue
+    }
+    const signature = signatures[index]
+    let end = index + 1
+    while (end < blocks.length && !usedIndexes.has(end) && signatures[end] === signature) {
+      end += 1
+    }
+    let group: ItemEffectFormulaGroup | null = null
+    let candidateIndexes: number[] = []
+
+    for (let candidateEnd = end; candidateEnd >= index + 3; candidateEnd -= 1) {
+      const adjacentIndexes = Array.from({ length: candidateEnd - index }, (_, offset) => index + offset)
+      const candidateGroup = buildItemEffectFormulaGroup(adjacentIndexes.map(blockIndex => blocks[blockIndex]))
+      if (!candidateGroup) continue
+      group = candidateGroup
+      candidateIndexes = adjacentIndexes
+      break
+    }
+
+    if (!group) {
+      const nonAdjacentIndexes = blocks
+        .map((block, blockIndex) => ({ block, blockIndex }))
+        .filter(item => item.blockIndex >= index && !usedIndexes.has(item.blockIndex) && signatures[item.blockIndex] === signature)
+        .map(item => item.blockIndex)
+      group = buildItemEffectFormulaGroup(nonAdjacentIndexes.map(blockIndex => blocks[blockIndex]))
+      candidateIndexes = group ? nonAdjacentIndexes : []
+    }
+
+    if (!group) {
+      groups.push(buildItemEffectRawGroup(blocks[index]))
+      usedIndexes.add(index)
+      index += 1
+      continue
+    }
+    groups.push(group)
+    candidateIndexes.forEach(blockIndex => usedIndexes.add(blockIndex))
+    index = candidateIndexes.length && candidateIndexes.every((blockIndex, offset) => blockIndex === index + offset)
+      ? index + candidateIndexes.length
+      : index + 1
+  }
+  return groups
+}
+
+function getCompressedItemEffectDetail(detail: FanxiuItemEffectDetail | null | undefined) {
+  if (detail?.kind !== 'spiritual_body') return null
+  if (itemEffectCompressionCache.has(detail)) return itemEffectCompressionCache.get(detail) ?? null
+  const text = getItemEffectDetailText(detail)
+  if (!text) {
+    itemEffectCompressionCache.set(detail, null)
+    return null
+  }
+  const parsed = parseItemEffectStageBlocks(text)
+  if (!parsed) {
+    itemEffectCompressionCache.set(detail, null)
+    return null
+  }
+  const { introParts, stageBlocks } = parsed
+
+  if (stageBlocks.length < 3) {
+    itemEffectCompressionCache.set(detail, null)
+    return null
+  }
+  const groups = buildItemEffectFormulaGroups(stageBlocks)
+  if (!groups.some(group => group.kind === 'formula')) {
+    itemEffectCompressionCache.set(detail, null)
+    return null
+  }
+  const compressed = { introParts, groups }
+  itemEffectCompressionCache.set(detail, compressed)
+  return compressed
+}
+
+function isCompressedItemEffectDetail(detail: FanxiuItemEffectDetail | null | undefined) {
+  return Boolean(getCompressedItemEffectDetail(detail))
 }
 
 function buildProgressionStepRunPlan(
@@ -16647,7 +16912,28 @@ onBeforeUnmount(() => {
                 <strong>{{ detail.title || '详细效果' }}</strong>
                 <span v-if="detail.subtitle">{{ detail.subtitle }}</span>
               </div>
-              <div class="game-rich-text" v-html="renderFanxiuText(detail.description || detail.plain_description || '')" />
+              <template v-if="isCompressedItemEffectDetail(detail)">
+                <div
+                  v-for="part in getCompressedItemEffectDetail(detail)?.introParts || []"
+                  :key="`${detail.kind || 'effect'}-${detail.source_id || detail.title}-intro-${part}`"
+                  class="game-rich-text item-effect-formula-intro"
+                  v-html="renderFanxiuText(part)"
+                />
+                <div class="item-effect-formula-list">
+                  <article
+                    v-for="group in getCompressedItemEffectDetail(detail)?.groups || []"
+                    :key="`${detail.kind || 'effect'}-${detail.source_id || detail.title}-${group.key}`"
+                    class="item-effect-formula-row"
+                  >
+                    <div class="item-effect-formula-title">
+                      <strong>{{ group.rangeLabel }}</strong>
+                      <span>{{ group.countLabel }}</span>
+                    </div>
+                    <div class="game-rich-text" v-html="renderFanxiuText(group.text)" />
+                  </article>
+                </div>
+              </template>
+              <div v-else class="game-rich-text" v-html="renderFanxiuText(detail.description || detail.plain_description || '')" />
             </div>
             <div v-if="selectedItem.optional_gift_rewards?.length" class="linked-item-strip detail-items optional-gift-items">
               <FanxiuLinkedItemChip
@@ -20371,6 +20657,45 @@ onBeforeUnmount(() => {
 .item-effect-detail-title span {
   color: rgba(247, 240, 223, 0.68);
   font-size: 13px;
+}
+
+.item-effect-formula-intro {
+  color: rgba(247, 240, 223, 0.84);
+}
+
+.item-effect-formula-list {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.item-effect-formula-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0 10px 12px;
+  border-left: 2px solid rgba(239, 217, 143, 0.38);
+}
+
+.item-effect-formula-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.item-effect-formula-title strong {
+  color: #ffd45f;
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.item-effect-formula-title span {
+  color: rgba(247, 240, 223, 0.58);
+  font-size: 12px;
+}
+
+.item-effect-formula-row .game-rich-text {
+  padding-top: 2px;
 }
 
 .plain-rich-text.compact {

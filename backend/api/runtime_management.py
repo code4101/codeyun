@@ -15,6 +15,7 @@ from backend.core.runtime.management import (
     get_runtime_item_logs,
     reset_builtin_runtime_job_schedule,
     list_builtin_runtime_job_catalog,
+    run_builtin_runtime_item_action,
     stop_builtin_runtime_item,
     stop_command_runtime_item,
     toggle_builtin_runtime_job,
@@ -112,6 +113,18 @@ def stop_runtime_item(
     if source == "command":
         return stop_command_runtime_item(item_key, session)
     raise HTTPException(status_code=400, detail="不支持的运行单元来源")
+
+
+@router.post("/items/{source}/{item_key}/actions/{action_key}")
+def run_runtime_item_action(
+    source: str,
+    item_key: str,
+    action_key: str,
+    _token_device: BaseDevice = Depends(verify_api_token),
+):
+    if source == "builtin":
+        return run_builtin_runtime_item_action(item_key, action_key)
+    raise HTTPException(status_code=400, detail="该运行单元不支持扩展动作")
 
 
 @router.post("/items/{source}/{item_key}/autostart")

@@ -1387,6 +1387,90 @@ def test_reset_scheduler_task_runs_clears_runtime_fields_and_world_facts(tmp_pat
     assert "legacy-daily-assistant" not in facts["discoveries"]["task"]
 
 
+def test_scheduler_write_preserves_existing_runtime_state_from_default_backfill(tmp_path):
+    scheduler_path = _scheduler_state_path(tmp_path)
+    runtime_control.write_scheduler_tasks(
+        [
+            {
+                "id": "daily-weekly-dungeon",
+                "task_type": "daily_weekly_dungeon",
+                "label": "日常_周本",
+                "enabled": True,
+                "source": "data_annotation_runtime",
+                "schedule_kind": "weekly",
+                "weekdays": [0],
+                "schedule_times": ["05:00"],
+                "last_run_at": "2026-07-01 06:17:12",
+                "last_result": "success",
+                "next_time": "2026-07-06 05:00:00",
+                "retry_after": None,
+            }
+        ],
+        scheduler_state_path=scheduler_path,
+    )
+
+    runtime_control.write_scheduler_tasks(
+        [
+            {
+                "id": "daily-weekly-dungeon",
+                "task_type": "daily_weekly_dungeon",
+                "label": "日常_周本",
+                "enabled": True,
+                "source": "data_annotation_runtime",
+                "schedule_kind": "weekly",
+                "weekdays": [0],
+                "schedule_times": ["05:00"],
+                "last_run_at": None,
+                "last_result": "",
+                "next_time": None,
+                "retry_after": None,
+            }
+        ],
+        scheduler_state_path=scheduler_path,
+    )
+
+    task = next(
+        item
+        for item in runtime_control.read_scheduler_tasks(scheduler_state_path=scheduler_path, world_facts_path=tmp_path / "world.json")
+        if item["id"] == "daily-weekly-dungeon"
+    )
+    assert task["last_result"] == "success"
+    assert task["last_run_at"] == "2026-07-01 06:17:12"
+    assert task["next_time"] == "2026-07-06 05:00:00"
+
+
+def test_world_facts_write_preserves_newer_scheduler_task_fact(tmp_path):
+    world_facts_path = tmp_path / "world_facts.json"
+    runtime_control.write_world_facts(
+        {
+            "discoveries": {
+                "task": {
+                    "daily-weekly-dungeon": {
+                        "last_result": "success",
+                        "last_run_at": "2026-07-01 06:17:12",
+                        "next_time": "2026-07-06 05:00:00",
+                        "updated_at": 200.0,
+                    }
+                }
+            }
+        },
+        world_facts_path,
+    )
+
+    runtime_control.write_world_facts(
+        {
+            "runtime": {"current_scene": 34},
+            "discoveries": {"task": {}},
+            "events": [],
+        },
+        world_facts_path,
+    )
+
+    fact = runtime_control.read_world_facts(world_facts_path)["discoveries"]["task"]["daily-weekly-dungeon"]
+    assert fact["last_result"] == "success"
+    assert fact["next_time"] == "2026-07-06 05:00:00"
+
+
 def test_data_annotation_scheduler_read_initializes_enabled_daily_next_time(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
@@ -2695,6 +2779,62 @@ def test_data_annotation_scheduler_syncs_retry_after_from_world_facts(tmp_path, 
     assert target["checkpoint"]["world_fact_updated_at"] == 456
 
 
+def test_data_annotation_scheduler_syncs_same_second_skipped_retry_from_world_facts(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    last_run_at = "2026-07-01 12:42:43"
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "daily-boss",
+            "task_type": "daily_boss",
+            "label": "日常_首领",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "priority": 40,
+            "interruptible": True,
+            "next_time": "2026-07-02 05:00:00",
+            "schedule_times": ["05:00"],
+            "window": None,
+            "last_run_at": last_run_at,
+            "last_result": "skipped",
+            "retry_after": None,
+            "cooldown_seconds": 600,
+            "payload": {"max_runtime_seconds": 1800},
+            "checkpoint": None,
+        }
+    ])
+    fanxiu._write_data_annotation_world_facts({
+        **fanxiu._initial_data_annotation_world_facts(),
+        "discoveries": {
+            "scene": {},
+            "popup": {},
+            "occlusion": {},
+            "task": {
+                "daily-boss": {
+                    "id": "daily-boss",
+                    "task_type": "daily_boss",
+                    "label": "日常_首领",
+                    "last_result": "skipped",
+                    "last_run_at": last_run_at,
+                    "discovered_next_time": None,
+                    "next_time": None,
+                    "discovered_retry_after": "2026-07-01 12:49:18",
+                    "retry_after": "2026-07-01 12:49:18",
+                    "updated_at": datetime(2026, 7, 1, 12, 42, 43).timestamp(),
+                }
+            },
+        },
+    })
+
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    target = next(item for item in tasks if item["id"] == "daily-boss")
+
+    assert target["last_result"] == "skipped"
+    assert target["next_time"] is None
+    assert target["retry_after"] == "2026-07-01 12:49:18"
+
+
 def test_data_annotation_run_now_payload_override_does_not_mutate_scheduler_task():
     tasks = [
         {
@@ -3813,7 +3953,20 @@ def test_daily_xianshi_open_coin_list_reads_as_runtime_steps(tmp_path, monkeypat
 
     assert result is None
     assert actions == [
-        ("wait_click_then_shape", 34, "仙市", 247, "秘藏阁", {"settle_seconds": 2.0, "label": "日常_仙市：等待仙市入口页"}),
+        (
+            "wait_click_then_shape",
+            34,
+            "仙市",
+            247,
+            "秘藏阁",
+            {
+                "settle_seconds": 2.0,
+                "timeout": 6.0,
+                "retry_if_source_remains": True,
+                "max_clicks": 3,
+                "label": "日常_仙市：等待仙市入口页",
+            },
+        ),
         ("wait_click_then_shape", 247, "秘藏阁", 248, "仙币", {"settle_seconds": 1.5, "label": "日常_仙市：等待秘藏阁仙币页"}),
         ("wait_click", 248, "仙币", {}),
         ("settle", 2.5),
@@ -4317,6 +4470,61 @@ def test_daily_boss_detail_cd_records_retry_and_returns_skipped(monkeypatch):
     assert retries[0]["task_id"] == "daily-boss"
     assert retries[0]["task_type"] == "daily_boss"
     assert retries[0]["last_result"] == "skipped"
+
+
+def test_daily_boss_done_frame_records_retry_when_remaining_unknown(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    retries: list[dict[str, object]] = []
+
+    class FakeRuntime:
+        def get_view(self, _scene_id):
+            return None
+
+    def fake_recheck(payload, *, seconds):
+        retries.append({"payload": payload, "seconds": seconds})
+        return "2026-07-01 13:27:19"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (181, 100.0, "frame", "封印"))
+    monkeypatch.setattr(runner, "_record_daily_boss_recheck_time", fake_recheck)
+
+    next_time, source = _drain_generator(
+        runner._record_daily_boss_next_time_after_done(
+            {"asset_tree_path": Path("asset.json"), "images": {}},
+            fanxiu.threading.Event(),
+            {"__scheduler_task_id": "daily-boss"},
+        )
+    )
+
+    assert next_time == "2026-07-01 13:27:19"
+    assert source == "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查刷新 CD"
+    assert retries == [{"payload": {"__scheduler_task_id": "daily-boss"}, "seconds": 1800}]
+
+
+def test_daily_boss_done_frame_reads_list_cd_after_returning_to_list(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        pass
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (178, 100.0, "frame", "刷新时间 00:03:23"))
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_boss_next_time_from_current_list",
+        lambda _ctx, _payload: ("2026-07-01 13:05:33", "按 #182 刷新时间读取 00:03:23"),
+    )
+
+    next_time, source = _drain_generator(
+        runner._record_daily_boss_next_time_after_done(
+            {"asset_tree_path": Path("asset.json"), "images": {}},
+            fanxiu.threading.Event(),
+            {"__scheduler_task_id": "daily-boss"},
+        )
+    )
+
+    assert next_time == "2026-07-01 13:05:33"
+    assert source == "已识别 #181 封印完成；按 #182 刷新时间读取 00:03:23"
 
 
 def test_mark_scheduler_task_skipped_uses_retry_fact_not_daily_next(tmp_path, monkeypatch):

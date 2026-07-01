@@ -5080,9 +5080,17 @@ export const matchFanxiuGameWindow2Screenshot = (
   }).then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationRuntimeStatus = (entryId = '') => {
+export const getFanxiuDataAnnotationRuntimeStatus = (
+  entryId = '',
+  options: {
+    includeCellLogs?: boolean;
+  } = {},
+) => {
+  const params: Record<string, string | boolean> = {};
+  if (entryId) params.entry_id = entryId;
+  if (options.includeCellLogs !== undefined) params.include_cell_logs = options.includeCellLogs;
   return api
-    .get<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params: entryId ? { entry_id: entryId } : {} })
+    .get<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params })
     .then(res => res.data);
 };
 

@@ -5,7 +5,7 @@ import DocPage from '@/components/DocPage.vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide } from '@element-plus/icons-vue';
+import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide, RefreshRight } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import {
   addRuntimeJob,
@@ -14,6 +14,7 @@ import {
   deleteRuntimeJob,
   fetchRuntimeJobCatalog,
   fetchRuntimeStatus,
+  runRuntimeItemAction,
   stopRuntimeItem,
   triggerRuntimeItem,
   triggerRuntimeJob,
@@ -355,7 +356,6 @@ const updateDeviceConfig = async () => {
 
 let taskPollTimer: number | null = null;
 let systemMonitorObserver: IntersectionObserver | null = null;
-let systemMonitorWarmupTimer: number | null = null;
 const taskFetchInFlight = new Set<string>();
 const taskFetchVersions = new Map<string, number>();
 
@@ -378,24 +378,9 @@ const startTaskPolling = (entryId: string) => {
 
 const activateSystemMonitor = () => {
   if (systemMonitorActivated.value) return;
-  if (systemMonitorWarmupTimer !== null) {
-    window.clearTimeout(systemMonitorWarmupTimer);
-    systemMonitorWarmupTimer = null;
-  }
   systemMonitorActivated.value = true;
   systemMonitorObserver?.disconnect();
   systemMonitorObserver = null;
-};
-
-const scheduleSystemMonitorActivation = () => {
-  if (systemMonitorActivated.value || typeof window === 'undefined') return;
-  if (systemMonitorWarmupTimer !== null) {
-    window.clearTimeout(systemMonitorWarmupTimer);
-  }
-  systemMonitorWarmupTimer = window.setTimeout(() => {
-    systemMonitorWarmupTimer = null;
-    activateSystemMonitor();
-  }, 900);
 };
 
 const initSystemMonitorObserver = () => {
@@ -417,7 +402,6 @@ const initSystemMonitorObserver = () => {
     threshold: 0.01,
   });
   systemMonitorObserver.observe(anchor);
-  scheduleSystemMonitorActivation();
 };
 
 const syncDeviceConfig = () => {
@@ -842,6 +826,114 @@ const handleRuntimeContextConfigure = () => {
       return;
     }
     viewLogs(target);
+  }
+};
+
+const runtimeItemSupportsAction = (item: RuntimeItem | null | undefined, actionKey: string) => {
+  if (!item || item.source !== 'builtin' || item.kind !== 'service') return false;
+  return Array.isArray(item.actions) && item.actions.includes(actionKey);
+};
+
+const runtimeInspectLabel = (item: RuntimeItem | null | undefined) => {
+  if (!item) return '查看诊断';
+  if (item.key === 'attendance-behavior-tree') return '查看调度';
+  if (item.key === 'fanxiu-behavior-tree') return '运行诊断';
+  return '查看诊断';
+};
+
+const runtimeWakeLabel = (item: RuntimeItem | null | undefined) => {
+  if (!item) return '唤醒服务';
+  if (item.key === 'fanxiu-behavior-tree') return '唤醒行为树';
+  return '唤醒服务';
+};
+
+const runtimeRestartLabel = (item: RuntimeItem | null | undefined) => {
+  if (!item) return '重启服务';
+  if (item.key === 'attendance-behavior-tree') return '重启调度器';
+  if (item.key === 'fanxiu-behavior-tree') return '重启行为树';
+  return '重启服务';
+};
+
+const handleRuntimeContextInspect = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!runtimeItemSupportsAction(target, 'inspect')) return;
+  target.actionLoading = true;
+  try {
+    await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'inspect');
+    ElMessage.success(target?.key === 'attendance-behavior-tree' ? '已刷新调度摘要' : '已刷新运行诊断');
+    await fetchTasks(currentDeviceId.value, true);
+    viewLogs(target);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || (target?.key === 'attendance-behavior-tree' ? '刷新调度摘要失败' : '刷新运行诊断失败'));
+  } finally {
+    target.actionLoading = false;
+  }
+};
+
+const handleRuntimeContextWake = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!runtimeItemSupportsAction(target, 'wake')) return;
+  target.actionLoading = true;
+  try {
+    await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'wake');
+    ElMessage.success(target?.key === 'fanxiu-behavior-tree' ? '已发送行为树唤醒请求' : '已发送唤醒请求');
+    await fetchTasks(currentDeviceId.value, true);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || (target?.key === 'fanxiu-behavior-tree' ? '唤醒行为树失败' : '唤醒服务失败'));
+  } finally {
+    target.actionLoading = false;
+  }
+};
+
+const handleRuntimeContextRestart = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!runtimeItemSupportsAction(target, 'restart')) return;
+  target.actionLoading = true;
+  try {
+    await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'restart');
+    ElMessage.success(target?.key === 'attendance-behavior-tree' ? '已重启考勤调度器' : '已重启凡修行为树');
+    await fetchTasks(currentDeviceId.value, true);
+    viewLogs(target);
+  } catch (err: any) {
+    ElMessage.error(
+      err.response?.data?.detail || (target?.key === 'attendance-behavior-tree' ? '重启考勤调度器失败' : '重启凡修行为树失败')
+    );
+  } finally {
+    target.actionLoading = false;
+  }
+};
+
+const handleRuntimeContextReset = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!runtimeItemSupportsAction(target, 'reset')) return;
+  try {
+    await ElMessageBox.confirm(
+      '将清空该行为树的调度状态文件，后续任务会按下一锚点重新计算；不会补跑错过的任务。',
+      '重置行为树状态',
+      {
+        confirmButtonText: '重置',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    );
+  } catch {
+    return;
+  }
+
+  target.actionLoading = true;
+  try {
+    await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'reset');
+    ElMessage.success('已重置行为树状态');
+    await fetchTasks(currentDeviceId.value, true);
+    viewLogs(target);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '重置行为树状态失败');
+  } finally {
+    target.actionLoading = false;
   }
 };
 
@@ -1603,10 +1695,6 @@ onUnmounted(() => {
   window.removeEventListener('click', closeRuntimeContextMenu);
   window.removeEventListener('resize', updateViewportWidth);
   stopTaskPolling();
-  if (systemMonitorWarmupTimer !== null) {
-    window.clearTimeout(systemMonitorWarmupTimer);
-    systemMonitorWarmupTimer = null;
-  }
   systemMonitorObserver?.disconnect();
   systemMonitorObserver = null;
   if (serviceSortableInstance) serviceSortableInstance.destroy();
@@ -1894,6 +1982,42 @@ onUnmounted(() => {
       >
         <el-icon><Setting /></el-icon>
         <span>配置</span>
+      </button>
+      <button
+        v-if="runtimeItemSupportsAction(runtimeContextMenu.target, 'inspect')"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextInspect"
+      >
+        <el-icon><View /></el-icon>
+        <span>{{ runtimeInspectLabel(runtimeContextMenu.target) }}</span>
+      </button>
+      <button
+        v-if="runtimeItemSupportsAction(runtimeContextMenu.target, 'wake')"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextWake"
+      >
+        <el-icon><VideoPlay /></el-icon>
+        <span>{{ runtimeWakeLabel(runtimeContextMenu.target) }}</span>
+      </button>
+      <button
+        v-if="runtimeItemSupportsAction(runtimeContextMenu.target, 'restart')"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextRestart"
+      >
+        <el-icon><RefreshRight /></el-icon>
+        <span>{{ runtimeRestartLabel(runtimeContextMenu.target) }}</span>
+      </button>
+      <button
+        v-if="runtimeItemSupportsAction(runtimeContextMenu.target, 'reset')"
+        type="button"
+        class="context-menu-item danger"
+        @click="handleRuntimeContextReset"
+      >
+        <el-icon><Connection /></el-icon>
+        <span>重置状态</span>
       </button>
       <button type="button" class="context-menu-item" @click="handleRuntimeContextLogs">
         <el-icon><Document /></el-icon>

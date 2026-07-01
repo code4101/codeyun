@@ -129,6 +129,7 @@ from backend.core.runtime.management import (
     get_runtime_item_logs,
     list_builtin_runtime_job_catalog,
     reset_builtin_runtime_job_schedule,
+    run_builtin_runtime_item_action,
     stop_builtin_runtime_item,
     stop_command_runtime_item,
     toggle_builtin_runtime_job,
@@ -1441,6 +1442,23 @@ def stop_runtime_item_for_entry(
             return stop_command_runtime_item(item_key, session)
         raise HTTPException(status_code=400, detail="不支持的运行单元来源")
     return _proxy_request(entry, "POST", f"/runtime/items/{source}/{item_key}/stop")
+
+
+@router.post("/{entry_id}/runtime/items/{source}/{item_key}/actions/{action_key}")
+def run_runtime_item_action_for_entry(
+    entry_id: str,
+    source: str,
+    item_key: str,
+    action_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        if source == "builtin":
+            return run_builtin_runtime_item_action(item_key, action_key)
+        raise HTTPException(status_code=400, detail="该运行单元不支持扩展动作")
+    return _proxy_request(entry, "POST", f"/runtime/items/{source}/{item_key}/actions/{action_key}")
 
 
 @router.get("/{entry_id}/runtime/items/{source}/{item_key}/logs")

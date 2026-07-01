@@ -53,6 +53,7 @@ from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_dat
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_world_facts_summary,
+    preserve_data_annotation_scheduler_runtime_state,
     repair_data_annotation_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
@@ -681,16 +682,46 @@ class FanxiuRuntime(Runtime):
         settle_seconds: float = 1.0,
         timeout: float | None = None,
         label: str = "点击后等待目标",
+        retry_if_source_remains: bool = False,
+        max_clicks: int = 1,
         **options: Any,
     ) -> str:
-        yield from self.wait_click(frame, shape, **options)
-        yield from self.wait_action_settle(settle_seconds)
-        return (yield from self.wait_shape(
-            target_frame,
-            target_shape,
-            timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
-            label=label,
-        ))
+        source_view = self.resolve_view_selector(frame)
+        target_view = self.resolve_view_selector(target_frame)
+        click_count = max(1, int(max_clicks or 1))
+        wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
+        last_error: TimeoutError | None = None
+        for attempt in range(1, click_count + 1):
+            yield from self.wait_click(frame, shape, **options)
+            yield from self.wait_action_settle(settle_seconds)
+            try:
+                return (yield from self.wait_shape(
+                    target_frame,
+                    target_shape,
+                    timeout=wait_timeout,
+                    label=label,
+                ))
+            except TimeoutError as exc:
+                last_error = exc
+                if not retry_if_source_remains or attempt >= click_count:
+                    raise
+                if not isinstance(source_view, View) or source_view.id is None:
+                    raise
+                if isinstance(target_view, View) and target_view.id == source_view.id:
+                    raise
+                scene_id, score, _frame = self.current_scene([source_view], update=True)
+                if scene_id != source_view.id:
+                    raise
+                self.runner._log(
+                    "warning",
+                    (
+                        f"{label}：点击后仍在源场景 #{source_view.id} {score:.0f}%，"
+                        f"重试点击 {attempt + 1}/{click_count}"
+                    ),
+                )
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError(f"{label} 失败")
 
     def wait_click_then_view(
         self,
@@ -2070,9 +2101,14 @@ def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
 
 
 def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
+    path = _data_annotation_scheduler_state_path()
+    payload = [_data_annotation_scheduler_task_state(task) for task in tasks]
+    existing = _read_data_annotation_json(path, [])
+    if isinstance(existing, list):
+        payload = preserve_data_annotation_scheduler_runtime_state(payload, existing)
     _write_data_annotation_json(
-        _data_annotation_scheduler_state_path(),
-        [_data_annotation_scheduler_task_state(task) for task in tasks],
+        path,
+        payload,
     )
 
 
@@ -2397,11 +2433,12 @@ class DataAnnotationRuntimeRunner(
         })
         return base
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, include_cell_logs: bool = True) -> dict[str, Any]:
         with self._lock:
             self._sync_guard_status_locked()
             self._sync_service_status_locked()
-            return json.loads(json.dumps(self._status, ensure_ascii=False))
+            payload = self._status if include_cell_logs else {**self._status, "cell_logs": []}
+            return json.loads(json.dumps(payload, ensure_ascii=False))
 
     def replace_logs(self, logs: list[dict[str, Any]]) -> dict[str, Any]:
         with self._lock:
@@ -5045,6 +5082,9 @@ class DataAnnotationRuntimeRunner(
             247,
             "秘藏阁",
             settle_seconds=2.0,
+            timeout=float(payload.get("xianshi_entry_wait_seconds") or 6.0),
+            retry_if_source_remains=True,
+            max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
             label=f"{task_label}：等待仙市入口页",
         )
         yield from runtime.wait_click_then_shape(
@@ -7648,7 +7688,9 @@ class DataAnnotationRuntimeRunner(
             self._require_shape_match(action_match_result, shape)
         raw_click_x, raw_click_y = ActionPlanner().shape_center(image, shape)
         click_x, click_y = raw_click_x, raw_click_y
-        resolved_click = self._shape_match_resolved_click_point(image, shape, action_match_result)
+        resolved_click = None
+        if shape.get("clickResolvedBox") is not False:
+            resolved_click = self._shape_match_resolved_click_point(image, shape, action_match_result)
         if resolved_click is not None:
             click_x, click_y = resolved_click
         if action_match_result is not None:
@@ -8357,10 +8399,15 @@ class DataAnnotationRuntimeRunner(
     ) -> dict[str, Any] | None:
         if current_image is None:
             return None
+        scene_title = str(current_image.get("title") or "").strip()
+        filename = str(current_image.get("filename") or "").strip()
+        if filename == "0086.png" or "离开场景" in scene_title:
+            for shape in self._flatten_shapes(current_image.get("shapes")):
+                if str(shape.get("title") or "").strip() in {"确认", "确定"}:
+                    return shape
         source_title = str(source_shape.get("title") or "").strip()
         if source_title not in {"离开", "返回", "关闭", "退出"}:
             return None
-        scene_title = str(current_image.get("title") or "").strip()
         if "离开" not in scene_title and "退出" not in scene_title:
             return None
         for shape in self._flatten_shapes(current_image.get("shapes")):

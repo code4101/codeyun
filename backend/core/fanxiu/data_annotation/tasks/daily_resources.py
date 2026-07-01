@@ -1117,7 +1117,16 @@ class DailyResourceTaskMixin:
             if scene_id != 34:
                 yield from runtime.goto_view(34)
                 yield from runtime.wait_view(34)
-            yield from runtime.wait_click_then_shape(34, "仙市", 247, "秘藏阁", settle_seconds=2.0)
+            yield from runtime.wait_click_then_shape(
+                34,
+                "仙市",
+                247,
+                "秘藏阁",
+                settle_seconds=2.0,
+                timeout=float(payload.get("xianshi_entry_wait_seconds") or 6.0),
+                retry_if_source_remains=True,
+                max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
+            )
 
         claimed: list[str] = []
         if phase == "midnight":
