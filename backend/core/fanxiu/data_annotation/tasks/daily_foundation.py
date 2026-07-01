@@ -446,6 +446,23 @@ class DailyFoundationTaskMixin:
                 text = runtime.ocr_text_in_shapes(image179, ("剩余奖励次数", "挑战状态"), frame_data_url=frame, padding=20)
                 cd_seconds = _parse_daily_boss_cd_seconds(text)
                 remaining = _parse_daily_boss_reward_remaining(text)
+                if remaining == 0:
+                    next_time = self._next_daily_boss_reset_time_text()
+                    self._record_scheduler_task_discovered_next_time(
+                        str(payload.get("__scheduler_task_id") or "daily-boss"),
+                        next_time,
+                        task_type="daily_boss",
+                        label="日常_首领",
+                        last_result="success",
+                    )
+                    self._log("success", f"日常_首领：挑战后奖励次数已用尽，下次 {next_time}")
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "success"
+                if cd_seconds and cd_seconds > 0:
+                    next_time = self._record_daily_boss_recheck_time(payload, seconds=cd_seconds + 10)
+                    self._log("skip", f"日常_首领：挑战后读到刷新 CD，{text}，下次 {next_time}")
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "skipped"
                 status_detail = "奖励次数变化" if remaining == 0 else f"刷新 CD {text}" if cd_seconds and cd_seconds > 0 else "详情状态未变化"
                 with self._lock:
                     self._set_status_locked(
@@ -460,15 +477,10 @@ class DailyFoundationTaskMixin:
                     return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
                 current_cd = _parse_daily_boss_cd_seconds(current_text)
                 if current_cd and current_cd > 0:
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"日常_首领：挑战后已读到刷新 CD，但还未识别 #181 封印，继续等待：{current_text}",
-                            phase="daily_boss_wait_done_after_cd",
-                            current_scene=scene_id,
-                        )
-                    yield BehaviorTreeStatus.RUNNING
-                    continue
+                    next_time = self._record_daily_boss_recheck_time(payload, seconds=current_cd + 10)
+                    self._log("skip", f"日常_首领：挑战后读到刷新 CD，{current_text}，下次 {next_time}")
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "skipped"
                 if self._daily_boss_combat_in_progress_text(current_text):
                     with self._lock:
                         self._set_status_locked(

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "bcc40826fa23de6be619166195890b2b2e846138"
-last_audited_at: "2026-07-01T06:35:27.8040501+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-bcc40826/report.md"
-last_frontend_commit_summary: "完整关闭 31b69188..bcc40826：沿 fanxiu/data-annotation/runtime 与 notes/center?tab=list 复核后，确认提交已把手动作业右键菜单收回到有效动作，并删除列表标题列里与“形态”列重复的 NoteFormBadge。"
-audited_commit_count: 55
+last_audited_commit: "cf6ac33da15354e3530527ff46c63bf7455e93fe"
+last_audited_at: "2026-07-01T14:33:44.3383139+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-cf6ac33d/report.md"
+last_frontend_commit_summary: "完整关闭 bcc40826..cf6ac33d：沿 cluster/runtime、notes/center?tab=list、cluster/storage、fanxiu/runtime 与 fanxiu/wiki 复核后，删除运行管理里把日志伪装成配置的重复入口，仅保留真实可配置对象。"
+audited_commit_count: 56
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-01
+
+- 完整范围：`bcc40826fa23de6be619166195890b2b2e846138..cf6ac33da15354e3530527ff46c63bf7455e93fe`
+- 覆盖提交：`cf6ac33da15354e3530527ff46c63bf7455e93fe`
+- 前端入口提交：`cf6ac33da15354e3530527ff46c63bf7455e93fe`
+- 入口如何牵引到旧问题：这次提交把 data-annotation runtime/scheduler 重构继续传导到 `cluster/runtime`、`notes/center?tab=list`、`cluster/storage` 和 `fanxiu/wiki`。沿同一“运行状态 -> 次级命令 -> 诊断结果”链路复核后，真正被牵出来的旧问题出现在 `cluster/runtime`：新加 `inspect / wake / restart / reset` 之后，内建服务右键菜单里旧的 `配置` 仍然存在，但对大部分服务它实际只是再次打开日志，导致同一事实既叫“配置”又叫“日志”。
+- 本轮减法：不新增任何按钮、说明、状态或入口；只把 [`frontend/src/standard/cluster/tasks/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/cluster/tasks/page.vue) 的 `配置` 收回到真实可配置对象。命令对象仍可编辑，内建作业仍可配调度，`CodeYun Watchdog` 仍保留 `自启` 入口；行为树等内建服务只保留 `运行诊断 / 唤醒行为树 / 重启行为树 / 日志` 四类真实动作。
+- 信息量保持：运行管理页仍保留服务/作业状态、运行命令摘要、下次触发、诊断、唤醒、重启与日志能力；减少的是“伪配置”这层错误概念，不是减少运维能力。`notes/list` 的前端筛选折叠卡、`cluster/storage` 的判重工具条拆分、`fanxiu/runtime` 的状态读取瘦身和 `fanxiu/wiki` 的灵体公式压缩都在真实页面里继续保持复杂度下降方向，没有新回退。
+- 概念图/线框图：报告中的 Mermaid 把 `cluster/runtime` 收回到“状态表 -> 右键动作 -> 真配置对象 / 运维动作”两层结构；ASCII 线框图直接对比了修复前后的行为树右键菜单，证明本轮是在删掉把日志伪装成配置的重复入口。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-cf6ac33d/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `cluster/runtime`、`notes/center?tab=list` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图，对 `cluster/storage`、`fanxiu/data-annotation/runtime`、`standalone/fanxiu/wiki?tab=item&id=16000100` 完成宽屏/窄屏截图；`evidence.json` 记录 12 张截图全部满足 `bodyScrollWidth == bodyClientWidth` 与 `docScrollWidth == docClientWidth`。其中 `cluster/runtime` 三视口右键菜单标签都只剩 `运行诊断 / 唤醒行为树 / 重启行为树 / 日志`。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：`cluster/runtime` 属于前端状态投影/信息架构问题，根因是旧菜单把日志伪装成配置；其余入口页面本轮未发现新的表现层、前端状态投影、后端数据投影或业务建模问题。
+- 跨自动化交接：无。本轮问题可在前端页面层直接收敛，不需要转交 `CodeYun 代码健康优化`。
+- 剩余风险：`fanxiu/wiki` 的灵体契约详情虽然已开始用公式段压缩高阶重复文本，但前半段仍保留较多单阶原文；当前方向仍是减法，本轮不继续扩散到更大重构。`notes/center?tab=star` 本次只涉及无边图自动 relayout 条件收紧，真实页面未发现新的 UI 回退，因此不在无关页面继续发散修复。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `cf6ac33da15354e3530527ff46c63bf7455e93fe`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`31b691883a4991c5b582aad3eb82ac69d8a547b9..bcc40826fa23de6be619166195890b2b2e846138`
 - 覆盖提交：`bcc40826fa23de6be619166195890b2b2e846138`

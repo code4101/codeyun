@@ -42,8 +42,24 @@ from backend.migrations.manager import (
     run_startup_schema_repairs,
 )
 
+
+def _env_enabled(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _should_run_startup_migrations() -> bool:
+    default = not settings.is_test
+    return _env_enabled("CODEYUN_RUN_STARTUP_MIGRATIONS", default)
+
+
 def migrate_db():
     """Perform automatic database migrations for schema changes."""
+    if not _should_run_startup_migrations():
+        print("Skipping Database Migration Manager during test startup.")
+        return
     print("Initializing Database Migration Manager...")
     try:
         run_startup_schema_repairs(engine)

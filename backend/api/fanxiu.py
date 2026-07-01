@@ -3238,7 +3238,7 @@ def load_fanxiu_packet_proxy_log(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse)
+@status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse, deprecated=True)
 def terminate_fanxiu_scripts(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -3257,7 +3257,7 @@ def terminate_fanxiu_scripts(
     return FanxiuProcessTerminateResponse.model_validate(stop_result)
 
 
-@status_router.get("/behavior-tree-service", response_model=FanxiuBehaviorTreeServiceStatus)
+@status_router.get("/behavior-tree-service", response_model=FanxiuBehaviorTreeServiceStatus, deprecated=True)
 def get_fanxiu_behavior_tree_service(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -3268,7 +3268,7 @@ def get_fanxiu_behavior_tree_service(
     return FanxiuBehaviorTreeServiceStatus.model_validate(get_behavior_tree_status())
 
 
-@status_router.post("/behavior-tree-service/start", response_model=FanxiuBehaviorTreeServiceResponse)
+@status_router.post("/behavior-tree-service/start", response_model=FanxiuBehaviorTreeServiceResponse, deprecated=True)
 def start_fanxiu_behavior_tree(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -3281,7 +3281,7 @@ def start_fanxiu_behavior_tree(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@status_router.post("/behavior-tree-service/stop", response_model=FanxiuBehaviorTreeServiceResponse)
+@status_router.post("/behavior-tree-service/stop", response_model=FanxiuBehaviorTreeServiceResponse, deprecated=True)
 def stop_fanxiu_behavior_tree(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
