@@ -628,6 +628,10 @@ def test_attendance_behavior_tree_serializes_as_builtin_runtime_service():
     assert item["status"]["total_process_count"] == 3
     assert item["next_run_at"] == "2026-05-20 21:00:00"
     assert item["actions"] == ["trigger", "stop", "logs", "configure", "inspect", "restart", "reset"]
+    assert item["action_labels"]["trigger"] == "启动调度器"
+    assert "唯一考勤调度器" in item["action_descriptions"]["trigger"]
+    assert item["action_success_messages"]["restart"] == "已重启考勤调度器"
+    assert item["action_error_messages"]["reset"] == "重置行为树状态失败"
     assert "PID 2233" in item["description"]
     assert "root 1" in item["description"]
     assert "descendant 2" in item["description"]
@@ -769,6 +773,10 @@ def test_builtin_attendance_behavior_tree_logs_use_service_log_builder(session, 
     assert payload["kind"] == "service"
     assert payload["title"] == "考勤行为树"
     assert payload["next_run_at"] == "2026-05-20 21:00:00"
+    assert payload["action_labels"]["trigger"] == "启动调度器"
+    assert "唯一考勤调度器" in payload["action_descriptions"]["trigger"]
+    assert payload["action_success_messages"]["inspect"] == "已刷新调度摘要"
+    assert payload["action_error_messages"]["restart"] == "重启考勤调度器失败"
     assert payload["logs"] == ["考勤行为树日志"]
 
 
@@ -839,7 +847,8 @@ def test_disabled_fanxiu_behavior_tree_runtime_item_cannot_start_on_non_executio
         runtime_core.trigger_builtin_runtime_item("fanxiu-behavior-tree", session)
     except runtime_core.HTTPException as exc:
         assert exc.status_code == 404
-        assert "mi15" in exc.detail
+        assert "codepc_mf" in exc.detail
+        assert "未在当前机器启用" in exc.detail
     else:
         raise AssertionError("expected HTTPException")
     assert captured == {}
@@ -866,6 +875,11 @@ def test_fanxiu_behavior_tree_serializes_inspect_action():
     assert item["key"] == "fanxiu-behavior-tree"
     assert item["kind"] == "service"
     assert item["actions"] == ["trigger", "stop", "logs", "configure", "inspect", "restart", "wake"]
+    assert item["action_labels"]["trigger"] == "确保行为树"
+    assert "resident service" in item["action_descriptions"]["trigger"]
+    assert "只停止当前业务任务" in item["action_descriptions"]["stop"]
+    assert item["action_success_messages"]["wake"] == "已发送行为树唤醒请求"
+    assert item["action_error_messages"]["inspect"] == "刷新运行诊断失败"
     assert item["status"]["current_scene"] == 121
 
 
@@ -1094,7 +1108,15 @@ def test_builtin_fanxiu_behavior_tree_logs_include_owner_queue_and_doctor(sessio
     assert any("普通作业隔离：active=True reason=local_enqueue" in line for line in payload["logs"])
     assert any("手动作业队列：1" in line for line in payload["logs"])
     assert any("Doctor：attention" in line for line in payload["logs"])
-    assert any("动作语义：stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询" in line for line in payload["logs"])
+    assert payload["action_labels"]["trigger"] == "确保行为树"
+    assert "resident service" in payload["action_descriptions"]["trigger"]
+    assert payload["action_success_messages"]["restart"] == "已重启凡修行为树"
+    assert payload["action_error_messages"]["wake"] == "唤醒凡修行为树失败"
+    assert any(
+        "动作语义：trigger=ensure resident service；stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询"
+        in line
+        for line in payload["logs"]
+    )
 
 
 def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):

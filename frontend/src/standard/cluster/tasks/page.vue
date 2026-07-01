@@ -621,8 +621,8 @@ const fetchLegacyTasks = async (
       device_id: devices.value.find(d => d.id === deviceId)?.device_id || deviceId,
       device: {},
       groups: [
-        { id: 'job:legacy', kind: 'job', title: '旧命令调度' },
-        { id: 'service:legacy', kind: 'service', title: '旧运行命令' },
+        { id: 'job:legacy', kind: 'job', title: '兼容旧任务接口 · 作业' },
+        { id: 'service:legacy', kind: 'service', title: '兼容旧任务接口 · 服务' },
       ],
       items: tasks.map((task: Task) => {
         const kind = getLegacyCommandRuntimeKind(task);
@@ -632,7 +632,7 @@ const fetchLegacyTasks = async (
           kind,
           source: 'command',
           group_id: kind === 'job' ? 'job:legacy' : 'service:legacy',
-          group_title: kind === 'job' ? '旧命令调度' : '旧运行命令',
+          group_title: kind === 'job' ? '兼容旧任务接口 · 作业' : '兼容旧任务接口 · 服务',
           title: task.name,
           description: task.description,
           command: task.command,
@@ -659,7 +659,7 @@ const fetchLegacyTasks = async (
     applyRuntimeStatus(deviceId, runtime);
     if (shouldApplyGlobalState()) {
       deviceError.value = false;
-      runtimeLoadIssue.value = '';
+      runtimeLoadIssue.value = '兼容模式：当前入口未提供 /runtime/status，页面已回退到旧 /task/ 列表；请优先升级目标节点，不要把旧任务接口当正式运行单元模型。';
     }
   } catch (err: any) {
     if (!isPolling && shouldApplyGlobalState()) {
@@ -823,10 +823,22 @@ const handleRuntimeContextConfigure = () => {
   } else if (target.source === 'builtin' && target.kind === 'service') {
     if (target.key === CODEYUN_WATCHDOG_KEY) {
       void handleConfigureWatchdogAutostart(target);
-      return;
     }
-    viewLogs(target);
   }
+};
+
+const canConfigureRuntimeItem = (item: RuntimeItem | null | undefined) => {
+  if (!item) return false;
+  if (item.source === 'command') return true;
+  if (item.source === 'builtin' && item.kind === 'job') return true;
+  return item.source === 'builtin' && item.kind === 'service' && item.key === CODEYUN_WATCHDOG_KEY;
+};
+
+const runtimeConfigureLabel = (item: RuntimeItem | null | undefined) => {
+  if (item?.source === 'builtin' && item.kind === 'service' && item.key === CODEYUN_WATCHDOG_KEY) {
+    return '自启';
+  }
+  return '配置';
 };
 
 const runtimeItemSupportsAction = (item: RuntimeItem | null | undefined, actionKey: string) => {
@@ -834,24 +846,44 @@ const runtimeItemSupportsAction = (item: RuntimeItem | null | undefined, actionK
   return Array.isArray(item.actions) && item.actions.includes(actionKey);
 };
 
+const runtimeActionLabel = (item: RuntimeItem | null | undefined, actionKey: string, fallback: string) => {
+  const value = item?.action_labels?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+
+const runtimeActionDescription = (item: RuntimeItem | null | undefined, actionKey: string, fallback: string) => {
+  const value = item?.action_descriptions?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+
+const runtimeActionSuccessMessage = (item: RuntimeItem | null | undefined, actionKey: string, fallback: string) => {
+  const value = item?.action_success_messages?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+
+const runtimeActionErrorMessage = (item: RuntimeItem | null | undefined, actionKey: string, fallback: string) => {
+  const value = item?.action_error_messages?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+
 const runtimeInspectLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '查看诊断';
-  if (item.key === 'attendance-behavior-tree') return '查看调度';
-  if (item.key === 'fanxiu-behavior-tree') return '运行诊断';
-  return '查看诊断';
+  if (item.key === 'attendance-behavior-tree') return runtimeActionLabel(item, 'inspect', '查看调度');
+  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'inspect', '运行诊断');
+  return runtimeActionLabel(item, 'inspect', '查看诊断');
 };
 
 const runtimeWakeLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '唤醒服务';
-  if (item.key === 'fanxiu-behavior-tree') return '唤醒行为树';
-  return '唤醒服务';
+  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'wake', '唤醒行为树');
+  return runtimeActionLabel(item, 'wake', '唤醒服务');
 };
 
 const runtimeRestartLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '重启服务';
-  if (item.key === 'attendance-behavior-tree') return '重启调度器';
-  if (item.key === 'fanxiu-behavior-tree') return '重启行为树';
-  return '重启服务';
+  if (item.key === 'attendance-behavior-tree') return runtimeActionLabel(item, 'restart', '重启调度器');
+  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'restart', '重启行为树');
+  return runtimeActionLabel(item, 'restart', '重启服务');
 };
 
 const handleRuntimeContextInspect = async () => {
@@ -861,11 +893,11 @@ const handleRuntimeContextInspect = async () => {
   target.actionLoading = true;
   try {
     await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'inspect');
-    ElMessage.success(target?.key === 'attendance-behavior-tree' ? '已刷新调度摘要' : '已刷新运行诊断');
+    ElMessage.success(runtimeActionSuccessMessage(target, 'inspect', '已刷新运行诊断'));
     await fetchTasks(currentDeviceId.value, true);
     viewLogs(target);
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || (target?.key === 'attendance-behavior-tree' ? '刷新调度摘要失败' : '刷新运行诊断失败'));
+    ElMessage.error(err.response?.data?.detail || runtimeActionErrorMessage(target, 'inspect', '刷新运行诊断失败'));
   } finally {
     target.actionLoading = false;
   }
@@ -878,10 +910,10 @@ const handleRuntimeContextWake = async () => {
   target.actionLoading = true;
   try {
     await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'wake');
-    ElMessage.success(target?.key === 'fanxiu-behavior-tree' ? '已发送行为树唤醒请求' : '已发送唤醒请求');
+    ElMessage.success(runtimeActionSuccessMessage(target, 'wake', '已发送唤醒请求'));
     await fetchTasks(currentDeviceId.value, true);
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || (target?.key === 'fanxiu-behavior-tree' ? '唤醒行为树失败' : '唤醒服务失败'));
+    ElMessage.error(err.response?.data?.detail || runtimeActionErrorMessage(target, 'wake', '唤醒服务失败'));
   } finally {
     target.actionLoading = false;
   }
@@ -894,13 +926,11 @@ const handleRuntimeContextRestart = async () => {
   target.actionLoading = true;
   try {
     await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'restart');
-    ElMessage.success(target?.key === 'attendance-behavior-tree' ? '已重启考勤调度器' : '已重启凡修行为树');
+    ElMessage.success(runtimeActionSuccessMessage(target, 'restart', '已重启运行单元'));
     await fetchTasks(currentDeviceId.value, true);
     viewLogs(target);
   } catch (err: any) {
-    ElMessage.error(
-      err.response?.data?.detail || (target?.key === 'attendance-behavior-tree' ? '重启考勤调度器失败' : '重启凡修行为树失败')
-    );
+    ElMessage.error(err.response?.data?.detail || runtimeActionErrorMessage(target, 'restart', '重启运行单元失败'));
   } finally {
     target.actionLoading = false;
   }
@@ -927,11 +957,11 @@ const handleRuntimeContextReset = async () => {
   target.actionLoading = true;
   try {
     await runRuntimeItemAction(currentDeviceId.value, target.source, target.key, 'reset');
-    ElMessage.success('已重置行为树状态');
+    ElMessage.success(runtimeActionSuccessMessage(target, 'reset', '已重置行为树状态'));
     await fetchTasks(currentDeviceId.value, true);
     viewLogs(target);
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || '重置行为树状态失败');
+    ElMessage.error(err.response?.data?.detail || runtimeActionErrorMessage(target, 'reset', '重置行为树状态失败'));
   } finally {
     target.actionLoading = false;
   }
@@ -1455,7 +1485,10 @@ const getJobStatusButtonTitle = (item: RuntimeItem) => {
 };
 
 const getServiceStatusButtonTitle = (item: RuntimeItem) => {
-  return isRuntimeItemRunning(item) ? '点击停止' : '点击启动';
+  if (isRuntimeItemRunning(item)) {
+    return runtimeActionDescription(item, 'stop', '点击停止');
+  }
+  return runtimeActionDescription(item, 'trigger', '点击启动');
 };
 
 function getRuntimeNextRunAt(item: RuntimeItem): string {
@@ -1975,13 +2008,13 @@ onUnmounted(() => {
         <span>停止</span>
       </button>
       <button
-        v-if="runtimeContextMenu.target?.source === 'command' || runtimeContextMenu.target?.source === 'builtin'"
+        v-if="canConfigureRuntimeItem(runtimeContextMenu.target)"
         type="button"
         class="context-menu-item"
         @click="handleRuntimeContextConfigure"
       >
         <el-icon><Setting /></el-icon>
-        <span>配置</span>
+        <span>{{ runtimeConfigureLabel(runtimeContextMenu.target) }}</span>
       </button>
       <button
         v-if="runtimeItemSupportsAction(runtimeContextMenu.target, 'inspect')"

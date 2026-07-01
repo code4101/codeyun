@@ -43,6 +43,10 @@ interface Task {
   next_run_at?: string | null;
   timeout?: number | null;
   status: TaskStatus;
+  action_labels?: Record<string, string>;
+  action_descriptions?: Record<string, string>;
+  action_success_messages?: Record<string, string>;
+  action_error_messages?: Record<string, string>;
   actionLoading?: boolean;
 }
 
@@ -94,10 +98,48 @@ const runtimeActionButtonType = computed<'primary' | 'success' | 'warning' | 'da
 const runtimeActionButtonIcon = computed(() => (
   task.value?.status.running && (!isBuiltinRuntime || isBuiltinServiceRuntime.value) ? VideoPause : VideoPlay
 ));
+const taskActionLabel = (actionKey: string, fallback: string) => {
+  const value = task.value?.action_labels?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+const taskActionMessage = (
+  field: 'action_success_messages' | 'action_error_messages',
+  actionKey: string,
+  fallback: string,
+) => {
+  const value = task.value?.[field]?.[actionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+const builtinServiceActionLabels = computed(() => {
+  if (!isBuiltinServiceRuntime.value) {
+    return {
+      start: '启动服务',
+      stop: '停止服务',
+      startSuccess: '服务已启动',
+      stopSuccess: '服务已停止',
+    };
+  }
+  if (task.value?.action_labels?.trigger || task.value?.action_labels?.stop) {
+    return {
+      start: taskActionLabel('trigger', '启动服务'),
+      stop: taskActionLabel('stop', '停止服务'),
+      startSuccess: taskActionMessage('action_success_messages', 'trigger', '服务已启动'),
+      stopSuccess: taskActionMessage('action_success_messages', 'stop', '服务已停止'),
+    };
+  }
+  return {
+    start: '启动服务',
+    stop: '停止服务',
+    startSuccess: '服务已启动',
+    stopSuccess: '服务已停止',
+  };
+});
 const runtimeActionButtonText = computed(() => {
   if (!task.value) return '';
   if (!isBuiltinRuntime) return task.value.status.running ? '停止任务' : '启动任务';
-  if (isBuiltinServiceRuntime.value) return task.value.status.running ? '停止服务' : '启动服务';
+  if (isBuiltinServiceRuntime.value) {
+    return task.value.status.running ? builtinServiceActionLabels.value.stop : builtinServiceActionLabels.value.start;
+  }
   return task.value.status.running ? '运行中' : '执行';
 });
 
@@ -160,10 +202,10 @@ const handleStatusClick = async () => {
     if (isBuiltinRuntime) {
       if (isBuiltinServiceRuntime.value && task.value.status.running) {
         await stopRuntimeItem(resolvedEntryId.value, runtimeSource, taskId);
-        ElMessage.success('服务已停止');
+        ElMessage.success(builtinServiceActionLabels.value.stopSuccess);
       } else {
         await triggerRuntimeItem(resolvedEntryId.value, runtimeSource, taskId);
-        ElMessage.success(isBuiltinServiceRuntime.value ? '服务已启动' : '作业已提交');
+        ElMessage.success(isBuiltinServiceRuntime.value ? builtinServiceActionLabels.value.startSuccess : '作业已提交');
       }
       await refreshAll();
       return;
@@ -202,7 +244,12 @@ const handleStatusClick = async () => {
     }
     await refreshAll();
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || 'Operation failed');
+    if (isBuiltinRuntime && isBuiltinServiceRuntime.value) {
+      const actionKey = task.value?.status.running ? 'stop' : 'trigger';
+      ElMessage.error(err.response?.data?.detail || taskActionMessage('action_error_messages', actionKey, '运行单元操作失败'));
+    } else {
+      ElMessage.error(err.response?.data?.detail || 'Operation failed');
+    }
   } finally {
     if (task.value) task.value.actionLoading = false;
   }
@@ -377,6 +424,10 @@ const applyRuntimeLogPayload = (payload: any) => {
     schedule_label: payload.schedule_label || '',
     next_run_at: payload.next_run_at || status.next_run_at || null,
     timeout: payload.timeout ?? null,
+    action_labels: payload.action_labels || {},
+    action_descriptions: payload.action_descriptions || {},
+    action_success_messages: payload.action_success_messages || {},
+    action_error_messages: payload.action_error_messages || {},
     status: {
       id: payload.key || taskId,
       running: Boolean(status.running || payload.active),

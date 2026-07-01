@@ -204,6 +204,7 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 
 1. 先读 [`行为树运行单元运维约定`](./行为树运行单元运维约定.md)
 2. 再用统一 runtime item action：
+   - `trigger`：`ensure resident service`
    - `inspect`：读取 runtime/owner/manual_job/isolation/doctor 摘要
    - `restart`：`shutdown_service -> ensure service`
    - `wake`：只唤醒 resident loop 重新轮询

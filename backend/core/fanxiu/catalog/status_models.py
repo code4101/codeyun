@@ -554,6 +554,8 @@ class FanxiuBehaviorTreeServiceStatus(BaseModel):
     state_label: str
     pid: Optional[int] = None
     process_count: int = 0
+    child_process_count: int = 0
+    total_process_count: int = 0
     processes: List[FanxiuProcessItem] = Field(default_factory=list)
     registry: dict[str, Any] = Field(default_factory=dict)
     registry_pid_alive: bool = False

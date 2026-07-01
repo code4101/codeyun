@@ -283,6 +283,7 @@ def test_log_lines_include_status_and_log_timestamps(monkeypatch):
     assert "状态更新时间：2026-07-01 12:31:13" in lines
     assert "行为树日志更新时间：2026-07-01 12:31:14" in lines
     assert "服务日志更新时间：2026-07-01 12:31:15" in lines
+    assert any("动作语义：trigger=确保唯一调度器" in line for line in lines)
     assert "行为树根进程数：1" in lines
     assert "子孙进程数：2" in lines
     assert any("不要把 descendant 误判成第二棵行为树" in line for line in lines)

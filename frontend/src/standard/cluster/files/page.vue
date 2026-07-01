@@ -271,7 +271,22 @@
 
           <template #sidebar-extra>
             <div class="device-gallery-sidebar-stack">
-              <GallerySortProgramBar
+              <section class="sort-summary-card">
+                <div class="sort-summary-copy">
+                  <span class="sort-summary-title">目录排序</span>
+                  <p class="sort-summary-text">{{ directorySortSummary }}</p>
+                </div>
+                <el-button
+                  size="small"
+                  text
+                  class="sort-summary-toggle"
+                  @click="showDirectorySortEditor = !showDirectorySortEditor"
+                >
+                  {{ showDirectorySortEditor ? '收起编辑器' : '编辑排序' }}
+                </el-button>
+              </section>
+              <AsyncGallerySortProgramBar
+                v-if="showDirectorySortEditor"
                 v-model="directorySortProgram"
                 title="目录排序"
                 caption="基于 devicefile 索引聚合递归大小、文件数、最新修改时间和权重。"
@@ -280,15 +295,31 @@
                 :default-program="DEFAULT_DIRECTORY_SORT_PROGRAM"
                 collapse-meta-to-tooltip
               />
-              <GallerySortProgramBar
-                v-if="mediaTotalCount > 0"
-                v-model="backendSortProgram"
-                title="媒体排序"
-                empty-text=""
-                :show-caption="false"
-                :show-help-text="false"
-                :show-hint="false"
-              />
+              <template v-if="mediaTotalCount > 0">
+                <section class="sort-summary-card">
+                  <div class="sort-summary-copy">
+                    <span class="sort-summary-title">媒体排序</span>
+                    <p class="sort-summary-text">{{ mediaSortSummary }}</p>
+                  </div>
+                  <el-button
+                    size="small"
+                    text
+                    class="sort-summary-toggle"
+                    @click="showMediaSortEditor = !showMediaSortEditor"
+                  >
+                    {{ showMediaSortEditor ? '收起编辑器' : '编辑排序' }}
+                  </el-button>
+                </section>
+                <AsyncGallerySortProgramBar
+                  v-if="showMediaSortEditor"
+                  v-model="backendSortProgram"
+                  title="媒体排序"
+                  empty-text=""
+                  :show-caption="false"
+                  :show-help-text="false"
+                  :show-hint="false"
+                />
+              </template>
             </div>
           </template>
         </ImageGalleryWorkspace>
@@ -321,7 +352,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Document, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera } from '@element-plus/icons-vue';
@@ -351,7 +382,6 @@ import {
   type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
 import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
-import GallerySortProgramBar from '@/components/GallerySortProgramBar.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { taskStore } from '@/store/taskStore';
@@ -360,6 +390,7 @@ import {
   createDefaultGallerySortProgram,
   formatDate,
   formatFileSize,
+  formatGallerySortSummary,
   formatResolution,
   normalizeGallerySortProgram,
   type GalleryImage,
@@ -417,6 +448,8 @@ const MIN_DEVICE_MEDIA_SCAN_LIMIT = 100;
 const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;
 const STREAMABLE_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm']);
 const STREAMABLE_VIDEO_EXTENSIONS = ['.mp4', '.webm'];
+const DEFAULT_BACKEND_SORT_PROGRAM = createDefaultGallerySortProgram();
+const AsyncGallerySortProgramBar = defineAsyncComponent(() => import('@/components/GallerySortProgramBar.vue'));
 
 const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
   { value: 'name', label: '目录名' },
@@ -462,6 +495,22 @@ const isSameDirectorySortProgram = (
   left?: Partial<DeviceDirectorySortProgram> | null,
   right?: Partial<DeviceDirectorySortProgram> | null
 ) => JSON.stringify(normalizeDirectorySortProgram(left)) === JSON.stringify(normalizeDirectorySortProgram(right));
+const isSameGallerySortProgram = (
+  left?: Partial<GallerySortProgram> | null,
+  right?: Partial<GallerySortProgram> | null
+) => JSON.stringify(normalizeGallerySortProgram(left)) === JSON.stringify(normalizeGallerySortProgram(right));
+const formatDirectorySortProgramSummary = (value?: Partial<DeviceDirectorySortProgram> | null) => {
+  const normalizedProgram = normalizeDirectorySortProgram(value);
+  if (!normalizedProgram.rules.length) {
+    return '默认稳定顺序';
+  }
+  return normalizedProgram.rules
+    .map((rule) => {
+      const label = DIRECTORY_SORT_FIELD_OPTIONS.find((option) => option.value === rule.field)?.label || String(rule.field);
+      return `${label}${rule.direction === 'desc' ? '降序' : '升序'}`;
+    })
+    .join(' -> ');
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -497,6 +546,8 @@ const mediaItems = ref<DeviceBrowserImage[]>([]);
 const galleryWorkspaceRef = ref<GalleryWorkspaceExpose | null>(null);
 const recursiveDisplay = ref(false);
 const showSidebar = ref(true);
+const showDirectorySortEditor = ref(false);
+const showMediaSortEditor = ref(false);
 const isLoadingDevices = ref(false);
 const isLoadingListing = ref(false);
 const isLoadingMediaPage = ref(false);
@@ -504,7 +555,7 @@ const downloadingPath = ref('');
 const revealingPath = ref('');
 const openingPdfPath = ref('');
 const directorySortProgram = ref<DeviceDirectorySortProgram>(cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM));
-const backendSortProgram = ref<GallerySortProgram>(createDefaultGallerySortProgram());
+const backendSortProgram = ref<GallerySortProgram>(cloneGallerySortProgram(DEFAULT_BACKEND_SORT_PROGRAM));
 const mediaTotalCount = ref(0);
 const mediaTotalBytes = ref(0);
 const mediaTotalDurationMs = ref(0);
@@ -873,6 +924,8 @@ const mediaVisualHashHint = computed(() => {
     ].filter(Boolean).join('\n'),
   };
 });
+const directorySortSummary = computed(() => formatDirectorySortProgramSummary(directorySortProgram.value));
+const mediaSortSummary = computed(() => formatGallerySortSummary(backendSortProgram.value));
 const mediaEmptyInlineText = computed(() =>
   isLoadingMediaPage.value
     ? '媒体索引加载中，目录可先浏览'
@@ -890,11 +943,13 @@ let suppressNextRecursiveDisplayReload = false;
 const restoreBackendSortProgram = (storageKey: string) => {
   suppressNextBackendSortProgramReload = true;
   backendSortProgram.value = loadPersistedBackendSortProgram(storageKey);
+  showMediaSortEditor.value = !isSameGallerySortProgram(backendSortProgram.value, DEFAULT_BACKEND_SORT_PROGRAM);
 };
 
 const restoreDirectorySortProgram = (storageKey: string) => {
   suppressNextDirectorySortProgramReload = true;
   directorySortProgram.value = loadPersistedDirectorySortProgram(storageKey);
+  showDirectorySortEditor.value = !isSameDirectorySortProgram(directorySortProgram.value, DEFAULT_DIRECTORY_SORT_PROGRAM);
 };
 
 const restoreMediaScanLimit = (storageKey: string) => {
@@ -2422,6 +2477,43 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.sort-summary-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.sort-summary-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sort-summary-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.sort-summary-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #475569;
+  word-break: break-word;
+}
+
+.sort-summary-toggle {
+  flex-shrink: 0;
+  padding-inline: 0;
 }
 
 .device-gallery-sort-select {

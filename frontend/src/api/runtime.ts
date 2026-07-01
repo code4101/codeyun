@@ -56,6 +56,10 @@ export interface RuntimeItem {
   active: boolean;
   status: Record<string, any>;
   actions: string[];
+  action_labels?: Record<string, string>;
+  action_descriptions?: Record<string, string>;
+  action_success_messages?: Record<string, string>;
+  action_error_messages?: Record<string, string>;
   raw: Record<string, any>;
   actionLoading?: boolean;
   toggleLoading?: boolean;
@@ -106,6 +110,10 @@ export interface RuntimeItemLogsResponse {
   next_run_at?: string | null;
   timeout?: number | null;
   status: Record<string, any>;
+  action_labels?: Record<string, string>;
+  action_descriptions?: Record<string, string>;
+  action_success_messages?: Record<string, string>;
+  action_error_messages?: Record<string, string>;
   records: Record<string, any>[];
   logs: string[];
 }

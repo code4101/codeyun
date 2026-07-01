@@ -173,6 +173,8 @@ export interface FanxiuBehaviorTreeServiceStatus {
   state_label: string;
   pid: number | null;
   process_count: number;
+  child_process_count: number;
+  total_process_count: number;
   processes: FanxiuProcessItem[];
   registry: Record<string, unknown>;
   registry_pid_alive: boolean;
@@ -4942,14 +4944,17 @@ export const getFanxiuDoupoTDRewardConfig = (sourceTable: string, configId: stri
 };
 
 export const getFanxiuBehaviorTreeService = () => {
+  // Legacy external-service status endpoint. Prefer runtime item actions for new work.
   return api.get<FanxiuBehaviorTreeServiceStatus>('/fanxiu/behavior-tree-service').then(res => res.data);
 };
 
 export const startFanxiuBehaviorTreeService = () => {
+  // Legacy external-service start endpoint. Prefer runtime item actions for new work.
   return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/start').then(res => res.data);
 };
 
 export const stopFanxiuBehaviorTreeService = () => {
+  // Legacy external-service stop endpoint. Prefer runtime item actions for new work.
   return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/stop').then(res => res.data);
 };
 
@@ -4958,6 +4963,7 @@ export const getLocalScriptProcesses = () => {
 };
 
 export const terminateFanxiuProcesses = () => {
+  // Legacy hard-stop helper for the external service path. Prefer runtime restart/wake actions for resident behavior tree ops.
   return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
 };
 

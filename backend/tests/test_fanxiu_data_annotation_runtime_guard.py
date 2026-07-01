@@ -11057,13 +11057,13 @@ def test_daily_boss_watched_list_cd_returns_skipped_retry_after(tmp_path, monkey
     assert fact["last_result"] == "skipped"
 
 
-def test_daily_boss_after_challenge_requires_done_scene_before_success(tmp_path, monkeypatch):
+def test_daily_boss_after_challenge_records_retry_when_refresh_cd_visible(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {}, "asset_tree_path": tmp_path / "asset_tree.json"}
-    scenes = iter([(180, 100.0, "fight"), (None, 0.0, "cd-only"), (181, 100.0, "done")])
+    scenes = iter([(180, 100.0, "fight"), (None, 0.0, "cd-only")])
     phases: list[str] = []
 
     class FakeStopEvent:
@@ -11076,18 +11076,24 @@ def test_daily_boss_after_challenge_requires_done_scene_before_success(tmp_path,
     monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: next(scenes))
 
     def fake_text(_ctx, frame=None):
-        return "首领自动战斗中" if frame == "fight" else "00:07:17后刷新封印泷尊剑主" if frame == "done" else "00:07:17后刷新首领伤害数据统计"
+        return "首领自动战斗中" if frame == "fight" else "00:07:17后刷新首领伤害数据统计"
 
     monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", fake_text)
-    completed_after_done: list[bool] = []
+    retries: list[tuple[dict[str, object], int]] = []
+    returned: list[bool] = []
 
-    def fake_complete(_ctx, _stop_event, _payload):
-        completed_after_done.append(True)
+    def fake_record_retry(payload, *, seconds):
+        retries.append((dict(payload), seconds))
+        return "2026-06-11 11:07:27"
+
+    def fake_return(_ctx, _stop_event):
+        returned.append(True)
         if False:
             yield BehaviorTreeStatus.RUNNING
         return "success"
 
-    monkeypatch.setattr(runner, "_complete_daily_boss_from_done_frame", fake_complete)
+    monkeypatch.setattr(runner, "_record_daily_boss_recheck_time", fake_record_retry)
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return)
     original_set_status = runner._set_status_locked
 
     def record_status(status, message="", **extra):
@@ -11103,10 +11109,10 @@ def test_daily_boss_after_challenge_requires_done_scene_before_success(tmp_path,
         tick_seconds=0.01,
     )
 
-    assert result == "success"
+    assert result == "skipped"
     assert "daily_boss_wait_boss_done" in phases
-    assert "daily_boss_wait_done_after_cd" in phases
-    assert completed_after_done == [True]
+    assert retries == [({}, 447)]
+    assert returned == [True]
 
 
 def test_daily_boss_stuck_at_twenty_percent_leaves_and_rechecks_rewards(tmp_path, monkeypatch):

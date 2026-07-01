@@ -675,6 +675,7 @@ def build_attendance_behavior_tree_log_lines(limit: int = 500) -> list[str]:
         f"名称：{status['title']}",
         f"状态：{status['state_label']}",
         f"PID：{status.get('pid') or '-'}",
+        "动作语义：trigger=确保唯一调度器；stop=停止调度器；inspect=查看调度摘要；restart=停旧后拉起唯一实例；reset=清空状态文件但不补跑错过任务",
         f"行为树根进程数：{status.get('process_count') or 0}",
         f"子孙进程数：{status.get('child_process_count') or 0}",
         f"总进程数：{status.get('total_process_count') or status.get('process_count') or 0}",

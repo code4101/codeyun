@@ -102,6 +102,8 @@ FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
 CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
 _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 10.0
 _builtin_services_status_cache: tuple[float, tuple[bool, bool, bool, bool], dict[str, Any]] | None = None
+_ATTENDANCE_BEHAVIOR_TREE_HOST_HINT = "考勤行为树只在 mi15 执行主机上管理"
+_FANXIU_BEHAVIOR_TREE_HOST_HINT = "凡修行为树未在当前机器启用；当前正式运行目标默认是 codepc_mf"
 
 
 def _invalidate_builtin_services_status_cache() -> None:
@@ -667,11 +669,45 @@ def _behavior_tree_service_description(status: dict[str, Any]) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def _attendance_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
+    return {
+        "labels": {
+            "trigger": "启动调度器",
+            "stop": "停止调度器",
+            "inspect": "查看调度",
+            "restart": "重启调度器",
+            "reset": "重置状态",
+        },
+        "descriptions": {
+            "trigger": "确保唯一考勤调度器运行；必要时替换旧实例。",
+            "stop": "停止当前考勤调度器进程。",
+            "inspect": "读取状态文件、日志摘要和下一次调度锚点。",
+            "restart": "停止旧调度器后重新拉起唯一实例。",
+            "reset": "清空调度状态文件；不会补跑错过的任务。",
+        },
+        "success_messages": {
+            "trigger": "考勤调度器已启动",
+            "stop": "考勤调度器已停止",
+            "inspect": "已刷新调度摘要",
+            "restart": "已重启考勤调度器",
+            "reset": "已重置行为树状态",
+        },
+        "error_messages": {
+            "trigger": "启动考勤调度器失败",
+            "stop": "停止考勤调度器失败",
+            "inspect": "刷新调度摘要失败",
+            "restart": "重启考勤调度器失败",
+            "reset": "重置行为树状态失败",
+        },
+    }
+
+
 def _serialize_attendance_behavior_tree_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = dict(status or get_attendance_behavior_tree_status())
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "stopped"))
     next_run_at = payload.get("next_run_at")
+    action_metadata = _attendance_behavior_tree_action_metadata()
     return {
         "id": f"builtin:{ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY}",
         "key": ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY,
@@ -705,6 +741,10 @@ def _serialize_attendance_behavior_tree_service_item(status: dict[str, Any] | No
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs", "configure", "inspect", "restart", "reset"],
+        "action_labels": action_metadata["labels"],
+        "action_descriptions": action_metadata["descriptions"],
+        "action_success_messages": action_metadata["success_messages"],
+        "action_error_messages": action_metadata["error_messages"],
         "raw": payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
@@ -1110,6 +1150,39 @@ def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def _fanxiu_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
+    return {
+        "labels": {
+            "trigger": "确保行为树",
+            "stop": "停止当前任务",
+            "inspect": "运行诊断",
+            "restart": "重启行为树",
+            "wake": "唤醒行为树",
+        },
+        "descriptions": {
+            "trigger": "确保 resident service 存在并恢复必要附属服务，不是旧 external-service 起脚本。",
+            "stop": "只停止当前业务任务，不关闭 resident service。",
+            "inspect": "读取 runtime、owner、手动作业、隔离锁和 doctor 摘要。",
+            "restart": "写入 shutdown_service，等待 owner 释放后重新 ensure resident service。",
+            "wake": "写入 wake_service，唤醒 resident loop 立即重新轮询。",
+        },
+        "success_messages": {
+            "trigger": "已确保凡修行为树常驻服务",
+            "stop": "已请求停止凡修当前任务",
+            "inspect": "已刷新运行诊断",
+            "restart": "已重启凡修行为树",
+            "wake": "已发送行为树唤醒请求",
+        },
+        "error_messages": {
+            "trigger": "确保凡修行为树失败",
+            "stop": "停止凡修当前任务失败",
+            "inspect": "刷新运行诊断失败",
+            "restart": "重启凡修行为树失败",
+            "wake": "唤醒凡修行为树失败",
+        },
+    }
+
+
 def _serialize_fanxiu_behavior_tree_service_item(
     status: dict[str, Any] | None = None,
     *,
@@ -1121,6 +1194,7 @@ def _serialize_fanxiu_behavior_tree_service_item(
         raw_payload.pop("logs", None)
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "idle"))
+    action_metadata = _fanxiu_behavior_tree_action_metadata()
     return {
         "id": f"builtin:{FANXIU_BEHAVIOR_TREE_SERVICE_KEY}",
         "key": FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
@@ -1159,6 +1233,10 @@ def _serialize_fanxiu_behavior_tree_service_item(
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs", "configure", "inspect", "restart", "wake"],
+        "action_labels": action_metadata["labels"],
+        "action_descriptions": action_metadata["descriptions"],
+        "action_success_messages": action_metadata["success_messages"],
+        "action_error_messages": action_metadata["error_messages"],
         "raw": raw_payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
@@ -1347,7 +1425,7 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
             f"入口：{raw.get('route_path') or '/fanxiu/data-annotation/runtime'}",
             f"Runtime 状态文件：{raw.get('runtime_state_path') or '-'}",
             f"World Facts：{raw.get('world_facts_path') or '-'}",
-            "动作语义：stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
+            "动作语义：trigger=ensure resident service；stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
             f"Owner：active={bool(owner.get('active'))} pid={owner.get('pid') or '-'} step={owner.get('step') or '-'}",
             f"普通作业隔离：active={bool(isolation.get('active'))} reason={isolation.get('reason') or '-'}",
             f"手动作业队列：{len(manual_jobs)}",
@@ -1679,6 +1757,10 @@ def get_runtime_item_logs(
             "next_run_at": item.get("next_run_at"),
             "timeout": item.get("timeout"),
             "status": item.get("status") or {},
+            "action_labels": item.get("action_labels") or {},
+            "action_descriptions": item.get("action_descriptions") or {},
+            "action_success_messages": item.get("action_success_messages") or {},
+            "action_error_messages": item.get("action_error_messages") or {},
             "records": records,
             "logs": task_manager.get_logs(normalized_key, limit),
         }
@@ -1707,6 +1789,10 @@ def get_runtime_item_logs(
                 "next_run_at": service_item.get("next_run_at"),
                 "timeout": service_item.get("timeout"),
                 "status": service_item.get("status") or {},
+                "action_labels": service_item.get("action_labels") or {},
+                "action_descriptions": service_item.get("action_descriptions") or {},
+                "action_success_messages": service_item.get("action_success_messages") or {},
+                "action_error_messages": service_item.get("action_error_messages") or {},
                 "records": [],
                 "logs": _build_builtin_service_log_lines(service_item),
             }
@@ -1739,6 +1825,10 @@ def get_runtime_item_logs(
             "next_run_at": item.get("next_run_at"),
             "timeout": item.get("timeout"),
             "status": item.get("status") or {},
+            "action_labels": item.get("action_labels") or {},
+            "action_descriptions": item.get("action_descriptions") or {},
+            "action_success_messages": item.get("action_success_messages") or {},
+            "action_error_messages": item.get("action_error_messages") or {},
             "records": records,
             "logs": (
                 _build_builtin_service_log_lines(item)
@@ -1806,14 +1896,14 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
+            raise HTTPException(status_code=404, detail=_ATTENDANCE_BEHAVIOR_TREE_HOST_HINT)
         try:
             return start_attendance_behavior_tree_service(replace_existing=True)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="凡修行为树只在 mi15 执行主机上管理")
+            raise HTTPException(status_code=404, detail=_FANXIU_BEHAVIOR_TREE_HOST_HINT)
         return ensure_data_annotation_behavior_tree_service(session)
     return trigger_builtin_runtime_job(normalized_key, session)
 
@@ -1862,7 +1952,7 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         return stop_fanxiu_packet_service()
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
+            raise HTTPException(status_code=404, detail=_ATTENDANCE_BEHAVIOR_TREE_HOST_HINT)
         return stop_attendance_behavior_tree_service()
     if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         if not _fanxiu_behavior_tree_service_enabled():
@@ -1878,7 +1968,7 @@ def run_builtin_runtime_item_action(task_key: str, action_key: str) -> dict[str,
     _invalidate_builtin_services_status_cache()
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
+            raise HTTPException(status_code=404, detail=_ATTENDANCE_BEHAVIOR_TREE_HOST_HINT)
         if action == "inspect":
             return show_attendance_behavior_tree_schedule(limit=20)
         if action == "restart":
@@ -1888,7 +1978,7 @@ def run_builtin_runtime_item_action(task_key: str, action_key: str) -> dict[str,
         raise HTTPException(status_code=400, detail="该运行单元不支持此动作")
     if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="凡修行为树只在 mi15 执行主机上管理")
+            raise HTTPException(status_code=404, detail=_FANXIU_BEHAVIOR_TREE_HOST_HINT)
         if action == "inspect":
             return inspect_fanxiu_behavior_tree_service()
         if action == "restart":
