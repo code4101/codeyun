@@ -224,6 +224,7 @@ const ocrService = computed<CodeYunServiceStatus | null>(() => (
   summary.value?.services.find(service => service.key === 'ocr') || null
 ))
 const enabledTokenCount = computed(() => tokens.value.filter(token => token.enabled).length)
+const ocrSummaryOptions = { keys: ['ocr'] }
 
 const ocrStateLabel = computed(() => {
   if (!ocrService.value) return '未知'
@@ -308,7 +309,7 @@ async function loadCurrentDevice() {
   summaryLoading.value = true
   tokensLoading.value = userStore.isAdmin
   const [summaryResult, tokensResult] = await Promise.allSettled([
-    fetchClusterServiceSummary(entryId),
+    fetchClusterServiceSummary(entryId, ocrSummaryOptions),
     userStore.isAdmin ? fetchClusterServiceTokens(entryId) : Promise.resolve<ServiceAccessToken[] | null>(null),
   ])
   if (requestToken !== loadRequestToken || entryId !== currentEntryId.value) {
@@ -474,7 +475,7 @@ function startPolling() {
   stopPolling()
   pollTimer = window.setInterval(() => {
     if (currentEntryId.value) {
-      void fetchClusterServiceSummary(currentEntryId.value).then((payload) => {
+      void fetchClusterServiceSummary(currentEntryId.value, ocrSummaryOptions).then((payload) => {
         summary.value = payload
       }).catch(() => undefined)
     }

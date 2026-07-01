@@ -45,11 +45,14 @@ const router = useRouter();
 const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
+const isCompactViewport = ref(false);
+const collapseForcedByCompactViewport = ref(false);
 const isResizingAside = ref(false);
 const asideRef = ref<HTMLElement | ComponentPublicInstance | null>(null);
 const COLLAPSED_ASIDE_WIDTH = 64;
 const MIN_EXPANDED_ASIDE_WIDTH = 200;
 const MAX_EXPANDED_ASIDE_WIDTH = 420;
+const COMPACT_VIEWPORT_MAX_WIDTH = 900;
 const ASIDE_WIDTH_STORAGE_KEY = 'layout.mainAsideWidthPx';
 const expandedAsideWidthPx = ref(MIN_EXPANDED_ASIDE_WIDTH);
 const manualExpandedAsideWidthPx = ref<number | null>(null);
@@ -231,7 +234,30 @@ const BUILTIN_MENU_SECTION_KEYS = new Set([
 ]);
 
 const toggleCollapse = () => {
+  collapseForcedByCompactViewport.value = false;
   isCollapse.value = !isCollapse.value;
+};
+
+const syncCollapseForViewport = () => {
+  const compact = window.innerWidth <= COMPACT_VIEWPORT_MAX_WIDTH;
+  if (compact === isCompactViewport.value) {
+    return;
+  }
+
+  isCompactViewport.value = compact;
+
+  if (compact) {
+    if (!isCollapse.value) {
+      isCollapse.value = true;
+      collapseForcedByCompactViewport.value = true;
+    }
+    return;
+  }
+
+  if (collapseForcedByCompactViewport.value) {
+    isCollapse.value = false;
+    collapseForcedByCompactViewport.value = false;
+  }
 };
 
 const getExpandedAsideViewportMaxWidth = () => Math.min(
@@ -711,6 +737,7 @@ const handleMenuStructureChange = () => {
 };
 
 const handleWindowResize = () => {
+  syncCollapseForViewport();
   if (manualExpandedAsideWidthPx.value != null) {
     manualExpandedAsideWidthPx.value = clampExpandedAsideWidth(manualExpandedAsideWidthPx.value);
     persistManualAsideWidth(manualExpandedAsideWidthPx.value);
@@ -720,6 +747,7 @@ const handleWindowResize = () => {
 };
 
 onMounted(() => {
+  syncCollapseForViewport();
   const rawStoredWidth = window.localStorage.getItem(ASIDE_WIDTH_STORAGE_KEY);
   if (rawStoredWidth) {
     const parsedWidth = Number(rawStoredWidth);

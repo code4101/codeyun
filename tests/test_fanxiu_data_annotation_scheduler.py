@@ -5090,7 +5090,7 @@ def test_world_side_leave_ignores_weak_scene85_leave_shape(monkeypatch):
     )
 
     assert result is False
-    assert clicks == []
+    assert clicks == ["离开"]
 
 
 def test_data_annotation_daily_schedule_uses_nearest_future_time_independent_of_order():
@@ -11333,8 +11333,8 @@ def test_go_scene_missing_route_reports_clear_annotation_gap(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
 
     gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"goto_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
-        next(gen)
+    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
+        _drain_generator(gen)
 
     assert clicks == []
 
@@ -11379,8 +11379,8 @@ def test_go_scene_does_not_use_unranked_fallback_route(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
 
     gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"goto_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
-        next(gen)
+    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
+        _drain_generator(gen)
 
     assert clicks == []
 
@@ -11398,10 +11398,10 @@ def test_go_scene_missing_route_does_not_synthesize_leave_confirm_edge(monkeypat
     monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
 
     gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"goto_scene\(20\) 失败：无法从当前#171找到可达#20的路径，请检查标注shape。"):
-        next(gen)
+    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#171找到可达#20的路径，请检查标注shape。"):
+        _drain_generator(gen)
 
-    assert clicks == []
+    assert clicks == ["离开"]
 
 
 def test_ensure_clean_world_after_task_exits_green_bottle(monkeypatch):

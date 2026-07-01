@@ -30,6 +30,7 @@ from backend.core.fanxiu.data_annotation.runtime_runner import (
     _now,
     _parse_daily_boss_hp_percent,
     _parse_daily_boss_cd_seconds,
+    _parse_daily_boss_cd_seconds_from_six_digits,
     _parse_daily_boss_reward_remaining,
     _parse_xianfu_skill_cd_seconds,
     _parse_xianfu_visit_cd_seconds,
@@ -131,7 +132,7 @@ class DailyFoundationTaskMixin:
                         world_text,
                         label="日常_首领",
                     )
-                list_status = yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
+                list_status = yield from self._open_daily_boss_list_from_daily(ctx, stop_event, payload)
                 if list_status == "done":
                     yield from self._return_daily_boss_to_world(ctx, stop_event)
                     return "success"
@@ -146,7 +147,12 @@ class DailyFoundationTaskMixin:
 
         return (yield from self._handle_daily_boss_detail(ctx, stop_event, payload))
 
-    def _open_daily_boss_list_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event):
+    def _open_daily_boss_list_from_daily(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         status = yield from runtime.open_daily_entry(
@@ -157,7 +163,8 @@ class DailyFoundationTaskMixin:
             reverse_scrolls=10,
         )
         if status == "done":
-            self._log("success", "日常_首领：日常列表显示「击败首领」已完成")
+            next_time = self._record_daily_boss_done_for_today(payload or {})
+            self._log("success", f"日常_首领：日常列表显示「击败首领」已完成，下次 {next_time}")
             return "done"
         if status == "not_found":
             raise RuntimeError("日常_首领：#69 日常列表未找到「击败首领」")
@@ -178,15 +185,7 @@ class DailyFoundationTaskMixin:
         if remaining is None:
             remaining = _parse_daily_boss_reward_remaining(runtime.ocr_text(update=True))
         if remaining == 0:
-            next_time = self._next_daily_boss_reset_time_text()
-            scheduler_task_id = "daily-boss"
-            self._record_scheduler_task_discovered_next_time(
-                scheduler_task_id,
-                next_time,
-                task_type="daily_boss",
-                label="日常_首领",
-                last_result="success",
-            )
+            next_time = self._record_daily_boss_done_for_today(payload)
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -209,20 +208,6 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_action_settle(1.5)
             yield from self._wait_daily_boss_list(ctx, stop_event, timeout=12.0, label="日常_首领：等待仙界首领列表 #178")
 
-        if remaining is None or remaining > 0:
-            cd_seconds, cd_text = self._daily_boss_refresh_cd_from_list(ctx)
-            if cd_seconds and cd_seconds > 0:
-                next_time = self._record_daily_boss_recheck_time(payload, seconds=cd_seconds + 10)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"日常_首领：注视中首领尚未刷新，{cd_text or cd_seconds}，下次 {next_time}",
-                        phase="daily_boss_list_cd",
-                        current_scene=178,
-                    )
-                    self._log_locked("skip", self._status["message"])
-                return "skipped"
-
         scroll_index = 0
         while True:
             self._raise_if_stopped(stop_event)
@@ -234,19 +219,33 @@ class DailyFoundationTaskMixin:
                     current_scene=178,
                 )
             frame = runtime.cur_frame(update=True)
-            matches = runtime.ocr_centers_in_shape(178, "首领列表", include=("注视",), frame_data_url=frame)
-            if matches:
-                x, y, text = matches[0]
-                click_x = max(x, float(self._box(list_shape, image178).get("x") or 0) + float(self._box(list_shape, image178).get("w") or 0) * 0.78)
+            item = runtime.find_floating_item_by_anchor(
+                178,
+                "条目",
+                "注视中",
+                container_shape="首领列表",
+                frame_data_url=frame,
+            )
+            if item is not None:
+                cd_status = yield from self._daily_boss_handle_watched_item_cd(
+                    runtime,
+                    item,
+                    payload,
+                    stop_event,
+                    frame_data_url=frame,
+                )
+                if cd_status == "skipped":
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "skipped"
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"日常_首领：点击注视中首领 {text}",
+                        f"日常_首领：点击注视中首领 {item.text}",
                         phase="daily_boss_click_watched",
                         current_scene=178,
                     )
-                    self._log_locked("action", f"日常_首领：点击 #178「{text}」")
-                runtime.click_frame_point(178, click_x, y)
+                    self._log_locked("action", f"日常_首领：点击 #178「{item.text or '注视中'}」")
+                runtime.click_floating_item_field(item, "注视中")
                 yield from runtime.wait_any(
                     {
                         "scene": runtime.view_visible(179),
@@ -268,6 +267,51 @@ class DailyFoundationTaskMixin:
                 break
             scroll_index += 1
         raise RuntimeError("日常_首领：仙界首领列表未找到「注视中」目标")
+
+    def _daily_boss_handle_watched_item_cd(
+        self,
+        runtime: Any,
+        item: Any,
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        frame_data_url: str | None = None,
+    ):
+        refresh_text = runtime.read_floating_item_field(item, "刷新时间", frame_data_url=frame_data_url, padding=12)
+        if not re.search(r"刷新|时间", _sanitize_ocr_text(refresh_text)):
+            return "ready"
+        timeout_seconds = float(payload.get("cd_ocr_timeout_seconds") or 30.0)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        last_text = refresh_text
+        while True:
+            self._raise_if_stopped(stop_event)
+            cd_seconds = _parse_daily_boss_cd_seconds_from_six_digits(last_text)
+            if cd_seconds is not None:
+                next_time = self._record_daily_boss_recheck_time(payload, seconds=cd_seconds + 10)
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"日常_首领：注视中首领处于刷新 CD，{last_text}，下次 {next_time}",
+                        phase="daily_boss_list_cd",
+                        current_scene=178,
+                    )
+                    self._log_locked("skip", self._status["message"])
+                return "skipped"
+            if time.monotonic() >= deadline:
+                next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"日常_首领：注视中条目有刷新时间但 30 秒未读到 6 位 CD，{last_text}，下次 {next_time}",
+                        phase="daily_boss_list_cd_unreadable",
+                        current_scene=178,
+                    )
+                    self._log_locked("skip", self._status["message"])
+                return "skipped"
+            yield BehaviorTreeStatus.RUNNING
+            if stop_event.wait(1.0):
+                self._raise_if_stopped(stop_event)
+            last_text = runtime.read_floating_item_field(item, "刷新时间", padding=12)
 
     def _wait_daily_boss_list(
         self,
@@ -340,27 +384,6 @@ class DailyFoundationTaskMixin:
             yield from self._return_daily_boss_to_world(ctx, stop_event)
             return "success"
 
-        cd_seconds = _parse_daily_boss_cd_seconds(detail_text)
-        if cd_seconds and cd_seconds > 0:
-            next_time = (_runtime_runner._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-            self._record_scheduler_task_discovered_retry_after(
-                str(payload.get("__scheduler_task_id") or "daily-boss"),
-                next_time,
-                task_type="daily_boss",
-                label="日常_首领",
-                last_result="skipped",
-            )
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_首领：首领尚未刷新，{detail_text}，下次 {next_time}",
-                    phase="daily_boss_wait_cd",
-                    current_scene=179,
-                )
-                self._log_locked("skip", self._status["message"])
-            yield from self._return_daily_boss_to_world(ctx, stop_event)
-            return "skipped"
-
         if "前往挑战" not in detail_text:
             fallback_seconds = int(payload.get("fallback_seconds") or 300)
             next_time = (_runtime_runner._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
@@ -382,140 +405,97 @@ class DailyFoundationTaskMixin:
             self._set_status_locked("running", "日常_首领：点击前往挑战", phase="daily_boss_challenge", current_scene=179)
             self._log_locked("action", "日常_首领：点击 #179「前往挑战」")
         challenge_shape.click(runtime)
-        if remaining is not None:
-            payload = dict(payload)
-            payload["_daily_boss_challenge_remaining"] = remaining
         post_result = yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload)
         return post_result
 
     def _wait_daily_boss_after_challenge(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]) -> str:
-        deadline = time.monotonic() + float(payload.get("post_challenge_wait_seconds") or 900)
+        deadline = time.monotonic() + float(payload.get("post_challenge_wait_seconds") or 300)
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        image179 = ctx.get("images", {}).get(179)
-        stuck_twenty_count = 0
-        stuck_boss_map_count = 0
-        stuck_twenty_threshold = max(2, int(payload.get("boss_twenty_percent_stuck_count") or 5))
-        stuck_boss_map_threshold = max(2, int(payload.get("boss_map_stuck_count") or 5))
+        saw_fighting = False
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
             if stop_event.wait(3.0):
                 self._raise_if_stopped(stop_event)
             scene_id, score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
             if scene_id == 181:
-                return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
+                return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
             if scene_id == 180:
+                saw_fighting = True
                 current_text = self._daily_boss_status_text_from_frame(ctx, frame)
                 if self._daily_boss_done_text(current_text):
-                    return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
-                hp_percent = _parse_daily_boss_hp_percent(current_text)
-                stuck_twenty_count = stuck_twenty_count + 1 if hp_percent == 20 else 0
-                stuck_boss_map_count = stuck_boss_map_count + 1 if self._daily_boss_stuck_map_text(current_text) else 0
-                if stuck_twenty_count >= stuck_twenty_threshold:
-                    return (
-                        yield from self._leave_daily_boss_fighting_and_recheck_rewards(
-                            ctx,
-                            stop_event,
-                            payload,
-                            reason=f"连续 {stuck_twenty_count} 次识别 #180 生命值 20%",
-                        )
-                    )
-                if stuck_boss_map_count >= stuck_boss_map_threshold:
-                    return (
-                        yield from self._leave_daily_boss_fighting_and_recheck_rewards(
-                            ctx,
-                            stop_event,
-                            payload,
-                            reason=f"连续 {stuck_boss_map_count} 次停留在 #180 首领地图",
-                        )
-                    )
+                    return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"日常_首领：已识别 #180 战斗中 {score:.0f}%"
-                        + (f"，生命值 {hp_percent}%" if hp_percent is not None else "")
-                        + "，继续等待 #181 封印",
+                        f"日常_首领：已识别 #180 战斗中 {score:.0f}%，继续等待 #181 封印",
                         phase="daily_boss_wait_boss_done",
                         current_scene=180,
                     )
                 yield BehaviorTreeStatus.RUNNING
                 continue
-            stuck_twenty_count = 0
-            stuck_boss_map_count = 0
-            if scene_id == 179 and isinstance(image179, dict):
-                text = runtime.ocr_text_in_shapes(image179, ("剩余奖励次数", "挑战状态"), frame_data_url=frame, padding=20)
-                cd_seconds = _parse_daily_boss_cd_seconds(text)
-                remaining = _parse_daily_boss_reward_remaining(text)
-                if remaining == 0:
-                    next_time = self._next_daily_boss_reset_time_text()
-                    self._record_scheduler_task_discovered_next_time(
-                        str(payload.get("__scheduler_task_id") or "daily-boss"),
-                        next_time,
-                        task_type="daily_boss",
-                        label="日常_首领",
-                        last_result="success",
-                    )
-                    self._log("success", f"日常_首领：挑战后奖励次数已用尽，下次 {next_time}")
-                    yield from self._return_daily_boss_to_world(ctx, stop_event)
-                    return "success"
-                if cd_seconds and cd_seconds > 0:
-                    next_time = self._record_daily_boss_recheck_time(payload, seconds=cd_seconds + 10)
-                    self._log("skip", f"日常_首领：挑战后读到刷新 CD，{text}，下次 {next_time}")
-                    yield from self._return_daily_boss_to_world(ctx, stop_event)
-                    return "skipped"
-                status_detail = "奖励次数变化" if remaining == 0 else f"刷新 CD {text}" if cd_seconds and cd_seconds > 0 else "详情状态未变化"
+            current_text = self._daily_boss_status_text_from_frame(ctx, frame)
+            if self._daily_boss_done_text(current_text):
+                return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+            if self._daily_boss_combat_in_progress_text(current_text):
+                saw_fighting = True
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"日常_首领：挑战后已回到详情 #179 {score:.0f}%，已读到{status_detail}，仍需等待 #181 封印",
-                        phase="daily_boss_wait_post_detail",
-                        current_scene=179,
-                    )
-            else:
-                current_text = self._daily_boss_status_text_from_frame(ctx, frame)
-                if self._daily_boss_done_text(current_text):
-                    return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
-                current_cd = _parse_daily_boss_cd_seconds(current_text)
-                if current_cd and current_cd > 0:
-                    next_time = self._record_daily_boss_recheck_time(payload, seconds=current_cd + 10)
-                    self._log("skip", f"日常_首领：挑战后读到刷新 CD，{current_text}，下次 {next_time}")
-                    yield from self._return_daily_boss_to_world(ctx, stop_event)
-                    return "skipped"
-                if self._daily_boss_combat_in_progress_text(current_text):
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            "日常_首领：首领战斗页已出现，继续等待 #181 封印",
-                            phase="daily_boss_combat_started",
-                            current_scene=scene_id,
-                        )
-                    yield BehaviorTreeStatus.RUNNING
-                    continue
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        "日常_首领：挑战中，等待回到首领详情",
-                        phase="daily_boss_wait_post_challenge",
+                        "日常_首领：首领战斗页已出现，继续等待 #181 封印",
+                        phase="daily_boss_combat_started",
                         current_scene=scene_id,
                     )
+                yield BehaviorTreeStatus.RUNNING
+                continue
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    "日常_首领：挑战中，等待 #181 封印",
+                    phase="daily_boss_wait_post_challenge",
+                    current_scene=scene_id,
+                )
             yield BehaviorTreeStatus.RUNNING
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-        self._log("skip", f"日常_首领：等待 #181「封印」超时，未确认挑战完成，{next_time} 重试确认")
+        self._log("skip", f"日常_首领：等待 #181「封印」超时{'，已见 #180' if saw_fighting else ''}，{next_time} 重试")
+        yield from self._return_daily_boss_to_world(ctx, stop_event)
         return "skipped"
 
     def _complete_daily_boss_from_done_frame(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]) -> str:
-        next_time, source = yield from self._record_daily_boss_next_time_after_done(ctx, stop_event, payload)
-        result = "success" if "奖励次数已用尽" in str(source or "") else "skipped"
+        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
+        return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+
+    def _finish_daily_boss_round_after_done(self, ctx: dict[str, Any], runtime: Any, stop_event: threading.Event, payload: dict[str, Any]) -> str:
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        view181 = View(images[181]) if isinstance(images.get(181), dict) else None
+        if view181 is None and hasattr(runtime, "get_view"):
+            try:
+                view181 = runtime.get_view(181)
+            except Exception as exc:
+                with self._lock:
+                    self._log_locked("warning", f"日常_首领：读取 #181 视图失败，直接走通用回世界：{exc}")
+        if isinstance(view181, View):
+            leave_shape = view181.get_shape("离开")
+            if leave_shape is not None:
+                with self._lock:
+                    self._set_status_locked("running", "日常_首领：#181 封印完成，点击离开", phase="daily_boss_leave_done", current_scene=181)
+                    self._log_locked("action", "日常_首领：点击 #181「离开」")
+                leave_shape.click(runtime)
+                yield from runtime.wait_action_settle(2.0)
+            else:
+                with self._lock:
+                    self._log_locked("warning", "日常_首领：#181 缺少「离开」标注，直接走通用回世界")
+        next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"日常_首领：已识别 #181 封印完成，{source}，下次 {next_time}",
+                f"日常_首领：本轮挑战已结束，{next_time} 后复查首领次数/CD",
                 phase="daily_boss_done",
                 current_scene=181,
             )
-            self._log_locked(result if result != "skipped" else "skip", self._status["message"])
+            self._log_locked("skip", self._status["message"])
         yield from self._return_daily_boss_to_world(ctx, stop_event)
-        return result
+        return "skipped"
 
     def _leave_daily_boss_fighting_and_recheck_rewards(
         self,
@@ -874,6 +854,17 @@ class DailyFoundationTaskMixin:
             task_type="daily_boss",
             label="日常_首领",
             last_result="skipped",
+        )
+        return next_time
+
+    def _record_daily_boss_done_for_today(self, payload: dict[str, Any]) -> str:
+        next_time = self._next_daily_boss_reset_time_text()
+        self._record_scheduler_task_discovered_next_time(
+            str(payload.get("__scheduler_task_id") or "daily-boss"),
+            next_time,
+            task_type="daily_boss",
+            label="日常_首领",
+            last_result="success",
         )
         return next_time
 
@@ -1863,7 +1854,26 @@ class DailyFoundationTaskMixin:
             text = runtime.ocr_text(frame)
             if scene_id == 69 and self._daily_text_is_daily_list(text):
                 return 69
-        world_like = self._daily_assistant_text_is_world_like(text)
+        if self._daily_lundao_text_is_seated(text):
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"{label}：当前停在论道闻道中，先离开道场回世界",
+                    phase="daily_recover_from_lundao_seated",
+                    current_scene=scene_id,
+                )
+                self._log_locked("action", f"{label}：OCR 命中论道闻道中，点击「离开」并确认")
+            yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, scene_id)
+            scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+            text = runtime.ocr_text(frame)
+            if scene_id == 69 and self._daily_text_is_daily_list(text):
+                return 69
+            if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+                world_like = True
+            else:
+                world_like = False
+        else:
+            world_like = self._daily_assistant_text_is_world_like(text)
         yihuo_like = (
             hasattr(self, "_daily_yihuo_text_is_xinghai_list")
             and (
@@ -3477,14 +3487,18 @@ class DailyFoundationTaskMixin:
         score: float = 0.0,
     ) -> str:
         if scene_id == 298:
-            yield from runtime.wait_click_then_view(298, "入座", [301, 302, 303], timeout=18.0)
-            scene_id, score, _frame = runtime.current_scene([301, 302, 303], update=True)
+            yield from runtime.wait_click_then_view(298, "入座", [329, 301, 302, 303], timeout=18.0)
+            scene_id, score, _frame = runtime.current_scene([329, 301, 302, 303], update=True)
+        if scene_id == 329:
+            yield from runtime.wait_click_then_view(329, "确认", [301, 302, 303, 52, 53, 186], settle_seconds=1.5, timeout=20.0)
+            scene_id, score, _frame = runtime.current_scene([301, 302, 303, 52, 53, 186], update=True)
         if scene_id in {301, 302}:
             scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(runtime, stop_event, scene_id)
         if scene_id == 186:
             frame = runtime.cur_frame(update=True)
             if self._daily_lundao_text_is_seated(runtime.ocr_text(frame)):
-                self._log("success", "日常_论道：已进入道场听道中")
+                yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 186)
+                self._log("success", "日常_论道：已进入道场听道中并退出回世界")
                 return "success"
         if scene_id == 303:
             yield from runtime.wait_click_then_view(303, "对话", [52, 53], settle_seconds=1.5, timeout=30.0)
@@ -3494,15 +3508,15 @@ class DailyFoundationTaskMixin:
             scene_id, score, frame_after = runtime.current_scene([186, 53, 69, 34, 85, 52], update=True)
             text_after = runtime.ocr_text(frame_after)
             if self._daily_lundao_text_is_seated(text_after):
-                self._log("success", "日常_论道：已确认听道收益并进入听道中")
+                yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 186)
+                self._log("success", "日常_论道：已确认听道收益并退出回世界")
                 return "success"
         if scene_id in {69, 34}:
             self._log("success", f"日常_论道：已确认听道收益并返回 #{scene_id}")
             return "success"
         if scene_id == 53:
-            runtime.click_shape_center(53, "离开")
-            yield from runtime.wait_action_settle(1.5)
-            self._log("success", "日常_论道：已完成听道并点击 #53「离开」")
+            yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 53)
+            self._log("success", "日常_论道：已完成听道并退出回世界")
             return "success"
         if scene_id == 54:
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
@@ -3536,6 +3550,23 @@ class DailyFoundationTaskMixin:
         self._log("success", "日常_论道：已确认退出道场，神识分身继续闻道")
         return "success"
 
+    def _leave_daily_lundao_seated_for_daily_entry(self, runtime: Any, scene_id: int | None):
+        click_view = 53
+        if scene_id == 186:
+            click_view = 186
+        runtime.click_shape_center(click_view, "离开")
+        yield from runtime.wait_action_settle(1.5)
+        next_scene_id, _score, frame = runtime.current_scene([54, 34, 69, 53, 59, 186], update=True)
+        next_text = runtime.ocr_text(frame)
+        if next_scene_id == 54 or self._daily_lundao_text_is_exit_confirm(next_text):
+            yield from self._confirm_daily_lundao_exit_to_world(runtime)
+            return "success"
+        if next_scene_id in {34, 69}:
+            return "success"
+        raise RuntimeError(
+            f"论道闻道中点击「离开」后未到退出确认/世界/日常，当前 #{next_scene_id if next_scene_id is not None else 'unknown'}"
+        )
+
     def _advance_daily_lundao_seat_confirmation(
         self,
         runtime: Any,
@@ -3546,12 +3577,14 @@ class DailyFoundationTaskMixin:
         last_score = 0.0
         for _index in range(4):
             self._raise_if_stopped(stop_event)
+            if scene_id == 329:
+                yield from runtime.wait_click_then_view(329, "确认", [301, 302, 303, 52, 53, 186], settle_seconds=1.5, timeout=20.0)
             if scene_id == 301:
                 yield from runtime.wait_click_then_view(301, "入座", wait_leave=True, timeout=12.0)
             if scene_id == 302:
                 yield from runtime.wait_click(302, "确定")
                 yield from runtime.wait_action_settle(2.0)
-            scene_id, score, _frame = runtime.current_scene([303, 301, 302, 52, 53, 186], update=True)
+            scene_id, score, _frame = runtime.current_scene([303, 301, 302, 329, 52, 53, 186], update=True)
             last_scene_id, last_score = scene_id, float(score)
             if self._daily_lundao_text_is_seated(runtime.ocr_text(_frame)):
                 return 186, float(score)
@@ -3563,6 +3596,8 @@ class DailyFoundationTaskMixin:
             if scene_id == 301:
                 continue
             if scene_id == 302:
+                continue
+            if scene_id == 329:
                 continue
             return scene_id, float(score)
         raise RuntimeError(f"日常_论道：#301/#302 入座确认循环超过上限，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%")
@@ -4089,14 +4124,16 @@ class DailyFoundationTaskMixin:
             timeout=float(payload.get("lingmai_gather_confirm_timeout") or 20.0),
         )
         yield from runtime.wait_action_settle(float(payload.get("lingmai_gather_confirm_settle_seconds") or 3.0))
-        scene_after, score_after, frame_after = runtime.current_scene([318, 285, 288, 289, 305, 34], update=True)
+        scene_after, score_after, frame_after = runtime.current_scene([318, 306, 285, 288, 289, 305, 34], update=True)
         text_after = runtime.ocr_text(frame_after)
         if scene_after == 305:
             raise RuntimeError(f"{task_label}：点击 #305「确定」后仍停留在灵脉聚灵确认弹窗，OCR={text_after[:160]}")
         if scene_after == 318:
             return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+        if scene_after == 306:
+            return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
         self._log("success", f"{task_label}：已确认聚灵，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return "success"
+        return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label))
 
     def _confirm_daily_lingmai_reward(
         self,
@@ -4112,11 +4149,66 @@ class DailyFoundationTaskMixin:
             timeout=float(payload.get("lingmai_reward_confirm_timeout") or 20.0),
         )
         yield from runtime.wait_action_settle(float(payload.get("lingmai_reward_confirm_settle_seconds") or 2.0))
-        scene_after, score_after, frame_after = runtime.current_scene([303, 285, 34, 318], update=True)
+        scene_after, score_after, frame_after = runtime.current_scene([302, 306, 303, 285, 34, 318, 59], update=True)
         text_after = runtime.ocr_text(frame_after)
         if scene_after == 318:
             raise RuntimeError(f"{task_label}：点击 #318「确认」后仍停留在灵脉奖励确认，OCR={text_after[:160]}")
         self._log("success", f"{task_label}：已关闭 #318 灵脉奖励确认，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
+        return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
+
+    def _finish_daily_lingmai_to_world(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+        scene_id: int | None = None,
+        frame: str | None = None,
+    ) -> str:
+        if scene_id is None:
+            scene_id, _score, frame = runtime.current_scene([34, 302, 306, 318, 285, 286, 287, 288, 289, 305, 59], update=True)
+        text = runtime.ocr_text(frame) if isinstance(frame, str) and frame else runtime.ocr_text(update=True)
+        if scene_id in {302, 306} or ("灵脉" in text and "确认" in text):
+            yield from self._confirm_daily_lingmai_summary_popup(runtime, payload, task_label=task_label, scene_id=scene_id, frame=frame)
+            scene_id, _score, frame = runtime.current_scene([34, 59, 285, 286, 287, 288, 289, 302, 306, 318], update=True)
+        if scene_id == 34:
+            self._log("success", f"{task_label}：已回到 #34 世界")
+            return "success"
+        self._log("action", f"{task_label}：完成后按场景图回到 #34 世界")
+        yield from runtime.goto_view(34)
+        self._log("success", f"{task_label}：完成后已回到 #34 世界")
+        return "success"
+
+    def _confirm_daily_lingmai_summary_popup(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+        scene_id: int | None = None,
+        frame: str | None = None,
+    ) -> str:
+        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        target_box: dict[str, float] | None = None
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if "确认" not in text and "确定" not in text:
+                continue
+            keyword = "确认" if "确认" in text else "确定"
+            box = self._ocr_match_resolved_box(line, keyword, "contains") or self._ocr_line_box(line)
+            if box is None:
+                continue
+            if float(box.get("y") or 0) < 850:
+                continue
+            target_box = box
+        if target_box is None:
+            raise RuntimeError(f"{task_label}：灵脉聚灵收益确认浮层缺少可点击「确认」OCR")
+        click_x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
+        click_y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
+        self._log("action", f"{task_label}：点击灵脉聚灵收益确认浮层「确认」")
+        runtime.click_frame_point(scene_id or 302, click_x, click_y)
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_summary_confirm_settle_seconds") or 2.0))
         return "success"
 
     def _continue_daily_lingmai_from_zaohua(
@@ -4294,12 +4386,14 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
         yield from runtime.wait_click(288, "占领")
         yield from runtime.wait_action_settle(float(payload.get("lingmai_final_occupy_settle_seconds") or 2.0))
-        scene_final, score_final, frame_final = runtime.current_scene([318, 305, 288, 285, 286, 287, 47], update=True)
+        scene_final, score_final, frame_final = runtime.current_scene([318, 306, 305, 288, 285, 286, 287, 47], update=True)
         text_final = runtime.ocr_text(frame_final)
         if scene_final == 318:
             return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
         if scene_final == 305:
             return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
+        if scene_final == 306:
+            return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_final, frame=frame_final))
         raise RuntimeError(
             f"{task_label}：已点击 #288「占领」，但后续业务状态机尚未迁移；"
             f"当前 {'#' + str(scene_final) if scene_final is not None else 'unknown'} {score_final:.0f}%，OCR={text_final[:160]}"

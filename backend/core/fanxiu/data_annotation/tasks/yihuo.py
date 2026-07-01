@@ -51,10 +51,10 @@ class 日常异火任务Mixin:
             return
         if scene_id == 261 or self._daily_yihuo_text_is_detail(current_text):
             runtime.click_shape_center(261, "返回")
-            yield from runtime.wait_view(260, timeout=5.0, label="日常_异火：从异火详情返回列表 #260")
+            yield from runtime.wait_scene(260, timeout=5.0, label="日常_异火：从异火详情返回列表 #260")
             scene_id = 260
         if scene_id not in {259, 260} and not self._daily_yihuo_text_is_xinghai_list(current_text):
-            yield from runtime.goto_view(34)
+            yield from runtime.go_scene(34)
             yield from runtime.wait_click(34, "下方菜单/星海")
 
         if scene_id != 260:
@@ -66,7 +66,7 @@ class 日常异火任务Mixin:
                 runtime.click_shape_center(259, "异火")
             else:
                 yield from runtime.wait_click(259, "异火")
-            yield from runtime.wait_view(260, timeout=18.0, label="日常_异火：等待异火列表 #260")
+            yield from runtime.wait_scene(260, timeout=18.0, label="日常_异火：等待异火列表 #260")
         runtime.click_shape_center(260, "净莲")
 
         箱子状态 = yield from runtime.wait_any({
@@ -88,7 +88,7 @@ class 日常异火任务Mixin:
         if 返回状态 == "异火页返回":
             runtime.click_shape_center(259, "返回")
         try:
-            yield from runtime.wait_view(34, timeout=3.0)
+            yield from runtime.wait_scene(34, timeout=3.0)
         except Exception:
             pass
 

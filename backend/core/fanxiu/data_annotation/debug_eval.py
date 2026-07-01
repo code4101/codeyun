@@ -220,6 +220,21 @@ class DataAnnotationRuntimeDebugContext:
         runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
         return (yield from runtime.wait_click_then_view(frame, shape, *targets, **options))
 
+    def wait_scene(self, *scenes: int | str, **options: Any):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.wait_scene(*scenes, **options))
+
+    def wait_view(self, *views: int | str, **options: Any):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.wait_view(*views, **options))
+
+    def go_scene(self, scene: int | str, **options: Any):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.go_scene(scene, **options))
+
     def tap(self, scene: int | str, x: float, y: float) -> None:
         self._require_act()
         image = self.image(scene)

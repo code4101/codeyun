@@ -128,6 +128,39 @@ from pyxllib.autogui import (
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
 DEFAULT_SCROLL_RATIO = 0.5
 DEFAULT_SCROLL_DURATION_SECONDS = 1.5
+DEFAULT_LAYER0_WAIT_SECONDS = 30.0
+
+
+@dataclass
+class FloatingItemInstance:
+    view: View
+    template_shape: Shape
+    anchor_shape: Shape
+    anchor_box: dict[str, float]
+    item_box: dict[str, float]
+    text: str = ""
+
+    def field_box(self, field_shape: Shape) -> dict[str, float]:
+        template_box = _absolute_shape_box(self.template_shape)
+        field_box = _absolute_shape_box(field_shape)
+        offset_x = field_box["x"] - template_box["x"]
+        offset_y = field_box["y"] - template_box["y"]
+        return {
+            "x": self.item_box["x"] + offset_x,
+            "y": self.item_box["y"] + offset_y,
+            "w": field_box["w"],
+            "h": field_box["h"],
+        }
+
+
+def _absolute_shape_box(shape: Shape) -> dict[str, float]:
+    box = shape.box()
+    return {
+        "x": float(box.get("x") or 0),
+        "y": float(box.get("y") or 0),
+        "w": float(box.get("w") or 0),
+        "h": float(box.get("h") or 0),
+    }
 DEFAULT_SCROLL_SETTLE_SECONDS = 1.0
 DEFAULT_SCROLL_UNCHANGED_THRESHOLD = 95.0
 _default_engine: Any | None = None
@@ -179,6 +212,20 @@ def _parse_xianfu_skill_cd_seconds(text: Any) -> int | None:
 
 def _parse_daily_boss_cd_seconds(text: Any) -> int | None:
     return _parse_xianfu_visit_cd_seconds(text)
+
+
+def _parse_daily_boss_cd_seconds_from_six_digits(text: Any) -> int | None:
+    normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    digits = re.findall(r"\d", normalized)
+    if len(digits) < 6:
+        return None
+    compact = "".join(digits[:6])
+    hours = int(compact[:2])
+    minutes = int(compact[2:4])
+    seconds = int(compact[4:6])
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def _parse_daily_boss_reward_remaining(text: Any) -> int | None:
@@ -867,8 +914,19 @@ class FanxiuRuntime(Runtime):
             label=label,
         ))
 
-    def goto_view(self, view: View | int) -> Any:
+    def goto_view(
+        self,
+        view: View | int,
+        *,
+        layer0_wait_seconds: float | None = None,
+        wait_seconds: float | None = None,
+        wait_time: float | None = None,
+    ) -> Any:
         target_scene_id = view.id if isinstance(view, View) else int(view)
+        if layer0_wait_seconds is None and wait_seconds is not None:
+            layer0_wait_seconds = wait_seconds
+        if layer0_wait_seconds is None and wait_time is not None:
+            layer0_wait_seconds = wait_time
         if not isinstance(self.asset_tree_path, Path):
             raise RuntimeError("缺少场景移动资产树路径")
         self._emit_runtime_action(
@@ -879,11 +937,32 @@ class FanxiuRuntime(Runtime):
             current_scene=target_scene_id,
         )
         stop_event = self.stop_event or threading.Event()
-        result = self.runner._go_scene_task(self.ctx, self.asset_tree_path, target_scene_id, stop_event)
+        result = self.runner._go_scene_task(
+            self.ctx,
+            self.asset_tree_path,
+            target_scene_id,
+            stop_event,
+            layer0_wait_seconds=layer0_wait_seconds,
+        )
         status = (yield from result) if isinstance(result, GeneratorType) else result
         if str(status or "").lower() in {"error", "failure", "failed"}:
             raise RuntimeError(f"前往 #{target_scene_id} 失败")
         return status
+
+    def go_scene(
+        self,
+        scene: View | int,
+        *,
+        layer0_wait_seconds: float | None = None,
+        wait_seconds: float | None = None,
+        wait_time: float | None = None,
+    ) -> Any:
+        return (yield from self.goto_view(
+            scene,
+            layer0_wait_seconds=layer0_wait_seconds,
+            wait_seconds=wait_seconds,
+            wait_time=wait_time,
+        ))
 
     def wait_view(
         self,
@@ -985,6 +1064,14 @@ class FanxiuRuntime(Runtime):
                     "updated_at": time.time(),
                 })
             previous_frame = frame
+
+    def wait_scene(
+        self,
+        *scenes: View | int,
+        timeout: float | None = None,
+        label: str = "等待场景",
+    ):
+        return (yield from self.wait_view(*scenes, timeout=timeout, label=label))
 
     def wait_view_id(
         self,
@@ -1424,6 +1511,125 @@ class FanxiuRuntime(Runtime):
         text = self.ocr_text_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url)
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
         return [int(match) for match in re.findall(r"\d+", normalized)], normalized
+
+    def find_floating_item_by_anchor(
+        self,
+        view: View | int | str,
+        template_shape: Shape | str,
+        anchor_field: Shape | str,
+        *,
+        container_shape: Shape | str | None = None,
+        frame_data_url: str | None = None,
+    ) -> FloatingItemInstance | None:
+        target_view = self.view(view)
+        item_template = self.resolve_shape_selector(target_view, template_shape)
+        anchor_shape = self._resolve_floating_item_field(target_view, item_template, anchor_field)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        container_box = (
+            _absolute_shape_box(self.resolve_shape_selector(target_view, container_shape))
+            if container_shape is not None
+            else _absolute_shape_box(item_template)
+        )
+        template_box = _absolute_shape_box(item_template)
+        anchor_template_box = _absolute_shape_box(anchor_shape)
+        target_text = _sanitize_ocr_text(anchor_shape.raw.get("ocrText") or anchor_shape.title)
+        mode = str(anchor_shape.raw.get("ocrMatchMode") or "contains")
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text or not target_text or not self.runner._ocr_text_matches(text, target_text, mode):
+                continue
+            resolved_box = self.runner._ocr_match_resolved_box(line, target_text, mode) or self.runner._ocr_line_box(line)
+            if resolved_box is None:
+                continue
+            center_x = float(resolved_box.get("x") or 0) + float(resolved_box.get("w") or 0) / 2
+            center_y = float(resolved_box.get("y") or 0) + float(resolved_box.get("h") or 0) / 2
+            if not self._point_in_box(center_x, center_y, container_box):
+                continue
+            anchor_offset_x = anchor_template_box["x"] - template_box["x"]
+            anchor_offset_y = anchor_template_box["y"] - template_box["y"]
+            anchor_box = {
+                "x": float(resolved_box.get("x") or 0),
+                "y": float(resolved_box.get("y") or 0),
+                "w": float(resolved_box.get("w") or 0),
+                "h": float(resolved_box.get("h") or 0),
+            }
+            item_box = {
+                "x": anchor_box["x"] - anchor_offset_x,
+                "y": anchor_box["y"] - anchor_offset_y,
+                "w": template_box["w"],
+                "h": template_box["h"],
+            }
+            return FloatingItemInstance(
+                view=target_view,
+                template_shape=item_template,
+                anchor_shape=anchor_shape,
+                anchor_box=anchor_box,
+                item_box=item_box,
+                text=text,
+            )
+        return None
+
+    def read_floating_item_field(
+        self,
+        item: FloatingItemInstance,
+        field: Shape | str,
+        *,
+        padding: int = 8,
+        frame_data_url: str | None = None,
+    ) -> str:
+        field_shape = self._resolve_floating_item_field(item.view, item.template_shape, field)
+        field_box = self._padded_box(item.field_box(field_shape), padding)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        selected: list[dict[str, Any]] = []
+        for line in lines:
+            line_box = self.runner._ocr_line_box(line)
+            if line_box is not None and self.runner._ocr_line_overlaps_box(line, field_box):
+                selected.append(line)
+        return self.runner._ocr_text(selected)
+
+    def click_floating_item_field(
+        self,
+        item: FloatingItemInstance,
+        field: Shape | str,
+        *,
+        x_ratio: float = 0.5,
+        y_ratio: float = 0.5,
+    ) -> None:
+        field_shape = self._resolve_floating_item_field(item.view, item.template_shape, field)
+        field_box = item.field_box(field_shape)
+        click_x = field_box["x"] + field_box["w"] * float(x_ratio)
+        click_y = field_box["y"] + field_box["h"] * float(y_ratio)
+        self.click_frame_point(item.view, click_x, click_y)
+
+    def _resolve_floating_item_field(self, view: View, template_shape: Shape, field: Shape | str) -> Shape:
+        if isinstance(field, Shape):
+            return field
+        field_text = self._selector_text(field)
+        for child in template_shape.children():
+            if child.title == field_text or str(child.raw.get("id") or "").strip() == field_text:
+                return child
+        try:
+            return self.resolve_shape_selector(view, f"{template_shape.title}/{field_text}")
+        except Exception:
+            raise RuntimeError(f"浮动条目「{template_shape.title}」缺少字段「{field_text}」")
+
+    def _point_in_box(self, x: float, y: float, box: Mapping[str, Any]) -> bool:
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        return left <= x <= right and top <= y <= bottom
+
+    def _padded_box(self, box: Mapping[str, Any], padding: int) -> dict[str, float]:
+        pad = float(padding)
+        return {
+            "x": float(box.get("x") or 0) - pad,
+            "y": float(box.get("y") or 0) - pad,
+            "w": float(box.get("w") or 0) + pad * 2,
+            "h": float(box.get("h") or 0) + pad * 2,
+        }
 
     def shape_score(
         self,
@@ -4734,6 +4940,9 @@ class DataAnnotationRuntimeRunner(
             "source": "data_annotation_runtime",
             "schedule_kind": "dynamic",
             "discovered_next_time": next_time_text,
+            "next_time": next_time_text,
+            "discovered_retry_after": None,
+            "retry_after": None,
             "updated_at": time.time(),
         }
         if last_result:
@@ -8760,11 +8969,16 @@ class DataAnnotationRuntimeRunner(
         edge: dict[str, Any],
         stop_event: threading.Event,
         return_source_on_stall: bool = False,
+        layer0_wait_seconds: float | None = None,
     ):
         shape = edge["shape"]
         expected_ids = list(edge.get("target_ids") or [])
         allows_self = source_scene_id in expected_ids
-        timeout_seconds = 30.0 if allows_self else 60.0
+        preferred_wait_seconds = max(
+            0.0,
+            float(layer0_wait_seconds if layer0_wait_seconds is not None else (DEFAULT_LAYER0_WAIT_SECONDS if expected_ids else 0.0)),
+        )
+        timeout_seconds = max(30.0 if allows_self else 60.0, preferred_wait_seconds)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -8790,9 +9004,19 @@ class DataAnnotationRuntimeRunner(
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
 
+            expected_id_set = {int(item) for item in expected_ids}
+            fallback_scene_id: int | None = None
+            fallback_score = 0.0
             matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
             if matched_expected == source_scene_id and source_scene_id not in expected_ids:
                 history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
+                matched_expected = None
+            if matched_expected is not None and int(matched_expected) not in expected_id_set:
+                fallback_scene_id, fallback_score = int(matched_expected), float(expected_score or 0.0)
+                history.append(
+                    f"{elapsed:.1f}s #{fallback_scene_id} {fallback_score:.0f}% "
+                    f"preferred-fallback expected={expected_ids} left={left_source}"
+                )
                 matched_expected = None
             if matched_expected is not None:
                 if not left_source and matched_expected != source_scene_id:
@@ -8814,7 +9038,10 @@ class DataAnnotationRuntimeRunner(
                 self._log("info", f"场景跳转：#{source_scene_id} -> #{matched_expected}，{elapsed:.1f}s")
                 return matched_expected
 
-            scene_id, score = self._identify_scene_number(ctx, frame)
+            if fallback_scene_id is not None:
+                scene_id, score = fallback_scene_id, fallback_score
+            else:
+                scene_id, score = self._identify_scene_number(ctx, frame)
             if scene_id is None:
                 strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
                 if strong_scene_id is not None:
@@ -8868,6 +9095,29 @@ class DataAnnotationRuntimeRunner(
                     ctx["images"] = self._index_images(tree)
                 self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，命中声明落点")
                 return int(scene_id)
+            if (
+                scene_id is not None
+                and scene_id != source_scene_id
+                and int(scene_id) not in expected_id_set
+                and scene_id != target_scene_id
+                and expected_ids
+                and preferred_wait_seconds > 0
+                and elapsed < preferred_wait_seconds
+            ):
+                left_source = True
+                scene_text = f"#{scene_id}"
+                history.append(f"{elapsed:.1f}s {scene_text} layer0-wait-before-replan target={expected_ids}")
+                with self._lock:
+                    self._status.update({
+                        "phase": "go_scene_wait_layer0",
+                        "current_scene": scene_id,
+                        "message": (
+                            f"跳转等待：#{source_scene_id} -> #{target_scene_id}，"
+                            f"继续等待预期落点 {expected_ids}，当前 {scene_text} {score:.0f}%"
+                        ),
+                        "updated_at": time.time(),
+                    })
+                continue
             if scene_id == target_scene_id and scene_id != source_scene_id:
                 if scene_id in expected_ids:
                     left_source = True
@@ -9019,6 +9269,19 @@ class DataAnnotationRuntimeRunner(
                     start = time.monotonic()
                     history.append(f"{elapsed:.1f}s unknown 右侧离开已处理")
                     continue
+            if expected_ids and preferred_wait_seconds > 0 and elapsed < preferred_wait_seconds:
+                history.append(f"{elapsed:.1f}s {scene_text} layer0-wait target={expected_ids}")
+                with self._lock:
+                    self._status.update({
+                        "phase": "go_scene_wait_layer0",
+                        "current_scene": scene_id,
+                        "message": (
+                            f"跳转等待：#{source_scene_id} -> #{target_scene_id}，"
+                            f"继续等待预期落点 {expected_ids}，当前 {scene_text} {score:.0f}%"
+                        ),
+                        "updated_at": time.time(),
+                    })
+                continue
             with self._lock:
                 self._status.update({
                     "phase": "go_scene_wait",
@@ -9110,6 +9373,8 @@ class DataAnnotationRuntimeRunner(
         asset_tree_path: Path,
         target_scene_id: int,
         stop_event: threading.Event,
+        *,
+        layer0_wait_seconds: float | None = None,
     ):
         tree = ctx.get("asset_tree")
         if not isinstance(tree, list):
@@ -9326,6 +9591,7 @@ class DataAnnotationRuntimeRunner(
                             edge=edge,
                             stop_event=stop_event,
                             return_source_on_stall=True,
+                            layer0_wait_seconds=layer0_wait_seconds,
                         )
                         if actual_scene_id == target_scene_id:
                             with self._lock:
@@ -9382,7 +9648,7 @@ class DataAnnotationRuntimeRunner(
                         history=[f"#{current_scene_id} 已尝试 {len(failed_edge_keys)} 个候选仍未离开源场景"],
                     )
                 raise RuntimeError(
-                    f"goto_scene({target_scene_id}) 失败：无法从当前#{current_scene_id}找到可达#{target_scene_id}的路径，请检查标注shape。"
+                    f"go_scene({target_scene_id}) 失败：无法从当前#{current_scene_id}找到可达#{target_scene_id}的路径，请检查标注shape。"
                 )
             edge = decision["edge"]
             image = edge["image"]
@@ -9410,6 +9676,7 @@ class DataAnnotationRuntimeRunner(
                 edge=edge,
                 stop_event=stop_event,
                 return_source_on_stall=True,
+                layer0_wait_seconds=layer0_wait_seconds,
             )
             if actual_scene_id == target_scene_id:
                 with self._lock:

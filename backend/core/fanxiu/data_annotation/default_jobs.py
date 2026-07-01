@@ -168,7 +168,13 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少场景移动资产树路径，当前只支持直接对齐 #49")
-        return runner._go_scene_task(ctx, asset_tree_path, target_scene_id, stop_event)
+        return runner._go_scene_task(
+            ctx,
+            asset_tree_path,
+            target_scene_id,
+            stop_event,
+            layer0_wait_seconds=payload.get("layer0_wait_seconds"),
+        )
 
     @register_fanxiu_data_annotation_manual_job("hide_floating_window", "隐藏浮动窗", scheduler_supported=True)
     def _run_data_annotation_hide_floating_window_manual_job(

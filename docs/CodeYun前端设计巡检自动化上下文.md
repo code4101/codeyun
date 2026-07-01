@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "cf6ac33da15354e3530527ff46c63bf7455e93fe"
-last_audited_at: "2026-07-01T14:33:44.3383139+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-cf6ac33d/report.md"
-last_frontend_commit_summary: "完整关闭 bcc40826..cf6ac33d：沿 cluster/runtime、notes/center?tab=list、cluster/storage、fanxiu/runtime 与 fanxiu/wiki 复核后，删除运行管理里把日志伪装成配置的重复入口，仅保留真实可配置对象。"
-audited_commit_count: 56
+last_audited_commit: "d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f"
+last_audited_at: "2026-07-01T16:40:39.6417612+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-d09a63ee/report.md"
+last_frontend_commit_summary: "完整关闭 cf6ac33d..d09a63ee：沿 cluster/runtime、cluster/files 与 cluster/logs 复核后，把窄屏仍展开的共享侧栏收回为自动折叠，恢复运维链路页面可读区。"
+audited_commit_count: 57
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-01
+
+- 完整范围：`cf6ac33da15354e3530527ff46c63bf7455e93fe..d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`
+- 覆盖提交：`d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`
+- 前端入口提交：`d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`
+- 入口如何牵引到旧问题：本次提交同时改了 `cluster/tasks`、`cluster/logs`、`cluster/files`，分别收敛运行单元动作文案、日志页动作反馈和文件页排序编辑器默认态；真实多视口复核后，三页又被同一个旧问题一起牵出：`集群管理` 共享侧栏在窄屏仍按桌面模式展开，直接挤压同一条运维链路的主内容区。
+- 本轮减法：不新增任何新控件，只在 [`frontend/src/layout/MainLayout.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/layout/MainLayout.vue) 把窄屏默认态收回为自动折叠图标侧栏，并在离开窄屏时只恢复这次自动折叠造成的状态，不覆盖用户手动切换。
+- 信息量保持：菜单入口、页面能力和运维状态信息都不变；减少的是共享布局层对 `运行管理 / 浏览文件 / 运行详情` 三页重复制造的横向挤压，不是减少业务能力。
+- 概念图/线框图：临时报告中的 Mermaid 把 `集群管理菜单 -> 运行管理 / 浏览文件 / 运行详情` 与共享 `MainLayout` 侧栏策略连到同一条“窄屏主内容可读宽度”链路，证明问题来自共享布局层，而非三页各自再发明了一套问题。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-d09a63ee/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；真实页面最终截图见 `tasks/files/logs-fanxiu-behavior-tree` 的 `wide-final`、`desktop-final`、`narrow-final` 共 9 张，修复前窄屏对比见 `*-narrow-viewport.png`。
+- 根因分层：本轮问题属于共享表现层 / 布局默认态，而不是新的后端数据投影或业务建模债务；`cluster/tasks`、`cluster/logs`、`cluster/files` 提交自身的一级模型收敛保持成立，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实三视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`bcc40826fa23de6be619166195890b2b2e846138..cf6ac33da15354e3530527ff46c63bf7455e93fe`
 - 覆盖提交：`cf6ac33da15354e3530527ff46c63bf7455e93fe`

@@ -2,6 +2,8 @@
 
 本文档记录凡修 `数据标注` Runtime、Scheduler 与行为树的职责边界。
 
+命名先读：[凡修 data-annotation 命名约定](./凡修data-annotation命名约定.md)。简单说：`scene` 是业务场景主术语，`frame` 只表示截图/匹配输入或资产树底层帧结构，`view` 只作为历史兼容名保留；资产树是标注事实容器，识别树是 Runtime 动态候选计划。
+
 ## 核心原则
 
 - 帧树是感知与定位的第一数据源。
@@ -10,6 +12,13 @@
 - 前端只负责控制、调试、展示和标注，不承载正式任务状态机。
 - Runtime 负责实际执行、当前场景识别、守护 tick、点击、输入、等待。
 - Scheduler 负责任务清单、到期判断、按分组和触发时间排队，以及手动触发。
+- 新增 Runtime 业务代码优先使用 `scene` 术语：`current_scene()`、`wait_scene()`、`go_scene()` 分别表示当前识别、等待目标场景和正式场景移动。`wait_view()` / `goto_view()` 保留为历史兼容入口，服务旧调用和底层 `View` 类模型，不作为新业务 API 的命名方向。
+
+## 资产树与识别树
+
+资产树 `asset tree` 是标注资产的文件夹、分组和数据容器，保存 scene、shape、OCR/图像匹配配置、`sceneJumpTarget` 和人工目录归档。资产目录嵌套不能直接等同于运行时 sub scene 关系；目录可以帮助人管理资产，但不应天然决定 Runtime 候选展开、等待顺序或跳转策略。
+
+识别树 `recognition tree` 是 Runtime 每次识别或跳转时动态生成的候选计划。它综合资产事实、图片 `layer` 字段、frame/subframe 结构、当前目标、route/path 上下文、弹窗/浮层规则和本次动作产生的 `layer0`，再决定先识别哪些候选、命中后如何下钻、失败后如何回退到全局队列。
 
 ## 帧树语义
 
@@ -33,7 +42,7 @@ frame 的 `layer` 表示 root frame 进入哪条全局识别队列：`layer=1` �
 
 旧 frame 等级只作为一次性迁移输入：旧等级 2 迁移为 `layer=1`，旧等级 1 迁移为 `layer=2`，旧非场景帧迁移为 `layer=3`。迁移后代码、UI 和文档只使用 `layer` 与 `structure`。shape 只表达“这个框是否作为当前 frame 场景标识，以及它的图像/OCR required/optional/off 策略”。
 
-Runtime 无上下文识别按 root `Layer 1 -> Layer 2 -> Layer 3` 的全局队列阻断式尝试。前一层命中 root frame 后，不再检测后续 root layer；而是沿该 frame 的 structure children 继续细化。subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。子 frame 的 `layer` 不参与 subtree 细化顺序，也不会让识别重新回到全局 layer 队列。如果传入候选清单或 `sceneJumpTarget` 预期目标，则候选视为 `layer0`，优先在这些候选所在 root 及其 structure 子树内识别，候选未命中才回到默认 root layer 队列。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.goto_view(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
+Runtime 无上下文识别按 root `Layer 1 -> Layer 2 -> Layer 3` 的全局队列阻断式尝试。前一层命中 root frame 后，不再检测后续 root layer；而是沿该 frame 的 structure children 继续细化。subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。子 frame 的 `layer` 不参与 subtree 细化顺序，也不会让识别重新回到全局 layer 队列。如果传入候选清单或 `sceneJumpTarget` 预期目标，则候选视为 `layer0`，优先在这些候选所在 root 及其 structure 子树内识别，候选未命中才回到默认 root layer 队列。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.go_scene(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
 
 subframe 的场景身份按链式语义理解：父 frame 命中后才会进入子 frame 识别，因此子 frame 只需要匹配自己的增量场景标识，不应把父 frame 的场景标识重复并入子 frame 的匹配谓词。语义上 `#75 = #69 + #75 own identity`，运行时则是先算 #69，命中后只算 #75 自己。
 
@@ -264,9 +273,11 @@ for code in codes:
 
 - 默认 `mode=readonly`，允许截图、场景识别、OCR、读取标注和记录日志。
 - 需要点击、拖拽等真实动作时必须显式传 `mode=act`。
-- 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
+- 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_scene()`、`ctx.go_scene()`、`ctx.wait_view()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
 - `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
 - `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在 `debug_eval` 中改成固定坐标硬点。
+- `ctx.wait_scene(*scenes)` 是动作模式能力，用于等待目标场景出现；`ctx.wait_view(*views)` 仅作为历史兼容名保留。
+- `ctx.go_scene(scene)` 是动作模式能力，用于通过通用场景移动进入目标场景；`ctx.goto_view(...)` 不作为新调试代码示例继续扩散。
 - `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开手动作业入口验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
 - 支持两种写法：直接执行短代码，或定义 `def task(ctx): ...`，系统会自动调用；`task` 返回生成器时继续沿用现有 yield/tick 机制。
 - 调用入口仍使用现有 Runtime 手动作业提交接口，例如 `task_type=debug_eval`、`payload.code=...`；不要新建第二套调度或后台线程。

@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -43,6 +43,29 @@ _RFC1918_LAN_NETWORKS = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 )
+
+
+def _normalize_service_keys(keys: list[str] | None) -> list[str] | None:
+    if not keys:
+        return None
+    normalized: list[str] = []
+    for raw_key in keys:
+        for part in str(raw_key or "").split(","):
+            key = part.strip()
+            if key and key not in normalized:
+                normalized.append(key)
+    return normalized or None
+
+
+def _build_service_statuses(service_keys: list[str] | None = None) -> list[dict[str, Any]]:
+    builders: dict[str, Any] = {
+        "ocr": get_ocr_service_status,
+        "fanxiu-game-window": get_game_window_service_status,
+    }
+    normalized_keys = _normalize_service_keys(service_keys)
+    if not normalized_keys:
+        return [builder() for builder in builders.values()]
+    return [builders[key]() for key in normalized_keys if key in builders]
 
 
 class OcrPredictRequest(BaseModel):
@@ -260,7 +283,11 @@ def build_service_docs_response() -> dict[str, Any]:
     }
 
 
-def build_service_summary_response(session: Session) -> dict[str, Any]:
+def build_service_summary_response(
+    session: Session,
+    *,
+    service_keys: list[str] | None = None,
+) -> dict[str, Any]:
     ensure_legacy_service_tokens(session)
     token_count = session.exec(select(ServiceAccessToken)).all()
     enabled_token_count = [token for token in token_count if token.enabled]
@@ -270,7 +297,7 @@ def build_service_summary_response(session: Session) -> dict[str, Any]:
             "id": get_device_id(),
             "hostname": socket.gethostname(),
         },
-        "services": [get_ocr_service_status(), get_game_window_service_status()],
+        "services": _build_service_statuses(service_keys),
         "token_count": len(token_count),
         "enabled_token_count": len(enabled_token_count),
     }
@@ -297,8 +324,11 @@ def get_ocr_status():
 
 
 @control_router.get("/summary")
-def control_get_service_summary(session: Session = Depends(get_session)):
-    return build_service_summary_response(session)
+def control_get_service_summary(
+    keys: list[str] | None = Query(None),
+    session: Session = Depends(get_session),
+):
+    return build_service_summary_response(session, service_keys=keys)
 
 
 @control_router.post("/ocr/reset")
