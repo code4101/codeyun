@@ -665,6 +665,7 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   exists: boolean;
   tree: unknown[];
   updated_at: number;
+  frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
 export interface FanxiuDataAnnotationSaveFramePayload {
@@ -704,6 +705,47 @@ export interface FanxiuDataAnnotationFrameStructureAdoption {
   };
 }
 
+export interface FanxiuDataAnnotationFrameStructureDiagnostic {
+  kind: string;
+  level: 'error' | 'warning' | 'suggestion' | string;
+  image_id: number;
+  message: string;
+  parent_id?: number | null;
+  child_id?: number | null;
+  score?: number | null;
+  shape_titles: string[];
+  parent?: {
+    title?: string;
+    filename?: string;
+    path?: string;
+    layer?: number;
+    parent_id?: number | null;
+  };
+  child?: {
+    title?: string;
+    filename?: string;
+    path?: string;
+    layer?: number;
+    parent_id?: number | null;
+  };
+  image?: {
+    title?: string;
+    filename?: string;
+    path?: string;
+    layer?: number;
+    parent_id?: number | null;
+  };
+}
+
+export interface FanxiuDataAnnotationFrameStructureSnapshot {
+  exists: boolean;
+  computed_at?: number | string | null;
+  asset_tree_updated_at?: number | null;
+  diagnostic_count: number;
+  diagnostics: FanxiuDataAnnotationFrameStructureDiagnostic[];
+  updated_at: number;
+}
+
 export interface FanxiuDataAnnotationFrameStructureResponse {
   path: string;
   entry_id: string;
@@ -718,10 +760,13 @@ export interface FanxiuDataAnnotationFrameStructureResponse {
     adoption_count: number;
     demoted_identity_count: number;
     layer_update_count: number;
+    diagnostic_count: number;
     adoptions: FanxiuDataAnnotationFrameStructureAdoption[];
+    diagnostics: FanxiuDataAnnotationFrameStructureDiagnostic[];
     demoted_identities: Array<Record<string, unknown>>;
     layer_updates: Array<Record<string, unknown>>;
   };
+  frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
 export interface FanxiuDataAnnotationOcrFrameLine {

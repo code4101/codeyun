@@ -19,14 +19,10 @@
 
     <div class="node-content">
       <div v-if="props.data.useSplitTitle" class="node-title node-title--split" :style="props.data.titleStyle">
-        <div class="node-title-layer" :style="props.data.filledTitleLayerStyle">
-          <NoteFormBadge :form="data.note_form" compact />
-          <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
-        </div>
-        <div class="node-title-layer" :style="props.data.emptyTitleLayerStyle">
-          <NoteFormBadge :form="data.note_form" compact />
-          <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
-        </div>
+        <NoteFormBadge :form="data.note_form" compact />
+        <span class="node-title-text node-title-text--split" :style="props.data.splitTitleTextStyle">
+          {{ data.title || 'Untitled' }}
+        </span>
       </div>
       <div v-else class="node-title" :style="props.data.titleStyle">
         <NoteFormBadge :form="data.note_form" compact />
@@ -46,6 +42,7 @@ const props = defineProps<{
     note_form?: string | null,
     nodeStyle: Record<string, string | number>,
     titleStyle: Record<string, string | number>,
+    splitTitleTextStyle: Record<string, string | number>,
     useSplitTitle: boolean,
     filledTitleLayerStyle: Record<string, string | number>,
     emptyTitleLayerStyle: Record<string, string | number>,
@@ -94,18 +91,7 @@ const props = defineProps<{
 }
 
 .node-title--split {
-  display: grid;
   width: 100%;
-}
-
-.node-title-layer {
-  grid-area: 1 / 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
 }
 
 .node-title-text{
@@ -114,6 +100,13 @@ const props = defineProps<{
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.node-title-text--split {
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 /* 默认隐藏句柄 */

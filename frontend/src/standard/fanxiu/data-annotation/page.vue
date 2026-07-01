@@ -210,7 +210,14 @@
                     :prefix-icon="Search"
                     @keyup.enter="searchAssetFrame"
                   />
-                  <el-button size="small" :icon="Plus" title="新建分组" aria-label="新建分组" :disabled="assetTreeViewMode !== 'business'" @click="addAssetFolder" />
+                  <el-button
+                    v-if="assetTreeViewMode === 'business'"
+                    size="small"
+                    :icon="Plus"
+                    title="新建分组"
+                    aria-label="新建分组"
+                    @click="addAssetFolder"
+                  />
                   <el-button
                     size="small"
                     :icon="Picture"
@@ -239,10 +246,14 @@
                     :disabled="!selectedEntryId"
                     @click="toggleBurstCapture"
                   />
-                  <el-button size="small" plain title="连拍缓存" aria-label="连拍缓存" @click="openBurstDialog">
-                    缓存
-                  </el-button>
-                  <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="assetTreeViewMode !== 'business' || !selectedAssetNode" @click="deleteSelectedAsset" />
+                  <el-button
+                    size="small"
+                    plain
+                    :icon="FolderOpened"
+                    title="连拍缓存"
+                    aria-label="连拍缓存"
+                    @click="openBurstDialog"
+                  />
                 </div>
               </div>
 
@@ -268,12 +279,16 @@
                   @node-contextmenu="openAssetContextMenu"
                 >
                   <template #default="{ data }">
-                    <span class="asset-tree-node" :class="{ 'is-image': data.type === 'image', 'is-virtual': isVirtualAssetTreeNode(data) }" @dblclick.stop="renameDisplayAssetNode(data)">
+                    <span
+                      class="asset-tree-node"
+                      :class="assetTreeNodeClasses(data)"
+                      :title="assetTreeNodeTitle(data)"
+                      @dblclick.stop="renameDisplayAssetNode(data)"
+                    >
                       <el-icon v-if="data.type === 'folder'"><Folder /></el-icon>
                       <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
                       <span
                         class="asset-node-title"
-                        :title="data.type === 'image' ? frameLayerTitle(inferredFrameLayer(data)) : ''"
                         :style="data.type === 'image' ? frameLayerStyle(inferredFrameLayer(data)) : undefined"
                       >{{ data.title }}</span>
                     </span>
@@ -1178,8 +1193,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Compon
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  Delete,
   Folder,
+  FolderOpened,
   Picture,
   Plus,
   Search,
@@ -1249,6 +1264,8 @@ import {
   type FanxiuGameWindow2PreLabelPayload,
   type FanxiuDataAnnotationRuntimeStatus,
   type FanxiuDataAnnotationFrameStructureAdoption,
+  type FanxiuDataAnnotationFrameStructureDiagnostic,
+  type FanxiuDataAnnotationFrameStructureSnapshot,
   type FanxiuDataAnnotationMacroAnnotateResponse,
   type FanxiuDataAnnotationOcrFrameLine,
   type FanxiuDataAnnotationSchedulerTaskItem,
@@ -1586,6 +1603,8 @@ const windowViewMode = ref<WindowViewMode>('live');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
 const frameStructureOrganizing = ref(false);
+const frameStructureDiagnostics = ref<FanxiuDataAnnotationFrameStructureDiagnostic[]>([]);
+const frameStructureDiagnosisRan = ref(false);
 const burstCaptureRunning = ref(false);
 const burstCaptureSaving = ref(false);
 const burstImporting = ref(false);
@@ -7638,6 +7657,7 @@ const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
   const response = await getFanxiuDataAnnotationAssetTree(entryId);
   if (selectedEntryId.value !== entryId) return;
   assetTreeBackendHydrating.value = true;
+  clearFrameStructureDiagnostics();
   try {
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
@@ -7647,6 +7667,7 @@ const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
       assetTree.value = [];
       assetTreeBackendUpdatedAt.value = 0;
     }
+    applyFrameStructureSnapshot(response.frame_structure);
   } finally {
     assetTreeBackendHydrating.value = false;
   }
@@ -7677,6 +7698,7 @@ const flushAssetTreeToBackend = async (
     }
     if (selectedEntryId.value === entryId) {
       assetTreeBackendUpdatedAt.value = Number(response.updated_at) || assetTreeBackendUpdatedAt.value;
+      applyFrameStructureSnapshot(response.frame_structure);
     }
     return true;
   } catch (error) {
@@ -7706,6 +7728,7 @@ const flushAssetTreeToBackend = async (
         }
         if (selectedEntryId.value === entryId) {
           assetTreeBackendUpdatedAt.value = Number(response.updated_at) || latestUpdatedAt || assetTreeBackendUpdatedAt.value;
+          applyFrameStructureSnapshot(response.frame_structure);
         }
         ElMessage.info('资产树有并发更新，已合并并重新保存');
         return true;
@@ -7750,6 +7773,7 @@ const loadEntryAssetTree = async (entryId: string) => {
   if (!entryId) return;
   assetTreeBackendHydrating.value = true;
   assetTreeBackendUpdatedAt.value = 0;
+  clearFrameStructureDiagnostics();
   try {
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
@@ -7760,6 +7784,7 @@ const loadEntryAssetTree = async (entryId: string) => {
       assetTree.value = [];
       assetTreeBackendUpdatedAt.value = 0;
     }
+    applyFrameStructureSnapshot(response.frame_structure);
     restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
     await focusImageFromRoute();
@@ -7785,6 +7810,7 @@ const refreshEntryAssetTreeIfChanged = async () => {
     const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
+    applyFrameStructureSnapshot(response.frame_structure);
     expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
     await syncAssetTreeExpansionFromState();
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
@@ -7804,6 +7830,34 @@ const frameStructureAdoptionLine = (item: FanxiuDataAnnotationFrameStructureAdop
   return `#${item.parent_id} ${parentTitle} -> #${item.child_id} ${childTitle} (${shapeText} ${Math.round(item.average_score)}%)`;
 };
 
+const normalizeFrameStructureDiagnostics = (items: FanxiuDataAnnotationFrameStructureDiagnostic[] = []) => (
+  items.filter((item) => Number.isFinite(Number(item.image_id)) && item.message)
+);
+
+const setFrameStructureDiagnostics = (items: FanxiuDataAnnotationFrameStructureDiagnostic[] = []) => {
+  frameStructureDiagnostics.value = normalizeFrameStructureDiagnostics(items);
+  frameStructureDiagnosisRan.value = true;
+};
+
+const clearFrameStructureDiagnostics = () => {
+  frameStructureDiagnostics.value = [];
+  frameStructureDiagnosisRan.value = false;
+};
+
+const applyFrameStructureSnapshot = (snapshot?: FanxiuDataAnnotationFrameStructureSnapshot | null) => {
+  if (!snapshot?.exists) {
+    clearFrameStructureDiagnostics();
+    return;
+  }
+  setFrameStructureDiagnostics(snapshot.diagnostics ?? []);
+};
+
+const frameStructureDiagnosticLine = (item: FanxiuDataAnnotationFrameStructureDiagnostic) => {
+  const imageTitle = item.image?.title || item.child?.title || item.parent?.title || `#${item.image_id}`;
+  const scoreText = typeof item.score === 'number' ? ` ${Math.round(item.score)}%` : '';
+  return `#${item.image_id} ${imageTitle}: ${item.message}${scoreText}`;
+};
+
 const organizeFrameStructureFromToolbar = async () => {
   if (!selectedEntryId.value || frameStructureOrganizing.value) return;
   const entryId = selectedEntryId.value;
@@ -7811,16 +7865,27 @@ const organizeFrameStructureFromToolbar = async () => {
   try {
     const preview = await organizeFanxiuDataAnnotationFrameStructure(entryId, false);
     const adoptions = preview.stats?.adoptions ?? [];
+    const previewDiagnostics = preview.stats?.diagnostics ?? [];
+    applyFrameStructureSnapshot(preview.frame_structure ?? null);
     if (!adoptions.length) {
-      ElMessage.success('没有发现需要场景归纳的 scene/sub-scene 候选');
+      const diagnosticCount = previewDiagnostics.length;
+      if (diagnosticCount) {
+        ElMessage.info(`没有发现可写入的 sub-scene 候选；场景归纳体检发现 ${diagnosticCount} 条结构提示`);
+      } else {
+        ElMessage.success('没有发现需要场景归纳的 scene/sub-scene 候选');
+      }
       return;
     }
     const lines = adoptions.slice(0, 30).map(frameStructureAdoptionLine);
+    const diagnosticLines = previewDiagnostics.slice(0, 8).map(frameStructureDiagnosticLine);
     const previewLines = [...lines];
     const hiddenCount = adoptions.length - previewLines.length;
     const moreText = hiddenCount > 0 ? `\n... 还有 ${hiddenCount} 条` : '';
+    const diagnosticText = diagnosticLines.length
+      ? `\n\n结构提示 ${previewDiagnostics.length} 条：\n${diagnosticLines.join('\n')}`
+      : '';
     await ElMessageBox.confirm(
-      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入？\n\n${previewLines.join('\n')}${moreText}`,
+      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入？\n\n${previewLines.join('\n')}${moreText}${diagnosticText}`,
       '场景归纳',
       {
         type: 'warning',
@@ -7832,7 +7897,9 @@ const organizeFrameStructureFromToolbar = async () => {
     const result = await organizeFanxiuDataAnnotationFrameStructure(entryId, true);
     assetTreeBackendUpdatedAt.value = 0;
     await loadEntryAssetTree(entryId);
-    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 sub-scene`);
+    applyFrameStructureSnapshot(result.frame_structure ?? null);
+    const diagnosticCount = result.stats?.diagnostic_count ?? result.stats?.diagnostics?.length ?? 0;
+    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 sub-scene，${diagnosticCount} 条结构提示`);
   } catch (error) {
     if (String((error as { message?: string })?.message || '').includes('cancel')) return;
     ElMessage.error(getErrorMessage(error));
@@ -7978,6 +8045,39 @@ const findAssetImageByNumericId = (nodes: DataAnnotationAssetNode[], id: number 
     if (found) return found;
   }
   return null;
+};
+
+const frameStructureDiagnosticsForNode = (node: DataAnnotationAssetNode) => {
+  const imageId = assetNumericImageId(node);
+  if (imageId === null) return [];
+  return frameStructureDiagnostics.value.filter((item) => Number(item.image_id) === imageId);
+};
+
+const assetTreeNodeDiagnosticLevel = (node: DataAnnotationAssetNode) => {
+  const diagnostics = frameStructureDiagnosticsForNode(node);
+  if (diagnostics.some((item) => item.level === 'error')) return 'error';
+  if (diagnostics.some((item) => item.level === 'warning')) return 'warning';
+  if (diagnostics.some((item) => item.level === 'suggestion')) return 'suggestion';
+  return '';
+};
+
+const assetTreeNodeClasses = (node: DataAnnotationAssetNode) => {
+  const level = node.type === 'image' ? assetTreeNodeDiagnosticLevel(node) : '';
+  return {
+    'is-image': node.type === 'image',
+    'is-virtual': isVirtualAssetTreeNode(node),
+    'has-diagnostic-error': level === 'error',
+    'has-diagnostic-warning': level === 'warning',
+    'has-diagnostic-suggestion': level === 'suggestion',
+  };
+};
+
+const assetTreeNodeTitle = (node: DataAnnotationAssetNode) => {
+  if (node.type !== 'image') return '';
+  const diagnostics = frameStructureDiagnosticsForNode(node);
+  const layerTitle = frameLayerTitle(inferredFrameLayer(node));
+  if (!diagnostics.length) return layerTitle;
+  return [layerTitle, ...diagnostics.map(frameStructureDiagnosticLine)].filter(Boolean).join('\n');
 };
 
 const findAssetAncestorFolderIds = (
@@ -9002,7 +9102,12 @@ watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
   expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
   queueAssetTreeExpansionSync();
-  if (!assetTreeBackendHydrating.value) assetTreeLocalVersion += 1;
+  if (!assetTreeBackendHydrating.value) {
+    assetTreeLocalVersion += 1;
+    if (!frameStructureOrganizing.value && frameStructureDiagnosisRan.value) {
+      clearFrameStructureDiagnostics();
+    }
+  }
   scheduleAssetTreeBackendSave();
 }, { deep: true });
 
@@ -14387,7 +14492,7 @@ const finishShapeDrag = () => {
   padding: 8px 10px;
   border-bottom: 1px solid #ebeef5;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   font-weight: 600;
@@ -14396,7 +14501,9 @@ const finishShapeDrag = () => {
 
 .annotation-panel-actions {
   display: inline-flex;
+  width: 100%;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -14485,7 +14592,25 @@ const finishShapeDrag = () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 1px 4px;
   min-width: 0;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+}
+
+.asset-tree-node.has-diagnostic-error {
+  background: #fff1f0;
+  border-left-color: #ff7875;
+}
+
+.asset-tree-node.has-diagnostic-warning {
+  background: #fffbe6;
+  border-left-color: #faad14;
+}
+
+.asset-tree-node.has-diagnostic-suggestion {
+  background: #f0fff4;
+  border-left-color: #52c41a;
 }
 
 .asset-node-id {

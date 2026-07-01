@@ -207,6 +207,74 @@ def test_go_scene_default_layer0_wait_seconds_is_high_confidence_window():
     assert runtime_runner_core.DEFAULT_LAYER0_WAIT_SECONDS == 30.0
 
 
+def test_current_scene_rejects_local_only_sub_scene_without_layer0(monkeypatch):
+    root = _scene_image(
+        "仙府",
+        "0171.png",
+        [{"title": "仙府标识", "isSceneIdentity": True}],
+        layer=1,
+    )
+    local_child = _scene_image(
+        "小助手进度",
+        "0277.png",
+        [{"title": "进度", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
+        layer=2,
+    )
+    root["children"] = [local_child]
+    ctx = {"asset_tree": [root], "images": {171: root, 277: local_child}}
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRecognizer:
+        def identify_scene_tree_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
+            assert preferred_scene_ids == [171]
+            return 277, 100.0
+
+        def identify_scene_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
+            assert preferred_scene_ids == [171]
+            return 171, 100.0
+
+    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+
+    trace: list[dict] = []
+    scene_id, score = runner._identify_scene_number(ctx, _png_data_url(), trace=trace)
+
+    assert (scene_id, score) == (171, 100.0)
+    assert any(item.get("reason") == "local_identity_without_layer0_context" for item in trace)
+
+
+def test_candidate_scene_rejects_local_only_sub_scene_unless_explicit(monkeypatch):
+    root = _scene_image(
+        "仙府",
+        "0171.png",
+        [{"title": "仙府标识", "isSceneIdentity": True}],
+        layer=1,
+    )
+    local_child = _scene_image(
+        "小助手进度",
+        "0277.png",
+        [{"title": "进度", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
+        layer=2,
+    )
+    root["children"] = [local_child]
+    ctx = {"asset_tree": [root], "images": {171: root, 277: local_child}}
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRecognizer:
+        def identify_scene_tree_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
+            return 277, 100.0
+
+        def identify_scene_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
+            return 171, 100.0
+
+    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+
+    trace: list[dict] = []
+    scene_id, score = runner._identify_scene_number(ctx, _png_data_url(), [171], trace=trace)
+
+    assert (scene_id, score) == (171, 100.0)
+    assert any(item.get("reason") == "local_identity_without_explicit_candidate" for item in trace)
+
+
 def test_runtime_goto_view_forwards_layer0_wait_seconds(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {}}
@@ -1598,6 +1666,7 @@ def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeyp
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: frame_data_url)
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, preferred_scene_ids=None: (None, 0.0))
+    monkeypatch.setattr(runner, "_strong_ocr_scene_number", lambda _ctx, _frame: 34)
     monkeypatch.setattr(
         runner,
         "_cached_ocr_lines",
@@ -4517,7 +4586,7 @@ def test_go_scene_moves_by_scene_jump_and_records_declared_target_frequency(tmp_
     jump_shape = {"id": "jump", "kind": "rect", "title": "去二", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "2"}
     tree = [
         _scene_image("一", "0001.jpg", [jump_shape]),
-        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -4551,9 +4620,9 @@ def test_go_scene_waits_layer0_declared_target_through_transition(tmp_path, monk
     runner = create_fanxiu_runtime_runner()
     jump_shape = {"id": "jump13", "kind": "rect", "title": "去三", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _scene_image("一", "0001.jpg", [jump_shape]),
-        _scene_image("二过渡", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
-        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [jump_shape], layer=1),
+        _scene_image("二过渡", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -4604,9 +4673,9 @@ def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkey
     jump_shape = {"id": "jump13", "kind": "rect", "title": "日常", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     claim_shape = {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1, "sceneJumpTarget": "1"}
     tree = [
-        _scene_image("一", "0001.jpg", [jump_shape]),
-        _scene_image("报名领取灵石奖励", "0002.jpg", [claim_shape]),
-        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [jump_shape], layer=1),
+        _scene_image("报名领取灵石奖励", "0002.jpg", [claim_shape], layer=1),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -4652,9 +4721,9 @@ def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatc
     runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _scene_image("一", "0001.jpg", [first_shape]),
-        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
-        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+        _scene_image("一", "0001.jpg", [first_shape], layer=1),
+        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
@@ -4698,6 +4767,64 @@ def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatc
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved[0]["shapes"][0]["sceneJumpTarget"] == "3"
     assert saved[0]["shapes"][0]["observedLanding"] == "2(1)"
+
+
+def test_go_scene_replans_through_observed_reachable_landing(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    first_shape = {
+        "id": "jump12",
+        "kind": "rect",
+        "title": "入口",
+        "x": 0.1,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "3",
+        "observedLanding": "2(1)",
+    }
+    second_shape = {"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
+    tree = [
+        _scene_image("一", "0001.jpg", [first_shape], layer=1),
+        _scene_image("二", "0002.jpg", [second_shape], layer=1),
+        _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+    ]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": runner._index_images(tree)}
+    scene_state = {"value": 1}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def click_shape(_ctx, image, _shape, _frame=None):
+        if runner._image_number(image) == 1:
+            scene_state["value"] = 2
+        elif runner._image_number(image) == 2:
+            scene_state["value"] = 3
+        runner._clear_tick_frame(_ctx)
+
+    monkeypatch.setattr(runner, "_capture_frame", lambda _ctx: f"scene{scene_state['value']}")
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, frame: 80 if str(runner._image_number(image)) in str(frame) else 0)
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+
+    result = runner._run_runtime_behavior_tree(
+        runtime_ctx=ctx,
+        asset_tree_path=path,
+        stop_event=FakeStopEvent(),
+        action=lambda: runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 3}, FakeStopEvent()),
+        label="到场景",
+    )
+
+    assert result == "success"
+    assert scene_state["value"] == 3
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "3"
+    assert saved[0]["shapes"][0]["observedLanding"] == "2(2)"
+    assert saved[1]["shapes"][0]["sceneJumpTarget"] == "3(1)"
 
 
 def test_daily_signup_scheduler_task_is_runtime_daily_task():
@@ -10480,6 +10607,37 @@ def test_runtime_click_translates_child_shape_by_matched_parent_box():
 
     assert click_x == pytest.approx(473.5)
     assert click_y == pytest.approx(153.0)
+
+
+def test_runtime_click_keeps_raw_center_for_ocr_only_navigation_shape():
+    runner = create_fanxiu_runtime_runner()
+    nav_shape = {
+        "title": "离开",
+        "sceneJumpTarget": "34",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "required",
+    }
+    match_result = {
+        "box": {"x": 770, "y": 760, "w": 100, "h": 80},
+        "fixed_box": {"x": 789, "y": 803, "w": 70, "h": 44},
+    }
+
+    assert runner._shape_should_keep_raw_click_for_ocr_navigation(nav_shape, match_result) is True
+
+
+def test_runtime_click_resolves_dynamic_ocr_non_navigation_shape():
+    runner = create_fanxiu_runtime_runner()
+    dynamic_shape = {
+        "title": "注视中",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "required",
+    }
+    match_result = {
+        "box": {"x": 400, "y": 900, "w": 120, "h": 50},
+        "fixed_box": {"x": 410, "y": 920, "w": 110, "h": 44},
+    }
+
+    assert runner._shape_should_keep_raw_click_for_ocr_navigation(dynamic_shape, match_result) is False
 
 
 def test_runtime_click_shape_center_then_view_clicks_fixed_shape_before_wait(monkeypatch):

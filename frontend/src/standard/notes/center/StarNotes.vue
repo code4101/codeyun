@@ -987,6 +987,9 @@ const buildGraphNodeVisualData = (note: NoteNode) => {
       fontWeight: displayStyle.fontWeight,
       textDecoration: displayStyle.textDecoration,
     },
+    splitTitleTextStyle: {
+      backgroundImage: `linear-gradient(to right, ${displayStyle.fillTextColor} 0%, ${displayStyle.fillTextColor} ${(fillRatio * 100).toFixed(2)}%, ${displayStyle.emptyTextColor} ${(fillRatio * 100).toFixed(2)}%, ${displayStyle.emptyTextColor} 100%)`,
+    },
     useSplitTitle: typeof displayStyle.partialFillRatio === 'number'
       && displayStyle.partialFillRatio > 0
       && displayStyle.partialFillRatio < 1,

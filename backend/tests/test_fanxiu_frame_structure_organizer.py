@@ -111,7 +111,7 @@ def test_frame_structure_organizer_is_idempotent_for_existing_subframes():
     assert stats.adoption_count == 0
 
 
-def test_frame_structure_organizer_adopts_layer_roots_across_business_folders():
+def test_frame_structure_organizer_layer_scope_keeps_cross_business_folders_separate():
     tree = [
         {
             "type": "folder",
@@ -136,10 +136,32 @@ def test_frame_structure_organizer_adopts_layer_roots_across_business_folders():
         return 96 if key == (71, "修仙传", 251) else 0
 
     organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
-    parent = organized[0]["children"][0]
 
-    assert [item["filename"] for item in organized[1]["children"][0]["children"]] == []
-    assert [item["filename"] for item in parent["children"]] == ["0251.png"]
+    assert [item["filename"] for item in organized[0]["children"]] == ["0071.png"]
+    assert [item["filename"] for item in organized[1]["children"][0]["children"]] == ["0251.png"]
+    assert stats.adoption_count == 0
+
+
+def test_frame_structure_organizer_layer_scope_adopts_local_sibling_group():
+    tree = [
+        {
+            "type": "folder",
+            "title": "日常",
+            "children": [
+                _image(71, "修仙传游历", [_shape("修仙传")]),
+                _image(251, "供奉", [_shape("供奉")]),
+            ],
+        },
+    ]
+
+    def score_shape(parent, shape, child):
+        key = (int(parent["filename"][:4]), shape["title"], int(child["filename"][:4]))
+        return 96 if key == (71, "修仙传", 251) else 0
+
+    organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
+
+    assert [item["filename"] for item in organized[0]["children"]] == ["0071.png"]
+    assert [item["filename"] for item in organized[0]["children"][0]["children"]] == ["0251.png"]
     assert stats.adoption_count == 1
     assert [(item.parent_id, item.child_id) for item in stats.adoptions] == [(71, 251)]
 
@@ -215,3 +237,61 @@ def test_frame_structure_organizer_downgrades_parent_after_identity_demotion():
     assert parent["shapes"][0]["sceneIdentityRole"] == "required"
     assert parent["shapes"][1]["sceneIdentityRole"] == "off"
     assert stats.layer_update_count == 0
+
+
+def test_frame_structure_organizer_diagnoses_child_not_matching_parent_identity():
+    tree = [
+        {
+            **_image(47, "所有提示窗口", [_shape("弹窗边框")], layer=1),
+            "children": [_image(306, "灵脉结算", [_shape("灵脉")], layer=2)],
+        }
+    ]
+
+    def score_shape(parent, shape, child):
+        return 40 if int(parent["filename"][:4]) == 47 and int(child["filename"][:4]) == 306 else 0
+
+    _organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
+
+    assert [
+        (item.kind, item.level, item.parent_id, item.child_id)
+        for item in stats.diagnostics
+    ] == [("invalid_child", "error", 47, 306)]
+
+
+def test_frame_structure_organizer_diagnoses_missing_sub_scene_candidate():
+    tree = [
+        _image(47, "所有提示窗口", [_shape("弹窗边框")], layer=1),
+        _image(306, "灵脉结算", [_shape("灵脉")], layer=2),
+    ]
+
+    def score_shape(parent, shape, child):
+        return 96 if int(parent["filename"][:4]) == 47 and int(child["filename"][:4]) == 306 else 0
+
+    _organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
+
+    assert any(
+        item.kind == "missing_child_candidate"
+        and item.level == "suggestion"
+        and item.parent_id == 47
+        and item.child_id == 306
+        for item in stats.diagnostics
+    )
+
+
+def test_frame_structure_organizer_warns_when_parent_identity_is_unverifiable():
+    tree = [
+        {
+            **_image(47, "所有提示窗口", [_shape("普通按钮", identity=False)], layer=1),
+            "children": [_image(306, "灵脉结算", [_shape("灵脉")], layer=2)],
+        }
+    ]
+
+    def score_shape(parent, shape, child):
+        return 0
+
+    _organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
+
+    assert [
+        (item.kind, item.level, item.parent_id, item.child_id)
+        for item in stats.diagnostics
+    ] == [("unverifiable_parent", "warning", 47, 306)]

@@ -35,6 +35,30 @@ def effective_recognition_layer(image: dict[str, Any]) -> int:
     return int(View(image).layer)
 
 
+def _flatten_shapes(shapes: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    if not isinstance(shapes, list):
+        return result
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        result.append(shape)
+        result.extend(_flatten_shapes(shape.get("children")))
+        result.extend(_flatten_shapes(shape.get("shapes")))
+    return result
+
+
+def is_explicit_local_identity_only_scene(image: dict[str, Any]) -> bool:
+    identity_shapes = []
+    for shape in _flatten_shapes(image.get("shapes")):
+        role = str(shape.get("sceneIdentityRole") or "").strip().lower()
+        if bool(shape.get("isSceneIdentity")) or role not in {"", "off", "无"}:
+            identity_shapes.append(shape)
+    if not identity_shapes:
+        return False
+    return all(str(shape.get("sceneIdentityScope") or "").strip().lower() == "local" for shape in identity_shapes)
+
+
 def build_recognition_tree_nodes(
     asset_tree: list[dict[str, Any]],
     images: dict[int, dict[str, Any]],
@@ -116,6 +140,8 @@ def runtime_root_scene_candidate_ids(
     def add_layer_candidate(scene_id: int) -> None:
         image = images.get(int(scene_id))
         if not isinstance(image, dict):
+            return
+        if is_explicit_local_identity_only_scene(image):
             return
         bucket = layer_buckets.get(effective_recognition_layer(image))
         if bucket is not None and scene_id not in bucket:

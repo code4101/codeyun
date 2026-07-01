@@ -51,7 +51,11 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
-from backend.core.fanxiu.data_annotation.recognition_tree import runtime_root_scene_candidate_ids
+from backend.core.fanxiu.data_annotation.recognition_tree import (
+    is_explicit_local_identity_only_scene,
+    layer0_recognition_candidate_ids,
+    runtime_root_scene_candidate_ids,
+)
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_world_facts_summary,
     preserve_data_annotation_scheduler_runtime_state,
@@ -1096,6 +1100,12 @@ class FanxiuRuntime(Runtime):
             if self.runner._auto_close_popup_guard_step(self):
                 self.clear_frame()
                 continue
+            if scene_id is None and any(int(view_id) in {34, 69} for view_id in view_ids):
+                target_scene_id = 34 if 34 in {int(view_id) for view_id in view_ids} else 69
+                if self.runner._recover_unknown_start_to_world(self.ctx, frame, target_scene_id=target_scene_id):
+                    self.clear_frame()
+                    previous_frame = None
+                    continue
             with self.runner._lock:
                 self.runner._status.update({
                     "phase": "wait_scene",
@@ -5348,6 +5358,7 @@ class DataAnnotationRuntimeRunner(
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from self._ensure_world_main_for_right_menu(ctx, runtime, stop_event, image34, task_label=task_label)
         yield from runtime.wait_click_then_shape(
             34,
             "仙市",
@@ -5369,6 +5380,51 @@ class DataAnnotationRuntimeRunner(
         )
         yield from runtime.wait_click(248, "仙币")
         yield from runtime.wait_action_settle(float(payload.get("coin_tab_settle_seconds") or 2.5))
+
+    def _ensure_world_main_for_right_menu(
+        self,
+        ctx: dict[str, Any],
+        runtime: Any,
+        stop_event: threading.Event,
+        image34: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        frame = runtime.cur_frame(update=True)
+        text = runtime.ocr_text(frame)
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if "仙市" in compact and ("仙府" in compact or "储物袋" in compact):
+            return
+        width, height = self._frame_size(image34)
+        candidates: list[tuple[float, float, str]] = []
+        for line in runtime.ocr_lines(frame):
+            line_text = _sanitize_ocr_text(line.get("text"))
+            if "世界" not in line_text:
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            cx = x + w / 2
+            cy = y + h / 2
+            if cx <= width * 0.22 and cy >= height * 0.72:
+                center = self._ocr_substring_center(line, "世界")
+                if center is not None:
+                    cx, cy = center
+                candidates.append((float(cx), float(cy), line_text))
+        if not candidates:
+            return
+        x, y, source_text = sorted(candidates, key=lambda item: (item[1], item[0]))[-1]
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"{task_label}：当前 #34 不是世界主态，点击底部「世界」恢复右侧菜单",
+                phase="world_main_restore_for_right_menu",
+                current_scene=34,
+            )
+            self._log_locked("action", f"{task_label}：OCR 命中底部「世界」({source_text})，点击恢复世界主态 ({x:.0f},{y:.0f})")
+        runtime.click_frame_point(View(image34), x, y)
+        yield from runtime.wait_action_settle(2.0)
 
     def _click_daily_xianshi_free_coin_box(
         self,
@@ -6337,10 +6393,30 @@ class DataAnnotationRuntimeRunner(
                         trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
                     return 86, 100.0
             recognizer = self._scene_recognizer()
+            root_candidate_ids = self._runtime_scene_candidate_ids(ctx)
+            allowed_scene_ids = set(root_candidate_ids)
+            tree = ctx.get("asset_tree")
+            images = ctx.get("images")
+            if isinstance(tree, list) and isinstance(images, dict) and root_candidate_ids:
+                allowed_scene_ids.update(layer0_recognition_candidate_ids(tree, images, root_candidate_ids))
             if trace is None:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=None)
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=root_candidate_ids)
             else:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=None, trace=trace)
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=root_candidate_ids, trace=trace)
+            if scene_id is not None and self._is_explicit_local_scene_result(ctx, int(scene_id), root_candidate_ids):
+                if trace is not None:
+                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "local_identity_without_layer0_context"})
+                retry_scene_id, retry_score = self._identify_root_scene_number_from_candidates(ctx, frame_data_url, root_candidate_ids, trace=trace)
+                if retry_scene_id is not None:
+                    return retry_scene_id, retry_score
+                return None, score
+            if scene_id is not None and allowed_scene_ids and int(scene_id) not in allowed_scene_ids:
+                if trace is not None:
+                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "outside_runtime_root_candidates"})
+                retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, root_candidate_ids, trace=trace)
+                if retry_scene_id is not None:
+                    return retry_scene_id, retry_score
+                return None, score
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
@@ -6368,6 +6444,13 @@ class DataAnnotationRuntimeRunner(
                     scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
                 else:
                     scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
+            if scene_id is not None and self._is_explicit_local_scene_result(ctx, int(scene_id), preferred_scene_ids):
+                if trace is not None:
+                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "local_identity_without_explicit_candidate"})
+                retry_scene_id, retry_score = self._identify_root_scene_number_from_candidates(ctx, frame_data_url, preferred_scene_ids, trace=trace)
+                if retry_scene_id is not None:
+                    return retry_scene_id, retry_score
+                return None, score
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
@@ -6385,6 +6468,31 @@ class DataAnnotationRuntimeRunner(
             candidate_scene_ids,
             trace=trace,
         )
+
+    def _is_explicit_local_scene_result(self, ctx: dict[str, Any], scene_id: int, root_candidate_ids: list[int]) -> bool:
+        if int(scene_id) in {int(item) for item in root_candidate_ids}:
+            return False
+        images = ctx.get("images") or {}
+        image = images.get(int(scene_id)) if isinstance(images, dict) else None
+        return isinstance(image, dict) and is_explicit_local_identity_only_scene(image)
+
+    def _identify_root_scene_number_from_candidates(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        candidate_scene_ids: list[int],
+        trace: list[dict[str, Any]] | None = None,
+    ) -> tuple[int | None, float]:
+        recognizer = self._scene_recognizer()
+        if trace is None:
+            scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None)
+        else:
+            scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None, trace=trace)
+        if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
+            if trace is not None:
+                trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
+            return None, score
+        return scene_id, score
 
     def _identify_scene_number_from_candidates(
         self,
@@ -6475,6 +6583,18 @@ class DataAnnotationRuntimeRunner(
         if "可旋转" in compact and "法则之主" in compact and "拜谒" in compact:
             self._log("detail", "场景强 OCR 命中 #265 法则之主旋转选择页")
             return 265
+        if "封印" in compact and "离开" in compact:
+            self._log("detail", "场景强 OCR 命中 #181 首领封印完成")
+            return 181
+        if "首领规则" in compact and ("神识注视" in compact or "前往挑战" in compact or "剩余奖励次数" in compact):
+            self._log("detail", "场景强 OCR 命中 #179 首领详情")
+            return 179
+        if "首领" in compact and ("自动战斗中" in compact or "数据统计" in compact or "伤害" in compact):
+            self._log("detail", "场景强 OCR 命中 #180 首领挑战中")
+            return 180
+        if "首领境界" in compact and ("剩余奖励次数" in compact or "掉落记录" in compact) and "首领规则" not in compact:
+            self._log("detail", "场景强 OCR 命中 #178 首领列表")
+            return 178
         return None
 
     def _leave_scene_confirm_text(self, text: str) -> bool:
@@ -6501,7 +6621,9 @@ class DataAnnotationRuntimeRunner(
         return [
             int(scene_id)
             for scene_id in self.scene_ids.values()
-            if int(scene_id) in images and isinstance(images.get(int(scene_id)), dict)
+            if int(scene_id) in images
+            and isinstance(images.get(int(scene_id)), dict)
+            and not is_explicit_local_identity_only_scene(images[int(scene_id)])
         ]
 
     def _runtime_tree_scene_candidate_ids(self, ctx: dict[str, Any], *, include_popups: bool | None) -> list[int]:
@@ -7914,7 +8036,7 @@ class DataAnnotationRuntimeRunner(
         resolved_click = None
         if shape.get("clickResolvedBox") is not False:
             resolved_click = self._shape_match_resolved_click_point(image, shape, action_match_result)
-        if resolved_click is not None:
+        if resolved_click is not None and not self._shape_should_keep_raw_click_for_ocr_navigation(shape, action_match_result):
             click_x, click_y = resolved_click
         if action_match_result is not None:
             self._log(
@@ -7980,6 +8102,22 @@ class DataAnnotationRuntimeRunner(
             dst_x + (raw_x - ref_x) * dst_w / ref_w,
             dst_y + (raw_y - ref_y) * dst_h / ref_h,
         )
+
+    def _shape_should_keep_raw_click_for_ocr_navigation(
+        self,
+        shape: dict[str, Any],
+        match_result: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(match_result, dict):
+            return False
+        if not str(shape.get("sceneJumpTarget") or "").strip():
+            return False
+        title = str(shape.get("title") or "").strip()
+        if title not in {"返回", "关闭", "离开", "退出", "回到世界"}:
+            return False
+        if self._shape_image_role(shape) != "off" or self._shape_ocr_role(shape) != "required":
+            return False
+        return isinstance(match_result.get("fixed_box"), dict) or isinstance(match_result.get("resolved_box"), dict)
 
     def _click_scene_route_shape(
         self,
@@ -8914,6 +9052,13 @@ class DataAnnotationRuntimeRunner(
             and "仙府" in title
         )
 
+    def _observed_landing_scene_ids(self, tree: list[dict[str, Any]], shape: dict[str, Any]) -> set[int]:
+        scene_ids: set[int] = set()
+        for entry in self._parse_scene_jump_entries(shape.get("observedLanding")):
+            for scene_id in self._resolve_scene_jump_label(tree, entry.get("label")):
+                scene_ids.add(int(scene_id))
+        return scene_ids
+
     def _is_scene_jump_recoverable_interruption(
         self,
         ctx: dict[str, Any],
@@ -8928,6 +9073,8 @@ class DataAnnotationRuntimeRunner(
             return False
         if self._find_scene_route(tree, int(scene_id), int(target_scene_id)) is None:
             return False
+        if int(scene_id) in self._observed_landing_scene_ids(tree, shape):
+            return True
         clicked_title = str(shape.get("title") or shape.get("id") or "").strip()
         if clicked_title in {"返回", "退出", "离开", "关闭", "空白", "回到世界"}:
             return True
