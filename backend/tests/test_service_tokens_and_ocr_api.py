@@ -152,6 +152,31 @@ def test_service_docs_lan_label_does_not_repeat_address(monkeypatch: pytest.Monk
     assert lan["url"] == "http://192.168.31.63:8000/api/services/ocr/predict"
 
 
+def test_build_service_summary_response_only_collects_requested_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _build_session()
+    calls: list[str] = []
+
+    monkeypatch.setattr(services_api, "ensure_legacy_service_tokens", lambda _session: None)
+    monkeypatch.setattr(
+        services_api,
+        "get_ocr_service_status",
+        lambda: calls.append("ocr") or {"key": "ocr", "title": "OCR"},
+    )
+
+    def _unexpected_game_window_status():
+        calls.append("fanxiu-game-window")
+        raise AssertionError("game window status should not be requested")
+
+    monkeypatch.setattr(services_api, "get_game_window_service_status", _unexpected_game_window_status)
+
+    payload = services_api.build_service_summary_response(session, service_keys=["ocr"])
+
+    assert calls == ["ocr"]
+    assert payload["services"] == [{"key": "ocr", "title": "OCR"}]
+    assert payload["token_count"] == 0
+    assert payload["enabled_token_count"] == 0
+
+
 def test_ocr_service_manager_reuses_resets_and_cleans_idle_instances(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

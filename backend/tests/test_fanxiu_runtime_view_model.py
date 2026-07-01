@@ -219,6 +219,35 @@ def test_fanxiu_runtime_wait_view_uses_scene_recognition(monkeypatch):
     assert preferred_calls == [[121]]
 
 
+def test_fanxiu_runtime_wait_scene_is_wait_view_alias(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "shapes": [{"id": "identity", "kind": "rect", "title": "邮件标识", "isSceneIdentity": True}],
+    }
+    ctx = {"entry": object(), "images": {121: image121}}
+    preferred_calls = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+
+    def identify(_ctx, _frame, preferred):
+        preferred_calls.append(preferred)
+        return 121, 96.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number", identify)
+
+    waiter = runner._fanxiu_runtime(ctx).wait_scene(121, timeout=3.0, label="等待邮件")
+
+    assert next(waiter) is BehaviorTreeStatus.RUNNING
+    with pytest.raises(StopIteration) as stop:
+        next(waiter)
+    assert stop.value.value.raw is image121
+    assert preferred_calls == [[121]]
+
+
 def test_fanxiu_runtime_wait_view_prefers_view_identity_match(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image68 = {

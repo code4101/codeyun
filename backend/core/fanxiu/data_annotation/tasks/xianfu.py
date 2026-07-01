@@ -159,7 +159,7 @@ class XianfuTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：进入仙府主页 #171", phase="xianfu_visit_go_home")
                     self._log_locked("action", "仙府_寻访仙侣：按场景图跳转到 #171")
-                yield from runtime.goto_view(171)
+                yield from runtime.goto_view(171, layer0_wait_seconds=60.0)
                 scene_id = 171
             if scene_id == 171:
                 view171 = runtime.get_view(171)
@@ -504,7 +504,7 @@ class XianfuTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "仙府_领悟绝技：进入仙府主页 #171", phase="xianfu_skill_go_home")
                     self._log_locked("action", "仙府_领悟绝技：按场景图跳转到 #171")
-                yield from runtime.goto_view(171)
+                yield from runtime.goto_view(171, layer0_wait_seconds=60.0)
                 scene_id = 171
             if scene_id == 171:
                 view171 = runtime.get_view(171)

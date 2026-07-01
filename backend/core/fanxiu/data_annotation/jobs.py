@@ -86,7 +86,15 @@ def parse_data_annotation_scene_id(value: Any, *, default: int = 49) -> int:
 def normalize_data_annotation_go_scene_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(payload or {})
     target_scene_id = parse_data_annotation_scene_id(payload.get("target_scene_id") or payload.get("target") or 49)
-    return {**payload, "target_scene_id": target_scene_id}
+    normalized = {**payload, "target_scene_id": target_scene_id}
+    layer0_wait = payload.get("layer0_wait_seconds")
+    if layer0_wait is None:
+        layer0_wait = payload.get("wait_seconds")
+    if layer0_wait is None:
+        layer0_wait = payload.get("wait_time")
+    if layer0_wait is not None:
+        normalized["layer0_wait_seconds"] = max(0.0, float(layer0_wait))
+    return normalized
 
 
 def normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:

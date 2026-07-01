@@ -40,6 +40,10 @@ export interface ServiceResetResponse {
   service: CodeYunServiceStatus
 }
 
+export interface ServiceSummaryOptions {
+  keys?: string[]
+}
+
 export interface ServiceAccessToken {
   id: string
   label: string
@@ -95,8 +99,13 @@ export interface ServiceTokenUpdatePayload {
   enabled?: boolean
 }
 
-export const fetchClusterServiceSummary = async (entryId: string): Promise<ServiceSummary> => {
-  const response = await api.get(`/cluster/services/${entryId}`)
+export const fetchClusterServiceSummary = async (
+  entryId: string,
+  options: ServiceSummaryOptions = {},
+): Promise<ServiceSummary> => {
+  const response = await api.get(`/cluster/services/${entryId}`, {
+    params: options.keys?.length ? { keys: options.keys } : undefined,
+  })
   return response.data
 }
 

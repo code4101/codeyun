@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from backend.api.services import (
@@ -27,6 +28,18 @@ from backend.models import User, UserDevice
 
 router = APIRouter()
 CLUSTER_SERVICES_FEATURE_KEY = "cluster.services"
+
+
+def _normalize_service_keys(keys: list[str] | None) -> list[str] | None:
+    if not keys:
+        return None
+    normalized: list[str] = []
+    for raw_key in keys:
+        for part in str(raw_key or "").split(","):
+            key = part.strip()
+            if key and key not in normalized:
+                normalized.append(key)
+    return normalized or None
 
 
 def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
@@ -106,13 +119,18 @@ def _proxy_service_control(
 @router.get("/{entry_id}")
 def get_entry_service_summary(
     entry_id: str,
+    keys: list[str] | None = Query(None),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
+    service_keys = _normalize_service_keys(keys)
     if entry.mode == "local":
-        return build_service_summary_response(session)
-    return _proxy_service_control(entry, "GET", "/summary")
+        return build_service_summary_response(session, service_keys=service_keys)
+    path = "/summary"
+    if service_keys:
+        path = f"{path}?{urlencode([('keys', key) for key in service_keys])}"
+    return _proxy_service_control(entry, "GET", path)
 
 
 @router.post("/{entry_id}/ocr/reset")
