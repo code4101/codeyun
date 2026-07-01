@@ -35,6 +35,10 @@ def restart_kernel(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Restart the resident runtime kernel.
+
+    This is a service-level restart entry, not a "stop current task" shortcut.
+    """
     return runtime_control.restart_runtime_kernel(
         entry=entry,
         entry_id=entry_id,
@@ -73,6 +77,10 @@ def interrupt_current_cell(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Interrupt only the current business task.
+
+    This does not stop the resident behavior-tree service itself.
+    """
     return runtime_control.stop_current_task(
         entry_id,
         runtime_state_path=runtime_state_path,
@@ -133,6 +141,10 @@ def tick(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Submit a manual tick/task into the resident loop.
+
+    This compatibility entry is for business execution, not service diagnosis.
+    """
     return runtime_control.submit_tick_task(
         entry=entry,
         entry_id=entry_id,

@@ -274,6 +274,8 @@ def get_behavior_tree_status() -> dict[str, Any]:
     registry = _read_json_file(get_registry_path())
     processes = list_behavior_tree_processes()
     root_processes = root_process_records(processes)
+    root_process_ids = {int(item["pid"]) for item in root_processes if item.get("pid") is not None}
+    child_processes = [item for item in processes if int(item.get("pid") or 0) not in root_process_ids]
     process_pids = {int(item["pid"]) for item in processes if item.get("pid") is not None}
     registry_pid = registry.get("pid")
     registry_pid_alive = isinstance(registry_pid, int) and registry_pid in process_pids
@@ -310,8 +312,11 @@ def get_behavior_tree_status() -> dict[str, Any]:
         "state_label": state_label,
         "pid": registry_pid if registry_pid_alive else (processes[0]["pid"] if processes else None),
         "process_count": len(root_processes),
+        "child_process_count": len(child_processes),
+        "total_process_count": len(processes),
         "processes": processes,
         "root_processes": root_processes,
+        "child_processes": child_processes,
         "registry": registry,
         "registry_pid_alive": registry_pid_alive,
         "heartbeat_age_seconds": heartbeat_age,
@@ -463,12 +468,15 @@ def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
         f"名称：{status['title']}",
         f"状态：{status['state_label']}",
         f"PID：{status.get('pid') or '-'}",
-        f"进程数：{status.get('process_count') or 0}",
+        f"行为树根进程数：{status.get('process_count') or 0}",
+        f"子孙进程数：{status.get('child_process_count') or 0}",
+        f"总进程数：{status.get('total_process_count') or 0}",
         f"启动时间：{status.get('started_at') or '-'}",
         f"心跳时间：{status.get('heartbeat_at') or '-'}",
         f"登记文件：{status.get('registry_path')}",
         f"状态文件：{status.get('status_path')}",
         f"行为树日志：{status.get('behavior_tree_log_path')}",
+        "说明：Windows 上常见 root python + descendant python/conhost；子孙进程不代表第二个行为树",
     ]
     if registry.get("ocr_host") or registry.get("ocr_device"):
         lines.append(
@@ -484,9 +492,12 @@ def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
     if status.get("processes"):
         lines.append("")
         lines.append("进程：")
+        root_pids = {int(item["pid"]) for item in status.get("root_processes") or [] if item.get("pid") is not None}
         for item in status["processes"][:20]:
+            pid = int(item.get("pid") or 0)
+            prefix = "root" if pid in root_pids else f"descendant-of:{item.get('parent_pid') or '-'}"
             lines.append(
-                f"- PID {item.get('pid')} · {item.get('created_at') or '-'} · "
+                f"- {prefix} · PID {item.get('pid')} · {item.get('created_at') or '-'} · "
                 f"{item.get('command_line') or '-'}"
             )
 

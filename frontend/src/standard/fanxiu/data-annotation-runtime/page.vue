@@ -541,7 +541,7 @@ const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
 };
 
 const refreshStatus = async () => {
-  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value);
+  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value, { includeCellLogs: false });
   applyStatus(status);
 };
 

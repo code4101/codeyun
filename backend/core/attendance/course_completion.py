@@ -489,11 +489,12 @@ def _update_kqmain_active_courses(kqmain_path: Path, archived_courses: list[dict
 
 def default_kqmain_path() -> Path:
     from backend.core.settings import get_settings
+    from backend.core.attendance_behavior_tree_service import get_attendance_project_root
 
     configured = str(getattr(get_settings(), "kqmain_path", "") or "").strip()
     if configured:
         return Path(configured)
-    return Path("D:/home/chenkunze/slns/kq5034/kqmain.py")
+    return get_attendance_project_root() / "kqmain.py"
 
 
 def run_attendance_course_completion_job(

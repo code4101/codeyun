@@ -198,6 +198,23 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 
 这个设计的目的不是继续固定死行为树，而是保留旧版成熟任务目录，同时允许人工随时通过 Scheduler 发送单个任务，例如临时收到礼包码后手动执行 `gift_code_redeem`。
 
+## 运维入口优先级
+
+如果问题本质是“凡修行为树服务是否在跑、要不要重启、当前 owner/队列/隔离/doctor 怎么样”，默认不要先从 `/data-annotation/runtime/task/*` 或 Scheduler 业务入口下手，而是按下面顺序：
+
+1. 先读 [`行为树运行单元运维约定`](./行为树运行单元运维约定.md)
+2. 再用统一 runtime item action：
+   - `inspect`：读取 runtime/owner/manual_job/isolation/doctor 摘要
+   - `restart`：`shutdown_service -> ensure service`
+   - `wake`：只唤醒 resident loop 重新轮询
+3. 只有在明确处理中断当前业务任务、提交手动作业、单步识别或调度具体 Scheduler task 时，才进入 `/data-annotation/runtime/task/*`、`/data-annotation/scheduler/task/*`
+
+边界：
+
+- `/data-annotation/runtime/task/stop` 不是停机接口，只是“停止当前业务任务”。
+- `/data-annotation/runtime/task/tick` 不是行为树重启或调度诊断入口，只是兼容的“提交单步识别/手动作业”入口。
+- `scheduler/task/run-now` 不是行为树运维入口，它的职责是提交某个具体任务实例。
+
 调度规则：
 
 - 常驻行为树每轮按 `守护 -> 手动作业 -> 自动作业` 的顺序检查。

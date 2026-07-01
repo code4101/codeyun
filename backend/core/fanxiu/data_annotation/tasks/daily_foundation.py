@@ -756,6 +756,7 @@ class DailyFoundationTaskMixin:
     ):
         runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        returned_to_list = scene_id == 178
         if scene_id != 178:
             view181 = runtime.get_view(181)
             leave_shape = view181.get_shape("离开") if isinstance(view181, View) else None
@@ -766,12 +767,16 @@ class DailyFoundationTaskMixin:
                 leave_shape.click(runtime)
                 try:
                     yield from runtime.wait_view_id(178, timeout=20.0, label="日常_首领：等待首领列表 #178")
+                    returned_to_list = True
                 except Exception as exc:
                     with self._lock:
                         self._log_locked("warning", f"日常_首领：离开 #181 后未能回到 #178 读取刷新时间：{exc}")
             else:
                 with self._lock:
                     self._log_locked("warning", "日常_首领：缺少 #181「离开」标注，无法回列表读取 #182 刷新时间")
+        if returned_to_list:
+            next_time, source = self._record_daily_boss_next_time_from_current_list(ctx, payload)
+            return next_time, f"已识别 #181 封印完成；{source}"
 
         challenge_remaining = payload.get("_daily_boss_challenge_remaining")
         try:
@@ -788,9 +793,11 @@ class DailyFoundationTaskMixin:
                 last_result="success",
             )
             return next_time, "挑战前剩余奖励次数为 1，已识别 #181 封印完成，奖励次数已用尽"
-
+        if challenge_remaining_int is not None:
+            next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
+            return next_time, f"已识别 #181 封印完成；挑战前剩余奖励次数为 {challenge_remaining_int}，半小时后复查刷新 CD"
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-        return next_time, "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查剩余奖励次数"
+        return next_time, "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查刷新 CD"
 
     def _record_daily_boss_next_time_from_current_list(self, ctx: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
         remaining = self._daily_boss_reward_remaining_from_scene(ctx, ctx.get("images", {}).get(178) or {})
@@ -1702,9 +1709,38 @@ class DailyFoundationTaskMixin:
         label: str,
         require_world_like: bool = True,
     ):
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if self._is_daily_weekly_dungeon_tiangong_page_text(text):
+            action_runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+            self._log("action", f"{label}：当前在周本玉霄天宫页，点击 #326「返回」恢复起点")
+            action_runtime.click_shape_center(326, "返回")
+            yield from action_runtime.wait_action_settle(1.0)
+            target = yield from action_runtime.wait_view(325, 69, 34, timeout=18.0, label=f"{label}：等待离开周本玉霄天宫页")
+            target_id = int(target.id) if isinstance(target, View) and target.id is not None else int(target)
+            if target_id == 325:
+                self._log("action", f"{label}：从 #325 周本入口返回日常页")
+                action_runtime.click_shape_center(325, "返回")
+                yield from action_runtime.wait_action_settle(1.0)
+                target = yield from action_runtime.wait_view(69, 34, timeout=18.0, label=f"{label}：等待离开周本入口页")
+                target_id = int(target.id) if isinstance(target, View) and target.id is not None else int(target)
+            if target_id == 34:
+                ctx["_go_scene_known_scene_id"] = 34
+            return True
+        compact_text = re.sub(r"\s+", "", _sanitize_ocr_text(str(text or "")))
+        if "拜仙台" in compact_text and ("入驻仙侣" in compact_text or "全属性加成" in compact_text):
+            action_runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+            ref_image = (ctx.get("images") or {}).get(34) if isinstance(ctx.get("images"), dict) else None
+            click_view = View(ref_image if isinstance(ref_image, dict) else {"filename": "world_runtime.png", "width": 900, "height": 1600})
+            self._log("action", f"{label}：当前在仙府拜仙台页，点击左下返回恢复起点")
+            action_runtime.click_frame_point(click_view, 76, 1490)
+            yield from action_runtime.wait_action_settle(1.5)
+            target = yield from action_runtime.wait_view(69, 34, timeout=25.0, label=f"{label}：等待离开仙府拜仙台页")
+            target_id = int(target.id) if isinstance(target, View) and target.id is not None else int(target)
+            if target_id == 34:
+                ctx["_go_scene_known_scene_id"] = 34
+            return True
         if require_world_like and not self._daily_assistant_text_is_world_like(text):
             return False
-        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         ref_image = images.get(34) if isinstance(images.get(34), dict) else {"filename": "world_runtime.png", "width": 900, "height": 1600}
         runtime = self._fanxiu_observer(ctx, stop_event, frame_data_url=frame)
         baiye_scene_id = self._baiye_stack_scene_from_text(text)
@@ -1731,6 +1767,30 @@ class DailyFoundationTaskMixin:
                 ctx["_go_scene_known_scene_id"] = 34
             yield from action_runtime.wait_action_settle(1.0)
             return True
+        side_popup_scene_id, side_popup_score = self._identify_scene_number(ctx, frame, [233, 225])
+        if side_popup_scene_id in {233, 225} and self._scene_matches_id(int(side_popup_scene_id), float(side_popup_score or 0.0)):
+            action_runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+            popup_id = int(side_popup_scene_id)
+            self._log("action", f"{label}：当前实际为 #{popup_id} {float(side_popup_score or 0.0):.0f}%，点击「空白」关闭资源不足提示")
+            yield from action_runtime.wait_click(popup_id, "空白", timeout=8.0)
+            yield from action_runtime.wait_action_settle(1.0)
+            scene_after_popup, _score_after_popup, frame_after_popup = action_runtime.current_scene([228, 223, 69, 34], update=True)
+            if scene_after_popup == 34:
+                ctx["_go_scene_known_scene_id"] = 34
+                return True
+            if scene_after_popup == 69:
+                return True
+            text_after_popup = action_runtime.ocr_text(frame_after_popup)
+            recovered = yield from self._leave_world_side_scene_if_present(
+                ctx,
+                stop_event,
+                frame_after_popup,
+                text_after_popup,
+                label=label,
+                require_world_like=False,
+            )
+            if recovered:
+                return True
         width, height = self._frame_size(ref_image)
         click_image = ref_image
         matches: list[tuple[float, float, str]] = []
@@ -2627,6 +2687,16 @@ class DailyFoundationTaskMixin:
         )
         if status == "not_found":
             raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
+        if payload.get("stop_after_daily_entry") or payload.get("pause_after_daily_entry"):
+            yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
+            current_scene_id, score, frame = runtime.current_scene(update=True)
+            text = runtime.ocr_text(frame)
+            scene_label = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
+            self._log(
+                "warning",
+                f"日常_奇袭魔界：已点击日常入口，按调试要求暂停；当前 {scene_label} {score:.0f}%，OCR={text[:120]}",
+            )
+            return "skipped"
         try:
             yield from runtime.wait_view(319, label="日常_奇袭魔界：等待奇袭魔界 #319")
         except TimeoutError as exc:

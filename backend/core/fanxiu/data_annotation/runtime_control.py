@@ -52,6 +52,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 from backend.core.fanxiu.data_annotation.scheduler import (
     build_data_annotation_scheduler_plan,
     merge_data_annotation_scheduler_task_updates,
+    preserve_data_annotation_scheduler_runtime_state,
     data_annotation_scheduler_run_now_task,
     data_annotation_scheduler_time_order_key,
     data_annotation_scheduler_task_plan_reason,
@@ -480,10 +481,21 @@ def read_scheduler_tasks(
     return sorted(tasks, key=data_annotation_scheduler_time_order_key)
 
 
-def write_scheduler_tasks(tasks: list[dict[str, Any]], *, scheduler_state_path: Path | None = None) -> None:
+def write_scheduler_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    scheduler_state_path: Path | None = None,
+    preserve_runtime_state: bool = True,
+) -> None:
+    path = scheduler_state_path or fanxiu_data_annotation_scheduler_state_path()
+    payload = [data_annotation_scheduler_task_state(task) for task in tasks]
+    if preserve_runtime_state:
+        existing = read_data_annotation_json(path, [])
+        if isinstance(existing, list):
+            payload = preserve_data_annotation_scheduler_runtime_state(payload, existing)
     write_data_annotation_json(
-        scheduler_state_path or fanxiu_data_annotation_scheduler_state_path(),
-        [data_annotation_scheduler_task_state(task) for task in tasks],
+        path,
+        payload,
     )
 
 
@@ -556,7 +568,7 @@ def reset_scheduler_task_runs(
             task[key] = None
         if clear_next_time:
             task["next_time"] = None
-    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
 
     if reset_ids and isinstance(task_facts, dict):
         changed = False
@@ -565,7 +577,11 @@ def reset_scheduler_task_runs(
                 task_facts.pop(task_id, None)
                 changed = True
         if changed:
-            write_world_facts(facts, world_facts_path)
+            write_data_annotation_world_facts(
+                world_facts_path or fanxiu_data_annotation_world_facts_path(),
+                facts,
+                preserve_existing_task_facts=False,
+            )
 
     return {
         "reset_count": len(reset_ids),

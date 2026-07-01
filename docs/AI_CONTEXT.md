@@ -1,13 +1,13 @@
 # AI Context: CodeYun
 
-> **Last Updated**: 2026-06-21
+> **Last Updated**: 2026-07-01
 > **Purpose**: 本文档旨在为AI提供CodeYun项目的全局上下文、架构设计与核心逻辑，以便快速理解代码并进行准确的修改。
 
 ## 1. 项目概览 (Project Overview)
 
-**CodeYun** 是一个**完全独立**的个人超级工具集成平台，与其他项目（如 `pyxllib`, `xlproject` 等）**无任何依赖关系**。
+**CodeYun** 是个人超级工具集成平台，主仓库在 `codeyun`，但部分运行单元会显式编排和托管外部同源运行时，例如 `xlproject/xlsln/kq5034` 的考勤行为树。
 
-> **CRITICAL**: 在进行代码搜索、分析或修改时，**严格限制在 `D:\home\chenkunze\slns\codeyun` 目录下**。严禁搜索或引用项目根目录之外的任何文件。
+> **CRITICAL**: 默认优先在 `D:\home\chenkunze\slns\codeyun` 内搜索、分析和修改；但当任务明确涉及考勤行为树、凡修行为树、运行单元托管、外部脚本接管或 CodeYun 调用的外部业务运行时时，必须把 `codeyun` 视为控制层、把对应外部仓库视为被托管运行时，一并检查真实入口与状态文件，不能假装 `codeyun` 与 `xlproject/pyxllib` 完全无关。
 
 
 *   **核心能力**:
@@ -17,6 +17,7 @@
     *   **远程文件系统**: 浏览和操作远程设备的文件目录。
     *   **远端 Sub-Agent（设计中）**: 通过设备能力探测和受控运行接口调用远端 Codex CLI 等 agent runtime。设计见 `docs/远端SubAgent能力设计.md`，实现前不要继续把它当成默认可用能力。
     *   **凡修逆向/图鉴上下文**: 凡人修仙传手游的资源、APK、IL2CPP、热更新 Lua、图鉴和抓包分析有独立 AI 交接文档：`docs/FANXIU_REVERSE_CONTEXT.md`。后续 agent 接手相关任务时先读该文档，再看具体代码或外部导出目录。若用户提到增量更新凡修逆向、更新凡修图鉴或同步最新游戏数据，还必须遵守 `docs/凡修逆向增量更新约定.md`：默认使用快照、diff、选择性合并的增量机制，不要无理由暴力全量重算或覆盖业务数据。若任务涉及凡修抓包服务、pcap、协议解析、储物袋、拜谒榜单、活动排行或运行态数据入库，先读 `docs/凡修抓包服务架构约定.md` 和 `docs/凡修抓包业务数据落库设计.md`：抓包监控器、解析队列、业务增量写入器和图鉴只读展示必须解耦，已探明业务域必须由抓包服务增量写入数据库；图鉴页绝对禁止触发抓包、解析、同步、重建或历史补扫。若用户对照图鉴页反馈解析/更新问题，优先处理抓包服务和业务写入链路，只有数据库已有正确事实但展示错误时才改图鉴页。若任务涉及凡修 data-annotation、Runtime、Scheduler、守护、MuMu 画面流或资产树，先读 `docs/凡修data-annotation运行设备约定.md`：当前凡修自动化只以 `codepc_mf` 为运行目标，`codepc_mi15` 旧凡修数据不再作为事实来源。若任务涉及凡修业务任务实现，先读 `docs/凡修行为树业务能力约定.md`，优先复用场景移动、弹窗处理、滚动窗口安全查找点击和局部结构读取能力，不在单个任务里写死坐标、滚动次数或目标位置。若任务涉及补标、缺标注或新界面探索，先读 `docs/凡修data-annotation自动探索标注数据.md`。若任务涉及 `/fanxiu/data-annotation/runtime`、行为树、守护/作业清单、开关、tick 或运行日志，先读 `docs/凡修行为树运行框架约定.md`：守护和作业清单必须由后端定义，前端只展示后端状态并提交 `guard_id`/任务 id 的开关或白名单信息。临时 Runtime 探针、自定义函数或 notebook 式排查优先提交 `task_type=debug_eval` 手动作业，不要默认私有直调 `_DataAnnotationRuntimeRunner`；`debug_eval` 自动注入 `ctx`，默认 `mode=readonly`，需要真实点击/拖拽才显式用 `mode=act`。凡修弹窗标注里的 `空白` 是背景/遮罩关闭区，是有效关闭动作；不要因为它没有 `sceneJumpTarget` 就判定为缺失关闭标注。同一弹窗同时有 `空白`、`关闭`、`确定` 时优先点 `空白`，因为显式关闭按钮偏小而 `确定` 可能触发跳转/领取等业务行为。
+    *   **行为树运行单元运维**: 若任务涉及考勤行为树或凡修行为树的启动、重启、停机、单实例诊断、状态文件、日志文件或“旧框架是否还有效”的判断，先读 `docs/行为树运行单元运维约定.md`。该文档定义了 CodeYun 作为控制层的正式入口、状态文件位置、旧 `xlserver`/脚本直觉的废弃边界，以及对外部 `xlproject` 运行时的接管方式。当前统一 runtime action 已明确到：考勤 `inspect/restart/reset`，凡修 `inspect/restart/wake`；不要再把凡修 `wake` 误读为 restart，也不要把 attendance Windows descendant 进程误读为第二棵 root 行为树。凡修源码路径优先认 `backend.core.fanxiu.*`；`backend.core.fanxiu_behavior_tree` 与 `backend.core.fanxiu_data_annotation_*` 仅为兼容别名。
 
 *   **技术栈**:
     *   **Backend**: Python 3.10+, FastAPI, Uvicorn, APScheduler (定时任务), psutil (进程管理)。

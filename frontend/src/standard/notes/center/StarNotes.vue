@@ -403,6 +403,7 @@ const hasCachedNodePositions = () => Object.keys(nodePositionCache.value).length
 const shouldDeferAutoRelayout = (hadCachedNodePositions: boolean = hasCachedNodePositions()) => (
   isGlobalGraph.value
   && shouldAutoRelayoutGraph()
+  && sourceEdges.value.length > 0
   && !hadCachedNodePositions
 );
 

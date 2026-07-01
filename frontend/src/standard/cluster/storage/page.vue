@@ -265,110 +265,24 @@
       </template>
 
       <template v-else-if="shouldShowDuplicates">
-        <section class="duplicate-toolbar">
-          <label class="duplicate-field duplicate-field-rules">
-            <span class="storage-field-label">判重规则</span>
-            <el-checkbox-group v-model="duplicateRuleFields" class="duplicate-rule-group">
-              <el-checkbox label="size" disabled>大小</el-checkbox>
-              <el-checkbox label="name">名称</el-checkbox>
-              <el-checkbox label="extension">扩展名</el-checkbox>
-              <el-checkbox label="modified_at">修改时间</el-checkbox>
-              <el-checkbox label="sha256">SHA256</el-checkbox>
-            </el-checkbox-group>
-          </label>
-
-          <label class="duplicate-field duplicate-field-min-size">
-            <span class="storage-field-label">最小大小</span>
-            <el-input-number
-              v-model="duplicateMinSizeMb"
-              class="duplicate-number-input"
-              :min="0"
-              :max="1048576"
-              :step="100"
-              :precision="0"
-              controls-position="right"
-            />
-          </label>
-
-          <label class="duplicate-field duplicate-field-select">
-            <span class="storage-field-label">排序</span>
-            <el-select v-model="duplicateSortMode" class="duplicate-select">
-              <el-option label="可释放空间" value="reclaimable" />
-              <el-option label="单文件大小" value="file_size" />
-              <el-option label="整组大小" value="group_total" />
-            </el-select>
-          </label>
-
-          <label class="duplicate-field duplicate-field-select">
-            <span class="storage-field-label">来源</span>
-            <el-select v-model="duplicateSource" class="duplicate-select">
-              <el-option label="自动" value="auto" />
-              <el-option label="Everything" value="everything" />
-              <el-option label="遍历" value="filesystem" />
-            </el-select>
-          </label>
-
-          <label class="duplicate-field duplicate-field-filter">
-            <span class="storage-field-label">筛选</span>
-            <el-popover placement="bottom-start" trigger="click" :width="620" popper-class="duplicate-filter-popover">
-              <template #reference>
-                <el-button class="duplicate-filter-button">
-                  路径规则 {{ duplicateEnabledFilterCount }}/{{ duplicateFilterRules.length }}
-                </el-button>
-              </template>
-              <div class="duplicate-filter-panel">
-                <div class="duplicate-filter-header">
-                  <strong>路径规则</strong>
-                  <div class="duplicate-filter-actions">
-                    <el-button size="small" @click="addDuplicateFilterRule">+</el-button>
-                    <el-button size="small" @click="resetDuplicateFilterRules">默认</el-button>
-                  </div>
-                </div>
-                <div
-                  v-for="(rule, index) in duplicateFilterRules"
-                  :key="index"
-                  class="duplicate-filter-rule"
-                >
-                  <el-checkbox v-model="rule.enabled" />
-                  <el-select v-model="rule.action" class="duplicate-filter-action" size="small">
-                    <el-option label="排除" value="exclude" />
-                    <el-option label="包含" value="include" />
-                  </el-select>
-                  <el-select v-model="rule.match" class="duplicate-filter-match" size="small">
-                    <el-option label="包含" value="contains" />
-                    <el-option label="前缀" value="prefix" />
-                    <el-option label="后缀" value="suffix" />
-                    <el-option label="等于" value="equals" />
-                    <el-option label="glob" value="glob" />
-                  </el-select>
-                  <el-input
-                    v-model="rule.value"
-                    class="duplicate-filter-value"
-                    size="small"
-                    placeholder="$Recycle.Bin"
-                  />
-                  <button
-                    type="button"
-                    class="duplicate-filter-remove"
-                    title="删除规则"
-                    @click="removeDuplicateFilterRule(index)"
-                  >
-                    -
-                  </button>
-                </div>
-              </div>
-            </el-popover>
-          </label>
-
-          <el-button
-            type="primary"
-            :icon="duplicateLoading ? undefined : Search"
-            :disabled="!canBrowse || duplicateLoading"
-            @click="analyzeDuplicates(1, false)"
-          >
-            {{ duplicateLoading ? '分析中' : '分析' }}
-          </el-button>
-        </section>
+        <StorageDuplicateControls
+          v-model:rule-fields="duplicateRuleFields"
+          v-model:min-size-mb="duplicateMinSizeMb"
+          v-model:sort-mode="duplicateSortMode"
+          v-model:source="duplicateSource"
+          v-model:filter-rules="duplicateFilterRules"
+          :can-browse="canBrowse"
+          :duplicate-loading="duplicateLoading"
+          :enabled-filter-count="duplicateEnabledFilterCount"
+          :page="duplicateListing?.page ?? 1"
+          :page-size="duplicateListing?.page_size ?? 1"
+          :page-count="duplicateTotalPages"
+          @add-filter-rule="addDuplicateFilterRule"
+          @analyze="analyzeDuplicates(1, false)"
+          @page-change="loadDuplicatePage"
+          @remove-filter-rule="removeDuplicateFilterRule"
+          @reset-filter-rules="resetDuplicateFilterRules"
+        />
 
         <section class="storage-summary duplicate-summary">
           <span class="summary-path" :title="duplicateDisplayPath">
@@ -455,16 +369,6 @@
           </table>
         </section>
 
-        <section class="duplicate-pagination">
-          <StandardPagination
-            :page="duplicateListing?.page ?? 1"
-            :page-size="duplicateListing?.page_size ?? 1"
-            :page-count="duplicateTotalPages"
-            :show-page-size="false"
-            :disabled="duplicateLoading"
-            @page-change="loadDuplicatePage"
-          />
-        </section>
       </template>
     </template>
 
@@ -538,7 +442,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Delete,
@@ -547,10 +451,8 @@ import {
   Loading,
   QuestionFilled,
   Refresh,
-  Search,
 } from '@element-plus/icons-vue';
 import { useRoute } from 'vue-router';
-import StandardPagination from '@/components/StandardPagination.vue';
 
 import {
   fetchDeviceEntryDeleteTask,
@@ -573,8 +475,6 @@ import {
   type DeviceFileSelector,
 } from '@/api/deviceFiles';
 import {
-  fetchWechatStorageDirectory,
-  fetchWechatStorageRoots,
   type WeChatStorageDirectoryItem,
   type WeChatStorageDirectoryListing,
   type WeChatStorageRoot,
@@ -582,7 +482,10 @@ import {
 import { taskStore, type Device } from '@/store/taskStore';
 import { monitorPolledTask } from '@/utils/longTask';
 
+const StorageDuplicateControls = defineAsyncComponent(() => import('./StorageDuplicateControls.vue'));
+
 type StorageSource = 'cluster' | 'wechat';
+type WechatArchiveApi = typeof import('@/api/wechatArchive');
 
 const props = defineProps<{ source?: StorageSource }>();
 
@@ -761,6 +664,7 @@ const DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
 
 const isWechatMode = computed(() => storageSource.value === 'wechat');
 const wechatRoots = ref<WeChatStorageRoot[]>([]);
+let wechatArchiveApiPromise: Promise<WechatArchiveApi> | null = null;
 const devices = computed<(Device | WeChatSourceEntry)[]>(() => isWechatMode.value
   ? wechatRoots.value.map((root) => ({
     id: root.device_id,
@@ -1537,6 +1441,11 @@ function normalizeWechatDirectoryListing(listing: WeChatStorageDirectoryListing)
   };
 }
 
+function loadWechatArchiveApi(): Promise<WechatArchiveApi> {
+  wechatArchiveApiPromise ||= import('@/api/wechatArchive');
+  return wechatArchiveApiPromise;
+}
+
 function createRequestForItem(listing: DeviceDirectoryListing, item: DeviceDirectoryItem): DeviceFileSelector {
   if (listing.root) {
     return {
@@ -1642,6 +1551,7 @@ function compareStorageNodes(left: StorageNode, right: StorageNode): number {
 
 async function fetchListing(request: DeviceFileSelector): Promise<DeviceDirectoryListing> {
   if (isWechatMode.value) {
+    const { fetchWechatStorageDirectory } = await loadWechatArchiveApi();
     const listing = await fetchWechatStorageDirectory({
       device_id: selectedEntryId.value,
       ...(request.absolute_path ? { absolute_path: request.absolute_path } : {}),
@@ -2047,6 +1957,7 @@ async function loadRootsForDevice(): Promise<DeviceDirectoryListing | null> {
   try {
     if (isWechatMode.value) {
       if (!wechatRoots.value.length) {
+        const { fetchWechatStorageRoots } = await loadWechatArchiveApi();
         const payload = await fetchWechatStorageRoots();
         wechatRoots.value = payload.items;
       }
@@ -2609,6 +2520,7 @@ onMounted(async () => {
   try {
     let canRestoreSelectedEntry = false;
     if (isWechatMode.value) {
+      const { fetchWechatStorageRoots } = await loadWechatArchiveApi();
       const payload = await fetchWechatStorageRoots();
       wechatRoots.value = payload.items;
       const preferred = payload.items.find((item) => item.current) ?? payload.items[0] ?? null;

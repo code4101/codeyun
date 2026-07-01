@@ -2,6 +2,7 @@ import time
 from types import SimpleNamespace
 
 from backend.api import device_entries as device_entries_api
+from backend.api import runtime_management as runtime_management_api
 from backend.core import runtime_management as runtime_core
 from backend.core import system_metrics as system_metrics_core
 from backend.models import Task, UserDevice
@@ -325,6 +326,46 @@ def test_local_device_entry_runtime_item_trigger_uses_same_runtime_kernel(
     assert response.json()["queue_task_id"] == "entry-queue-1"
 
 
+def test_local_device_entry_runtime_item_action_uses_same_runtime_kernel(
+    client,
+    session,
+    auth_user,
+    test_device,
+    monkeypatch,
+):
+    entry_response = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token-2",
+            "alias": "当前机器2",
+        },
+    )
+    assert entry_response.status_code == 200
+    entry_id = entry_response.json()["id"]
+
+    monkeypatch.setattr(
+        device_entries_api,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {
+            "item_key": item_key,
+            "action_key": action_key,
+            "status": "ok",
+        },
+    )
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/runtime/items/builtin/attendance-behavior-tree/actions/inspect"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_key": "attendance-behavior-tree",
+        "action_key": "inspect",
+        "status": "ok",
+    }
+
+
 def test_runtime_queue_uses_runtime_titles_and_preserves_duplicate_records(session, test_device, monkeypatch):
     task = Task(
         id="rime-command",
@@ -586,9 +627,10 @@ def test_attendance_behavior_tree_serializes_as_builtin_runtime_service():
     assert item["status"]["child_process_count"] == 2
     assert item["status"]["total_process_count"] == 3
     assert item["next_run_at"] == "2026-05-20 21:00:00"
-    assert item["actions"] == ["trigger", "stop", "logs", "configure"]
+    assert item["actions"] == ["trigger", "stop", "logs", "configure", "inspect", "restart", "reset"]
     assert "PID 2233" in item["description"]
-    assert "子进程 2" in item["description"]
+    assert "root 1" in item["description"]
+    assert "descendant 2" in item["description"]
 
 
 def test_trigger_builtin_attendance_behavior_tree_runtime_item_starts_service(session, monkeypatch):
@@ -629,6 +671,70 @@ def test_stop_builtin_attendance_behavior_tree_runtime_item_stops_service(monkey
 
     assert captured == {"called": True}
     assert result == {"status": "stopped", "service": {"key": "attendance-behavior-tree", "running": False}}
+
+
+def test_run_builtin_attendance_behavior_tree_inspect_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "show_attendance_behavior_tree_schedule",
+        lambda limit=20: {"status": "ok", "limit": limit},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("attendance-behavior-tree", "inspect")
+
+    assert result == {"status": "ok", "limit": 20}
+
+
+def test_run_builtin_attendance_behavior_tree_restart_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "restart_attendance_behavior_tree_service",
+        lambda: {"status": "started", "service": {"running": True}},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("attendance-behavior-tree", "restart")
+
+    assert result == {"status": "started", "service": {"running": True}}
+
+
+def test_run_builtin_attendance_behavior_tree_reset_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "reset_attendance_behavior_tree_state",
+        lambda: {"status": "ok", "service": {"running": False}},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("attendance-behavior-tree", "reset")
+
+    assert result == {"status": "ok", "service": {"running": False}}
+
+
+def test_runtime_action_endpoint_runs_builtin_attendance_action(client, test_device, monkeypatch):
+    monkeypatch.setattr(
+        runtime_management_api,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+
+    response = client.post(
+        "/api/runtime/items/builtin/attendance-behavior-tree/actions/inspect",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_key": "attendance-behavior-tree",
+        "action_key": "inspect",
+        "status": "ok",
+    }
 
 
 def test_builtin_attendance_behavior_tree_logs_use_service_log_builder(session, monkeypatch):
@@ -737,6 +843,258 @@ def test_disabled_fanxiu_behavior_tree_runtime_item_cannot_start_on_non_executio
     else:
         raise AssertionError("expected HTTPException")
     assert captured == {}
+
+
+def test_fanxiu_behavior_tree_serializes_inspect_action():
+    item = runtime_core._serialize_fanxiu_behavior_tree_service_item({
+        "running": True,
+        "state": "running",
+        "state_label": "运行中",
+        "current_scene": 121,
+        "current_task": "go_scene",
+        "phase": "manual_job",
+        "guard_enabled": True,
+        "service_running": True,
+        "task_running": True,
+        "updated_at": "2026-07-01 13:00:00",
+        "runtime_state_path": "D:/tmp/runtime_state.json",
+        "world_facts_path": "D:/tmp/world_facts.json",
+        "route_path": "/fanxiu/data-annotation/runtime",
+        "last_error": "",
+    })
+
+    assert item["key"] == "fanxiu-behavior-tree"
+    assert item["kind"] == "service"
+    assert item["actions"] == ["trigger", "stop", "logs", "configure", "inspect", "restart", "wake"]
+    assert item["status"]["current_scene"] == 121
+
+
+def test_run_builtin_fanxiu_behavior_tree_inspect_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_fanxiu_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "inspect_fanxiu_behavior_tree_service",
+        lambda: {"status": "ok", "owner": {"active": True}},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("fanxiu-behavior-tree", "inspect")
+
+    assert result == {"status": "ok", "owner": {"active": True}}
+
+
+def test_run_builtin_fanxiu_behavior_tree_wake_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_fanxiu_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "wake_fanxiu_behavior_tree_service",
+        lambda: {"status": "ok", "action": "wake"},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("fanxiu-behavior-tree", "wake")
+
+    assert result == {"status": "ok", "action": "wake"}
+
+
+def test_run_builtin_fanxiu_behavior_tree_restart_action(monkeypatch):
+    monkeypatch.setattr(runtime_core, "is_fanxiu_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_core,
+        "restart_fanxiu_behavior_tree_service",
+        lambda: {"status": "ok", "action": "restart"},
+    )
+
+    result = runtime_core.run_builtin_runtime_item_action("fanxiu-behavior-tree", "restart")
+
+    assert result == {"status": "ok", "action": "restart"}
+
+
+def test_restart_attendance_behavior_tree_service_replaces_existing(monkeypatch):
+    captured = {}
+
+    def fake_start(*, replace_existing: bool = True):
+        captured["replace_existing"] = replace_existing
+        return {"status": "started"}
+
+    monkeypatch.setattr(runtime_core, "start_attendance_behavior_tree_service", fake_start)
+
+    result = runtime_core.restart_attendance_behavior_tree_service()
+
+    assert result == {"status": "started"}
+    assert captured == {"replace_existing": True}
+
+
+def test_restart_fanxiu_behavior_tree_service_requests_shutdown_then_ensure(monkeypatch):
+    owner_states = iter([
+        {"active": True, "pid": 1001},
+        {"active": False, "pid": 1001},
+    ])
+    captured = {}
+
+    monkeypatch.setattr(
+        runtime_core,
+        "_get_data_annotation_behavior_tree_status",
+        lambda: {"entry_id": "entry-1", "guard_entry_id": "", "service_running": True},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "request_fanxiu_behavior_tree_service_shutdown",
+        lambda *, entry_id="", reason="": {"entry_id": entry_id, "reason": reason, "command": "shutdown_service"},
+    )
+    monkeypatch.setattr(runtime_core, "read_fanxiu_behavior_tree_service_owner", lambda: next(owner_states))
+    monkeypatch.setattr(runtime_core, "resolve_fanxiu_entry", lambda entry_id: {"entry_id": entry_id})
+
+    def fake_ensure(entry, entry_id=None, **kwargs):
+        captured["entry"] = entry
+        captured["entry_id"] = entry_id
+        captured["kwargs"] = kwargs
+        return {"service_running": True, "entry_id": entry_id}
+
+    monkeypatch.setattr(runtime_core, "ensure_fanxiu_behavior_tree_service", fake_ensure)
+
+    result = runtime_core.restart_fanxiu_behavior_tree_service(timeout_seconds=2.0, poll_seconds=0.01)
+
+    assert result["action"] == "restart"
+    assert result["shutdown_request"]["command"] == "shutdown_service"
+    assert result["shutdown_request"]["reason"] == "runtime_management_restart"
+    assert captured["entry"] == {"entry_id": "entry-1"}
+    assert captured["entry_id"] == "entry-1"
+    assert captured["kwargs"] == {}
+    assert result["service"] == {"service_running": True, "entry_id": "entry-1"}
+
+
+def test_runtime_action_endpoint_runs_builtin_fanxiu_action(client, test_device, monkeypatch):
+    monkeypatch.setattr(
+        runtime_management_api,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+
+    response = client.post(
+        "/api/runtime/items/builtin/fanxiu-behavior-tree/actions/inspect",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_key": "fanxiu-behavior-tree",
+        "action_key": "inspect",
+        "status": "ok",
+    }
+
+
+def test_runtime_action_endpoint_runs_builtin_fanxiu_wake_action(client, test_device, monkeypatch):
+    monkeypatch.setattr(
+        runtime_management_api,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+
+    response = client.post(
+        "/api/runtime/items/builtin/fanxiu-behavior-tree/actions/wake",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_key": "fanxiu-behavior-tree",
+        "action_key": "wake",
+        "status": "ok",
+    }
+
+
+def test_runtime_action_endpoint_runs_builtin_fanxiu_restart_action(client, test_device, monkeypatch):
+    monkeypatch.setattr(
+        runtime_management_api,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "run_builtin_runtime_item_action",
+        lambda item_key, action_key: {"item_key": item_key, "action_key": action_key, "status": "ok"},
+    )
+
+    response = client.post(
+        "/api/runtime/items/builtin/fanxiu-behavior-tree/actions/restart",
+        headers=_headers(test_device),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_key": "fanxiu-behavior-tree",
+        "action_key": "restart",
+        "status": "ok",
+    }
+
+
+def test_builtin_fanxiu_behavior_tree_logs_include_owner_queue_and_doctor(session, monkeypatch):
+    item = runtime_core._serialize_fanxiu_behavior_tree_service_item({
+        "running": True,
+        "state": "idle",
+        "state_label": "常驻",
+        "route_path": "/fanxiu/data-annotation/runtime",
+        "runtime_state_path": "D:/tmp/runtime_state.json",
+        "world_facts_path": "D:/tmp/world_facts.json",
+        "logs": [{"time": "2026-07-01 13:10:00", "kind": "info", "message": "service ready"}],
+    }, include_logs=True)
+    monkeypatch.setattr(
+        runtime_core,
+        "_collect_builtin_jobs",
+        lambda session: {
+            "items": [],
+            "queue": None,
+            "runner_running": False,
+            "next_wake_at": None,
+            "runner_error": None,
+        },
+    )
+    monkeypatch.setattr(runtime_core, "_collect_builtin_services", lambda: {"items": [item]})
+    monkeypatch.setattr(
+        runtime_core,
+        "read_fanxiu_behavior_tree_service_owner",
+        lambda: {"active": True, "pid": 4321, "step": "scheduler_poll"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "read_fanxiu_job_group_isolation",
+        lambda: {"active": True, "reason": "local_enqueue"},
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "fanxiu_data_annotation_manual_jobs",
+        lambda: [{"id": "job-1", "status": "queued", "task_type": "go_scene", "label": "回世界"}],
+    )
+    monkeypatch.setattr(
+        runtime_core,
+        "read_doctor_watch_latest",
+        lambda: {
+            "ok": True,
+            "exists": True,
+            "path": "D:/tmp/doctor.json",
+            "message": "attention: due tasks pending",
+            "heartbeat": {"active": True, "updated_at": "2026-07-01 13:12:00", "pid": 5566},
+            "snapshot": {"maintenance": {"severity": "attention", "summary": "due tasks pending"}},
+        },
+    )
+
+    payload = runtime_core.get_runtime_item_logs("builtin", "fanxiu-behavior-tree", session)
+
+    assert payload["kind"] == "service"
+    assert any("Owner：active=True pid=4321 step=scheduler_poll" in line for line in payload["logs"])
+    assert any("普通作业隔离：active=True reason=local_enqueue" in line for line in payload["logs"])
+    assert any("手动作业队列：1" in line for line in payload["logs"])
+    assert any("Doctor：attention" in line for line in payload["logs"])
+    assert any("动作语义：stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询" in line for line in payload["logs"])
 
 
 def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):

@@ -446,6 +446,74 @@ def test_runtime_wait_click_then_view_infers_scene_jump_target(monkeypatch):
     ]
 
 
+def test_runtime_wait_click_then_shape_retries_when_source_remains(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [{"title": "仙市", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}])
+    image247 = _image("仙市", "0247.png", [{"title": "秘藏阁", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.1}])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {34: image34, 247: image247}, "asset_tree": [image34, image247]},
+        stop_event=threading.Event(),
+    )
+    actions: list[tuple] = []
+    wait_shape_calls = {"count": 0}
+
+    def fake_wait_click(frame, shape, **kwargs):
+        actions.append(("wait_click", getattr(frame, "id", frame), getattr(shape, "title", shape), kwargs))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(seconds=1.0):
+        actions.append(("settle", seconds))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_shape(frame, shape, **kwargs):
+        wait_shape_calls["count"] += 1
+        actions.append(("wait_shape", getattr(frame, "id", frame), getattr(shape, "title", shape), kwargs))
+        if False:
+            yield None
+        if wait_shape_calls["count"] == 1:
+            raise TimeoutError("秘藏阁未出现")
+        return "frame"
+
+    def fake_current_scene(*args, **kwargs):
+        actions.append(("current_scene", args, kwargs))
+        return 34, 100.0, "frame"
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "wait_shape", fake_wait_shape)
+    monkeypatch.setattr(runtime, "current_scene", fake_current_scene)
+
+    result = _drain_generator(
+        runtime.wait_click_then_shape(
+            34,
+            "仙市",
+            247,
+            "秘藏阁",
+            timeout=6.0,
+            settle_seconds=2.0,
+            retry_if_source_remains=True,
+            max_clicks=2,
+            label="等待仙市入口页",
+        )
+    )
+
+    assert result == "frame"
+    assert [action[0] for action in actions] == [
+        "wait_click",
+        "settle",
+        "wait_shape",
+        "current_scene",
+        "wait_click",
+        "settle",
+        "wait_shape",
+    ]
+
+
 def test_runtime_wait_click_then_view_records_landing_frequency(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     baiye_shape = {"title": "拜谒", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1, "sceneJumpTarget": "264"}
@@ -779,6 +847,31 @@ def test_runtime_cell_logs_prefers_persisted_cell_and_falls_back_to_runtime_logs
     assert payload["cells"][0]["entries"][0]["message"] == "提交 cell"
     assert payload["cells"][1]["title"] == "守护 cell"
     assert payload["cells"][1]["source"].startswith("# 历史运行日志回放")
+
+
+def test_runtime_status_can_skip_cell_logs(monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "ensure_feature_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        fanxiu_api,
+        "_data_annotation_runtime_status",
+        lambda **_kwargs: {
+            "ok": True,
+            "status": "idle",
+            "message": "ready",
+            "cell_logs": [{"id": "cell-1", "title": "历史 cell", "entries": [{"message": "huge"}]}],
+        },
+    )
+    current_user = User(id=1, username="tester", hashed_password="x", is_active=True)
+
+    response = fanxiu_api.get_fanxiu_data_annotation_runtime_status(
+        entry_id="",
+        include_cell_logs=False,
+        current_user=current_user,
+        session=None,
+    )
+
+    assert response.message == "ready"
+    assert response.cell_logs == []
 
 
 def test_ocr_row_clicks_in_shape_uses_shape_center_x_and_filters_text():
@@ -10087,6 +10180,65 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("click_shape_center_then_view", 321, "返回", (320,), {}),
         ("wait_click", 320, "返回"),
         ("wait_click", 319, "返回"),
+    ]
+
+
+def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        scene_calls = 0
+
+        def current_scene(self, preferred=None, *, update=False):
+            calls.append(("current_scene", tuple(preferred or ()), update))
+            self.scene_calls += 1
+            if self.scene_calls == 1:
+                return 69, 100.0, "daily-frame"
+            return 47, 96.0, "popup-frame"
+
+        def ocr_text(self, frame):
+            calls.append(("ocr_text", frame))
+            return "日常" if frame == "daily-frame" else "弹窗"
+
+        def open_daily_entry(self, **kwargs):
+            calls.append((
+                "open_daily_entry",
+                kwargs.get("label"),
+                kwargs.get("title_pattern"),
+                kwargs.get("progress_can_mark_done"),
+            ))
+            return done("open")
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def wait_view(self, *_args, **_kwargs):
+            raise AssertionError("pause branch must not wait for #319")
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {"stop_after_daily_entry": True})
+    )
+
+    assert result == "skipped"
+    assert calls == [
+        ("current_scene", (69, 34), True),
+        ("ocr_text", "daily-frame"),
+        ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
+        ("wait_action_settle", 1.5),
+        ("current_scene", (), True),
+        ("ocr_text", "popup-frame"),
     ]
 
 

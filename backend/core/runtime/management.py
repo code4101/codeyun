@@ -57,6 +57,8 @@ from backend.core.attendance.behavior_tree_service import (
     build_attendance_behavior_tree_log_lines,
     get_attendance_behavior_tree_status,
     is_attendance_behavior_tree_service_enabled,
+    reset_attendance_behavior_tree_state,
+    show_attendance_behavior_tree_schedule,
     start_attendance_behavior_tree_service,
     stop_attendance_behavior_tree_service,
 )
@@ -69,14 +71,20 @@ from backend.core.fanxiu.packet.service_runtime import (
     stop_fanxiu_packet_service,
 )
 from backend.core.fanxiu.runtime.behavior_tree import (
+    fanxiu_data_annotation_manual_jobs,
     ensure_fanxiu_behavior_tree_service,
     fanxiu_data_annotation_runtime_dir,
     fanxiu_data_annotation_runtime_status,
     fanxiu_data_annotation_runtime_state_path,
     fanxiu_data_annotation_world_facts_path,
+    read_fanxiu_behavior_tree_service_owner,
+    read_fanxiu_job_group_isolation,
+    request_fanxiu_behavior_tree_service_shutdown,
+    request_fanxiu_behavior_tree_wake,
+    resolve_fanxiu_entry,
     stop_fanxiu_behavior_tree_current_task,
 )
-from backend.core.fanxiu.data_annotation.runtime_control import ensure_doctor_watch_background
+from backend.core.fanxiu.data_annotation.runtime_control import ensure_doctor_watch_background, read_doctor_watch_latest
 from backend.core.runtime.units import (
     command_runtime_group,
     command_runtime_queue_name,
@@ -645,11 +653,11 @@ def _behavior_tree_service_description(status: dict[str, Any]) -> str:
     if status.get("pid"):
         parts.append(f"PID {status.get('pid')}")
     process_count = int(status.get("process_count") or 0)
-    if process_count > 1:
-        parts.append(f"{process_count} 个行为树")
+    if process_count:
+        parts.append(f"root {process_count}")
     child_process_count = int(status.get("child_process_count") or 0)
     if child_process_count:
-        parts.append(f"子进程 {child_process_count}")
+        parts.append(f"descendant {child_process_count}")
     next_run_at = status.get("next_run_at")
     if next_run_at:
         parts.append(f"下次 {next_run_at}")
@@ -696,7 +704,7 @@ def _serialize_attendance_behavior_tree_service_item(status: dict[str, Any] | No
             "last_error": payload.get("last_error") or "",
             "controllable": True,
         },
-        "actions": ["trigger", "stop", "logs", "configure"],
+        "actions": ["trigger", "stop", "logs", "configure", "inspect", "restart", "reset"],
         "raw": payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
@@ -984,6 +992,108 @@ def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[st
     return {"status": "stopped", "service": _get_data_annotation_behavior_tree_status()}
 
 
+def _serialize_fanxiu_manual_job_item(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(job.get("id") or ""),
+        "status": str(job.get("status") or ""),
+        "task_type": str(job.get("task_type") or ""),
+        "label": str(job.get("label") or ""),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+    }
+
+
+def _summarize_doctor_watch_latest(payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    heartbeat = payload.get("heartbeat") if isinstance(payload.get("heartbeat"), dict) else {}
+    maintenance = snapshot.get("maintenance") if isinstance(snapshot.get("maintenance"), dict) else {}
+    return {
+        "ok": bool(payload.get("ok")),
+        "exists": bool(payload.get("exists")),
+        "path": str(payload.get("path") or ""),
+        "message": str(payload.get("message") or ""),
+        "heartbeat": {
+            "active": bool(heartbeat.get("active")),
+            "updated_at": heartbeat.get("updated_at"),
+            "pid": heartbeat.get("pid"),
+            "latest_path": heartbeat.get("latest_path"),
+        },
+        "snapshot": {
+            "checked_at": snapshot.get("checked_at"),
+            "summary": snapshot.get("summary"),
+            "runtime": snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {},
+            "maintenance": {
+                "severity": maintenance.get("severity"),
+                "summary": maintenance.get("summary"),
+                "blocking_count": maintenance.get("blocking_count"),
+                "due_task_count": maintenance.get("due_task_count"),
+            },
+        },
+    }
+
+
+def inspect_fanxiu_behavior_tree_service() -> dict[str, Any]:
+    status = _get_data_annotation_behavior_tree_status()
+    manual_jobs = fanxiu_data_annotation_manual_jobs()
+    return {
+        "status": "ok",
+        "service": status,
+        "owner": read_fanxiu_behavior_tree_service_owner(),
+        "manual_job_count": len(manual_jobs),
+        "manual_jobs": [_serialize_fanxiu_manual_job_item(job) for job in manual_jobs[:20] if isinstance(job, dict)],
+        "isolation": read_fanxiu_job_group_isolation(),
+        "doctor_watch": _summarize_doctor_watch_latest(read_doctor_watch_latest()),
+    }
+
+
+def restart_attendance_behavior_tree_service() -> dict[str, Any]:
+    return start_attendance_behavior_tree_service(replace_existing=True)
+
+
+def wake_fanxiu_behavior_tree_service() -> dict[str, Any]:
+    status = _get_data_annotation_behavior_tree_status()
+    entry_id = str(status.get("entry_id") or status.get("guard_entry_id") or "")
+    request = request_fanxiu_behavior_tree_wake(
+        entry_id=entry_id,
+        reason="runtime_management_action",
+    )
+    refreshed = _get_data_annotation_behavior_tree_status()
+    return {
+        "status": "ok",
+        "action": "wake",
+        "request": request,
+        "service": refreshed,
+    }
+
+
+def restart_fanxiu_behavior_tree_service(*, timeout_seconds: float = 15.0, poll_seconds: float = 0.5) -> dict[str, Any]:
+    before = _get_data_annotation_behavior_tree_status()
+    entry_id = str(before.get("entry_id") or before.get("guard_entry_id") or "")
+    shutdown_request = request_fanxiu_behavior_tree_service_shutdown(
+        entry_id=entry_id,
+        reason="runtime_management_restart",
+    )
+    deadline = time.time() + max(1.0, float(timeout_seconds or 15.0))
+    owner = read_fanxiu_behavior_tree_service_owner()
+    while time.time() < deadline:
+        owner = read_fanxiu_behavior_tree_service_owner()
+        if not bool(owner.get("active")):
+            break
+        time.sleep(max(0.1, float(poll_seconds or 0.5)))
+    if bool(owner.get("active")):
+        raise HTTPException(status_code=409, detail="凡修行为树仍未停止，暂不能重启")
+
+    entry = resolve_fanxiu_entry(entry_id)
+    refreshed = ensure_fanxiu_behavior_tree_service(entry, entry_id or None)
+    return {
+        "status": "ok",
+        "action": "restart",
+        "shutdown_request": shutdown_request,
+        "owner_before_restart": owner,
+        "service": refreshed,
+    }
+
+
 def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
     parts = [str(status.get("state_label") or "")]
     current_scene = status.get("current_scene")
@@ -1048,7 +1158,7 @@ def _serialize_fanxiu_behavior_tree_service_item(
             "last_error": payload.get("last_error") or "",
             "controllable": True,
         },
-        "actions": ["trigger", "stop", "logs", "configure"],
+        "actions": ["trigger", "stop", "logs", "configure", "inspect", "restart", "wake"],
         "raw": raw_payload,
         "schedule_kind": "manual",
         "timeout_policy": "none",
@@ -1227,11 +1337,30 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return build_attendance_behavior_tree_log_lines()
     if item.get("key") == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        owner = read_fanxiu_behavior_tree_service_owner()
+        isolation = read_fanxiu_job_group_isolation()
+        manual_jobs = fanxiu_data_annotation_manual_jobs()
+        doctor_watch = _summarize_doctor_watch_latest(read_doctor_watch_latest())
         lines = [
             f"名称：{item.get('title') or item.get('key')}",
             f"状态：{(item.get('status') or {}).get('state_label') or '-'}",
             f"入口：{raw.get('route_path') or '/fanxiu/data-annotation/runtime'}",
+            f"Runtime 状态文件：{raw.get('runtime_state_path') or '-'}",
+            f"World Facts：{raw.get('world_facts_path') or '-'}",
+            "动作语义：stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
+            f"Owner：active={bool(owner.get('active'))} pid={owner.get('pid') or '-'} step={owner.get('step') or '-'}",
+            f"普通作业隔离：active={bool(isolation.get('active'))} reason={isolation.get('reason') or '-'}",
+            f"手动作业队列：{len(manual_jobs)}",
+            f"Doctor：{doctor_watch.get('snapshot', {}).get('maintenance', {}).get('severity') or '-'} · {doctor_watch.get('message') or '无巡检摘要'}",
         ]
+        for job in manual_jobs[:10]:
+            if isinstance(job, dict):
+                lines.append(
+                    "手动作业："
+                    f"{job.get('status') or '-'} · "
+                    f"{job.get('task_type') or '-'} · "
+                    f"{job.get('label') or job.get('id') or '-'}"
+                )
         for entry in raw.get("logs") or []:
             if isinstance(entry, dict):
                 lines.append(f"{entry.get('time') or ''} {entry.get('kind') or ''} {entry.get('message') or ''}".strip())
@@ -1741,6 +1870,33 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         with Session(engine) as session:
             return stop_data_annotation_behavior_tree_current_task(session)
     raise HTTPException(status_code=400, detail="该内置运行单元不支持停止")
+
+
+def run_builtin_runtime_item_action(task_key: str, action_key: str) -> dict[str, Any]:
+    normalized_key = str(task_key or "").strip()
+    action = str(action_key or "").strip().lower()
+    _invalidate_builtin_services_status_cache()
+    if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
+        if not is_attendance_behavior_tree_service_enabled():
+            raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
+        if action == "inspect":
+            return show_attendance_behavior_tree_schedule(limit=20)
+        if action == "restart":
+            return restart_attendance_behavior_tree_service()
+        if action == "reset":
+            return reset_attendance_behavior_tree_state()
+        raise HTTPException(status_code=400, detail="该运行单元不支持此动作")
+    if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
+        if not _fanxiu_behavior_tree_service_enabled():
+            raise HTTPException(status_code=404, detail="凡修行为树只在 mi15 执行主机上管理")
+        if action == "inspect":
+            return inspect_fanxiu_behavior_tree_service()
+        if action == "restart":
+            return restart_fanxiu_behavior_tree_service()
+        if action == "wake":
+            return wake_fanxiu_behavior_tree_service()
+        raise HTTPException(status_code=400, detail="该运行单元不支持此动作")
+    raise HTTPException(status_code=400, detail="该运行单元不支持扩展动作")
 
 
 def configure_builtin_runtime_item_autostart(task_key: str, enabled: bool) -> dict[str, Any]:

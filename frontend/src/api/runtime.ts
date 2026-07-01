@@ -170,6 +170,21 @@ export const stopRuntimeItem = async (entryId: string, source: RuntimeSource, it
   return response.data;
 };
 
+export const runRuntimeItemAction = async (
+  entryId: string,
+  source: RuntimeSource,
+  itemKey: string,
+  actionKey: string
+) => {
+  const response = await api.post(
+    getDeviceEntryPath(
+      entryId,
+      `/runtime/items/${encodeURIComponent(source)}/${encodeURIComponent(itemKey)}/actions/${encodeURIComponent(actionKey)}`
+    )
+  );
+  return response.data;
+};
+
 export const configureRuntimeItemAutostart = async (
   entryId: string,
   source: RuntimeSource,

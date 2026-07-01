@@ -45,6 +45,10 @@ from backend.core.attendance.service import (
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
 )
+from backend.core.attendance_behavior_tree_service import (
+    get_attendance_project_root,
+    get_xlproject_root,
+)
 from backend.core.attendance.progress_style import (
     highlight_presence_progress,
     highlight_text_refund_progress,
@@ -300,7 +304,7 @@ ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
     r"(?:(?P<date>\d{8}|\d{6})\s*)?第(?P<edition>\d+)届(?P<course>\S+)",
 )
 ATTENDANCE_TEMPLATE_LEADING_DATE_RE = re.compile(r"^(?P<date>\d{8}|\d{6})(?P<body>.*)$")
-ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = Path(r"D:\home\chenkunze\slns\kq5034\courses")
+ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = get_attendance_project_root() / "courses"
 ATTENDANCE_COURSE_SCRIPT_DIR = Path(
     os.environ.get(
         "CODEYUN_KQ5034_COURSES_DIR",
@@ -310,13 +314,13 @@ ATTENDANCE_COURSE_SCRIPT_DIR = Path(
 ATTENDANCE_KQ5034_REPO_DIR = Path(
     os.environ.get(
         "CODEYUN_KQ5034_REPO_DIR",
-        r"D:\home\chenkunze\slns\kq5034",
+        os.fspath(get_attendance_project_root()),
     )
 )
 ATTENDANCE_XLPROJECT_SRC_DIR = Path(
     os.environ.get(
         "CODEYUN_XLPROJECT_SRC_DIR",
-        r"D:\home\chenkunze\slns\xlproject\src",
+        os.fspath(get_xlproject_root() / "src"),
     )
 )
 ATTENDANCE_COURSE_SCRIPT_STEM_RE = re.compile(r"^d(?P<date>\d{6})(?P<body>.+)$")
@@ -13631,6 +13635,8 @@ def _attendance_course_script_dir_candidates() -> list[Path]:
         if key in seen:
             continue
         seen.add(key)
+        if not path.exists() or not path.is_dir():
+            continue
         candidates.append(path)
     return candidates
 
@@ -13828,7 +13834,7 @@ def _load_attendance_course_link_provider():
             sys.path.insert(0, path_text)
 
     try:
-        from kqmain import 获取课程链接  # type: ignore
+        from xlsln.kq5034.kqmain import 获取课程链接  # type: ignore
 
         return 获取课程链接
     except Exception as exc:

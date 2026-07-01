@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import time
 from datetime import date
+from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from sqlmodel import Session, select
@@ -43,6 +45,56 @@ def _create_user(session: Session, *, username: str, nickname: str = "", is_supe
     session.commit()
     session.refresh(user)
     return user
+
+
+def test_attendance_course_script_dir_candidates_include_formal_xlproject_course_dir(monkeypatch, tmp_path: Path):
+    course_dir = tmp_path / "xlproject" / "src" / "xlsln" / "kq5034" / "courses"
+    course_dir.mkdir(parents=True)
+
+    legacy_default = tmp_path / "legacy-kq5034" / "courses"
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT", legacy_default)
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_COURSE_SCRIPT_DIR", legacy_default)
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_XLPROJECT_SRC_DIR", tmp_path / "xlproject" / "src")
+
+    candidates = note_sheets_api._attendance_course_script_dir_candidates()
+
+    assert course_dir in candidates
+    assert legacy_default not in candidates
+
+
+def test_load_attendance_course_link_provider_uses_namespaced_kqmain(monkeypatch, tmp_path: Path):
+    xlproject_src = tmp_path / "xlproject" / "src"
+    package_dir = xlproject_src / "xlsln" / "kq5034"
+    package_dir.mkdir(parents=True)
+    (xlproject_src / "xlsln" / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "kqmain.py").write_text(
+        "def 获取课程链接(*args, **kwargs):\n"
+        "    return {'source': 'namespaced-kqmain', 'args': args, 'kwargs': kwargs}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_XLPROJECT_SRC_DIR", xlproject_src)
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_KQ5034_REPO_DIR", tmp_path / "unused-kq5034")
+    monkeypatch.setattr(sys, "path", [entry for entry in sys.path if str(xlproject_src) not in entry])
+    old_modules = {name: sys.modules.get(name) for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln")}
+    for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln"):
+        sys.modules.pop(name, None)
+
+    try:
+        provider = note_sheets_api._load_attendance_course_link_provider()
+
+        assert provider(course_name="第48届觉观") == {
+            "source": "namespaced-kqmain",
+            "args": (),
+            "kwargs": {"course_name": "第48届觉观"},
+        }
+    finally:
+        for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln"):
+            sys.modules.pop(name, None)
+        for name, module in old_modules.items():
+            if module is not None:
+                sys.modules[name] = module
 
 
 def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -> None:
