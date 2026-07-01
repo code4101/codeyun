@@ -95,3 +95,35 @@ def test_recognition_tree_derives_layer2_from_scene_identity_and_keeps_asset_ord
     assert by_id[200].layer == 2
     assert by_id[300].layer == 3
     assert runtime_root_scene_candidate_ids(tree, images) == [100, 200, 300]
+
+
+def test_runtime_root_scene_candidates_skip_explicit_local_only_identity_roots():
+    world = _image(34, "世界", layer=1)
+    local_overlay = _image(277, "小助手进度", layer=None, identity=False)
+    local_overlay["shapes"] = [
+        {
+            "id": "progress",
+            "title": "进度",
+            "isSceneIdentity": True,
+            "sceneIdentityScope": "local",
+        }
+    ]
+    legacy_identity = _image(100, "旧标注场景", layer=None, identity=True)
+    popup = _image(47, "所有提示窗口", layer=None, identity=False)
+    popup["shapes"] = [
+        {
+            "id": "popup",
+            "title": "弹窗标识",
+            "isSceneIdentity": True,
+            "sceneIdentityScope": "local",
+        }
+    ]
+    tree = [
+        {"type": "folder", "title": "场景", "children": [world, legacy_identity]},
+        {"type": "folder", "title": "日常", "children": [local_overlay]},
+        {"type": "folder", "title": "弹窗", "children": [popup]},
+    ]
+    images = {34: world, 277: local_overlay, 100: legacy_identity, 47: popup}
+
+    assert runtime_root_scene_candidate_ids(tree, images) == [34, 100]
+    assert runtime_root_scene_candidate_ids(tree, images, include_popups=True) == [47]

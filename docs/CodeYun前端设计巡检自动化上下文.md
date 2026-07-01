@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "b72baa1b93641e86bd98961391f459d27d0c8176"
-last_audited_at: "2026-07-01T20:37:44.1982847+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-b72baa1b/report.md"
-last_frontend_commit_summary: "完整关闭 d09a63ee..b72baa1b：把 cluster/services 挂回集群菜单，并让 cluster 菜单跨页保留当前 entry_id 设备上下文。"
-audited_commit_count: 58
+last_audited_commit: "891fb26355df59b6de0b7c0fe5146b76acc7cae6"
+last_audited_at: "2026-07-02T00:35:12.3260195+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-891fb263-closeout/report.md"
+last_frontend_commit_summary: "完整关闭 b72baa1b..891fb263：数据标注识别层收回无效编辑动作，并把结构诊断退回节点级提示。"
+audited_commit_count: 59
 pending_or_skipped_ranges: []
 ```
 
@@ -258,7 +258,33 @@ pending_or_skipped_ranges: []
 
 ## 巡检记录
 
+### 2026-07-02
+
+- 完整范围：`b72baa1b93641e86bd98961391f459d27d0c8176..891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 覆盖提交：`891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 前端入口提交：`891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 入口如何牵引到旧问题：本轮是对同一 `fanxiu/data-annotation` 入口的补闭环。上一轮已经识别出“识别层仍常驻无效编辑动作”并做了减法修复，但缺少修复后 authenticated 实图，游标没法推进。补拍成功后，又在同一资产树工具条链路上看到当前工作树新增的常驻 `结构提示` tag，它重复了树节点高亮、tooltip 与场景归纳反馈已经表达的事实，因此一并收回。
+- 本轮减法：不新增任何功能、状态、说明区或路由，只继续压缩同一条工具条。第一，补齐 `识别层` 宽屏 / 普通桌面 / 窄屏 authenticated 实图，证明 `新建分组` 与 `删除` 已收回到正确层级且不再横向溢出。第二，删除一级工具条里的 `结构提示` 常驻 tag，把结构诊断退回到节点高亮、节点 tooltip 与 `场景归纳` 确认/结果消息。
+- 信息量保持：资产树 / 识别层浏览、保存当前帧、场景归纳、连拍、连拍缓存和结构诊断能力都保留；减少的是同一诊断事实在一级工具条的重复投影，而不是减少诊断能力。
+- 概念图/线框图：报告中的 Mermaid 把 `浏览投影`、`分组编辑`、`运行辅助` 和 `结构诊断` 明确拆层；ASCII 线框图直接对比了“结构提示 tag 常驻”与“诊断退回节点级提示”前后的概念数量变化。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-891fb263-closeout/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。authenticated in-app Browser 已完成 `data-annotation` 的修复后三视口复拍和 `资产树` 桌面对照，`data-annotation-evidence.json` 记录 `scene` 三视口均满足 `plusVisible = false`、`deleteVisible = false`、`bodyOverflowX = 0`、`actionsClientWidth == actionsScrollWidth`，`business` 对照满足 `plusVisible = true` 且 `tagText = []`。
+- 根因分层：本轮问题仍属于同一页面内的表现层 + 前端状态投影问题，不涉及新的后端数据投影或业务建模债务；无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮已完成完整增量范围的提交归类、authenticated 真实页面复拍、同链路低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `891fb26355df59b6de0b7c0fe5146b76acc7cae6`，并清空 `pending_or_skipped_ranges`。
+
 ### 2026-07-01
+
+- 完整范围：`b72baa1b93641e86bd98961391f459d27d0c8176..891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 覆盖提交：`891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 前端入口提交：`891fb26355df59b6de0b7c0fe5146b76acc7cae6`
+- 入口如何牵引到旧问题：本次提交显式把 `fanxiu/data-annotation` 从旧的“帧树 / Layer / subframe”命名收回到“资产树 / 识别层 / scene / sub-scene”，同时限制识别层视图下的编辑动作。真实页面复核后，被牵出的旧问题不是命名文案，而是同一页面资产树工具条仍把只属于资产树的编辑动作以禁用态常驻展示，并在普通桌面宽度把按钮挤出容器。
+- 本轮减法：不新增任何功能、状态、说明区或路由，只在 [`frontend/src/standard/fanxiu/data-annotation/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/fanxiu/data-annotation/page.vue) 做 3 个减法。第一，`识别层` 视图下不再常驻显示 `新建分组`。第二，删除一级工具条里的 `删除选中节点`，把删除入口收回到已有右键菜单。第三，把 `连拍缓存` 收成图标次要动作，避免继续挤爆主工具条。
+- 信息量保持：资产树 / 识别层浏览、保存当前帧、场景归纳、连拍和连拍缓存能力都保留；减少的是“识别层里无效编辑动作”和“删除入口重复”两层偶然复杂度，不是减少标注能力。
+- 概念图/线框图：报告中的 Mermaid 把 `数据标注 -> 浏览投影(资产树 / 识别层) -> 仅资产树可编辑` 与 `运行辅助动作` 明确拆层；ASCII 线框图直接对比了修复前把无效编辑动作堆在识别层工具条，以及修复后收回到正确层级的差异。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-891fb263/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。authenticated in-app Browser 已拿到修复前 wide `1600x1000`、desktop `1366x900`、narrow `820x1180` 截图与 `data-annotation-evidence.json`；但修复后最终 authenticated 复拍时浏览器会话重置，只有 unauthenticated headless fallback 登录页截图，不作为闭环证据。
+- 根因分层：本轮问题属于同一页面内的表现层 + 前端状态投影问题，不涉及新的后端数据投影或业务建模债务；无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念建模、代码减法修复和前端构建验证，但因为修复后 authenticated 真实页面复拍失败，暂不推进 `last_audited_commit`，并把当前范围记录到 `pending_or_skipped_ranges`。
 
 - 完整范围：`d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f..b72baa1b93641e86bd98961391f459d27d0c8176`
 - 覆盖提交：`b72baa1b93641e86bd98961391f459d27d0c8176`

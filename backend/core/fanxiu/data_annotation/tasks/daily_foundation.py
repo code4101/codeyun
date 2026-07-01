@@ -266,7 +266,16 @@ class DailyFoundationTaskMixin:
             if not changed:
                 break
             scroll_index += 1
-        raise RuntimeError("日常_首领：仙界首领列表未找到「注视中」目标")
+        next_time, source = self._record_daily_boss_next_time_from_current_list(ctx, payload)
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"日常_首领：仙界首领列表未找到「注视中」目标，{source}，下次 {next_time}",
+                phase="daily_boss_no_watched_item",
+                current_scene=178,
+            )
+            self._log_locked("skip", self._status["message"])
+        return "skipped"
 
     def _daily_boss_handle_watched_item_cd(
         self,

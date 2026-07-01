@@ -70,6 +70,7 @@
             v-loading="loading"
             :data="visiblePageRows"
             class="notes-table"
+            table-layout="fixed"
             highlight-current-row
             @current-change="handleCurrentChange"
             @selection-change="handleSelectionChange"
