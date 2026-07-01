@@ -6,7 +6,7 @@
 
 ## 核心原则
 
-- 帧树是感知与定位的第一数据源。
+- 资产树是感知与定位的第一数据源。
 - 已有场景、父帧/子帧、shape 标注可用时，Runtime 禁止猜坐标。
 - 处理行为树任务前必须先读取当前 `entry_id` 的资产树标注，而不是从截图重新目测入口。当前机器的标注数据位于 `CODEYUN_DATA_DIR/fanxiu/data-annotation/entries/<entry_id>/asset-tree.json`，图片位于同一 entry 目录下的 `images/`，后端统一通过 `_data_annotation_asset_tree_path(entry_id)` 和 `_index_images()` 读取。
 - 前端只负责控制、调试、展示和标注，不承载正式任务状态机。
@@ -16,39 +16,52 @@
 
 ## 资产树与识别树
 
-资产树 `asset tree` 是标注资产的文件夹、分组和数据容器，保存 scene、shape、OCR/图像匹配配置、`sceneJumpTarget` 和人工目录归档。资产目录嵌套不能直接等同于运行时 sub scene 关系；目录可以帮助人管理资产，但不应天然决定 Runtime 候选展开、等待顺序或跳转策略。
+资产树 `asset tree` 是标注资产的分组和数据容器，保存 scene、shape、OCR/图像匹配配置、`sceneJumpTarget` 和人工资产分组。资产分组嵌套不能直接等同于运行时 sub scene 关系；分组可以帮助人管理资产，但不应天然决定 Runtime 候选展开、等待顺序或跳转策略。
 
-识别树 `recognition tree` 是 Runtime 每次识别或跳转时动态生成的候选计划。它综合资产事实、图片 `layer` 字段、frame/subframe 结构、当前目标、route/path 上下文、弹窗/浮层规则和本次动作产生的 `layer0`，再决定先识别哪些候选、命中后如何下钻、失败后如何回退到全局队列。
+识别树 `recognition tree` 是 Runtime 每次识别或跳转时动态生成的候选计划。它综合资产事实、图片 `layer` 字段、兼容期 `image.children` 结构、当前目标、route/path 上下文、弹窗/浮层规则和本次动作产生的 `layer0`，再决定先识别哪些候选、命中后如何下钻、失败后如何回退到全局队列。
 
-## 帧树语义
+当前第一批落地边界：
 
-帧树同时承载两条正交概念：`layer` 和 `structure`。`layer` 表示 root frame 所在的全局识别队列；`structure` 表示 frame/subframe 的父子关系。目录只是方便人找帧和组织 root 识别队列；真正的父子语义只来自 image.children 中的 frame 嵌套。
+- `backend/core/fanxiu/data_annotation/recognition_tree.py` 负责把资产树投影成 Runtime 识别候选节点。`type="folder"` 分组只进入 `asset_path`，不产生父子识别关系；只有 `image.children` 会形成当前兼容保留的 scene/sub-scene 结构。
+- `runtime_runner` 的 root 场景候选收集通过 recognition tree helper 生成，保持原有 layer 1 -> 2 -> 3 与弹窗过滤行为。
+- `layer0` 仍由调用方目标或 `sceneJumpTarget` 动态传入；helper 已提供 layer0 候选扩展边界，用于后续把 preferred target、父级上下文和目标子树统一收敛到识别树计划。
 
-如果一个流程可达某个父帧，那么该父帧下的子帧在逻辑上也视为可达候选；任务实现不应要求每条跳转路径都重复写到每个子帧。
+后续分批改造：
 
-定期检查 frame/subframe 归纳时，使用标准入口：
+- 第一批已做：抽出 recognition tree 构建边界，补 focused tests，保持现有识别器行为不变。
+- 第二批可做：让 `SceneRecognizer.identify_scene_tree_number` 接收显式 recognition tree plan，减少它直接读取资产树结构的职责。
+- 必须兼容保留：`image.children` 当前仍是已人工确认的 scene/sub-scene 资产事实，不能一次性移除；持久化字段 `type="folder"` 和 `children` 暂不改 schema；`wait_view()`、`goto_view()`、`View` 类仍保留历史兼容。
+- 暂不动：目录隐式返回、具体 sub scene 策略、#59/#277、仙府入口误识别和真实 Runtime 验收。
+
+## 资产树与识别结构语义
+
+资产树当前同时保存两条正交识别事实：`layer` 和兼容期 `structure`。`layer` 表示 root scene 所在的全局识别队列；`structure` 表示已人工确认的 scene/sub-scene 细化关系。资产分组只是方便人找资产和组织 root 识别队列；运行时父子候选关系必须先投影为 recognition tree，再由识别树结合当前上下文展开。
+
+如果一个流程可达某个父 scene，那么该父 scene 下的 sub-scene 在逻辑上也可作为识别树候选；任务实现不应要求每条跳转路径都重复写到每个 sub-scene。
+
+定期检查 scene/sub-scene 归纳时，使用标准入口：
 
 ```bash
 uv run python scripts/fanxiu_organize_frame_structure.py --scope layer --keep-unshared-parent-identities
 ```
 
-该命令默认 dry-run：按 Layer 视图收集 root frame，跨业务目录检查“父 frame 的场景身份锚点是否在另一个 root frame 中成立”，并输出候选父子关系、命中锚点、分数和双方路径。确认候选合理后再追加 `--write` 写回资产树；写回时会创建备份。目录不作为归纳依据；写回结果仍使用现有 `image.children` 表达 subframe。
+该命令默认 dry-run：按识别层视图收集 root scene，跨资产分组检查“父 scene 的场景身份锚点是否在另一个 root scene 中成立”，并输出候选父子关系、命中锚点、分数和双方路径。确认候选合理后再追加 `--write` 写回资产树；写回时会创建备份。资产分组不作为归纳依据；写回结果仍使用现有 `image.children` 表达 sub-scene。
 
-Runtime 识别场景时应优先使用帧树内已有帧和 shape。只有缺少标注时，任务才应报错或进入人工补标流程，不应在正式任务里临时猜测按钮位置。
+Runtime 识别场景时应优先使用资产树内已有 scene 和 shape。只有缺少标注时，任务才应报错或进入人工补标流程，不应在正式任务里临时猜测按钮位置。
 
 frame 承载“场景身份”，shape 承载“判定证据”。同一场景可以有多个 `isSceneIdentity / sceneIdentityRole` 锚点，Runtime 场景分数按“全部场景标识都命中”理解：同一 view 内多个场景标识取最低分，任意一个 required 锚点低于阈值都不能判定为该场景。检测/调试页可以把每个条件都展示出来，用来评估是哪一个锚点没有通过。不要把同一场景的多个备选锚点都勾成场景标识；如果只是备选，请拆成不同子帧，或只保留当前稳定的一组必要锚点。
 
-frame 的 `layer` 表示 root frame 进入哪条全局识别队列：`layer=1` 先识别，`layer=2` 后识别，`layer=3` 最后识别，通常用于模板、素材、过渡和低优先级帧。同一个 `layer` 内用 `layerOrder` 表达识别优先顺序；Layer 视图里的拖拽排序只更新这个顺序字段，不改变目录归属。`layer` 和 `layerOrder` 都不表达父子关系；父 frame 与 subframe 的 structure 只由 image.children 表达。
+scene 资产的 `layer` 表示 root scene 进入哪条全局识别队列：`layer=1` 先识别，`layer=2` 后识别，`layer=3` 最后识别，通常用于模板、素材、过渡和低优先级 scene。同一个 `layer` 内用 `layerOrder` 表达识别优先顺序；识别层视图里的拖拽排序只更新这个顺序字段，不改变资产分组归属。`layer` 和 `layerOrder` 都不表达父子关系；scene 与 sub-scene 的候选关系由 recognition tree 根据 `image.children`、route/path 上下文和 `layer0` 动态计算。
 
 旧 frame 等级只作为一次性迁移输入：旧等级 2 迁移为 `layer=1`，旧等级 1 迁移为 `layer=2`，旧非场景帧迁移为 `layer=3`。迁移后代码、UI 和文档只使用 `layer` 与 `structure`。shape 只表达“这个框是否作为当前 frame 场景标识，以及它的图像/OCR required/optional/off 策略”。
 
-Runtime 无上下文识别按 root `Layer 1 -> Layer 2 -> Layer 3` 的全局队列阻断式尝试。前一层命中 root frame 后，不再检测后续 root layer；而是沿该 frame 的 structure children 继续细化。subframe 命中则继续细化，subframe 不命中则返回最近命中的父 frame。子 frame 的 `layer` 不参与 subtree 细化顺序，也不会让识别重新回到全局 layer 队列。如果传入候选清单或 `sceneJumpTarget` 预期目标，则候选视为 `layer0`，优先在这些候选所在 root 及其 structure 子树内识别，候选未命中才回到默认 root layer 队列。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.go_scene(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、structure 和全部场景标识条件判定。
+Runtime 无上下文识别按 root `Layer 1 -> Layer 2 -> Layer 3` 的全局队列阻断式尝试。前一层命中 root scene 后，不再检测后续 root layer；而是沿识别树候选继续细化。sub-scene 命中则继续细化，sub-scene 不命中则返回最近命中的父 scene。子 scene 的 `layer` 不参与 subtree 细化顺序，也不会让识别重新回到全局 layer 队列。如果传入候选清单或 `sceneJumpTarget` 预期目标，则候选视为 `layer0`，优先在这些候选所在 root 及其识别树子树内识别，候选未命中才回到默认 root layer 队列。业务调试不得临时只测一个 shape 就断言当前场景；必须调用 `ctx.scene(...)`、`runtime.current_scene(...)`、`runtime.go_scene(...)` 或正式 `go_scene` 等公共入口，让基础设施按 layer、识别树候选和全部场景标识条件判定。
 
-subframe 的场景身份按链式语义理解：父 frame 命中后才会进入子 frame 识别，因此子 frame 只需要匹配自己的增量场景标识，不应把父 frame 的场景标识重复并入子 frame 的匹配谓词。语义上 `#75 = #69 + #75 own identity`，运行时则是先算 #69，命中后只算 #75 自己。
+sub-scene 的场景身份按链式语义理解：父 scene 命中后才会进入子 scene 识别，因此子 scene 只需要匹配自己的增量场景标识，不应把父 scene 的场景标识重复并入子 scene 的匹配谓词。语义上 `#75 = #69 + #75 own identity`，运行时则是先算 #69，命中后只算 #75 自己。
 
-shape 的使用规则与场景身份不同：subframe 可以继承祖先 frame 的普通 shape、动作 shape、区域 shape 和滚动 shape。查找 shape 时先查当前 frame 自己定义的 shape，再沿父 frame、祖先 frame 向上查找；子 frame 的同名 shape 会覆盖父 frame 的同名 shape。点击、匹配、OCR 裁剪和滚动区域使用 inherited shape 时，参考标注来源仍是 shape 所在的原 frame，但当前场景上下文仍是已识别到的子 frame。
+shape 的使用规则与场景身份不同：sub-scene 可以继承祖先 scene 的普通 shape、动作 shape、区域 shape 和滚动 shape。查找 shape 时先查当前 scene 自己定义的 shape，再沿父 scene、祖先 scene 向上查找；子 scene 的同名 shape 会覆盖父 scene 的同名 shape。点击、匹配、OCR 裁剪和滚动区域使用 inherited shape 时，参考标注来源仍是 shape 所在的原 scene，但当前场景上下文仍是已识别到的子 scene。
 
-行为树实现必须复用帧树的三类信息：
+行为树实现必须复用资产树的三类信息：
 
 - `isSceneIdentity / sceneIdentityRole`：判断当前是否真的在某个场景。
 - `shape.x/y/w/h`、`floating`、`imageMatchRole / ocrMatchRole`：决定点击和匹配 payload。
@@ -73,8 +86,8 @@ shape 的使用规则与场景身份不同：subframe 可以继承祖先 frame �
 - 候选框已经命中但靠近识别区边缘时，调用 `nudge_shape_content_for_box(...)` 做小比例复位。该动作是候选后处理，不替代默认滚动查找；复位后必须重新截图/OCR 复核目标仍是同一个业务对象。
 - 列表滚动后不要立即对当前帧计算签名；先固定等待 1 秒，让拖拽惯性和复位动画结束。这里不再做“等待到稳定”的递归判断，避免稳定判断本身依赖哈希而形成循环。
 - 滚动到底的主要判据是：一次滚动并等待后，可见列表签名与上一轮滚动后的签名相同。连续空滚动次数只能作为异常兜底，不应作为正常完成逻辑。
-- 帧树里的「遮挡标记」分组表示固定排除区域，不表示固定遮挡内容。这些区域经常出现不同通知文字、公告条或临时浮层，因此其中 OCR/图像内容不能进入列表哈希或滚动签名。
-- 计算列表签名时，应把「遮挡标记」分组下所有 shape 转换为当前帧坐标屏蔽框；OCR 行中心落在屏蔽框内时直接跳过。
+- 资产树里的「遮挡」分组表示固定排除区域，不表示固定遮挡内容。这些区域经常出现不同通知文字、公告条或临时浮层，因此其中 OCR/图像内容不能进入列表哈希或滚动签名。
+- 计算列表签名时，应把「遮挡」分组下所有 shape 转换为当前帧坐标屏蔽框；OCR 行中心落在屏蔽框内时直接跳过。
 
 ### 闭环幂等与浮动模板
 
@@ -119,11 +132,11 @@ Runtime 状态包含：
 守护 tick 的职责边界：
 
 - 优先处理独立弹窗、遮挡帧和已标注的全局干扰项。
-- 只使用帧树里的场景标识和动作 shape。
+- 只使用资产树里的场景标识和动作 shape。
 - `弹窗` 分组第一层图片里的 `空白` 表示背景关闭区，可直接作为关闭动作使用，不要求填写 `sceneJumpTarget`。同一弹窗有多个关闭候选时优先点 `空白`：显式关闭按钮可能太小，`确定` 可能触发跳转或领取等业务行为；背景取消通常更大、更稳、副作用更少。
 - 对 `sceneJumpTarget=-1` 的 shape，可视为独立弹窗关闭动作。
 - 对无自动动作的遮挡帧，只记录发现，不猜测点击。
-- 对“万灵切磋邀请”这类特殊守护任务，必须先在帧树里补足识别 shape 和动作 shape，Runtime 才能稳定处理。
+- 对“万灵切磋邀请”这类特殊守护任务，必须先在资产树里补足识别 shape 和动作 shape，Runtime 才能稳定处理。
 
 ## Scheduler
 
@@ -200,8 +213,8 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 - `schedule_kind=daily` 表示每日定时任务，执行后 Scheduler 会推进到下一次 `schedule_times`。
 - `schedule_kind=weekly` 表示每周定时任务，按 `weekdays`（周一为 0）和 `schedule_times` 生成下一次 `next_time`。
 - 尚未迁移的旧任务使用 `legacy_daily_task` / `legacy_dynamic_task` 占位，但不允许作为 Runtime 任务启动。
-- 未验收任务不应在 Runtime 中保留可调用执行函数；需要迁移时先补齐帧树/shape 验证，再新增对应执行函数和测试。
-- 当前默认清单只把旧版任务导入为占位，不默认启用具体日常任务。具体迁移必须等对应帧树和 shape 数据确认充分后再逐项打开。
+- 未验收任务不应在 Runtime 中保留可调用执行函数；需要迁移时先补齐资产树/shape 验证，再新增对应执行函数和测试。
+- 当前默认清单只把旧版任务导入为占位，不默认启用具体日常任务。具体迁移必须等对应资产树和 shape 数据确认充分后再逐项打开。
 - `run-due` 只启动已支持的到期任务；旧任务占位即使被手动启用，也不会作为可执行任务启动。
 - `run-now` 对未纳入框架验收的任务直接返回 400，避免误触发未确认链路。
 
@@ -263,7 +276,7 @@ for code in codes:
 点击 #49[回退]
 ```
 
-这里的 #49、#78、#81、#82 和按钮位置都来自帧树标注。
+这里的 #49、#78、#81、#82 和按钮位置都来自资产树标注。
 
 ### 开发调试手动作业
 
@@ -327,7 +340,7 @@ def task(ctx):
 
 允许保留的前端能力：
 
-- 帧树编辑
+- 资产树编辑
 - shape 标注
 - 图片对比
 - 抠图/检测
@@ -399,9 +412,9 @@ def task(ctx):
 - Scheduler 任务状态变化会写入 `discoveries.task` 和事件流。
 - Scheduler 会从 `WorldFacts.discoveries.task` 同步 `next_time`、`retry_after`、`last_run_at`、`last_result`。
 - Scheduler 任务清单 PUT 会保留后端运行结果字段，避免前端旧整表状态覆盖刚执行完的 `日常_报名` 次日触发时间。
-- Runtime 会递归读取父帧/子帧，并把子帧中的独立弹窗/遮挡标记纳入守护候选。
+- Runtime 会递归读取父帧/子帧，并把子帧中的独立弹窗/遮挡纳入守护候选。
 - 未验收 legacy 任务不能被状态文件或 PUT 请求误启用。
-- `go_scene` 已支持嵌套子场景的 `离开/返回/关闭` 空目标隐式返回父场景标题对应的同名图片；例如“世界”文件夹下的 `#85 某区域内部` 可规划回 `#34 世界`。
+- `go_scene` 迁移期仍支持嵌套子场景的 `离开/返回/关闭` 空目标隐式返回父场景标题对应的同名图片；例如“世界”分组下的 `#85 某区域内部` 可规划回 `#34 世界`。这属于旧标注兼容，不代表资产分组天然决定 sub-scene 识别关系。
 - `go_scene` 等待阶段会把“离开场景”确认弹窗视为中间态，识别到 `确认/确定` 后自动点击并继续等待原目标；该确认弹窗不能被学习成原按钮的最终 `sceneJumpTarget`。
 - 场景身份默认阈值按 80 执行；`#85[离开]` 这类小图标在世界画面中 69% 的弱相似度不能算命中。真实世界场景当前补了 `#34[大地图当前入口]` OCR 身份锚点，用于兼容实际画面与旧 #34 截图不同的状态。
 - 2026-06-04 真实验收：从当前 MuMu/ADB 画面执行 `/data-annotation/runtime/task/start`，`task_type=go_scene`、`target_scene_id=34`，最终 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_final_20260604_012723/`。后续修复守护 tick 语义后再次真实验收，仍为 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_after_guard_fix_20260604_015404/`。

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from pyxllib.autogui import MatchRole, Shape, View, image_number, normalize_frame_layer
+from pyxllib.autogui import MatchRole, Shape, View, image_number
 
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
@@ -71,32 +71,7 @@ def _shape_key(shape: dict[str, Any]) -> str:
 
 
 def _image_layer(image: dict[str, Any]) -> int:
-    return normalize_frame_layer(image.get("layer"), 3)
-
-
-def _target_layer_for_scene_identity(image: dict[str, Any]) -> int:
-    current_layer = _image_layer(image)
-    if not _scene_identity_shapes(image):
-        return 3
-    if current_layer == 3:
-        return 2
-    return current_layer
-
-
-def _normalize_image_layer_by_scene_identity(image: dict[str, Any]) -> dict[str, Any] | None:
-    before = _image_layer(image)
-    after = _target_layer_for_scene_identity(image)
-    if before == after:
-        return None
-    image["layer"] = after
-    return {
-        "image_id": image_number(image),
-        "title": str(image.get("title") or ""),
-        "filename": str(image.get("filename") or ""),
-        "from_layer": before,
-        "to_layer": after,
-        "has_scene_identity": bool(_scene_identity_shapes(image)),
-    }
+    return int(View(image).layer)
 
 
 def _image_sort_key(image: dict[str, Any], order: int) -> tuple[int, int]:
@@ -204,7 +179,7 @@ def organize_frame_structure_in_tree(
     """按场景身份公共锚点整理 frame/subframe 结构。
 
     `sibling` 模式只整理同一业务目录中的同级图片，保留旧行为。
-    `layer` 模式按 Layer 视图收集 root frame，目录不参与工程判断。
+    `layer` 模式按识别层派生视图收集 root scene，目录不参与工程判断。
     """
     if scope not in {"sibling", "layer"}:
         raise ValueError(f"未知 frame structure scope：{scope}")
@@ -219,7 +194,6 @@ def organize_frame_structure_in_tree(
     }
     adoptions: list[FrameStructureAdoption] = []
     demoted_identities: list[dict[str, Any]] = []
-    layer_updates_by_id: dict[int, dict[str, Any]] = {}
 
     def clone_node(node: Any) -> Any:
         if not isinstance(node, dict):
@@ -241,24 +215,6 @@ def organize_frame_structure_in_tree(
             children = node.get("children")
             if isinstance(children, list):
                 count_images([child for child in children if isinstance(child, dict)])
-
-    def normalize_layers(nodes: list[Any]) -> None:
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            if node.get("type") == "image":
-                update = _normalize_image_layer_by_scene_identity(node)
-                node_id = image_number(node)
-                if update is not None and node_id is not None:
-                    previous = layer_updates_by_id.get(int(node_id))
-                    if previous is None:
-                        layer_updates_by_id[int(node_id)] = update
-                    else:
-                        previous["to_layer"] = update["to_layer"]
-                        previous["has_scene_identity"] = update["has_scene_identity"]
-            children = node.get("children")
-            if isinstance(children, list):
-                normalize_layers(children)
 
     def apply_planned_adoptions(
         planned: list[FrameStructureAdoption],
@@ -369,25 +325,17 @@ def organize_frame_structure_in_tree(
         apply_planned_adoptions(planned, shared_keys, by_id=by_id, source_children_by_id=source_children_by_id)
 
     count_images([node for node in migrated if isinstance(node, dict)])
-    normalize_layers(migrated)
     if scope == "layer":
         organize_layer_roots()
     else:
         organize_children(migrated, allow_adoption=True)
-    normalize_layers(migrated)
     counters["adoption_count"] = len(adoptions)
     counters["demoted_identity_count"] = len(demoted_identities)
-    layer_updates = [
-        item
-        for item in layer_updates_by_id.values()
-        if item.get("from_layer") != item.get("to_layer")
-    ]
-    counters["layer_update_count"] = len(layer_updates)
     return migrated, FrameStructureOrganizerStats(
         **counters,
         adoptions=adoptions,
         demoted_identities=demoted_identities,
-        layer_updates=layer_updates,
+        layer_updates=[],
     )
 
 

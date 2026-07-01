@@ -2657,29 +2657,32 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_仙缘资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([308, 69, 34], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id != 69:
+        if scene_id not in {308, 69}:
             scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_仙缘")
-        if scene_id != 69:
+        if scene_id not in {308, 69}:
             raise RuntimeError("日常_仙缘：未能进入 #69 日常列表")
-        status = yield from runtime.open_daily_entry(
-            label="日常_仙缘",
-            title_pattern=r"斗\s*法",
-            progress_can_mark_done=False,
-            max_scrolls=int(payload.get("max_scrolls") or 30),
-            reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
-        )
-        if status == "not_found":
-            raise RuntimeError("日常_仙缘：#69 日常列表未找到「斗法」入口")
-        yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
+        if scene_id == 69:
+            status = yield from runtime.open_daily_entry(
+                label="日常_仙缘",
+                title_pattern=r"斗\s*法",
+                progress_can_mark_done=False,
+                max_scrolls=int(payload.get("max_scrolls") or 30),
+                reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
+            )
+            if status == "not_found":
+                raise RuntimeError("日常_仙缘：#69 日常列表未找到「斗法」入口")
+        if not bool(payload.get("skip_purchase")):
+            yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
         max_runs = int(payload.get("max_runs") or 7)
         for index in range(max_runs):
             self._log("action", f"日常_仙缘：斗法挑战 {index + 1}/{max_runs}")
             yield from runtime.wait_click_then_view(308, "挑战1", 309)
             yield from self._optimize_daily_xianyuan_duel_formation(runtime, payload)
-            yield from runtime.wait_click_then_view(309, "开始挑战", 310)
-            yield from runtime.wait_click_then_view(310, "点击继续", [308, 316])
+            view_after_start = yield from runtime.wait_click_then_view(309, "开始挑战", [310, 308])
+            if int(getattr(view_after_start, "id", 0) or 0) == 310:
+                yield from runtime.wait_click_then_view(310, "点击继续", [308, 316])
         self._log("success", f"日常_仙缘：已完成斗法挑战 {max_runs} 次")
         return "success"
 
@@ -2843,6 +2846,7 @@ class DailyFoundationTaskMixin:
         state = self._read_daily_xianyuan_duel_formation_state(runtime)
         max_probe_swaps = int(payload.get("formation_probe_max_swaps") or 2)
         settle_seconds = float(payload.get("formation_drag_settle_seconds") or 1.8)
+        drag_duration = float(payload.get("formation_drag_duration_seconds") or 2.0)
         probe_actions = 0
 
         # 不要把克制结果改成“识别双方职业后自行计算”。
@@ -2863,7 +2867,7 @@ class DailyFoundationTaskMixin:
             if not swaps:
                 break
             start_slot, end_slot = swaps[0]
-            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=0.55, frame_data_url=state["frame"])
+            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=drag_duration, frame_data_url=state["frame"])
             probe_actions += 1
             yield from runtime.wait_action_settle(settle_seconds)
             state = self._read_daily_xianyuan_duel_formation_state(runtime)
@@ -2878,7 +2882,7 @@ class DailyFoundationTaskMixin:
         final_swaps = plan_swaps(state["my_order"], best["order"])
         max_final_swaps = int(payload.get("formation_final_max_swaps") or 4)
         for start_slot, end_slot in final_swaps[:max_final_swaps]:
-            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=0.55, frame_data_url=state["frame"])
+            runtime.drag_shape_to_shape(309, f"拖拽锚点{start_slot}", f"拖拽锚点{end_slot}", duration=drag_duration, frame_data_url=state["frame"])
             yield from runtime.wait_action_settle(settle_seconds)
             state = self._read_daily_xianyuan_duel_formation_state(runtime)
         elapsed = time.monotonic() - start_ts

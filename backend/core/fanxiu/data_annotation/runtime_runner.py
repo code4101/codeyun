@@ -51,6 +51,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
+from backend.core.fanxiu.data_annotation.recognition_tree import runtime_root_scene_candidate_ids
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_world_facts_summary,
     preserve_data_annotation_scheduler_runtime_state,
@@ -122,13 +123,14 @@ from pyxllib.autogui import (
     frame_size as _runtime_frame_size,
     image_number as _runtime_image_number,
     index_images as _index_runtime_images,
-    normalize_frame_layer,
 )
 
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
 DEFAULT_SCROLL_RATIO = 0.5
 DEFAULT_SCROLL_DURATION_SECONDS = 1.5
 DEFAULT_LAYER0_WAIT_SECONDS = 30.0
+OCCLUSION_ASSET_GROUP_TITLE = "遮挡"
+LEGACY_OCCLUSION_ASSET_GROUP_TITLES = {"遮挡标记"}
 
 
 @dataclass
@@ -914,15 +916,16 @@ class FanxiuRuntime(Runtime):
             label=label,
         ))
 
-    def goto_view(
+    def _go_scene_movement(
         self,
-        view: View | int,
+        scene: View | int,
         *,
         layer0_wait_seconds: float | None = None,
         wait_seconds: float | None = None,
         wait_time: float | None = None,
+        api_name: str,
     ) -> Any:
-        target_scene_id = view.id if isinstance(view, View) else int(view)
+        target_scene_id = scene.id if isinstance(scene, View) else int(scene)
         if layer0_wait_seconds is None and wait_seconds is not None:
             layer0_wait_seconds = wait_seconds
         if layer0_wait_seconds is None and wait_time is not None:
@@ -931,9 +934,9 @@ class FanxiuRuntime(Runtime):
             raise RuntimeError("缺少场景移动资产树路径")
         self._emit_runtime_action(
             f"前往 #{target_scene_id}",
-            phase="runtime_goto_view",
+            phase="runtime_go_scene" if api_name == "go_scene" else "runtime_goto_view",
             kind="goto",
-            source_info=self._runtime_source_info("goto_view", self._format_runtime_call("goto_view", target_scene_id)),
+            source_info=self._runtime_source_info(api_name, self._format_runtime_call(api_name, target_scene_id)),
             current_scene=target_scene_id,
         )
         stop_event = self.stop_event or threading.Event()
@@ -949,6 +952,22 @@ class FanxiuRuntime(Runtime):
             raise RuntimeError(f"前往 #{target_scene_id} 失败")
         return status
 
+    def goto_view(
+        self,
+        view: View | int,
+        *,
+        layer0_wait_seconds: float | None = None,
+        wait_seconds: float | None = None,
+        wait_time: float | None = None,
+    ) -> Any:
+        return (yield from self._go_scene_movement(
+            view,
+            layer0_wait_seconds=layer0_wait_seconds,
+            wait_seconds=wait_seconds,
+            wait_time=wait_time,
+            api_name="goto_view",
+        ))
+
     def go_scene(
         self,
         scene: View | int,
@@ -957,23 +976,34 @@ class FanxiuRuntime(Runtime):
         wait_seconds: float | None = None,
         wait_time: float | None = None,
     ) -> Any:
-        return (yield from self.goto_view(
+        return (yield from self._go_scene_movement(
             scene,
             layer0_wait_seconds=layer0_wait_seconds,
             wait_seconds=wait_seconds,
             wait_time=wait_time,
+            api_name="go_scene",
         ))
 
-    def wait_view(
+    def _wait_scene_core(
         self,
-        *views: View | int,
+        *scenes: View | int,
         timeout: float | None = None,
+        layer0_wait_seconds: float | None = None,
+        wait_seconds: float | None = None,
+        wait_time: float | None = None,
         label: str = "等待场景",
+        api_name: str,
     ):
-        view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
+        view_ids = [scene.id if isinstance(scene, View) else int(scene) for scene in scenes]
         view_ids = [view_id for view_id in view_ids if view_id is not None]
+        if not view_ids:
+            return self.current_scene(update=True)
+        if layer0_wait_seconds is None and wait_seconds is not None:
+            layer0_wait_seconds = wait_seconds
+        if layer0_wait_seconds is None and wait_time is not None:
+            layer0_wait_seconds = wait_time
         images = self.ctx.get("images")
-        target_views_by_id: dict[int, View] = {int(view.id): view for view in views if isinstance(view, View) and view.id is not None}
+        target_views_by_id: dict[int, View] = {int(scene.id): scene for scene in scenes if isinstance(scene, View) and scene.id is not None}
         if isinstance(images, dict):
             for view_id in view_ids:
                 image = images.get(view_id)
@@ -981,10 +1011,18 @@ class FanxiuRuntime(Runtime):
                     target_views_by_id.setdefault(int(view_id), View(image))
         start = time.monotonic()
         wait_timeout = self.default_wait_view_timeout if timeout is None else float(timeout)
-        source_info = self._runtime_source_info("wait_view", self._format_runtime_call("wait_view", *view_ids))
+        preferred_wait_seconds = max(
+            0.0,
+            float(
+                layer0_wait_seconds
+                if layer0_wait_seconds is not None
+                else (DEFAULT_LAYER0_WAIT_SECONDS if api_name == "wait_scene" else wait_timeout)
+            ),
+        )
+        source_info = self._runtime_source_info(api_name, self._format_runtime_call(api_name, *view_ids))
         self._emit_runtime_action(
             f"{label}：等待 {'/'.join(f'#{view_id}' for view_id in view_ids)}",
-            phase="runtime_wait_view",
+            phase="runtime_wait_scene" if api_name == "wait_scene" else "runtime_wait_view",
             kind="wait",
             source_info=source_info,
             current_scene=view_ids[0] if len(view_ids) == 1 else None,
@@ -1002,6 +1040,7 @@ class FanxiuRuntime(Runtime):
             frame_elapsed = time.monotonic() - frame_started_at
             elapsed = time.monotonic() - start
             identify_started_at = time.monotonic()
+            in_layer0_window = elapsed < preferred_wait_seconds
             for view_id in view_ids:
                 target_view = target_views_by_id.get(int(view_id))
                 if isinstance(target_view, View) and target_view.is_match(self):
@@ -1011,13 +1050,14 @@ class FanxiuRuntime(Runtime):
                         scene_id, score = matched_scene_id, matched_score
                         break
             else:
-                scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
+                preferred_ids = view_ids if in_layer0_window else None
+                scene_id, score = self.runner._identify_scene_number(self.ctx, frame, preferred_ids)
             identify_elapsed = time.monotonic() - identify_started_at
             if elapsed >= 10.0 or frame_elapsed + identify_elapsed >= 1.0:
                 self.runner._log(
                     "detail",
                     (
-                        f"{label}：wait_view轮询 elapsed={elapsed:.1f}s "
+                        f"{label}：{api_name}轮询 elapsed={elapsed:.1f}s "
                         f"frame={frame_elapsed:.2f}s identify={identify_elapsed:.2f}s "
                         f"scene={'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%"
                     ),
@@ -1065,13 +1105,32 @@ class FanxiuRuntime(Runtime):
                 })
             previous_frame = frame
 
+    def wait_view(
+        self,
+        *views: View | int,
+        timeout: float | None = None,
+        label: str = "等待场景",
+    ):
+        return (yield from self._wait_scene_core(*views, timeout=timeout, label=label, api_name="wait_view"))
+
     def wait_scene(
         self,
         *scenes: View | int,
         timeout: float | None = None,
+        layer0_wait_seconds: float | None = None,
+        wait_seconds: float | None = None,
+        wait_time: float | None = None,
         label: str = "等待场景",
     ):
-        return (yield from self.wait_view(*scenes, timeout=timeout, label=label))
+        return (yield from self._wait_scene_core(
+            *scenes,
+            timeout=timeout,
+            layer0_wait_seconds=layer0_wait_seconds,
+            wait_seconds=wait_seconds,
+            wait_time=wait_time,
+            label=label,
+            api_name="wait_scene",
+        ))
 
     def wait_view_id(
         self,
@@ -2599,7 +2658,11 @@ class DataAnnotationRuntimeRunner(
                     continue
                 node_type = str(node.get("type") or "").strip()
                 title = str(node.get("title") or "").strip()
-                current_in_occlusion = in_occlusion_folder or (node_type == "folder" and title == "遮挡标记")
+                is_occlusion_folder = (
+                    node_type == "folder"
+                    and (title == OCCLUSION_ASSET_GROUP_TITLE or title in LEGACY_OCCLUSION_ASSET_GROUP_TITLES)
+                )
+                current_in_occlusion = in_occlusion_folder or is_occlusion_folder
                 if current_in_occlusion and node_type == "image":
                     for shape in self._flatten_shapes(node.get("shapes")):
                         if shape.get("kind") == "group":
@@ -6446,56 +6509,7 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(tree, list) or not isinstance(images, dict):
             return []
-        candidates: list[int] = []
-
-        layer_buckets: dict[int, list[int]] = {1: [], 2: [], 3: []}
-
-        def add_candidate(image_id: int) -> None:
-            if image_id not in candidates:
-                candidates.append(image_id)
-
-        def add_layer_candidate(image_id: int) -> None:
-            layer = self._image_layer(images[int(image_id)])
-            bucket = layer_buckets.get(layer)
-            if bucket is not None and image_id not in bucket:
-                bucket.append(image_id)
-
-        def visit(items: list[dict[str, Any]], path: list[str], inside_image: bool) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                node_type = str(item.get("type") or "")
-                title = str(item.get("title") or "").strip()
-                current_path = [*path, title] if title else path
-                in_popup_path = any("弹窗" in segment for segment in current_path)
-                if node_type == "image":
-                    image_id = self._image_number(item)
-                    if (
-                        image_id is not None
-                        and not inside_image
-                        and int(image_id) in images
-                        and isinstance(images.get(int(image_id)), dict)
-                        and (include_popups is None or in_popup_path == include_popups)
-                    ):
-                        if include_popups is True:
-                            add_candidate(int(image_id))
-                        else:
-                            add_layer_candidate(int(image_id))
-                    child_inside_image = True
-                else:
-                    child_inside_image = inside_image
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)], current_path, child_inside_image)
-
-        visit([item for item in tree if isinstance(item, dict)], [], False)
-        if include_popups is not True:
-            for layer in (1, 2, 3):
-                for image_id in layer_buckets[layer]:
-                    add_candidate(image_id)
-        if not candidates:
-            return []
-        return candidates
+        return runtime_root_scene_candidate_ids(tree, images, include_popups=include_popups)
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         edges = SceneNavigator(tree).scene_jump_edges()
@@ -7067,7 +7081,7 @@ class DataAnnotationRuntimeRunner(
         return "local" if bool(shape.get("isSceneIdentity")) or str(shape.get("sceneIdentityRole") or "").strip() not in {"", "off", "无"} else "none"
 
     def _image_layer(self, image: dict[str, Any]) -> int:
-        return normalize_frame_layer(image.get("layer", image.get("sceneIdentityLevel")), 3)
+        return int(View(image).layer)
 
     def _navigation_scene_id(
         self,

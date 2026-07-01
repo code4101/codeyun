@@ -10,6 +10,7 @@ import base64
 import io
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -226,15 +227,19 @@ def test_runtime_go_scene_forwards_to_scene_movement(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     runtime = runtime_runner_core.FanxiuRuntime(runner, {"images": {}}, asset_tree_path=tmp_path / "asset_tree.json", stop_event=threading.Event())
     captured: dict[str, object] = {}
+    emitted_actions = []
 
     def fake_go_scene(_ctx, _asset_tree_path, target_scene_id, _stop_event, **kwargs):
         captured.update({"target_scene_id": target_scene_id, **kwargs})
         return "success"
 
     monkeypatch.setattr(runner, "_go_scene_task", fake_go_scene)
+    monkeypatch.setattr(runtime, "_emit_runtime_action", lambda message, **kwargs: emitted_actions.append((message, kwargs)))
 
     assert _drain_generator(runtime.go_scene(171, layer0_wait_seconds=45)) == "success"
     assert captured == {"target_scene_id": 171, "layer0_wait_seconds": 45}
+    assert emitted_actions[0][1]["phase"] == "runtime_go_scene"
+    assert emitted_actions[0][1]["source_info"]["action"] == "go_scene"
 
 
 def test_runtime_shape_lookup_inherits_parent_frame_shapes():
@@ -2257,7 +2262,7 @@ def test_auto_close_guard_images_use_only_top_level_popup_entries():
     login = _image("修炼", "0019.jpg")
 
     candidates = runner._auto_close_guard_images([
-        {"type": "folder", "title": "遮挡标记", "children": [_image("公告遮挡", "0026.jpg")]},
+        {"type": "folder", "title": "遮挡", "children": [_image("公告遮挡", "0026.jpg")]},
         {"type": "folder", "title": "登录弹窗", "children": [login]},
         {
             "type": "folder",
@@ -10151,7 +10156,7 @@ def test_runtime_image_signature_excludes_occlusion_marker_regions(tmp_path):
     ])
     ctx = {
         "entry": object(),
-        "asset_tree": [image23, {"type": "folder", "title": "遮挡标记", "children": [occlusion_image]}],
+        "asset_tree": [image23, {"type": "folder", "title": "遮挡", "children": [occlusion_image]}],
         "asset_tree_path": path,
         "images": {23: image23},
     }
@@ -10173,6 +10178,27 @@ def test_runtime_image_signature_excludes_occlusion_marker_regions(tmp_path):
 
     assert occlusion_changed == baseline
     assert row_changed != baseline
+
+
+def test_runtime_image_signature_keeps_legacy_occlusion_marker_group_compatible(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image23 = _image("报名", "0023.png", [
+        {"id": "column", "kind": "rect", "title": "报名列", "x": 0.2, "y": 0.2, "w": 0.7, "h": 0.6},
+    ])
+    occlusion_image = _image("通知遮挡", "0033.jpg", [
+        {"id": "notice", "kind": "rect", "title": "通知遮挡", "x": 0.0, "y": 0.24, "w": 1.0, "h": 0.04},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree": [image23, {"type": "folder", "title": "遮挡标记", "children": [occlusion_image]}],
+        "asset_tree_path": path,
+        "images": {23: image23},
+    }
+    boxes = runner._occlusion_marker_boxes(ctx, image23)
+
+    assert boxes == [{"x": 0.0, "y": 384.0, "w": 900.0, "h": 64.0}]
 
 
 def test_runtime_image_signature_similarity_allows_small_pixel_noise(tmp_path):
@@ -10214,7 +10240,7 @@ def test_daily_scroll_window_unchanged_signature_ignores_occlusion_markers(tmp_p
     ])
     ctx = {
         "entry": object(),
-        "asset_tree": [image69, {"type": "folder", "title": "遮挡标记", "children": [occlusion_image]}],
+        "asset_tree": [image69, {"type": "folder", "title": "遮挡", "children": [occlusion_image]}],
         "asset_tree_path": path,
         "images": {69: image69},
     }
@@ -10355,7 +10381,10 @@ def test_daily_xianyuan_duel_waits_formation_before_optimizing(tmp_path, monkeyp
 
         def wait_click_then_view(self, scene, shape, *targets):
             calls.append(("wait_click_then_view", scene, shape, targets))
-            return done(scene)
+            target = targets[0]
+            if isinstance(target, list):
+                target = target[0]
+            return done(SimpleNamespace(id=int(target)))
 
     fake_runtime = FakeRuntime()
 
@@ -10377,15 +10406,59 @@ def test_daily_xianyuan_duel_waits_formation_before_optimizing(tmp_path, monkeyp
 
     assert result == "success"
     assert calls == [
-        ("current_scene", (69, 34), True),
+        ("current_scene", (308, 69, 34), True),
         ("ocr_text",),
         ("open_daily_entry", r"斗\s*法"),
         ("prepare_purchase",),
         ("wait_click_then_view", 308, "挑战1", (309,)),
         ("optimize_formation",),
-        ("wait_click_then_view", 309, "开始挑战", (310,)),
+        ("wait_click_then_view", 309, "开始挑战", ([310, 308],)),
         ("wait_click_then_view", 310, "点击继续", ([308, 316],)),
     ]
+
+
+def test_daily_xianyuan_duel_accepts_return_to_list_after_start(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, _preferred, *, update=False):
+            calls.append(("current_scene", tuple(_preferred), update))
+            return 308, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            calls.append(("ocr_text",))
+            return "仙缘斗法"
+
+        def wait_click_then_view(self, scene, shape, *targets):
+            calls.append(("wait_click_then_view", scene, shape, targets))
+            if scene == 309 and shape == "开始挑战":
+                return done(SimpleNamespace(id=308))
+            target = targets[0]
+            if isinstance(target, list):
+                target = target[0]
+            return done(SimpleNamespace(id=int(target)))
+
+    fake_runtime = FakeRuntime()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_prepare_daily_xianyuan_duel_purchases", lambda *_args, **_kwargs: done(None))
+    monkeypatch.setattr(runner, "_optimize_daily_xianyuan_duel_formation", lambda *_args, **_kwargs: done(None))
+
+    result = _drain_generator(
+        runner._execute_daily_xianyuan_duel_task(ctx, threading.Event(), {"max_runs": 1})
+    )
+
+    assert result == "success"
+    assert ("wait_click_then_view", 309, "开始挑战", ([310, 308],)) in calls
+    assert ("wait_click_then_view", 310, "点击继续", ([308, 316],)) not in calls
 
 
 def test_runtime_click_translates_child_shape_by_matched_parent_box():

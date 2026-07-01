@@ -770,7 +770,7 @@
       "parent_key": "cluster-tools",
       "sort_order": 18,
       "route_paths": ["/cluster/services"],
-      "menu_paths": [],
+      "menu_paths": ["/cluster/services"],
       "api_scopes": ["cluster-tools.services"],
       "default_anonymous_allow": false
     },

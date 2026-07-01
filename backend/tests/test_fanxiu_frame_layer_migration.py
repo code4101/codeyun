@@ -43,17 +43,17 @@ def test_frame_layer_migration_infers_legacy_scopes_without_touching_shapes():
     migrated, stats = migrate_frame_layers_in_tree(tree)
     children = migrated[0]["children"]
 
-    assert [item["layer"] for item in children] == [2, 1, 3]
+    assert [item.get("layer") for item in children] == [None, 1, None]
     assert all("sceneIdentityLevel" not in item for item in children)
     assert children[0]["shapes"][0]["sceneIdentityScope"] == "local"
     assert stats.to_dict() == {
         "image_count": 3,
-        "added_layer_count": 3,
+        "added_layer_count": 1,
         "preserved_layer_count": 0,
         "removed_legacy_level_count": 0,
         "layer1_count": 1,
-        "layer2_count": 1,
-        "layer3_count": 1,
+        "layer2_count": 0,
+        "layer3_count": 2,
     }
 
 
@@ -66,12 +66,12 @@ def test_frame_layer_migration_maps_old_level_to_new_layer_and_removes_old_field
 
     migrated, stats = migrate_frame_layers_in_tree(tree)
 
-    assert [item["layer"] for item in migrated] == [1, 2, 3]
+    assert [item.get("layer") for item in migrated] == [1, None, None]
     assert all("sceneIdentityLevel" not in item for item in migrated)
     assert stats.removed_legacy_level_count == 3
 
 
-def test_frame_layer_migration_preserves_explicit_layer_by_default():
+def test_frame_layer_migration_drops_non_primary_explicit_layer_by_default():
     tree = [
         {
             "type": "image",
@@ -84,10 +84,10 @@ def test_frame_layer_migration_preserves_explicit_layer_by_default():
 
     migrated, stats = migrate_frame_layers_in_tree(tree)
 
-    assert migrated[0]["layer"] == 3
+    assert migrated[0]["layer"] == 1
     assert "sceneIdentityLevel" not in migrated[0]
-    assert stats.preserved_layer_count == 1
-    assert stats.added_layer_count == 0
+    assert stats.preserved_layer_count == 0
+    assert stats.added_layer_count == 1
 
 
 def test_frame_layer_migration_file_dry_run_does_not_write(tmp_path):
@@ -96,7 +96,7 @@ def test_frame_layer_migration_file_dry_run_does_not_write(tmp_path):
 
     result = migrate_frame_layers_file(path, write=False)
 
-    assert result["changed"] is True
+    assert result["changed"] is False
     assert result["write"] is False
     assert result["backup_path"] is None
     assert json.loads(path.read_text(encoding="utf-8"))[0].get("layer") is None

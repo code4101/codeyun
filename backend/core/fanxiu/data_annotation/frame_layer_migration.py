@@ -24,25 +24,18 @@ class FrameLayerMigrationStats:
         return asdict(self)
 
 
-def _legacy_frame_layer(image: dict[str, Any]) -> int:
+def _legacy_primary_scene_marker(image: dict[str, Any]) -> bool:
     legacy_level = image.get("sceneIdentityLevel")
     if legacy_level == 2 or str(legacy_level).strip() == "2":
-        return 1
-    if legacy_level == 1 or str(legacy_level).strip() == "1":
-        return 2
-    if legacy_level == 0 or str(legacy_level).strip() == "0":
-        return 3
+        return True
 
-    layer = 3
     for shape in View(image).get_shapes(include_groups=False):
         scope = normalize_scene_identity_scope(shape.raw.get("sceneIdentityScope"), "")
         if not scope and shape.is_scene_identity:
             scope = "local"
         if scope == "global":
-            layer = min(layer, 1)
-        elif scope == "local":
-            layer = min(layer, 2)
-    return layer
+            return True
+    return False
 
 
 def migrate_frame_layers_in_tree(
@@ -50,7 +43,7 @@ def migrate_frame_layers_in_tree(
     *,
     overwrite: bool = False,
 ) -> tuple[list[dict[str, Any]], FrameLayerMigrationStats]:
-    """把资产树 image 节点迁移到 `layer`。"""
+    """清理旧识别层字段，仅保留显式 layer1 主场景标记。"""
 
     counters = {
         "image_count": 0,
@@ -73,13 +66,17 @@ def migrate_frame_layers_in_tree(
         counters["image_count"] += 1
         if "sceneIdentityLevel" in result:
             counters["removed_legacy_level_count"] += 1
-        if not overwrite and "layer" in result:
-            layer = normalize_frame_layer(result.get("layer"), 3)
+        if not overwrite and normalize_frame_layer(result.get("layer"), 3) == 1:
+            layer = 1
             counters["preserved_layer_count"] += 1
+            result["layer"] = 1
         else:
-            layer = _legacy_frame_layer(result)
-            counters["added_layer_count"] += 1
-        result["layer"] = layer
+            layer = 1 if _legacy_primary_scene_marker(result) else 3
+            if layer == 1:
+                result["layer"] = 1
+                counters["added_layer_count"] += 1
+            else:
+                result.pop("layer", None)
         result.pop("sceneIdentityLevel", None)
         counters[f"layer{layer}_count"] += 1
         return result

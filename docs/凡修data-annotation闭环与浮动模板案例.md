@@ -71,7 +71,7 @@ pyxllib 的旧 `anlib.py` 和新 `pyxllib.autogui.behavior_tree` 已经具备这
 
 - `AnShape / AnView / AnRegion` 已表达父子 shape、截图、OCR、点击、拖拽等能力。
 - `AnView.create_sub_view(sub_view_loc, anchor_shape_loc, det_shape)` 已经是“静态模板 + 动态锚点”的早期实现；注释里明确说明它用于滚动窗口中元素的动态定位。
-- `ActivityWatchParams.activity_ignore_regions` 已有“画面变化比较时忽略局部区域”的思想，和遮挡标记不参与滚动哈希属于同类需求。
+- `ActivityWatchParams.activity_ignore_regions` 已有“画面变化比较时忽略局部区域”的思想，和遮挡不参与滚动哈希属于同类需求。
 
 新 `pyxllib.autogui.behavior_tree` 中：
 
