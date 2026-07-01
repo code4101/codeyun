@@ -115,7 +115,7 @@ def test_frame_structure_organizer_adopts_layer_roots_across_business_folders():
     tree = [
         {
             "type": "folder",
-            "title": "默认分组",
+            "title": "默认",
             "children": [_image(71, "修仙传游历", [_shape("修仙传")])],
         },
         {
@@ -146,7 +146,7 @@ def test_frame_structure_organizer_adopts_layer_roots_across_business_folders():
 
 def test_frame_structure_organizer_sibling_scope_does_not_cross_business_folders():
     tree = [
-        {"type": "folder", "title": "默认分组", "children": [_image(71, "修仙传游历", [_shape("修仙传")])]},
+        {"type": "folder", "title": "默认", "children": [_image(71, "修仙传游历", [_shape("修仙传")])]},
         {"type": "folder", "title": "日常", "children": [_image(251, "供奉", [_shape("供奉")])]},
     ]
 
@@ -159,7 +159,7 @@ def test_frame_structure_organizer_sibling_scope_does_not_cross_business_folders
     assert stats.adoption_count == 0
 
 
-def test_frame_structure_organizer_normalizes_layers_by_scene_identity_for_all_frames():
+def test_frame_structure_organizer_does_not_materialize_derived_layers():
     tree = [
         {
             "type": "folder",
@@ -184,18 +184,13 @@ def test_frame_structure_organizer_normalizes_layers_by_scene_identity_for_all_f
     organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape)
     children = organized[0]["children"]
 
-    assert children[0]["layer"] == 2
-    assert children[1]["layer"] == 3
+    assert children[0]["layer"] == 3
+    assert children[1]["layer"] == 2
     assert children[2]["layer"] == 1
-    assert children[2]["children"][0]["layer"] == 2
-    assert children[2]["children"][1]["layer"] == 3
-    assert stats.layer_update_count == 4
-    assert {(item["image_id"], item["from_layer"], item["to_layer"]) for item in stats.layer_updates} == {
-        (250, 3, 2),
-        (251, 2, 3),
-        (253, 3, 2),
-        (254, 2, 3),
-    }
+    assert children[2]["children"][0]["layer"] == 3
+    assert children[2]["children"][1]["layer"] == 2
+    assert stats.layer_update_count == 0
+    assert stats.layer_updates == []
 
 
 def test_frame_structure_organizer_downgrades_parent_after_identity_demotion():

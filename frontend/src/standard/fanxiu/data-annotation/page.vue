@@ -192,7 +192,7 @@
                     v-model="assetTreeViewMode"
                     class="asset-view-select"
                     size="small"
-                    aria-label="帧树视图"
+                    aria-label="资产树视图"
                   >
                     <el-option
                       v-for="option in assetTreeViewModeOptions"
@@ -210,12 +210,12 @@
                     :prefix-icon="Search"
                     @keyup.enter="searchAssetFrame"
                   />
-                  <el-button size="small" :icon="Plus" title="新建目录" aria-label="新建目录" @click="addAssetFolder" />
+                  <el-button size="small" :icon="Plus" title="新建分组" aria-label="新建分组" :disabled="assetTreeViewMode !== 'business'" @click="addAssetFolder" />
                   <el-button
                     size="small"
                     :icon="Picture"
-                    title="保存帧"
-                    aria-label="保存帧"
+                    title="保存当前帧"
+                    aria-label="保存当前帧"
                     :loading="saveFrameLoading"
                     :disabled="!selectedEntryId"
                     @click="saveCurrentFrame"
@@ -223,7 +223,7 @@
                   <el-button
                     size="small"
                     plain
-                    title="按 Layer 视图体检并归纳场景 frame/subframe"
+                    title="按识别层视图体检并归纳 scene/sub-scene"
                     :loading="frameStructureOrganizing"
                     :disabled="!selectedEntryId"
                     @click="organizeFrameStructureFromToolbar"
@@ -242,7 +242,7 @@
                   <el-button size="small" plain title="连拍缓存" aria-label="连拍缓存" @click="openBurstDialog">
                     缓存
                   </el-button>
-                  <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="!selectedAssetNode" @click="deleteSelectedAsset" />
+                  <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="assetTreeViewMode !== 'business' || !selectedAssetNode" @click="deleteSelectedAsset" />
                 </div>
               </div>
 
@@ -256,7 +256,7 @@
                   :default-expanded-keys="assetTreeDefaultExpandedKeys"
                   :auto-expand-parent="false"
                   highlight-current
-                  :draggable="true"
+                  :draggable="assetTreeViewMode === 'business'"
                   :expand-on-click-node="false"
                   :current-node-key="selectedAssetId"
                   :allow-drop="allowAssetDrop"
@@ -295,27 +295,6 @@
                 >
                   重置帧
                 </button>
-                <button
-                  v-if="assetContextMenuNode?.type === 'image'"
-                  type="button"
-                  @click="setAssetContextMenuFrameLayer(1)"
-                >
-                  设为 Layer 1
-                </button>
-                <button
-                  v-if="assetContextMenuNode?.type === 'image'"
-                  type="button"
-                  @click="setAssetContextMenuFrameLayer(2)"
-                >
-                  设为 Layer 2
-                </button>
-                <button
-                  v-if="assetContextMenuNode?.type === 'image'"
-                  type="button"
-                  @click="setAssetContextMenuFrameLayer(3)"
-                >
-                  设为 Layer 3
-                </button>
                 <button v-if="assetContextMenuNode" type="button" class="is-danger" @click="deleteAssetFromContextMenu">
                   删除
                 </button>
@@ -329,7 +308,7 @@
               <div class="annotation-title-tools">
                 <span>{{ selectedImageTitleText }}</span>
                 <el-checkbox v-if="selectedImageNode" v-model="globalOcclusionMaskEnabled" size="small">
-                  遮挡标记
+                  遮挡
                 </el-checkbox>
                 <button
                   v-if="selectedImageNode"
@@ -4866,7 +4845,7 @@ const saveCurrentFrame = async () => {
       preferLiveFrame: true,
       liveFrameWaitMs: 1200,
     });
-    if (!currentFrameDataUrl) throw new Error('当前画面为空，无法保存到帧树');
+    if (!currentFrameDataUrl) throw new Error('当前画面为空，无法保存到资产树');
     const result = await saveFanxiuDataAnnotationFrame({
       entry_id: selectedEntryId.value,
       current_frame_data_url: currentFrameDataUrl,
@@ -4879,7 +4858,7 @@ const saveCurrentFrame = async () => {
     setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
     addSavedFrameToAssetTree(node);
     const persisted = await flushAssetTreeToBackend(selectedEntryId.value, cloneAssetTree(assetTree.value));
-    if (persisted) ElMessage.success(`已保存到帧树：${result.filename}`);
+    if (persisted) ElMessage.success(`已保存到资产树：${result.filename}`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -4951,7 +4930,7 @@ const importSelectedBurstFrames = async () => {
     }));
     for (const node of importedNodes) addSavedFrameToAssetTree(node);
     selectedBurstFilenames.value = [];
-    ElMessage.success(`已保存 ${response.imported_count} 张到帧树`);
+    ElMessage.success(`已保存 ${response.imported_count} 张到资产树`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -6699,7 +6678,6 @@ type DataAnnotationAssetNode = {
   width?: number;
   height?: number;
   layer?: FrameLayer;
-  layerOrder?: number;
   shapes?: DataAnnotationShape[];
 };
 
@@ -7152,8 +7130,8 @@ const assetTreeProps = {
 };
 const LAYER_TREE_ROOT_IDS = ['__frame_layer_1__', '__frame_layer_2__', '__frame_layer_3__'] as const;
 const assetTreeViewModeOptions: Array<{ label: string; value: AssetTreeViewMode }> = [
-  { label: '目录', value: 'business' },
-  { label: 'Layer', value: 'scene' },
+  { label: '资产树', value: 'business' },
+  { label: '识别层', value: 'scene' },
 ];
 const shapeTreeProps = {
   children: 'children',
@@ -7170,17 +7148,20 @@ type DataAnnotationUiState = {
 
 const createAssetId = (prefix: string) => prefix + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
 
+const DEFAULT_ASSET_GROUP_TITLE = '默认';
+const OCCLUSION_ASSET_GROUP_TITLE = '遮挡';
+const LEGACY_DEFAULT_ASSET_GROUP_TITLES = new Set(['默认分组', '默认资产分组']);
+const LEGACY_OCCLUSION_ASSET_GROUP_TITLES = new Set(['遮挡标记']);
+
 const createAssetImageNode = (
   title: string,
   options: Partial<Pick<DataAnnotationAssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height' | 'layer'>> = {},
 ): DataAnnotationAssetNode => {
-  const { layer, ...restOptions } = options;
   return {
     id: createAssetId('image'),
     type: 'image',
     title,
-    ...restOptions,
-    layer: normalizeFrameLayer(layer, 3),
+    ...options,
     shapes: [],
   };
 };
@@ -7189,7 +7170,7 @@ const createDefaultAssetTree = (): DataAnnotationAssetNode[] => ([
   {
     id: createAssetId('folder'),
     type: 'folder',
-    title: '默认分组',
+    title: DEFAULT_ASSET_GROUP_TITLE,
     children: [createAssetImageNode('空图')],
   },
 ]);
@@ -7397,10 +7378,18 @@ const normalizeShapes = (
   }];
 });
 
+const normalizeAssetGroupTitle = (title: unknown) => {
+  const normalized = typeof title === 'string' ? title.trim() : '';
+  if (LEGACY_DEFAULT_ASSET_GROUP_TITLES.has(normalized)) return DEFAULT_ASSET_GROUP_TITLE;
+  if (LEGACY_OCCLUSION_ASSET_GROUP_TITLES.has(normalized)) return OCCLUSION_ASSET_GROUP_TITLE;
+  return typeof title === 'string' ? title : normalized;
+};
+
 const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.map((node) => {
   if (node.type === 'folder') {
     return {
       ...node,
+      title: normalizeAssetGroupTitle(node.title),
       children: normalizeAssetTree(node.children ?? []),
     };
   }
@@ -7413,8 +7402,7 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
     imageDataUrl: typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
-    layer: normalizeFrameLayer(node.layer, 3),
-    layerOrder: typeof node.layerOrder === 'number' && Number.isFinite(node.layerOrder) ? node.layerOrder : undefined,
+    layer: node.layer === 1 ? 1 : undefined,
     shapes: normalizedShapes,
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -7816,12 +7804,6 @@ const frameStructureAdoptionLine = (item: FanxiuDataAnnotationFrameStructureAdop
   return `#${item.parent_id} ${parentTitle} -> #${item.child_id} ${childTitle} (${shapeText} ${Math.round(item.average_score)}%)`;
 };
 
-const frameStructureLayerUpdateLine = (item: Record<string, unknown>) => {
-  const imageId = Number(item.image_id);
-  const title = String(item.title || item.filename || '').trim() || `#${imageId}`;
-  return `#${imageId} ${title}: layer${item.from_layer} -> layer${item.to_layer}`;
-};
-
 const organizeFrameStructureFromToolbar = async () => {
   if (!selectedEntryId.value || frameStructureOrganizing.value) return;
   const entryId = selectedEntryId.value;
@@ -7829,18 +7811,16 @@ const organizeFrameStructureFromToolbar = async () => {
   try {
     const preview = await organizeFanxiuDataAnnotationFrameStructure(entryId, false);
     const adoptions = preview.stats?.adoptions ?? [];
-    const layerUpdates = preview.stats?.layer_updates ?? [];
-    if (!adoptions.length && !layerUpdates.length) {
-      ElMessage.success('没有发现需要场景归纳的 frame/subframe 候选');
+    if (!adoptions.length) {
+      ElMessage.success('没有发现需要场景归纳的 scene/sub-scene 候选');
       return;
     }
     const lines = adoptions.slice(0, 30).map(frameStructureAdoptionLine);
-    const layerLines = layerUpdates.slice(0, Math.max(0, 30 - lines.length)).map(frameStructureLayerUpdateLine);
-    const previewLines = [...lines, ...layerLines];
-    const hiddenCount = adoptions.length + layerUpdates.length - previewLines.length;
+    const previewLines = [...lines];
+    const hiddenCount = adoptions.length - previewLines.length;
     const moreText = hiddenCount > 0 ? `\n... 还有 ${hiddenCount} 条` : '';
     await ElMessageBox.confirm(
-      `发现 ${adoptions.length} 个 subframe 候选、${layerUpdates.length} 个 layer 修正，确认写入？\n\n${previewLines.join('\n')}${moreText}`,
+      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入？\n\n${previewLines.join('\n')}${moreText}`,
       '场景归纳',
       {
         type: 'warning',
@@ -7852,7 +7832,7 @@ const organizeFrameStructureFromToolbar = async () => {
     const result = await organizeFanxiuDataAnnotationFrameStructure(entryId, true);
     assetTreeBackendUpdatedAt.value = 0;
     await loadEntryAssetTree(entryId);
-    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 subframe，${result.stats?.layer_update_count ?? 0} 个 layer 修正`);
+    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 sub-scene`);
   } catch (error) {
     if (String((error as { message?: string })?.message || '').includes('cancel')) return;
     ElMessage.error(getErrorMessage(error));
@@ -8112,7 +8092,7 @@ const flattenShapes = (shapes: DataAnnotationShape[]): DataAnnotationShape[] => 
   ...flattenShapes(shape.children ?? []),
 ]);
 const isOcclusionAssetGroup = (node: DataAnnotationAssetNode) => (
-  node.type === 'folder' && node.title.trim() === '遮挡标记'
+  node.type === 'folder' && node.title.trim() === OCCLUSION_ASSET_GROUP_TITLE
 );
 const collectOcclusionAssetImages = (
   nodes: DataAnnotationAssetNode[],
@@ -8552,12 +8532,18 @@ const shapeSceneIdentityScope = (shape: DataAnnotationShape) => (
 );
 const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityRole(shape) !== 'off';
 
-const inferredFrameLayer = (image: DataAnnotationAssetNode): FrameLayer => normalizeFrameLayer(image.layer, 3);
+const imageHasSceneIdentity = (image: DataAnnotationAssetNode) => (
+  (image.shapes ?? []).some((shape) => isSceneIdentityShape(shape))
+);
+
+const inferredFrameLayer = (image: DataAnnotationAssetNode): FrameLayer => (
+  normalizeFrameLayer(image.layer, 3) === 1 ? 1 : (imageHasSceneIdentity(image) ? 2 : 3)
+);
 
 const frameLayerTitle = (layer: FrameLayer) => ({
-  1: 'Layer 1：第一目录队列，默认优先识别',
-  2: 'Layer 2：第二目录队列，在 Layer 1 之后识别',
-  3: 'Layer 3：第三目录队列，通常用于模板、素材和低优先级帧',
+  1: 'Layer 1：第一识别队列，默认优先识别',
+  2: 'Layer 2：第二识别队列，在 Layer 1 之后识别',
+  3: 'Layer 3：第三识别队列，通常用于模板、素材和低优先级 scene',
 }[layer]);
 
 const frameLayerStyle = (layer: FrameLayer) => ({
@@ -8568,12 +8554,6 @@ const frameLayerStyle = (layer: FrameLayer) => ({
 
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
   Boolean(node && (LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id))
-);
-
-const frameLayerOrderValue = (image: DataAnnotationAssetNode, fallback: number) => (
-  typeof image.layerOrder === 'number' && Number.isFinite(image.layerOrder)
-    ? image.layerOrder
-    : fallback
 );
 
 const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
@@ -8622,12 +8602,9 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
   }
   for (const layer of [1, 2, 3] as FrameLayer[]) {
     rootsByLayer[layer].sort((left, right) => {
-      const leftSource = records.get(left.id)?.node ?? left;
-      const rightSource = records.get(right.id)?.node ?? right;
       const leftOrder = records.get(left.id)?.order ?? 0;
       const rightOrder = records.get(right.id)?.order ?? 0;
-      return frameLayerOrderValue(leftSource, leftOrder) - frameLayerOrderValue(rightSource, rightOrder)
-        || leftOrder - rightOrder;
+      return leftOrder - rightOrder;
     });
   }
 
@@ -9137,6 +9114,7 @@ const insertAssetNodeAfterSelection = (node: DataAnnotationAssetNode) => {
 };
 
 const addAssetFolder = () => {
+  if (assetTreeViewMode.value !== 'business') return;
   const { siblings } = getAssetInsertContext();
   const folderCount = siblings.filter((node) => node.type === 'folder').length + 1;
   const node: DataAnnotationAssetNode = {
@@ -9803,6 +9781,7 @@ const refineRecordedGameShapeWithAi = async (
 };
 
 const deleteSelectedAsset = async () => {
+  if (assetTreeViewMode.value !== 'business') return;
   const node = selectedAssetNode.value;
   const parent = findAssetParentChildren(assetTree.value, selectedAssetId.value);
   if (!node || !parent) return;
@@ -9869,6 +9848,10 @@ const closeAssetContextMenu = () => {
 
 const openAssetContextMenu = (event: MouseEvent, node: DataAnnotationAssetNode) => {
   event.preventDefault();
+  if (assetTreeViewMode.value !== 'business') {
+    closeAssetContextMenu();
+    return;
+  }
   const actualNode = findAssetNode(assetTree.value, node.id);
   if (isVirtualAssetTreeNode(node) && !actualNode) {
     closeAssetContextMenu();
@@ -9894,33 +9877,6 @@ const findDisplayAssetParentId = (
     if (found !== undefined) return found;
   }
   return undefined;
-};
-
-const moveIdInOrder = (
-  ids: string[],
-  draggingId: string,
-  dropId: string,
-  type: 'prev' | 'next',
-) => {
-  const result = ids.filter((id) => id !== draggingId);
-  const dropIndex = result.indexOf(dropId);
-  if (dropIndex < 0) return ids;
-  result.splice(type === 'prev' ? dropIndex : dropIndex + 1, 0, draggingId);
-  return result;
-};
-
-const layerFromVirtualRootId = (id: string | null | undefined): FrameLayer | null => {
-  const index = id ? LAYER_TREE_ROOT_IDS.indexOf(id) : -1;
-  return index >= 0 ? ((index + 1) as FrameLayer) : null;
-};
-
-const applyLayerRootOrder = (layer: FrameLayer, orderedIds: string[]) => {
-  orderedIds.forEach((id, index) => {
-    const node = findAssetNode(assetTree.value, id);
-    if (node?.type !== 'image') return;
-    node.layer = normalizeFrameLayer(layer);
-    node.layerOrder = index + 1;
-  });
 };
 
 const moveAssetChildWithinParent = (
@@ -9982,8 +9938,6 @@ const allowAssetDrop = (
   const draggingParentId = findDisplayAssetParentId(assetTreeDisplayData.value, dragging.id);
   const dropParentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
   if (!draggingParentId || draggingParentId !== dropParentId) return false;
-  const rootLayer = layerFromVirtualRootId(dropParentId);
-  if (rootLayer) return inferredFrameLayer(dragging) === rootLayer && inferredFrameLayer(drop) === rootLayer;
   return Boolean(findAssetNode(assetTree.value, draggingParentId));
 };
 
@@ -10006,16 +9960,7 @@ const handleAssetNodeDrop = (
   if (!dropType) return;
   const parentId = findDisplayAssetParentId(assetTreeDisplayData.value, drop.id);
   if (!parentId || parentId !== findDisplayAssetParentId(assetTreeDisplayData.value, dragging.id)) return;
-  const rootLayer = layerFromVirtualRootId(parentId);
-  if (rootLayer) {
-    const projectionRoot = assetTreeDisplayData.value.find((node) => node.id === parentId);
-    const currentIds = (projectionRoot?.children ?? [])
-      .filter((node) => node.type === 'image')
-      .map((node) => node.id);
-    applyLayerRootOrder(rootLayer, moveIdInOrder(currentIds, dragging.id, drop.id, dropType));
-  } else {
-    moveAssetChildWithinParent(parentId, dragging.id, drop.id, dropType);
-  }
+  moveAssetChildWithinParent(parentId, dragging.id, drop.id, dropType);
   assetTree.value = [...assetTree.value];
   selectedAssetId.value = dragging.id;
 };
@@ -10024,15 +9969,6 @@ const deleteAssetFromContextMenu = async () => {
   selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
   closeAssetContextMenu();
   await deleteSelectedAsset();
-};
-
-const setAssetContextMenuFrameLayer = (layer: FrameLayer) => {
-  const nodeId = assetContextMenu.value.nodeId || selectedAssetId.value;
-  const node = findAssetNode(assetTree.value, nodeId);
-  if (node?.type !== 'image') return;
-  node.layer = normalizeFrameLayer(layer);
-  selectedAssetId.value = node.id;
-  closeAssetContextMenu();
 };
 
 const selectAssetRenameInputText = async () => {
@@ -10046,7 +9982,7 @@ const renameAssetNode = async (node: DataAnnotationAssetNode) => {
   if (isVirtualAssetTreeNode(node)) return;
   selectedAssetId.value = node.id;
   closeAssetContextMenu();
-  const nodeKindText = node.type === 'folder' ? '目录' : '图片';
+  const nodeKindText = node.type === 'folder' ? '分组' : '图片';
   try {
     const prompt = ElMessageBox.prompt(nodeKindText + '名称', '重命名' + nodeKindText, {
       inputValue: node.title,
@@ -10065,6 +10001,7 @@ const renameAssetNode = async (node: DataAnnotationAssetNode) => {
 };
 
 const renameDisplayAssetNode = (node: DataAnnotationAssetNode) => {
+  if (assetTreeViewMode.value !== 'business') return;
   const actualNode = findAssetNode(assetTree.value, node.id);
   if (!actualNode) return;
   void renameAssetNode(actualNode);
@@ -12096,10 +12033,10 @@ const showSceneJumpHelp = () => {
       ],
     },
     {
-      title: '6. 目录路径',
+      title: '6. 分组路径',
       lines: [
-        '可以写目录名，例如 登录弹窗。',
-        '表示该目录下的一组场景都可能进入。',
+        '可以写资产树分组名，例如 登录弹窗。',
+        '表示该分组下的一组 scene 都可能进入。',
       ],
     },
     {
@@ -12133,9 +12070,9 @@ const showRuntimeHelp = () => {
       ],
     },
     {
-      title: '4. 帧树',
+      title: '4. 资产树',
       lines: [
-        'Runtime 优先使用帧树里已有场景和 shape 标注。',
+        'Runtime 优先使用资产树里已有 scene 和 shape 标注事实。',
         '已有 shape 可用时不猜坐标；缺标注时任务会报错，方便补标。',
       ],
     },

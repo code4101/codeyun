@@ -366,7 +366,7 @@ def test_scene_recognizer_keeps_parent_when_no_direct_child_matches():
     assert seen == ["所有提示窗口", "二层确认弹窗", "三层邮件确认"]
 
 
-def test_scene_recognizer_uses_layer_order_within_same_layer():
+def test_scene_recognizer_ignores_legacy_layer_order_within_same_layer():
     first_in_tree = {"type": "image", "filename": "0100.png", "title": "低优先", "layer": 1, "layerOrder": 20}
     second_in_tree = {"type": "image", "filename": "0200.png", "title": "高优先", "layer": 1, "layerOrder": 10}
     ctx = {"asset_tree": [first_in_tree, second_in_tree], "images": {100: first_in_tree, 200: second_in_tree}}
@@ -375,7 +375,7 @@ def test_scene_recognizer_uses_layer_order_within_same_layer():
         threshold_for_scene_id=lambda _scene_id: 80.0,
     )
 
-    assert recognizer.identify_scene_tree_number(ctx, "frame") == (200, 100.0)
+    assert recognizer.identify_scene_tree_number(ctx, "frame") == (100, 100.0)
 
 
 def test_scene_recognizer_treats_layer3_frame_as_transparent_parent():
@@ -424,6 +424,7 @@ def test_scene_navigator_treats_layer3_frame_as_transparent_parent():
                         "title": "子场景",
                         "layer": 2,
                         "shapes": [
+                            {"id": "scene", "title": "子场景", "sceneIdentityRole": "required"},
                             {"id": "return", "title": "返回"},
                         ],
                     }

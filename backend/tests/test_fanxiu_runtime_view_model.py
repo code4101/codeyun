@@ -82,11 +82,10 @@ def test_view_scene_identity_uses_match_role_model():
     assert identities[1].scene_identity_role is MatchRole.decisive
 
 
-def test_view_layer_uses_explicit_frame_layer():
+def test_view_layer_derives_from_primary_marker_and_scene_identity():
     layer2_image = {
         "type": "image",
         "filename": "0266.png",
-        "layer": 2,
         "shapes": [{"id": "local", "title": "拜谒", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
     }
     layer1_image = {
@@ -98,7 +97,7 @@ def test_view_layer_uses_explicit_frame_layer():
     default_image = {
         "type": "image",
         "filename": "0001.png",
-        "shapes": [{"id": "legacy", "title": "旧", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
+        "shapes": [{"id": "button", "title": "普通按钮"}],
     }
 
     assert normalize_frame_layer("layer1") == 1
@@ -219,7 +218,7 @@ def test_fanxiu_runtime_wait_view_uses_scene_recognition(monkeypatch):
     assert preferred_calls == [[121]]
 
 
-def test_fanxiu_runtime_wait_scene_is_wait_view_alias(monkeypatch):
+def test_fanxiu_runtime_wait_scene_uses_scene_api_source(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -239,13 +238,67 @@ def test_fanxiu_runtime_wait_scene_is_wait_view_alias(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number", identify)
 
-    waiter = runner._fanxiu_runtime(ctx).wait_scene(121, timeout=3.0, label="等待邮件")
+    runtime = runner._fanxiu_runtime(ctx)
+    emitted_actions = []
+    monkeypatch.setattr(runtime, "_emit_runtime_action", lambda message, **kwargs: emitted_actions.append((message, kwargs)))
+
+    waiter = runtime.wait_scene(121, timeout=3.0, label="等待邮件")
 
     assert next(waiter) is BehaviorTreeStatus.RUNNING
     with pytest.raises(StopIteration) as stop:
         next(waiter)
     assert stop.value.value.raw is image121
     assert preferred_calls == [[121]]
+    assert emitted_actions[0][1]["phase"] == "runtime_wait_scene"
+    assert emitted_actions[0][1]["source_info"]["action"] == "wait_scene"
+
+
+def test_fanxiu_runtime_wait_scene_without_targets_returns_current_scene(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"entry": object(), "images": {}}
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, preferred: (34, 91.0))
+
+    waiter = runner._fanxiu_runtime(ctx).wait_scene()
+
+    with pytest.raises(StopIteration) as stop:
+        next(waiter)
+    assert stop.value.value == (34, 91.0, "frame")
+
+
+def test_fanxiu_runtime_wait_scene_falls_back_to_global_after_layer0_window(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "shapes": [{"id": "identity", "kind": "rect", "title": "邮件标识", "isSceneIdentity": True}],
+    }
+    ctx = {"entry": object(), "images": {121: image121}}
+    preferred_calls = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+
+    def identify(_ctx, _frame, preferred):
+        preferred_calls.append(preferred)
+        if preferred is None:
+            return 121, 96.0
+        return None, 0.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number", identify)
+    waiter = runner._fanxiu_runtime(ctx).wait_scene(121, timeout=1.0, layer0_wait_seconds=0, label="等待邮件")
+
+    for _ in range(100):
+        try:
+            assert next(waiter) is BehaviorTreeStatus.RUNNING
+        except StopIteration as stop:
+            assert stop.value.raw is image121
+            break
+    else:
+        raise AssertionError("wait_scene did not finish")
+
+    assert None in preferred_calls
 
 
 def test_fanxiu_runtime_wait_view_prefers_view_identity_match(monkeypatch):

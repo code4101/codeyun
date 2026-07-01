@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f"
-last_audited_at: "2026-07-01T16:40:39.6417612+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-d09a63ee/report.md"
-last_frontend_commit_summary: "完整关闭 cf6ac33d..d09a63ee：沿 cluster/runtime、cluster/files 与 cluster/logs 复核后，把窄屏仍展开的共享侧栏收回为自动折叠，恢复运维链路页面可读区。"
-audited_commit_count: 57
+last_audited_commit: "b72baa1b93641e86bd98961391f459d27d0c8176"
+last_audited_at: "2026-07-01T20:37:44.1982847+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-b72baa1b/report.md"
+last_frontend_commit_summary: "完整关闭 d09a63ee..b72baa1b：把 cluster/services 挂回集群菜单，并让 cluster 菜单跨页保留当前 entry_id 设备上下文。"
+audited_commit_count: 58
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-01
+
+- 完整范围：`d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f..b72baa1b93641e86bd98961391f459d27d0c8176`
+- 覆盖提交：`b72baa1b93641e86bd98961391f459d27d0c8176`
+- 前端入口提交：`b72baa1b93641e86bd98961391f459d27d0c8176`
+- 入口如何牵引到旧问题：本次提交前端显式触达 `cluster/services` 与共享 `MainLayout`，并通过后端摘要裁剪把服务管理页进一步收敛到 OCR 主对象。真实页面复核后，真正被牵出的旧问题不在服务卡片内部，而在同一条 `cluster` 入口链路上：`/cluster/services` 虽有页面、有权限标题，但既没有左侧菜单挂载，也没有在 cluster 菜单切页时保留当前 `entry_id`，导致新服务页只能靠直链进入，且跨页会丢设备上下文。
+- 本轮减法：不新增任何新页面、按钮、状态或说明，只做两处共享入口收口。第一，为 `cluster.services` 补 `menu_paths` 并在 [`frontend/src/layout/MainLayout.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/layout/MainLayout.vue) 的 `集群管理` 分组显式加入 `服务管理`。第二，把 cluster 菜单跳转统一收回到一个 `buildMenuRouteLocation`，让 `/cluster/*` 在同一设备链路里自动保留当前 `entry_id`。
+- 信息量保持：服务页本身仍只展示 OCR 摘要、Token 与使用文档；运行管理、TreeSize、浏览文件等现有 cluster 能力都不变。减少的是“隐藏直链页”和“跨页设备上下文丢失”两层偶然复杂度，不是新增运维概念。
+- 概念图/线框图：报告中的 Mermaid 把 `集群管理菜单 -> 运行管理 / 服务管理 -> entry_id = 当前设备 -> OCR 摘要 / Token` 收回到一条共享设备上下文链路；ASCII 线框图直接对比了修复前 `服务管理` 缺席菜单、只能靠 URL 进入，与修复后回到单一菜单入口的差异。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-01-frontend-design-b72baa1b/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，在 in-app Browser 对 `cluster/services?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2` 与 `cluster/runtime?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`evidence.json` 记录 6 张截图全部满足 `bodyOverflowX = 0`、`mainOverflowX = 0`，且桌面视口下 `集群管理` 菜单都包含 `服务管理`。另外补做远程设备交互探针：从 `cluster/runtime?entry_id=da2d06f2-ab06-4c05-a614-e396e2e6e6a3` 点击左侧 `服务管理` 后，真实 URL 保持 `entry_id=da2d06f2-ab06-4c05-a614-e396e2e6e6a3`，活动设备仍为 `codepc_mi15`。`npm run typecheck --prefix frontend` 与 `npm run build --prefix frontend` 均通过。
+- 根因分层：本轮问题属于共享导航层 / 前端入口模型，而不是新的后端 DTO 或业务建模债务；`cluster/services` 本次只读 `ocr` 摘要的一级页面模型保持成立，不新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实三视口截图、共享导航层低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `b72baa1b93641e86bd98961391f459d27d0c8176`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`cf6ac33da15354e3530527ff46c63bf7455e93fe..d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`
 - 覆盖提交：`d09a63ee07e96782b9a0e0fd0ab568a3e5ad6c0f`
