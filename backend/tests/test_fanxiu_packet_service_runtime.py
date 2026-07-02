@@ -85,6 +85,52 @@ def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
     assert health["worker_maintenance_age_seconds"] == 4 * 3600
 
 
+def test_packet_service_health_uses_active_heartbeat_for_maintenance(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_age_seconds",
+        lambda value: {
+            "2026-06-28 21:00:00": 30,
+            "2026-06-28 16:28:17": 4 * 3600,
+            "2026-06-28 20:59:50": 10,
+        }.get(value, 0),
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True, "watchdog_last_check_at": "2026-06-28 21:00:00"},
+            "packet_worker": {
+                "ok": True,
+                "updated_at": "2026-06-28 21:00:00",
+                "realtime_running": True,
+                "maintenance_running": True,
+                "realtime_interval_seconds": 15,
+                "maintenance_interval_seconds": 1800,
+                "realtime": {"updated_at": "2026-06-28 21:00:00"},
+                "maintenance": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "active": True,
+                    "heartbeat_at": "2026-06-28 20:59:50",
+                },
+            },
+        }
+    )
+
+    assert "maintenance_result_stale" not in health["issues"]
+    assert health["worker_maintenance_age_seconds"] == 10
+
+
 def test_latest_live_capture_summary_ignores_vanished_candidates(monkeypatch, tmp_path):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)
@@ -155,3 +201,22 @@ def test_start_packet_service_uses_no_window_module_launcher(monkeypatch, tmp_pa
     assert kwargs["env"]["FX_PACKET_SERVICE_LOG"] == str(log_path)
     assert kwargs["env"]["FX_PACKET_SERVICE_STATE"] == str(state_path)
     assert Path(kwargs["stdout"].name) == log_path
+
+
+def test_write_json_retries_replace_on_windows_permission_error(monkeypatch, tmp_path):
+    path = tmp_path / "packet_service_state.json"
+    calls = {"count": 0}
+    original_replace = Path.replace
+
+    def flaky_replace(self, target):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError(13, "denied", str(target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    service_runtime._write_json(path, {"ok": True, "value": 1})
+
+    assert calls["count"] >= 2
+    assert '"value": 1' in path.read_text(encoding="utf-8")

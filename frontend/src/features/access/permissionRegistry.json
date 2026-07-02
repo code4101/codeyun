@@ -130,17 +130,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "tools.ai-agents",
-      "title": "AGENTS",
-      "node_type": "feature",
-      "parent_key": "ai-tools",
-      "sort_order": 26,
-      "route_paths": ["/tools/ai-agents"],
-      "menu_paths": ["/tools/ai-agents"],
-      "api_scopes": ["ai-tools.agents"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "tools.ai-reduction",
       "title": "AI归纳",
       "node_type": "feature",
@@ -171,17 +160,6 @@
       "route_paths": ["/tools/ai-wechat"],
       "menu_paths": ["/tools/ai-wechat"],
       "api_scopes": ["ai-tools.wechat"],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "tools.ai-notebook",
-      "title": "AI协作Notebook",
-      "node_type": "feature",
-      "parent_key": "ai-tools",
-      "sort_order": 60,
-      "route_paths": ["/tools/ai-notebook"],
-      "menu_paths": ["/tools/ai-notebook"],
-      "api_scopes": ["ai-tools.notebook"],
       "default_anonymous_allow": false
     },
     {

@@ -75,11 +75,9 @@ const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const MUSIC_TOOLS_PATH = requirePageMenuPath('MusicTools');
 const OPEN_SCORE_STUDY_PATH = requirePageMenuPath('OpenScoreStudy');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
-const AI_AGENTS_PATH = requirePageMenuPath('AiAgents');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
-const AI_NOTEBOOK_PATH = requirePageMenuPath('AiNotebook');
 const AI_WECHAT_PATH = requirePageMenuPath('AiWechat');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
 const ATTENDANCE_HEADER_TOOL_PATH = requirePageMenuPath('AttendanceHeaderTool');
@@ -154,11 +152,9 @@ const MUSIC_TOOLS_TITLE = requirePermissionTitleByMenuPath(MUSIC_TOOLS_PATH);
 const OPEN_SCORE_STUDY_TITLE = requirePermissionTitleByMenuPath(OPEN_SCORE_STUDY_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
-const AI_AGENTS_TITLE = requirePermissionTitleByMenuPath(AI_AGENTS_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
-const AI_NOTEBOOK_TITLE = requirePermissionTitleByMenuPath(AI_NOTEBOOK_PATH);
 const AI_WECHAT_TITLE = requirePermissionTitleByMenuPath(AI_WECHAT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
@@ -411,11 +407,9 @@ const aiToolsMenuVisible = computed(() =>
   && [
     AI_CONFIG_PATH,
     CLUSTER_CODEX_PATH,
-    AI_AGENTS_PATH,
     AI_CHAT_PATH,
     AI_REDUCTION_PATH,
     AI_GIT_COMMIT_PATH,
-    AI_NOTEBOOK_PATH,
     AI_WECHAT_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -868,11 +862,9 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_AGENTS_PATH)" :index="AI_AGENTS_PATH">{{ AI_AGENTS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_NOTEBOOK_PATH)" :index="AI_NOTEBOOK_PATH">{{ AI_NOTEBOOK_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_WECHAT_PATH)" :index="AI_WECHAT_PATH">{{ AI_WECHAT_TITLE }}</el-menu-item>
           </el-sub-menu>
 

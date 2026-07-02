@@ -55,8 +55,9 @@ def test_frame_structure_organizer_adopts_children_by_shared_identity_anchor():
     folder_children = organized[0]["children"]
     parent = folder_children[0]
 
-    assert [item["filename"] for item in folder_children] == ["0121.png"]
-    assert [item["filename"] for item in parent["children"]] == ["0122.png", "0123.png"]
+    assert [item["filename"] for item in folder_children] == ["0121.png", "0122.png", "0123.png"]
+    assert [item.get("recognitionParentId") for item in folder_children] == [None, 121, 121]
+    assert parent["children"] == []
     assert stats.adoption_count == 2
     assert [(item.parent_id, item.child_id) for item in stats.adoptions] == [(121, 122), (121, 123)]
     assert parent["shapes"][0]["sceneIdentityRole"] == "required"
@@ -160,8 +161,9 @@ def test_frame_structure_organizer_layer_scope_adopts_local_sibling_group():
 
     organized, stats = organize_frame_structure_in_tree(tree, score_shape=score_shape, scope="layer")
 
-    assert [item["filename"] for item in organized[0]["children"]] == ["0071.png"]
-    assert [item["filename"] for item in organized[0]["children"][0]["children"]] == ["0251.png"]
+    assert [item["filename"] for item in organized[0]["children"]] == ["0071.png", "0251.png"]
+    assert organized[0]["children"][1]["recognitionParentId"] == 71
+    assert organized[0]["children"][0]["children"] == []
     assert stats.adoption_count == 1
     assert [(item.parent_id, item.child_id) for item in stats.adoptions] == [(71, 251)]
 

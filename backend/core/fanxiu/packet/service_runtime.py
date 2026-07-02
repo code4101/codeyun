@@ -133,9 +133,29 @@ def _read_json(path: Path, fallback: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            temp_path.write_text(text, encoding="utf-8")
+            temp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        if last_error is not None:
+            raise last_error
+        raise
 
 
 def _parse_local_datetime(value: Any) -> datetime | None:
@@ -167,6 +187,10 @@ def _age_seconds(value: Any) -> float | None:
 
 def _worker_substate_age_seconds(worker: dict[str, Any], key: str) -> float | None:
     substate = worker.get(key) if isinstance(worker.get(key), dict) else {}
+    if substate.get("active"):
+        heartbeat_age = _age_seconds(substate.get("heartbeat_at"))
+        if heartbeat_age is not None:
+            return heartbeat_age
     return _age_seconds(substate.get("updated_at"))
 
 

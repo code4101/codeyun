@@ -384,12 +384,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./tools/ai-config/page.vue'),
   },
   {
-    routeName: 'AiAgents',
-    canonicalPath: '/tools/ai-agents',
-    component: () => import('./tools/ai-agents/page.vue'),
-    requiresAuth: true,
-  },
-  {
     routeName: 'AiChat',
     canonicalPath: '/tools/ai-chat',
     component: () => import('./tools/ai-chat/page.vue'),
@@ -405,13 +399,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     canonicalPath: '/tools/ai-git-commit',
     component: () => import('./tools/ai-git-commit/page.vue'),
     requiresAuth: true,
-  },
-  {
-    routeName: 'AiNotebook',
-    canonicalPath: '/tools/ai-notebook',
-    component: () => import('./tools/ai-notebook/page.vue'),
-    requiresAuth: true,
-    requiresAdmin: true,
   },
   {
     routeName: 'AiWechat',

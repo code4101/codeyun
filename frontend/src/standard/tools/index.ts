@@ -1,10 +1,8 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 import aiChatPage from './ai-chat'
-import aiAgentsPage from './ai-agents'
 import aiConfigPage from './ai-config'
 import aiGitCommitPage from './ai-git-commit'
-import aiNotebookPage from './ai-notebook'
 import aiReductionPage from './ai-reduction'
 import aiWechatPage from './ai-wechat'
 import colorToolsPage from './color-tools'
@@ -20,11 +18,9 @@ const pages: AppPageDefinition[] = [
   musicToolsPage,
   openScoreStudyPage,
   aiConfigPage,
-  aiAgentsPage,
   aiChatPage,
   aiReductionPage,
   aiGitCommitPage,
-  aiNotebookPage,
   aiWechatPage,
 ]
 

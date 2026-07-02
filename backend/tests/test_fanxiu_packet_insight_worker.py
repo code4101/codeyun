@@ -654,3 +654,17 @@ def test_decode_runtime_capture_with_timeout_raises_quickly(monkeypatch, tmp_pat
         raise AssertionError("expected timeout")
 
     assert time.time() - started < 2
+
+
+def test_worker_status_marks_active_maintenance_with_heartbeat():
+    service = worker.FanxiuPacketInsightWorker(scan_interval_seconds=3, maintenance_interval_seconds=60, stable_seconds=1)
+    service._last_realtime_result = {"ok": True, "updated_at": "2026-07-02 15:00:00"}
+    service._last_maintenance_result = {"ok": True, "updated_at": "2026-07-02 11:55:49", "decoded": list(range(20))}
+    service._maintenance_cycle_started_at = time.time() - 5
+
+    status = service.status()
+
+    assert status["maintenance"]["active"] is True
+    assert status["maintenance"]["heartbeat_at"]
+    assert status["maintenance"]["decoded_count"] == 20
+    assert len(status["maintenance"]["decoded"]) == 5
