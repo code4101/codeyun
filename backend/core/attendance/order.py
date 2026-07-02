@@ -34,8 +34,9 @@ def _close_extra_weipay_tabs(weipay: Any, *, min_tabs_to_keep: int = 1) -> None:
         close_if_exceeds = getattr(weipay, "close_if_exceeds_min_tabs", None)
         if callable(close_if_exceeds):
             close_if_exceeds(min_tabs_to_keep)
+            return
     except Exception:
-        pass
+        return
 
     try:
         browser = getattr(weipay, "browser", None)
@@ -65,6 +66,13 @@ def _close_extra_weipay_tabs(weipay: Any, *, min_tabs_to_keep: int = 1) -> None:
             tab.close()
         except Exception:
             pass
+
+
+def _auto_weipay_tab_cleanup_enabled() -> bool:
+    value = os.getenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS")
+    if value is None:
+        return False
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
 def _ensure_managed_weipay(
@@ -144,7 +152,7 @@ def execute_order_action(
             lookup_mode=lookup_mode,
         )
     finally:
-        if owned_weipay:
+        if owned_weipay and _auto_weipay_tab_cleanup_enabled():
             _close_extra_weipay_tabs(managed_weipay, min_tabs_to_keep=1)
 
 
@@ -183,7 +191,7 @@ def query_order_refund_details(
         )
         return retry_result if retry_result.get("rows") else result
     finally:
-        if owned_weipay:
+        if owned_weipay and _auto_weipay_tab_cleanup_enabled():
             _close_extra_weipay_tabs(managed_weipay, min_tabs_to_keep=1)
 
 

@@ -600,6 +600,46 @@ class AutoGitCommitRun(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class DeviceAgentSession(SQLModel, table=True):
+    __tablename__ = "deviceagentsession"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    local_device_id: str = Field(default="", index=True)
+    peer_device_id: str = Field(default="", index=True)
+    peer_name: str = Field(default="")
+    requester_kind: str = Field(default="device", index=True)
+    title: str = Field(default="")
+    status: str = Field(default="pending", index=True)
+    last_turn_id: Optional[str] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
+class DeviceAgentTurn(SQLModel, table=True):
+    __tablename__ = "deviceagentturn"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    session_id: str = Field(foreign_key="deviceagentsession.id", index=True)
+    role: str = Field(default="requester", index=True)
+    requester: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    request_type: str = Field(default="ask", index=True)
+    instruction: str = Field(default="")
+    context: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)
+    stage: str = Field(default="pending", index=True)
+    stage_label: str = Field(default="等待中")
+    queue_task_id: Optional[str] = Field(default=None, index=True)
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    result_report: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    created_at: float = Field(default_factory=time.time, index=True)
+    started_at: Optional[float] = Field(default=None, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
 class CodexDailySummaryRun(SQLModel, table=True):
     __tablename__ = "codexdailysummaryrun"
     __table_args__ = {'extend_existing': True}

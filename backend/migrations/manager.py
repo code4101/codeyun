@@ -5012,6 +5012,75 @@ def v77_add_codex_diary_replace_existing(session: Session):
     print("  Added Codex diary replace_existing column.")
 
 
+def v78_add_device_agent_tables(session: Session):
+    """
+    Migration V78: Add Device Agent session and turn tables.
+    """
+    print("Running System Upgrade V78: Add Device Agent tables...")
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS deviceagentsession (
+            id VARCHAR NOT NULL,
+            local_device_id VARCHAR NOT NULL DEFAULT '',
+            peer_device_id VARCHAR NOT NULL DEFAULT '',
+            peer_name VARCHAR NOT NULL DEFAULT '',
+            requester_kind VARCHAR NOT NULL DEFAULT 'device',
+            title VARCHAR NOT NULL DEFAULT '',
+            status VARCHAR NOT NULL DEFAULT 'pending',
+            last_turn_id VARCHAR,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            PRIMARY KEY (id)
+        )
+    """))
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS deviceagentturn (
+            id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            role VARCHAR NOT NULL DEFAULT 'requester',
+            requester JSON NOT NULL DEFAULT '{}',
+            request_type VARCHAR NOT NULL DEFAULT 'ask',
+            instruction VARCHAR NOT NULL DEFAULT '',
+            context JSON NOT NULL DEFAULT '{}',
+            status VARCHAR NOT NULL DEFAULT 'pending',
+            stage VARCHAR NOT NULL DEFAULT 'pending',
+            stage_label VARCHAR NOT NULL DEFAULT '等待中',
+            queue_task_id VARCHAR,
+            heartbeat_at FLOAT,
+            result_report JSON NOT NULL DEFAULT '{}',
+            error_message VARCHAR,
+            created_at FLOAT NOT NULL,
+            started_at FLOAT,
+            finished_at FLOAT,
+            updated_at FLOAT NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(session_id) REFERENCES deviceagentsession (id)
+        )
+    """))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_local_device_id ON deviceagentsession (local_device_id)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_peer_device_id ON deviceagentsession (peer_device_id)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_requester_kind ON deviceagentsession (requester_kind)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_status ON deviceagentsession (status)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_last_turn_id ON deviceagentsession (last_turn_id)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_created_at ON deviceagentsession (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentsession_updated_at ON deviceagentsession (updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_session_id ON deviceagentturn (session_id)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_role ON deviceagentturn (role)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_request_type ON deviceagentturn (request_type)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_status ON deviceagentturn (status)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_stage ON deviceagentturn (stage)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_queue_task_id ON deviceagentturn (queue_task_id)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_heartbeat_at ON deviceagentturn (heartbeat_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_created_at ON deviceagentturn (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_started_at ON deviceagentturn (started_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_finished_at ON deviceagentturn (finished_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deviceagentturn_updated_at ON deviceagentturn (updated_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Device Agent tables.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5092,6 +5161,7 @@ MIGRATIONS = [
     (75, "Add Codex maintenance feedback table", v75_add_codex_maintenance_feedback_table),
     (76, "Add GitHub project creation time", v76_add_github_project_created_at),
     (77, "Add Codex diary replace existing flag", v77_add_codex_diary_replace_existing),
+    (78, "Add Device Agent tables", v78_add_device_agent_tables),
 ]
 
 def get_current_version(session: Session) -> int:

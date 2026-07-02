@@ -29,14 +29,12 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "e1d79d0cf571e2dded7942e5900639ec0a05ce5e"
-last_audited_at: "2026-07-02T14:39:31.9717708+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-78774fb2/report.md"
-last_frontend_commit_summary: "部分处理 e1d79d0c..78774fb2：数据标注把 OCR 专用抠图策略从默认常驻收回到条件显露，但 NoteSheetWorkspace 真实已返款表入口仍待验证。"
-audited_commit_count: 60
-pending_or_skipped_ranges:
-  - range: "e1d79d0cf571e2dded7942e5900639ec0a05ce5e..78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820"
-    reason: "已完成 cluster/runtime、notes/list、notes/star、attendance/orders 和 fanxiu/data-annotation 的实拍复核，并对 data-annotation 做了 OCR 抠图策略减法修复；但当前账号打开 /notes/sheets-manager 返回 403，未拿到真实 NoteSheetWorkspace 的已返款 sheet 入口，所以整段增量范围暂不推进游标。"
+last_audited_commit: "72a3d80aaabb730cf6277293a8487067dcb705ca"
+last_audited_at: "2026-07-02T16:33:27.9073159+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-72a3d80a-closeout/report.md"
+last_frontend_commit_summary: "完成 e1d79d0c..72a3d80a：关闭 NoteSheetWorkspace 已返款入口 pending，并确认 AI 工具菜单已移除 Notebook/AGENTS。"
+audited_commit_count: 62
+pending_or_skipped_ranges: []
 ```
 
 更新规则：
@@ -261,6 +259,18 @@ pending_or_skipped_ranges:
 ## 巡检记录
 
 ### 2026-07-02
+
+- 完整范围：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e..72a3d80aaabb730cf6277293a8487067dcb705ca`
+- 覆盖提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`、`72a3d80aaabb730cf6277293a8487067dcb705ca`
+- 前端入口提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`、`72a3d80aaabb730cf6277293a8487067dcb705ca`
+- 入口如何牵引到旧问题：上一轮已经把 `检查已返款` 从 `NoteSheetWorkspace` 组件层做完，但卡在 `/notes/sheets-manager -> 403`，无法确认它在真实工作表里的层级是否合适。新提交继续收缩 AI 工具菜单和 Fanxiu 链路，因此本轮沿着同一条“工作表上下文动作 + 工具入口减法”链路收口，而不是扩散到无关旧页。
+- 本轮减法：不新增任何功能、状态、说明区或路由，也没有再改仓库代码。第一，转到当前账号可访问的 `http://127.0.0.1:5173/workbook/14?sheet=58855`，验证 `检查已返款` 只在 `已返款` 列上下文里出现，并以单个结果弹窗完成闭环。第二，展开 `fanxiu/data-annotation` 的 AI 工具菜单，确认 `Notebook/AGENTS` 已从一级入口消失，只保留当前仍成立的 AI 工具项。
+- 信息量保持：工作表仍然保留完整退款核对能力，AI 工具仍保留 `配置 / Codex / AI聊天 / AI归纳 / AI提交 / CodeClaw`；减少的是“受限管理页阻塞导致的未闭环判断”和“废弃工具入口残留”两层噪音，而不是减少业务能力。
+- 概念图/线框图：报告中的 Mermaid 把 `已返款列 -> 右键菜单 -> 检查已返款 -> 结果弹窗` 与 `AI工具 -> 保留项 / 删除项` 明确拆层；ASCII 线框图直接说明为什么 `检查已返款` 应该留在对象上下文，而不是升格为常驻工具栏。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-72a3d80a-closeout/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `fanxiu/data-annotation` 与 `workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`evidence.json` 记录两页三视口都满足 `bodyOverflowX = 0`，工作表同时满足 `gridOverflowX = 0`、`hasRefundedHeader = true`、`rowCountText = 共 34 行`。桌面视口下右键 `已返款` 单元格后可见 `检查已返款` 菜单项，点击后弹窗文案为 `已核对 34/34 行，当前表格已返款与历史返款记录一致。`；`fanxiu/data-annotation` 的 AI 工具菜单中 `hasAiNotebook = false`、`hasAgents = false`。
+- 根因分层：上一轮 pending 的根因是入口权限差异，不是 `NoteSheetWorkspace` 本身的 UI 模型错误；本轮新增的 AI 工具减法属于共享导航边界收敛，不涉及新的后端数据投影或业务建模债务；无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮未改仓库代码，但已完成完整增量范围的提交归类、概念建模、真实三视口截图和关键交互复验，因此关闭 `e1d79d0c..78774fb2` 的 pending，并把 `last_audited_commit` 推进到 `72a3d80aaabb730cf6277293a8487067dcb705ca`，清空 `pending_or_skipped_ranges`。
 
 - 完整范围：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e..78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`
 - 覆盖提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`

@@ -2719,36 +2719,46 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([330, 319, 69, 34], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id != 69:
+        if scene_id == 330:
+            self._log("action", "日常_奇袭魔界：起点检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")
+            yield from runtime.wait_click(330, "确定")
+            yield from runtime.wait_view(319, label="日常_奇袭魔界：等待 #330 后的奇袭魔界 #319")
+            scene_id = 319
+        if scene_id not in {69, 319}:
             scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
-        if scene_id != 69:
+        if scene_id not in {69, 319}:
             raise RuntimeError("日常_奇袭魔界：未能进入 #69 日常列表")
-        status = yield from runtime.open_daily_entry(
-            label="日常_奇袭魔界",
-            title_pattern="魔界",
-            progress_can_mark_done=False,
-            max_scrolls=int(payload.get("max_scrolls") or 30),
-            reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
-        )
-        if status == "not_found":
-            raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
-        if payload.get("stop_after_daily_entry") or payload.get("pause_after_daily_entry"):
-            yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
-            current_scene_id, score, frame = runtime.current_scene(update=True)
-            text = runtime.ocr_text(frame)
-            scene_label = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
-            self._log(
-                "warning",
-                f"日常_奇袭魔界：已点击日常入口，按调试要求暂停；当前 {scene_label} {score:.0f}%，OCR={text[:120]}",
+        if scene_id == 69:
+            status = yield from runtime.open_daily_entry(
+                label="日常_奇袭魔界",
+                title_pattern="魔界",
+                progress_can_mark_done=False,
+                max_scrolls=int(payload.get("max_scrolls") or 30),
+                reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
             )
-            return "skipped"
-        try:
-            yield from runtime.wait_view(319, label="日常_奇袭魔界：等待奇袭魔界 #319")
-        except TimeoutError as exc:
-            yield from self._handle_daily_mojie_raid_open_blocker_placeholder(runtime, payload)
-            raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
+            if status == "not_found":
+                raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
+            if payload.get("stop_after_daily_entry") or payload.get("pause_after_daily_entry"):
+                yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
+                current_scene_id, score, frame = runtime.current_scene(update=True)
+                text = runtime.ocr_text(frame)
+                scene_label = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
+                self._log(
+                    "warning",
+                    f"日常_奇袭魔界：已点击日常入口，按调试要求暂停；当前 {scene_label} {score:.0f}%，OCR={text[:120]}",
+                )
+                return "skipped"
+            try:
+                waited = yield from runtime.wait_view(319, 330, label="日常_奇袭魔界：等待奇袭魔界 #319")
+                if getattr(waited, "id", waited) == 330:
+                    self._log("action", "日常_奇袭魔界：检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")
+                    yield from runtime.wait_click(330, "确定")
+                    yield from runtime.wait_view(319, label="日常_奇袭魔界：等待 #330 后的奇袭魔界 #319")
+            except TimeoutError as exc:
+                yield from self._handle_daily_mojie_raid_open_blocker_placeholder(runtime, payload)
+                raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
         self._log("success", "日常_奇袭魔界：已到达 #319")
         numbers, text = runtime.ocr_numbers_in_shapes(
             319,
@@ -2769,8 +2779,8 @@ class DailyFoundationTaskMixin:
         yield from runtime.wait_click_then_view(322, "下拉选项", 323)
         yield from runtime.wait_click_then_view(323, "开启", 322)
         yield from runtime.wait_click_then_view(322, "确定", 324)
-        yield from runtime.wait_click_then_view(324, "返回", 321)
-        yield from runtime.click_shape_center_then_view(321, "返回", 320)
+        yield from runtime.wait_click_then_view(324, "返回", 331)
+        yield from runtime.click_shape_center_then_view(331, "返回", 320)
         yield from runtime.wait_click(320, "返回")
         yield from runtime.wait_click(319, "返回")
         return "success"

@@ -133,6 +133,7 @@ def test_execute_order_action_closes_owned_weipay_tabs(monkeypatch):
     events = []
     fake_weipay = object()
 
+    monkeypatch.setenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS", "1")
     monkeypatch.setattr(
         attendance_order,
         "_ensure_managed_weipay",
@@ -160,6 +161,51 @@ def test_execute_order_action_closes_owned_weipay_tabs(monkeypatch):
     assert events[0][0] == "execute"
     assert events[0][1]["weipay"] is fake_weipay
     assert events[-1] == ("close", fake_weipay, 1)
+
+
+def test_execute_order_action_skips_automatic_weipay_tab_cleanup_by_default(monkeypatch):
+    events = []
+    fake_weipay = object()
+
+    monkeypatch.delenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS", raising=False)
+    monkeypatch.setattr(
+        attendance_order,
+        "_ensure_managed_weipay",
+        lambda weipay=None, *, weipay_login_users=None: (fake_weipay, True),
+    )
+    monkeypatch.setattr(attendance_order, "_execute_order_action", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        attendance_order,
+        "_close_extra_weipay_tabs",
+        lambda weipay, *, min_tabs_to_keep=1: events.append(("close", weipay, min_tabs_to_keep)),
+    )
+
+    result = attendance_order.execute_order_action(
+        action="inspect",
+        rows=[{"商户订单号": "MA2026"}],
+        lookup_mode="browser_only",
+    )
+
+    assert result == {"ok": True}
+    assert events == []
+
+
+def test_close_extra_weipay_tabs_uses_native_cleanup_without_browser_scan():
+    events = []
+
+    class BlockingBrowser:
+        def get_tabs(self, **_kwargs):
+            raise AssertionError("native Weipay cleanup should avoid browser tab scan")
+
+    class NativeCleanupWeipay:
+        browser = BlockingBrowser()
+
+        def close_if_exceeds_min_tabs(self, min_tabs_to_keep):
+            events.append(("native_cleanup", min_tabs_to_keep))
+
+    attendance_order.cleanup_weipay_tabs(NativeCleanupWeipay(), min_tabs_to_keep=2)
+
+    assert events == [("native_cleanup", 2)]
 
 
 def test_execute_order_action_db_only_does_not_preload_weipay(monkeypatch):
@@ -208,6 +254,7 @@ def test_query_order_refund_details_closes_owned_weipay_tabs_on_error(monkeypatc
     events = []
     fake_weipay = object()
 
+    monkeypatch.setenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS", "1")
     monkeypatch.setattr(
         attendance_order,
         "_ensure_managed_weipay",

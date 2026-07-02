@@ -8,6 +8,16 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide, RefreshRight } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import {
+  createDeviceAgentSession,
+  fetchDeviceAgentManifest,
+  fetchDeviceAgentSession,
+  fetchDeviceAgentSessions,
+  saveDeviceAgentConfig,
+  type DeviceAgentConfig,
+  type DeviceAgentManifest,
+  type DeviceAgentSession,
+} from '@/api/deviceAgent';
+import {
   addRuntimeJob,
   configureRuntimeItemAutostart,
   configureRuntimeJobSchedule,
@@ -51,6 +61,18 @@ const runtimeNameColumnWidth = computed(() => (viewportWidth.value < 960 ? 88 : 
 const runtimeCommandColumnMinWidth = computed(() => (viewportWidth.value < 960 ? 240 : 520));
 const runtimeNextColumnWidth = computed(() => (viewportWidth.value < 960 ? 96 : 130));
 const runtimeLoadIssue = ref('');
+const deviceAgentLoading = ref(false);
+const deviceAgentSaving = ref(false);
+const deviceAgentSubmitting = ref(false);
+const deviceAgentConfig = ref<DeviceAgentConfig | null>(null);
+const deviceAgentManifest = ref<DeviceAgentManifest | null>(null);
+const deviceAgentConfigDraft = ref<Partial<DeviceAgentConfig>>({});
+const deviceAgentSessions = ref<DeviceAgentSession[]>([]);
+const activeDeviceAgentSession = ref<DeviceAgentSession | null>(null);
+const deviceAgentRequestType = ref<'ask' | 'diagnose' | 'delegate' | 'repair'>('diagnose');
+const deviceAgentInstruction = ref('');
+const deviceAgentContextText = ref('');
+const deviceAgentPollTimer = ref<number | null>(null);
 const systemMonitorAnchorRef = ref<HTMLElement | null>(null);
 const systemMonitorActivated = ref(false);
 const getDeviceEntryMeta = (device: Device) => {
@@ -421,16 +443,208 @@ const startEditingDevice = () => {
   isEditingDevice.value = true;
 };
 
+const resetDeviceAgentState = () => {
+  deviceAgentConfig.value = null;
+  deviceAgentManifest.value = null;
+  deviceAgentConfigDraft.value = {};
+  deviceAgentSessions.value = [];
+  activeDeviceAgentSession.value = null;
+  deviceAgentInstruction.value = '';
+  deviceAgentContextText.value = '';
+  stopDeviceAgentPolling();
+};
+
+const syncDeviceAgentDraft = () => {
+  const config = deviceAgentConfig.value;
+  const manifest = deviceAgentManifest.value;
+  deviceAgentConfigDraft.value = config
+    ? {
+        ...config,
+        default_provider: manifest?.configured_provider ?? config.default_provider,
+        default_model: manifest?.configured_model ?? config.default_model,
+      }
+    : {
+        enabled: true,
+        display_name: currentDevice.value?.name || '',
+        device_role: 'CodeYun 设备节点',
+        local_context: '',
+        responsibilities: '',
+        default_provider: 'codex-cli',
+        default_model: '',
+      };
+};
+
+const loadDeviceAgent = async (entryId = currentDeviceId.value) => {
+  if (!entryId) {
+    resetDeviceAgentState();
+    return;
+  }
+  deviceAgentLoading.value = true;
+  try {
+    const [manifest, sessions] = await Promise.all([
+      fetchDeviceAgentManifest(entryId),
+      fetchDeviceAgentSessions(entryId, 8),
+    ]);
+    deviceAgentManifest.value = manifest;
+    deviceAgentConfig.value = manifest;
+    syncDeviceAgentDraft();
+    deviceAgentSessions.value = sessions.items || [];
+    if (activeDeviceAgentSession.value) {
+      const match = deviceAgentSessions.value.find(item => item.id === activeDeviceAgentSession.value?.id);
+      if (match) {
+        activeDeviceAgentSession.value = await fetchDeviceAgentSession(entryId, match.id);
+      }
+    }
+  } catch (err: any) {
+    deviceAgentConfig.value = null;
+    deviceAgentSessions.value = [];
+    ElMessage.warning(err.response?.data?.detail || '设备代理状态读取失败');
+  } finally {
+    deviceAgentLoading.value = false;
+  }
+};
+
+const saveCurrentDeviceAgentConfig = async () => {
+  if (!currentDeviceId.value) return;
+  deviceAgentSaving.value = true;
+  try {
+    const saved = await saveDeviceAgentConfig(currentDeviceId.value, deviceAgentConfigDraft.value);
+    deviceAgentConfig.value = saved;
+    syncDeviceAgentDraft();
+    ElMessage.success('设备代理配置已保存');
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '设备代理配置保存失败');
+  } finally {
+    deviceAgentSaving.value = false;
+  }
+};
+
+const parseDeviceAgentContext = () => {
+  const text = deviceAgentContextText.value.trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { note: text };
+  }
+};
+
+const submitDeviceAgentSession = async () => {
+  if (!currentDeviceId.value || !deviceAgentInstruction.value.trim()) {
+    ElMessage.warning('请先填写设备代理请求');
+    return;
+  }
+  deviceAgentSubmitting.value = true;
+  try {
+    const requesterDevice = currentDevice.value;
+    const session = await createDeviceAgentSession(currentDeviceId.value, {
+      requester: {
+        kind: 'user',
+        id: requesterDevice?.device_id || currentDeviceId.value,
+        display_name: requesterDevice?.name || 'CodeYun UI',
+      },
+      request_type: deviceAgentRequestType.value,
+      instruction: deviceAgentInstruction.value.trim(),
+      context: parseDeviceAgentContext(),
+    });
+    activeDeviceAgentSession.value = session;
+    deviceAgentInstruction.value = '';
+    deviceAgentContextText.value = '';
+    await loadDeviceAgent(currentDeviceId.value);
+    startDeviceAgentPolling();
+    ElMessage.success('设备代理请求已提交');
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '设备代理请求提交失败');
+  } finally {
+    deviceAgentSubmitting.value = false;
+  }
+};
+
+const openDeviceAgentSession = async (sessionId: string) => {
+  if (!currentDeviceId.value) return;
+  try {
+    activeDeviceAgentSession.value = await fetchDeviceAgentSession(currentDeviceId.value, sessionId);
+    startDeviceAgentPolling();
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '设备代理会话读取失败');
+  }
+};
+
+function stopDeviceAgentPolling() {
+  if (deviceAgentPollTimer.value !== null) {
+    window.clearInterval(deviceAgentPollTimer.value);
+    deviceAgentPollTimer.value = null;
+  }
+}
+
+const latestDeviceAgentTurn = computed(() => {
+  const turns = activeDeviceAgentSession.value?.turns || [];
+  return turns.length ? turns[turns.length - 1] : null;
+});
+
+const latestDeviceAgentReport = computed(() => latestDeviceAgentTurn.value?.result_report || null);
+
+const deviceAgentStatusLabel = computed(() => {
+  const status = deviceAgentManifest.value?.status || (deviceAgentConfigDraft.value.enabled === false ? 'disabled' : '');
+  if (status === 'available') return '可用';
+  if (status === 'degraded') return '降级';
+  if (status === 'disabled') return '未启用';
+  return '未知';
+});
+
+const deviceAgentStatusType = computed(() => {
+  const status = deviceAgentManifest.value?.status || '';
+  if (status === 'available') return 'success';
+  if (status === 'degraded') return 'warning';
+  if (status === 'disabled') return 'info';
+  return 'info';
+});
+
+const deviceAgentAiProviderLabel = computed(() => {
+  const provider = deviceAgentManifest.value?.ai_provider;
+  if (!provider) return '';
+  return [provider.label || provider.provider, provider.model].filter(Boolean).join(' · ');
+});
+
+const startDeviceAgentPolling = () => {
+  stopDeviceAgentPolling();
+  const sessionId = activeDeviceAgentSession.value?.id;
+  if (!currentDeviceId.value || !sessionId) return;
+  deviceAgentPollTimer.value = window.setInterval(async () => {
+    if (!currentDeviceId.value || !activeDeviceAgentSession.value) return;
+    const latest = latestDeviceAgentTurn.value;
+    if (latest && ['completed', 'failed'].includes(latest.status)) {
+      stopDeviceAgentPolling();
+      return;
+    }
+    try {
+      activeDeviceAgentSession.value = await fetchDeviceAgentSession(currentDeviceId.value, sessionId);
+      await loadDeviceAgent(currentDeviceId.value);
+    } catch {
+      // Keep the current display; the next manual refresh can surface details.
+    }
+  }, 3000);
+};
+
+const refreshDeviceRuntimePanels = async (entryId: string) => {
+  await Promise.all([
+    fetchTasks(entryId, false),
+    loadDeviceAgent(entryId),
+  ]);
+};
+
 // Watch for device switching to refresh tasks and restart polling
 watch(currentDeviceId, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     stopEditingDevice();
     deviceError.value = false;
     stopTaskPolling();
-    await fetchTasks(newId, false);
+    resetDeviceAgentState();
+    await refreshDeviceRuntimePanels(newId);
     startTaskPolling(newId);
   } else if (!newId) {
     stopTaskPolling();
+    resetDeviceAgentState();
   }
 });
 
@@ -1762,7 +1976,7 @@ onMounted(async () => {
   }
 
   if (currentDeviceId.value && !selectionChangedDuringBootstrap) {
-      await fetchTasks(currentDeviceId.value, false);
+      await refreshDeviceRuntimePanels(currentDeviceId.value);
       startTaskPolling(currentDeviceId.value);
   }
   
@@ -1778,6 +1992,7 @@ onUnmounted(() => {
   window.removeEventListener('click', closeRuntimeContextMenu);
   window.removeEventListener('resize', updateViewportWidth);
   stopTaskPolling();
+  stopDeviceAgentPolling();
   systemMonitorObserver?.disconnect();
   systemMonitorObserver = null;
   clearDeferredInitHandle(runtimeSortableInitHandle);
@@ -1875,6 +2090,109 @@ onUnmounted(() => {
       show-icon
       class="runtime-load-alert"
     />
+
+    <section v-if="currentDevice" class="runtime-section device-agent-section" v-loading="deviceAgentLoading">
+      <div class="runtime-section-title">
+        <span>设备代理</span>
+        <el-tag :type="deviceAgentStatusType" size="small">{{ deviceAgentStatusLabel }}</el-tag>
+        <span v-if="deviceAgentAiProviderLabel" class="device-agent-provider-label">{{ deviceAgentAiProviderLabel }}</span>
+        <div class="device-agent-actions">
+          <el-button :icon="RefreshRight" size="small" text @click="loadDeviceAgent()">刷新</el-button>
+          <el-button type="primary" size="small" :loading="deviceAgentSaving" @click="saveCurrentDeviceAgentConfig">保存</el-button>
+        </div>
+      </div>
+      <el-alert
+        v-if="deviceAgentManifest?.ai_provider && !deviceAgentManifest.ai_provider.available"
+        :title="deviceAgentManifest.ai_provider.error || '设备代理模型后端不可用'"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="device-agent-alert"
+      />
+      <div class="device-agent-grid">
+        <div class="device-agent-config">
+          <el-form label-width="76px" size="small">
+            <el-form-item label="启用">
+              <el-switch v-model="deviceAgentConfigDraft.enabled" />
+            </el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="deviceAgentConfigDraft.display_name" placeholder="设备代理显示名" />
+            </el-form-item>
+            <el-form-item label="职责">
+              <el-input v-model="deviceAgentConfigDraft.device_role" placeholder="例如：考勤自动化运行设备" />
+            </el-form-item>
+            <el-form-item label="上下文">
+              <el-input
+                v-model="deviceAgentConfigDraft.local_context"
+                type="textarea"
+                :rows="3"
+                placeholder="本机登录态、服务、业务上下文"
+              />
+            </el-form-item>
+            <el-form-item label="负责项">
+              <el-input
+                v-model="deviceAgentConfigDraft.responsibilities"
+                type="textarea"
+                :rows="3"
+                placeholder="本机负责排查、执行和反馈的事项"
+              />
+            </el-form-item>
+            <div class="device-agent-model-row">
+              <el-input v-model="deviceAgentConfigDraft.default_provider" size="small" placeholder="provider" />
+              <el-input v-model="deviceAgentConfigDraft.default_model" size="small" placeholder="model，留空跟随 AI 配置" />
+            </div>
+          </el-form>
+        </div>
+        <div class="device-agent-request">
+          <div class="device-agent-request-head">
+            <el-select v-model="deviceAgentRequestType" size="small" style="width: 108px">
+              <el-option label="询问" value="ask" />
+              <el-option label="诊断" value="diagnose" />
+              <el-option label="委托" value="delegate" />
+              <el-option label="修复" value="repair" />
+            </el-select>
+            <el-button type="primary" size="small" :loading="deviceAgentSubmitting" @click="submitDeviceAgentSession">
+              提交
+            </el-button>
+          </div>
+          <el-input
+            v-model="deviceAgentInstruction"
+            type="textarea"
+            :rows="4"
+            placeholder="向该设备代理发起请求"
+          />
+          <el-input
+            v-model="deviceAgentContextText"
+            type="textarea"
+            :rows="3"
+            placeholder="上下文 JSON 或普通文本"
+            class="device-agent-context-input"
+          />
+          <div v-if="activeDeviceAgentSession" class="device-agent-report">
+            <div class="device-agent-report-title">
+              {{ activeDeviceAgentSession.title }}
+              <span v-if="latestDeviceAgentTurn"> · {{ latestDeviceAgentTurn.stage_label }}</span>
+            </div>
+            <div class="device-agent-report-body">
+              {{ latestDeviceAgentReport?.final_message || latestDeviceAgentReport?.summary || latestDeviceAgentTurn?.error_message || '等待设备代理反馈' }}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="deviceAgentSessions.length" class="device-agent-session-list">
+        <button
+          v-for="sessionItem in deviceAgentSessions"
+          :key="sessionItem.id"
+          type="button"
+          class="device-agent-session-chip"
+          :class="{ active: activeDeviceAgentSession?.id === sessionItem.id }"
+          @click="openDeviceAgentSession(sessionItem.id)"
+        >
+          <span>{{ sessionItem.title }}</span>
+          <small>{{ sessionItem.status }}</small>
+        </button>
+      </div>
+    </section>
 
     <section class="runtime-section">
       <div class="runtime-section-title">
@@ -2488,6 +2806,111 @@ onUnmounted(() => {
   margin-top: 16px;
 }
 
+.device-agent-section {
+  border-top: 1px solid #ebeef5;
+  border-bottom: 1px solid #ebeef5;
+  padding: 12px 0 14px;
+}
+
+.device-agent-actions,
+.device-agent-request-head,
+.device-agent-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-agent-provider-label {
+  color: #606266;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.device-agent-alert {
+  margin-bottom: 10px;
+}
+
+.device-agent-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.95fr) minmax(360px, 1.05fr);
+  gap: 16px;
+}
+
+.device-agent-model-row {
+  padding-left: 76px;
+}
+
+.device-agent-request {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.device-agent-request-head {
+  justify-content: space-between;
+}
+
+.device-agent-context-input {
+  margin-top: 2px;
+}
+
+.device-agent-report {
+  min-height: 88px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafafa;
+}
+
+.device-agent-report-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 6px;
+}
+
+.device-agent-report-body {
+  white-space: pre-wrap;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.device-agent-session-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.device-agent-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #303133;
+  padding: 5px 9px;
+  cursor: pointer;
+  max-width: 260px;
+}
+
+.device-agent-session-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-agent-session-chip small {
+  color: #909399;
+}
+
+.device-agent-session-chip.active {
+  border-color: #409eff;
+  color: #1f6fbd;
+}
+
 .runtime-load-alert {
   margin-bottom: 12px;
 }
@@ -2825,6 +3248,14 @@ onUnmounted(() => {
 
   .command-cell {
     max-width: 300px;
+  }
+
+  .device-agent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .device-agent-model-row {
+    padding-left: 0;
   }
 }
 </style>
