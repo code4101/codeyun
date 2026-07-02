@@ -10718,21 +10718,17 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
             ))
             return done("open")
 
-        def wait_view(self, scene_id, **kwargs):
-            calls.append(("wait_view", scene_id, kwargs.get("label")))
-            return done(scene_id)
-
         def ocr_numbers_in_shapes(self, scene_id, shape_titles, **kwargs):
             calls.append(("ocr_numbers_in_shapes", scene_id, tuple(shape_titles), kwargs))
             return [7], "本周剩余进攻次数：7"
 
-        def wait_click(self, scene_id, shape):
-            calls.append(("wait_click", scene_id, shape))
+        def wait_click(self, scene_id, shape, **kwargs):
+            calls.append(("wait_click", scene_id, shape, kwargs))
             return done(None)
 
-        def wait_view(self, scene_id, **kwargs):
-            calls.append(("wait_view", scene_id, kwargs))
-            return done(scene_id)
+        def wait_view(self, *scene_ids, **kwargs):
+            calls.append(("wait_view", scene_ids, kwargs))
+            return done(scene_ids[0])
 
         def wait_action_settle(self, seconds=1.0):
             calls.append(("wait_action_settle", seconds))
@@ -10749,6 +10745,10 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         def click_shape_center(self, scene_id, shape):
             calls.append(("click_shape_center", scene_id, shape))
             return None
+
+        def wait_click_then_view(self, scene_id, shape, *target_scene_ids, **kwargs):
+            calls.append(("wait_click_then_view", scene_id, shape, target_scene_ids, kwargs))
+            return done(target_scene_ids[0] if target_scene_ids else scene_id)
 
         def click_shape_center_then_view(self, scene_id, shape, *target_scene_ids, **kwargs):
             calls.append(("click_shape_center_then_view", scene_id, shape, target_scene_ids, kwargs))
@@ -10765,10 +10765,10 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     assert definition is not None
     assert definition.label == "日常_奇袭魔界"
     assert calls == [
-        ("current_scene", (69, 34), True),
+        ("current_scene", (330, 319, 69, 34), True),
         ("ocr_text",),
         ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
-        ("wait_view", 319, "日常_奇袭魔界：等待奇袭魔界 #319"),
+        ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}),
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
         ("wait_click_then_view", 319, "参与进攻", (320,), {}),
         ("wait_click_then_view", 320, "检索区域/修罗", (321,), {}),
@@ -10776,10 +10776,10 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("wait_click_then_view", 322, "下拉选项", (323,), {}),
         ("wait_click_then_view", 323, "开启", (322,), {}),
         ("wait_click_then_view", 322, "确定", (324,), {}),
-        ("wait_click_then_view", 324, "返回", (321,), {}),
-        ("click_shape_center_then_view", 321, "返回", (320,), {}),
-        ("wait_click", 320, "返回"),
-        ("wait_click", 319, "返回"),
+        ("wait_click_then_view", 324, "返回", (331,), {}),
+        ("click_shape_center_then_view", 331, "返回", (320,), {}),
+        ("wait_click", 320, "返回", {}),
+        ("wait_click", 319, "返回", {}),
     ]
 
 
@@ -10833,7 +10833,7 @@ def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch):
 
     assert result == "skipped"
     assert calls == [
-        ("current_scene", (69, 34), True),
+        ("current_scene", (330, 319, 69, 34), True),
         ("ocr_text", "daily-frame"),
         ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
         ("wait_action_settle", 1.5),
@@ -10864,15 +10864,15 @@ def test_daily_mojie_raid_returns_when_remaining_empty(tmp_path, monkeypatch):
         def open_daily_entry(self, **_kwargs):
             return done("open")
 
-        def wait_view(self, scene_id, **_kwargs):
-            return done(scene_id)
+        def wait_view(self, *scene_ids, **_kwargs):
+            return done(scene_ids[0])
 
         def ocr_numbers_in_shapes(self, scene_id, shape_titles, **kwargs):
             calls.append(("ocr_numbers_in_shapes", scene_id, tuple(shape_titles), kwargs))
             return [0], "本周剩余进攻次数：0"
 
-        def wait_click(self, scene_id, shape):
-            calls.append(("wait_click", scene_id, shape))
+        def wait_click(self, scene_id, shape, **kwargs):
+            calls.append(("wait_click", scene_id, shape, kwargs))
             return done(None)
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
@@ -10884,8 +10884,63 @@ def test_daily_mojie_raid_returns_when_remaining_empty(tmp_path, monkeypatch):
     assert result == "skipped"
     assert calls == [
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
-        ("wait_click", 319, "返回"),
+        ("wait_click", 319, "返回", {}),
     ]
+
+
+def test_daily_mojie_raid_confirms_optional_reward_popup_before_main(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        wait_view_calls = 0
+
+        def current_scene(self, preferred, *, update=False):
+            calls.append(("current_scene", tuple(preferred), update))
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            return "日常"
+
+        def open_daily_entry(self, **_kwargs):
+            return done("open")
+
+        def wait_view(self, *scene_ids, **kwargs):
+            calls.append(("wait_view", scene_ids, kwargs))
+            self.wait_view_calls += 1
+            return done(330 if self.wait_view_calls == 1 else 319)
+
+        def wait_click(self, scene_id, shape, **kwargs):
+            calls.append(("wait_click", scene_id, shape, kwargs))
+            return done(None)
+
+        def wait_action_settle(self, seconds=1.0):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, **kwargs):
+            calls.append(("ocr_numbers_in_shapes", scene_id, tuple(shape_titles), kwargs))
+            return [0], "本周剩余进攻次数：0"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
+    )
+
+    assert result == "skipped"
+    assert ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}) in calls
+    assert ("wait_click", 330, "确定", {}) in calls
+    assert ("wait_view", (319,), {"label": "日常_奇袭魔界：等待 #330 后的奇袭魔界 #319"}) in calls
+    assert ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}) in calls
 
 
 def test_daily_weekly_dungeon_opens_daily_entry_by_zhouben(tmp_path, monkeypatch):

@@ -89,6 +89,17 @@ from backend.core.ai.git_commit import (
     resolve_ai_git_commit_runtime_config,
 )
 from backend.core.ai.chat import OllamaClientError
+from backend.core.device_agent import (
+    DeviceAgentError,
+    append_device_agent_turn,
+    create_device_agent_session,
+    get_device_agent_config,
+    get_device_agent_manifest,
+    get_device_agent_session,
+    get_device_agent_turn,
+    list_device_agent_sessions,
+    save_device_agent_config,
+)
 from backend.core.ai.git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.access.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.codex.sessions import (
@@ -277,6 +288,24 @@ class RimeWeightCompareAdjustRequest(BaseModel):
     candidates: List[str] = Field(default_factory=list)
     source: str = "snapshot"
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class DeviceEntryAgentPayload(BaseModel):
+    requester: Dict[str, Any] = Field(default_factory=dict)
+    request_type: str = "ask"
+    instruction: str = ""
+    context: Dict[str, Any] = Field(default_factory=dict)
+    title: Optional[str] = None
+
+
+class DeviceEntryAgentConfigPayload(BaseModel):
+    enabled: Optional[bool] = None
+    display_name: Optional[str] = None
+    device_role: Optional[str] = None
+    local_context: Optional[str] = None
+    responsibilities: Optional[str] = None
+    default_provider: Optional[str] = None
+    default_model: Optional[str] = None
 
 
 def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
@@ -640,6 +669,12 @@ def _raise_codex_http_error(exc: Exception) -> None:
     if isinstance(exc, (ValueError, OllamaClientError)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise HTTPException(status_code=500, detail=f"读取 Codex 会话失败：{exc}") from exc
+
+
+def _raise_device_agent_error(exc: Exception) -> None:
+    if isinstance(exc, DeviceAgentError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=500, detail=f"设备代理请求失败：{exc}") from exc
 
 
 def _index_device_media_payload(
@@ -1119,6 +1154,140 @@ def _associate_local_process(session: Session, entry: UserDevice, task_id: str, 
     session.commit()
     session.refresh(task)
     return result
+
+
+@router.get("/{entry_id}/agent/config")
+def get_device_agent_config_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        return get_device_agent_config(session)
+    return _proxy_request(entry, "GET", "/device-agent/config", timeout=20)
+
+
+@router.put("/{entry_id}/agent/config")
+def put_device_agent_config_for_entry(
+    entry_id: str,
+    payload: DeviceEntryAgentConfigPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    body = payload.model_dump(exclude_unset=True)
+    if _is_local_runtime_entry(entry):
+        return save_device_agent_config(session, body)
+    return _proxy_request(entry, "PUT", "/device-agent/config", json_body=body, timeout=20)
+
+
+@router.get("/{entry_id}/agent/manifest")
+def get_device_agent_manifest_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        return get_device_agent_manifest(session, current_user=current_user)
+    return _proxy_request(entry, "GET", "/device-agent/manifest", timeout=20)
+
+
+@router.get("/{entry_id}/agent/sessions")
+def list_device_agent_sessions_for_entry(
+    entry_id: str,
+    limit: int = Query(30, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        return {"items": list_device_agent_sessions(session, limit=limit)}
+    return _proxy_request(entry, "GET", "/device-agent/sessions", params={"limit": limit}, timeout=20)
+
+
+@router.post("/{entry_id}/agent/sessions")
+def create_device_agent_session_for_entry(
+    entry_id: str,
+    payload: DeviceEntryAgentPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    body = payload.model_dump()
+    if _is_local_runtime_entry(entry):
+        try:
+            return create_device_agent_session(
+                session,
+                requester=body.get("requester"),
+                request_type=str(body.get("request_type") or "ask"),
+                instruction=str(body.get("instruction") or ""),
+                context=body.get("context") if isinstance(body.get("context"), dict) else {},
+                title=body.get("title"),
+                current_user=current_user,
+            )
+        except Exception as exc:
+            _raise_device_agent_error(exc)
+    return _proxy_request(entry, "POST", "/device-agent/sessions", json_body=body, timeout=20)
+
+
+@router.get("/{entry_id}/agent/sessions/{agent_session_id}")
+def get_device_agent_session_for_entry(
+    entry_id: str,
+    agent_session_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        try:
+            return get_device_agent_session(session, agent_session_id)
+        except Exception as exc:
+            _raise_device_agent_error(exc)
+    return _proxy_request(entry, "GET", f"/device-agent/sessions/{agent_session_id}", timeout=20)
+
+
+@router.post("/{entry_id}/agent/sessions/{agent_session_id}/turns")
+def append_device_agent_turn_for_entry(
+    entry_id: str,
+    agent_session_id: str,
+    payload: DeviceEntryAgentPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    body = payload.model_dump()
+    if _is_local_runtime_entry(entry):
+        try:
+            return append_device_agent_turn(
+                session,
+                agent_session_id,
+                requester=body.get("requester"),
+                request_type=str(body.get("request_type") or "ask"),
+                instruction=str(body.get("instruction") or ""),
+                context=body.get("context") if isinstance(body.get("context"), dict) else {},
+                current_user=current_user,
+            )
+        except Exception as exc:
+            _raise_device_agent_error(exc)
+    return _proxy_request(entry, "POST", f"/device-agent/sessions/{agent_session_id}/turns", json_body=body, timeout=20)
+
+
+@router.get("/{entry_id}/agent/turns/{turn_id}")
+def get_device_agent_turn_for_entry(
+    entry_id: str,
+    turn_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if _is_local_runtime_entry(entry):
+        try:
+            return get_device_agent_turn(session, turn_id)
+        except Exception as exc:
+            _raise_device_agent_error(exc)
+    return _proxy_request(entry, "GET", f"/device-agent/turns/{turn_id}", timeout=20)
 
 
 @router.get("/{entry_id}/task/")

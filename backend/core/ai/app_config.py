@@ -27,6 +27,7 @@ AI_APP_FANXIU_GAME_MACRO_ANNOTATION = "fanxiu-game-macro-annotation"
 AI_APP_ATTENDANCE_PRECHECK = "attendance-precheck"
 AI_APP_CODECLAW = "codeclaw"
 AI_APP_WECHAT_DAILY_SUMMARY = "wechat-daily-summary"
+AI_APP_DEVICE_AGENT = "device-agent"
 AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
 AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
 AI_APP_DEEPSEEK_PROVIDER = "deepseek"
@@ -49,6 +50,7 @@ _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
 }
 _AI_APP_CODEX_SPARK_DEFAULT_IDS = {
     app_id
@@ -131,6 +133,12 @@ AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
         "group": "星图笔记",
         "label": "微信聊天日总结",
         "description": "读取本机微信聊天数据，按联系人或群生成日总结并写入星图笔记。",
+    },
+    {
+        "id": AI_APP_DEVICE_AGENT,
+        "group": "集群",
+        "label": "设备代理",
+        "description": "设备代理处理跨设备请求、诊断和委托任务时使用的模型。",
     },
 )
 
