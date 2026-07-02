@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "01cc40d747499fd9a9e44681a0ebcec9e815ee7c"
-last_audited_at: "2026-07-02T18:32:17.9113534+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-01cc40d7/report.md"
-last_frontend_commit_summary: "完成 72a3d80a..01cc40d7：确认设备代理整块工作台会把 cluster/runtime 从状态表重新膨胀，当前工作树已在同方向回收。"
-audited_commit_count: 63
+last_audited_commit: "fd0c1918d535a5a68d17f1016cc3717bf309f1c6"
+last_audited_at: "2026-07-03T02:33:32.6833184+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-fd0c1918/report.md"
+last_frontend_commit_summary: "完成 01cc40d7..fd0c1918：确认设备代理已退出运行管理与 AI 配置一级入口，退款页把失败事实留在本地闭环。"
+audited_commit_count: 64
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-03
+
+- 完整范围：`01cc40d747499fd9a9e44681a0ebcec9e815ee7c..fd0c1918d535a5a68d17f1016cc3717bf309f1c6`
+- 覆盖提交：`fd0c1918d535a5a68d17f1016cc3717bf309f1c6`
+- 前端入口提交：`fd0c1918d535a5a68d17f1016cc3717bf309f1c6`
+- 入口如何牵引到旧问题：这次提交一边删除 `frontend/src/standard/cluster/tasks/page.vue` 里的整块 `设备代理` 工作台，一边从 `frontend/src/store/aiAppStore.ts` 删除 `device-agent` 业务项，同时在 `attendance/orders/page.vue` 给退款失败补本地错误留痕。三者都落在同一条“一级页面只保留状态事实和下一步动作，不把跨设备会话/模型配置/短暂异常丢进主界面”链路上，因此需要把 `cluster/runtime`、`AI配置` 和 `订单` 三个入口合并做页面级巡检，而不是只看单文件 diff。
+- 本轮减法：不新增源码改动；通过真实页面复拍确认 `cluster/runtime` 首屏现在只保留 `服务 / 作业 / 资源监控` 主闭环，`AI配置 -> 业务` 列表里也不再出现 `设备代理`，避免同一能力同时占据 `运行管理` 和 `AI 配置` 两个长期一级入口。`attendance/orders` 新增的错误告警只在退款失败时出现在当前卡片内，属于局部留痕，不会形成新的常驻概念区。
+- 信息量保持：设备切换、服务/作业状态、资源监控、AI 业务项绑定、退款查询、退款执行、退款历史与退款结果能力都还在；减少的是“跨设备代理会话/模型配置”误入运行首页与 AI 业务树的重复概念，以及退款失败只能靠 toast 瞬时消失的上下文丢失。
+- 概念图/线框图：报告里的 Mermaid 把 `运行状态表`、`AI 业务配置`、`退款闭环` 三个对象边界拆开，并明确 `设备代理` 不再属于一级运行页或一级业务树。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-fd0c1918/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `cluster/runtime`、`attendance/orders`、`tools/ai-config` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口截图，证据见 `evidence.json` 与对应 `*.png`；三个页面三种视口下 `bodyOverflowX = 0`，console `warn/error` 为空。`cluster/runtime` 在三视口下都满足 `hasDeviceAgentText = false`，只保留 `服务 / 作业 / 资源监控` 三个区块；`AI配置 -> 业务` 也满足 `hasDeviceAgentText = false`。`attendance/orders` 因涉及真实退款副作用，本轮未触发 `执行退款`，只对真实页面结构、历史表与错误告警挂载位置做静态/视觉验证；本轮未改源码，因此未运行 `npm run typecheck --prefix frontend` / `npm run build --prefix frontend`。
+- 根因分层：`cluster/runtime` 与 `AI配置` 的主因仍是前端状态投影与入口边界收敛；`attendance/orders` 的新增告警属于前端交互闭环补足，不涉及后端数据投影或业务建模债务。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图和真实多视口取证，没有发现需要继续自动修复的新 UI 问题，因此把 `last_audited_commit` 推进到 `fd0c1918d535a5a68d17f1016cc3717bf309f1c6`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-02
 
