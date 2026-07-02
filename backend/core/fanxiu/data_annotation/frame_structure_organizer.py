@@ -105,6 +105,14 @@ def _image_title(image: dict[str, Any]) -> str:
     return f"#{number} {title}" if number is not None and title else (f"#{number}" if number is not None else title)
 
 
+def _recognition_parent_id(image: dict[str, Any]) -> int | None:
+    try:
+        value = int(image.get("recognitionParentId"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _image_sort_key(image: dict[str, Any], order: int) -> tuple[int, int]:
     number = image_number(image)
     return (number if number is not None else 10**9, order)
@@ -209,6 +217,16 @@ def _diagnose_scene_domain_group(
     diagnostics: list[FrameStructureDiagnostic] = []
 
     def image_children(image: dict[str, Any]) -> list[dict[str, Any]]:
+        image_id = image_number(image)
+        recognized_children = [
+            candidate
+            for candidate in roots
+            if image_number(candidate) is not None
+            and image_id is not None
+            and _recognition_parent_id(candidate) == int(image_id)
+        ]
+        if recognized_children:
+            return recognized_children
         children = image.get("children")
         return [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
 
@@ -358,23 +376,15 @@ def organize_frame_structure_in_tree(
         shared_keys: dict[int, set[str]],
         *,
         by_id: dict[int, dict[str, Any]],
-        source_children_by_id: dict[int, list[Any]],
     ) -> None:
         if not planned:
             return
-        child_to_parent = {item.child_id: item.parent_id for item in planned}
         for adoption in planned:
             parent = by_id.get(adoption.parent_id)
             child = by_id.get(adoption.child_id)
-            source_children = source_children_by_id.get(adoption.child_id)
-            if parent is None or child is None or source_children is None:
+            if parent is None or child is None:
                 continue
-            parent_children = parent.get("children")
-            if not isinstance(parent_children, list):
-                parent_children = []
-                parent["children"] = parent_children
-            if child not in parent_children:
-                parent_children.append(child)
+            child["recognitionParentId"] = int(adoption.parent_id)
             adoptions.append(adoption)
         if demote_unshared_parent_identities:
             for parent_id, keys in shared_keys.items():
@@ -383,15 +393,6 @@ def organize_frame_structure_in_tree(
                     continue
                 demoted = _demote_unshared_parent_identities(parent, shared_shape_keys=keys)
                 demoted_identities.extend(demoted)
-        for child_id in child_to_parent:
-            source_children = source_children_by_id.get(child_id)
-            if source_children is None:
-                continue
-            source_children[:] = [
-                child
-                for child in source_children
-                if not (isinstance(child, dict) and image_number(child) == child_id)
-            ]
 
     def organize_children(children: list[Any], *, allow_adoption: bool) -> list[Any]:
         for child in children:
@@ -415,12 +416,7 @@ def organize_frame_structure_in_tree(
             counters["scored_pair_count"] += scored_count
             if planned:
                 by_id = {image_number(item): item for item in direct_images}
-                source_children_by_id = {
-                    int(image_number(item)): children
-                    for item in direct_images
-                    if image_number(item) is not None
-                }
-                apply_planned_adoptions(planned, shared_keys, by_id=by_id, source_children_by_id=source_children_by_id)
+                apply_planned_adoptions(planned, shared_keys, by_id=by_id)
         return children
 
     def diagnose_children(children: list[Any]) -> None:

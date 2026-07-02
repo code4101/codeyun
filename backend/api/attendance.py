@@ -2511,7 +2511,19 @@ def _same_refunded_amount(left: Any, right: Any) -> bool:
     return _normalize_order_history_text(left) == _normalize_order_history_text(right)
 
 
-def _load_submitted_refund_amounts_from_csv() -> dict[str, float]:
+def _submitted_refund_month_dir_names(attendance_document: SheetDocument | None = None) -> list[str]:
+    if attendance_document is None:
+        return []
+    text = json.dumps(attendance_document.document_json or {}, ensure_ascii=False)
+    result: list[str] = []
+    for match in re.finditer(r"(20\d{2})[/.-](\d{1,2})[/.-]\d{1,2}", text):
+        name = f"{match.group(1)}年{int(match.group(2)):02}月"
+        if name not in result:
+            result.append(name)
+    return result
+
+
+def _load_submitted_refund_amounts_from_csv(attendance_document: SheetDocument | None = None) -> dict[str, float]:
     roots: list[Path] = []
     try:
         from backend.core.attendance_behavior_tree_service import get_attendance_data_root
@@ -2527,23 +2539,29 @@ def _load_submitted_refund_amounts_from_csv() -> dict[str, float]:
     ])
 
     result: dict[str, float] = {}
+    month_names = _submitted_refund_month_dir_names(attendance_document)
     for refund_root in dict.fromkeys(roots):
         if not refund_root.exists():
             continue
-        for file in refund_root.rglob("*.csv"):
-            try:
-                with file.open(encoding="utf-8-sig", newline="") as handle:
-                    reader = csv.reader(handle)
-                    for parts in reader:
-                        if len(parts) < 2:
-                            continue
-                        order_id = _normalize_attendance_order_id(parts[0])
-                        amount = _coerce_order_history_number(parts[1])
-                        if not order_id or amount is None:
-                            continue
-                        result[order_id] = round(result.get(order_id, 0.0) + amount, 2)
-            except Exception:
-                continue
+        search_roots = [refund_root / name for name in month_names if (refund_root / name).exists()]
+        if not search_roots:
+            search_roots = [refund_root]
+        for search_root in search_roots:
+            files = search_root.glob("*.csv") if search_root != refund_root else refund_root.rglob("*.csv")
+            for file in files:
+                try:
+                    with file.open(encoding="utf-8-sig", newline="") as handle:
+                        reader = csv.reader(handle)
+                        for parts in reader:
+                            if len(parts) < 2:
+                                continue
+                            order_id = _normalize_attendance_order_id(parts[0])
+                            amount = _coerce_order_history_number(parts[1])
+                            if not order_id or amount is None:
+                                continue
+                            result[order_id] = round(result.get(order_id, 0.0) + amount, 2)
+                except Exception:
+                    continue
     return result
 
 
@@ -5314,7 +5332,7 @@ def check_attendance_sheet_refunded_amounts(
         registration_document,
     )
 
-    submitted_refunds = _load_submitted_refund_amounts_from_csv()
+    submitted_refunds = _load_submitted_refund_amounts_from_csv(attendance_document)
     if submitted_refunds:
         _merge_refunded_check_submitted_csv_results(check_rows, submitted_refunds)
         return {

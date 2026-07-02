@@ -596,6 +596,7 @@
                       <el-option label="正则" value="regex" />
                     </el-select>
                     <el-select
+                      v-if="selectedShapeShowsOcrMaskControls"
                       v-model="selectedShape.ocrMaskMode"
                       class="shape-ocr-mask-mode-select"
                       size="small"
@@ -607,7 +608,7 @@
                       <el-option label="原始抠图" value="raw-alpha" />
                     </el-select>
                     <el-button
-                      v-if="selectedShape.ocrMaskMode === 'custom'"
+                      v-if="selectedShapeShowsOcrMaskControls && selectedShape.ocrMaskMode === 'custom'"
                       size="small"
                       :disabled="!selectedShape"
                       @click="openShapeMaskDialog('ocr')"
@@ -6717,6 +6718,7 @@ type DataAnnotationAssetNode = {
   width?: number;
   height?: number;
   layer?: FrameLayer;
+  recognitionParentId?: number | null;
   shapes?: DataAnnotationShape[];
 };
 
@@ -7270,6 +7272,11 @@ const normalizeShapeOcrMaskMode = (value: unknown): ShapeOcrMaskMode => (
   value === 'custom' || value === 'off' || value === 'raw-alpha' ? value : 'inherit-envelope'
 );
 
+const normalizeRecognitionParentId = (value: unknown) => {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? Math.floor(numberValue) : null;
+};
+
 const SHAPE_MATCH_ROLE_ORDER: ShapeMatchRole[] = ['off', 'required', 'optional'];
 const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
   off: '关',
@@ -7451,6 +7458,7 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   const normalizedNode = { ...node } as DataAnnotationAssetNode & { occlusionMaskEnabled?: boolean };
   delete normalizedNode.occlusionMaskEnabled;
   const normalizedShapes = normalizeShapes(node.shapes ?? []);
+  const recognitionParentId = normalizeRecognitionParentId(node.recognitionParentId);
   return {
     ...normalizedNode,
     filename: typeof node.filename === 'string' ? node.filename : undefined,
@@ -7458,6 +7466,7 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
     layer: node.layer === 1 ? 1 : undefined,
+    recognitionParentId,
     shapes: normalizedShapes,
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -7906,7 +7915,7 @@ const organizeFrameStructureFromToolbar = async () => {
     if (!adoptions.length) {
       const diagnosticCount = previewDiagnostics.length;
       if (diagnosticCount) {
-        ElMessage.info(`没有发现可写入的 sub-scene 候选；场景归纳体检发现 ${diagnosticCount} 条结构提示`);
+        ElMessage.info(`没有发现可写入识别层的 sub-scene 候选；场景归纳体检发现 ${diagnosticCount} 条结构提示`);
       } else {
         ElMessage.success('没有发现需要场景归纳的 scene/sub-scene 候选');
       }
@@ -7921,11 +7930,11 @@ const organizeFrameStructureFromToolbar = async () => {
       ? `\n\n结构提示 ${previewDiagnostics.length} 条：\n${diagnosticLines.join('\n')}`
       : '';
     await ElMessageBox.confirm(
-      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入？\n\n${previewLines.join('\n')}${moreText}${diagnosticText}`,
+      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入识别层？资产树业务布局不会移动。\n\n${previewLines.join('\n')}${moreText}${diagnosticText}`,
       '场景归纳',
       {
         type: 'warning',
-        confirmButtonText: '写入',
+        confirmButtonText: '写入识别层',
         cancelButtonText: '取消',
         customClass: 'frame-structure-confirm',
       },
@@ -7935,7 +7944,7 @@ const organizeFrameStructureFromToolbar = async () => {
     await loadEntryAssetTree(entryId);
     applyFrameStructureSnapshot(result.frame_structure ?? null);
     const diagnosticCount = result.stats?.diagnostic_count ?? result.stats?.diagnostics?.length ?? 0;
-    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个 sub-scene，${diagnosticCount} 条结构提示`);
+    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个识别层 sub-scene，${diagnosticCount} 条结构提示`);
   } catch (error) {
     if (String((error as { message?: string })?.message || '').includes('cancel')) return;
     ElMessage.error(getErrorMessage(error));
@@ -8564,6 +8573,14 @@ const selectedShapeDetectDebug = computed(() => (
 ));
 const selectedShapeImageMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.imageMatchRole));
 const selectedShapeOcrMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.ocrMatchRole, selectedShape.value?.ocrEnabled ? 'required' : 'off'));
+const selectedShapeShowsOcrMaskControls = computed(() => {
+  const shape = selectedShape.value;
+  if (!shape || !isDrawableShape(shape)) return false;
+  return selectedShapeOcrMatchRole.value !== 'off'
+    || Boolean(shape.ocrText?.trim())
+    || normalizeShapeOcrMaskMode(shape.ocrMaskMode) !== 'inherit-envelope'
+    || Boolean(shape.ocrMask?.dataUrl);
+});
 const selectedShapeSceneIdentityRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.sceneIdentityRole, selectedShape.value?.isSceneIdentity ? 'required' : 'off'));
 const cycleSelectedShapeMatchRole = (kind: 'image' | 'ocr') => {
   const shape = selectedShape.value;
@@ -8692,14 +8709,19 @@ const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined
   Boolean(node && (LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id))
 );
 
+const assetRecognitionParentId = (node: DataAnnotationAssetNode) => {
+  return normalizeRecognitionParentId(node.recognitionParentId);
+};
+
 const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
   type SceneRecord = {
     node: DataAnnotationAssetNode;
-    parentImageId: string | null;
+    legacyParentImageId: string | null;
     children: SceneRecord[];
     order: number;
   };
   const records = new Map<string, SceneRecord>();
+  const recordsByNumber = new Map<number, SceneRecord>();
   const ordered: SceneRecord[] = [];
 
   const visit = (items: DataAnnotationAssetNode[], nearestSceneParentId: string | null) => {
@@ -8708,17 +8730,26 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
         visit(node.children ?? [], nearestSceneParentId);
         continue;
       }
-      const record: SceneRecord = { node, parentImageId: nearestSceneParentId, children: [], order: ordered.length };
+      const record: SceneRecord = { node, legacyParentImageId: nearestSceneParentId, children: [], order: ordered.length };
       records.set(node.id, record);
+      const imageId = assetNumericImageId(node);
+      if (imageId !== null) recordsByNumber.set(imageId, record);
       ordered.push(record);
       visit(node.children ?? [], node.id);
     }
   };
   visit(nodes, null);
 
+  const parentRecordOf = (record: SceneRecord) => {
+    const recognitionParentId = assetRecognitionParentId(record.node);
+    const recognitionParent = recognitionParentId !== null ? recordsByNumber.get(recognitionParentId) : null;
+    if (recognitionParent && recognitionParent !== record) return recognitionParent;
+    return record.legacyParentImageId ? records.get(record.legacyParentImageId) ?? null : null;
+  };
+
   const sceneRoots: SceneRecord[] = [];
   for (const record of ordered) {
-    const parent = record.parentImageId ? records.get(record.parentImageId) : null;
+    const parent = parentRecordOf(record);
     if (parent) parent.children.push(record);
     else sceneRoots.push(record);
   }

@@ -30,11 +30,13 @@
 
 ```yaml
 last_audited_commit: "e1d79d0cf571e2dded7942e5900639ec0a05ce5e"
-last_audited_at: "2026-07-02T06:32:40.8452721+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-e1d79d0c/report.md"
-last_frontend_commit_summary: "完整关闭 891fb263..e1d79d0c：数据标注把 suggestion 级结构提示从常驻整行底退回边缘标记。"
+last_audited_at: "2026-07-02T14:39:31.9717708+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-78774fb2/report.md"
+last_frontend_commit_summary: "部分处理 e1d79d0c..78774fb2：数据标注把 OCR 专用抠图策略从默认常驻收回到条件显露，但 NoteSheetWorkspace 真实已返款表入口仍待验证。"
 audited_commit_count: 60
-pending_or_skipped_ranges: []
+pending_or_skipped_ranges:
+  - range: "e1d79d0cf571e2dded7942e5900639ec0a05ce5e..78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820"
+    reason: "已完成 cluster/runtime、notes/list、notes/star、attendance/orders 和 fanxiu/data-annotation 的实拍复核，并对 data-annotation 做了 OCR 抠图策略减法修复；但当前账号打开 /notes/sheets-manager 返回 403，未拿到真实 NoteSheetWorkspace 的已返款 sheet 入口，所以整段增量范围暂不推进游标。"
 ```
 
 更新规则：
@@ -259,6 +261,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-02
+
+- 完整范围：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e..78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`
+- 覆盖提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`
+- 前端入口提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`
+- 入口如何牵引到旧问题：本次提交把 `fanxiu/data-annotation` 的 OCR 专用抠图、`cluster/tasks` 的 sortable 初始化、`notes/list` / `notes/star` 的展示与渲染，以及 `NoteSheetWorkspace` 的 `检查已返款` 一并推到前台。真实页面复核后，真正被同链路牵出的旧问题落在 `data-annotation` 的同一条 shape 检测行：新增的 `OCR抠图策略` 属于 OCR 工作态下的细化策略，却在默认态也跟 `OCR 文本 + 匹配模式` 并列常驻，形成多一个概念解释同一事实的过度暴露。
+- 本轮减法：不新增任何功能、状态或说明区，只在 [`frontend/src/standard/fanxiu/data-annotation/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/fanxiu/data-annotation/page.vue) 新增 `selectedShapeShowsOcrMaskControls`，把 `OCR抠图策略` 与 `OCR抠图` 按钮收回到“当前 shape 已进入 OCR 使用态，或已经存在 OCR 专用配置”时再显示。OCR 关闭且没有 OCR 专用配置时，这组新概念完全消失。
+- 信息量保持：OCR 文本、OCR 匹配模式、OCR 专用抠图能力和已有 OCR 专用配置都保留；减少的是“还没用 OCR 就先常驻暴露 OCR 策略”这一层重复概念，不是减少检测能力。
+- 概念图/线框图：报告里的 Mermaid 把 `选择 shape -> 图像命中 -> 需要时补 OCR -> 需要时再细化 OCR 专用抠图 -> 检测/保存` 拆层，明确 `OCR 专用抠图` 不应升级成默认一级常驻元素。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-78774fb2/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。`fanxiu/data-annotation` 已补拍 `1600x1000`、`1366x900`、`820x1180` 三视口截图；`cluster/runtime`、`notes/center?tab=list`、`notes/center?tab=star`、`attendance/orders` 也已做桌面复核。`domSnapshot()` 在 OCR 关闭样本上只剩 `OCR：不要求`，不再出现 `OCR抠图策略`；切换 OCR 后，同一行会重新出现策略控件，说明能力仍在。`/notes/sheets-manager` 当前账号返回 403，未取得真实 `已返款` sheet 入口。
+- 根因分层：`data-annotation` 的问题属于前端状态投影 + 表现层过度暴露；`cluster/tasks` / `notes/list` / `notes/star` 本轮未发现新的设计债务。`NoteSheetWorkspace` 则仍缺真实页面验证，暂时不能判断新右键入口在真实表格里的层级是否合适。
+- 处理结果：本轮已完成完整提交列表归类、同链路建模、`data-annotation` 低风险减法修复、静态验证和多页实拍，但因为 `NoteSheetWorkspace` 真实 `已返款` 表入口没有打开成功，整段范围 `e1d79d0c..78774fb2` 先记录到 `pending_or_skipped_ranges`，`last_audited_commit` 保持在 `e1d79d0cf571e2dded7942e5900639ec0a05ce5e`。
 
 - 完整范围：`891fb26355df59b6de0b7c0fe5146b76acc7cae6..e1d79d0cf571e2dded7942e5900639ec0a05ce5e`
 - 覆盖提交：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e`

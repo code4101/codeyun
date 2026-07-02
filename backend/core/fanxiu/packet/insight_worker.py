@@ -75,9 +75,82 @@ def _load_json(path: Path, fallback: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            temp_path.write_text(text, encoding="utf-8")
+            temp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        if last_error is not None:
+            raise last_error
+        raise
+
+
+def _compact_state_payload(value: Any, *, list_limit: int = 5) -> Any:
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, list):
+                compacted[key] = [_compact_state_payload(entry, list_limit=list_limit) for entry in item[:list_limit]]
+                compacted[f"{key}_count"] = len(item)
+                if len(item) > list_limit:
+                    compacted[f"{key}_truncated"] = True
+            elif isinstance(item, dict):
+                compacted[key] = _compact_state_payload(item, list_limit=list_limit)
+            else:
+                compacted[key] = item
+        return compacted
+    if isinstance(value, list):
+        return [_compact_state_payload(item, list_limit=list_limit) for item in value[:list_limit]]
+    return value
+
+
+def _compact_worker_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compacted = dict(payload)
+    for key in (
+        "decoded",
+        "skipped",
+        "errors",
+        "pcap_states",
+        "source_samples",
+        "action_samples",
+    ):
+        value = compacted.get(key)
+        if isinstance(value, list):
+            compacted[key] = [_compact_state_payload(item) for item in value[:5]]
+            compacted[f"{key}_count"] = len(value)
+            if len(value) > 5:
+                compacted[f"{key}_truncated"] = True
+    for key in (
+        "mail_business_backlog_sync",
+        "decoded_record_db_sync",
+        "activity_packet_sync",
+        "historical_runtime_business_sync",
+        "historical_mail_packet_sync",
+        "bounded_mail_packet_sync",
+        "capture_runtime_backstop",
+        "host_commit_pressure",
+        "mail_packet_sync",
+        "mail_source_probe",
+    ):
+        value = compacted.get(key)
+        if isinstance(value, dict):
+            compacted[key] = _compact_state_payload(value)
+    return compacted
 
 
 def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
@@ -808,7 +881,7 @@ def sync_fanxiu_decoded_business_backlog(
         "recent_processed_source_keys": recent_processed,
         "historical_cursor_source_key": historical_cursor,
     }
-    _write_json(state_path, payload)
+    _write_json(state_path, _compact_state_payload(payload))
     return {key: value for key, value in payload.items() if key not in {"recent_processed_source_keys"}}
 
 
@@ -852,7 +925,7 @@ def sync_fanxiu_mail_business_backlog(
             "mail_source_probe": _mail_source_protocol_probe([]),
             "updated_at": _now_text(),
         }
-        _write_json(state_path, {**(state if isinstance(state, dict) else {}), **payload})
+        _write_json(state_path, _compact_state_payload({**(state if isinstance(state, dict) else {}), **payload}))
         return payload
 
     try:
@@ -896,7 +969,7 @@ def sync_fanxiu_mail_business_backlog(
         "mail_source_probe": _mail_source_protocol_probe(selected),
         "updated_at": _now_text(),
     }
-    _write_json(state_path, payload)
+    _write_json(state_path, _compact_state_payload(payload))
     return payload
 
 
@@ -1121,7 +1194,7 @@ def sync_fanxiu_live_capture_backlog(
             "errors": list(previous_errors.values())[-20:],
             "pcap_states": previous_state.get("pcap_states", []) if isinstance(previous_state, dict) else [],
         }
-        _write_json(_worker_state_path(data_dir), payload)
+        _write_json(_worker_state_path(data_dir), _compact_worker_state_payload(payload))
         return payload
 
     decode_limit = max(1, int(limit))
@@ -1346,7 +1419,7 @@ def sync_fanxiu_live_capture_backlog(
         "errors": list(merged_errors.values())[-20:],
         "pcap_states": _merge_pcap_states(previous_state, pcap_state_updates),
     }
-    _write_json(_worker_state_path(data_dir), payload)
+    _write_json(_worker_state_path(data_dir), _compact_worker_state_payload(payload))
     return payload
 
 
@@ -1428,7 +1501,7 @@ def sync_fanxiu_capture_maintenance_backlog(
         "historical_mail_packet_sync": historical_mail_sync,
         "bounded_mail_packet_sync": bounded_mail_sync,
     }
-    _write_json(_maintenance_state_path(data_dir), payload)
+    _write_json(_maintenance_state_path(data_dir), _compact_worker_state_payload(payload))
     return payload
 
 
@@ -1450,6 +1523,8 @@ class FanxiuPacketInsightWorker:
         self._maintenance_thread: threading.Thread | None = None
         self._last_realtime_result: dict[str, Any] = {}
         self._last_maintenance_result: dict[str, Any] = {}
+        self._realtime_cycle_started_at: float | None = None
+        self._maintenance_cycle_started_at: float | None = None
 
     def start(self) -> None:
         with self._lock:
@@ -1465,7 +1540,7 @@ class FanxiuPacketInsightWorker:
                 "mode": "packet_worker_startup",
                 "capture_runtime_backstop": startup_backstop,
             }
-            _write_json(_worker_state_path(), self._last_realtime_result)
+            _write_json(_worker_state_path(), _compact_worker_state_payload(self._last_realtime_result))
             if not (self._thread and self._thread.is_alive()):
                 self._thread = threading.Thread(target=self._run_loop, name="fanxiu-packet-realtime-worker", daemon=True)
                 self._thread.start()
@@ -1490,8 +1565,16 @@ class FanxiuPacketInsightWorker:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            realtime = dict(self._last_realtime_result)
-            maintenance = dict(self._last_maintenance_result)
+            realtime = _compact_worker_state_payload(dict(self._last_realtime_result))
+            maintenance = _compact_worker_state_payload(dict(self._last_maintenance_result))
+            if self._realtime_cycle_started_at is not None:
+                realtime["active"] = True
+                realtime["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._realtime_cycle_started_at))
+                realtime["heartbeat_at"] = _now_text()
+            if self._maintenance_cycle_started_at is not None:
+                maintenance["active"] = True
+                maintenance["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._maintenance_cycle_started_at))
+                maintenance["heartbeat_at"] = _now_text()
             return {
                 **realtime,
                 "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
@@ -1553,19 +1636,29 @@ class FanxiuPacketInsightWorker:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
+                with self._lock:
+                    self._realtime_cycle_started_at = time.time()
                 self.scan_once()
             except Exception as exc:
                 with self._lock:
                     self._last_realtime_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+            finally:
+                with self._lock:
+                    self._realtime_cycle_started_at = None
             self._stop_event.wait(self.scan_interval_seconds)
 
     def _maintenance_loop(self) -> None:
         while not self._maintenance_stop_event.is_set():
             try:
+                with self._lock:
+                    self._maintenance_cycle_started_at = time.time()
                 self.maintenance_once()
             except Exception as exc:
                 with self._lock:
                     self._last_maintenance_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+            finally:
+                with self._lock:
+                    self._maintenance_cycle_started_at = None
             self._maintenance_stop_event.wait(self.maintenance_interval_seconds)
 
 

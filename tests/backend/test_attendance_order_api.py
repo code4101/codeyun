@@ -214,7 +214,7 @@ def test_check_attendance_sheet_refunded_amounts_uses_order_execute_entry(sessio
             "summary": {"processed_count": 2},
         }
 
-    monkeypatch.setattr(attendance, "_load_submitted_refund_amounts_from_csv", lambda: {})
+    monkeypatch.setattr(attendance, "_load_submitted_refund_amounts_from_csv", lambda _document=None: {})
     monkeypatch.setattr(attendance, "_execute_order_on_entry", fake_execute)
 
     result = attendance.check_attendance_sheet_refunded_amounts(
@@ -282,7 +282,7 @@ def test_check_attendance_sheet_refunded_amounts_prefers_submitted_csv_history(s
     monkeypatch.setattr(
         attendance,
         "_load_submitted_refund_amounts_from_csv",
-        lambda: {"MA202607010001": 14.0},
+        lambda _document=None: {"MA202607010001": 14.0},
     )
 
     def fail_execute(*_args, **_kwargs):

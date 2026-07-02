@@ -59,18 +59,26 @@ def is_explicit_local_identity_only_scene(image: dict[str, Any]) -> bool:
     return all(str(shape.get("sceneIdentityScope") or "").strip().lower() == "local" for shape in identity_shapes)
 
 
+def recognition_parent_id(image: dict[str, Any]) -> int | None:
+    try:
+        value = int(image.get("recognitionParentId"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def build_recognition_tree_nodes(
     asset_tree: list[dict[str, Any]],
     images: dict[int, dict[str, Any]],
 ) -> list[RecognitionTreeNode]:
     """Project asset-tree facts into a runtime recognition-tree node list.
 
-    Folder nesting stays in ``asset_path`` as classification metadata. Only
-    ``image.children`` contributes to ``parent_scene_ids`` and therefore to
-    scene/sub-scene candidate refinement.
+    Folder nesting stays in ``asset_path`` as classification metadata.
+    ``recognitionParentId`` is the preferred recognition-layer relation;
+    legacy ``image.children`` remains supported for older asset trees.
     """
 
-    nodes: list[RecognitionTreeNode] = []
+    records: list[dict[str, Any]] = []
 
     def visit(
         items: list[dict[str, Any]],
@@ -90,17 +98,15 @@ def build_recognition_tree_nodes(
             if node_type == "image":
                 scene_id = image_number(item)
                 if scene_id is not None and int(scene_id) in images and isinstance(images.get(int(scene_id)), dict):
-                    nodes.append(
-                        RecognitionTreeNode(
-                            scene_id=int(scene_id),
-                            image=images[int(scene_id)],
-                            parent_scene_ids=parent_scene_ids,
-                            asset_path=current_asset_path,
-                            depth=depth,
-                            layer=effective_recognition_layer(images[int(scene_id)]),
-                            order=len(nodes),
-                            in_popup_path=any("弹窗" in part for part in current_asset_path),
-                        )
+                    records.append(
+                        {
+                            "scene_id": int(scene_id),
+                            "image": images[int(scene_id)],
+                            "legacy_parent_scene_ids": parent_scene_ids,
+                            "asset_path": current_asset_path,
+                            "order": len(records),
+                            "in_popup_path": any("弹窗" in part for part in current_asset_path),
+                        }
                     )
                     current_parent_scene_ids = (*parent_scene_ids, int(scene_id))
                     current_depth = depth + 1
@@ -114,6 +120,47 @@ def build_recognition_tree_nodes(
                 )
 
     visit(asset_tree, asset_path=(), parent_scene_ids=(), depth=0)
+    record_by_id = {int(record["scene_id"]): record for record in records}
+
+    def direct_parent_id(record: dict[str, Any]) -> int | None:
+        explicit_parent_id = recognition_parent_id(record["image"])
+        if explicit_parent_id is not None and explicit_parent_id in record_by_id and explicit_parent_id != int(record["scene_id"]):
+            return explicit_parent_id
+        legacy_parents = record["legacy_parent_scene_ids"]
+        return int(legacy_parents[-1]) if legacy_parents else None
+
+    parent_by_id = {
+        int(record["scene_id"]): direct_parent_id(record)
+        for record in records
+    }
+
+    def parent_chain(scene_id: int) -> tuple[int, ...]:
+        chain: list[int] = []
+        seen = {scene_id}
+        current = parent_by_id.get(scene_id)
+        while current is not None and current in record_by_id and current not in seen:
+            chain.append(int(current))
+            seen.add(int(current))
+            current = parent_by_id.get(int(current))
+        chain.reverse()
+        return tuple(chain)
+
+    nodes: list[RecognitionTreeNode] = []
+    for record in records:
+        scene_id = int(record["scene_id"])
+        parents = parent_chain(scene_id)
+        nodes.append(
+            RecognitionTreeNode(
+                scene_id=scene_id,
+                image=record["image"],
+                parent_scene_ids=parents,
+                asset_path=record["asset_path"],
+                depth=len(parents),
+                layer=effective_recognition_layer(record["image"]),
+                order=int(record["order"]),
+                in_popup_path=bool(record["in_popup_path"]),
+            )
+        )
     return nodes
 
 

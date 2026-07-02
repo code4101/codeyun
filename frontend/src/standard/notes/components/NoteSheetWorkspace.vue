@@ -5592,7 +5592,11 @@ async function checkSelectedAttendanceRefundedAmounts() {
         customClass: 'sheet-refunded-check-message',
       })
     } else {
-      ElMessage.success(message)
+      await ElMessageBox.alert(message, '检查已返款', {
+        confirmButtonText: '知道了',
+        customClass: 'sheet-refunded-check-message',
+        type: 'success',
+      })
     }
   } catch (error) {
     ElMessage.error(getSheetActionErrorMessage(error, '检查已返款失败'))
