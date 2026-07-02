@@ -371,6 +371,8 @@ export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFram
   scan_box?: FanxiuGameWindow2MatchBox;
   pixel_tolerance?: number;
   alpha_mask_data_url?: string;
+  ocr_mask_mode?: 'inherit-envelope' | 'custom' | 'off' | 'raw-alpha';
+  ocr_mask_data_url?: string;
   tolerance_min_data_url?: string;
   tolerance_max_data_url?: string;
   current_frame_data_url?: string;

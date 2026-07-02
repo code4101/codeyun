@@ -9,10 +9,12 @@ import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFee
 import StandardPagination from '@/components/StandardPagination.vue'
 import NoteSheetAccessDialog from './NoteSheetAccessDialog.vue'
 import {
+  checkAttendanceSheetRefundedAmounts,
   fetchAttendanceFeedbackHistory,
   runAttendanceCourseUpdateData,
   runAttendanceWjxDataAiPrecheck,
   submitAttendanceFeedback,
+  type AttendanceSheetRefundedCheckResponse,
   type AttendanceCourseUpdateDataCourseType,
   type AttendanceWjxDataItem,
 } from '@/api/attendance'
@@ -1425,6 +1427,7 @@ const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(nul
 const clockinLinkDetectionRunStatus = ref<NoteSheetClockinLinkDetectionRunResponse | null>(null)
 const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
 const attendanceWjxAiPrecheckRunning = ref(false)
+const attendanceRefundedCheckRunning = ref(false)
 const rowDetailDialogVisible = ref(false)
 const rowDetail = ref<SheetRowDetail | null>(null)
 const rowDetailDialogSize = ref<RowDetailDialogSize | null>(loadRowDetailDialogSizePreference())
@@ -4702,9 +4705,17 @@ const contextMenu = {
         openSelectedRowDetailDialog()
       },
     },
+    check_refunded_amounts: {
+      name: () => (attendanceRefundedCheckRunning.value ? '检查已返款中...' : '检查已返款'),
+      hidden: () => getSelectedAttendanceRefundedColumnIndex() == null,
+      disabled: () => !canCheckAttendanceRefundedAmountsFromSelection(),
+      callback: () => {
+        void checkSelectedAttendanceRefundedAmounts()
+      },
+    },
     hsep_row_detail: {
       name: '---------',
-      hidden: () => !(canOpenSelectedRowDetailDialog() && canEditData.value),
+      hidden: () => !((canOpenSelectedRowDetailDialog() && canEditData.value) || getSelectedAttendanceRefundedColumnIndex() != null),
     },
     row_insert: {
       name: '添加行',
@@ -5509,6 +5520,85 @@ function getSelectedAttendanceCourseUpdateDataCell() {
 
 function canRunAttendanceCourseUpdateDataFromSelection() {
   return !!getSelectedAttendanceCourseUpdateDataCell() && canRunAttendanceCourseUpdateData()
+}
+
+function isAttendanceRefundedColumn(columnIndex: number) {
+  return normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim() === '已返款'
+}
+
+function getSelectedAttendanceRefundedColumnIndex() {
+  const selection = normalizeHotSelectionRange(getHotInstance()?.getSelectedLast())
+  if (!selection) {
+    return null
+  }
+  const range = getSheetColumnRangeFromHotRange(selection[1], selection[3])
+  if (!range) {
+    return null
+  }
+  for (let columnIndex = range.start; columnIndex <= range.end; columnIndex += 1) {
+    if (isAttendanceRefundedColumn(columnIndex)) {
+      return columnIndex
+    }
+  }
+  return null
+}
+
+function canCheckAttendanceRefundedAmountsFromSelection() {
+  return (
+    props.sheetId != null
+    && canRunSheetActions.value
+    && !attendanceRefundedCheckRunning.value
+    && getSelectedAttendanceRefundedColumnIndex() != null
+  )
+}
+
+function buildAttendanceRefundedCheckMessage(result: AttendanceSheetRefundedCheckResponse) {
+  const summary = result.summary
+  if (!summary.warning_count) {
+    return `已核对 ${summary.checked_count}/${summary.total_count} 行，当前表格已返款与历史返款记录一致。`
+  }
+  const issueRows = (result.rows || []).filter((row) => row.status !== 'matched')
+  const issueLines = issueRows.slice(0, 12).map((row) => {
+    const label = [row.student_no, row.student_name].filter(Boolean).join(' ')
+    const detail = row.status === 'mismatch'
+      ? `表格 ${row.sheet_refunded_amount || 0} / 历史记录 ${row.payment_refunded_amount || 0}`
+      : (row.message || row.status)
+    return `${row.row_number}行 ${label}: ${detail}`
+  })
+  const moreText = issueRows.length > issueLines.length ? `\n还有 ${issueRows.length - issueLines.length} 条未显示。` : ''
+  return [
+    `已核对 ${summary.checked_count}/${summary.total_count} 行，发现 ${summary.warning_count} 条需要处理。`,
+    ...issueLines,
+  ].join('\n') + moreText
+}
+
+async function checkSelectedAttendanceRefundedAmounts() {
+  if (props.sheetId == null || attendanceRefundedCheckRunning.value) {
+    return
+  }
+  if (!canRunSheetActions.value) {
+    warnReadOnlyAction()
+    return
+  }
+  attendanceRefundedCheckRunning.value = true
+  try {
+    const result = await checkAttendanceSheetRefundedAmounts(props.sheetId, {
+      workbook_id: props.workbookId ?? null,
+    })
+    const message = buildAttendanceRefundedCheckMessage(result)
+    if (result.summary.warning_count > 0) {
+      await ElMessageBox.alert(message, '检查已返款', {
+        confirmButtonText: '知道了',
+        customClass: 'sheet-refunded-check-message',
+      })
+    } else {
+      ElMessage.success(message)
+    }
+  } catch (error) {
+    ElMessage.error(getSheetActionErrorMessage(error, '检查已返款失败'))
+  } finally {
+    attendanceRefundedCheckRunning.value = false
+  }
 }
 
 function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) {

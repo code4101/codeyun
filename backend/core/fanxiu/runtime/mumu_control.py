@@ -3161,15 +3161,57 @@ def _ocr_text_matches(text: str, target: str, mode: str) -> bool:
     return normalized_target in normalized_text
 
 
-def _apply_alpha_mask_for_ocr(crop: Any, alpha_mask: Any):
+OCR_MASK_MODES = {"inherit-envelope", "custom", "off", "raw-alpha"}
+
+
+def _normalize_ocr_mask_mode(mode: str | None) -> str:
+    return mode if mode in OCR_MASK_MODES else "inherit-envelope"
+
+
+def _alpha_mask_envelope(alpha_mask: Any, width: int, height: int):
+    mask = _normalize_alpha_mask(alpha_mask, width, height)
+    if mask is None or float(mask.sum()) <= 1e-6:
+        return None
+
+    import numpy as np
+
+    ys, xs = np.where(mask > 0.05)
+    if xs.size == 0 or ys.size == 0:
+        return None
+    left = max(0, int(xs.min()) - 2)
+    top = max(0, int(ys.min()) - 2)
+    right = min(width, int(xs.max()) + 3)
+    bottom = min(height, int(ys.max()) + 3)
+    if right <= left or bottom <= top:
+        return None
+    envelope = np.zeros((height, width), dtype=mask.dtype)
+    envelope[top:bottom, left:right] = 1.0
+    return envelope
+
+
+def _resolve_ocr_alpha_mask(alpha_mask: Any, ocr_mask: Any, width: int, height: int, mode: str | None):
+    resolved_mode = _normalize_ocr_mask_mode(mode)
+    if resolved_mode == "off":
+        return None, resolved_mode
+    if resolved_mode == "custom":
+        mask = _normalize_alpha_mask(ocr_mask, width, height)
+        return (mask if mask is not None and float(mask.sum()) > 1e-6 else None), resolved_mode
+    if resolved_mode == "raw-alpha":
+        mask = _normalize_alpha_mask(alpha_mask, width, height)
+        return (mask if mask is not None and float(mask.sum()) > 1e-6 else None), resolved_mode
+    return _alpha_mask_envelope(alpha_mask, width, height), resolved_mode
+
+
+def _apply_alpha_mask_for_ocr(crop: Any, alpha_mask: Any, *, ocr_mask: Any = None, ocr_mask_mode: str | None = "inherit-envelope"):
     if alpha_mask is None:
-        return crop
+        if ocr_mask is None or _normalize_ocr_mask_mode(ocr_mask_mode) != "custom":
+            return crop
     import numpy as np
 
     frame = _ensure_bgr_frame(crop).copy()
     height, width = frame.shape[:2]
-    mask = _normalize_alpha_mask(alpha_mask, width, height)
-    if mask is None or float(mask.sum()) <= 1e-6:
+    mask, _resolved_mode = _resolve_ocr_alpha_mask(alpha_mask, ocr_mask, width, height, ocr_mask_mode)
+    if mask is None:
         return frame
     frame[mask <= 0.05] = np.array([255, 255, 255], dtype=frame.dtype)
     return frame
@@ -3283,6 +3325,8 @@ def _match_ocr_frame(
     match_mode: str = "contains",
     min_confidence: float = 0.0,
     alpha_mask: Any = None,
+    ocr_mask: Any = None,
+    ocr_mask_mode: str | None = "inherit-envelope",
 ) -> dict[str, Any]:
     expected_text = str(text or "")
     frame = _ensure_bgr_frame(current_frame)
@@ -3301,7 +3345,13 @@ def _match_ocr_frame(
             "matches": [],
             "ocr_text": "",
         }
-    ocr_crop = _apply_alpha_mask_for_ocr(crop, alpha_mask) if not scan else crop
+    resolved_ocr_mask_mode = _normalize_ocr_mask_mode(ocr_mask_mode)
+    ocr_crop = _apply_alpha_mask_for_ocr(
+        crop,
+        alpha_mask,
+        ocr_mask=ocr_mask,
+        ocr_mask_mode=resolved_ocr_mask_mode,
+    ) if not scan else crop
     document = _run_ocr_on_bgr_frame(ocr_crop).get("document") or {}
     raw_shapes = document.get("shapes") if isinstance(document, dict) else []
     matches: list[dict[str, Any]] = []
@@ -3352,6 +3402,7 @@ def _match_ocr_frame(
         "search_radius": -1 if scan else 0,
         "matches": matches[:50],
         "ocr_text": "".join(all_texts),
+        "ocr_mask_mode": resolved_ocr_mask_mode,
     }
 
 
@@ -3611,6 +3662,8 @@ def match_fanxiu_screenshot_box_frame(
     quality: int = 82,
     pixel_tolerance: int = 20,
     alpha_mask_data_url: str | None = None,
+    ocr_mask_mode: str | None = "inherit-envelope",
+    ocr_mask_data_url: str | None = None,
     tolerance_min_data_url: str | None = None,
     tolerance_max_data_url: str | None = None,
     current_frame_data_url: str | None = None,
@@ -3661,6 +3714,7 @@ def match_fanxiu_screenshot_box_frame(
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
+    ocr_mask = _decode_image_data_url_gray(ocr_mask_data_url or "") if ocr_mask_data_url else None
     source_scan_box = _normalize_match_box(scan_box, source_width, source_height) if scan_box else {
         "name": "scan",
         "x": 0,
@@ -3680,6 +3734,8 @@ def match_fanxiu_screenshot_box_frame(
             match_mode=ocr_match_mode if ocr_match_mode in {"contains", "exact", "wildcard", "regex"} else "contains",
             min_confidence=ocr_min_confidence,
             alpha_mask=alpha_mask,
+            ocr_mask=ocr_mask,
+            ocr_mask_mode=ocr_mask_mode,
         )
         index = 0
         output_dir = get_fanxiu_match_frame_dir()
@@ -3720,6 +3776,7 @@ def match_fanxiu_screenshot_box_frame(
             "ocr_text": fixed_match.get("ocr_text") or "",
             "ocr_target": str(ocr_text or ""),
             "ocr_match_mode": ocr_match_mode,
+            "ocr_mask_mode": fixed_match.get("ocr_mask_mode") or _normalize_ocr_mask_mode(ocr_mask_mode),
             "ocr_min_confidence": max(0.0, min(1.0, float(ocr_min_confidence or 0.0))),
         }
     if match_strategy == "anchor_pixel":

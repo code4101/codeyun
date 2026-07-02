@@ -1441,6 +1441,24 @@ def _attendance_video_refund_rules_override(document: dict[str, Any], columns: l
     return _parse_attendance_video_refund_rules(note_value)
 
 
+def _attendance_video_refund_source_meta(
+    document: dict[str, Any],
+    columns: list[str],
+) -> dict[str, Any]:
+    source_meta = dict(document.get("source_meta") or {})
+    rules = (
+        _attendance_video_refund_rules_override(document, columns)
+        or _parse_timed_text_rules(source_meta.get("timed_video_rules"))
+    )
+    if not rules:
+        return {}
+
+    return {
+        "video_refund_rule_mode": _normalize_text(source_meta.get("video_refund_rule_mode")) or "timed_text",
+        "timed_video_rules": rules,
+    }
+
+
 def _attendance_legacy_zen_video_refund_amount(document: dict[str, Any], columns: list[str]) -> float:
     refund_index = _find_column_index(columns, "视频应返款")
     if refund_index is None:
@@ -1628,6 +1646,10 @@ def _build_video_config_document(
     course_name: str = NIANZHU_COURSE_NAME,
 ) -> dict[str, Any]:
     columns = _normalize_document_columns(attendance_document)
+    inherited_refund_meta = _attendance_video_refund_source_meta(
+        attendance_document,
+        columns,
+    )
     progress_by_key: dict[str, tuple[int, str]] = {}
     for column_index in _progress_column_range(columns):
         field_name = columns[column_index]
@@ -1701,6 +1723,7 @@ def _build_video_config_document(
     )
     document["source_meta"] = {
         "course_name": course_name,
+        **inherited_refund_meta,
         "legacy_lesson_rows": len(legacy_rows),
         "legacy_lesson_error": legacy_error,
         "legacy_lesson_id_map": legacy_lesson_id_map,
@@ -1760,6 +1783,7 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
             page_size=200,
         )
         document["source_meta"] = {
+            **source_meta,
             "legacy_lesson_data_rows": len(legacy_rows),
             "legacy_lesson_data_error": legacy_error,
         }
@@ -1792,12 +1816,15 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
                 "update_time": source_time,
                 "lesson_id": _format_numeric_cell(_to_float(lesson_id)),
             })
-    return _make_table_document_from_dicts(
+    document = _make_table_document_from_dicts(
         columns=VIDEO_DATA_COLUMNS,
         rows=result,
         numeric_columns={"lesson_data_id", "progress", "lesson_id"},
         page_size=200,
     )
+    if source_meta:
+        document["source_meta"] = source_meta
+    return document
 
 
 def _build_clockin_config_document(
@@ -3248,7 +3275,10 @@ def _load_video_config(
                 else "",
             ),
         }
-        custom_text_rules = dict(timed_video_rules_override or _parse_timed_text_rules(source_meta.get("timed_video_rules")))
+        custom_text_rules = dict(
+            timed_video_rules_override
+            or _parse_timed_text_rules(source_meta.get("timed_video_rules"))
+        )
         text_rules_by_version: dict[str, dict[str, int]] = {}
         for version, rules in DEFAULT_TIMED_VIDEO_RULES.items():
             if participates_refund and refund_rule_mode == "timed_text":

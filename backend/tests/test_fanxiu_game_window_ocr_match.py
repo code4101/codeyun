@@ -1,4 +1,6 @@
-from backend.core.fanxiu.runtime.mumu_control import _ocr_shape_box, _ocr_text_matches
+import numpy as np
+
+from backend.core.fanxiu.runtime.mumu_control import _apply_alpha_mask_for_ocr, _ocr_shape_box, _ocr_text_matches
 
 
 def test_ocr_text_match_modes():
@@ -28,4 +30,26 @@ def test_ocr_shape_box_offsets_rectangle_points():
         "w": 10,
         "h": 15,
     }
+
+
+def test_ocr_default_alpha_mask_uses_envelope_instead_of_glyph_stencil():
+    crop = np.zeros((8, 10, 3), dtype=np.uint8)
+    alpha = np.zeros((8, 10), dtype=np.uint8)
+    alpha[2, 2] = 255
+    alpha[2, 6] = 255
+
+    masked = _apply_alpha_mask_for_ocr(crop, alpha)
+
+    assert np.array_equal(masked[2, 4], np.array([0, 0, 0], dtype=np.uint8))
+
+
+def test_ocr_raw_alpha_mask_keeps_legacy_stencil_behavior():
+    crop = np.zeros((8, 10, 3), dtype=np.uint8)
+    alpha = np.zeros((8, 10), dtype=np.uint8)
+    alpha[2, 2] = 255
+    alpha[2, 6] = 255
+
+    masked = _apply_alpha_mask_for_ocr(crop, alpha, ocr_mask_mode="raw-alpha")
+
+    assert np.array_equal(masked[2, 4], np.array([255, 255, 255], dtype=np.uint8))
 

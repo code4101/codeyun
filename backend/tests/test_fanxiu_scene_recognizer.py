@@ -216,7 +216,12 @@ def test_scene_recognizer_trace_records_root_and_child_refinement():
 
 def test_scene_recognizer_trace_records_batched_stage_timing():
     roots = [
-        {"type": "image", "filename": f"{scene_id:04d}.png", "title": f"root-{scene_id}", "layer": 2}
+        {
+            "type": "image",
+            "filename": f"{scene_id:04d}.png",
+            "title": f"root-{scene_id}",
+            "shapes": [{"title": "场景标识", "isSceneIdentity": True}],
+        }
         for scene_id in (101, 102, 103, 104, 105)
     ]
     ctx = {"asset_tree": roots, "images": {101: roots[0], 102: roots[1], 103: roots[2], 104: roots[3], 105: roots[4]}}

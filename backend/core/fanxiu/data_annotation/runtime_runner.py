@@ -6530,6 +6530,12 @@ class DataAnnotationRuntimeRunner(
         scene_id: int,
         score: float,
     ) -> bool:
+        if int(scene_id) == 180:
+            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            if self._daily_boss_fighting_scene_ocr_confirmed_text(text):
+                return True
+            self._log("detail", f"场景识别降级：#180 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像首领战斗，OCR={text[:120]}")
+            return False
         if int(scene_id) != 34:
             return True
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
@@ -6537,6 +6543,15 @@ class DataAnnotationRuntimeRunner(
             return True
         self._log("detail", f"场景识别降级：#34 图像命中 {float(score or 0):.0f}% 但 OCR 不像世界，OCR={text[:120]}")
         return False
+
+    def _daily_boss_fighting_scene_ocr_confirmed_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if not compact or "首领" not in compact:
+            return False
+        reward_noise = ("活动时间", "大奖预览", "奖励预览", "成功击败", "获得了", "使用后可以获得")
+        if any(marker in compact for marker in reward_noise):
+            return False
+        return any(marker in compact for marker in ("自动战斗中", "数据统计", "伤害", "离开"))
 
     def _world_scene_ocr_confirmed_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
@@ -7461,6 +7476,8 @@ class DataAnnotationRuntimeRunner(
             "scan": scan,
             "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 20),
             "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),
+            "ocr_mask_mode": shape.get("ocrMaskMode") or "inherit-envelope",
+            "ocr_mask_data_url": ((shape.get("ocrMask") or {}).get("dataUrl") if isinstance(shape.get("ocrMask"), dict) else None),
             "tolerance_min_data_url": ((shape.get("toleranceRange") or {}).get("minDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
             "tolerance_max_data_url": ((shape.get("toleranceRange") or {}).get("maxDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
             "current_frame_data_url": frame_data_url,
@@ -7585,6 +7602,20 @@ class DataAnnotationRuntimeRunner(
             raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
         similarity = float(result.get("similarity") or 0)
         result_ocr_matched = bool(ocr_enabled and self._shape_match_result_ocr_matches(shape, result))
+        if ocr_enabled and not result_ocr_matched:
+            existing_fixed_box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else None
+            existing_resolved_box = result.get("resolved_box") if isinstance(result.get("resolved_box"), dict) else None
+            self._cached_ocr_lines(ctx, frame_data_url)
+            frame_ocr_result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
+            if bool(frame_ocr_result.get("matched")):
+                if existing_fixed_box is not None:
+                    if isinstance(frame_ocr_result.get("fixed_box"), dict):
+                        frame_ocr_result["ocr_box"] = frame_ocr_result.get("fixed_box")
+                    frame_ocr_result["fixed_box"] = existing_fixed_box
+                    frame_ocr_result["resolved_box"] = existing_resolved_box or existing_fixed_box
+                result = {**result, **frame_ocr_result}
+                result_ocr_matched = True
+                similarity = max(similarity, float(result.get("similarity") or 0))
         matched = result_ocr_matched or similarity >= float(self.scene_threshold)
         if ocr_enabled and not result_ocr_matched:
             matched = matched and bool(result.get("matches"))

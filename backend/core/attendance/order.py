@@ -1,5 +1,7 @@
 """Compatibility bridge for shared order automation helpers."""
 
+import os
+from pathlib import Path
 from typing import Any, Sequence
 
 from kq5034.order_ops import (
@@ -79,6 +81,35 @@ def _ensure_managed_weipay(
     return Weipay(users or None), True
 
 
+def _ensure_legacy_xl_env_loaded() -> None:
+    if os.getenv("XL_LINKS"):
+        return
+
+    env_file = Path(__file__).resolve().parents[4] / "xlproject" / ".env"
+    if not env_file.exists():
+        return
+
+    try:
+        from dotenv import dotenv_values
+    except Exception:
+        dotenv_values = None
+
+    if dotenv_values is not None:
+        values = dotenv_values(env_file)
+    else:
+        values = {}
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            values[key.strip()] = value.strip().strip("'\"")
+
+    for key, value in values.items():
+        if key and key.startswith("XL_") and value is not None and key not in os.environ:
+            os.environ[key] = value
+
+
 def execute_order_action(
     *,
     action: str,
@@ -88,10 +119,21 @@ def execute_order_action(
     kqdb: Any = None,
     lookup_mode: Any = "hybrid",
 ) -> dict[str, Any]:
-    managed_weipay, owned_weipay = _ensure_managed_weipay(
-        weipay,
-        weipay_login_users=weipay_login_users,
+    _ensure_legacy_xl_env_loaded()
+    normalized_action = str(action or "").strip().lower()
+    normalized_lookup_mode = str(lookup_mode or "").strip().lower()
+    should_preload_weipay = (
+        weipay is not None
+        or normalized_action == "refund"
+        or normalized_lookup_mode in {"browser_only", "hybrid"}
     )
+    if should_preload_weipay:
+        managed_weipay, owned_weipay = _ensure_managed_weipay(
+            weipay,
+            weipay_login_users=weipay_login_users,
+        )
+    else:
+        managed_weipay, owned_weipay = None, False
     try:
         return _execute_order_action(
             action=action,
@@ -113,6 +155,7 @@ def query_order_refund_details(
     weipay=None,
     weipay_login_users: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    _ensure_legacy_xl_env_loaded()
     managed_weipay, owned_weipay = _ensure_managed_weipay(
         weipay,
         weipay_login_users=weipay_login_users,

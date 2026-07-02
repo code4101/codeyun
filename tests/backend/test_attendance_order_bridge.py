@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from backend.core.attendance import order as attendance_order
@@ -158,6 +160,48 @@ def test_execute_order_action_closes_owned_weipay_tabs(monkeypatch):
     assert events[0][0] == "execute"
     assert events[0][1]["weipay"] is fake_weipay
     assert events[-1] == ("close", fake_weipay, 1)
+
+
+def test_execute_order_action_db_only_does_not_preload_weipay(monkeypatch):
+    events = []
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("db_only inspect should not initialize Weipay in bridge")
+
+    monkeypatch.setattr(attendance_order, "_ensure_managed_weipay", fail_ensure)
+    monkeypatch.setattr(
+        attendance_order,
+        "_execute_order_action",
+        lambda **kwargs: events.append(kwargs) or {"ok": True},
+    )
+
+    result = attendance_order.execute_order_action(
+        action="inspect",
+        rows=[{"商户订单号": "MA2026"}],
+        lookup_mode="db_only",
+    )
+
+    assert result == {"ok": True}
+    assert events[0]["weipay"] is None
+
+
+def test_execute_order_action_loads_legacy_xl_env(monkeypatch, tmp_path):
+    legacy_env = tmp_path / "slns" / "xlproject" / ".env"
+    legacy_env.parent.mkdir(parents=True)
+    legacy_env.write_text("XL_LINKS='[[\"from\", \"to\"], [\"*\", \"kq5034\"]]'\nIGNORED=value\n", encoding="utf-8")
+    fake_order_file = tmp_path / "slns" / "codeyun" / "backend" / "core" / "attendance" / "order.py"
+    fake_order_file.parent.mkdir(parents=True)
+    fake_order_file.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("XL_LINKS", raising=False)
+    monkeypatch.delenv("IGNORED", raising=False)
+    monkeypatch.setattr(attendance_order, "__file__", str(fake_order_file))
+    monkeypatch.setattr(attendance_order, "_execute_order_action", lambda **kwargs: {"rows": []})
+
+    attendance_order.execute_order_action(action="inspect", rows=[], lookup_mode="db_only")
+
+    assert "kq5034" in os.environ["XL_LINKS"]
+    assert "IGNORED" not in os.environ
 
 
 def test_query_order_refund_details_closes_owned_weipay_tabs_on_error(monkeypatch):

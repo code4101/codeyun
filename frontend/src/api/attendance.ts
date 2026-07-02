@@ -4,6 +4,7 @@ import api from '@/api'
 
 export type AttendanceOrderLookupMode = 'hybrid' | 'db_only' | 'browser_only'
 const ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS = 620000
+const ATTENDANCE_REFUNDED_CHECK_TIMEOUT_MS = 60000
 
 function normalizeAttendanceTimestamp(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value)
@@ -198,6 +199,51 @@ export interface AttendanceOrderRefundDetailResponse {
   execution_device_entry_id: string
   summary: AttendanceOrderRefundDetailSummary
   rows: AttendanceOrderRefundDetailItem[]
+}
+
+export interface AttendanceSheetRefundedCheckRequest {
+  workbook_id?: number | null
+  execution_device_entry_id?: string | null
+  login_users?: string[]
+  order_lookup_mode?: AttendanceOrderLookupMode
+  persist_global_selection?: boolean
+}
+
+export type AttendanceSheetRefundedCheckStatus =
+  | 'matched'
+  | 'mismatch'
+  | 'missing_registration'
+  | 'missing_order'
+  | 'missing_payment_refunded'
+
+export interface AttendanceSheetRefundedCheckRow {
+  row_number: number
+  student_no: string
+  student_name: string
+  wechat_order_id: string
+  merchant_order_id: string
+  sheet_refunded_amount: string
+  payment_refunded_amount: string
+  order_amount: string
+  status: AttendanceSheetRefundedCheckStatus
+  message: string
+}
+
+export interface AttendanceSheetRefundedCheckSummary {
+  total_count: number
+  checked_count: number
+  matched_count: number
+  mismatch_count: number
+  warning_count: number
+}
+
+export interface AttendanceSheetRefundedCheckResponse {
+  execution_device_entry_id: string
+  attendance_sheet_id: number
+  registration_sheet_id?: number | null
+  workbook_id?: number | null
+  summary: AttendanceSheetRefundedCheckSummary
+  rows: AttendanceSheetRefundedCheckRow[]
 }
 
 export interface AttendanceOrderRefundHistoryForegroundColors {
@@ -555,6 +601,15 @@ export async function fetchAttendanceOrderRefundDetails(payload: AttendanceOrder
       completed_at: String(item.completed_at || ''),
     })),
   }
+}
+
+export async function checkAttendanceSheetRefundedAmounts(sheetId: number, payload: AttendanceSheetRefundedCheckRequest = {}) {
+  const response = await api.post<AttendanceSheetRefundedCheckResponse>(
+    `/attendance/sheets/${sheetId}/check-refunded`,
+    payload,
+    { timeout: ATTENDANCE_REFUNDED_CHECK_TIMEOUT_MS },
+  )
+  return response.data
 }
 
 export async function fetchAttendanceOrderRefundHistory(params?: { page?: number; page_size?: number }) {

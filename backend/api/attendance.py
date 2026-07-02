@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import time
 import re
+import csv
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -244,6 +246,44 @@ class AttendanceOrderRefundDetailResponse(BaseModel):
     execution_device_entry_id: str
     summary: AttendanceOrderRefundDetailSummary
     rows: list[AttendanceOrderRefundDetailItem] = Field(default_factory=list)
+
+
+class AttendanceSheetRefundedCheckRequest(BaseModel):
+    workbook_id: Optional[int] = None
+    execution_device_entry_id: Optional[str] = None
+    login_users: list[str] = Field(default_factory=list)
+    order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = None
+    persist_global_selection: bool = True
+
+
+class AttendanceSheetRefundedCheckRow(BaseModel):
+    row_number: int
+    student_no: str = ""
+    student_name: str = ""
+    wechat_order_id: str = ""
+    merchant_order_id: str = ""
+    sheet_refunded_amount: str = ""
+    payment_refunded_amount: str = ""
+    order_amount: str = ""
+    status: Literal["matched", "mismatch", "missing_registration", "missing_order", "missing_payment_refunded"] = "matched"
+    message: str = ""
+
+
+class AttendanceSheetRefundedCheckSummary(BaseModel):
+    total_count: int = 0
+    checked_count: int = 0
+    matched_count: int = 0
+    mismatch_count: int = 0
+    warning_count: int = 0
+
+
+class AttendanceSheetRefundedCheckResponse(BaseModel):
+    execution_device_entry_id: str
+    attendance_sheet_id: int
+    registration_sheet_id: Optional[int] = None
+    workbook_id: Optional[int] = None
+    summary: AttendanceSheetRefundedCheckSummary
+    rows: list[AttendanceSheetRefundedCheckRow] = Field(default_factory=list)
 
 
 class AttendanceOrderRefundHistoryItem(BaseModel):
@@ -2355,6 +2395,301 @@ def _normalize_attendance_order_id(value: Any) -> str:
     return str(value or "").lstrip("`'").strip()
 
 
+def _normalize_attendance_sheet_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        value = value.get("value", "")
+    return _normalize_order_history_text(value)
+
+
+def _normalize_attendance_sheet_columns(document_json: dict[str, Any]) -> list[str]:
+    columns = document_json.get("columns")
+    if not isinstance(columns, list):
+        return []
+    return [_normalize_attendance_sheet_text(column) for column in columns]
+
+
+def _extract_attendance_sheet_rows(document_json: dict[str, Any]) -> list[list[Any]]:
+    rows = document_json.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [list(row) if isinstance(row, list) else [] for row in rows]
+
+
+def _attendance_sheet_cell(row: list[Any], columns: list[str], header: str) -> Any:
+    try:
+        index = columns.index(header)
+    except ValueError:
+        return ""
+    return row[index] if index < len(row) else ""
+
+
+def _find_sheet_by_numeric_id(session: Session, sheet_id: int) -> SheetDocument:
+    document = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == int(sheet_id))).first()
+    if document is None:
+        raise HTTPException(status_code=404, detail="表格不存在")
+    return document
+
+
+def _find_workbook_for_sheet(
+    session: Session,
+    sheet: SheetDocument,
+    *,
+    workbook_id: int | None,
+) -> WorkbookDocument | None:
+    if workbook_id is not None:
+        workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.numeric_id == int(workbook_id))).first()
+        if workbook is None:
+            raise HTTPException(status_code=404, detail="工作簿不存在")
+        return workbook
+
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(sheet)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    workbooks = load_workbooks_by_refs(session, [link.workbook_id for link in links])
+    for link in links:
+        workbook = workbooks.get(str(link.workbook_id))
+        if workbook is not None:
+            return workbook
+    return None
+
+
+def _find_registration_sheet_for_workbook(
+    session: Session,
+    workbook: WorkbookDocument,
+) -> SheetDocument | None:
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    sheets = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    fallback: SheetDocument | None = None
+    for link in links:
+        sheet = sheets.get(str(link.sheet_id))
+        if sheet is None:
+            continue
+        sheet_key = _normalize_attendance_sheet_text(sheet.sheet_key).lower()
+        title = _normalize_attendance_sheet_text(sheet.title)
+        if sheet_key == "registration":
+            return sheet
+        if fallback is None and title == "报名表":
+            fallback = sheet
+    return fallback
+
+
+def _build_registration_rows_by_student_no(registration_document: SheetDocument) -> dict[str, list[Any]]:
+    document_json = dict(registration_document.document_json or {})
+    columns = _normalize_attendance_sheet_columns(document_json)
+    rows = _extract_attendance_sheet_rows(document_json)
+    key_header = "序号" if "序号" in columns else "学号"
+    result: dict[str, list[Any]] = {}
+    for row in rows:
+        key = _normalize_attendance_sheet_text(_attendance_sheet_cell(row, columns, key_header))
+        if key and key not in result:
+            result[key] = row
+    return result
+
+
+def _format_refunded_check_amount(value: Any) -> str:
+    number = _coerce_order_history_number(value)
+    if number is None:
+        return _normalize_order_history_text(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
+
+
+def _same_refunded_amount(left: Any, right: Any) -> bool:
+    left_number = _coerce_order_history_number(left)
+    right_number = _coerce_order_history_number(right)
+    if left_number is not None and right_number is not None:
+        return abs(left_number - right_number) < 1e-9
+    return _normalize_order_history_text(left) == _normalize_order_history_text(right)
+
+
+def _load_submitted_refund_amounts_from_csv() -> dict[str, float]:
+    roots: list[Path] = []
+    try:
+        from backend.core.attendance_behavior_tree_service import get_attendance_data_root
+
+        roots.append(Path(get_attendance_data_root()) / "返款表")
+    except Exception:
+        pass
+
+    roots.extend([
+        Path.home() / "data" / "m2112kq5034" / "返款表",
+        Path("D:/home/chenkunze/data/m2112kq5034/返款表"),
+        Path("C:/home/chenkunze/data/m2112kq5034/返款表"),
+    ])
+
+    result: dict[str, float] = {}
+    for refund_root in dict.fromkeys(roots):
+        if not refund_root.exists():
+            continue
+        for file in refund_root.rglob("*.csv"):
+            try:
+                with file.open(encoding="utf-8-sig", newline="") as handle:
+                    reader = csv.reader(handle)
+                    for parts in reader:
+                        if len(parts) < 2:
+                            continue
+                        order_id = _normalize_attendance_order_id(parts[0])
+                        amount = _coerce_order_history_number(parts[1])
+                        if not order_id or amount is None:
+                            continue
+                        result[order_id] = round(result.get(order_id, 0.0) + amount, 2)
+            except Exception:
+                continue
+    return result
+
+
+def _merge_refunded_check_submitted_csv_results(
+    check_rows: list[dict[str, Any]],
+    submitted_refunds: dict[str, float],
+) -> None:
+    for check_row in check_rows:
+        order_id = (
+            _normalize_attendance_order_id(check_row.get("merchant_order_id"))
+            or _normalize_attendance_order_id(check_row.get("wechat_order_id"))
+        )
+        if not order_id:
+            continue
+        history_refunded = submitted_refunds.get(order_id, 0.0)
+        history_text = _format_refunded_check_amount(history_refunded)
+        check_row["payment_refunded_amount"] = history_text
+        if _same_refunded_amount(check_row.get("sheet_refunded_amount"), history_text):
+            check_row["status"] = "matched"
+            check_row["message"] = ""
+        else:
+            check_row["status"] = "mismatch"
+            check_row["message"] = "当前表格已返款与已提交返款CSV累计金额不一致"
+
+
+def _build_attendance_refunded_check_payload_rows(
+    attendance_document: SheetDocument,
+    registration_document: SheetDocument,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    attendance_json = dict(attendance_document.document_json or {})
+    registration_json = dict(registration_document.document_json or {})
+    attendance_columns = _normalize_attendance_sheet_columns(attendance_json)
+    registration_columns = _normalize_attendance_sheet_columns(registration_json)
+    attendance_rows = _extract_attendance_sheet_rows(attendance_json)
+    registration_by_student_no = _build_registration_rows_by_student_no(registration_document)
+
+    if "已返款" not in attendance_columns:
+        raise HTTPException(status_code=400, detail="当前表格没有“已返款”列")
+    if "学号" not in attendance_columns:
+        raise HTTPException(status_code=400, detail="当前考勤表没有“学号”列，无法匹配报名表")
+
+    order_rows: list[dict[str, Any]] = []
+    check_rows: list[dict[str, Any]] = []
+    data_start_row = int(attendance_json.get("data_start_row") or 3)
+    for row_index, attendance_row in enumerate(attendance_rows):
+        student_no = _normalize_attendance_sheet_text(_attendance_sheet_cell(attendance_row, attendance_columns, "学号"))
+        student_name = _normalize_attendance_sheet_text(_attendance_sheet_cell(attendance_row, attendance_columns, "姓名"))
+        sheet_refunded = _format_refunded_check_amount(
+            _attendance_sheet_cell(attendance_row, attendance_columns, "已返款")
+        )
+        row_number = data_start_row + row_index + 1
+        registration_row = registration_by_student_no.get(student_no)
+        base_row = {
+            "row_number": row_number,
+            "student_no": student_no,
+            "student_name": student_name,
+            "sheet_refunded_amount": sheet_refunded,
+        }
+        if registration_row is None:
+            check_rows.append({
+                **base_row,
+                "wechat_order_id": "",
+                "merchant_order_id": "",
+                "order_amount": _format_refunded_check_amount(
+                    _attendance_sheet_cell(attendance_row, attendance_columns, "订单金额")
+                ),
+                "payment_refunded_amount": "",
+                "status": "missing_registration",
+                "message": "报名表未找到对应序号",
+            })
+            continue
+
+        wechat_order_id = _normalize_attendance_order_id(
+            _attendance_sheet_cell(registration_row, registration_columns, "微信支付订单号")
+        )
+        merchant_order_id = _normalize_attendance_order_id(
+            _attendance_sheet_cell(registration_row, registration_columns, "商户订单号")
+        )
+        order_amount = _format_refunded_check_amount(
+            _attendance_sheet_cell(registration_row, registration_columns, "订单金额")
+            or _attendance_sheet_cell(attendance_row, attendance_columns, "订单金额")
+        )
+        check_index = len(check_rows)
+        check_rows.append({
+            **base_row,
+            "wechat_order_id": wechat_order_id,
+            "merchant_order_id": merchant_order_id,
+            "order_amount": order_amount,
+            "payment_refunded_amount": "",
+            "status": "missing_order" if not (wechat_order_id or merchant_order_id) else "missing_payment_refunded",
+            "message": "缺少订单号" if not (wechat_order_id or merchant_order_id) else "",
+        })
+        if wechat_order_id or merchant_order_id:
+            order_rows.append({
+                "_check_index": check_index,
+                "编号": student_no,
+                "学员名称": student_name,
+                "微信支付订单号": wechat_order_id,
+                "商户订单号": merchant_order_id,
+                "订单金额": order_amount,
+                "已返款": sheet_refunded,
+            })
+    return order_rows, check_rows
+
+
+def _merge_refunded_check_order_results(
+    check_rows: list[dict[str, Any]],
+    order_rows: list[dict[str, Any]],
+    result_rows: list[dict[str, Any]],
+) -> None:
+    for position, order_row in enumerate(order_rows):
+        check_index = int(order_row.get("_check_index") or 0)
+        if check_index < 0 or check_index >= len(check_rows):
+            continue
+        check_row = check_rows[check_index]
+        result_row = result_rows[position] if position < len(result_rows) and isinstance(result_rows[position], dict) else {}
+        payment_refunded = _format_refunded_check_amount(result_row.get("已返款"))
+        if payment_refunded == "":
+            check_row["status"] = "missing_payment_refunded"
+            check_row["message"] = _normalize_order_history_text(result_row.get("处理结果") or result_row.get("订单金额") or "支付侧未返回已返款")
+            continue
+        check_row["payment_refunded_amount"] = payment_refunded
+        if _normalize_order_history_text(result_row.get("订单金额")):
+            check_row["order_amount"] = _format_refunded_check_amount(result_row.get("订单金额"))
+        if _same_refunded_amount(check_row.get("sheet_refunded_amount"), payment_refunded):
+            check_row["status"] = "matched"
+            check_row["message"] = ""
+        else:
+            check_row["status"] = "mismatch"
+            check_row["message"] = "当前表格已返款与支付侧已返款不一致"
+
+
+def _summarize_refunded_check_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    checked_count = sum(1 for row in rows if row.get("status") in {"matched", "mismatch"})
+    matched_count = sum(1 for row in rows if row.get("status") == "matched")
+    mismatch_count = sum(1 for row in rows if row.get("status") == "mismatch")
+    warning_count = sum(1 for row in rows if row.get("status") not in {"matched"})
+    return {
+        "total_count": len(rows),
+        "checked_count": checked_count,
+        "matched_count": matched_count,
+        "mismatch_count": mismatch_count,
+        "warning_count": warning_count,
+    }
+
+
 def _sum_successful_refund_detail_amount(rows: list[dict[str, Any]]) -> float:
     total = 0.0
     for row in rows:
@@ -2695,11 +3030,25 @@ def _build_order_refund_history_page(session: Session, *, page: int, page_size: 
     normalized_page_size = min(max(1, int(page_size or 20)), 100)
     offset = (normalized_page - 1) * normalized_page_size
 
-    statement = select(AttendanceOrderRefundHistory)
-    all_records = list(session.exec(statement).all())
-    serialized_items = _serialize_order_refund_history_items(all_records)
-    total = len(serialized_items)
-    items = serialized_items[offset : offset + normalized_page_size]
+    total = int(
+        session.exec(
+            select(func.count()).select_from(AttendanceOrderRefundHistory)
+        ).one()
+        or 0
+    )
+    statement = (
+        select(AttendanceOrderRefundHistory)
+        # Refund history rows already persist normalized created_at values on write,
+        # so the read path can page directly in SQL without reserializing the full table.
+        .order_by(AttendanceOrderRefundHistory.created_at.desc(), AttendanceOrderRefundHistory.id.desc())
+        .offset(offset)
+        .limit(normalized_page_size)
+    )
+    items = []
+    for record in session.exec(statement).all():
+        item = serialize_attendance_order_refund_history(record)
+        item["result_text"] = _strip_order_history_result_timestamps(item.get("result_text"))
+        items.append(AttendanceOrderRefundHistoryItem.model_validate(item))
     return AttendanceOrderRefundHistoryPage(
         items=items,
         total=total,
@@ -3371,10 +3720,11 @@ def _post_remote_attendance_json(
 def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
     mode = str(entry_snapshot.get("mode") or "")
     operation_password = str(execution_payload.get("operation_password") or "")
+    remote_timeout = float(execution_payload.get("_remote_timeout_seconds") or 600)
     order_action_payload = {
         key: value
         for key, value in execution_payload.items()
-        if key != "operation_password"
+        if key not in {"operation_password", "_remote_timeout_seconds"}
     }
     if mode == "local":
         local_device_id = get_device_id()
@@ -3387,8 +3737,12 @@ def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: d
     response = _post_remote_attendance_json(
         entry_snapshot,
         path="/api/device-control/attendance/order/execute",
-        payload=execution_payload,
-        timeout=600,
+        payload={
+            key: value
+            for key, value in execution_payload.items()
+            if key != "_remote_timeout_seconds"
+        },
+        timeout=remote_timeout,
     )
     if response.status_code >= 400:
         try:
@@ -4935,6 +5289,98 @@ def execute_attendance_order(
         "execution_device_entry_id": entry.entry_id,
         "refund_confirmation": refund_confirmation,
         **result,
+    }
+
+
+@router.post("/sheets/{sheet_id}/check-refunded", response_model=AttendanceSheetRefundedCheckResponse)
+def check_attendance_sheet_refunded_amounts(
+    sheet_id: int,
+    payload: AttendanceSheetRefundedCheckRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    attendance_document = _find_sheet_by_numeric_id(session, sheet_id)
+    workbook = _find_workbook_for_sheet(session, attendance_document, workbook_id=payload.workbook_id)
+    if workbook is None:
+        raise HTTPException(status_code=400, detail="未找到当前考勤表所属工作簿")
+    registration_document = _find_registration_sheet_for_workbook(session, workbook)
+    if registration_document is None:
+        raise HTTPException(status_code=400, detail="当前工作簿没有报名表，无法检查已返款")
+
+    order_rows, check_rows = _build_attendance_refunded_check_payload_rows(
+        attendance_document,
+        registration_document,
+    )
+
+    submitted_refunds = _load_submitted_refund_amounts_from_csv()
+    if submitted_refunds:
+        _merge_refunded_check_submitted_csv_results(check_rows, submitted_refunds)
+        return {
+            "execution_device_entry_id": "",
+            "attendance_sheet_id": sheet_id,
+            "registration_sheet_id": registration_document.numeric_id,
+            "workbook_id": workbook.numeric_id,
+            "summary": _summarize_refunded_check_rows(check_rows),
+            "rows": check_rows,
+        }
+
+    config = get_or_create_attendance_service_config(session)
+    extra_config = get_attendance_service_extra_config(session)
+    entry = _resolve_run_device(
+        session,
+        config,
+        execution_device_entry_id=payload.execution_device_entry_id,
+        current_user=current_user,
+    )
+
+    if order_rows:
+        execution_payload = {
+            "action": "inspect",
+            "rows": [
+                {key: value for key, value in row.items() if key != "_check_index"}
+                for row in order_rows
+            ],
+            "login_users": list(payload.login_users or extra_config.get("scan_reminder_users") or []),
+            "lookup_mode": str(payload.order_lookup_mode or "db_only"),
+            "_remote_timeout_seconds": 45,
+        }
+        try:
+            result = _execute_order_on_entry(
+                {
+                    **serialize_user_device(entry),
+                    "token": entry.token,
+                },
+                execution_payload,
+            )
+            result = _normalize_attendance_order_execution_result(result)
+        except OrderAutomationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _merge_refunded_check_order_results(
+            check_rows,
+            order_rows,
+            list(result.get("rows") or []),
+        )
+
+    if payload.persist_global_selection and current_user.is_superuser:
+        config.execution_device_entry_id = entry.entry_id
+        config.updated_by_user_id = current_user.id
+        config.updated_at = time.time()
+        session.add(config)
+        session.commit()
+
+    workbook_numeric_id = workbook.numeric_id if workbook.numeric_id is not None else None
+    registration_numeric_id = registration_document.numeric_id if registration_document.numeric_id is not None else None
+    return {
+        "execution_device_entry_id": entry.entry_id,
+        "attendance_sheet_id": int(sheet_id),
+        "registration_sheet_id": registration_numeric_id,
+        "workbook_id": workbook_numeric_id,
+        "summary": _summarize_refunded_check_rows(check_rows),
+        "rows": check_rows,
     }
 
 

@@ -2291,6 +2291,8 @@ def test_runtime_shape_payload_matches_frontend_protocol_for_floating_ocr():
     assert payload["match_strategy"] == "anchor_pixel"
     assert payload["ocr_enabled"] is True
     assert payload["ocr_text"] == "邮件"
+    assert payload["ocr_mask_mode"] == "inherit-envelope"
+    assert payload["ocr_mask_data_url"] is None
 
 
 def test_runtime_shape_payload_scans_floating_image_without_ocr():
@@ -11533,6 +11535,14 @@ def test_daily_boss_reward_and_cd_parsers():
     assert runtime_runner_core._parse_daily_boss_hp_percent("首领 命20% 自动战斗中") == 20
 
 
+def test_daily_boss_fighting_scene_ocr_rejects_reward_activity_noise():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_boss_fighting_scene_ocr_confirmed_text("首领 命20% 自动战斗中 数据统计 离开") is True
+    assert runner._daily_boss_fighting_scene_ocr_confirmed_text("活动时间 大奖预览 成功击败幻瑶谷首领 获得了玄阴经 奖励预览") is False
+    assert runner._daily_boss_fighting_scene_ocr_confirmed_text("套装 秦妍 成功击败幻瑶谷首领 使用后可以获得以下道具") is False
+
+
 def test_daily_boss_detail_clicks_challenge_when_available(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
@@ -11555,7 +11565,7 @@ def test_daily_boss_detail_clicks_challenge_when_available(tmp_path, monkeypatch
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "神识注视剩余奖励次数：3/3前往挑战"}])
-    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
 
     def fake_wait(_ctx, _stop_event, _payload):
         if False:
@@ -11571,7 +11581,49 @@ def test_daily_boss_detail_clicks_challenge_when_available(tmp_path, monkeypatch
     )
 
     assert result == "success"
-    assert clicked == ["前往挑战"]
+    assert clicked == [("首领详情", 450.0, 1368.0)]
+
+
+def test_daily_boss_detail_clicks_challenge_when_reward_remains_even_if_button_ocr_misses(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image179 = _image("首领详情", "0179.png", [
+        {"id": "watch", "kind": "rect", "title": "神识注视", "x": 0.35, "y": 0.5, "w": 0.5, "h": 0.06},
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.78, "w": 0.4, "h": 0.06},
+        {"id": "action", "kind": "rect", "title": "挑战状态", "x": 0.25, "y": 0.82, "w": 0.5, "h": 0.07},
+        {"id": "challenge", "kind": "rect", "title": "前往挑战", "x": 0.25, "y": 0.82, "w": 0.5, "h": 0.07},
+    ])
+    ctx = {"asset_tree_path": path, "images": {179: image179}}
+    clicked: list[tuple[str, float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "神识注视剩余奖励次数：3/3"}])
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
+
+    def fake_wait(_ctx, _stop_event, payload):
+        assert payload["_daily_boss_challenge_remaining"] == 3
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_daily_boss_after_challenge", fake_wait)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_daily_boss_detail(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [("首领详情", 450.0, 1368.0)]
 
 
 def test_daily_boss_detail_records_next_reset_when_reward_is_empty(tmp_path, monkeypatch):
