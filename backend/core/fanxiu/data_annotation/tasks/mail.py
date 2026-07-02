@@ -18,11 +18,6 @@ from backend.core.fanxiu.runtime.capture_runtime import (
 )
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
-    fanxiu_mail_action_policy_for_rewards,
-    fanxiu_mail_desired_status_for_record,
-    fanxiu_mail_desired_status_for_rewards,
-    fanxiu_mail_rewards_from_payload,
-    fanxiu_mail_rewards_unresolved,
     fanxiu_mail_visible_group_action_policy,
 )
 from backend.core.fanxiu.mail.runtime_store import (
@@ -286,12 +281,12 @@ class MailTaskMixin:
                 break
             frame = runtime.cur_frame(update=True)
             rows = self._runtime_mail_rows_from_frame(runtime, view121, frame)
-            aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup")
+            aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup", dry_run=True)
             if aligned_result.get("updated"):
                 self._log(
-                    "success",
-                    "邮件_清理：可见相邻断层校准 "
-                    f"{aligned_result.get('updated')} 封为可领，区间 {aligned_result.get('interval_count')}",
+                    "warning",
+                    "邮件_清理：可见相邻断层仅记录为诊断，不自动改为可领；"
+                    f"候选 {aligned_result.get('updated')} 封，区间 {aligned_result.get('interval_count')}",
                 )
             action_row: _RuntimeMailRow | None = None
             detail_probe_row: _RuntimeMailRow | None = None
@@ -1902,22 +1897,15 @@ class MailTaskMixin:
     def _visible_packet_mail_group_action_policy(self, records: list[Any], *, time_text: str = "") -> str:
         if not records:
             return ""
-        has_visible_time_match = bool(time_text) and any(self._mail_record_matches_visible_time(record, time_text) for record in records)
         for record in records:
-            if has_visible_time_match:
-                claimable = fanxiu_mail_desired_status_for_record(record) == "可领"
-            else:
-                claimable = self._packet_mail_record_initially_claimable(record)
-            if not claimable:
+            if str(getattr(record, "status", "") or "").strip() != "可领":
                 return ""
         return "claim"
 
     def _packet_mail_record_initially_claimable(self, record: Any | None) -> bool:
         if record is None:
             return False
-        if fanxiu_mail_rewards_unresolved(getattr(record, "payload", None)):
-            return False
-        return fanxiu_mail_desired_status_for_rewards(fanxiu_mail_rewards_from_payload(getattr(record, "payload", None))) == "可领"
+        return str(getattr(record, "status", "") or "").strip() == "可领"
 
     def _find_packet_mail_records_for_visible_row(
         self,
@@ -2035,8 +2023,7 @@ class MailTaskMixin:
     def _visible_packet_mail_action_policy(self, record: Any | None) -> str:
         if record is None:
             return ""
-        desired_status = fanxiu_mail_desired_status_for_record(record)
-        if desired_status != "可领":
+        if str(getattr(record, "status", "") or "").strip() != "可领":
             return ""
         status = str(record.status or "").strip().lower()
         if status in {"claimed", "deleted"}:
@@ -2046,9 +2033,7 @@ class MailTaskMixin:
             if not self._mail_requested_action_retryable(record, retry_policy):
                 return ""
             return retry_policy
-        if fanxiu_mail_rewards_unresolved(record.payload):
-            return ""
-        return fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
+        return "claim"
 
     def _mail_requested_action_retryable(self, record: Any, policy: str) -> bool:
         if policy not in {"claim", "delete"}:

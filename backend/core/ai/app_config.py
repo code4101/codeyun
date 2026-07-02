@@ -134,12 +134,6 @@ AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
         "label": "微信聊天日总结",
         "description": "读取本机微信聊天数据，按联系人或群生成日总结并写入星图笔记。",
     },
-    {
-        "id": AI_APP_DEVICE_AGENT,
-        "group": "集群",
-        "label": "设备代理",
-        "description": "设备代理处理跨设备请求、诊断和委托任务时使用的模型。",
-    },
 )
 
 
@@ -156,7 +150,7 @@ def build_legacy_ai_git_commit_config_setting_key(user_id: int) -> str:
 
 
 def _known_app_ids() -> set[str]:
-    return {item["id"] for item in AI_APP_DEFINITIONS}
+    return {item["id"] for item in AI_APP_DEFINITIONS} | set(_AI_APP_DEFAULTS)
 
 
 def _normalize_app_id(value: str | None) -> str:
