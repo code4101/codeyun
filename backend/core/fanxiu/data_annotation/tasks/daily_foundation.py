@@ -393,7 +393,19 @@ class DailyFoundationTaskMixin:
             yield from self._return_daily_boss_to_world(ctx, stop_event)
             return "success"
 
-        if "前往挑战" not in detail_text:
+        cd_seconds = _parse_daily_boss_cd_seconds(detail_text)
+        if cd_seconds is not None:
+            next_time = self._record_daily_boss_recheck_time(payload, seconds=max(60, cd_seconds))
+            self._log("skip", f"日常_首领：首领详情仍在 CD，{cd_seconds}s 后复查，下次 {next_time}")
+            yield from self._return_daily_boss_to_world(ctx, stop_event)
+            return "skipped"
+
+        view179 = runtime.get_view(179)
+        challenge_shape = view179.get_shape("前往挑战") if isinstance(view179, View) else None
+        if challenge_shape is None:
+            raise RuntimeError("缺少 #179「前往挑战」标注，无法挑战首领")
+
+        if remaining is None and "前往挑战" not in detail_text:
             fallback_seconds = int(payload.get("fallback_seconds") or 300)
             next_time = (_runtime_runner._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
             self._record_scheduler_task_discovered_retry_after(
@@ -406,14 +418,15 @@ class DailyFoundationTaskMixin:
             self._log("skip", f"日常_首领：未识别到「前往挑战」或 CD，当前文本：{detail_text or '空'}；{next_time} 兜底重试")
             return "skipped"
 
-        view179 = runtime.get_view(179)
-        challenge_shape = view179.get_shape("前往挑战") if isinstance(view179, View) else None
-        if challenge_shape is None:
-            raise RuntimeError("缺少 #179「前往挑战」标注，无法挑战首领")
+        if remaining is not None:
+            payload["_daily_boss_challenge_remaining"] = int(remaining)
         with self._lock:
             self._set_status_locked("running", "日常_首领：点击前往挑战", phase="daily_boss_challenge", current_scene=179)
             self._log_locked("action", "日常_首领：点击 #179「前往挑战」")
-        challenge_shape.click(runtime)
+        box = challenge_shape.box()
+        click_x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+        click_y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+        runtime.click_frame_point(179, click_x, click_y)
         post_result = yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload)
         return post_result
 

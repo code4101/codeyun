@@ -81,6 +81,37 @@ def test_video_rule_system_boundaries_are_explicit() -> None:
     ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR
 
 
+def test_course_sheet_documents_inherit_video_refund_rules_from_attendance_template_note() -> None:
+    columns = ["姓名", "用户ID", "完成视频数", "视频应返款", "打卡数", "第01课"]
+    note_row = [""] * len(columns)
+    note_row[columns.index("视频应返款")] = (
+        '21课*19元=399元。\n视频在"当堂(直播)/第1天(当天)/第2天/第3天/第4~5天"看完，'
+        '对应返回"19/14/9/4/0"元'
+    )
+    attendance_document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [["甲", "u1", "", "", "", "当堂完成/100%"]],
+        "grid_rows": [[""] * len(columns), columns, note_row, ["甲", "u1", "", "", "", "当堂完成/100%"]],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    documents = nianzhu_course_sheets._course_sheet_documents_from_attendance(
+        attendance_document,
+        course_name="第48届觉观",
+    )
+
+    expected_rules = {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0}
+    video_meta = documents[VIDEO_CONFIG_SHEET_KEY]["source_meta"]
+    video_data_meta = documents[VIDEO_DATA_SHEET_KEY]["source_meta"]
+    assert video_meta["video_refund_rule_mode"] == "timed_text"
+    assert video_meta["timed_video_rules"] == expected_rules
+    assert video_data_meta["video_refund_rule_mode"] == "timed_text"
+    assert video_data_meta["timed_video_rules"] == expected_rules
+
+
 def test_zen_stage_attendance_schema_adds_50_video_columns_and_caps_refund_formula() -> None:
     document = {
         "schema_version": 1,
@@ -1316,6 +1347,161 @@ def test_rebuild_nianzhu_attendance_prefers_attendance_video_refund_note_rules(s
     assert summary["video_refund_total"] == 38
     assert row[columns.index("完成视频数")] == '=COUNTIF(G4:H4,"*完成*")+COUNTIF(G4:H4,"*回放*")'
     assert row[columns.index("视频应返款")] == 38
+
+
+def test_rebuild_jueguan_attendance_uses_inherited_timed_refund_rules(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    columns = ["姓名", "用户ID", "完成视频数", "视频应返款", "打卡应返款", "打卡数", "第01课", "第02课"]
+    rows = [["甲", "u1", "", "", "", "", "", ""]]
+    attendance.document_json = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, [""] * len(columns), *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {"lesson_id": 1, "lesson_name": "第01课", "video_duration": 3600}),
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {"lesson_id": 2, "lesson_name": "第02课", "video_duration": 3600}),
+        ],
+    )
+    video_config.document_json["source_meta"] = {
+        "course_name": "第48届觉观",
+        "video_refund_rule_mode": "timed_text",
+        "timed_video_rules": {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0},
+    }
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "studio_seconds": 3132,
+                    "cum_seconds": 3132,
+                    "study_state": "已完成",
+                    "progress": 87,
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "studio_seconds": 3528,
+                    "cum_seconds": 3528,
+                    "study_state": "已完成",
+                    "progress": 98,
+                    "lesson_id": 2,
+                },
+            ),
+        ],
+    )
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(attendance)
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, attendance_sheet_id=21)
+    session.commit()
+
+    row = attendance.document_json["rows"][0]
+    assert summary["video_refund_total"] == 38
+    assert row[columns.index("视频应返款")] == 38
+    assert row[columns.index("第01课")] == "当堂完成/87%"
+    assert row[columns.index("第02课")] == "当堂完成/98%"
+
+
+def test_rebuild_attendance_preserves_existing_refunded_amount(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    columns = [
+        "姓名",
+        "用户ID",
+        "完成视频数",
+        "视频应返款",
+        "打卡应返款",
+        "总应返款",
+        "已返款",
+        "订单金额",
+        "当前应返款",
+        "打卡数",
+        "第01课",
+    ]
+    rows = [["甲", "u1", "", "", "", "", "7", "499", "", "", ""]]
+    attendance.document_json = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, [""] * len(columns), *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [_row_from_dict(VIDEO_CONFIG_COLUMNS, {"lesson_id": 1, "lesson_name": "第01课", "video_duration": 3600})],
+    )
+    video_config.document_json["source_meta"] = {
+        "course_name": "第48届觉观",
+        "video_refund_rule_mode": "timed_text",
+        "timed_video_rules": {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0},
+    }
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "studio_seconds": 3600,
+                    "cum_seconds": 3600,
+                    "study_state": "已完成",
+                    "progress": 100,
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(attendance)
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    rebuild_nianzhu_attendance_from_course_sheets(session, attendance_sheet_id=21)
+    session.commit()
+
+    row = attendance.document_json["rows"][0]
+    assert row[columns.index("视频应返款")] == 19
+    assert row[columns.index("总应返款")] == "=IF(H4>0,MIN(MAX(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),0),H4),0)"
+    assert row[columns.index("已返款")] == "7"
+    assert row[columns.index("当前应返款")] == "=IF(H4>0,MAX(F4-G4,0),0)"
 
 
 def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Session) -> None:

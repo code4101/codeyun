@@ -537,7 +537,7 @@
                   </div>
                   <div class="shape-action-group">
                     <el-checkbox v-model="selectedShape.maskEnabled" title="启用抠图" aria-label="启用抠图" />
-                    <el-button size="small" :disabled="!selectedShape" @click="openShapeMaskDialog">
+                    <el-button size="small" :disabled="!selectedShape" @click="openShapeMaskDialog('image')">
                       抠图
                     </el-button>
                   </div>
@@ -595,6 +595,25 @@
                       <el-option label="通配符" value="wildcard" />
                       <el-option label="正则" value="regex" />
                     </el-select>
+                    <el-select
+                      v-model="selectedShape.ocrMaskMode"
+                      class="shape-ocr-mask-mode-select"
+                      size="small"
+                      title="OCR抠图策略"
+                    >
+                      <el-option label="继承区域" value="inherit-envelope" />
+                      <el-option label="OCR专用" value="custom" />
+                      <el-option label="不用抠图" value="off" />
+                      <el-option label="原始抠图" value="raw-alpha" />
+                    </el-select>
+                    <el-button
+                      v-if="selectedShape.ocrMaskMode === 'custom'"
+                      size="small"
+                      :disabled="!selectedShape"
+                      @click="openShapeMaskDialog('ocr')"
+                    >
+                      OCR抠图
+                    </el-button>
                   </div>
                 </div>
                 <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
@@ -820,7 +839,7 @@
     >
       <template #header>
         <div class="shape-dialog-head">
-          <span>方框抠图</span>
+          <span>{{ shapeMaskTarget === 'ocr' ? 'OCR专用抠图' : '方框抠图' }}</span>
           <button type="button" class="shape-help-button" title="查看说明" aria-label="查看抠图说明" @click="showShapeMaskHelp">
             ?
           </button>
@@ -1496,6 +1515,7 @@ type ShapeMatchRole = 'off' | 'optional' | 'required';
 type SceneIdentityScope = 'none' | 'local' | 'global';
 type FrameLayer = 1 | 2 | 3;
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
+type ShapeOcrMaskMode = 'inherit-envelope' | 'custom' | 'off' | 'raw-alpha';
 type AssetTreeViewMode = 'business' | 'scene';
 
 type GameMacroConfig = {
@@ -6720,6 +6740,8 @@ type DataAnnotationShape = {
   ocrEnabled?: boolean;
   ocrText?: string;
   ocrMatchMode?: ShapeOcrMatchMode;
+  ocrMaskMode?: ShapeOcrMaskMode;
+  ocrMask?: ShapeAlphaMask | null;
   maskEnabled?: boolean;
   alphaMask?: ShapeAlphaMask | null;
   toleranceEnabled?: boolean;
@@ -7035,6 +7057,8 @@ const shapeDetectLoopEnabled = ref(false);
 let shapeDetectStopRequested = false;
 let shapeDetectAbortController: AbortController | null = null;
 const shapeMaskDialogVisible = ref(false);
+type ShapeMaskTarget = 'image' | 'ocr';
+const shapeMaskTarget = ref<ShapeMaskTarget>('image');
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
 type ShapeMaskCaptureMode = 'single' | 'burst';
@@ -7242,6 +7266,10 @@ const normalizeShapeOcrMatchMode = (value: unknown): ShapeOcrMatchMode => (
   value === 'exact' || value === 'wildcard' || value === 'regex' ? value : 'contains'
 );
 
+const normalizeShapeOcrMaskMode = (value: unknown): ShapeOcrMaskMode => (
+  value === 'custom' || value === 'off' || value === 'raw-alpha' ? value : 'inherit-envelope'
+);
+
 const SHAPE_MATCH_ROLE_ORDER: ShapeMatchRole[] = ['off', 'required', 'optional'];
 const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
   off: '关',
@@ -7364,6 +7392,14 @@ const normalizeShapes = (
     ocrEnabled: normalizedOcrMatchRole !== 'off',
     ocrText: typeof shape.ocrText === 'string' ? shape.ocrText : '',
     ocrMatchMode: normalizeShapeOcrMatchMode(shape.ocrMatchMode),
+    ocrMaskMode: normalizeShapeOcrMaskMode(shape.ocrMaskMode),
+    ocrMask: shape.ocrMask && typeof shape.ocrMask === 'object'
+      ? {
+          width: Number(shape.ocrMask.width) || 0,
+          height: Number(shape.ocrMask.height) || 0,
+          dataUrl: typeof shape.ocrMask.dataUrl === 'string' ? shape.ocrMask.dataUrl : '',
+        }
+      : null,
     maskEnabled: Boolean(shape.maskEnabled),
     alphaMask: shape.alphaMask && typeof shape.alphaMask === 'object'
       ? {
@@ -8822,6 +8858,8 @@ const buildRuntimeShapeMatchPayload = (
   const forceOcr = options.condition === 'ocr';
   const ocrEnabled = !forceImage && shapeOcrMatchRole(shape) !== 'off' && Boolean(ocrText);
   const alphaMaskDataUrl = shape.maskEnabled ? shape.alphaMask?.dataUrl || '' : '';
+  const ocrMaskMode = normalizeShapeOcrMaskMode(shape.ocrMaskMode);
+  const ocrMaskDataUrl = ocrMaskMode === 'custom' ? shape.ocrMask?.dataUrl || '' : '';
   const toleranceMinDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl || '' : '';
   const toleranceMaxDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl || '' : '';
   const scanEnabled = Boolean(shape.floating && !ocrEnabled);
@@ -8837,6 +8875,8 @@ const buildRuntimeShapeMatchPayload = (
     scan_box: scanBox,
     pixel_tolerance: shapePixelTolerance(shape),
     alpha_mask_data_url: alphaMaskDataUrl || buildOcclusionAlphaMaskDataUrl(image, shape, box) || undefined,
+    ocr_mask_mode: ocrMaskMode,
+    ocr_mask_data_url: ocrMaskDataUrl || undefined,
     tolerance_min_data_url: toleranceMinDataUrl || undefined,
     tolerance_max_data_url: toleranceMaxDataUrl || undefined,
     title: targetTitle.value.trim(),
@@ -9813,6 +9853,8 @@ const createRecordedGameShape = (
     ocrEnabled: false,
     ocrText: '',
     ocrMatchMode: 'contains',
+    ocrMaskMode: 'inherit-envelope',
+    ocrMask: null,
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -10159,6 +10201,8 @@ const addAnnotationShape = () => {
     ocrEnabled: false,
     ocrText: '',
     ocrMatchMode: 'contains',
+    ocrMaskMode: 'inherit-envelope',
+    ocrMask: null,
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -10642,7 +10686,16 @@ const cropLiveImageDataByShape = (shape: DataAnnotationShape, width: number, hei
   return context.getImageData(0, 0, width, height);
 };
 
-const loadShapeAlphaMask = async (shape: DataAnnotationShape, width: number, height: number) => {
+const loadShapeAlphaMask = async (
+  shape: DataAnnotationShape,
+  width: number,
+  height: number,
+  target: ShapeMaskTarget = 'image',
+) => {
+  if (target === 'ocr') {
+    if (!shape.ocrMask?.dataUrl) return null;
+    return loadAlphaMaskDataUrl(shape.ocrMask.dataUrl, width, height);
+  }
   if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
   return loadAlphaMaskDataUrl(shape.alphaMask.dataUrl, width, height);
 };
@@ -11368,7 +11421,7 @@ const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
-  const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height) : null;
+  const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height, shapeMaskTarget.value) : null;
   const fullAlpha = new Uint8ClampedArray(total).fill(255);
   const initialAlpha = baseAlpha ?? fullAlpha;
   shapeMaskFrameCount.value = 0;
@@ -11480,8 +11533,9 @@ const runSelectedShapeMaskMode = async () => {
   await startShapeMaskSampling();
 };
 
-const openShapeMaskDialog = async () => {
+const openShapeMaskDialog = async (target: ShapeMaskTarget = 'image') => {
   if (!selectedShape.value || selectedShape.value.kind === 'group') return;
+  shapeMaskTarget.value = target;
   shapeMaskDialogVisible.value = true;
   await nextTick();
   await initializeShapeMaskSampling(true);
@@ -11491,6 +11545,22 @@ const saveShapeMaskAndClose = () => {
   const shape = selectedShape.value;
   const stats = shapeMaskStats.value;
   if (!shape || !stats || !shapeMaskAlphaDataUrl.value) return;
+  if (shapeMaskTarget.value === 'ocr') {
+    if (shapeMaskResetToEmpty.value || isFullShapeMaskAlpha(stats.baseAlpha)) {
+      shape.ocrMask = null;
+      shape.ocrMaskMode = 'inherit-envelope';
+      shapeMaskDialogVisible.value = false;
+      return;
+    }
+    shape.ocrMask = {
+      width: stats.width,
+      height: stats.height,
+      dataUrl: shapeMaskAlphaDataUrl.value,
+    };
+    shape.ocrMaskMode = 'custom';
+    shapeMaskDialogVisible.value = false;
+    return;
+  }
   if (shapeMaskResetToEmpty.value || isFullShapeMaskAlpha(stats.baseAlpha)) {
     shape.alphaMask = null;
     shape.maskEnabled = false;
@@ -11709,6 +11779,8 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     ocrEnabled: false,
     ocrText: '',
     ocrMatchMode: 'contains',
+    ocrMaskMode: 'inherit-envelope',
+    ocrMask: null,
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -12218,6 +12290,8 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   ocrEnabled: false,
   ocrText: '',
   ocrMatchMode: 'contains',
+  ocrMaskMode: 'inherit-envelope',
+  ocrMask: null,
   maskEnabled: false,
   alphaMask: null,
   toleranceEnabled: false,
@@ -12304,6 +12378,8 @@ const finishShapeDraft = (event: PointerEvent) => {
     ocrEnabled: false,
     ocrText: '',
     ocrMatchMode: 'contains',
+    ocrMaskMode: 'inherit-envelope',
+    ocrMask: null,
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -14609,7 +14685,6 @@ const finishShapeDrag = () => {
 }
 
 .asset-tree-node.has-diagnostic-suggestion {
-  background: #f0fff4;
   border-left-color: #52c41a;
 }
 
@@ -14987,6 +15062,10 @@ const finishShapeDrag = () => {
 
 .shape-ocr-mode-select {
   width: 72px;
+}
+
+.shape-ocr-mask-mode-select {
+  width: 94px;
 }
 
 .shape-jitter-config {

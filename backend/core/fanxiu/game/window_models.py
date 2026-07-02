@@ -244,6 +244,8 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     scan_box: Optional[FanxiuGameWindow2MatchBox] = None
     pixel_tolerance: int = Field(20, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
+    ocr_mask_mode: str = Field("inherit-envelope", pattern="^(inherit-envelope|custom|off|raw-alpha)$")
+    ocr_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
     tolerance_max_data_url: Optional[str] = None
     title: Optional[str] = None
@@ -277,6 +279,8 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     scan_box: Optional[FanxiuGameWindow2MatchBox] = None
     pixel_tolerance: int = Field(20, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
+    ocr_mask_mode: str = Field("inherit-envelope", pattern="^(inherit-envelope|custom|off|raw-alpha)$")
+    ocr_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
     tolerance_max_data_url: Optional[str] = None
     title: Optional[str] = None

@@ -24,7 +24,6 @@ import {
   type RuntimeJobCatalogItem,
   type RuntimeStatusResponse,
 } from '@/api/runtime';
-import Sortable from 'sortablejs';
 
 const RuntimeSystemMetricsChart = defineAsyncComponent(
   () => import('@/components/RuntimeSystemMetricsChart.vue')
@@ -602,7 +601,7 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     } finally {
         taskFetchInFlight.delete(deviceId);
         if (!isPolling) loading.value = false;
-        if (!isPolling) nextTick(initRuntimeSortables);
+        if (!isPolling) nextTick(scheduleRuntimeSortableInit);
     }
 };
 
@@ -1595,13 +1594,38 @@ const getRuntimeRowClassName = ({ row }: { row: RuntimeItem }) => (
 
 const serviceTableRef = ref<any>(null);
 const tabsRef = ref<any>(null);
-let serviceSortableInstance: Sortable | null = null;
-let tabsSortableInstance: Sortable | null = null;
+let sortableModulePromise: Promise<typeof import('sortablejs')> | null = null;
+let serviceSortableInstance: import('sortablejs').default | null = null;
+let tabsSortableInstance: import('sortablejs').default | null = null;
+let runtimeSortableInitHandle: number | null = null;
+let deviceSortableInitHandle: number | null = null;
+let runtimeSortableInitVersion = 0;
+let deviceSortableInitVersion = 0;
+
+const loadSortable = async () => {
+  sortableModulePromise ||= import('sortablejs');
+  return (await sortableModulePromise).default;
+};
+
+const clearDeferredInitHandle = (handle: number | null) => {
+  if (handle === null || typeof window === 'undefined') return;
+  window.clearTimeout(handle);
+};
+
+const scheduleDeferredInit = (assignHandle: (handle: number | null) => void, run: () => void) => {
+  if (typeof window === 'undefined') return;
+  const execute = () => {
+    assignHandle(null);
+    run();
+  };
+  assignHandle(window.setTimeout(execute, 900));
+};
 
 const createRuntimeSortable = (
   tableComponent: any,
   items: RuntimeItem[],
-  assignInstance: (instance: Sortable | null) => void
+  assignInstance: (instance: import('sortablejs').default | null) => void,
+  initVersion: number
 ) => {
   if (!tableComponent) {
     assignInstance(null);
@@ -1618,7 +1642,11 @@ const createRuntimeSortable = (
     return;
   }
 
-  const instance = Sortable.create(el, {
+  void loadSortable().then((Sortable) => {
+    if (initVersion !== runtimeSortableInitVersion || !el.isConnected) {
+      return;
+    }
+    const instance = Sortable.create(el, {
     handle: '.sortable-order-handle',
     animation: 150,
     filter: '.is-not-sortable',
@@ -1644,20 +1672,22 @@ const createRuntimeSortable = (
       }
     }
   });
-  assignInstance(instance);
+    assignInstance(instance);
+  });
 };
 
 const initRuntimeSortables = () => {
+  const initVersion = ++runtimeSortableInitVersion;
   if (serviceSortableInstance) serviceSortableInstance.destroy();
   serviceSortableInstance = null;
 
   createRuntimeSortable(serviceTableRef.value, serviceItems.value, instance => {
     serviceSortableInstance = instance;
-  });
+  }, initVersion);
 };
 
 const initSortable = () => {
-  initRuntimeSortables();
+  scheduleRuntimeSortableInit();
 };
 
 const initDeviceSortable = () => {
@@ -1666,36 +1696,56 @@ const initDeviceSortable = () => {
   
   const navEl = tabsRef.value.$el.querySelector('.el-tabs__nav');
   if (!navEl) return;
-  
-  tabsSortableInstance = Sortable.create(navEl, {
-    animation: 150,
-    filter: '.is-disabled', // The Add Device tab is disabled
-    onMove: (evt: any) => {
-        // Prevent dragging past the last element (Add Device)
-        // If the target element is disabled, don't allow dropping there
-        if (evt.related.classList.contains('is-disabled')) return false;
-        return true;
-    },
-    onEnd: async ({ newIndex, oldIndex }: any) => {
-      if (newIndex === oldIndex) return;
-      
-      const currList = [...taskStore.devices];
-      if (oldIndex >= currList.length || newIndex >= currList.length) return;
-      
-      const targetDev = currList.splice(oldIndex, 1)[0];
-      currList.splice(newIndex, 0, targetDev);
-      
-      taskStore.devices = currList;
-      
-      try {
-          await taskStore.reorderDevices(currList.map(d => d.id));
-          ElMessage.success('设备顺序已更新');
-      } catch (err) {
-          ElMessage.error('设备排序保存失败');
-          fetchDevices();
-      }
+
+  const initVersion = ++deviceSortableInitVersion;
+  void loadSortable().then((Sortable) => {
+    if (initVersion !== deviceSortableInitVersion || !navEl.isConnected) {
+      return;
     }
+    tabsSortableInstance = Sortable.create(navEl, {
+      animation: 150,
+      filter: '.is-disabled', // The Add Device tab is disabled
+      onMove: (evt: any) => {
+          // Prevent dragging past the last element (Add Device)
+          // If the target element is disabled, don't allow dropping there
+          if (evt.related.classList.contains('is-disabled')) return false;
+          return true;
+      },
+      onEnd: async ({ newIndex, oldIndex }: any) => {
+        if (newIndex === oldIndex) return;
+        
+        const currList = [...taskStore.devices];
+        if (oldIndex >= currList.length || newIndex >= currList.length) return;
+        
+        const targetDev = currList.splice(oldIndex, 1)[0];
+        currList.splice(newIndex, 0, targetDev);
+        
+        taskStore.devices = currList;
+        
+        try {
+            await taskStore.reorderDevices(currList.map(d => d.id));
+            ElMessage.success('设备顺序已更新');
+        } catch (err) {
+            ElMessage.error('设备排序保存失败');
+            fetchDevices();
+        }
+      }
+    });
   });
+};
+
+const scheduleRuntimeSortableInit = () => {
+  clearDeferredInitHandle(runtimeSortableInitHandle);
+  scheduleDeferredInit(handle => {
+    runtimeSortableInitHandle = handle;
+  }, initRuntimeSortables);
+};
+
+const scheduleDeviceSortableInit = () => {
+  clearDeferredInitHandle(deviceSortableInitHandle);
+  scheduleDeferredInit(handle => {
+    deviceSortableInitHandle = handle;
+  }, initDeviceSortable);
 };
 
 onMounted(async () => {
@@ -1719,7 +1769,7 @@ onMounted(async () => {
   nextTick(() => {
     initSystemMonitorObserver();
     initSortable();
-    initDeviceSortable();
+    scheduleDeviceSortableInit();
   });
   
 });
@@ -1730,6 +1780,8 @@ onUnmounted(() => {
   stopTaskPolling();
   systemMonitorObserver?.disconnect();
   systemMonitorObserver = null;
+  clearDeferredInitHandle(runtimeSortableInitHandle);
+  clearDeferredInitHandle(deviceSortableInitHandle);
   if (serviceSortableInstance) serviceSortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
 });

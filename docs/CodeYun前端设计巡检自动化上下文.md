@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "891fb26355df59b6de0b7c0fe5146b76acc7cae6"
-last_audited_at: "2026-07-02T00:35:12.3260195+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-891fb263-closeout/report.md"
-last_frontend_commit_summary: "完整关闭 b72baa1b..891fb263：数据标注识别层收回无效编辑动作，并把结构诊断退回节点级提示。"
-audited_commit_count: 59
+last_audited_commit: "e1d79d0cf571e2dded7942e5900639ec0a05ce5e"
+last_audited_at: "2026-07-02T06:32:40.8452721+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-e1d79d0c/report.md"
+last_frontend_commit_summary: "完整关闭 891fb263..e1d79d0c：数据标注把 suggestion 级结构提示从常驻整行底退回边缘标记。"
+audited_commit_count: 60
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-02
+
+- 完整范围：`891fb26355df59b6de0b7c0fe5146b76acc7cae6..e1d79d0cf571e2dded7942e5900639ec0a05ce5e`
+- 覆盖提交：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e`
+- 前端入口提交：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e`
+- 入口如何牵引到旧问题：本次提交把 `fanxiu/data-annotation` 的 `frame_structure.diagnostics` 回挂到资产树节点展示，并同步触达 `notes/list` 与 `notes/star`。真实页面复核后，被牵出的旧问题仍在同一资产树链路上：`suggestion` 级结构提示被做成常驻绿色整行底，和 tooltip 文本、`场景归纳` 确认消息在重复表达同一事实，导致一级浏览层级被次级建议抢占。
+- 本轮减法：不新增功能、入口、状态或说明区，只把 [`frontend/src/standard/fanxiu/data-annotation/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/fanxiu/data-annotation/page.vue) 里的 `suggestion` 样式从整行绿色底退回为左侧边缘标记。`error/warning` 级提醒、tooltip 诊断文本和 `场景归纳` 操作都保留，删除的是“次级建议常驻染色整行”这个重复视觉层级。
+- 信息量保持：scene/sub-scene 体检、结构提示、节点 tooltip 和场景归纳写入能力都保留；减少的是 suggestion 事实在一级资产树里的重复强调，不是减少诊断能力。
+- 概念图/线框图：报告中的 Mermaid 把 `资产树节点 -> 一级判断 -> 场景归纳 -> 附带结构提示` 拆层，明确结构提示应退回 tooltip / 边缘标记，而不是升级成一级常驻色块。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-e1d79d0c/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。`fanxiu/data-annotation` 已完成 `1600x1000`、`1366x900`、`820x1180` 三视口复拍；`data-annotation-evidence.json` 记录三视口均满足 `bodyOverflowX = 0`、`actionWraps = false`，且 `has-diagnostic-suggestion` 的 `backgroundColor = transparent`、`borderLeftColor = rgb(82, 196, 26)`。`notes/list` 与 `notes/star` 也已做真实页面复核，未发现新增交互回归。
+- 根因分层：本轮自动修复属于同一页面内的表现层 + 前端状态投影问题，不涉及新的后端数据投影或业务建模债务；无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念建模、低风险减法修复、三视口真实页面复拍和前端验证，因此把 `last_audited_commit` 推进到 `e1d79d0cf571e2dded7942e5900639ec0a05ce5e`，并保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`b72baa1b93641e86bd98961391f459d27d0c8176..891fb26355df59b6de0b7c0fe5146b76acc7cae6`
 - 覆盖提交：`891fb26355df59b6de0b7c0fe5146b76acc7cae6`

@@ -13,7 +13,7 @@ from backend.core.attendance.service import (
     update_attendance_service_extra_config,
 )
 from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
-from backend.models import AttendanceOrderRefundHistory, User, UserDevice
+from backend.models import AttendanceOrderRefundHistory, SheetDocument, User, UserDevice, WorkbookDocument, WorkbookSheetLink
 
 
 def _create_superuser(session):
@@ -153,6 +153,154 @@ def test_execute_attendance_order_uses_global_scan_reminder_users(session, monke
         "login_users": ["考勤后台", "文件传输助手"],
         "lookup_mode": "db_only",
     }
+
+
+def test_check_attendance_sheet_refunded_amounts_uses_order_execute_entry(session, monkeypatch):
+    user = _create_superuser(session)
+    entry = _create_local_device(session, user_id=user.id)
+    config = get_or_create_attendance_service_config(session)
+    config.execution_device_entry_id = entry.entry_id
+    session.add(config)
+
+    workbook = WorkbookDocument(id="wb-refund-check", numeric_id=9101, title="第48届觉观")
+    attendance_sheet = SheetDocument(
+        id="sheet-attendance-refund-check",
+        numeric_id=9102,
+        scope="notes",
+        owner_type="course",
+        owner_key="jueguan-48",
+        sheet_key="attendance",
+        title="考勤表",
+        document_json={
+            "columns": ["学号", "姓名", "已返款", "订单金额"],
+            "rows": [["1_01", "甲", "14", "499"], ["1_02", "乙", "0", "499"]],
+            "data_start_row": 3,
+        },
+    )
+    registration_sheet = SheetDocument(
+        id="sheet-registration-refund-check",
+        numeric_id=9103,
+        scope="notes",
+        owner_type="course",
+        owner_key="jueguan-48",
+        sheet_key="registration",
+        title="报名表",
+        document_json={
+            "columns": ["序号", "姓名", "微信支付订单号", "商户订单号", "订单金额"],
+            "rows": [
+                ["1_01", "甲", "4200001", "MA202607010001", "499"],
+                ["1_02", "乙", "4200002", "MA202607010002", "499"],
+            ],
+        },
+    )
+    session.add(workbook)
+    session.add(attendance_sheet)
+    session.add(registration_sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=attendance_sheet.id, order_index=5))
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=registration_sheet.id, order_index=10))
+    session.commit()
+
+    captured = {}
+
+    def fake_execute(entry_snapshot, execution_payload):
+        captured["entry_snapshot"] = entry_snapshot
+        captured["execution_payload"] = execution_payload
+        return {
+            "action": "inspect",
+            "rows": [
+                {"商户订单号": "MA202607010001", "订单金额": 499, "已返款": 14},
+                {"商户订单号": "MA202607010002", "订单金额": 499, "已返款": 19},
+            ],
+            "summary": {"processed_count": 2},
+        }
+
+    monkeypatch.setattr(attendance, "_load_submitted_refund_amounts_from_csv", lambda: {})
+    monkeypatch.setattr(attendance, "_execute_order_on_entry", fake_execute)
+
+    result = attendance.check_attendance_sheet_refunded_amounts(
+        9102,
+        attendance.AttendanceSheetRefundedCheckRequest(workbook_id=9101),
+        session=session,
+        current_user=user,
+    )
+
+    assert captured["entry_snapshot"]["entry_id"] == entry.entry_id
+    assert captured["execution_payload"]["action"] == "inspect"
+    assert captured["execution_payload"]["rows"][0]["商户订单号"] == "MA202607010001"
+    assert result["summary"]["matched_count"] == 1
+    assert result["summary"]["mismatch_count"] == 1
+    assert result["rows"][0]["status"] == "matched"
+    assert result["rows"][1]["status"] == "mismatch"
+    assert result["rows"][1]["payment_refunded_amount"] == "19"
+
+
+def test_check_attendance_sheet_refunded_amounts_prefers_submitted_csv_history(session, monkeypatch):
+    user = _create_superuser(session)
+    entry = _create_local_device(session, user_id=user.id)
+    config = get_or_create_attendance_service_config(session)
+    config.execution_device_entry_id = entry.entry_id
+    session.add(config)
+
+    workbook = WorkbookDocument(id="wb-refund-check-csv", numeric_id=9111, title="第48届觉观")
+    attendance_sheet = SheetDocument(
+        id="sheet-attendance-refund-check-csv",
+        numeric_id=9112,
+        scope="notes",
+        owner_type="course",
+        owner_key="jueguan-48",
+        sheet_key="attendance",
+        title="考勤表",
+        document_json={
+            "columns": ["学号", "姓名", "已返款", "订单金额"],
+            "rows": [["1_01", "甲", "14", "499"], ["1_02", "乙", "0", "499"]],
+            "data_start_row": 3,
+        },
+    )
+    registration_sheet = SheetDocument(
+        id="sheet-registration-refund-check-csv",
+        numeric_id=9113,
+        scope="notes",
+        owner_type="course",
+        owner_key="jueguan-48",
+        sheet_key="registration",
+        title="报名表",
+        document_json={
+            "columns": ["序号", "姓名", "微信支付订单号", "商户订单号", "订单金额"],
+            "rows": [
+                ["1_01", "甲", "4200001", "MA202607010001", "499"],
+                ["1_02", "乙", "4200002", "MA202607010002", "499"],
+            ],
+        },
+    )
+    session.add(workbook)
+    session.add(attendance_sheet)
+    session.add(registration_sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=attendance_sheet.id, order_index=5))
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=registration_sheet.id, order_index=10))
+    session.commit()
+
+    monkeypatch.setattr(
+        attendance,
+        "_load_submitted_refund_amounts_from_csv",
+        lambda: {"MA202607010001": 14.0},
+    )
+
+    def fail_execute(*_args, **_kwargs):
+        raise AssertionError("submitted refund CSV is the primary history source")
+
+    monkeypatch.setattr(attendance, "_execute_order_on_entry", fail_execute)
+
+    result = attendance.check_attendance_sheet_refunded_amounts(
+        9112,
+        attendance.AttendanceSheetRefundedCheckRequest(workbook_id=9111),
+        session=session,
+        current_user=user,
+    )
+
+    assert result["summary"]["matched_count"] == 2
+    assert result["summary"]["mismatch_count"] == 0
+    assert result["rows"][0]["payment_refunded_amount"] == "14"
+    assert result["rows"][1]["payment_refunded_amount"] == "0"
 
 
 def test_execute_attendance_order_includes_configured_operation_password_for_refund(session, monkeypatch):

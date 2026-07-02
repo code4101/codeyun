@@ -101,9 +101,7 @@
 
             <el-table-column prop="note_form" label="形态" width="88" sortable>
               <template #default="{ row }">
-                <span class="form-badge-wrap">
-                  <NoteFormBadge :form="row.note_form" :show-label="true" />
-                </span>
+                <span class="form-badge-text">{{ row._ui.noteFormLabel }}</span>
               </template>
             </el-table-column>
 
@@ -135,9 +133,12 @@
 
             <el-table-column prop="private_level" label="私密" width="88" sortable>
               <template #default="{ row }">
-                <el-tag :type="row.private_level > 0 ? 'danger' : 'info'" size="small">
-                  {{ row.private_level > 0 ? `开(${row.private_level})` : '关' }}
-                </el-tag>
+                <span
+                  class="private-level-badge"
+                  :class="row._ui.privateLevelClass"
+                >
+                  {{ row._ui.privateLevelLabel }}
+                </span>
               </template>
             </el-table-column>
 
@@ -198,9 +199,8 @@ import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
-import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
-import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
+import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
@@ -272,6 +272,7 @@ const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
       titleStyle: getTitleStyle(note),
       typeTagStyle: getTypeTagStyle(note),
       categoryLabel: getCategoryLabel(note.primary_category),
+      noteFormLabel: getNoteFormConfig(note.note_form).label,
       lifecycleStageLabel,
       statusStyle,
       useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
@@ -285,6 +286,8 @@ const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
       },
       startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
       formattedStartAt: formatDate(note.start_at),
+      privateLevelLabel: note.private_level > 0 ? `开(${note.private_level})` : '关',
+      privateLevelClass: note.private_level > 0 ? 'is-danger' : 'is-info',
     }
   };
 }));
@@ -730,9 +733,34 @@ watch(isActive, async (active) => {
   /* No badge styling, just text */
 }
 
-.form-badge-wrap {
+.form-badge-text {
   display: inline-flex;
   align-items: center;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.private-level-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.private-level-badge.is-info {
+  color: #606266;
+  background: #f4f4f5;
+}
+
+.private-level-badge.is-danger {
+  color: #f56c6c;
+  background: #fef0f0;
 }
 
 .start-at-badge {

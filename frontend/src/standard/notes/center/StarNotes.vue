@@ -42,6 +42,7 @@
             :edges="edges"
             :node-types="nodeTypes"
             :edge-types="edgeTypes"
+            :only-render-visible-elements="shouldOnlyRenderVisibleElements"
             class="vue-flow-basic"
             :default-viewport="{ zoom: 1 }"
             :min-zoom="0.2"
@@ -219,6 +220,11 @@ let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredInitialRelayoutTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
 const isActive = computed(() => props.active !== false);
+const shouldOnlyRenderVisibleElements = computed(() => (
+  isGlobalGraph.value
+  && edges.value.length === 0
+  && nodes.value.length > 120
+));
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
   session.value?.viewState.dataProgram ?? createDefaultRecentMonthProgram('start_at')
 );

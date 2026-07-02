@@ -336,6 +336,8 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
                 scan_box=payload.get("scan_box"),
                 pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 20),
                 alpha_mask_data_url=payload.get("alpha_mask_data_url"),
+                ocr_mask_mode=payload.get("ocr_mask_mode") or "inherit-envelope",
+                ocr_mask_data_url=payload.get("ocr_mask_data_url"),
                 tolerance_min_data_url=payload.get("tolerance_min_data_url"),
                 tolerance_max_data_url=payload.get("tolerance_max_data_url"),
                 title=title,
