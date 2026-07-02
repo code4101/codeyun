@@ -1,7 +1,18 @@
 <template>
   <div class="list-notes-layout">
     <div class="filter-section">
+      <div v-if="!backendFilterExpanded" class="front-filter-collapsed">
+        <div class="front-filter-collapsed__meta">
+          <div class="front-filter-collapsed__title">后端筛选</div>
+          <div class="front-filter-collapsed__summary">{{ dataProgramSummary }}</div>
+        </div>
+        <div class="collapsed-filter-actions">
+          <el-button size="small" @click="expandBackendFilter">编辑规则</el-button>
+          <el-button size="small" type="primary" :loading="loading" @click="applyDataProgram">执行</el-button>
+        </div>
+      </div>
       <NoteProgramBar
+        v-else
         v-model="dataProgram"
         title="后端筛选"
         help-text="决定从后端加载哪些节点，点击“执行”后生效并保存；规则按顺序执行，后面的添加/移除/筛选可以覆盖前面的结果。"
@@ -198,7 +209,6 @@ import {
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import NoteSplitView from '@/components/NoteSplitView.vue';
-import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
@@ -207,6 +217,7 @@ import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 import { getStableBadgeStyle } from '@/utils/stableVisualColor';
 
 const noteStore = useNoteStore();
+const NoteProgramBar = defineAsyncComponent(() => import('@/components/NoteProgramBar.vue'));
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/BatchNoteEditDialog.vue'));
 const props = defineProps<{
@@ -236,6 +247,7 @@ const dataProgram = ref(normalizeNoteProgramChannel(
 const viewProgram = ref(normalizeNoteProgramChannel(
   getViewProgram()
 ));
+const backendFilterExpanded = ref(false);
 const frontFilterExpanded = ref(!isIncludeAllProgram(getViewProgram()));
 const currentNoteId = ref('');
 const loading = ref(false);
@@ -252,6 +264,20 @@ const frontFilterSummary = computed(() => (
     ? '默认显示当前已加载的全部节点。'
     : `已配置 ${normalizeNoteProgramChannel(viewProgram.value).rules.length} 条规则。`
 ));
+const dataProgramSummary = computed(() => {
+  const normalized = normalizeNoteProgramChannel(dataProgram.value);
+  const rules = normalized.rules.length;
+  if (rules === 0) {
+    return normalized.default ? '当前默认加载全部节点。' : '当前默认不加载节点。';
+  }
+
+  const defaultRecentMonth = JSON.stringify(normalized) === JSON.stringify(createDefaultRecentMonthProgram('start_at'));
+  if (defaultRecentMonth) {
+    return '当前默认加载最近 1 个月到未来 1 个月的节点。';
+  }
+
+  return `已配置 ${rules} 条规则；点击“编辑规则”可调整加载范围。`;
+});
 
 // Computed
 const filteredNotes = computed(() => {
@@ -263,33 +289,33 @@ const visiblePageNotes = computed(() => {
   return filteredNotes.value.slice(start, start + pageSize.value);
 });
 const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
-  const statusStyle = getStatusBadgeStyle(note);
-  const ratio = statusStyle.partialFillRatio;
-  const lifecycleStageLabel = getLifecycleStageLabel(note.lifecycle_stage);
-  return {
-    ...note,
-    _ui: {
-      titleStyle: getTitleStyle(note),
-      typeTagStyle: getTypeTagStyle(note),
-      categoryLabel: getCategoryLabel(note.primary_category),
-      noteFormLabel: getNoteFormConfig(note.note_form).label,
-      lifecycleStageLabel,
-      statusStyle,
-      useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
-      statusFillLayerStyle: {
-        color: statusStyle.fillTextColor,
-        clipPath: `inset(0 ${(100 - (ratio ?? 0) * 100).toFixed(2)}% 0 0)`
-      },
-      statusEmptyLayerStyle: {
-        color: statusStyle.emptyTextColor,
-        clipPath: `inset(0 0 0 ${((ratio ?? 0) * 100).toFixed(2)}%)`
-      },
-      startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
-      formattedStartAt: formatDate(note.start_at),
-      privateLevelLabel: note.private_level > 0 ? `开(${note.private_level})` : '关',
-      privateLevelClass: note.private_level > 0 ? 'is-danger' : 'is-info',
-    }
-  };
+    const statusStyle = getStatusBadgeStyle(note);
+    const ratio = statusStyle.partialFillRatio;
+    const lifecycleStageLabel = getLifecycleStageLabel(note.lifecycle_stage);
+    return {
+      ...note,
+      _ui: {
+        titleStyle: getTitleStyle(note),
+        typeTagStyle: getTypeTagStyle(note),
+        categoryLabel: getCategoryLabel(note.primary_category),
+        noteFormLabel: getNoteFormConfig(note.note_form).label,
+        lifecycleStageLabel,
+        statusStyle,
+        useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
+        statusFillLayerStyle: {
+          color: statusStyle.fillTextColor,
+          clipPath: `inset(0 ${(100 - (ratio ?? 0) * 100).toFixed(2)}% 0 0)`
+        },
+        statusEmptyLayerStyle: {
+          color: statusStyle.emptyTextColor,
+          clipPath: `inset(0 0 0 ${((ratio ?? 0) * 100).toFixed(2)}%)`
+        },
+        startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
+        formattedStartAt: formatDate(note.start_at),
+        privateLevelLabel: note.private_level > 0 ? `开(${note.private_level})` : '关',
+        privateLevelClass: note.private_level > 0 ? 'is-danger' : 'is-info',
+      }
+    };
 }));
 const selectedCount = computed(() => selectedNoteIds.value.length);
 const allVisibleSelected = computed(() => (
@@ -336,6 +362,10 @@ const resetDataProgram = () => {
 
 const expandFrontFilter = () => {
   frontFilterExpanded.value = true;
+};
+
+const expandBackendFilter = () => {
+  backendFilterExpanded.value = true;
 };
 
 const applyViewProgram = () => {
@@ -631,7 +661,6 @@ watch(isActive, async (active) => {
   border-radius: 10px;
   background: linear-gradient(180deg, #fbfcfe 0%, #f5f7fa 100%);
 }
-
 .front-filter-collapsed__meta {
   display: flex;
   flex-direction: column;
@@ -793,5 +822,10 @@ watch(isActive, async (active) => {
 
 .node-badge-layer {
   grid-area: 1 / 1;
+}
+.collapsed-filter-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 </style>

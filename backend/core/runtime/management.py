@@ -16,7 +16,7 @@ from pyxllib.prog.schedule_policy import schedule_policy_label
 from backend.api.task_manager import task_manager
 from backend.db import engine
 from backend.core.runtime.background_task_queue import background_task_queue
-from backend.core.devices.device import device_manager, get_device_id
+from backend.core.devices.device import TaskStatus, device_manager, get_device_id
 from backend.core.runtime.codeyun_watchdog import (
     CODEYUN_WATCHDOG_SERVICE_KEY,
     CodeYunWatchdogError,
@@ -1521,12 +1521,17 @@ def _build_game_window_service_log_lines(item: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _serialize_command_runtime_item(task: TaskModel, queue: dict[str, Any] | None = None) -> dict[str, Any]:
+def _serialize_command_runtime_item(
+    task: TaskModel,
+    queue: dict[str, Any] | None = None,
+    *,
+    status: TaskStatus | None = None,
+) -> dict[str, Any]:
     kind = "job" if _is_command_job(task) else "service"
     group_id, group_title = _command_group_for(task, kind)
     policy = resolve_command_runtime_policy(task)
-    status = task_manager.get_task_status(task.id)
-    status_payload = _model_dump(status)
+    runtime_status = status or task_manager.get_task_status(task.id)
+    status_payload = _model_dump(runtime_status)
     active = bool(status_payload.get("running"))
     next_run_at = _command_next_run_at(task)
     if next_run_at:
@@ -1672,6 +1677,7 @@ def _collect_builtin_services() -> dict[str, Any]:
 def build_runtime_status(session: Session, device_id: str | None = None) -> dict[str, Any]:
     target_device_id = device_id or get_device_id()
     local_device_id = get_device_id()
+    runtime_device = device_manager.get_device(target_device_id)
 
     if target_device_id == local_device_id:
         task_manager.scan_running_tasks()
@@ -1691,7 +1697,11 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
     builtin_services = _collect_builtin_services() if target_device_id == local_device_id else {"items": []}
     queue = builtin["queue"] if target_device_id == local_device_id else None
     command_items = [
-        _serialize_command_runtime_item(task, queue=queue)
+        _serialize_command_runtime_item(
+            task,
+            queue=queue,
+            status=runtime_device.get_task_status(task.id) if runtime_device else None,
+        )
         for task in session.exec(stmt).all()
         if not (target_device_id == local_device_id and is_legacy_codeyun_command_task(task))
     ]
@@ -1702,10 +1712,9 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
     for item in items:
         group_by_id[item["group_id"]] = _runtime_group(item["kind"], item["group_id"], item["group_title"])
 
-    device = device_manager.get_device(target_device_id)
     return {
         "device_id": target_device_id,
-        "device": device.to_dict() if device else {"id": target_device_id, "name": target_device_id},
+        "device": runtime_device.to_dict() if runtime_device else {"id": target_device_id, "name": target_device_id},
         "groups": sorted(group_by_id.values(), key=lambda group: (group["kind"], group["title"])),
         "items": items,
         "queue": runtime_queue,
@@ -1741,7 +1750,12 @@ def get_runtime_item_logs(
         if task is None or (device_id and task.device_id != device_id):
             raise HTTPException(status_code=404, detail="运行单元不存在")
         queue = background_task_queue.snapshot()
-        item = _serialize_command_runtime_item(task, queue=queue)
+        runtime_device = device_manager.get_device(task.device_id)
+        item = _serialize_command_runtime_item(
+            task,
+            queue=queue,
+            status=runtime_device.get_task_status(task.id) if runtime_device else None,
+        )
         queue_name = _runtime_queue_name_for_item(item)
         records = _queue_records_for_name(_enrich_runtime_queue(queue, [item]), queue_name, limit)
         return {
