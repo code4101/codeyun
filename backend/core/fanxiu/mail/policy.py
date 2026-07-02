@@ -106,17 +106,10 @@ def fanxiu_mail_desired_status_for_record(record: Any | None) -> str:
         return status
     if bool(record.locked):
         return "锁定"
-    if fanxiu_mail_rewards_unresolved(record.payload):
-        return "锁定"
-    action_policy = str(getattr(record, "action_policy", "") or "").strip()
     legacy_status = status.lower()
-    if legacy_status in {"deleted", "claimed", "missing_from_list", "claim_requested", "delete_requested"}:
-        return "可领"
-    if action_policy in {"claim", "delete"}:
-        return "可领"
     if legacy_status == "seen":
         return "留存"
-    return fanxiu_mail_desired_status_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
+    return ""
 
 
 def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
@@ -125,16 +118,13 @@ def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
     status = str(record.status or "").strip().lower()
     if status in FINAL_MAIL_STATUSES or status in REQUESTED_MAIL_STATUSES:
         return ""
-    action_policy = str(getattr(record, "action_policy", "") or "").strip()
-    if action_policy in {"claim", "delete"}:
-        return action_policy
-    return "claim" if fanxiu_mail_desired_status_for_record(record) == "可领" else ""
+    return "claim" if str(record.status or "").strip() == "可领" else ""
 
 
 def fanxiu_mail_visible_group_action_policy(records: list[Any]) -> str:
     if not records:
         return ""
     for record in records:
-        if fanxiu_mail_desired_status_for_record(record) != "可领":
+        if str(getattr(record, "status", "") or "").strip() != "可领":
             return ""
     return "claim"

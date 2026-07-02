@@ -1015,6 +1015,8 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
 
     def identify_scene_number(_ctx, _frame, keys=None, *_args, **_kwargs):
+        if keys and 121 in keys:
+            return (121, 95.0)
         if keys and 122 in keys:
             return (122, 96.0)
         return (121, 95.0)
@@ -1393,7 +1395,7 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
         tick_seconds=0.01,
     )
 
-    assert result == "success"
+    assert result["result"] == "skipped"
     assert actions == [
         ("click", "邮件", "一键删除"),
         ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),

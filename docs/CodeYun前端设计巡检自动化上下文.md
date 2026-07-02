@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "72a3d80aaabb730cf6277293a8487067dcb705ca"
-last_audited_at: "2026-07-02T16:33:27.9073159+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-72a3d80a-closeout/report.md"
-last_frontend_commit_summary: "完成 e1d79d0c..72a3d80a：关闭 NoteSheetWorkspace 已返款入口 pending，并确认 AI 工具菜单已移除 Notebook/AGENTS。"
-audited_commit_count: 62
+last_audited_commit: "01cc40d747499fd9a9e44681a0ebcec9e815ee7c"
+last_audited_at: "2026-07-02T18:32:17.9113534+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-01cc40d7/report.md"
+last_frontend_commit_summary: "完成 72a3d80a..01cc40d7：确认设备代理整块工作台会把 cluster/runtime 从状态表重新膨胀，当前工作树已在同方向回收。"
+audited_commit_count: 63
 pending_or_skipped_ranges: []
 ```
 
@@ -259,6 +259,18 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-02
+
+- 完整范围：`72a3d80aaabb730cf6277293a8487067dcb705ca..01cc40d747499fd9a9e44681a0ebcec9e815ee7c`
+- 覆盖提交：`01cc40d747499fd9a9e44681a0ebcec9e815ee7c`
+- 前端入口提交：`01cc40d747499fd9a9e44681a0ebcec9e815ee7c`
+- 入口如何牵引到旧问题：本次提交把 `device-agent` 接口、`aiAppStore` 业务项和 `cluster/tasks(page.vue)` 内的整块设备代理工作台一起推到前台，直接撞上这条页面过去几轮刚刚收敛出来的核心边界：`cluster/runtime` 首页应该是“按设备看当前运行事实，再决定下一步”的状态表，而不是把跨设备请求、模型绑定、上下文输入和会话历史重新塞回一级页面。因此本轮不是无关扩散，而是沿着同一条“设备 -> 服务/作业 -> 队列 -> 资源监控”的闭环继续做减法审查。
+- 本轮减法：不在冲突中的源码上继续自动改动；通过完整 diff、概念图和真实页面复拍确认 `01cc40d7` 提交里的 `设备代理` 区会把首页重新膨胀成混合工作台，而当前工作树未提交改动已经把这块常驻 UI 抽掉，页面重新回到 `服务 / 作业 / 队列记录 / 资源监控` 主闭环。换句话说，本轮减掉的是“运行首页常驻设备代理工作台”这个错误层级，不是减掉设备代理能力本身。
+- 信息量保持：设备切换、服务/作业状态、队列记录、资源监控、跨设备代理能力和 AI 模型配置都仍可存在；减少的是把“配置 + 请求 + 结果 + 历史”四类语义同时塞进运行首页的重复概念。`device-agent` 模型绑定也不该同时出现在 `AI配置` 和 `运行管理` 两个长期入口里。
+- 概念图/线框图：报告里的 Mermaid 明确区分 `运行状态表` 与 `设备代理会话` 两类对象；ASCII 线框图直接对比了“正确首页”与 `01cc40d7` 提交后的膨胀首页。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-02-frontend-design-01cc40d7/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，用 in-app Browser 打开 `http://127.0.0.1:5173/cluster/runtime`，补拍宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图，并写出 `evidence.json`。真实页面因当前工作树已有未提交回收，截图看到的是简化后的在制状态，但 `evidence.json` 已证明页面当前只保留 `服务 / 作业 / 资源监控` 区块，`hasDeviceAgentText = false`、`hasDeviceAgentApiLabel = false`，同方向减法成立。由于本轮未改源码，未运行 `npm run typecheck --prefix frontend` / `npm run build --prefix frontend`。
+- 根因分层：主因是前端状态投影问题，次因是页面对象边界轻度失守；还不是后端数据投影债务。当前问题更接近“把错误对象放进了错误首页”，不是接口不可用。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图/线框图和真实多视口取证。由于工作区里同一文件已经存在用户未提交的回收改动，为避免覆盖现场，本轮只生成报告并更新记忆，不直接改源码；但这不影响把 `last_audited_commit` 推进到 `01cc40d747499fd9a9e44681a0ebcec9e815ee7c`，`pending_or_skipped_ranges` 保持为空。
 
 - 完整范围：`e1d79d0cf571e2dded7942e5900639ec0a05ce5e..72a3d80aaabb730cf6277293a8487067dcb705ca`
 - 覆盖提交：`78774fb2ed3ccfd4a59b916bf1e7acf0bbdcb820`、`72a3d80aaabb730cf6277293a8487067dcb705ca`

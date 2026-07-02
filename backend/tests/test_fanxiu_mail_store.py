@@ -296,7 +296,7 @@ def test_packet_mail_seen_does_not_downgrade_requested_action():
     assert row.status == "claim_requested"
 
 
-def test_visible_adjacency_alignment_marks_desired_records_claimable():
+def test_visible_adjacency_alignment_does_not_change_user_status():
     session = _session()
     for mail_id, title, time_text, status in [
         ("newer", "上边界", "2026年06月21日22:15", "留存"),
@@ -338,13 +338,18 @@ def test_visible_adjacency_alignment_marks_desired_records_claimable():
     session.commit()
 
     rows = {row.mail_id: row for row in session.exec(select(FanxiuMailRecord)).all()}
-    assert result["matched"] == 3
-    assert result["updated"] == 3
-    for mail_id in ("protected-middle", "locked-middle", "seen-middle"):
-        assert rows[mail_id].status == "可领"
-        assert rows[mail_id].locked is False
-        assert rows[mail_id].action_policy == "claim"
-        assert rows[mail_id].evidence["visible_adjacency_claimable_alignment"]["source"] == "pytest"
+    assert result["matched"] == 1
+    assert result["updated"] == 0
+    assert rows["seen-middle"].status == "seen"
+    assert rows["seen-middle"].locked is False
+    assert rows["seen-middle"].action_policy == ""
+    assert "visible_adjacency_claimable_alignment" not in (rows["seen-middle"].evidence or {})
+    assert rows["protected-middle"].status == "留存"
+    assert rows["protected-middle"].locked is False
+    assert rows["protected-middle"].action_policy == ""
+    assert rows["locked-middle"].status == "锁定"
+    assert rows["locked-middle"].locked is True
+    assert rows["locked-middle"].action_policy == ""
     assert rows["newer"].status == "留存"
     assert rows["older"].status == "留存"
     assert rows["older-with-seconds"].status == "锁定"

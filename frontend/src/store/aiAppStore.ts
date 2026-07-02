@@ -61,12 +61,6 @@ export const FALLBACK_AI_APP_DEFINITIONS: AiAppDefinition[] = [
     label: 'CodeClaw 微信接入',
     description: '微信消息入口使用的 AI 模型，默认交给本机 Codex CLI 处理并回复微信。',
   },
-  {
-    id: 'device-agent',
-    group: '集群',
-    label: '设备代理',
-    description: '设备代理处理跨设备请求、诊断和委托任务时使用的模型。',
-  },
 ]
 
 function canUseLocalStorage() {
@@ -85,7 +79,7 @@ function buildDefaultAppConfig(appId?: AiAppId): AiAppRuntimeConfig {
 
   return {
     enabled: true,
-    provider: appId === 'codex-diary' ? 'deepseek' : appId === 'note-taxonomy' || appId === 'codeclaw' || appId === 'device-agent' ? 'codex-cli' : '',
+    provider: appId === 'codex-diary' ? 'deepseek' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'codex-cli' : '',
     model: appId === 'codex-diary' ? 'deepseek-v4-pro' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'gpt-5.3-codex-spark' : '',
     updatedAt: null,
   }

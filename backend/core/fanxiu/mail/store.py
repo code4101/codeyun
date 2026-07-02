@@ -389,7 +389,7 @@ def align_fanxiu_mail_records_claimable_between_times(
     source: str = "visible_mail_adjacency",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Mark user-managed records in an observed empty open interval as claimable.
+    """Report records in an observed empty open interval without changing user status.
 
     The interval is open: records exactly at either visible boundary are not touched.
     """
@@ -410,7 +410,7 @@ def align_fanxiu_mail_records_claimable_between_times(
     rows = session.exec(
         select(FanxiuMailRecord).where(
             FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
-            FanxiuMailRecord.status.in_(("锁定", "留存", "seen")),
+            FanxiuMailRecord.status == "seen",
         )
     ).all()
     matched: list[FanxiuMailRecord] = []
@@ -425,8 +425,6 @@ def align_fanxiu_mail_records_claimable_between_times(
             continue
         if older_ms < row_ms < newer_ms:
             matched.append(row)
-    now = time.time()
-    source_text = str(source or "visible_mail_adjacency").strip() or "visible_mail_adjacency"
     records: list[dict[str, Any]] = []
     updated = 0
     for row in sorted(matched, key=lambda item: (_fanxiu_mail_record_time_ms(item) or 0, item.mail_key), reverse=True):
@@ -442,27 +440,6 @@ def align_fanxiu_mail_records_claimable_between_times(
         )
         if dry_run:
             continue
-        evidence = dict(row.evidence or {})
-        history = [item for item in evidence.get("visible_adjacency_claimable_alignment_history") or [] if isinstance(item, dict)]
-        history.append(
-            {
-                "source": source_text,
-                "newer_time_text": normalize_fanxiu_mail_time_text(newer_time_text),
-                "older_time_text": normalize_fanxiu_mail_time_text(older_time_text),
-                "previous_status": previous_status,
-                "aligned_at": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-        evidence["visible_adjacency_claimable_alignment"] = history[-1]
-        evidence["visible_adjacency_claimable_alignment_history"] = history[-12:]
-        row.status = "可领"
-        row.locked = False
-        row.action_policy = "claim"
-        row.last_action_error = ""
-        row.evidence = evidence
-        row.updated_at = now
-        session.add(row)
-        updated += 1
     return {
         "ok": True,
         "newer_time_text": normalize_fanxiu_mail_time_text(newer_time_text),

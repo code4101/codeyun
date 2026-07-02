@@ -90,6 +90,9 @@ router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("attendance-tools"))],
 )
 
+REFUND_CONFIRMATION_MAX_ATTEMPTS = 5
+REFUND_CONFIRMATION_RETRY_INTERVAL_SECONDS = 1.0
+
 FIXED_WJX_TEMPLATE_ID = "wjx-course-catalog"
 FIXED_WJX_TEMPLATE_NAME = "课程清单问卷"
 FIXED_WJX_TEMPLATE_ACTIVITY_ID = "264266843"
@@ -2735,6 +2738,7 @@ def _verify_refund_execution_confirmed(
     rows = [dict(row) for row in list(result.get("rows") or []) if isinstance(row, dict)]
     checked: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    rows_to_confirm: list[dict[str, Any]] = []
     login_users = list(execution_payload.get("login_users") or [])
 
     for row in rows:
@@ -2756,25 +2760,43 @@ def _verify_refund_execution_confirmed(
             })
             continue
 
-        detail = _execute_order_refund_details_on_entry(
-            entry_snapshot,
-            {
-                "order_id": order_id,
-                "query_type": "merchant_order" if not order_id.isdigit() else "pay_order",
-                "login_users": login_users,
-            },
-        )
-        actual_total = _sum_successful_refund_detail_amount(list(detail.get("rows") or []))
-        check = {
+        rows_to_confirm.append({
             "student_name": _normalize_order_history_text(row.get("学员名称")),
             "order_id": order_id,
             "refund_amount": round(refund_amount, 2),
             "expected_refunded": round(expected_total, 2),
-            "actual_refunded": actual_total,
-        }
-        checked.append(check)
-        if actual_total + 0.01 < expected_total:
-            failures.append({**check, "reason": "支付侧成功退款累计额未达到本次执行后的目标已返款金额"})
+        })
+
+    max_attempts = max(1, int(REFUND_CONFIRMATION_MAX_ATTEMPTS))
+    for attempt_index in range(max_attempts):
+        next_rows_to_confirm: list[dict[str, Any]] = []
+        for row in rows_to_confirm:
+            order_id = str(row.get("order_id") or "")
+            detail = _execute_order_refund_details_on_entry(
+                entry_snapshot,
+                {
+                    "order_id": order_id,
+                    "query_type": "merchant_order" if not order_id.isdigit() else "pay_order",
+                    "login_users": login_users,
+                },
+            )
+            actual_total = _sum_successful_refund_detail_amount(list(detail.get("rows") or []))
+            check = {**row, "actual_refunded": actual_total}
+            if actual_total + 0.01 >= float(row.get("expected_refunded") or 0.0):
+                checked.append(check)
+            else:
+                next_rows_to_confirm.append({
+                    **check,
+                    "reason": "支付侧成功退款累计额未达到本次执行后的目标已返款金额",
+                })
+
+        rows_to_confirm = next_rows_to_confirm
+        if not rows_to_confirm:
+            break
+        if attempt_index < max_attempts - 1:
+            time.sleep(max(0.0, float(REFUND_CONFIRMATION_RETRY_INTERVAL_SECONDS)))
+
+    failures.extend(rows_to_confirm)
 
     if failures:
         detail_text = "；".join(
@@ -3041,6 +3063,79 @@ def _persist_refund_history(
 
     session.add_all(records)
     session.commit()
+
+
+def _has_refund_history_for_payment_state(
+    session: Session,
+    *,
+    wechat_order_id: str,
+    merchant_order_id: str,
+    refunded_amount: float,
+) -> bool:
+    conditions = []
+    if wechat_order_id:
+        conditions.append(AttendanceOrderRefundHistory.wechat_order_id == wechat_order_id)
+    if merchant_order_id:
+        conditions.append(AttendanceOrderRefundHistory.merchant_order_id == merchant_order_id)
+    if not conditions:
+        return False
+
+    statement = select(AttendanceOrderRefundHistory).where(or_(*conditions))
+    for record in session.exec(statement).all():
+        existing_amount = (
+            _coerce_order_history_number(record.refunded_amount)
+            or _coerce_order_history_number(record.refund_amount)
+            or 0.0
+        )
+        if existing_amount + 0.01 >= refunded_amount:
+            return True
+    return False
+
+
+def _sync_refund_history_from_payment_state(
+    session: Session,
+    *,
+    current_user: User,
+    execution_device_entry_id: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    rows_to_persist: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        refunded_amount = _coerce_order_history_number(row.get("已返款")) or 0.0
+        if refunded_amount <= 0:
+            continue
+        wechat_order_id = _normalize_attendance_order_id(row.get("微信支付订单号"))
+        merchant_order_id = _normalize_attendance_order_id(row.get("商户订单号"))
+        if _has_refund_history_for_payment_state(
+            session,
+            wechat_order_id=wechat_order_id,
+            merchant_order_id=merchant_order_id,
+            refunded_amount=refunded_amount,
+        ):
+            continue
+
+        row_to_persist = dict(row)
+        row_to_persist["微信支付订单号"] = wechat_order_id
+        row_to_persist["商户订单号"] = merchant_order_id
+        refund_amount = _coerce_order_history_number(row.get("退款额度")) or 0.0
+        row_to_persist["退款额度"] = (
+            _normalize_order_history_text(row.get("退款额度"))
+            if refund_amount > 0
+            else _normalize_order_history_text(row.get("已返款"))
+        )
+        row_to_persist["执行退款"] = _normalize_order_history_text(row.get("执行退款")) or "支付侧已退款（同步）"
+        rows_to_persist.append(row_to_persist)
+
+    if rows_to_persist:
+        _persist_refund_history(
+            session,
+            current_user=current_user,
+            execution_device_entry_id=execution_device_entry_id,
+            rows=rows_to_persist,
+        )
+    return len(rows_to_persist)
 
 
 def _build_order_refund_history_page(session: Session, *, page: int, page_size: int) -> AttendanceOrderRefundHistoryPage:
@@ -5282,6 +5377,11 @@ def execute_attendance_order(
         )
     except OrderAutomationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        detail = str(exc)
+        if payload.action == "refund" and detail.startswith("退款执行后支付侧确认失败"):
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise HTTPException(status_code=500, detail=detail) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -5302,6 +5402,13 @@ def execute_attendance_order(
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"退款已执行，但写入历史失败：{exc}") from exc
+    elif payload.action == "inspect":
+        _sync_refund_history_from_payment_state(
+            session,
+            current_user=current_user,
+            execution_device_entry_id=entry.entry_id,
+            rows=list(result.get("rows") or []),
+        )
 
     return {
         "execution_device_entry_id": entry.entry_id,

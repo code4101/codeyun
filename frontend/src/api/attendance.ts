@@ -614,7 +614,10 @@ export async function checkAttendanceSheetRefundedAmounts(sheetId: number, paylo
 
 export async function fetchAttendanceOrderRefundHistory(params?: { page?: number; page_size?: number }) {
   const response = await api.get<AttendanceOrderRefundHistoryPage>('/attendance/order-refund-history', {
-    params,
+    params: {
+      ...params,
+      _ts: Date.now(),
+    },
   })
   return {
     ...response.data,

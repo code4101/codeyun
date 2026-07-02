@@ -103,6 +103,7 @@ const restoredInputDraftStorageKey = ref<string | null>(null)
 const restoredQueryDraftStorageKey = ref<string | null>(null)
 const restoredRefundDraftStorageKey = ref<string | null>(null)
 const restoredDetailDraftStorageKey = ref<string | null>(null)
+const refundErrorMessage = ref('')
 const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
@@ -1121,6 +1122,8 @@ async function queryOrders() {
     })
     loadQueryRowsToGrid(result.rows.map(mapQueryRowFromBackend))
     loadRefundRowsToGrid([])
+    refundHistoryPage.value = 1
+    await loadRefundHistory(1, refundHistoryPageSize.value)
     ElMessage.success('订单状态已刷新')
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '订单查询失败')
@@ -1235,6 +1238,7 @@ async function refundOrders() {
   }
 
   refunding.value = true
+  refundErrorMessage.value = ''
   try {
     const result = await executeAttendanceOrder({
       action: 'refund',
@@ -1245,9 +1249,12 @@ async function refundOrders() {
     loadRefundRowsToGrid(result.rows.map(mapRefundRowFromBackend))
     refundHistoryPage.value = 1
     await loadRefundHistory(1, refundHistoryPageSize.value)
+    refundErrorMessage.value = ''
     ElMessage.success('退款流程已执行')
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '退款任务执行失败')
+    const detail = error.response?.data?.detail || '退款任务执行失败'
+    refundErrorMessage.value = detail
+    ElMessage.error(detail)
   } finally {
     refunding.value = false
   }
@@ -1477,6 +1484,16 @@ onBeforeUnmount(() => {
         <div class="section-action-row">
           <el-button type="danger" :icon="VideoPlay" :loading="refunding" @click="refundOrders">执行退款</el-button>
         </div>
+
+        <el-alert
+          v-if="refundErrorMessage"
+          class="refund-error-alert"
+          type="error"
+          :title="refundErrorMessage"
+          show-icon
+          closable
+          @close="refundErrorMessage = ''"
+        />
       </section>
 
       <section v-if="hasRefundRows" class="panel-card">

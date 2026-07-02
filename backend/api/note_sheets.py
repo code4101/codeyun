@@ -5769,6 +5769,32 @@ def _derive_registration_order_month(order_id: Any) -> str:
     return ""
 
 
+def _normalize_registration_order_month_value(value: Any, order_id: Any = "") -> str:
+    current = _normalize_sheet_text(value)
+    if re.fullmatch(r"20\d{2}(0[1-9]|1[0-2])", current):
+        return current
+
+    date_match = re.search(
+        r"\b(20\d{2})\s*[-/.年]\s*(0?[1-9]|1[0-2])(?:\s*[-/.月]\s*(0?[1-9]|[12]\d|3[01]))?",
+        current,
+    )
+    if date_match:
+        return f"{int(date_match.group(1)):04d}{int(date_match.group(2)):02d}"
+
+    return _derive_registration_order_month(order_id)
+
+
+def _normalize_registration_order_month_cell(row: list[Any], indexes: dict[str, int], order_id: Any = "") -> bool:
+    order_date_index = indexes.get("订单日期")
+    if order_date_index is None or order_date_index >= len(row):
+        return False
+    normalized = _normalize_registration_order_month_value(row[order_date_index], order_id)
+    if not normalized or _normalize_sheet_text(row[order_date_index]) == normalized:
+        return False
+    row[order_date_index] = normalized
+    return True
+
+
 def _registration_order_lookup_id(row: list[Any], indexes: dict[str, int]) -> str:
     for column in ("微信支付订单号", "商户订单号"):
         index = indexes.get(column)
@@ -5914,8 +5940,7 @@ def _apply_registration_order_info_to_row(
             if column == "微信支付订单号":
                 formatted_value = _strip_legacy_text_prefix(formatted_value)
             row[indexes[column]] = formatted_value
-    if not _normalize_sheet_text(row[indexes["订单日期"]]):
-        row[indexes["订单日期"]] = _derive_registration_order_month(row[indexes["微信支付订单号"]])
+    _normalize_registration_order_month_cell(row, indexes, row[indexes["微信支付订单号"]])
 
 
 def _clear_registration_order_optional_refund_value(row: list[Any], indexes: dict[str, int]) -> None:
@@ -5977,15 +6002,22 @@ def _update_registration_order_match_document(
             continue
 
         needs_refund_audit = _registration_row_needs_refund_payment_audit(row, indexes)
+        before_order_month_normalize = list(row)
+        normalized_order_month = _normalize_registration_order_month_cell(row, indexes, order_id)
         has_complete_order_info = all(_normalize_sheet_text(row[indexes[column]]) for column in required_completeness_columns)
         if has_complete_order_info and not needs_refund_audit:
-            skipped_count += 1
-            already_complete_count += 1
+            if normalized_order_month:
+                target_count += 1
+                updated_count += 1
+                matched_count += 1
+            else:
+                skipped_count += 1
+                already_complete_count += 1
             next_rows.append(row)
             continue
 
         target_count += 1
-        before = list(row)
+        before = before_order_month_normalize
         if (
             not _normalize_sheet_text(row[indexes["订单日期"]])
             and all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns if column != "订单日期")
