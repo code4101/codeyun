@@ -955,12 +955,20 @@ class FanxiuRuntime(Runtime):
             current_scene=target_scene_id,
         )
         stop_event = self.stop_event or threading.Event()
-        result = self.runner._go_scene_task(
+        go_scene_task = self.runner._go_scene_task
+        go_scene_kwargs: dict[str, Any] = {}
+        go_scene_parameters = inspect.signature(go_scene_task).parameters
+        if (
+            "layer0_wait_seconds" in go_scene_parameters
+            or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in go_scene_parameters.values())
+        ):
+            go_scene_kwargs["layer0_wait_seconds"] = layer0_wait_seconds
+        result = go_scene_task(
             self.ctx,
             self.asset_tree_path,
             target_scene_id,
             stop_event,
-            layer0_wait_seconds=layer0_wait_seconds,
+            **go_scene_kwargs,
         )
         status = (yield from result) if isinstance(result, GeneratorType) else result
         if str(status or "").lower() in {"error", "failure", "failed"}:
@@ -6309,7 +6317,27 @@ class DataAnnotationRuntimeRunner(
         return SceneNavigator(tree).scene_jump_target_ids(shape)
 
     def _resolve_scene_image_title_ids(self, tree: list[dict[str, Any]], title: str) -> list[int]:
-        return SceneNavigator(tree).resolve_scene_image_title_ids(title)
+        result = [int(scene_id) for scene_id in SceneNavigator(tree).resolve_scene_image_title_ids(title)]
+        seen = set(result)
+        expected = str(title or "").strip()
+        if not expected:
+            return result
+
+        def visit(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type") or "image") == "image" and str(item.get("title") or "").strip() == expected:
+                    image_id = self._image_number(item)
+                    if image_id is not None and int(image_id) not in seen:
+                        result.append(int(image_id))
+                        seen.add(int(image_id))
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)])
+
+        visit([item for item in tree if isinstance(item, dict)])
+        return result
 
     def _implicit_parent_return_target_ids(
         self,
@@ -6768,6 +6796,12 @@ class DataAnnotationRuntimeRunner(
         preferred_scene_ids: list[int] | None = None,
         trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
+        if preferred_scene_ids is None and isinstance(ctx.get("asset_tree"), list):
+            strong_scene_id = self._strong_ocr_scene_number(ctx, frame_data_url)
+            if strong_scene_id is not None:
+                if trace is not None:
+                    trace.append({"event": "special_case", "scene_id": int(strong_scene_id), "reason": "strong_ocr"})
+                return int(strong_scene_id), float(self.scene_threshold)
         graph_scene_id, graph_score, graph_status = self._identify_scene_number_by_graph(
             ctx,
             frame_data_url,
@@ -7067,10 +7101,69 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(tree, list) or not isinstance(images, dict):
             return []
-        return runtime_root_scene_candidate_ids(tree, images, include_popups=include_popups)
+        candidates = runtime_root_scene_candidate_ids(tree, images, include_popups=include_popups)
+        if include_popups is None:
+            for node in build_recognition_tree_nodes(tree, images):
+                if node.scene_id not in candidates and node.is_root and node.layer in {2, 3}:
+                    candidates.append(node.scene_id)
+        return candidates
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         edges = SceneNavigator(tree).scene_jump_edges()
+        seen_keys = {self._scene_jump_edge_key(edge) for edge_list in edges.values() for edge in edge_list}
+
+        def visit(items: list[dict[str, Any]], folder_titles: tuple[str, ...] = ()) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                next_folder_titles = folder_titles
+                if str(item.get("type") or "") == "folder":
+                    title = str(item.get("title") or "").strip()
+                    if title:
+                        next_folder_titles = (*folder_titles, title)
+                if str(item.get("type") or "image") == "image":
+                    source_id = self._image_number(item)
+                    if source_id is not None:
+                        edge_list = edges.setdefault(int(source_id), [])
+                        for shape in self._flatten_shapes(item.get("shapes")):
+                            if not isinstance(shape, dict):
+                                continue
+                            target_ids: list[int] = []
+                            if str(shape.get("sceneJumpTarget") or "").strip():
+                                target_ids = self._scene_jump_target_ids(tree, shape)
+                                if not target_ids:
+                                    target_id = self._scene_jump_label_number(shape.get("sceneJumpTarget"))
+                                    target_ids = [target_id] if target_id is not None else []
+                            if not target_ids:
+                                title = str(shape.get("title") or shape.get("id") or "").strip()
+                                if title in {"离开", "返回", "关闭", "退出", "关闭下方菜单", "回到世界"}:
+                                    for folder_title in reversed(folder_titles):
+                                        resolved = [
+                                            int(scene_id)
+                                            for scene_id in self._resolve_scene_image_title_ids(tree, folder_title)
+                                            if int(scene_id) != int(source_id)
+                                        ]
+                                        if resolved:
+                                            target_ids = resolved
+                                            break
+                            if not target_ids:
+                                continue
+                            edge = {
+                                "source_id": int(source_id),
+                                "image": item,
+                                "shape": shape,
+                                "target_ids": target_ids,
+                            }
+                            key = self._scene_jump_edge_key(edge)
+                            if key in seen_keys:
+                                continue
+                            seen_keys.add(key)
+                            edge_list.append(edge)
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)], next_folder_titles)
+
+        visit([item for item in tree if isinstance(item, dict)])
         self._add_runtime_confirm_scene_edges(edges)
         return edges
 
@@ -7078,27 +7171,6 @@ class DataAnnotationRuntimeRunner(
         if start_scene_id == target_scene_id:
             return []
         edges = self._scene_jump_edges(tree)
-        for item in tree:
-            if not isinstance(item, dict) or str(item.get("type") or "image") != "image":
-                continue
-            source_id = self._image_number(item)
-            if source_id is None:
-                continue
-            edge_list = edges.setdefault(source_id, [])
-            for shape in item.get("shapes") if isinstance(item.get("shapes"), list) else []:
-                if not isinstance(shape, dict) or not str(shape.get("sceneJumpTarget") or "").strip():
-                    continue
-                target_ids = self._scene_jump_target_ids(tree, shape)
-                if not target_ids:
-                    target_id = self._scene_jump_label_number(shape.get("sceneJumpTarget"))
-                    target_ids = [target_id] if target_id is not None else []
-                if target_ids:
-                    edge_list.append({
-                        "source_id": source_id,
-                        "image": item,
-                        "shape": shape,
-                        "target_ids": target_ids,
-                    })
         queue: list[tuple[int, list[dict[str, Any]]]] = [(start_scene_id, [])]
         visited = {start_scene_id}
         while queue:
@@ -7179,6 +7251,12 @@ class DataAnnotationRuntimeRunner(
 
         shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
         current_edge_risk = self._scene_navigation_shape_risk(shape)
+        image = edge.get("image") if isinstance(edge.get("image"), dict) else {}
+        image_title = str(image.get("title") or "") if isinstance(image, dict) else ""
+        shape_title = str(shape.get("title") or "")
+        if current_edge_risk >= 100 and "奖励" in image_title and shape_title in {"领取", "确定", "确认"}:
+            self._log("detail", f"场景移动：奖励/提示页打断 #{source_id}，允许点击「{shape_title}」回到已声明落点")
+            current_edge_risk = 0
         if current_edge_risk >= 100:
             return None
         target_counts = self._scene_jump_target_counts(tree, shape)
@@ -7206,8 +7284,13 @@ class DataAnnotationRuntimeRunner(
         direct = any(landing_id == int(target_scene_id) for landing_id, _ in reachable_landings)
         best_landing_id, downstream_len = min(reachable_landings, key=lambda item: item[1])
         best_count = max((target_counts.get(landing_id, 0) for landing_id, _ in reachable_landings), default=0)
+        reachable_landing_ids = {int(landing_id) for landing_id, _ in reachable_landings}
         wrong_target_count = max(
-            (count for landing_id, count in target_counts.items() if landing_id != int(target_scene_id)),
+            (
+                count
+                for landing_id, count in target_counts.items()
+                if landing_id != int(target_scene_id) and int(landing_id) not in reachable_landing_ids
+            ),
             default=0,
         )
         ambiguity = len(target_ids)
@@ -7219,6 +7302,7 @@ class DataAnnotationRuntimeRunner(
         score = (
             1 if direct else 0,
             int(direct_target_count),
+            int(best_count),
             -int(wrong_target_count),
             -int(total_path_len),
             -int(navigation_risk),
@@ -7359,7 +7443,7 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(images, dict) or not candidate_scene_ids:
             return None, 0.0
 
-        ranked: list[tuple[float, int, int, int]] = []
+        ranked: list[tuple[int, int, float, int]] = []
         for candidate_scene_id in candidate_scene_ids:
             try:
                 scene_id = int(candidate_scene_id)
@@ -7374,12 +7458,12 @@ class DataAnnotationRuntimeRunner(
             clarity, route_len = self._scene_route_ranking(tree, scene_id, int(target_scene_id))
             if clarity <= -100:
                 continue
-            ranked.append((score, clarity, -route_len, scene_id))
+            ranked.append((clarity, -route_len, score, scene_id))
         if not ranked:
             scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
             return scene_id, score
         ranked.sort(reverse=True)
-        score, clarity, neg_route_len, scene_id = ranked[0]
+        clarity, neg_route_len, score, scene_id = ranked[0]
         route_len = -neg_route_len
         self._log(
             "detail",
@@ -7389,9 +7473,15 @@ class DataAnnotationRuntimeRunner(
 
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
         source_shape = {"title": "离开"}
-        return SceneNavigator(tree).confirmation_scene_ids(
+        candidates = SceneNavigator(tree).confirmation_scene_ids(
             lambda image: self._scene_jump_intermediate_confirm_shape(image, source_shape) is not None
         )
+        seen = {int(scene_id) for scene_id in candidates}
+        for image_id in self._resolve_scene_image_title_ids(tree, "离开场景"):
+            if int(image_id) not in seen:
+                candidates.append(int(image_id))
+                seen.add(int(image_id))
+        return candidates
 
     def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
         candidates = SceneNavigator(tree).route_candidate_ids(
@@ -7399,6 +7489,36 @@ class DataAnnotationRuntimeRunner(
             confirmation_scene_ids=self._scene_jump_confirmation_scene_ids(tree),
         )
         candidate_set = {int(scene_id) for scene_id in candidates}
+        image_ids: list[int] = []
+
+        def collect_image_ids(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                image_id = self._image_number(item)
+                if image_id is not None and int(image_id) not in image_ids:
+                    image_ids.append(int(image_id))
+                children = item.get("children")
+                if isinstance(children, list):
+                    collect_image_ids([child for child in children if isinstance(child, dict)])
+
+        collect_image_ids([item for item in tree if isinstance(item, dict)])
+
+        reachable_sources: list[tuple[int, int]] = []
+        for image_id in image_ids:
+            if int(image_id) == int(target_scene_id) or int(image_id) in candidate_set:
+                continue
+            route = self._find_scene_route(tree, int(image_id), int(target_scene_id))
+            if route is None:
+                continue
+            route_risk = self._scene_route_navigation_risk(route)
+            if route_risk >= 100:
+                continue
+            reachable_sources.append((len(route), int(image_id)))
+        for _route_len, image_id in sorted(reachable_sources, key=lambda item: (item[0], image_ids.index(item[1]))):
+            if image_id not in candidate_set:
+                candidates.append(image_id)
+                candidate_set.add(image_id)
 
         def visit(items: list[dict[str, Any]], parent_scene_id: int | None = None) -> None:
             for item in items:
@@ -9218,13 +9338,13 @@ class DataAnnotationRuntimeRunner(
             return None
         scene_title = str(current_image.get("title") or "").strip()
         filename = str(current_image.get("filename") or "").strip()
+        source_title = str(source_shape.get("title") or "").strip()
+        if source_title not in {"离开", "返回", "关闭", "退出"}:
+            return None
         if filename == "0086.png" or "离开场景" in scene_title:
             for shape in self._flatten_shapes(current_image.get("shapes")):
                 if str(shape.get("title") or "").strip() in {"确认", "确定"}:
                     return shape
-        source_title = str(source_shape.get("title") or "").strip()
-        if source_title not in {"离开", "返回", "关闭", "退出"}:
-            return None
         if "离开" not in scene_title and "退出" not in scene_title:
             return None
         for shape in self._flatten_shapes(current_image.get("shapes")):
@@ -10007,6 +10127,7 @@ class DataAnnotationRuntimeRunner(
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
+            current_scene_from_strong_ocr = False
             known_scene_id = ctx.pop("_go_scene_known_scene_id", None)
             if known_scene_id is not None:
                 current_scene_id, score = int(known_scene_id), float(self.scene_threshold)
@@ -10016,6 +10137,8 @@ class DataAnnotationRuntimeRunner(
                 strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
                 if strong_scene_id is not None:
                     current_scene_id, score = strong_scene_id, float(self.scene_threshold)
+                    current_scene_from_strong_ocr = True
+                    self._log("detail", f"场景强 OCR 命中 #{int(strong_scene_id)}，跳过局部路径候选")
                 else:
                     route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
                     current_scene_id, score = self._identify_scene_number_for_route(
@@ -10066,12 +10189,30 @@ class DataAnnotationRuntimeRunner(
             if strong_scene_id is not None:
                 current_scene_id = int(strong_scene_id)
                 score = float(self.scene_threshold)
+                current_scene_from_strong_ocr = True
+                self._log("detail", f"场景强 OCR 命中 #{int(strong_scene_id)}，作为导航起点")
             if current_scene_id is not None and not self._scene_matches_id(int(current_scene_id), float(score or 0.0)):
                 self._log(
                     "detail",
                     f"场景移动：候选 #{current_scene_id} 仅 {float(score or 0.0):.0f}%，低于阈值，不作为当前场景",
                 )
                 current_scene_id = None
+            if current_scene_id is None:
+                if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
+                    recovered_unknown_start = True
+                    yield BehaviorTreeStatus.RUNNING
+                    continue
+                return self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=None,
+                    action_shape=None,
+                    elapsed_seconds=0.0,
+                    history=[f"候选低于阈值 {score:.0f}%"],
+                )
             if current_scene_id == target_scene_id and self._scene_matches_id(int(target_scene_id), float(score or 0.0)):
                 with self._lock:
                     self._status.update({
@@ -10093,7 +10234,20 @@ class DataAnnotationRuntimeRunner(
                     )
                     yield BehaviorTreeStatus.RUNNING
                     continue
-            current_scene_id = self._navigation_scene_id(ctx, current_scene_id, frame)
+            has_navigation_edge = current_scene_id is not None and self._select_scene_next_edge(
+                tree,
+                int(current_scene_id),
+                target_scene_id,
+                failed_edge_keys=failed_edge_keys,
+            ) is not None
+            last_failed_source_matches = False
+            if last_failed_edge is not None and current_scene_id is not None:
+                try:
+                    last_failed_source_matches = int(last_failed_edge.get("source_id")) == int(current_scene_id)
+                except (TypeError, ValueError):
+                    last_failed_source_matches = False
+            if not current_scene_from_strong_ocr and not has_navigation_edge and not last_failed_source_matches:
+                current_scene_id = self._navigation_scene_id(ctx, current_scene_id, frame)
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
                     recovered_unknown_start = True

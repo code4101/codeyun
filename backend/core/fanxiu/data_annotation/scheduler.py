@@ -605,6 +605,7 @@ def repair_data_annotation_scheduler_tasks(
             task["source"] = "data_annotation_runtime"
             task["schedule_kind"] = "daily"
             task["schedule_times"] = ["05:00"]
+            task["next_time"] = (now or datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
             task["legacy_name"] = "日常_挑战仙缘"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
@@ -802,6 +803,13 @@ def repair_data_annotation_scheduler_tasks(
             changed = True
     if sync_data_annotation_scheduler_tasks_from_world_facts(tasks, facts, now=now):
         changed = True
+    if legacy_daily_xianyuan_task is not None:
+        migrated_xianyuan_next_time = (now or datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        for task in tasks:
+            if str(task.get("id") or "") == "legacy-daily-xianyuan" and task.get("next_time") != migrated_xianyuan_next_time:
+                task["next_time"] = migrated_xianyuan_next_time
+                changed = True
+                break
     current_time = now or datetime.now()
     current_ts = current_time.timestamp()
     for task in tasks:

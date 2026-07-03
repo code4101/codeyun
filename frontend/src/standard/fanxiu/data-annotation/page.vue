@@ -291,6 +291,14 @@
                         class="asset-node-title"
                         :style="data.type === 'image' ? frameLayerStyle(inferredFrameLayer(data)) : undefined"
                       >{{ data.title }}</span>
+                      <span
+                        v-if="data.type === 'folder' && isRecognitionCycleGroupId(data.id)"
+                        class="asset-node-relation-badge is-cycle-group"
+                      >SCC</span>
+                      <span
+                        v-if="data.type === 'image' && data.recognitionProjectionIssue"
+                        class="asset-node-relation-badge"
+                      >{{ recognitionProjectionIssueLabel(data.recognitionProjectionIssue) }}</span>
                     </span>
                   </template>
                 </el-tree>
@@ -347,6 +355,59 @@
                 </button>
               </div>
             </div>
+
+            <section
+              v-if="selectedImageNode"
+              class="scene-relation-graph"
+              :class="{ 'is-resizing': sceneRelationGraphResizing }"
+              :style="{ height: `${sceneRelationGraphHeight}px`, minHeight: `${sceneRelationGraphHeight}px` }"
+            >
+              <div class="scene-relation-tabs" role="tablist" aria-label="图结构类型">
+                <button
+                  v-for="tab in sceneRelationGraphTabs"
+                  :key="tab.value"
+                  type="button"
+                  class="scene-relation-tab"
+                  :class="{ 'is-active': activeSceneRelationGraphTab === tab.value }"
+                  role="tab"
+                  :aria-selected="activeSceneRelationGraphTab === tab.value"
+                  @click="activeSceneRelationGraphTab = tab.value"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+              <VueFlow
+                :key="selectedSceneGraphKey"
+                class="scene-relation-flow"
+                :nodes="selectedSceneGraphNodes"
+                :edges="selectedSceneGraphEdges"
+                :edge-types="sceneRelationGraphEdgeTypes"
+                :nodes-draggable="false"
+                :nodes-connectable="false"
+                :elements-selectable="false"
+                :zoom-on-scroll="false"
+                :pan-on-scroll="false"
+                :pan-on-drag="false"
+                :prevent-scrolling="false"
+                fit-view-on-init
+                :min-zoom="0.45"
+                :max-zoom="1.25"
+                @node-click="handleSceneGraphNodeClick"
+                @edge-click="handleSceneGraphEdgeClick"
+              >
+                <Controls :show-interactive="false" />
+              </VueFlow>
+              <div v-if="!selectedSceneGraphEdges.length" class="scene-relation-empty">
+                {{ selectedSceneGraphEmptyText }}
+              </div>
+            </section>
+            <div
+              v-if="selectedImageNode"
+              class="scene-relation-resizer"
+              :class="{ 'is-resizing': sceneRelationGraphResizing }"
+              title="拖拽调整图结构高度"
+              @mousedown.prevent="startSceneRelationGraphResizing"
+            />
 
             <div v-if="selectedImageNode" class="annotation-editor">
               <div class="annotation-main-row">
@@ -1212,6 +1273,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { VueFlow, MarkerType, type Edge, type Node } from '@vue-flow/core';
+import { Controls } from '@vue-flow/controls';
+import ELK from 'elkjs/lib/elk.bundled.js';
 import {
   Folder,
   FolderOpened,
@@ -1295,8 +1359,13 @@ import {
   type FanxiuPseudoCodeRunResponse,
 } from '@/api/fanxiu';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
+import ElkEdge from '@/components/ElkEdge.vue';
 import { taskStore, type Device } from '@/store/taskStore';
+import { useResizablePane } from '@/utils/useResizablePane';
 import { useSortableList } from '@/utils/useSortableList';
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
+import '@vue-flow/controls/dist/style.css';
 interface OverlayBox {
   id: string;
   name: string;
@@ -1554,6 +1623,8 @@ const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro
 const DEFAULT_VISUAL_MACRO_THRESHOLD = 0.8;
 const DEFAULT_SHAPE_PIXEL_TOLERANCE = 20;
 const GAME_MACRO_CONFIG_STORAGE_KEY = 'fanxiu.dataAnnotation.gameMacro.config.v1';
+const SCENE_RELATION_GRAPH_HEIGHT_STORAGE_PREFIX = 'fanxiu.dataAnnotation.sceneRelationGraphHeight.v1';
+const SCENE_RELATION_GRAPH_TAB_STORAGE_KEY = 'fanxiu.dataAnnotation.sceneRelationGraphTab.v1';
 const GAME_MACRO_CONFIG_VERSION = 2;
 const GAME_MACRO_DEFAULT_DRAG_DURATION_MS = 1500;
 const FALLBACK_FRAME_WIDTH = 900;
@@ -1599,6 +1670,61 @@ const windowScenes: WindowScene[] = [
 
 const devices = computed(() => taskStore.devices);
 const selectedEntryId = ref('');
+type SceneRelationGraphTab = 'recognition' | 'jump';
+const sceneRelationGraphTabs: Array<{ value: SceneRelationGraphTab; label: string }> = [
+  { value: 'recognition', label: '识别结构' },
+  { value: 'jump', label: '跳转流转' },
+];
+const isSceneRelationGraphTab = (value: unknown): value is SceneRelationGraphTab => (
+  value === 'recognition' || value === 'jump'
+);
+const activeSceneRelationGraphTab = ref<SceneRelationGraphTab>('recognition');
+const sceneRelationGraphHeightStorageKey = computed(() => (
+  `${SCENE_RELATION_GRAPH_HEIGHT_STORAGE_PREFIX}:${selectedEntryId.value || 'default'}`
+));
+const {
+  paneHeight: sceneRelationGraphHeight,
+  isResizing: sceneRelationGraphResizing,
+  isManualResized: sceneRelationGraphManualResized,
+  startResizing: startSceneRelationGraphResizing,
+} = useResizablePane({
+  initialHeight: 224,
+  getResizeBounds: () => {
+    const viewportHeight = typeof window === 'undefined' ? 900 : window.innerHeight;
+    return {
+      min: 128,
+      max: Math.max(180, Math.floor(viewportHeight * 0.55)),
+    };
+  },
+});
+const clampSceneRelationGraphHeight = (value: number) => {
+  const viewportHeight = typeof window === 'undefined' ? 900 : window.innerHeight;
+  const max = Math.max(180, Math.floor(viewportHeight * 0.55));
+  return Math.max(128, Math.min(max, Math.round(value)));
+};
+const restoreSceneRelationGraphHeight = () => {
+  if (typeof window === 'undefined') return;
+  const raw = window.localStorage.getItem(sceneRelationGraphHeightStorageKey.value);
+  const parsed = raw ? Number(raw) : NaN;
+  sceneRelationGraphHeight.value = Number.isFinite(parsed)
+    ? clampSceneRelationGraphHeight(parsed)
+    : clampSceneRelationGraphHeight(sceneRelationGraphHeight.value);
+};
+watch(selectedEntryId, restoreSceneRelationGraphHeight);
+watch(sceneRelationGraphHeight, (height) => {
+  if (!sceneRelationGraphManualResized.value || typeof window === 'undefined') return;
+  window.localStorage.setItem(sceneRelationGraphHeightStorageKey.value, String(clampSceneRelationGraphHeight(height)));
+});
+if (typeof window !== 'undefined') {
+  const savedSceneRelationGraphTab = window.localStorage.getItem(SCENE_RELATION_GRAPH_TAB_STORAGE_KEY);
+  if (isSceneRelationGraphTab(savedSceneRelationGraphTab)) {
+    activeSceneRelationGraphTab.value = savedSceneRelationGraphTab;
+  }
+}
+watch(activeSceneRelationGraphTab, (tab) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(SCENE_RELATION_GRAPH_TAB_STORAGE_KEY, tab);
+});
 const selectedWindowKey = ref<WindowSceneKey>('mumu');
 const serviceStatus = ref<FanxiuGameWindow2ServiceStatus | null>(null);
 const runtimeLoading = ref(false);
@@ -6719,6 +6845,8 @@ type DataAnnotationAssetNode = {
   height?: number;
   layer?: FrameLayer;
   recognitionParentId?: number | null;
+  recognitionProjectionIssue?: 'self' | 'cycle' | 'missing-parent';
+  recognitionCycleGroupId?: string;
   shapes?: DataAnnotationShape[];
 };
 
@@ -6801,6 +6929,33 @@ type DiscriminatorGroup = {
   title: string;
   syncBox: boolean;
   members: DiscriminatorGroupMember[];
+};
+
+type SceneRelationEdgeKind = 'recognition' | 'structure' | 'jump' | 'discriminator';
+
+type SceneRelationEdge = {
+  id: string;
+  kind: SceneRelationEdgeKind;
+  kindLabel: string;
+  sourceId: number | null;
+  targetId: number | null;
+  sourceLabel: string;
+  targetLabel: string;
+  shapeId?: string;
+  shapeTitle?: string;
+  focusImageId: number | null;
+  focusShapeId?: string;
+  tooltip: string;
+};
+
+type SceneGraphNodeData = {
+  label: string;
+  imageId: number | null;
+};
+
+type SceneGraphEdgeData = {
+  relationEdge: SceneRelationEdge;
+  elkSections?: unknown[];
 };
 
 type ShapeDragState = {
@@ -8049,6 +8204,18 @@ const flattenAssetImages = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   ...flattenAssetImages(node.children ?? []),
 ]);
 
+const collectAssetImageRecords = (
+  nodes: DataAnnotationAssetNode[],
+  nearestImageId: number | null = null,
+): Array<{ image: DataAnnotationAssetNode; legacyParentId: number | null }> => nodes.flatMap((node) => {
+  if (node.type === 'folder') return collectAssetImageRecords(node.children ?? [], nearestImageId);
+  const imageId = assetNumericImageId(node);
+  return [
+    { image: node, legacyParentId: nearestImageId },
+    ...collectAssetImageRecords(node.children ?? [], imageId ?? nearestImageId),
+  ];
+});
+
 const collectAssetNodeIds = (node: DataAnnotationAssetNode): string[] => [
   node.id,
   ...(node.children ?? []).flatMap(collectAssetNodeIds),
@@ -8092,6 +8259,510 @@ const findAssetImageByNumericId = (nodes: DataAnnotationAssetNode[], id: number 
   return null;
 };
 
+const sceneImageLabel = (imageId: number | null, imagesByNumber: Map<number, DataAnnotationAssetNode>, fallback = '?') => {
+  if (imageId === null) return fallback;
+  const image = imagesByNumber.get(imageId);
+  return image ? `#${imageId} ${image.title || image.filename || '未命名'}` : `#${imageId} 缺失`;
+};
+
+const sceneRelationKindLabel = (kind: SceneRelationEdgeKind) => ({
+  recognition: '识别',
+  structure: '结构',
+  jump: '跳转',
+  discriminator: '区分',
+}[kind]);
+
+const buildSceneRelationTooltip = (edge: Omit<SceneRelationEdge, 'tooltip'>) => (
+  [
+    `${edge.kindLabel}: ${edge.sourceLabel} -> ${edge.targetLabel}`,
+    edge.shapeTitle ? `shape: ${edge.shapeTitle}` : '',
+  ].filter(Boolean).join('\n')
+);
+
+const buildSceneRelationEdges = (nodes: DataAnnotationAssetNode[]) => {
+  const imageRecords = collectAssetImageRecords(nodes);
+  const images = imageRecords.map((record) => record.image);
+  const imagesByNumber = new Map<number, DataAnnotationAssetNode>();
+  for (const image of images) {
+    const imageId = assetNumericImageId(image);
+    if (imageId !== null) imagesByNumber.set(imageId, image);
+  }
+
+  const edges: SceneRelationEdge[] = [];
+  const pushEdge = (edge: Omit<SceneRelationEdge, 'tooltip'>) => {
+    edges.push({
+      ...edge,
+      tooltip: buildSceneRelationTooltip(edge),
+    });
+  };
+
+  for (const { image, legacyParentId } of imageRecords) {
+    const sourceId = assetNumericImageId(image);
+    if (sourceId === null) continue;
+    const recognitionParentId = assetRecognitionParentId(image);
+    const structureParentId = recognitionParentId ?? legacyParentId;
+    if (structureParentId !== null) {
+      const kind: SceneRelationEdgeKind = recognitionParentId === null ? 'structure' : 'recognition';
+      pushEdge({
+        id: `${kind}:${structureParentId}:${sourceId}`,
+        kind,
+        kindLabel: sceneRelationKindLabel(kind),
+        sourceId: structureParentId,
+        targetId: sourceId,
+        sourceLabel: sceneImageLabel(structureParentId, imagesByNumber),
+        targetLabel: sceneImageLabel(sourceId, imagesByNumber),
+        focusImageId: structureParentId,
+      });
+    }
+
+    for (const shape of flattenShapes(image.shapes ?? [])) {
+      for (const target of parseSceneJumpEntries(shape.sceneJumpTarget)) {
+        const normalizedTarget = Number(String(target.label).replace(/^#/, ''));
+        const targetId = Number.isFinite(normalizedTarget) && target.label !== '-1' ? normalizedTarget : null;
+        pushEdge({
+          id: `jump:${sourceId}:${shape.id}:${target.label}`,
+          kind: 'jump',
+          kindLabel: sceneRelationKindLabel('jump'),
+          sourceId,
+          targetId,
+          sourceLabel: sceneImageLabel(sourceId, imagesByNumber),
+          targetLabel: targetId === null ? target.label : sceneImageLabel(targetId, imagesByNumber),
+          shapeId: shape.id,
+          shapeTitle: shape.title || 'shape',
+          focusImageId: targetId,
+        });
+      }
+
+      const discriminatorTargetId = shape.discriminator?.targetImageId ?? null;
+      if (Number.isFinite(Number(discriminatorTargetId)) && Number(discriminatorTargetId) > 0) {
+        const targetId = Math.floor(Number(discriminatorTargetId));
+        pushEdge({
+          id: `discriminator:${sourceId}:${shape.id}:${targetId}`,
+          kind: 'discriminator',
+          kindLabel: sceneRelationKindLabel('discriminator'),
+          sourceId,
+          targetId,
+          sourceLabel: sceneImageLabel(sourceId, imagesByNumber),
+          targetLabel: sceneImageLabel(targetId, imagesByNumber),
+          shapeId: shape.id,
+          shapeTitle: shape.title || 'shape',
+          focusImageId: targetId,
+        });
+      }
+    }
+  }
+  return edges.sort((left, right) => (
+    left.kind.localeCompare(right.kind)
+    || String(left.sourceId ?? '').localeCompare(String(right.sourceId ?? ''))
+    || String(left.targetId ?? '').localeCompare(String(right.targetId ?? ''))
+    || String(left.shapeTitle ?? '').localeCompare(String(right.shapeTitle ?? ''), 'zh-Hans-CN')
+  ));
+};
+
+const selectedSceneRelationEdges = computed(() => {
+  const imageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
+  if (imageId === null) return { incoming: [] as SceneRelationEdge[], outgoing: [] as SceneRelationEdge[] };
+  const edges = buildSceneRelationEdges(assetTree.value);
+  return {
+    incoming: edges
+      .filter((edge) => edge.targetId === imageId)
+      .map((edge) => ({ ...edge, focusImageId: edge.sourceId, focusShapeId: edge.shapeId })),
+    outgoing: edges
+      .filter((edge) => edge.sourceId === imageId)
+      .map((edge) => ({ ...edge, focusImageId: edge.targetId, focusShapeId: edge.targetId === imageId ? edge.shapeId : undefined })),
+  };
+});
+
+const selectedSceneIncomingEdges = computed(() => selectedSceneRelationEdges.value.incoming);
+const selectedSceneOutgoingEdges = computed(() => selectedSceneRelationEdges.value.outgoing);
+
+const sceneGraphNodeId = (imageId: number | null, fallback: string) => (
+  imageId === null ? `external:${fallback}` : `scene:${imageId}`
+);
+
+const sceneRelationColor = (kind: SceneRelationEdgeKind) => ({
+  recognition: '#2563eb',
+  structure: '#059669',
+  jump: '#d97706',
+  discriminator: '#7c3aed',
+}[kind]);
+
+const sceneRelationGraphKinds = (tab: SceneRelationGraphTab) => (
+  tab === 'recognition'
+    ? new Set<SceneRelationEdgeKind>(['recognition', 'structure'])
+    : new Set<SceneRelationEdgeKind>(['jump', 'discriminator'])
+);
+
+const selectedSceneGraphEmptyText = computed(() => (
+  activeSceneRelationGraphTab.value === 'recognition' ? '无上游识别结构' : '无上游跳转流转'
+));
+
+const selectedSceneGraphKey = computed(() => (
+  `${activeSceneRelationGraphTab.value}:${selectedImageNode.value?.id ?? 'none'}`
+));
+
+const sceneRelationGraphEdgeTypes = {
+  elk: ElkEdge,
+};
+const sceneRelationGraphElk = new ELK();
+const SCENE_GRAPH_NODE_WIDTH = 156;
+const SCENE_GRAPH_NODE_HEIGHT = 42;
+
+const buildLocalSceneGraphRelations = (
+  imageId: number | null,
+  kinds: Set<SceneRelationEdgeKind>,
+) => {
+  if (imageId === null) return [];
+  const allEdges = buildSceneRelationEdges(assetTree.value)
+    .filter((edge) => kinds.has(edge.kind));
+
+  const directEdges = allEdges.filter((edge) => (
+    edge.sourceId === imageId || edge.targetId === imageId
+  ));
+
+  const incomingByTarget = new Map<number, SceneRelationEdge[]>();
+  for (const edge of allEdges) {
+    if (edge.targetId === null) continue;
+    const list = incomingByTarget.get(edge.targetId) ?? [];
+    list.push(edge);
+    incomingByTarget.set(edge.targetId, list);
+  }
+
+  const included = new Set<number>([imageId]);
+  const queue = [imageId];
+  while (queue.length) {
+    const targetId = queue.shift();
+    if (targetId === undefined) continue;
+    for (const edge of incomingByTarget.get(targetId) ?? []) {
+      if (edge.sourceId === null || included.has(edge.sourceId)) continue;
+      included.add(edge.sourceId);
+      queue.push(edge.sourceId);
+    }
+  }
+
+  for (const edge of directEdges) {
+    if (edge.sourceId !== null) included.add(edge.sourceId);
+    if (edge.targetId !== null) included.add(edge.targetId);
+  }
+
+  const relationById = new Map<string, SceneRelationEdge>();
+  for (const edge of allEdges) {
+    if (
+      edge.sourceId !== null
+      && edge.targetId !== null
+      && included.has(edge.sourceId)
+      && included.has(edge.targetId)
+    ) {
+      relationById.set(edge.id, edge);
+    }
+  }
+  for (const edge of directEdges) {
+    relationById.set(edge.id, edge);
+  }
+
+  return [...relationById.values()];
+};
+
+const selectedSceneGraphRelations = computed(() => {
+  const imageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
+  return buildLocalSceneGraphRelations(imageId, sceneRelationGraphKinds(activeSceneRelationGraphTab.value));
+});
+
+const buildFallbackSceneGraphNodes = (baseNodes: Node<SceneGraphNodeData>[]) => {
+  const columns = new Map<number, Node<SceneGraphNodeData>[]>();
+  for (const node of baseNodes) {
+    const depth = Number(node.data?.['depth'] ?? 0);
+    const list = columns.get(depth) ?? [];
+    list.push(node);
+    columns.set(depth, list);
+  }
+  const maxDepth = Math.max(...[...columns.keys()], 0);
+  return [...columns.entries()]
+    .sort((left, right) => right[0] - left[0])
+    .flatMap(([depth, columnNodes]) => (
+      [...columnNodes]
+        .sort((left, right) => String(left.data.label).localeCompare(String(right.data.label), 'zh-Hans-CN'))
+        .map((node, index) => ({
+          ...node,
+          position: {
+            x: (maxDepth - depth) * 196 + 24,
+            y: 88 + (index - (columnNodes.length - 1) / 2) * 62,
+          },
+        }))
+    ));
+};
+
+const selectedSceneGraphBaseNodes = computed<Node<SceneGraphNodeData>[]>(() => {
+  const imageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
+  if (imageId === null) return [];
+
+  type GraphNodeRecord = {
+    id: string;
+    imageId: number | null;
+    label: string;
+    depth: number;
+  };
+  const records = new Map<string, GraphNodeRecord>();
+  const ensureNode = (id: string, label: string, nodeImageId: number | null, depth: number) => {
+    const current = records.get(id);
+    if (current) {
+      if (current.depth === 0 || depth === 0) {
+        current.depth = 0;
+      } else if (current.depth > 0 && depth > 0) {
+        current.depth = Math.min(current.depth, depth);
+      } else if (current.depth < 0 && depth < 0) {
+        current.depth = Math.max(current.depth, depth);
+      } else if (depth > 0) {
+        current.depth = depth;
+      }
+      return current;
+    }
+    const record: GraphNodeRecord = {
+      id,
+      imageId: nodeImageId,
+      label,
+      depth,
+    };
+    records.set(id, record);
+    return record;
+  };
+
+  const incomingByTarget = new Map<number, SceneRelationEdge[]>();
+  for (const edge of selectedSceneGraphRelations.value) {
+    if (edge.targetId === null) continue;
+    const list = incomingByTarget.get(edge.targetId) ?? [];
+    list.push(edge);
+    incomingByTarget.set(edge.targetId, list);
+  }
+  const depthByImageId = new Map<number, number>([[imageId, 0]]);
+  const queue = [imageId];
+  while (queue.length) {
+    const targetId = queue.shift();
+    if (targetId === undefined) continue;
+    const nextDepth = (depthByImageId.get(targetId) ?? 0) + 1;
+    for (const edge of incomingByTarget.get(targetId) ?? []) {
+      if (edge.sourceId === null) continue;
+      const currentDepth = depthByImageId.get(edge.sourceId);
+      if (currentDepth !== undefined && currentDepth <= nextDepth) continue;
+      depthByImageId.set(edge.sourceId, nextDepth);
+      queue.push(edge.sourceId);
+    }
+  }
+
+  const imagesByNumber = new Map<number, DataAnnotationAssetNode>();
+  for (const image of flattenAssetImages(assetTree.value)) {
+    const id = assetNumericImageId(image);
+    if (id !== null) imagesByNumber.set(id, image);
+  }
+  const centerId = sceneGraphNodeId(imageId, String(imageId));
+  ensureNode(centerId, sceneImageLabel(imageId, imagesByNumber, `#${imageId}`), imageId, 0);
+
+  for (const edge of selectedSceneGraphRelations.value) {
+    const sourceId = sceneGraphNodeId(edge.sourceId, edge.sourceLabel);
+    const targetId = sceneGraphNodeId(edge.targetId, edge.targetLabel);
+    const sourceDepth = edge.sourceId === null
+      ? 1
+      : edge.sourceId === imageId
+        ? 0
+        : depthByImageId.get(edge.sourceId) ?? -1;
+    const targetDepth = edge.targetId === null
+      ? -1
+      : edge.targetId === imageId
+        ? 0
+        : depthByImageId.get(edge.targetId) ?? -1;
+    ensureNode(sourceId, edge.sourceLabel, edge.sourceId, sourceDepth);
+    ensureNode(targetId, edge.targetLabel, edge.targetId, targetDepth);
+  }
+
+  const columns = new Map<number, GraphNodeRecord[]>();
+  for (const record of records.values()) {
+    const list = columns.get(record.depth) ?? [];
+    list.push(record);
+    columns.set(record.depth, list);
+  }
+  const maxDepth = Math.max(...[...columns.keys()], 0);
+
+  const nodes: Node<SceneGraphNodeData>[] = [];
+  const pushNode = (record: GraphNodeRecord, variant: string) => {
+    nodes.push({
+      id: record.id,
+      position: { x: 0, y: 0 },
+      data: {
+        label: record.label,
+        imageId: record.imageId,
+        depth: record.depth,
+      },
+      style: {
+        width: `${SCENE_GRAPH_NODE_WIDTH}px`,
+        minHeight: `${SCENE_GRAPH_NODE_HEIGHT}px`,
+        padding: '7px 10px',
+        color: variant === 'center' ? '#111827' : '#303133',
+        fontSize: '12px',
+        lineHeight: '16px',
+        border: variant === 'center' ? '2px solid #409eff' : '1px solid #dcdfe6',
+        borderRadius: '5px',
+        background: variant === 'center' ? '#ecf5ff' : '#fff',
+        boxShadow: variant === 'center' ? '0 2px 7px rgba(64, 158, 255, 0.16)' : '0 1px 4px rgba(31, 41, 55, 0.12)',
+        textAlign: 'center',
+        whiteSpace: 'normal',
+      },
+    });
+  };
+  for (const [depth, columnRecords] of [...columns.entries()].sort((left, right) => right[0] - left[0])) {
+    const orderedRecords = [...columnRecords].sort((left, right) => (
+      String(left.label).localeCompare(String(right.label), 'zh-Hans-CN')
+    ));
+    orderedRecords.forEach((record) => {
+      pushNode(
+        record,
+        depth === 0 ? 'center' : 'ancestor',
+      );
+    });
+  }
+  return nodes;
+});
+
+const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => selectedSceneGraphRelations.value.map((edge, index) => {
+  const color = sceneRelationColor(edge.kind);
+  return {
+    id: `scene-graph:${edge.id}:${index}`,
+    source: sceneGraphNodeId(edge.sourceId, edge.sourceLabel),
+    target: sceneGraphNodeId(edge.targetId, edge.targetLabel),
+    type: 'elk',
+    animated: edge.kind === 'recognition',
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color,
+      width: 16,
+      height: 16,
+    },
+    style: {
+      stroke: color,
+      strokeWidth: edge.kind === 'recognition' ? 2 : 1.5,
+    },
+    data: {
+      relationEdge: edge,
+    },
+  };
+}));
+
+const selectedSceneGraphNodes = ref<Node<SceneGraphNodeData>[]>([]);
+const selectedSceneGraphEdges = ref<Edge<SceneGraphEdgeData>[]>([]);
+
+const layoutSelectedSceneGraph = async () => {
+  const baseNodes = selectedSceneGraphBaseNodes.value;
+  const baseEdges = selectedSceneGraphBaseEdges.value;
+  if (!baseNodes.length) {
+    selectedSceneGraphNodes.value = [];
+    selectedSceneGraphEdges.value = [];
+    return;
+  }
+
+  const fallbackNodes = buildFallbackSceneGraphNodes(baseNodes);
+  selectedSceneGraphNodes.value = fallbackNodes;
+  selectedSceneGraphEdges.value = baseEdges;
+  if (!baseEdges.length) return;
+
+  try {
+    const graph = await sceneRelationGraphElk.layout({
+      id: 'scene-relation-graph',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.edgeRouting': 'ORTHOGONAL',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '72',
+        'elk.spacing.nodeNode': '36',
+        'elk.layered.spacing.edgeNodeBetweenLayers': '28',
+        'elk.layered.spacing.edgeEdgeBetweenLayers': '16',
+        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+        'elk.layered.cycleBreaking.strategy': 'GREEDY',
+        'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      },
+      children: baseNodes.map((node) => ({
+        id: node.id,
+        width: SCENE_GRAPH_NODE_WIDTH,
+        height: SCENE_GRAPH_NODE_HEIGHT,
+      })),
+      edges: baseEdges.map((edge) => ({
+        id: edge.id,
+        sources: [edge.source],
+        targets: [edge.target],
+      })),
+    });
+    const positionById = new Map((graph.children ?? []).map((node: any) => [
+      node.id,
+      { x: Number(node.x ?? 0), y: Number(node.y ?? 0) },
+    ]));
+    const sectionsByEdgeId = new Map((graph.edges ?? []).map((edge: any) => [
+      edge.id,
+      Array.isArray(edge.sections) ? edge.sections : [],
+    ]));
+    selectedSceneGraphNodes.value = baseNodes.map((node) => ({
+      ...node,
+      position: positionById.get(node.id) ?? node.position,
+    }));
+    selectedSceneGraphEdges.value = baseEdges.map((edge) => ({
+      ...edge,
+      data: {
+        ...(edge.data ?? {}),
+        elkSections: sectionsByEdgeId.get(edge.id) ?? [],
+      },
+    }));
+  } catch {
+    selectedSceneGraphNodes.value = fallbackNodes;
+    selectedSceneGraphEdges.value = baseEdges;
+  }
+};
+
+const handleSceneGraphNodeClick = async ({ node }: { node: Node }) => {
+  const imageId = Number(node.data?.imageId);
+  if (!Number.isFinite(imageId) || imageId <= 0) return;
+  const image = findAssetImageByNumericId(assetTree.value, imageId);
+  if (!image) return;
+  selectedAssetId.value = image.id;
+  await nextTick();
+  assetTreeRef.value?.setCurrentKey?.(image.id);
+  scrollCurrentTreeNodeIntoView('asset-tree');
+};
+
+const handleSceneGraphEdgeClick = ({ edge }: { edge: Edge }) => {
+  const relationEdge = edge.data?.relationEdge as SceneRelationEdge | undefined;
+  if (relationEdge) void selectSceneRelationEdge(relationEdge);
+};
+
+const collectShapeAncestorIds = (
+  shapes: DataAnnotationShape[],
+  id: string,
+  ancestors: string[] = [],
+): string[] => {
+  for (const shape of shapes) {
+    if (shape.id === id) return ancestors;
+    const found = collectShapeAncestorIds(shape.children ?? [], id, [...ancestors, shape.id]);
+    if (found.length || (shape.children ?? []).some((child) => child.id === id)) return found;
+  }
+  return [];
+};
+
+const selectSceneRelationEdge = async (edge: SceneRelationEdge) => {
+  const focusImage = findAssetImageByNumericId(assetTree.value, edge.focusImageId);
+  if (focusImage) {
+    selectedAssetId.value = focusImage.id;
+    await nextTick();
+    assetTreeRef.value?.setCurrentKey?.(focusImage.id);
+    scrollCurrentTreeNodeIntoView('asset-tree');
+  }
+  if (edge.focusShapeId && focusImage && findShapeById(focusImage.shapes ?? [], edge.focusShapeId)) {
+    selectedShapeId.value = edge.focusShapeId;
+    expandedShapeNodeIds.value = Array.from(new Set([
+      ...expandedShapeNodeIds.value,
+      ...collectShapeAncestorIds(focusImage.shapes ?? [], edge.focusShapeId),
+    ]));
+    await nextTick();
+    shapeTreeRef.value?.setCurrentKey?.(edge.focusShapeId);
+    scrollCurrentTreeNodeIntoView('shape-tree');
+  }
+};
+
 const frameStructureDiagnosticsForNode = (node: DataAnnotationAssetNode) => {
   const imageId = assetNumericImageId(node);
   if (imageId === null) return [];
@@ -8111,18 +8782,38 @@ const assetTreeNodeClasses = (node: DataAnnotationAssetNode) => {
   return {
     'is-image': node.type === 'image',
     'is-virtual': isVirtualAssetTreeNode(node),
+    'is-recognition-cycle-group': isRecognitionCycleGroupId(node.id),
+    'has-recognition-projection-issue': Boolean(node.recognitionProjectionIssue),
     'has-diagnostic-error': level === 'error',
     'has-diagnostic-warning': level === 'warning',
     'has-diagnostic-suggestion': level === 'suggestion',
   };
 };
 
+const recognitionProjectionIssueLabel = (issue: DataAnnotationAssetNode['recognitionProjectionIssue']) => ({
+  self: '自',
+  cycle: '环',
+  'missing-parent': '缺',
+}[issue ?? 'cycle']);
+
+const recognitionProjectionIssueLine = (issue: DataAnnotationAssetNode['recognitionProjectionIssue']) => ({
+  self: '识别父边指向自身，不能投影为子结构',
+  cycle: '识别父边形成互指或循环，作为歧义组保留在当前层',
+  'missing-parent': '识别父边指向的场景不存在，暂不能投影为子结构',
+}[issue ?? 'cycle']);
+
 const assetTreeNodeTitle = (node: DataAnnotationAssetNode) => {
+  if (node.type === 'folder' && isRecognitionCycleGroupId(node.id)) {
+    return '识别父边形成强连通互指组，组内成员不能投影成单向父子结构';
+  }
   if (node.type !== 'image') return '';
   const diagnostics = frameStructureDiagnosticsForNode(node);
   const layerTitle = frameLayerTitle(inferredFrameLayer(node));
-  if (!diagnostics.length) return layerTitle;
-  return [layerTitle, ...diagnostics.map(frameStructureDiagnosticLine)].filter(Boolean).join('\n');
+  return [
+    layerTitle,
+    node.recognitionProjectionIssue ? recognitionProjectionIssueLine(node.recognitionProjectionIssue) : '',
+    ...diagnostics.map(frameStructureDiagnosticLine),
+  ].filter(Boolean).join('\n');
 };
 
 const findAssetAncestorFolderIds = (
@@ -8200,6 +8891,13 @@ const selectedImageNode = computed(() => {
   const node = selectedAssetNode.value;
   return node?.type === 'image' ? node : null;
 });
+watch(
+  [selectedSceneGraphBaseNodes, selectedSceneGraphBaseEdges],
+  () => {
+    void layoutSelectedSceneGraph();
+  },
+  { immediate: true },
+);
 const selectedImageTitleText = computed(() => (
   selectedImageNode.value
     ? `${assetImageIdMark(selectedImageNode.value)} ${selectedImageNode.value.title}`
@@ -8264,7 +8962,7 @@ const findShapeById = (shapes: DataAnnotationShape[], id: string | null): DataAn
 const isLayerTreeRootId = (id: string) => (LAYER_TREE_ROOT_IDS as readonly string[]).includes(id);
 
 const filterExistingAssetNodeIds = (ids: string[]) => ids.filter((id) => (
-  isLayerTreeRootId(id) || Boolean(findAssetNode(assetTree.value, id))
+  isLayerTreeRootId(id) || isRecognitionCycleGroupId(id) || Boolean(findAssetNode(assetTree.value, id))
 ));
 const filterExistingShapeNodeIds = (ids: string[]) => {
   const image = selectedImageNode.value;
@@ -8705,8 +9403,13 @@ const frameLayerStyle = (layer: FrameLayer) => ({
   3: { color: '#303133' },
 }[layer]);
 
+const RECOGNITION_CYCLE_GROUP_PREFIX = '__recognition_cycle__';
+const isRecognitionCycleGroupId = (id: string | null | undefined) => (
+  typeof id === 'string' && id.startsWith(RECOGNITION_CYCLE_GROUP_PREFIX)
+);
+
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
-  Boolean(node && (LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id))
+  Boolean(node && ((LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id) || isRecognitionCycleGroupId(node.id)))
 );
 
 const assetRecognitionParentId = (node: DataAnnotationAssetNode) => {
@@ -8719,10 +9422,19 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
     legacyParentImageId: string | null;
     children: SceneRecord[];
     order: number;
+    issue?: DataAnnotationAssetNode['recognitionProjectionIssue'];
+  };
+  type SceneCycleGroup = {
+    id: string;
+    records: SceneRecord[];
+    children: SceneRecord[];
+    order: number;
+    layer: FrameLayer;
   };
   const records = new Map<string, SceneRecord>();
   const recordsByNumber = new Map<number, SceneRecord>();
   const ordered: SceneRecord[] = [];
+  const displayOrderById = new Map<string, number>();
 
   const visit = (items: DataAnnotationAssetNode[], nearestSceneParentId: string | null) => {
     for (const node of items) {
@@ -8730,7 +9442,12 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
         visit(node.children ?? [], nearestSceneParentId);
         continue;
       }
-      const record: SceneRecord = { node, legacyParentImageId: nearestSceneParentId, children: [], order: ordered.length };
+      const record: SceneRecord = {
+        node,
+        legacyParentImageId: nearestSceneParentId,
+        children: [],
+        order: ordered.length,
+      };
       records.set(node.id, record);
       const imageId = assetNumericImageId(node);
       if (imageId !== null) recordsByNumber.set(imageId, record);
@@ -8740,24 +9457,148 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
   };
   visit(nodes, null);
 
-  const parentRecordOf = (record: SceneRecord) => {
+  const parentRecordOf = (record: SceneRecord, markIssue = true): SceneRecord | null => {
+    const imageId = assetNumericImageId(record.node);
     const recognitionParentId = assetRecognitionParentId(record.node);
-    const recognitionParent = recognitionParentId !== null ? recordsByNumber.get(recognitionParentId) : null;
-    if (recognitionParent && recognitionParent !== record) return recognitionParent;
+    if (recognitionParentId !== null) {
+      if (imageId !== null && recognitionParentId === imageId) {
+        if (markIssue) record.issue = 'self';
+        return null;
+      }
+      const recognitionParent = recordsByNumber.get(recognitionParentId) ?? null;
+      if (!recognitionParent) {
+        if (markIssue) record.issue = 'missing-parent';
+        return null;
+      }
+      return recognitionParent === record ? null : recognitionParent;
+    }
     return record.legacyParentImageId ? records.get(record.legacyParentImageId) ?? null : null;
   };
 
+  const outgoing = new Map<string, string[]>();
+  for (const record of ordered) {
+    const parent = parentRecordOf(record, false);
+    if (!parent) {
+      parentRecordOf(record, true);
+      continue;
+    }
+    const list = outgoing.get(parent.node.id) ?? [];
+    list.push(record.node.id);
+    outgoing.set(parent.node.id, list);
+  }
+
+  const sccs: SceneRecord[][] = [];
+  const indexById = new Map<string, number>();
+  const lowlinkById = new Map<string, number>();
+  const stack: SceneRecord[] = [];
+  const stackIds = new Set<string>();
+  let tarjanIndex = 0;
+
+  const strongConnect = (record: SceneRecord) => {
+    indexById.set(record.node.id, tarjanIndex);
+    lowlinkById.set(record.node.id, tarjanIndex);
+    tarjanIndex += 1;
+    stack.push(record);
+    stackIds.add(record.node.id);
+
+    for (const targetId of outgoing.get(record.node.id) ?? []) {
+      const target = records.get(targetId);
+      if (!target) continue;
+      if (!indexById.has(targetId)) {
+        strongConnect(target);
+        lowlinkById.set(
+          record.node.id,
+          Math.min(lowlinkById.get(record.node.id) ?? 0, lowlinkById.get(targetId) ?? 0),
+        );
+      } else if (stackIds.has(targetId)) {
+        lowlinkById.set(
+          record.node.id,
+          Math.min(lowlinkById.get(record.node.id) ?? 0, indexById.get(targetId) ?? 0),
+        );
+      }
+    }
+
+    if (lowlinkById.get(record.node.id) !== indexById.get(record.node.id)) return;
+    const component: SceneRecord[] = [];
+    while (stack.length) {
+      const item = stack.pop();
+      if (!item) break;
+      stackIds.delete(item.node.id);
+      component.push(item);
+      if (item === record) break;
+    }
+    sccs.push(component);
+  };
+
+  for (const record of ordered) {
+    if (!indexById.has(record.node.id)) strongConnect(record);
+  }
+
+  const cycleGroupByRecordId = new Map<string, SceneCycleGroup>();
+  const cycleGroups: SceneCycleGroup[] = [];
+  for (const component of sccs) {
+    if (component.length <= 1) continue;
+    const recordsInOrder = [...component].sort((left, right) => left.order - right.order);
+    const memberIds = recordsInOrder
+      .map((record) => assetNumericImageId(record.node))
+      .filter((id): id is number => id !== null);
+    const groupId = `${RECOGNITION_CYCLE_GROUP_PREFIX}${memberIds.length ? memberIds.join('_') : recordsInOrder.map((record) => record.node.id).join('_')}`;
+    const group: SceneCycleGroup = {
+      id: groupId,
+      records: recordsInOrder,
+      children: [],
+      order: Math.min(...recordsInOrder.map((record) => record.order)),
+      layer: recordsInOrder.reduce<FrameLayer>((layer, record) => (
+        Math.min(layer, inferredFrameLayer(record.node)) as FrameLayer
+      ), 3),
+    };
+    for (const record of recordsInOrder) {
+      record.issue = 'cycle';
+      cycleGroupByRecordId.set(record.node.id, group);
+    }
+    cycleGroups.push(group);
+    displayOrderById.set(group.id, group.order);
+  }
+
   const sceneRoots: SceneRecord[] = [];
   for (const record of ordered) {
+    if (cycleGroupByRecordId.has(record.node.id)) continue;
     const parent = parentRecordOf(record);
-    if (parent) parent.children.push(record);
-    else sceneRoots.push(record);
+    const parentGroup = parent ? cycleGroupByRecordId.get(parent.node.id) : null;
+    if (parentGroup) {
+      parentGroup.children.push(record);
+    } else if (parent) {
+      parent.children.push(record);
+    } else {
+      sceneRoots.push(record);
+    }
   }
 
   const cloneSceneRecord = (record: SceneRecord): DataAnnotationAssetNode => ({
     ...record.node,
+    recognitionProjectionIssue: record.issue,
     children: record.children.map(cloneSceneRecord),
   });
+
+  const cloneCycleGroup = (group: SceneCycleGroup): DataAnnotationAssetNode => {
+    const memberLabels = group.records.map((record) => {
+      const imageId = assetNumericImageId(record.node);
+      return imageId === null ? record.node.title : `#${imageId}`;
+    });
+    return {
+      id: group.id,
+      type: 'folder',
+      title: `互指组 ${memberLabels.join(' ↔ ')}`,
+      recognitionCycleGroupId: group.id,
+      children: [
+        ...group.records.map((record) => ({
+          ...cloneSceneRecord({ ...record, children: [] }),
+          recognitionCycleGroupId: group.id,
+        })),
+        ...group.children.map(cloneSceneRecord),
+      ],
+    };
+  };
 
   const rootsByLayer: Record<FrameLayer, DataAnnotationAssetNode[]> = {
     1: [],
@@ -8765,12 +9606,17 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
     3: [],
   };
   for (const record of sceneRoots) {
-    rootsByLayer[inferredFrameLayer(record.node)].push(cloneSceneRecord(record));
+    const node = cloneSceneRecord(record);
+    rootsByLayer[inferredFrameLayer(record.node)].push(node);
+    displayOrderById.set(node.id, record.order);
+  }
+  for (const group of cycleGroups) {
+    rootsByLayer[group.layer].push(cloneCycleGroup(group));
   }
   for (const layer of [1, 2, 3] as FrameLayer[]) {
     rootsByLayer[layer].sort((left, right) => {
-      const leftOrder = records.get(left.id)?.order ?? 0;
-      const rightOrder = records.get(right.id)?.order ?? 0;
+      const leftOrder = displayOrderById.get(left.id) ?? records.get(left.id)?.order ?? 0;
+      const rightOrder = displayOrderById.get(right.id) ?? records.get(right.id)?.order ?? 0;
       return leftOrder - rightOrder;
     });
   }
@@ -14719,6 +15565,10 @@ const finishShapeDrag = () => {
   border-left-color: #52c41a;
 }
 
+.asset-tree-node.has-recognition-projection-issue {
+  border-left-color: #faad14;
+}
+
 .asset-node-id {
   flex: 0 0 auto;
   min-width: 28px;
@@ -14730,6 +15580,19 @@ const finishShapeDrag = () => {
 .asset-node-title {
   flex: 0 1 auto;
   min-width: 0;
+}
+
+.asset-node-relation-badge {
+  flex: 0 0 auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  color: #a16207;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  background: #fef3c7;
+  border-radius: 3px;
 }
 
 .asset-context-menu {
@@ -14762,6 +15625,180 @@ const finishShapeDrag = () => {
 
 .shape-context-menu {
   min-width: 72px;
+}
+
+.scene-relation-graph {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 224px;
+  min-height: 224px;
+  background: #fafafa;
+}
+
+.scene-relation-graph.is-resizing {
+  cursor: row-resize;
+}
+
+.scene-relation-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 8px 0;
+  background: #fff;
+  border-top: 1px solid #ebeef5;
+}
+
+.scene-relation-tab {
+  height: 24px;
+  padding: 0 10px;
+  color: #606266;
+  font-size: 12px;
+  line-height: 22px;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+}
+
+.scene-relation-tab:hover {
+  color: #409eff;
+}
+
+.scene-relation-tab.is-active {
+  color: #409eff;
+  background: #ecf5ff;
+  border-color: #b3d8ff;
+  border-bottom-color: #ecf5ff;
+}
+
+.scene-relation-flow {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.scene-relation-flow :deep(.vue-flow__node) {
+  cursor: pointer;
+}
+
+.scene-relation-flow :deep(.vue-flow__node-default) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scene-relation-flow :deep(.vue-flow__handle) {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+:global(.scene-relation-flow .vue-flow__handle) {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.scene-relation-flow :deep(.vue-flow__edge) {
+  cursor: pointer;
+}
+
+.scene-relation-flow :deep(.vue-flow__controls) {
+  transform: scale(0.72);
+  transform-origin: left bottom;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.scene-relation-empty {
+  position: absolute;
+  left: 12px;
+  top: 38px;
+  color: #909399;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.scene-relation-resizer {
+  height: 7px;
+  border-top: 1px solid #ebeef5;
+  border-bottom: 1px solid #ebeef5;
+  background: linear-gradient(to bottom, #fafafa, #f2f3f5);
+  cursor: row-resize;
+}
+
+.scene-relation-resizer:hover,
+.scene-relation-resizer.is-resizing {
+  background: #ecf5ff;
+  border-color: #c6e2ff;
+}
+
+.scene-edge-column {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.scene-edge-heading {
+  color: #606266;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scene-edge-row {
+  display: inline-grid;
+  grid-template-columns: auto minmax(52px, auto) auto minmax(52px, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 4px;
+  color: #303133;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.scene-edge-row:hover {
+  background: #ecf5ff;
+}
+
+.scene-edge-type {
+  padding: 0 4px;
+  color: #409eff;
+  background: #ecf5ff;
+  border-radius: 3px;
+}
+
+.scene-edge-main,
+.scene-edge-target,
+.scene-edge-shape {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scene-edge-target {
+  color: #1f7a1f;
+}
+
+.scene-edge-shape {
+  max-width: 120px;
+  color: #909399;
+}
+
+.scene-edge-arrow,
+.scene-edge-empty {
+  color: #909399;
+}
+
+.scene-edge-empty {
+  font-size: 12px;
 }
 
 .annotation-workbench {

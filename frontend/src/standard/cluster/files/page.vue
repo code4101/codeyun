@@ -401,7 +401,7 @@
         <div v-if="genericPreviewError" class="generic-file-preview-empty is-error">
           {{ genericPreviewError }}
         </div>
-        <GenericFileViewer
+        <AsyncGenericFileViewer
           v-else
           class="generic-file-preview-viewer"
           :file-blob="genericPreviewBlob"
@@ -454,7 +454,6 @@ import {
   type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
 import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
-import GenericFileViewer from '@/components/GenericFileViewer.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { taskStore } from '@/store/taskStore';
@@ -526,6 +525,7 @@ const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;
 const STREAMABLE_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm']);
 const STREAMABLE_VIDEO_EXTENSIONS = ['.mp4', '.webm'];
 const DEFAULT_BACKEND_SORT_PROGRAM = createDefaultGallerySortProgram();
+const AsyncGenericFileViewer = defineAsyncComponent(() => import('@/components/GenericFileViewer.vue'));
 const AsyncGallerySortProgramBar = defineAsyncComponent(() => import('@/components/GallerySortProgramBar.vue'));
 
 const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
