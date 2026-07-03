@@ -1893,7 +1893,7 @@ onUnmounted(() => {
         ref="serviceTableRef"
         :data="serviceItems"
         v-loading="loading"
-        table-layout="fixed"
+        table-layout="auto"
         :fit="false"
         class="runtime-table"
         row-key="id"
@@ -1977,7 +1977,7 @@ onUnmounted(() => {
       <el-table
         :data="sortedJobItems"
         v-loading="loading"
-        table-layout="fixed"
+        table-layout="auto"
         :fit="false"
         class="runtime-table"
         row-key="id"
@@ -2502,7 +2502,7 @@ onUnmounted(() => {
 }
 
 .runtime-table {
-  width: 100%;
+  width: max-content;
   max-width: 100%;
 }
 

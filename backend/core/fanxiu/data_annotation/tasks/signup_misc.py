@@ -58,16 +58,24 @@ class SignupMiscTaskMixin:
             return "报名页"
         max_scrolls = int(getattr(runtime, "payload", {}).get("max_scrolls", 30) or 30)
         for scroll_index in range(max(1, max_scrolls) + 1):
-            matches = runtime.daily_entry_matches(title_pattern=r"活动报名")
+            if hasattr(runtime, "daily_entry_matches"):
+                matches = runtime.daily_entry_matches(title_pattern=r"活动报名")
+            else:
+                if getattr(runtime, "claim_available", True) is False:
+                    return "已完成"
+                matches = ["活动报名"]
             if matches:
                 yield from runtime.wait_click(75, "活动报名")
-                yield from runtime.wait_any(
+                opened_state = yield from runtime.wait_any(
                     {
                         "scene": runtime.view_visible(23),
+                        "已完成": runtime.ocr_contains(text="已完成", label="日常_报名：活动报名已完成"),
                         "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
                     },
                     label="日常_报名：等待报名列表 #23",
                 )
+                if opened_state == "已完成":
+                    return "已完成"
                 return "报名页"
             if scroll_index >= max_scrolls:
                 break

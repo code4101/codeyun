@@ -1853,8 +1853,10 @@ class DailyFoundationTaskMixin:
                 yield from runtime.wait_action_settle(2.0)
         with self._lock:
             self._set_status_locked("running", f"{label}：等待返回世界 #34", phase="world_side_scene_leave_wait_world", current_scene=34)
-        yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：等待返回世界 #34")
-        self._set_tick_frame(ctx, runtime.cur_frame(update=False))
+        wait_runtime = runtime if hasattr(runtime, "wait_view") else self._fanxiu_runtime(ctx, stop_event=stop_event)
+        yield from wait_runtime.wait_view(34, timeout=12.0, label=f"{label}：等待返回世界 #34")
+        if wait_runtime is runtime and hasattr(wait_runtime, "cur_frame"):
+            self._set_tick_frame(ctx, wait_runtime.cur_frame(update=False))
         ctx["_go_scene_known_scene_id"] = 34
         return True
 
@@ -2719,7 +2721,7 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([330, 319, 320, 321, 322, 323, 324, 331, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([330, 319, 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 330:
             self._log("action", "日常_奇袭魔界：起点检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")

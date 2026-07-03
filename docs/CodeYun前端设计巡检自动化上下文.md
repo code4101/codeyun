@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "da1575be28606b8d2a9199603cb06f3b418e778b"
-last_audited_at: "2026-07-03T16:38:10.7544454+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-da1575be/report.md"
-last_frontend_commit_summary: "完成 4422a85e..da1575be：重复文件前置条件复验通过，并收回退款历史首屏解释占位。"
-audited_commit_count: 68
+last_audited_commit: "90ed802e5c3660ae3a316d8c8a5620bdc411872e"
+last_audited_at: "2026-07-03T22:35:56.8875503+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-90ed802e/report.md"
+last_frontend_commit_summary: "完成 da1575be..90ed802e：收回运行管理状态表的填满型回归，并复验退款历史与复制节点对话框。"
+audited_commit_count: 69
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-03（第五轮）
+
+- 完整范围：`da1575be28606b8d2a9199603cb06f3b418e778b..90ed802e5c3660ae3a316d8c8a5620bdc411872e`
+- 覆盖提交：`90ed802e5c3660ae3a316d8c8a5620bdc411872e`
+- 前端入口提交：`90ed802e5c3660ae3a316d8c8a5620bdc411872e`
+- 入口如何牵引到旧问题：这次提交同时碰了 `cluster/runtime`、`attendance/orders` 和 `NoteCopyDialog`。其中 `attendance/orders` 与复制对话框的方向都延续了前几轮的减法：退款历史继续静默待载，无分类节点继续保留空语义。真正被牵出的旧问题落在 `cluster/runtime`：本轮后端/运行时调整并不要求前端扩容，但提交顺手把服务/作业状态表从“按内容收口”改回了“填满容器”，让运行状态表再次出现大块表内留白。
+- 本轮减法：在 [`frontend/src/standard/cluster/tasks/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/cluster/tasks/page.vue) 把服务表和作业表的 `table-layout` 从 `fixed` 收回到 `auto`，并把 `.runtime-table` 从 `width: 100%` 收回到 `width: max-content`。没有新增功能、入口、字段、状态或解释；`attendance/orders` 与 `NoteCopyDialog` 只做复验，不追加新控件。
+- 信息量保持：`cluster/runtime` 仍保留设备切换、服务/作业状态、状态按钮和下次触发；减少的是把右侧留白塞进表内的表现层回归。`attendance/orders` 仍保留查询输入、退款历史和分页；`NoteCopyDialog` 仍保留标题、时间、权重、分类、形态、阶段、关联关系与内容编辑，只是在无分类节点上稳定显示 `分类:-`。
+- 概念图/线框图：报告里的 Mermaid 把三条入口统一收敛成一个基础判断：`对象/状态事实先成立，再展开下游工作台；不要为内部节奏或空语义新增解释型常驻控件`。ASCII 线框图则直接对比了 `cluster/runtime` 的“表内空白”与“表外空白”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-90ed802e/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `cluster/runtime`、`attendance/orders` 与 `/doc/55491 -> 复制节点` 完成真实页面取证。`cluster/runtime` 宽屏与普通桌面表宽都收回到 `910px`，窄屏收回到 `568px`，三视口 `bodyOverflowX = 0` 且 `hasNextColumn = true`；`attendance/orders` 三视口都满足 `historyTableExists = true`、`pendingShellExists = false`、`historyPaginationExists = true`、`bodyOverflowX = 0`；复制节点对话框满足 `dialogTitle = 复制节点`、`categoryLine` 含 `分类:-`、`bodyOverflowX = 0`。同时 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`cluster/runtime` 是前端表现层 / 状态表投影回归；`attendance/orders` 与 `NoteCopyDialog` 本轮未发现新的 UI 复杂度问题。
+- 剩余风险：复制节点对话框本轮用 `/doc/55491` 入口完成真实复验，尚未再补 `notes/center` 详情面板里的同组件第二处截图；但组件本体一致，本轮改动也未触发布局重排，风险较低。
+- 处理结果：本轮已完成完整增量范围的提交归类、页面级建模、真实多视口取证、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `90ed802e5c3660ae3a316d8c8a5620bdc411872e`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-03（第四轮）
 

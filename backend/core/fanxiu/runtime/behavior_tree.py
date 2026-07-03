@@ -842,6 +842,12 @@ def wait_fanxiu_local_manual_job(
                     "job_id": resolved_job_id,
                     "runtime_status": status,
                 }
+            return {
+                "done": True,
+                "result": "removed_after_idle",
+                "job_id": resolved_job_id,
+                "runtime_status": status,
+            }
         if time.time() >= deadline:
             logs = [item for item in last_status.get("logs") or [] if isinstance(item, dict)]
             has_matching_log = any(

@@ -1607,7 +1607,21 @@ class DailyChallengeTaskMixin:
 
     def _daily_assistant_text_is_one_key_result(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        return bool(re.search(r"神物园自动收取|仙府资源助手|本次获得的道具|自动兑换", compact) and "退出" in compact)
+        return bool(
+            (re.search(r"神物园自动收取|仙府资源助手|本次获得的道具|自动兑换", compact) and "退出" in compact)
+            or (
+                "退出" in compact
+                and "今日已完成" in compact
+                and any(marker in compact for marker in ("宗门任务", "宗门祈福", "宗门俸禄", "宗门请安"))
+            )
+        )
+
+    def _daily_assistant_text_is_one_key_progress(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return bool(
+            ("执行进度" in compact and ("剩余时间" in compact or "正在" in compact))
+            or ("助手正在" in compact and ("执行进度" in compact or "寻路" in compact))
+        )
 
     def _daily_assistant_one_key_progress_seconds(self, text: str) -> int | None:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -1760,6 +1774,8 @@ class DailyChallengeTaskMixin:
                 yield from runtime.wait_click(276, "是")
                 yield from runtime.wait_action_settle(float(payload.get("assistant_one_key_confirm_settle_seconds") or 2.0))
                 break
+            if scene_id == 277 or self._daily_assistant_text_is_one_key_progress(text):
+                break
             if time.monotonic() - start >= confirm_timeout:
                 if self._daily_assistant_scene_or_text_is_list(scene_id, text):
                     yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
@@ -1787,9 +1803,14 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = runtime.current_scene([275, 204, 69, 34], update=True)
+            scene_id, score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
+            if scene_id == 237:
+                yield from self._daily_assistant_close_youli_result(runtime, payload)
+                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=34)
+                self._log("success", "日常_助手：已关闭游历结果页并返回世界")
+                return "success"
             if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
                 if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
                     raise RuntimeError("日常_助手：一键执行结果汇总已出现，但缺少 #275「退出」标注")
@@ -1853,7 +1874,7 @@ class DailyChallengeTaskMixin:
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
                 return
-            if scene_id == 277 or "时间" in _sanitize_ocr_text(text):
+            if scene_id == 277 or self._daily_assistant_text_is_one_key_progress(text):
                 seconds = self._daily_assistant_one_key_progress_seconds(text)
                 if seconds is None:
                     wait_seconds = 10.0
@@ -1901,18 +1922,92 @@ class DailyChallengeTaskMixin:
             if False:
                 yield None
             return
-        if current_scene == 204:
+        scene_id, _score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
+            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+            image275 = images.get(275)
+            if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
+                raise RuntimeError("日常_助手：一键执行结果汇总仍在前台，但缺少 #275「退出」标注")
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    "日常_助手：一键执行后返回日常页",
-                    phase="daily_assistant_one_key_return_daily",
-                    current_scene=204,
+                    "日常_助手：收尾时关闭一键执行结果汇总",
+                    phase="daily_assistant_return_close_result",
+                    current_scene=275,
                 )
-                self._log_locked("action", "日常_助手：点击 #204「返回」")
-            yield from runtime.wait_click(204, "返回")
-            yield from runtime.wait_view(69, timeout=float(payload.get("assistant_one_key_return_daily_timeout") or 15.0), label="日常_助手：等待返回日常页")
-            current_scene = 69
+                self._log_locked("action", "日常_助手：点击 #275「退出」")
+            runtime.click_shape_center(image275, "退出")
+            yield from self._wait_daily_assistant_list_state(
+                ctx,
+                stop_event,
+                timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
+                label="日常_助手：等待结果汇总返回小助手总览",
+            )
+            current_scene = 204
+        elif scene_id in {237, 204, 69, 34}:
+            current_scene = int(scene_id)
+        if current_scene == 204:
+            for _attempt in range(3):
+                scene_id, _score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
+                    images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+                    image275 = images.get(275)
+                    if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
+                        raise RuntimeError("日常_助手：一键执行结果汇总仍在前台，但缺少 #275「退出」标注")
+                    with self._lock:
+                        self._set_status_locked(
+                            "running",
+                            "日常_助手：收尾时关闭一键执行结果汇总",
+                            phase="daily_assistant_return_close_result",
+                            current_scene=275,
+                        )
+                        self._log_locked("action", "日常_助手：点击 #275「退出」")
+                    runtime.click_shape_center(image275, "退出")
+                    yield from self._wait_daily_assistant_list_state(
+                        ctx,
+                        stop_event,
+                        timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
+                        label="日常_助手：等待结果汇总返回小助手总览",
+                    )
+                    current_scene = 204
+                    continue
+                if scene_id == 237:
+                    yield from self._daily_assistant_close_youli_result(runtime, payload)
+                    current_scene = 34
+                    break
+                if scene_id in {69, 34}:
+                    current_scene = int(scene_id)
+                    break
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        "日常_助手：一键执行后返回日常页",
+                        phase="daily_assistant_one_key_return_daily",
+                        current_scene=204,
+                    )
+                    self._log_locked("action", "日常_助手：点击 #204「返回」")
+                images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+                image204 = images.get(204)
+                if not isinstance(image204, dict) or self._find_shape(image204, "返回") is None:
+                    raise RuntimeError("日常_助手：缺少 #204「返回」标注，无法退出小助手总览")
+                runtime.click_shape_center(image204, "返回")
+                landed = yield from runtime.wait_view(
+                    69,
+                    34,
+                    275,
+                    237,
+                    204,
+                    timeout=float(payload.get("assistant_one_key_return_daily_timeout") or 15.0),
+                    label="日常_助手：等待返回日常页",
+                )
+                current_scene = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+                if current_scene in {69, 34}:
+                    break
+        if current_scene == 237:
+            yield from self._daily_assistant_close_youli_result(runtime, payload)
+            current_scene = 34
         if current_scene == 69 and bool(payload.get("assistant_return_world", True)):
             with self._lock:
                 self._set_status_locked(
@@ -1924,6 +2019,30 @@ class DailyChallengeTaskMixin:
                 self._log_locked("action", "日常_助手：点击 #69「退出」")
             yield from runtime.wait_click(69, "退出")
             yield from runtime.wait_view(34, timeout=float(payload.get("assistant_one_key_return_world_timeout") or 25.0), label="日常_助手：等待返回世界")
+
+    def _daily_assistant_close_youli_result(self, runtime: Any, payload: dict[str, Any]):
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                "日常_助手：关闭游历结果页",
+                phase="daily_assistant_close_youli_result",
+                current_scene=237,
+            )
+            self._log_locked("action", "日常_助手：点击 #237「确定」关闭游历结果")
+        yield from runtime.wait_click(237, "确定")
+        landed = yield from runtime.wait_view(228, 204, 69, 34, timeout=float(payload.get("assistant_youli_result_close_timeout") or 15.0), label="日常_助手：等待游历结果关闭")
+        landed_scene_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+        if landed_scene_id == 228:
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    "日常_助手：从游历页返回世界",
+                    phase="daily_assistant_return_from_youli",
+                    current_scene=228,
+                )
+                self._log_locked("action", "日常_助手：点击 #228「返回」")
+            yield from runtime.wait_click(228, "返回")
+            yield from runtime.wait_view(34, 69, timeout=float(payload.get("assistant_youli_return_timeout") or 18.0), label="日常_助手：等待离开游历页")
 
     def _execute_daily_assistant_task(
         self,
@@ -1938,8 +2057,23 @@ class DailyChallengeTaskMixin:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
 
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([204, 123, 122, 121, 86, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([275, 204, 237, 123, 122, 121, 86, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        image275 = images.get(275)
+        image275_exit = self._find_shape(image275, "退出") if isinstance(image275, dict) else None
+        image275_exit_score = (
+            float(self._shape_score(ctx, image275, image275_exit, frame) or 0.0)
+            if isinstance(image275, dict) and isinstance(image275_exit, dict)
+            else 0.0
+        )
+        if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text) or image275_exit_score >= 80.0:
+            yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
+            self._log("success", "日常_助手：启动时关闭遗留一键执行结果页")
+            return "success"
+        if scene_id == 237:
+            yield from self._daily_assistant_close_youli_result(runtime, payload)
+            scene_id, _score, frame = runtime.current_scene([204, 69, 34], update=True)
+            text = runtime.ocr_text(frame)
         if scene_id == 86 or self._leave_scene_confirm_text(text):
             image86 = images.get(86)
             confirm_shape = self._find_shape(image86, "确认") if isinstance(image86, dict) else None
