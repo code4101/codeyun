@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "64b872eb783ae8b4a7706650a121f3b14ac7ed07"
-last_audited_at: "2026-07-03T06:32:43.6489696+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-64b872eb/report.md"
-last_frontend_commit_summary: "完成 fd0c1918..64b872eb：Notes 列表页把后端筛选真正收回摘要态，编辑后执行/恢复默认都会自动回收。"
-audited_commit_count: 65
+last_audited_commit: "4422a85ea5cc237017e9080fd5373a09e4aed63e"
+last_audited_at: "2026-07-03T12:49:24.0406340+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-4422a85/report.md"
+last_frontend_commit_summary: "完成 64b872eb..4422a85e：浏览文件与重复文件工作台在无对象时收回空壳 chrome，相关笔记链路复验通过。"
+audited_commit_count: 67
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-03（第三轮）
+
+- 完整范围：`64b872eb783ae8b4a7706650a121f3b14ac7ed07..4422a85ea5cc237017e9080fd5373a09e4aed63e`
+- 覆盖提交：`686bba369cb42e237e9e2632c5c9fae0fa1e80d3`、`4422a85ea5cc237017e9080fd5373a09e4aed63e`
+- 前端入口提交：`686bba369cb42e237e9e2632c5c9fae0fa1e80d3`、`4422a85ea5cc237017e9080fd5373a09e4aed63e`
+- 入口如何牵引到旧问题：这两次提交都在把文件/预览/笔记工作台做厚：`cluster/files` 把普通文件预览并入媒体工作区，`cluster/treesize` 把重复文件分析独立成子页，`notes/center` 继续打通共享笔记与文件预览。真实页面复验后，暴露出来的不是“功能少”，而是同一条对象链路上的旧问题：目录里没有可预览媒体时，媒体工作台的侧栏、视图切换、缩放、分页仍先出现；还停在设备根目录时，重复文件分析页的规则栏、零统计和分页也已经常驻。两者本质上都是“对象事实未成立，下游工作台先出现”，因此本轮沿同一业务链路把这两个旧壳层一起收回，而不是停留在提交表面的新增预览能力。
+- 本轮减法：在 [`frontend/src/standard/cluster/files/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/cluster/files/page.vue) 只把真正可预览的 `image / media / pdf` 送入媒体工作台，并在当前目录无可预览媒体时隐藏媒体专用 chrome，让普通文件只留在“其他文件”表里；在 [`frontend/src/standard/cluster/storage/StorageDuplicatePane.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/cluster/storage/StorageDuplicatePane.vue) 把“重复文件”子页收回成前置条件态，只有进入具体磁盘或目录后才显示分析器，未进入范围时只保留一句 `请先进入具体磁盘或目录，再分析重复文件。`
+- 信息量保持：普通文件仍可见、仍可预览；重复文件规则、统计和结果也都仍保留，只是不再在对象未成立时提前占据一级页面。减少的是“普通文件被双重投影”为媒体卡片 + 普通文件表，以及“无范围时的零统计分析器壳层”。
+- 概念图/线框图：报告里的 Mermaid 和 ASCII 线框图都把页面先拆成 `当前对象是否成立 -> 若否只显示前置条件 -> 若是再展开下游工作台`，用同一个基础模型解释 `cluster/files` 与 `cluster/treesize` 的减法。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-4422a85/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，Chrome 已登录态复验 `cluster/files` 与 `cluster/treesize`；随后用临时无头 Chrome 注入本地 JWT，在宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口补齐 `cluster/files`、`cluster/treesize`、`notes/center?tab=list` 截图与结构探针，证据见 `evidence.json`。`cluster/files` 三视口都满足 `hasMediaToolbar = false`、`hasOtherFiles = true`、`inlineEmptyText = 上方列出普通文件。`；`cluster/treesize` 三视口都满足 `hasDuplicatePrerequisite = true`、`hasDuplicateZeroSummary = false`；`notes/center?tab=list` 三视口无 `bodyOverflowX` 与 console `warn/error`，仅保留既有表格内部横向滚动。`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`cluster/files` 是前端状态投影问题，普通文件被重复映射到媒体工作台与普通文件表两个层面；`cluster/treesize` 是前端信息层级问题，下游分析器在前置条件未成立时提前常驻；`notes/center` 本轮真实页面复验未发现需要继续自动修复的高优先级问题。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念建模、真实多视口取证、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `4422a85ea5cc237017e9080fd5373a09e4aed63e`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-03（第二轮）
 

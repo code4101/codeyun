@@ -569,11 +569,17 @@ class FanxiuRuntime(Runtime):
         if not isinstance(parent, Shape):
             return raw
         parent_raw = parent.raw
+        if self.runner._shape_image_role(raw) != "off":
+            scan_box = {key: parent_raw.get(key) for key in ("x", "y", "w", "h") if key in parent_raw}
+            if {"x", "y", "w", "h"}.issubset(scan_box):
+                raw["_match_scan_box"] = scan_box
+            raw["_wait_click_action_title"] = shape.title or shape.raw.get("id")
+            return raw
         for key in ("x", "y", "w", "h"):
             if key in parent_raw:
                 raw[key] = parent_raw.get(key)
         raw["_wait_click_action_title"] = shape.title or shape.raw.get("id")
-        if not str(raw.get("ocrText") or "").strip() and str(shape.title or "").strip():
+        if self.runner._shape_ocr_role(raw) != "off" and not str(raw.get("ocrText") or "").strip() and str(shape.title or "").strip():
             raw["ocrText"] = str(shape.title).strip()
         return raw
 
@@ -7469,10 +7475,15 @@ class DataAnnotationRuntimeRunner(
         use_ocr = bool(ocr_enabled and ocr_text)
         if save_match_frame is None:
             save_match_frame = not use_ocr
+        scan_box = shape.get("_match_scan_box")
+        if not isinstance(scan_box, dict):
+            scan_box = None
+        scan_box_payload = self._box(scan_box, image) if scan_box is not None else None
         payload = {
             "entry_id": str(entry_id or ""),
             "filename": filename,
             "box": self._box(shape, image),
+            "scan_box": scan_box_payload if scan else None,
             "scan": scan,
             "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 20),
             "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),

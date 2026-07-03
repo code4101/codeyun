@@ -41,6 +41,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_weekly_dungeon",
     "daily_vip",
     "daily_dongtian",
+    "daily_dongtian_clear",
     "daily_lingmai",
     "daily_lingmai_clear",
     "daily_dungeon",
@@ -414,6 +415,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_dongtian_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_dongtian_clear", "日常_洞天福地_清行动力", scheduler_supported=True)
+    def _run_data_annotation_daily_dongtian_clear_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_dongtian_clear_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_lingmai", "日常_灵脉", scheduler_supported=True)
     def _run_data_annotation_daily_lingmai_manual_job(

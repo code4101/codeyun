@@ -3373,12 +3373,19 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
     assert not task_fact or not task_fact.get("discovered_next_time")
 
 
-def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("fixed_now", "expected_next_time"),
+    [
+        (datetime(2026, 7, 1, 7, 0, 0), "2026-07-01 21:30:00"),
+        (datetime(2026, 6, 30, 23, 32, 0), "2026-07-01 21:30:00"),
+    ],
+)
+def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkeypatch, fixed_now, expected_next_time):
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
-    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 30, 23, 32, 0))
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: fixed_now)
     fanxiu._write_data_annotation_scheduler_tasks([
         {
             "id": "legacy-daily-lingmai-clear",
@@ -3389,7 +3396,7 @@ def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkey
             "enabled": True,
             "next_time": "2026-06-30 21:30:00",
             "schedule_times": ["21:30"],
-            "window": ["21:30", "22:00"],
+            "window": ["10:00", "22:00"],
             "last_result": "",
             "retry_after": None,
             "payload": {},
@@ -3404,12 +3411,50 @@ def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkey
     assert result == "skipped"
     fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-lingmai-clear"]
     assert fact["last_result"] == "skipped"
-    assert fact["discovered_next_time"] == "2026-07-01 21:30:00"
+    assert fact["discovered_next_time"] == expected_next_time
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
     runner._mark_scheduler_task(tasks, "legacy-daily-lingmai-clear", "skipped")
     updated = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingmai-clear")
-    assert updated["next_time"] == "2026-07-01 21:30:00"
+    assert updated["next_time"] == expected_next_time
     assert updated["retry_after"] is None
+
+
+@pytest.mark.parametrize(
+    ("fixed_now", "expected_next_time"),
+    [
+        (datetime(2026, 7, 1, 7, 0, 0), "2026-07-01 21:30:00"),
+        (datetime(2026, 6, 30, 23, 32, 0), "2026-07-01 21:30:00"),
+    ],
+)
+def test_daily_dongtian_clear_outside_window_records_next_window(tmp_path, monkeypatch, fixed_now, expected_next_time):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: fixed_now)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-dongtian-clear",
+            "task_type": "daily_dongtian_clear",
+            "label": "日常_洞天福地_清行动力",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "next_time": "2026-06-30 21:30:00",
+            "schedule_times": ["21:30"],
+            "window": ["10:00", "22:00"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+    runner = create_fanxiu_runtime_runner()
+
+    result = runner._execute_daily_dongtian_clear_task({}, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-dongtian-clear"})
+
+    assert result == "skipped"
+    fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-dongtian-clear"]
+    assert fact["last_result"] == "skipped"
+    assert fact["discovered_next_time"] == expected_next_time
 
 
 @pytest.mark.parametrize(
@@ -3467,7 +3512,7 @@ def test_daily_lingmai_clear_inside_window_continues_runtime_flow(tmp_path, monk
             "enabled": True,
             "next_time": "2026-06-30 21:30:00",
             "schedule_times": ["21:30"],
-            "window": ["21:30", "22:00"],
+            "window": ["10:00", "22:00"],
             "last_result": "",
             "retry_after": None,
             "payload": {},
@@ -4943,6 +4988,91 @@ def test_fanxiu_runtime_wait_click_nested_shape_uses_parent_match_region(monkeyp
     assert captured["match_shape"]["h"] == 0.6
     assert captured["action_shape"]["title"] == "灵石仙币宝匣"
     assert captured["match_result"]["resolved_box"]["x"] == 300
+
+
+def test_fanxiu_runtime_wait_click_nested_floating_image_uses_child_template_and_parent_scan_box(monkeypatch):
+    image = {
+        "id": 320,
+        "title": "奇袭魔界",
+        "filename": "0320.png",
+        "width": 1000,
+        "height": 2000,
+        "shapes": [{
+            "title": "检索区域",
+            "kind": "group",
+            "x": 0.05,
+            "y": 0.04,
+            "w": 0.85,
+            "h": 0.17,
+            "children": [{
+                "title": "修罗",
+                "floating": True,
+                "imageMatchRole": "required",
+                "ocrMatchRole": "off",
+                "x": 0.38,
+                "y": 0.10,
+                "w": 0.09,
+                "h": 0.05,
+                "pixelTolerance": 80,
+            }],
+        }],
+    }
+    runner, runtime = _wait_click_runtime(image)
+    captured: dict[str, object] = {}
+    clicks: list[dict[str, object]] = []
+
+    def fake_run_match(ctx, img, shape, frame, **kwargs):
+        captured["match_shape"] = dict(shape)
+        captured["match_kwargs"] = dict(kwargs)
+        payload = runner._build_shape_match_payload(
+            img,
+            shape,
+            frame,
+            entry_id="entry",
+            scan=bool(kwargs.get("scan")),
+            match_strategy=str(kwargs.get("match_strategy") or "auto"),
+            ocr_enabled=bool(kwargs.get("ocr_enabled")),
+        )
+        captured["payload"] = payload
+        return {
+            "similarity": 100,
+            "matched": True,
+            "box": payload["box"],
+            "fixed_box": {"x": 382, "y": 205, "w": 88, "h": 44},
+        }
+
+    monkeypatch.setattr(runner, "_screencap", lambda ctx: "frame")
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+    monkeypatch.setattr(runtime_runner_core, "_click_game_window2_service", lambda payload: clicks.append(dict(payload)))
+
+    _drain_generator(runtime.wait_click(320, "[检索区域/修罗]"))
+
+    assert captured["match_shape"]["title"] == "修罗"
+    assert captured["match_shape"]["x"] == pytest.approx(0.38)
+    assert captured["match_shape"]["y"] == pytest.approx(0.10)
+    assert captured["match_shape"]["w"] == pytest.approx(0.09)
+    assert captured["match_shape"]["h"] == pytest.approx(0.05)
+    assert captured["match_shape"]["_match_scan_box"] == {"x": 0.05, "y": 0.04, "w": 0.85, "h": 0.17}
+    assert captured["match_shape"].get("ocrText") in (None, "")
+    assert captured["match_kwargs"]["scan"] is True
+    assert captured["match_kwargs"]["ocr_enabled"] is False
+    assert {key: captured["payload"]["box"][key] for key in ("x", "y", "w", "h")} == pytest.approx(
+        {"x": 380.0, "y": 200.0, "w": 90.0, "h": 100.0}
+    )
+    assert {key: captured["payload"]["scan_box"][key] for key in ("x", "y", "w", "h")} == pytest.approx(
+        {"x": 50.0, "y": 80.0, "w": 850.0, "h": 340.0}
+    )
+    assert clicks
+    assert clicks[-1]["x"] == pytest.approx(426.0)
+    assert clicks[-1]["y"] == pytest.approx(227.0)
+
+
+def test_daily_mojie_raid_remaining_ocr_fallback_accepts_b_as_eight():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_mojie_raid_remaining_ocr_fallback("进攻次数：B") == 8
+    assert runner._daily_mojie_raid_remaining_ocr_fallback("剩余次数：8") == 8
+    assert runner._daily_mojie_raid_remaining_ocr_fallback("其他次数：B") is None
 
 
 def test_fanxiu_runtime_wait_click_ocr_floating_child_uses_shape_center(monkeypatch):

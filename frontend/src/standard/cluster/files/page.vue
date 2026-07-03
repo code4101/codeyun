@@ -14,7 +14,7 @@
         v-if="shouldShowBrowserWorkspace"
         class="waterfall-media-section"
       >
-        <div class="media-actions">
+        <div v-if="showWorkspaceChrome" class="media-actions">
           <el-button size="small" class="collapse-toggle-btn" @click="showSidebar = !showSidebar">
             {{ showSidebar ? '收起边栏和目录' : '展开边栏和目录' }}
           </el-button>
@@ -22,18 +22,18 @@
 
         <ImageGalleryWorkspace
           ref="galleryWorkspaceRef"
-          :images="mediaItems"
-          :show-sidebar="showSidebar"
+          :images="displayMediaItems"
+          :show-sidebar="showSidebarPanel"
           :show-sidebar-when-empty="true"
           :show-sort-program="false"
           :show-thumbnail-scale-control="false"
           :show-view-mode-control="false"
           :show-result-label="false"
           :show-gallery-summary="false"
-          :show-gallery-top="showSidebar"
+          :show-gallery-top="showDirectoryPanel"
           layout-mode="top-panels"
           :show-visible-count-stat="false"
-          :summary-total-bytes="mediaTotalBytes"
+          :summary-total-bytes="displayMediaTotalBytes"
           :preserve-order="true"
           :storage-key-prefix="galleryStorageKey"
           item-label="媒体"
@@ -225,9 +225,9 @@
           </template>
 
           <template #gallery-controls="{ thumbnailScale, viewMode, setThumbnailScale, setViewMode }">
-            <div class="media-top-toolbar">
+            <div v-if="showMediaToolbar || hasToolbarAfterSlot" class="media-top-toolbar">
               <div class="media-top-toolbar-left">
-                <div class="media-toolbar-group media-toolbar-group-mode">
+                <div v-if="showMediaToolbar" class="media-toolbar-group media-toolbar-group-mode">
                   <el-button-group class="media-view-mode-switch">
                     <el-button
                       :type="viewMode === 'masonry' ? 'primary' : 'default'"
@@ -246,7 +246,7 @@
                   </el-button-group>
                 </div>
 
-                <div class="media-toolbar-group media-toolbar-group-scale">
+                <div v-if="showMediaToolbar" class="media-toolbar-group media-toolbar-group-scale">
                   <span class="media-toolbar-label">缩放比例</span>
                   <el-slider
                     class="media-toolbar-slider"
@@ -259,12 +259,12 @@
                   <span class="media-toolbar-value">{{ thumbnailScale }}%</span>
                 </div>
 
-                <div v-if="mediaTotalCount > 0" class="media-toolbar-group media-toolbar-group-duration">
+                <div v-if="showMediaToolbar" class="media-toolbar-group media-toolbar-group-duration">
                   <span class="media-toolbar-label">总时长</span>
                   <span class="media-toolbar-value media-duration-value">{{ mediaTotalDurationDaysText }}</span>
                 </div>
 
-                <div v-if="mediaVisualHashHint" class="media-toolbar-group media-toolbar-group-index">
+                <div v-if="showMediaToolbar && mediaVisualHashHint" class="media-toolbar-group media-toolbar-group-index">
                   <span class="media-toolbar-label">视觉索引</span>
                   <span class="media-index-pill" :class="`is-${mediaVisualHashHint.tone}`">
                     <el-icon v-if="mediaVisualHashHint.loading" class="media-index-pill-icon is-loading">
@@ -283,7 +283,7 @@
                 </div>
               </div>
 
-              <div v-if="mediaTotalCount > 0" class="media-pagination-inline media-pagination-inline-top">
+              <div v-if="showMediaToolbar" class="media-pagination-inline media-pagination-inline-top">
                 <StandardPagination
                   :page="currentMediaPage"
                   :page-size="mediaPageSize"
@@ -310,8 +310,8 @@
           </template>
 
           <template #sidebar-extra>
-            <div class="device-gallery-sidebar-stack">
-              <section class="sort-summary-card">
+            <div v-if="showWorkspaceChrome" class="device-gallery-sidebar-stack">
+              <section v-if="showDirectorySortTools" class="sort-summary-card">
                 <div class="sort-summary-copy">
                   <span class="sort-summary-title">目录排序</span>
                   <p class="sort-summary-text">{{ directorySortSummary }}</p>
@@ -326,7 +326,7 @@
                 </el-button>
               </section>
               <AsyncGallerySortProgramBar
-                v-if="showDirectorySortEditor"
+                v-if="showDirectorySortTools && showDirectorySortEditor"
                 v-model="directorySortProgram"
                 title="目录排序"
                 caption="基于 devicefile 索引聚合递归大小、文件数、最新修改时间和权重。"
@@ -335,7 +335,7 @@
                 :default-program="DEFAULT_DIRECTORY_SORT_PROGRAM"
                 collapse-meta-to-tooltip
               />
-              <template v-if="mediaTotalCount > 0">
+              <template v-if="showMediaToolbar">
                 <section class="sort-summary-card">
                   <div class="sort-summary-copy">
                     <span class="sort-summary-title">媒体排序</span>
@@ -364,7 +364,7 @@
           </template>
         </ImageGalleryWorkspace>
 
-        <div v-if="mediaTotalCount > 0" class="media-pagination-bar">
+        <div v-if="showMediaToolbar" class="media-pagination-bar">
           <StandardPagination
             :page="currentMediaPage"
             :page-size="mediaPageSize"
@@ -424,7 +424,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, useSlots, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Document, Download, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera, View } from '@element-plus/icons-vue';
@@ -591,6 +591,7 @@ const formatDirectorySortProgramSummary = (value?: Partial<DeviceDirectorySortPr
 
 const route = useRoute();
 const router = useRouter();
+const slots = useSlots();
 
 const getQueryString = (value: unknown) => {
   if (Array.isArray(value)) {
@@ -952,8 +953,19 @@ const fallbackFileEntries = computed(() => listingItems.value.filter((entry) => 
   const previewKind = resolveCodeyunPreviewKind(entry.name || entry.path);
   return previewKind === 'generic' || previewKind === 'unsupported';
 }));
+const hasToolbarAfterSlot = computed(() => Boolean(slots['toolbar-after']));
 const galleryStorageKey = computed(() => `device_media_gallery_${selectedEntryId.value || 'default'}`);
 const mediaTotalDurationDaysText = computed(() => `${(mediaTotalDurationMs.value / 86_400_000).toFixed(2)}天`);
+const isPreviewableMediaPath = (nameOrPath: string) => {
+  const previewKind = resolveCodeyunPreviewKind(nameOrPath);
+  return previewKind === 'image' || previewKind === 'media' || previewKind === 'pdf';
+};
+const displayMediaItems = computed(() =>
+  mediaItems.value.filter((item) => isPreviewableMediaPath(item.name || item.filePath))
+);
+const displayMediaTotalBytes = computed(() =>
+  displayMediaItems.value.reduce((total, item) => total + (typeof item.size === 'number' ? item.size : 0), 0)
+);
 const getParentPathWithinConstraints = (value: string) => {
   const parent = getAbsoluteParentPath(value);
   if (!parent) {
@@ -1013,12 +1025,21 @@ const mediaVisualHashHint = computed(() => {
     ].filter(Boolean).join('\n'),
   };
 });
+const showMediaToolbar = computed(() => displayMediaItems.value.length > 0);
+const showDirectorySortTools = computed(() =>
+  directoryEntries.value.length > 1 || showDirectorySortEditor.value
+);
+const showWorkspaceChrome = computed(() => showDirectorySortTools.value || showMediaToolbar.value);
+const showSidebarPanel = computed(() => showWorkspaceChrome.value && showSidebar.value);
+const showDirectoryPanel = computed(() => showWorkspaceChrome.value ? showSidebar.value : true);
 const directorySortSummary = computed(() => formatDirectorySortProgramSummary(directorySortProgram.value));
 const mediaSortSummary = computed(() => formatGallerySortSummary(backendSortProgram.value));
 const mediaEmptyInlineText = computed(() =>
   isLoadingMediaPage.value
     ? '媒体索引加载中，目录可先浏览'
-    : '当前筛选条件下没有可显示的媒体'
+    : fallbackFileEntries.value.length
+      ? '上方列出普通文件。'
+      : '当前筛选条件下没有可显示的媒体'
 );
 
 const syncPathInputFromSelection = () => {

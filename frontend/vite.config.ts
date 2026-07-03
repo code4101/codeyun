@@ -12,6 +12,9 @@ export default defineConfig({
     fileViewerRenderers({
       preset: 'auto',
       renderers: ['archive', 'email'],
+      // Keep file-viewer renderers local to GenericFileViewer instead of
+      // injecting them into every Vite HTML entry and unrelated page.
+      inject: false,
       copyAssets: true,
       missingRenderer: 'warn',
     }),

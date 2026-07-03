@@ -112,6 +112,7 @@ let orderResizeObserver: ResizeObserver | null = null
 let hotTableComponentLoader: Promise<unknown> | null = null
 let hotTableAssetsLoader: Promise<void> | null = null
 let refundHistoryLoadPromise: Promise<void> | null = null
+let refundHistoryDeferredTimer: number | null = null
 
 const loadHotTableAssets = async () => {
   if (!hotTableAssetsLoader) {
@@ -975,7 +976,6 @@ function handleRefundAfterChange(_changes: unknown, source?: string) {
 
 async function loadPageData() {
   loading.value = true
-  const refundHistoryPromise = activeSubview.value === 'refund' ? ensureRefundHistoryLoaded() : null
   try {
     const configData = await fetchAttendanceConfig()
     config.value = configData
@@ -984,8 +984,8 @@ async function loadPageData() {
   } finally {
     loading.value = false
   }
-  if (refundHistoryPromise) {
-    await refundHistoryPromise
+  if (activeSubview.value === 'refund') {
+    scheduleRefundHistoryLoad()
   }
 }
 
@@ -1001,6 +1001,25 @@ async function ensureRefundHistoryLoaded() {
   } finally {
     refundHistoryLoadPromise = null
   }
+}
+
+function clearRefundHistoryDeferredTimer() {
+  if (refundHistoryDeferredTimer !== null) {
+    window.clearTimeout(refundHistoryDeferredTimer)
+    refundHistoryDeferredTimer = null
+  }
+}
+
+function scheduleRefundHistoryLoad(delayMs = 160) {
+  if (refundHistoryLoaded.value || refundHistoryLoading.value || refundHistoryLoadPromise || refundHistoryDeferredTimer !== null) {
+    return
+  }
+  refundHistoryDeferredTimer = window.setTimeout(() => {
+    refundHistoryDeferredTimer = null
+    if (activeSubview.value === 'refund') {
+      void ensureRefundHistoryLoaded()
+    }
+  }, delayMs)
 }
 
 async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refundHistoryPageSize.value) {
@@ -1347,7 +1366,9 @@ watch(activeSubview, (view) => {
   }
   void router.replace({ query: nextQuery })
   if (view === 'refund') {
-    void ensureRefundHistoryLoaded()
+    scheduleRefundHistoryLoad()
+  } else {
+    clearRefundHistoryDeferredTimer()
   }
 })
 
@@ -1362,6 +1383,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearRefundHistoryDeferredTimer()
   cleanupOrderViewportObserver()
 })
 </script>
@@ -1538,7 +1560,7 @@ onBeforeUnmount(() => {
           <span v-if="refundHistoryLoading" class="panel-header__status" aria-live="polite">刷新中...</span>
         </div>
 
-        <div class="history-table-shell">
+        <div v-if="refundHistoryLoaded || refundHistoryLoading" class="history-table-shell">
           <el-table
             v-if="!isCompactViewport"
             :data="refundHistoryItems"
@@ -1604,8 +1626,11 @@ onBeforeUnmount(() => {
             <div v-if="!refundHistoryItems.length" class="mobile-history-empty">暂无退款历史</div>
           </div>
         </div>
+        <div v-else class="history-placeholder" aria-live="polite">
+          首屏已优先加载退款工作区，退款历史稍后补齐。
+        </div>
 
-        <div v-if="refundHistoryTotal > 0" class="history-pagination-row">
+        <div v-if="refundHistoryLoaded && refundHistoryTotal > 0" class="history-pagination-row">
           <StandardPagination
             :page="refundHistoryPage"
             :page-size="refundHistoryPageSize"
@@ -1953,6 +1978,15 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(133, 100, 59, 0.14);
   background: rgba(255, 253, 248, 0.95);
   -webkit-overflow-scrolling: touch;
+}
+
+.history-placeholder {
+  padding: 18px 16px;
+  border: 1px dashed rgba(133, 100, 59, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 251, 244, 0.7);
+  color: #7a6445;
+  font-size: 14px;
 }
 
 .mobile-history-list {
