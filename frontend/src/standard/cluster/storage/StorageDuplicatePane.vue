@@ -1,103 +1,109 @@
 <template>
-  <StorageDuplicateControls
-    v-model:rule-fields="duplicateRuleFields"
-    v-model:min-size-mb="duplicateMinSizeMb"
-    v-model:sort-mode="duplicateSortMode"
-    v-model:source="duplicateSource"
-    v-model:filter-rules="duplicateFilterRules"
-    :can-browse="canBrowse"
-    :duplicate-loading="duplicateLoading"
-    :enabled-filter-count="duplicateEnabledFilterCount"
-    :page="duplicateListing?.page ?? 1"
-    :page-size="duplicateListing?.page_size ?? 1"
-    :page-count="duplicateTotalPages"
-    @add-filter-rule="addDuplicateFilterRule"
-    @analyze="analyzeDuplicates(1, false)"
-    @page-change="loadDuplicatePage"
-    @remove-filter-rule="removeDuplicateFilterRule"
-    @reset-filter-rules="resetDuplicateFilterRules"
-  />
+  <template v-if="hasDuplicateScope">
+    <StorageDuplicateControls
+      v-model:rule-fields="duplicateRuleFields"
+      v-model:min-size-mb="duplicateMinSizeMb"
+      v-model:sort-mode="duplicateSortMode"
+      v-model:source="duplicateSource"
+      v-model:filter-rules="duplicateFilterRules"
+      :can-browse="canBrowse"
+      :duplicate-loading="duplicateLoading"
+      :enabled-filter-count="duplicateEnabledFilterCount"
+      :page="duplicateListing?.page ?? 1"
+      :page-size="duplicateListing?.page_size ?? 1"
+      :page-count="duplicateTotalPages"
+      @add-filter-rule="addDuplicateFilterRule"
+      @analyze="analyzeDuplicates(1, false)"
+      @page-change="loadDuplicatePage"
+      @remove-filter-rule="removeDuplicateFilterRule"
+      @reset-filter-rules="resetDuplicateFilterRules"
+    />
 
-  <section class="storage-summary duplicate-summary">
-    <span class="summary-path" :title="duplicateDisplayPath">
-      <strong>范围</strong>
-      <code>{{ duplicateDisplayPath }}</code>
-    </span>
-    <span><strong>重复组</strong>{{ duplicateListing?.total_groups ?? 0 }}</span>
-    <span><strong>重复文件</strong>{{ duplicateListing?.duplicate_file_count ?? 0 }}</span>
-    <span><strong>可释放</strong>{{ formatBytes(duplicateListing?.total_reclaimable_bytes ?? 0) }}</span>
-    <span><strong>已扫描</strong>{{ duplicateListing?.scanned_file_count ?? 0 }}</span>
-    <span><strong>候选</strong>{{ duplicateListing?.candidate_file_count ?? 0 }}</span>
-    <span v-if="duplicateListing"><strong>状态</strong>{{ formatDuplicateTaskStatus(duplicateListing) }}</span>
-    <span v-if="duplicateListing"><strong>来源</strong>{{ formatDuplicateSource(duplicateListing.source) }}</span>
-    <span v-if="duplicateListing?.hit_scan_limit" class="summary-warning">
-      <strong>未完成</strong>已达到扫描上限
-    </span>
-  </section>
+    <section v-if="duplicateListing" class="storage-summary duplicate-summary">
+      <span class="summary-path" :title="duplicateDisplayPath">
+        <strong>范围</strong>
+        <code>{{ duplicateDisplayPath }}</code>
+      </span>
+      <span><strong>重复组</strong>{{ duplicateListing.total_groups }}</span>
+      <span><strong>重复文件</strong>{{ duplicateListing.duplicate_file_count }}</span>
+      <span><strong>可释放</strong>{{ formatBytes(duplicateListing.total_reclaimable_bytes) }}</span>
+      <span><strong>已扫描</strong>{{ duplicateListing.scanned_file_count }}</span>
+      <span><strong>候选</strong>{{ duplicateListing.candidate_file_count }}</span>
+      <span><strong>状态</strong>{{ formatDuplicateTaskStatus(duplicateListing) }}</span>
+      <span><strong>来源</strong>{{ formatDuplicateSource(duplicateListing.source) }}</span>
+      <span v-if="duplicateListing.hit_scan_limit" class="summary-warning">
+        <strong>未完成</strong>已达到扫描上限
+      </span>
+    </section>
 
-  <section class="storage-table-shell duplicate-table-shell">
-    <div v-if="duplicateError" class="storage-error">
-      {{ duplicateError }}
-    </div>
-    <div v-else-if="!duplicateListing" class="storage-empty">
-      设置范围和规则后开始分析。
-    </div>
-    <div v-else-if="!duplicateListing.groups.length" class="storage-empty">
-      当前页没有重复文件组。
-    </div>
-    <table v-else class="storage-table duplicate-table" aria-label="重复文件组">
-      <thead>
-        <tr class="storage-table-head">
-          <th class="storage-cell duplicate-cell-name" scope="col">组 / 文件</th>
-          <th class="storage-cell duplicate-cell-size" scope="col">单文件</th>
-          <th class="storage-cell duplicate-cell-total" scope="col">整组</th>
-          <th class="storage-cell duplicate-cell-total" scope="col">可释放</th>
-          <th class="storage-cell duplicate-cell-count" scope="col">数量</th>
-          <th class="storage-cell duplicate-cell-time" scope="col">修改时间</th>
-          <th class="storage-cell duplicate-cell-path" scope="col">路径</th>
-          <th class="storage-cell storage-cell-spacer" scope="col" aria-hidden="true"></th>
-        </tr>
-      </thead>
-      <tbody>
-        <template v-for="group in duplicateListing.groups" :key="group.id">
-          <tr class="storage-table-row duplicate-group-row">
-            <td class="storage-cell duplicate-cell-name">
-              <span class="duplicate-group-title" :title="group.key_label">
-                {{ group.key_label }}
-              </span>
-            </td>
-            <td class="storage-cell duplicate-cell-size">{{ formatBytes(group.file_size) }}</td>
-            <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.group_total_bytes) }}</td>
-            <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.reclaimable_bytes) }}</td>
-            <td class="storage-cell duplicate-cell-count">{{ group.file_count }}</td>
-            <td class="storage-cell duplicate-cell-time">--</td>
-            <td class="storage-cell duplicate-cell-path">--</td>
-            <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
+    <section class="storage-table-shell duplicate-table-shell">
+      <div v-if="duplicateError" class="storage-error">
+        {{ duplicateError }}
+      </div>
+      <div v-else-if="!duplicateListing" class="storage-empty">
+        设置规则后开始分析。
+      </div>
+      <div v-else-if="!duplicateListing.groups.length" class="storage-empty">
+        当前页没有重复文件组。
+      </div>
+      <table v-else class="storage-table duplicate-table" aria-label="重复文件组">
+        <thead>
+          <tr class="storage-table-head">
+            <th class="storage-cell duplicate-cell-name" scope="col">组 / 文件</th>
+            <th class="storage-cell duplicate-cell-size" scope="col">单文件</th>
+            <th class="storage-cell duplicate-cell-total" scope="col">整组</th>
+            <th class="storage-cell duplicate-cell-total" scope="col">可释放</th>
+            <th class="storage-cell duplicate-cell-count" scope="col">数量</th>
+            <th class="storage-cell duplicate-cell-time" scope="col">修改时间</th>
+            <th class="storage-cell duplicate-cell-path" scope="col">路径</th>
+            <th class="storage-cell storage-cell-spacer" scope="col" aria-hidden="true"></th>
           </tr>
-          <tr
-            v-for="file in group.files"
-            :key="file.absolute_path"
-            class="storage-table-row duplicate-file-row"
-          >
-            <td class="storage-cell duplicate-cell-name">
-              <div class="entry-label duplicate-file-label">
-                <span class="entry-toggle"></span>
-                <span class="entry-name" :title="file.name">{{ file.name }}</span>
-              </div>
-            </td>
-            <td class="storage-cell duplicate-cell-size">{{ formatBytes(file.size) }}</td>
-            <td class="storage-cell duplicate-cell-total">--</td>
-            <td class="storage-cell duplicate-cell-total">--</td>
-            <td class="storage-cell duplicate-cell-count">1</td>
-            <td class="storage-cell duplicate-cell-time">{{ formatTime(file.modified_at) }}</td>
-            <td class="storage-cell duplicate-cell-path">
-              <span :title="file.absolute_path || file.path">{{ file.absolute_path || file.path }}</span>
-            </td>
-            <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <template v-for="group in duplicateListing.groups" :key="group.id">
+            <tr class="storage-table-row duplicate-group-row">
+              <td class="storage-cell duplicate-cell-name">
+                <span class="duplicate-group-title" :title="group.key_label">
+                  {{ group.key_label }}
+                </span>
+              </td>
+              <td class="storage-cell duplicate-cell-size">{{ formatBytes(group.file_size) }}</td>
+              <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.group_total_bytes) }}</td>
+              <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.reclaimable_bytes) }}</td>
+              <td class="storage-cell duplicate-cell-count">{{ group.file_count }}</td>
+              <td class="storage-cell duplicate-cell-time">--</td>
+              <td class="storage-cell duplicate-cell-path">--</td>
+              <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
+            </tr>
+            <tr
+              v-for="file in group.files"
+              :key="file.absolute_path"
+              class="storage-table-row duplicate-file-row"
+            >
+              <td class="storage-cell duplicate-cell-name">
+                <div class="entry-label duplicate-file-label">
+                  <span class="entry-toggle"></span>
+                  <span class="entry-name" :title="file.name">{{ file.name }}</span>
+                </div>
+              </td>
+              <td class="storage-cell duplicate-cell-size">{{ formatBytes(file.size) }}</td>
+              <td class="storage-cell duplicate-cell-total">--</td>
+              <td class="storage-cell duplicate-cell-total">--</td>
+              <td class="storage-cell duplicate-cell-count">1</td>
+              <td class="storage-cell duplicate-cell-time">{{ formatTime(file.modified_at) }}</td>
+              <td class="storage-cell duplicate-cell-path">
+                <span :title="file.absolute_path || file.path">{{ file.absolute_path || file.path }}</span>
+              </td>
+              <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+  </template>
+
+  <section v-else class="storage-empty duplicate-prerequisite">
+    请先进入具体磁盘或目录，再分析重复文件。
   </section>
 </template>
 
@@ -152,6 +158,10 @@ const duplicateListing = ref<DeviceDuplicateAnalysis | null>(null);
 const duplicateLoading = ref(false);
 const duplicateError = ref('');
 let duplicateTaskPollVersion = 0;
+
+const hasDuplicateScope = computed(() =>
+  Boolean(props.request && props.request.absolute_path !== DEVICE_ROOT_SENTINEL)
+);
 
 const duplicateDisplayPath = computed(() => {
   if (duplicateListing.value?.absolute_path) {

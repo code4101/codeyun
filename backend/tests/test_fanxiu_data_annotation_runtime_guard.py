@@ -5238,6 +5238,58 @@ def test_daily_lundao_empty_seat_confirms_go_to_dojo_popup_before_continuing():
     assert runtime.actions[4] == ("settle", 1.5)
 
 
+def test_daily_lundao_request_seat_reuses_go_to_dojo_flow():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.scenes = iter([(329, 100.0, "confirm"), (303, 100.0, "dialog"), (53, 100.0, "leave"), (34, 100.0, "world")])
+            self.actions = []
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def current_scene(self, *_args, **_kwargs):
+            return next(self.scenes)
+
+        def ocr_text(self, _frame):
+            return ""
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._continue_daily_lundao_scene(runtime, FakeStopEvent(), 297))
+
+    assert result == "success"
+    assert runtime.actions[0] == (
+        "wait_click_then_view",
+        (297, "请他让座", [329, 301, 302, 303, 52, 53, 186, 69, 34]),
+        {"settle_seconds": 2.0, "timeout": 60.0},
+    )
+    assert runtime.actions[1] == (
+        "wait_click_then_view",
+        (329, "确认", [301, 302, 303, 52, 53, 186]),
+        {"settle_seconds": 1.5, "timeout": 20.0},
+    )
+    assert runtime.actions[2] == (
+        "wait_click_then_view",
+        (303, "对话", [52, 53]),
+        {"settle_seconds": 1.5, "timeout": 30.0},
+    )
+    assert runtime.actions[3] == ("click_shape_center", (53, "离开"), {})
+
+
 def test_daily_lundao_seated_scene_exits_to_world_before_success():
     runner = create_fanxiu_runtime_runner()
 
