@@ -5417,6 +5417,7 @@ def build_file_response(root_key: Optional[str] = None, rel_path: str = "", *, a
         path=os.fspath(target_path),
         media_type=media_type or "application/octet-stream",
         filename=target_path.name,
+        content_disposition_type="inline",
     )
 
 
@@ -6105,11 +6106,21 @@ def list_directory(req: LegacyPathRequest):
     try:
         with os.scandir(path) as entries:
             for entry in entries:
+                is_dir = entry.is_dir()
+                try:
+                    entry_stat = entry.stat()
+                    size = None if is_dir else int(entry_stat.st_size)
+                    modified_at = float(entry_stat.st_mtime)
+                except OSError:
+                    size = None
+                    modified_at = None
                 items.append(
                     {
                         "name": entry.name,
-                        "is_dir": entry.is_dir(),
+                        "is_dir": is_dir,
                         "path": entry.path,
+                        "size": size,
+                        "modified_at": modified_at,
                     }
                 )
     except PermissionError as exc:

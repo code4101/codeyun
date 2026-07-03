@@ -444,7 +444,7 @@ def test_execute_attendance_order_blocks_history_when_refund_confirmation_fails(
     with pytest.raises(HTTPException) as exc:
         attendance.execute_attendance_order(payload, session=session, current_user=user)
 
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 409
     assert "退款执行后支付侧确认失败" in str(exc.value.detail)
     page = attendance._build_order_refund_history_page(session, page=1, page_size=20)
     assert page.total == 0

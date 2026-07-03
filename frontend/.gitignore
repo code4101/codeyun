@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+public/flyfish-viewer-assets.json
+public/vendor/
 
 # Editor directories and files
 .vscode/*

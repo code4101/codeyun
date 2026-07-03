@@ -3415,7 +3415,7 @@ def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkey
 @pytest.mark.parametrize(
     ("fixed_now", "expected_next_time"),
     [
-        (datetime(2026, 7, 3, 7, 0, 0), "2026-07-03 14:00:00"),
+        (datetime(2026, 7, 3, 7, 0, 0), "2026-07-04 14:00:00"),
         (datetime(2026, 7, 3, 11, 0, 0), "2026-07-03 14:00:00"),
         (datetime(2026, 7, 3, 23, 0, 0), "2026-07-04 14:00:00"),
     ],
@@ -11786,6 +11786,106 @@ def test_mail_cleanup_detail_timeout_still_runs_delete_read_cleanup(tmp_path, mo
     result = _drain_generator(runner._execute_mail_cleanup_task(ctx, fanxiu.threading.Event(), {"max_scrolls": 1}))
 
     assert result == "success"
+    assert clicks == ["一键删除", "确认"]
+
+
+def test_mail_cleanup_read_mail_probes_detail_delete_before_bulk_cleanup(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+    image34 = {"id": 34, "title": "世界", "width": 900, "height": 1600, "shapes": []}
+    image121 = {
+        "id": 121,
+        "title": "邮件",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "邮件清单2", "x": 0.05, "y": 0.10, "w": 0.90, "h": 0.70},
+            {"title": "一键删除", "x": 0.10, "y": 0.90, "w": 0.22, "h": 0.06},
+        ],
+    }
+    image278 = {"id": 278, "title": "一键删除确认", "width": 900, "height": 1600, "shapes": [{"title": "确认"}]}
+    ctx = {"asset_tree_path": tmp_path / "asset-tree.json", "images": {34: image34, 121: image121, 278: image278}}
+    view121 = runtime_runner_core.View(image121)
+    title_shape = runtime_runner_core.Shape(
+        {"title": "灵祖挑战个人奖励补发", "x": 0.10, "y": 0.20, "w": 0.40, "h": 0.05},
+        parent_view=view121,
+    )
+    read_row = runtime_runner_core._RuntimeMailRow(
+        raw={"title": "灵祖挑战个人奖励补发", "time_text": "2026年07月03日 05:00", "status": "已阅", "x": 220, "y": 260},
+        title_shape=title_shape,
+    )
+    rows_by_call = [[read_row], []]
+    clicks: list[str] = []
+    probed_titles: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.attrs = {}
+            self.wait_views = [runtime_runner_core.View(image278), runtime_runner_core.View(image34)]
+
+        def cur_frame(self, update=False):
+            return "frame"
+
+        def click_shape(self, view, shape, **_kwargs):
+            clicks.append(str(shape.title) if isinstance(shape, runtime_runner_core.Shape) else str(shape))
+
+        def wait_view(self, *_views, **_kwargs):
+            return_value = self.wait_views.pop(0)
+            if False:
+                yield None
+            return return_value
+
+        def scroll_shape_content(self, _shape):
+            if False:
+                yield None
+            return False
+
+    fake_runtime = FakeRuntime()
+
+    monkeypatch.setattr(runtime_runner_core, "ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr(mail_tasks, "ensure_fanxiu_capture_runtime_backstop", lambda _reason: {"ensured": True, "status": {"state": "running"}})
+    monkeypatch.setattr(runner, "_wait_mail_capture_runtime_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件 一键删除"))
+    monkeypatch.setattr(runner, "_refresh_recent_mail_packets_for_runtime_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_align_mail_records_from_visible_adjacency", lambda *_args, **_kwargs: {"updated": 0})
+    monkeypatch.setattr(runner, "_mark_pending_packet_mail_actions_not_visible", lambda **_kwargs: 0)
+
+    def fake_rows(*_args, **_kwargs):
+        return rows_by_call.pop(0)
+
+    def fake_probe(_ctx, _stop_event, _image121, row):
+        probed_titles.append(str(row.get("title") or ""))
+        if False:
+            yield None
+        return "processed"
+
+    def no_green_bottle(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def clean_world(*_args, **_kwargs):
+        if False:
+            yield None
+        return 34
+
+    def no_tip_stack(*_args, **_kwargs):
+        if False:
+            yield None
+        return None
+
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", fake_rows)
+    monkeypatch.setattr(runner, "_probe_and_maybe_delete_mail_row", fake_probe)
+    monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", no_green_bottle)
+    monkeypatch.setattr(runner, "_ensure_clean_world_after_task", clean_world)
+    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_stack_if_present", no_tip_stack)
+
+    result = _drain_generator(runner._execute_mail_cleanup_task(ctx, fanxiu.threading.Event(), {"max_scrolls": 1}))
+
+    assert result == "success"
+    assert probed_titles == ["灵祖挑战个人奖励补发"]
     assert clicks == ["一键删除", "确认"]
 
 

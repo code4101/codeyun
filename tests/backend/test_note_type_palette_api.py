@@ -177,6 +177,28 @@ def test_create_note_backfills_new_taxonomy_fields(client, auth_user):
     assert payload["note_categories"] == [{"key": "general", "weight": 100}]
 
 
+def test_create_note_preserves_explicit_empty_category(client, auth_user):
+    response = client.post(
+        "/api/notes/",
+        json={
+            "title": "Empty Category Note",
+            "content": "",
+            "node_type": "note",
+            "node_status": "idea",
+            "note_categories": [],
+            "primary_category": None,
+            "note_form": "note",
+            "note_scene": "note",
+            "lifecycle_stage": "idea",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["note_categories"] == []
+    assert payload["primary_category"] is None
+    assert payload["node_type"] == "note"
+
+
 def test_create_note_accepts_extended_note_forms(client, auth_user):
     response = client.post(
         "/api/notes/",

@@ -979,7 +979,22 @@ const createNoteForDay = async (date: Date) => {
   
   const defaultTitle = `${yy}${mm}${dd}_${hh}${min}`;
 
-  const newNote = await noteStore.createNote(defaultTitle, '', NOTE_WEIGHT_DEFAULT, startAt);
+  const newNote = await noteStore.createNote(
+    defaultTitle,
+    '',
+    NOTE_WEIGHT_DEFAULT,
+    startAt,
+    'note',
+    'idea',
+    [],
+    0,
+    null,
+    null,
+    'note',
+    [],
+    [],
+    null
+  );
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = noteKey(newNote.id);

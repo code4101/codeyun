@@ -388,7 +388,22 @@ const createNewNote = async () => {
   const now = new Date();
   const title = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
   
-  const newNote = await noteStore.createNote(title, '');
+  const newNote = await noteStore.createNote(
+    title,
+    '',
+    undefined,
+    undefined,
+    'note',
+    'idea',
+    [],
+    0,
+    null,
+    null,
+    'note',
+    [],
+    [],
+    null
+  );
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = noteKey(newNote.id);

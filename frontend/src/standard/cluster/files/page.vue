@@ -181,6 +181,46 @@
               <div v-if="!directoryEntries.length" class="directory-empty-state">
                 当前目录下没有子目录
               </div>
+              <section v-if="fallbackFileEntries.length" class="fallback-file-panel">
+                <div class="fallback-file-header">
+                  <span>其他文件</span>
+                  <span>{{ fallbackFileEntries.length }}项</span>
+                </div>
+                <el-table
+                  :data="fallbackFileEntries"
+                  table-layout="auto"
+                  :fit="false"
+                  max-height="260"
+                >
+                  <el-table-column label="名称" min-width="260">
+                    <template #default="{ row }">
+                      <span class="fallback-file-name" :title="row.name">{{ row.name }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="类型" width="110">
+                    <template #default="{ row }">
+                      {{ formatPreviewKindLabel(resolveCodeyunPreviewKind(row.name)) }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="大小" width="110">
+                    <template #default="{ row }">{{ formatDirectoryFileSize(row) }}</template>
+                  </el-table-column>
+                  <el-table-column label="修改时间" width="168">
+                    <template #default="{ row }">{{ formatDirectoryModifiedAt(row) }}</template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="104" fixed="right">
+                    <template #default="{ row }">
+                      <el-button
+                        :icon="View"
+                        text
+                        title="预览"
+                        :loading="genericPreviewLoading && genericPreviewFile?.path === row.path"
+                        @click="openFallbackFilePreview(row)"
+                      />
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </section>
             </section>
           </template>
 
@@ -348,6 +388,38 @@
       :can-browse="canBrowse"
       :reload-directory="loadDirectory"
     />
+
+    <el-dialog
+      v-model="genericPreviewVisible"
+      class="generic-file-preview-dialog"
+      :title="genericPreviewFile?.name || '文件预览'"
+      width="86vw"
+      top="5vh"
+      destroy-on-close
+    >
+      <div class="generic-file-preview-body" v-loading="genericPreviewLoading">
+        <div v-if="genericPreviewError" class="generic-file-preview-empty is-error">
+          {{ genericPreviewError }}
+        </div>
+        <GenericFileViewer
+          v-else
+          class="generic-file-preview-viewer"
+          :file-blob="genericPreviewBlob"
+          :filename="genericPreviewFile?.name || ''"
+          :mime-type="genericPreviewBlob?.type || ''"
+          :size="genericPreviewFile?.size ?? genericPreviewBlob?.size ?? undefined"
+        />
+      </div>
+      <template #footer>
+        <el-button
+          :icon="Download"
+          :disabled="!genericPreviewFile"
+          @click="genericPreviewFile && downloadFile(genericPreviewFile)"
+        >
+          下载
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -355,7 +427,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Document, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera } from '@element-plus/icons-vue';
+import { Document, Download, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera, View } from '@element-plus/icons-vue';
 
 import {
   fetchDeviceDirectoryItems,
@@ -382,6 +454,7 @@ import {
   type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
 import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
+import GenericFileViewer from '@/components/GenericFileViewer.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { taskStore } from '@/store/taskStore';
@@ -398,6 +471,10 @@ import {
   type GalleryUrlVariant,
 } from '@/utils/imageGallery';
 import { monitorPolledTask } from '@/utils/longTask';
+import {
+  formatPreviewKindLabel,
+  resolveCodeyunPreviewKind,
+} from '@/utils/filePreviewRegistry';
 import {
   formatPathInput as formatSharedPathInput,
   isAbsolutePath,
@@ -551,6 +628,11 @@ const showMediaSortEditor = ref(false);
 const isLoadingDevices = ref(false);
 const isLoadingListing = ref(false);
 const isLoadingMediaPage = ref(false);
+const genericPreviewVisible = ref(false);
+const genericPreviewLoading = ref(false);
+const genericPreviewError = ref('');
+const genericPreviewFile = ref<DeviceDirectoryItem | null>(null);
+const genericPreviewBlob = ref<Blob | null>(null);
 const downloadingPath = ref('');
 const revealingPath = ref('');
 const openingPdfPath = ref('');
@@ -863,6 +945,13 @@ const emptyStateDescription = computed(() => {
   return '先到运行管理里添加本地或远程设备入口，再从设备上下文里浏览真实目录。';
 });
 const listingItems = computed(() => listing.value?.items ?? []);
+const fallbackFileEntries = computed(() => listingItems.value.filter((entry) => {
+  if (entry.is_dir) {
+    return false;
+  }
+  const previewKind = resolveCodeyunPreviewKind(entry.name || entry.path);
+  return previewKind === 'generic' || previewKind === 'unsupported';
+}));
 const galleryStorageKey = computed(() => `device_media_gallery_${selectedEntryId.value || 'default'}`);
 const mediaTotalDurationDaysText = computed(() => `${(mediaTotalDurationMs.value / 86_400_000).toFixed(2)}天`);
 const getParentPathWithinConstraints = (value: string) => {
@@ -1025,6 +1114,12 @@ const buildEntryPayload = (item: DeviceDirectoryItem): DeviceFileSelector => {
 const buildImagePayload = (image: DeviceBrowserImage): DeviceFileSelector => {
   return { absolute_path: image.absolutePath };
 };
+
+const formatDirectoryFileSize = (item: DeviceDirectoryItem) =>
+  typeof item.size === 'number' ? formatFileSize(item.size) : '--';
+
+const formatDirectoryModifiedAt = (item: DeviceDirectoryItem) =>
+  typeof item.modified_at === 'number' ? formatDate(item.modified_at) : '--';
 
 const getMediaPageOffset = (page = currentMediaPage.value) =>
   Math.max(0, (Math.max(1, page) - 1) * Math.max(1, mediaPageSize.value));
@@ -1510,6 +1605,33 @@ const downloadFile = async (item: DeviceDirectoryItem | DeviceBrowserImage) => {
     ElMessage.error('下载文件失败');
   } finally {
     downloadingPath.value = '';
+  }
+};
+
+const openFallbackFilePreview = async (item: DeviceDirectoryItem) => {
+  if (!selectedEntryId.value || item.is_dir) {
+    return;
+  }
+
+  const previewKind = resolveCodeyunPreviewKind(item.name || item.path);
+  genericPreviewVisible.value = true;
+  genericPreviewFile.value = item;
+  genericPreviewBlob.value = null;
+  genericPreviewError.value = '';
+
+  if (previewKind !== 'generic') {
+    genericPreviewError.value = '这个格式暂未接入预览，可先下载或用系统应用打开。';
+    return;
+  }
+
+  genericPreviewLoading.value = true;
+  try {
+    genericPreviewBlob.value = await fetchDeviceFileBlob(selectedEntryId.value, buildEntryPayload(item));
+  } catch (error) {
+    console.error('Failed to preview fallback device file', error);
+    genericPreviewError.value = '文件预览加载失败';
+  } finally {
+    genericPreviewLoading.value = false;
   }
 };
 
@@ -2239,6 +2361,67 @@ defineExpose({
 .directory-section-count {
   color: #64748b;
   font-size: 12px;
+}
+
+.fallback-file-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.fallback-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fallback-file-header span + span {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.fallback-file-name {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.generic-file-preview-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+
+.generic-file-preview-body {
+  height: min(76vh, 820px);
+  min-height: 520px;
+}
+
+.generic-file-preview-viewer {
+  height: 100%;
+}
+
+.generic-file-preview-empty {
+  height: 100%;
+  min-height: 320px;
+  padding: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  text-align: center;
+}
+
+.generic-file-preview-empty.is-error {
+  color: #b42318;
 }
 
 .directory-path-input {

@@ -1472,7 +1472,22 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 
   const defaultTitle = generateDefaultTitle();
   // Calculate center position or random
-  const newNote = await noteStore.createNote(defaultTitle, '');
+  const newNote = await noteStore.createNote(
+    defaultTitle,
+    '',
+    undefined,
+    undefined,
+    'note',
+    'idea',
+    [],
+    0,
+    null,
+    null,
+    'note',
+    [],
+    [],
+    null
+  );
   if (newNote) {
     const key = noteKey(newNote.id);
     // Add to graph

@@ -290,6 +290,7 @@ class MailTaskMixin:
                 )
             action_row: _RuntimeMailRow | None = None
             detail_probe_row: _RuntimeMailRow | None = None
+            delete_probe_row: _RuntimeMailRow | None = None
             page_packet_counts: dict[str, int] = {}
             page_rows_summary: list[str] = []
             for mail in rows:
@@ -302,11 +303,12 @@ class MailTaskMixin:
                         f"{mail.title[:16]}|{mail.raw.get('time_text') or '-'}|"
                         f"{mail.raw.get('policy') or '-'}|{packet_match}"
                     )
-                if mail.status == "已阅":
-                    continue
                 if mail.raw.get("policy") in {"claim", "delete"}:
                     action_row = mail
                     break
+                if delete_probe_row is None and self._mail_cleanup_delete_probe_candidate(mail.raw):
+                    delete_probe_row = mail
+                    continue
                 if (
                     detail_probe_row is None
                     and str(mail.raw.get("packet_match") or "") in {"missing", "title_only"}
@@ -348,7 +350,7 @@ class MailTaskMixin:
                         stop_event,
                         image121,
                         detail_probe_row.raw,
-                        allowed_policies={"claim", "delete"},
+                        allowed_policies={"delete"},
                     )
                 except TimeoutError as exc:
                     probe_elapsed = time.monotonic() - probe_started_at
@@ -364,7 +366,28 @@ class MailTaskMixin:
                     )
                     if status == "processed":
                         processed_count += 1
-                        self._refresh_recent_mail_packets_for_runtime_log("详情页领取后同步", flush_capture=True)
+                        self._refresh_recent_mail_packets_for_runtime_log("详情页处理后同步", flush_capture=True)
+                        continue
+
+            if delete_probe_row is not None:
+                probe_started_at = time.monotonic()
+                try:
+                    status = yield from self._probe_and_maybe_delete_mail_row(ctx, stop_event, image121, delete_probe_row.raw)
+                except TimeoutError as exc:
+                    probe_elapsed = time.monotonic() - probe_started_at
+                    self._log(
+                        "warning",
+                        f"邮件_清理：删除探测「{delete_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                    )
+                else:
+                    probe_elapsed = time.monotonic() - probe_started_at
+                    self._log(
+                        "detail",
+                        f"邮件_清理：删除探测「{delete_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
+                    )
+                    if status == "processed":
+                        processed_count += 1
+                        self._refresh_recent_mail_packets_for_runtime_log("详情页删除后同步", flush_capture=True)
                         continue
 
             if rows:
@@ -2315,6 +2338,20 @@ class MailTaskMixin:
             },
         )
         return "processed"
+
+    def _mail_cleanup_delete_probe_candidate(self, row: dict[str, Any]) -> bool:
+        if self._mail_row_has_attachment_hint(row):
+            return False
+        title = str(row.get("title") or "").strip()
+        if not title:
+            return False
+        status = self._normalize_mail_row_status(str(row.get("status") or ""))
+        if status == "锁定" or bool(row.get("list_has_lock")):
+            return False
+        packet_match = str(row.get("packet_match") or "")
+        if status == "已阅":
+            return True
+        return packet_match in {"missing", "title_only", "ui_skipped"}
 
     def _open_mail_row(
         self,

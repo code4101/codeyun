@@ -525,7 +525,10 @@ const formReadonly = computed(() => effectiveReadonly.value || Boolean(props.loc
 const resolvedShowPrivateToggle = computed(() => Boolean(props.showPrivateToggle));
 const readonlyPresentationActive = computed(() => Boolean(props.readonlyPresentation) && effectiveReadonly.value);
 const isReady = computed(() => !!currentNote.value && currentNote.value.content !== undefined);
-const currentPrimaryType = computed(() => derivePrimaryNodeType(currentNote.value?.note_categories, currentNote.value?.primary_category ?? NOTE_CATEGORY_DEFAULT));
+const currentPrimaryType = computed(() => derivePrimaryNodeType(
+  currentNote.value?.note_categories,
+  currentNote.value?.primary_category ?? (currentNote.value?.note_categories?.length ? NOTE_CATEGORY_DEFAULT : null)
+));
 const showCompletionProgressControl = computed(() => getNodeStatusConfig(currentNote.value?.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT).id === 'done');
 const isOneNoteImportedNote = computed(() => {
   const source = String(getStoredCustomFieldValue(currentNote.value?.custom_fields, 'source') ?? '');

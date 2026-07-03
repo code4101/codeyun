@@ -662,7 +662,7 @@ def test_attendance_feedback_submission_strips_nianzhu_jueguan_workbook_date_pre
     assert response.json()["course_name"] == "第41届念住"
 
 
-def test_order_refund_history_strips_timestamps_but_keeps_result_text(client: TestClient, session):
+def test_order_refund_history_uses_db_order_and_strips_timestamps(client: TestClient, session):
     admin_user = _create_admin_user(session)
     _grant_feature_access(session, user_id=admin_user.id, feature_key="attendance.orders")
     _override_user(admin_user)
@@ -710,8 +710,8 @@ def test_order_refund_history_strips_timestamps_but_keeps_result_text(client: Te
         assert response.status_code == 200
         items = response.json()["items"]
 
-        assert items[0]["result_text"] == "已退款"
-        assert items[1]["result_text"] == "已退还全部促学金"
+        assert items[0]["result_text"] == "已退还全部促学金"
+        assert items[1]["result_text"] == "已退款"
         assert items[0]["created_at"] > items[1]["created_at"]
     finally:
         _clear_user_override()
