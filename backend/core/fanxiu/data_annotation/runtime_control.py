@@ -477,7 +477,7 @@ def read_scheduler_tasks(
     if repair_orphaned_scheduler_runs(tasks, manual_job_path=manual_job_path):
         changed = True
     if changed:
-        write_scheduler_tasks(tasks, scheduler_state_path=path)
+        write_scheduler_tasks(tasks, scheduler_state_path=path, preserve_runtime_state=False)
     return sorted(tasks, key=data_annotation_scheduler_time_order_key)
 
 

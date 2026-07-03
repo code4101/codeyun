@@ -12,6 +12,11 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "@file-viewer/preset-lite": "^2.1.17",
+    "@file-viewer/preset-office": "^2.1.17",
+    "@file-viewer/renderer-archive": "^2.1.17",
+    "@file-viewer/renderer-email": "^2.1.17",
+    "@file-viewer/vue3": "^2.1.17",
     "@handsontable/vue3": "^17.0.1",
     "@ungap/structured-clone": "^1.3.0",
     "@vue-flow/background": "^1.3.2",
@@ -39,6 +44,7 @@
     "vue-router": "^5.0.2"
   },
   "devDependencies": {
+    "@file-viewer/vite-plugin": "^2.1.17",
     "@types/node": "^24.10.13",
     "@types/sortablejs": "^1.15.9",
     "@vitejs/plugin-vue": "^6.0.2",

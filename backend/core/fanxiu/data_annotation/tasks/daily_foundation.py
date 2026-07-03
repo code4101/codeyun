@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_cls, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -3783,6 +3783,27 @@ class DailyFoundationTaskMixin:
         self._log("success", f"日常_洞天福地：{message}，下次 {next_time}")
         return next_time
 
+    def _daily_dongtian_sleep_window_next_time(self, now: datetime | None = None) -> str | None:
+        now = now or _runtime_runner._now()
+        clock = now.time()
+        if not (clock >= time_cls(22, 0) or clock < time_cls(10, 0)):
+            return None
+        task = next(
+            (
+                item
+                for item in _read_data_annotation_scheduler_tasks()
+                if str(item.get("id") or "") == "legacy-daily-dongtian"
+                or str(item.get("task_type") or "") == "daily_dongtian"
+            ),
+            None,
+        )
+        if not isinstance(task, dict):
+            return None
+        return _runtime_runner._next_data_annotation_scheduler_time(
+            task,
+            now.replace(hour=23, minute=59, second=59, microsecond=999999),
+        )
+
     def _daily_dongtian_has_shape(self, ctx: dict[str, Any], scene_id: int, title: str) -> bool:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image = images.get(scene_id)
@@ -3841,6 +3862,17 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = {"max_scrolls": 24, "reverse_scrolls": 6, **dict(payload or {})}
+        sleep_window_next_time = self._daily_dongtian_sleep_window_next_time()
+        if sleep_window_next_time:
+            self._record_scheduler_task_discovered_next_time(
+                str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
+                sleep_window_next_time,
+                task_type="daily_dongtian",
+                label="日常_洞天福地",
+                last_result="skipped",
+            )
+            self._log("skip", f"日常_洞天福地：当前在 22:00-次日10:00不可操作窗口，本轮按完成处理，下次 {sleep_window_next_time}")
+            return "skipped"
         outside_window_next_time = self._runtime_daily_window_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
             "daily_dongtian",
