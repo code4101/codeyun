@@ -1,5 +1,6 @@
 from sqlmodel import Session, SQLModel, create_engine
 
+from backend.api import task_manager as task_manager_module
 from backend.core.devices.device import TaskStatus
 from backend.core.runtime import management
 from backend.models import Task
@@ -59,3 +60,55 @@ def test_build_runtime_status_reuses_runtime_device_for_command_status(monkeypat
     assert [item["key"] for item in payload["items"]] == ["service-1", "job-1"]
     assert fake_device.status_calls == ["service-1", "job-1"]
     assert payload["device"]["name"] == "Local Device"
+
+
+def test_scan_running_tasks_skips_recent_repeat_and_rescans_after_ttl(monkeypatch):
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine, tables=[Task.__table__])
+    local_device_id = "device-local"
+
+    with Session(engine) as session:
+        session.add(
+            Task(
+                id="service-1",
+                name="Service 1",
+                command="python service.py",
+                device_id=local_device_id,
+                runtime_kind="service",
+                order=0,
+            )
+        )
+        session.commit()
+
+    class FakeDevice:
+        def __init__(self):
+            self.scan_calls: list[tuple[bool, list[str]]] = []
+
+        def scan_running_tasks(self, tasks_to_check, *, deep_scan=False):
+            self.scan_calls.append((deep_scan, [str(task.id) for task in tasks_to_check]))
+
+        def get_task_status(self, task_id: str) -> TaskStatus:
+            return TaskStatus(id=task_id, running=False)
+
+    fake_device = FakeDevice()
+    monotonic_values = iter([100.0, 100.5, 101.2])
+    manager = task_manager_module.TaskManager()
+
+    try:
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+        monkeypatch.setattr(task_manager_module.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(manager, "_get_local_device_id", lambda: local_device_id)
+        monkeypatch.setattr(task_manager_module.device_manager, "get_device", lambda device_id: fake_device if device_id == local_device_id else None)
+
+        manager.scan_running_tasks()
+        manager.scan_running_tasks()
+        manager.scan_running_tasks()
+    finally:
+        manager.scheduler.shutdown(wait=False)
+
+    assert fake_device.scan_calls == [
+        (False, ["service-1"]),
+        (True, ["service-1"]),
+        (False, ["service-1"]),
+        (True, ["service-1"]),
+    ]

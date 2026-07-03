@@ -1568,6 +1568,52 @@ def test_data_annotation_scheduler_read_retries_failed_runtime_task(tmp_path, mo
     assert task["retry_after"] == "2026-06-02 06:10:00"
 
 
+@pytest.mark.parametrize(
+    ("fixed_now", "expected_next_time"),
+    [
+        (datetime(2026, 7, 3, 7, 0, 0), "2026-07-03 14:00:00"),
+        (datetime(2026, 7, 3, 11, 0, 0), "2026-07-03 14:00:00"),
+        (datetime(2026, 7, 3, 23, 0, 0), "2026-07-04 14:00:00"),
+    ],
+)
+def test_data_annotation_scheduler_windowed_daily_error_defers_to_next_trigger(tmp_path, monkeypatch, fixed_now, expected_next_time):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-dongtian",
+            "task_type": "daily_dongtian",
+            "label": "日常_洞天福地",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["14:00"],
+            "window": ["10:00", "22:00"],
+            "last_result": "error",
+            "last_run_at": "2026-07-03 07:00:00",
+            "next_time": expected_next_time,
+            "retry_after": None,
+            "cooldown_seconds": 600,
+            "payload": {"__scheduler_definition_task_type": "daily_dongtian"},
+        }
+    ])
+
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    task = next(item for item in tasks if item["id"] == "legacy-daily-dongtian")
+
+    assert task["last_result"] == "error"
+    assert task["next_time"] == expected_next_time
+    assert task["retry_after"] is None
+
+
 def test_data_annotation_scheduler_read_retries_stopped_task_with_stale_next_time(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
@@ -3329,6 +3375,7 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
 
 def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 30, 23, 32, 0))
@@ -3363,6 +3410,47 @@ def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkey
     updated = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingmai-clear")
     assert updated["next_time"] == "2026-07-01 21:30:00"
     assert updated["retry_after"] is None
+
+
+@pytest.mark.parametrize(
+    ("fixed_now", "expected_next_time"),
+    [
+        (datetime(2026, 7, 3, 7, 0, 0), "2026-07-03 14:00:00"),
+        (datetime(2026, 7, 3, 11, 0, 0), "2026-07-03 14:00:00"),
+        (datetime(2026, 7, 3, 23, 0, 0), "2026-07-04 14:00:00"),
+    ],
+)
+def test_daily_dongtian_outside_window_records_next_schedule(tmp_path, monkeypatch, fixed_now, expected_next_time):
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: fixed_now)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "legacy-daily-dongtian",
+            "task_type": "daily_dongtian",
+            "label": "日常_洞天福地",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "next_time": expected_next_time,
+            "schedule_times": ["14:00"],
+            "window": ["10:00", "22:00"],
+            "last_result": "",
+            "retry_after": None,
+            "payload": {},
+        }
+    ])
+    runner = create_fanxiu_runtime_runner()
+
+    result = _drain_generator(
+        runner._execute_daily_dongtian_task({}, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-dongtian"})
+    )
+
+    assert result == "skipped"
+    fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-dongtian"]
+    assert fact["last_result"] == "skipped"
+    assert fact["discovered_next_time"] == expected_next_time
 
 
 def test_daily_lingmai_clear_inside_window_continues_runtime_flow(tmp_path, monkeypatch):
@@ -11605,6 +11693,100 @@ def test_action_trace_creates_temp_directory(tmp_path, monkeypatch):
     assert trace_dir.exists()
     assert list(trace_dir.glob("*_before.png"))
     assert (trace_dir / "index.jsonl").exists()
+
+
+def test_mail_cleanup_detail_timeout_still_runs_delete_read_cleanup(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
+    runner = create_fanxiu_runtime_runner()
+    image34 = {"id": 34, "title": "世界", "width": 900, "height": 1600, "shapes": []}
+    image121 = {
+        "id": 121,
+        "title": "邮件",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "邮件清单2", "x": 0.05, "y": 0.10, "w": 0.90, "h": 0.70},
+            {"title": "一键删除", "x": 0.10, "y": 0.90, "w": 0.22, "h": 0.06},
+        ],
+    }
+    image278 = {"id": 278, "title": "一键删除确认", "width": 900, "height": 1600, "shapes": [{"title": "确认"}]}
+    ctx = {"asset_tree_path": tmp_path / "asset-tree.json", "images": {34: image34, 121: image121, 278: image278}}
+    view121 = runtime_runner_core.View(image121)
+    title_shape = runtime_runner_core.Shape(
+        {"title": "虚天殿冰火路奖励", "x": 0.10, "y": 0.20, "w": 0.40, "h": 0.05},
+        parent_view=view121,
+    )
+    row = runtime_runner_core._RuntimeMailRow(
+        raw={"title": "虚天殿冰火路奖励", "time_text": "2026年07月03日 05:00", "status": "未阅", "policy": "delete"},
+        title_shape=title_shape,
+    )
+    clicks: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.attrs = {}
+            self.wait_views = [runtime_runner_core.View(image278), runtime_runner_core.View(image34)]
+
+        def cur_frame(self, update=False):
+            return "frame"
+
+        def click_shape(self, view, shape, **_kwargs):
+            clicks.append(str(shape.title) if isinstance(shape, runtime_runner_core.Shape) else str(shape))
+
+        def wait_view(self, *_views, **_kwargs):
+            return_value = self.wait_views.pop(0)
+            if False:
+                yield None
+            return return_value
+
+        def scroll_shape_content(self, _shape):
+            if False:
+                yield None
+            return False
+
+    fake_runtime = FakeRuntime()
+
+    monkeypatch.setattr(runtime_runner_core, "ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr(mail_tasks, "ensure_fanxiu_capture_runtime_backstop", lambda _reason: {"ensured": True, "status": {"state": "running"}})
+    monkeypatch.setattr(runner, "_wait_mail_capture_runtime_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件 一键删除"))
+    monkeypatch.setattr(runner, "_refresh_recent_mail_packets_for_runtime_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_align_mail_records_from_visible_adjacency", lambda *_args, **_kwargs: {"updated": 0})
+    monkeypatch.setattr(runner, "_prepare_mail_row_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [row])
+    monkeypatch.setattr(runner, "_mark_pending_packet_mail_actions_not_visible", lambda **_kwargs: 0)
+
+    def no_green_bottle(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def clean_world(*_args, **_kwargs):
+        if False:
+            yield None
+        return 34
+
+    def no_tip_stack(*_args, **_kwargs):
+        if False:
+            yield None
+        return None
+
+    def claim_timeout(*_args, **_kwargs):
+        if False:
+            yield None
+        raise TimeoutError("详情超时")
+
+    monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", no_green_bottle)
+    monkeypatch.setattr(runner, "_ensure_clean_world_after_task", clean_world)
+    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_stack_if_present", no_tip_stack)
+    monkeypatch.setattr(runner, "_claim_runtime_mail_row", claim_timeout)
+
+    result = _drain_generator(runner._execute_mail_cleanup_task(ctx, fanxiu.threading.Event(), {"max_scrolls": 1}))
+
+    assert result == "success"
+    assert clicks == ["一键删除", "确认"]
 
 
 def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(monkeypatch):

@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import time
+import threading
 import uuid
 import shlex
 import socket
@@ -42,6 +43,7 @@ router = APIRouter()
 _status_broadcaster_task: Optional[asyncio.Task] = None
 DEFAULT_STALE_SCHEDULED_TASK_SECONDS = 12 * 60 * 60
 COMMAND_JOB_POLL_INTERVAL_SECONDS = 1.0
+RUNNING_TASK_SCAN_CACHE_TTL_SECONDS = 1.0
 
 
 def _get_scheduled_task_misfire_grace_seconds() -> int:
@@ -146,6 +148,8 @@ class TaskManager:
         self.scheduler = BackgroundScheduler()
         self.scheduler.start()
         self._runtime_state_initialized = False
+        self._last_running_task_scan_at = 0.0
+        self._running_task_scan_lock = threading.Lock()
 
     def initialize_runtime_state(self, *, restore_timeouts: bool = False):
         if self._runtime_state_initialized:
@@ -157,6 +161,23 @@ class TaskManager:
 
     def _get_local_device_id(self) -> str:
         return device_manager.get_local_device_id()
+
+    def _invalidate_running_task_scan_cache(self) -> None:
+        with self._running_task_scan_lock:
+            self._last_running_task_scan_at = 0.0
+
+    def _mark_running_task_scan_at(self, scanned_at: float) -> None:
+        with self._running_task_scan_lock:
+            self._last_running_task_scan_at = scanned_at
+
+    def _should_skip_running_task_scan(self, *, now: float, restore_timeouts: bool) -> bool:
+        if restore_timeouts:
+            return False
+        with self._running_task_scan_lock:
+            return (
+                self._last_running_task_scan_at > 0
+                and now - self._last_running_task_scan_at <= RUNNING_TASK_SCAN_CACHE_TTL_SECONDS
+            )
 
     def load_schedules(self):
         with Session(engine) as session:
@@ -492,6 +513,10 @@ class TaskManager:
             raise
 
     def scan_running_tasks(self, restore_timeouts: bool = False):
+        scanned_at = time.monotonic()
+        if self._should_skip_running_task_scan(now=scanned_at, restore_timeouts=restore_timeouts):
+            return
+
         # Scan local tasks
         local_id = self._get_local_device_id()
         
@@ -525,6 +550,7 @@ class TaskManager:
             if restore_timeouts:
                 if hasattr(device, 'processes') and hasattr(device, '_watch_timeout'):
                      self._restore_timeouts(device, local_tasks)
+        self._mark_running_task_scan_at(scanned_at)
 
     def _restore_timeouts(self, device, tasks):
         import psutil
@@ -608,6 +634,7 @@ class TaskManager:
         try:
             # Pass command and env from DB
             result = device.start_task(task.id, task.command, task.cwd, env={}, timeout=task.timeout)
+            self._invalidate_running_task_scan_cache()
             if trigger_reason != "scheduled" and result.get("status") != "already_running":
                 self._reset_interval_schedule_after_manual_trigger(task_id)
             if result.get("status") == "already_running":
@@ -734,7 +761,9 @@ class TaskManager:
         device = device_manager.get_device(target_device_id)
         if not device:
              return {"status": "device_not_found"}
-        return device.stop_task(task_id)
+        result = device.stop_task(task_id)
+        self._invalidate_running_task_scan_cache()
+        return result
 
     def get_task_status(self, task_id: str):
         # We need to know which device this task belongs to
@@ -811,6 +840,7 @@ class TaskManager:
         result = device.associate_process(task_id, pid)
         if result.get("status") == "error":
             raise HTTPException(status_code=400, detail=result.get("message"))
+        self._invalidate_running_task_scan_cache()
             
         # Update Task Config in DB
         with Session(engine) as session:

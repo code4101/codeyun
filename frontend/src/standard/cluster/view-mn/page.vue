@@ -5,6 +5,26 @@
   >
     <template #toolbar-after="{ selectedPath, canBrowse, reloadDirectory }">
       <div v-if="isLocalCandidatePool(selectedPath)" class="mn-media-sync-actions">
+        <MediaSyncStatusProbe
+          :selected-path="selectedPath"
+          :active="isLocalCandidatePool(selectedPath)"
+          @load="loadCacheStatus"
+        />
+        <span
+          class="mn-media-cache-count"
+          title="提前缓存的 remote id、详情页 URL 和原图 URL，不是已下载图片。"
+        >
+          URL缓存 <strong>{{ candidateCacheCountText(selectedPath) }}</strong>
+        </span>
+        <el-button
+          size="small"
+          plain
+          :loading="isStartingAction(selectedPath, 'collect')"
+          :disabled="!canBrowse || isStarting(selectedPath) || isLocalTaskRunning(selectedPath)"
+          @click="startPlatformAction('collect', selectedPath, reloadDirectory)"
+        >
+          补充缓存
+        </el-button>
         <el-button
           type="primary"
           size="small"
@@ -32,27 +52,56 @@
 
 <script setup lang="ts">
 import axios from 'axios';
-import { onBeforeUnmount, ref } from 'vue';
+import { defineComponent, onBeforeUnmount, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import ClusterFileBrowserPage from '@/standard/cluster/files/page.vue';
 import {
+  fetchMediaSyncCandidateCacheStatus,
   fetchMediaSyncStatus,
   openMediaSyncCandidateLoginPage,
   startMediaSyncPlatformClean,
+  startMediaSyncPlatformCollect,
   startMediaSyncPlatformDownload,
   type MediaSyncStatus,
 } from '@/plugins/modules/media-sync/api';
 
 const MN_ROOT_DIR = 'D:\\home\\chenkunze\\data\\m2510mn';
 const MEDIA_SYNC_TARGET_COUNT = 200;
+const CACHE_STATUS_TTL_MS = 10_000;
 
-type MediaSyncAction = 'download' | 'clean';
+type MediaSyncAction = 'collect' | 'download' | 'clean';
+type MediaSyncPlatform = 'pixiv' | 'pinterest';
 
 const statusByPath = ref<Record<string, MediaSyncStatus>>({});
 const startingActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
 const runningActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
+const statusLoadedAtByPath = ref<Record<string, number>>({});
+const statusLoadErrorByPath = ref<Record<string, boolean>>({});
+const candidateCacheCountByPath = ref<Record<string, number>>({});
+const loadingStatusPaths = new Set<string>();
 const pollTimers = new Map<string, number>();
 let isUnmounted = false;
+
+const MediaSyncStatusProbe = defineComponent({
+  name: 'MediaSyncStatusProbe',
+  props: {
+    selectedPath: { type: String, required: true },
+    active: { type: Boolean, required: true },
+  },
+  emits: ['load'],
+  setup(props, { emit }) {
+    watch(
+      () => [props.selectedPath, props.active] as const,
+      ([selectedPath, active]) => {
+        if (active && selectedPath) {
+          emit('load', selectedPath);
+        }
+      },
+      { immediate: true },
+    );
+    return () => null;
+  },
+});
 
 function isLocalTaskRunning(path: string) {
   const key = normalizePath(path);
@@ -74,6 +123,22 @@ function isStartingAction(path: string, action: MediaSyncAction) {
   return startingActionByPath.value[normalizePath(path)] === action;
 }
 
+function inferPlatformFromPath(path: string): MediaSyncPlatform | '' {
+  const segments = normalizePath(path).split('/').filter(Boolean);
+  const name = segments[segments.length - 1] || '';
+  if (name === '_pixiv') return 'pixiv';
+  if (name === '_pinterest') return 'pinterest';
+  return '';
+}
+
+function candidateCacheCountText(path: string) {
+  const key = normalizePath(path);
+  if (!inferPlatformFromPath(path)) return '';
+  const count = candidateCacheCountByPath.value[key];
+  if (typeof count === 'number') return String(count);
+  return statusLoadErrorByPath.value[key] ? '取数失败' : '加载中';
+}
+
 function isLocalCandidatePool(path: string) {
   const segments = normalizePath(path).split('/').filter(Boolean);
   const name = segments[segments.length - 1] || '';
@@ -82,6 +147,30 @@ function isLocalCandidatePool(path: string) {
 
 function normalizePath(path: string) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+}
+
+async function loadCacheStatus(selectedPath: string, options: { force?: boolean } = {}) {
+  const key = normalizePath(selectedPath);
+  if (!isLocalCandidatePool(selectedPath) || loadingStatusPaths.has(key)) return;
+  const loadedAt = statusLoadedAtByPath.value[key] || 0;
+  if (!options.force && statusByPath.value[key] && Date.now() - loadedAt < CACHE_STATUS_TTL_MS) return;
+
+  loadingStatusPaths.add(key);
+  statusLoadErrorByPath.value = { ...statusLoadErrorByPath.value, [key]: false };
+  try {
+    const nextStatus = await fetchMediaSyncCandidateCacheStatus({ path: selectedPath });
+    if (isUnmounted) return;
+    candidateCacheCountByPath.value = {
+      ...candidateCacheCountByPath.value,
+      [key]: nextStatus.pending_count,
+    };
+    statusLoadedAtByPath.value = { ...statusLoadedAtByPath.value, [key]: Date.now() };
+  } catch (error) {
+    statusLoadErrorByPath.value = { ...statusLoadErrorByPath.value, [key]: true };
+    console.error('Failed to load local media cache status', error);
+  } finally {
+    loadingStatusPaths.delete(key);
+  }
 }
 
 async function startPlatformAction(
@@ -101,7 +190,13 @@ async function startPlatformAction(
           path: selectedPath,
           target_new_count: MEDIA_SYNC_TARGET_COUNT,
         })
-      : await startMediaSyncPlatformClean({
+      : action === 'collect'
+        ? await startMediaSyncPlatformCollect({
+            root_dir: MN_ROOT_DIR,
+            path: selectedPath,
+            target_new_count: MEDIA_SYNC_TARGET_COUNT,
+          })
+        : await startMediaSyncPlatformClean({
           root_dir: MN_ROOT_DIR,
           path: selectedPath,
         });
@@ -116,7 +211,7 @@ async function startPlatformAction(
       await syncRunningStatus(selectedPath, reloadDirectory);
       return;
     }
-    ElMessage.error(action === 'download' ? '启动下载失败' : '启动清理失败');
+    ElMessage.error(actionStartErrorMessage(action));
     runningActionByPath.value = { ...runningActionByPath.value, [key]: '' };
   } finally {
     if (isUnmounted) return;
@@ -164,9 +259,12 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
           return;
         }
         if (finishedAction) {
-          ElMessage.success(finishedAction === 'download' ? '下载完成' : '清理完成');
+          ElMessage.success(actionSuccessMessage(finishedAction));
         }
-        void reloadDirectory?.();
+        if (finishedAction !== 'collect') {
+          void reloadDirectory?.();
+        }
+        void loadCacheStatus(selectedPath, { force: true });
       }
     } catch (error) {
       if (isUnmounted) return;
@@ -176,6 +274,16 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
     }
   }, 1800);
   pollTimers.set(key, timer);
+}
+
+function actionStartErrorMessage(action: MediaSyncAction) {
+  if (action === 'collect') return '启动补充缓存失败';
+  return action === 'download' ? '启动下载失败' : '启动清理失败';
+}
+
+function actionSuccessMessage(action: MediaSyncAction) {
+  if (action === 'collect') return '缓存补充完成';
+  return action === 'download' ? '下载完成' : '清理完成';
 }
 
 async function openLoginWindow(selectedPath: string) {

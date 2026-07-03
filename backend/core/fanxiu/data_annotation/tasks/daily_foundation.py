@@ -3841,6 +3841,20 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = {"max_scrolls": 24, "reverse_scrolls": 6, **dict(payload or {})}
+        outside_window_next_time = self._runtime_daily_window_next_time(
+            str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
+            "daily_dongtian",
+        )
+        if outside_window_next_time:
+            self._record_scheduler_task_discovered_next_time(
+                str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
+                outside_window_next_time,
+                task_type="daily_dongtian",
+                label="日常_洞天福地",
+                last_result="skipped",
+            )
+            self._log("skip", f"日常_洞天福地：当前不在运行窗口或触发时间内，下次 {outside_window_next_time}")
+            return "skipped"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_洞天福地资产树路径，无法执行作业")
@@ -4038,11 +4052,23 @@ class DailyFoundationTaskMixin:
             else:
                 end_at += timedelta(days=1)
         if start_at <= now < end_at:
+            schedule_next_time = self._scheduler_task_next_time_from_schedule(task_id, task_type)
+            schedule_next_ts = parse_data_annotation_task_time(schedule_next_time)
+            if schedule_next_time and schedule_next_ts is not None:
+                schedule_next_at = datetime.fromtimestamp(schedule_next_ts)
+                if schedule_next_at.date() == now.date() and schedule_next_at > now:
+                    return schedule_next_time
             return None
         if now < start_at:
             next_start = start_at
         else:
             next_start = start_at + timedelta(days=1)
+        schedule_next_time = self._scheduler_task_next_time_from_schedule(task_id, task_type)
+        schedule_next_ts = parse_data_annotation_task_time(schedule_next_time)
+        if schedule_next_time and schedule_next_ts is not None:
+            schedule_next_at = datetime.fromtimestamp(schedule_next_ts)
+            if schedule_next_at >= next_start:
+                return schedule_next_time
         return next_start.strftime("%Y-%m-%d %H:%M:%S")
 
     def _enter_daily_lingmai_zaohua_from_world_or_daily(
