@@ -4734,7 +4734,12 @@ def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) 
 
     if uses_new_taxonomy_input:
         effective_categories = note_data.get("note_categories", db_note.note_categories)
-        effective_primary_category = note_data.get("primary_category", db_note.primary_category or NOTE_CATEGORY_DEFAULT)
+        if "primary_category" in note_data:
+            effective_primary_category = note_data.get("primary_category")
+        elif isinstance(effective_categories, list) and len(effective_categories) == 0 and db_note.primary_category is None:
+            effective_primary_category = None
+        else:
+            effective_primary_category = db_note.primary_category or NOTE_CATEGORY_DEFAULT
         effective_note_form = note_data.get("note_form", db_note.note_form or NOTE_FORM_DEFAULT)
         effective_note_scene = note_data.get("note_scene", db_note.note_scene or db_note.note_kind or NOTE_SCENE_DEFAULT)
         effective_lifecycle_stage = note_data.get("lifecycle_stage", db_note.lifecycle_stage or db_note.node_status or NOTE_LIFECYCLE_STAGE_DEFAULT)

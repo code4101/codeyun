@@ -133,6 +133,34 @@ class DataAnnotationRuntimeDebugContext:
         )
         return float(self._runner._shape_score(self._ctx, source_image, shape, frame_data_url) or 0.0)
 
+    def match(
+        self,
+        s: int | str,
+        x: int | str,
+        *,
+        threshold: float | None = None,
+        frame: str | None = None,
+    ) -> dict[str, Any]:
+        self.check_stop()
+        return self._runner.match_scene_frame(self._ctx, s, x, threshold=threshold, frame_data_url=frame)
+
+    def match_matrix(
+        self,
+        scene_ids: list[int] | None = None,
+        *,
+        layer: int | None = 2,
+        threshold: float | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        self.check_stop()
+        return self._runner.match_scene_matrix(
+            self._ctx,
+            scene_ids,
+            layer=layer,
+            threshold=threshold,
+            use_cache=use_cache,
+        )
+
     def shape_probe(
         self,
         scene: int | str,

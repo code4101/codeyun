@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,7 +56,7 @@ def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
     monkeypatch.setattr(
         service_runtime,
         "_latest_live_capture_summary",
-        lambda _capture: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+        lambda _capture, _worker=None: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
     )
     monkeypatch.setattr(
         service_runtime,
@@ -89,7 +90,7 @@ def test_packet_service_health_uses_active_heartbeat_for_maintenance(monkeypatch
     monkeypatch.setattr(
         service_runtime,
         "_latest_live_capture_summary",
-        lambda _capture: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+        lambda _capture, _worker=None: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
     )
     monkeypatch.setattr(
         service_runtime,
@@ -131,6 +132,73 @@ def test_packet_service_health_uses_active_heartbeat_for_maintenance(monkeypatch
     assert health["worker_maintenance_age_seconds"] == 10
 
 
+def test_packet_service_health_flags_lagging_realtime_cursor_even_with_active_heartbeat(monkeypatch, tmp_path):
+    cursor = tmp_path / "fanxiu_runtime_cursor.pcap"
+    latest = tmp_path / "fanxiu_runtime_latest.pcap"
+    cursor.write_bytes(b"older")
+    latest.write_bytes(b"newer")
+    cursor_mtime = cursor.stat().st_mtime
+    latest_mtime = cursor_mtime + 400
+    os.utime(latest, (latest_mtime, latest_mtime))
+
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture, _worker=None: {
+            "age_seconds": 5,
+            "path": str(latest),
+            "size": 128,
+            "mtime": latest_mtime,
+            "mtime_text": "2026-06-28 21:00:00",
+        },
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_age_seconds",
+        lambda value: {
+            "2026-06-28 21:00:00": 30,
+            "2026-06-28 20:59:50": 10,
+        }.get(value, 0),
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True, "watchdog_last_check_at": "2026-06-28 21:00:00"},
+            "packet_worker": {
+                "ok": True,
+                "updated_at": "2026-06-28 21:00:00",
+                "realtime_running": True,
+                "maintenance_running": True,
+                "realtime_interval_seconds": 15,
+                "maintenance_interval_seconds": 1800,
+                "has_unconfirmed_gap": True,
+                "confirmed_cursor_pcap": str(cursor),
+                "realtime": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "confirmed_cursor_pcap": str(cursor),
+                    "active": True,
+                    "heartbeat_at": "2026-06-28 20:59:50",
+                },
+                "maintenance": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "active": True,
+                    "heartbeat_at": "2026-06-28 20:59:50",
+                },
+            },
+        }
+    )
+
+    assert "realtime_result_stale" not in health["issues"]
+    assert "realtime_cursor_lagging" in health["issues"]
+    assert health["realtime_cursor_lag_seconds"] == 400
+
+
 def test_latest_live_capture_summary_ignores_vanished_candidates(monkeypatch, tmp_path):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)
@@ -166,6 +234,96 @@ def test_latest_live_capture_summary_ignores_vanished_candidates(monkeypatch, tm
 
     assert summary["path"] == str(stable)
     assert summary["name"] == "stable.pcap"
+    assert summary["source"] == "latest_live_dir"
+
+
+def test_latest_live_capture_summary_prefers_packet_sync_active_path_without_directory_scan(monkeypatch, tmp_path):
+    active = tmp_path / "fanxiu_runtime_snapshot_active.pcap"
+    active.write_bytes(b"capture")
+
+    def fail_glob(self, pattern):
+        raise AssertionError("directory scan should not run when active capture path exists")
+
+    monkeypatch.setattr(Path, "glob", fail_glob)
+
+    summary = service_runtime._latest_live_capture_summary(
+        {
+            "current_pcap_path": str(tmp_path / "missing_current.pcap"),
+            "packet_sync_active_path": str(active),
+        }
+    )
+
+    assert summary["path"] == str(active)
+    assert summary["name"] == active.name
+    assert summary["source"] == "packet_sync_active"
+
+
+def test_latest_live_capture_summary_uses_worker_latest_scanned_path_before_directory_scan(monkeypatch, tmp_path):
+    scanned = tmp_path / "fanxiu_runtime_latest_scanned.pcap"
+    scanned.write_bytes(b"decoded")
+
+    def fail_glob(self, pattern):
+        raise AssertionError("directory scan should not run when worker capture path exists")
+
+    monkeypatch.setattr(Path, "glob", fail_glob)
+
+    summary = service_runtime._latest_live_capture_summary(
+        {"current_pcap_path": str(tmp_path / "missing_current.pcap")},
+        {"latest_scanned_pcap": str(scanned)},
+    )
+
+    assert summary["path"] == str(scanned)
+    assert summary["name"] == scanned.name
+    assert summary["source"] == "worker_latest_scanned"
+
+
+def test_latest_live_capture_summary_prefers_newest_existing_candidate(monkeypatch, tmp_path):
+    current = tmp_path / "fanxiu_runtime_current.pcap"
+    active = tmp_path / "fanxiu_runtime_snapshot_active.pcap"
+    current.write_bytes(b"newer")
+    active.write_bytes(b"older")
+    current_mtime = current.stat().st_mtime
+    older_mtime = current_mtime - 120
+    os.utime(active, (older_mtime, older_mtime))
+
+    def fail_glob(self, pattern):
+        raise AssertionError("directory scan should not run when candidate capture paths exist")
+
+    monkeypatch.setattr(Path, "glob", fail_glob)
+
+    summary = service_runtime._latest_live_capture_summary(
+        {
+            "current_pcap_path": str(current),
+            "packet_sync_active_path": str(active),
+        },
+        {"latest_scanned_pcap": str(active)},
+    )
+
+    assert summary["path"] == str(current)
+    assert summary["name"] == current.name
+    assert summary["source"] == "current_capture"
+
+
+def test_latest_live_capture_summary_prefers_directory_newest_when_candidates_are_stale(monkeypatch, tmp_path):
+    live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
+    live_dir.mkdir(parents=True)
+    stale_worker = live_dir / "fanxiu_runtime_older.pcap"
+    fresh_dir = live_dir / "fanxiu_runtime_snapshot_fresh.pcap"
+    stale_worker.write_bytes(b"older")
+    fresh_dir.write_bytes(b"fresh")
+    fresh_mtime = fresh_dir.stat().st_mtime
+    stale_mtime = fresh_mtime - 120
+    os.utime(stale_worker, (stale_mtime, stale_mtime))
+
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+
+    summary = service_runtime._latest_live_capture_summary(
+        {"current_pcap_path": str(tmp_path / "missing_current.pcap")},
+        {"latest_scanned_pcap": str(stale_worker)},
+    )
+
+    assert summary["path"] == str(fresh_dir)
+    assert summary["name"] == fresh_dir.name
     assert summary["source"] == "latest_live_dir"
 
 

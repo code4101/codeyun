@@ -120,8 +120,9 @@ import NodeSelector from './NodeSelector.vue';
 import NoteTypeSelector from './NoteTypeSelector.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
 import { NOTE_WEIGHT_DEFAULT, NOTE_WEIGHT_MIN, normalizeNoteWeight } from '@/utils/noteWeight';
-import { derivePrimaryNodeType, normalizeNoteTypeAssignments, type NoteTypeAssignment } from '@/utils/nodeConfig';
+import { normalizeNoteTypeAssignments, type NoteTypeAssignment } from '@/utils/nodeConfig';
 import {
+  derivePrimaryCategory,
   deriveLegacySemanticsFromTaxonomy,
   NOTE_CATEGORY_DEFAULT,
   NOTE_FORM_DEFAULT,
@@ -157,7 +158,7 @@ const form = reactive({
   weight: NOTE_WEIGHT_DEFAULT,
   nodeType: 'note',
   noteTypes: [] as NoteTypeAssignment[],
-  primaryCategory: NOTE_CATEGORY_DEFAULT,
+  primaryCategory: null as string | null,
   noteCategories: [] as NoteTypeAssignment[],
   noteForm: NOTE_FORM_DEFAULT,
   lifecycleStage: NOTE_LIFECYCLE_STAGE_DEFAULT,
@@ -179,8 +180,8 @@ const initForm = () => {
   form.weight = normalizeNoteWeight(props.sourceNote.weight);
   form.nodeType = props.sourceNote.node_type || 'note';
   form.noteTypes = normalizeNoteTypeAssignments(props.sourceNote.note_types, form.nodeType);
-  form.primaryCategory = props.sourceNote.primary_category || NOTE_CATEGORY_DEFAULT;
-  form.noteCategories = normalizeNoteTypeAssignments(props.sourceNote.note_categories, form.primaryCategory);
+  form.primaryCategory = props.sourceNote.primary_category ?? (props.sourceNote.note_categories?.length ? NOTE_CATEGORY_DEFAULT : null);
+  form.noteCategories = normalizeNoteTypeAssignments(props.sourceNote.note_categories, form.primaryCategory, { allowEmpty: true });
   form.noteForm = props.sourceNote.note_form || NOTE_FORM_DEFAULT;
   form.lifecycleStage = props.sourceNote.lifecycle_stage || NOTE_LIFECYCLE_STAGE_DEFAULT;
   form.completionProgressExpr = props.sourceNote.completion_progress_expr || '';
@@ -218,12 +219,12 @@ const shiftTime = (amount: number, unit: 'month' | 'year') => {
 const syncLegacyFieldsFromTaxonomy = () => {
     const legacy = deriveLegacySemanticsFromTaxonomy(
         form.noteCategories,
-        form.primaryCategory || NOTE_CATEGORY_DEFAULT,
+        form.primaryCategory ?? (form.noteCategories.length ? NOTE_CATEGORY_DEFAULT : null),
         form.noteForm || NOTE_FORM_DEFAULT,
         form.noteScene || NOTE_SCENE_DEFAULT,
         form.lifecycleStage || NOTE_LIFECYCLE_STAGE_DEFAULT
     );
-    form.noteCategories = normalizeNoteTypeAssignments(legacy.note_categories, legacy.primary_category);
+    form.noteCategories = normalizeNoteTypeAssignments(legacy.note_categories, legacy.primary_category, { allowEmpty: true });
     form.primaryCategory = legacy.primary_category;
     form.noteForm = legacy.note_form;
     form.lifecycleStage = legacy.lifecycle_stage;
@@ -233,8 +234,10 @@ const syncLegacyFieldsFromTaxonomy = () => {
 };
 
 const handleCategoryChange = (value: NoteTypeAssignment[]) => {
-    form.noteCategories = normalizeNoteTypeAssignments(value, form.primaryCategory);
-    form.primaryCategory = derivePrimaryNodeType(form.noteCategories, form.primaryCategory);
+    form.noteCategories = normalizeNoteTypeAssignments(value, form.primaryCategory, { allowEmpty: true });
+    form.primaryCategory = form.noteCategories.length
+      ? derivePrimaryCategory(form.noteCategories, form.primaryCategory ?? NOTE_CATEGORY_DEFAULT)
+      : null;
     syncLegacyFieldsFromTaxonomy();
 };
 

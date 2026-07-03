@@ -35,6 +35,45 @@ class PopupGuardMixin:
             or ("请重新登录" in compact and "重连" in compact)
         )
 
+    def _login_or_maintenance_screen_detected(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if not compact:
+            return False
+        return (
+            ("进入游戏" in compact and ("账号" in compact or "适龄提示" in compact or "登录" in compact))
+            or ("服务协议" in compact and "隐私" in compact and ("同意并继续" in compact or "登录" in compact))
+            or ("停更码字中" in compact and ("敬请期待更新" in compact or "进入游戏" in compact))
+        )
+
+    def _skip_popup_guard_on_login_or_maintenance(self, runtime: Any) -> bool:
+        try:
+            frame = runtime.cur_frame(update=False)
+            text = runtime.ocr_text(frame)
+        except Exception:
+            return False
+        if not self._login_or_maintenance_screen_detected(text):
+            return False
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        with self._lock:
+            event = {
+                "time": time.time(),
+                "kind": "login_or_maintenance",
+                "image": "OCR",
+                "title": "登录/维护页",
+                "folder_path": "runtime/ocr",
+                "score": 100.0,
+                "action": "skip_popup_guard",
+                "ocr": compact[:120],
+            }
+            self._status.update({
+                "current_scene": None,
+                "message": f"守护跳过：当前是登录/维护页，不按 #47 通用空白弹窗处理，OCR={compact[:80]}",
+                "last_guard_event": event,
+                "updated_at": time.time(),
+            })
+            self._log_locked("skip", self._status["message"])
+        return True
+
     def _disconnect_popup_button_center(
         self,
         lines: list[dict[str, Any]],
@@ -584,6 +623,8 @@ class PopupGuardMixin:
             if disconnect_result is True:
                 return True
             if disconnect_result == "blocked":
+                return False
+            if self._skip_popup_guard_on_login_or_maintenance(runtime):
                 return False
 
             view = runtime.find_view("弹窗")
