@@ -52,9 +52,14 @@ from backend.core.fanxiu.data_annotation.jobs import (
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation.recognition_tree import (
+    build_recognition_tree_nodes,
     is_explicit_local_identity_only_scene,
     layer0_recognition_candidate_ids,
     runtime_root_scene_candidate_ids,
+)
+from backend.core.fanxiu.data_annotation.recognition_graph import (
+    SceneGraphCandidate,
+    choose_scene_from_graph,
 )
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_world_facts_summary,
@@ -6332,6 +6337,379 @@ class DataAnnotationRuntimeRunner(
     def _scene_matches_id(self, scene_id: int, score: float) -> bool:
         return self._scene_recognizer().scene_matches_id(scene_id, score)
 
+    def _scene_match_cache_dir(self) -> Path:
+        return codeyun_temp_root("fanxiu-scene-match")
+
+    def _scene_match_cache_key(
+        self,
+        ctx: dict[str, Any],
+        scene_ids: list[int],
+        *,
+        threshold: float | None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "version": 1,
+            "scene_ids": [int(scene_id) for scene_id in scene_ids],
+            "threshold": round(float(threshold), 4) if threshold is not None else None,
+        }
+        if threshold is None:
+            payload["scene_thresholds"] = {
+                str(int(scene_id)): round(float(self._scene_match_threshold(int(scene_id))), 4)
+                for scene_id in scene_ids
+            }
+        asset_tree_path = ctx.get("asset_tree_path")
+        if isinstance(asset_tree_path, Path) and asset_tree_path.is_file():
+            stat = asset_tree_path.stat()
+            payload["asset_tree"] = {
+                "path": str(asset_tree_path),
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+            }
+            image_dir = asset_tree_path.parent / "images"
+        else:
+            image_dir = None
+        image_signatures: list[dict[str, Any]] = []
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        for scene_id in scene_ids:
+            image = images.get(int(scene_id))
+            if not isinstance(image, dict):
+                continue
+            filename = str(image.get("filename") or "")
+            record: dict[str, Any] = {"scene_id": int(scene_id), "filename": filename}
+            if image_dir is not None and filename:
+                path = image_dir / filename
+                if path.is_file():
+                    stat = path.stat()
+                    record.update({"mtime_ns": stat.st_mtime_ns, "size": stat.st_size})
+            image_signatures.append(record)
+        payload["images"] = image_signatures
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _scene_frame_data_url_from_reference(self, ctx: dict[str, Any], image: dict[str, Any]) -> str:
+        filename = str(image.get("filename") or "")
+        if not filename:
+            raise RuntimeError(f"帧「{image.get('title') or self._image_number(image) or '?'}」缺少图片文件")
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("ctx 缺少 asset_tree_path，无法把参考 scene 作为 match(s,x) 的 x")
+        path = asset_tree_path.parent / "images" / filename
+        if not path.is_file():
+            raise RuntimeError(f"参考帧图片不存在：{path}")
+        return self._data_url(path.read_bytes())
+
+    def match_scene_frame(
+        self,
+        ctx: dict[str, Any],
+        s: int | str,
+        x: int | str,
+        *,
+        threshold: float | None = None,
+        frame_data_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the directed relation ``match(s, x)``.
+
+        ``s`` is the reference scene whose identity rules are evaluated.
+        ``x`` is either a live/reference frame data URL or a scene id whose
+        reference image should be used as the fact frame.
+        """
+
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        try:
+            reference_scene_id = int(str(s).lstrip("#"))
+        except (TypeError, ValueError):
+            raise RuntimeError(f"无法解析 match(s,x) 的 s：{s}") from None
+        reference_image = images.get(reference_scene_id)
+        if not isinstance(reference_image, dict):
+            raise RuntimeError(f"找不到 match(s,x) 的 s 场景：#{reference_scene_id}")
+
+        fact_scene_id: int | None = None
+        if isinstance(frame_data_url, str) and frame_data_url:
+            frame = frame_data_url
+        elif isinstance(x, str) and x.startswith("data:image"):
+            frame = x
+        else:
+            try:
+                fact_scene_id = int(str(x).lstrip("#"))
+            except (TypeError, ValueError):
+                raise RuntimeError(f"无法解析 match(s,x) 的 x：{x}") from None
+            fact_image = images.get(fact_scene_id)
+            if not isinstance(fact_image, dict):
+                raise RuntimeError(f"找不到 match(s,x) 的 x 场景：#{fact_scene_id}")
+            frame = self._scene_frame_data_url_from_reference(ctx, fact_image)
+
+        scene_threshold = float(threshold if threshold is not None else self._scene_match_threshold(reference_scene_id))
+        score = float(self._scene_score(ctx, reference_image, frame) or 0.0)
+        return {
+            "s": reference_scene_id,
+            "x": fact_scene_id if fact_scene_id is not None else "frame",
+            "score": score,
+            "threshold": scene_threshold,
+            "matched": score >= scene_threshold,
+        }
+
+    def match_scene_matrix(
+        self,
+        ctx: dict[str, Any],
+        scene_ids: list[int] | None = None,
+        *,
+        layer: int | None = 2,
+        threshold: float | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        """Build a cached directed ``match(s, x)`` matrix for reference scenes."""
+
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if scene_ids is None:
+            scene_ids = [
+                int(scene_id)
+                for scene_id, image in images.items()
+                if isinstance(image, dict) and (layer is None or int(View(image).layer) == int(layer))
+            ]
+        scene_ids = [int(scene_id) for scene_id in scene_ids if isinstance(images.get(int(scene_id)), dict)]
+        scene_ids = list(dict.fromkeys(scene_ids))
+        scene_threshold = float(threshold) if threshold is not None else None
+        cache_key = self._scene_match_cache_key(ctx, scene_ids, threshold=scene_threshold)
+        cache_path = self._scene_match_cache_dir() / f"{cache_key}.json"
+        if use_cache and cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("cache_key") == cache_key:
+                    cached["cache_hit"] = True
+                    return cached
+            except Exception:
+                pass
+
+        matches: list[dict[str, Any]] = []
+        for reference_id in scene_ids:
+            for fact_id in scene_ids:
+                if int(reference_id) == int(fact_id):
+                    continue
+                result = self.match_scene_frame(ctx, reference_id, fact_id, threshold=scene_threshold)
+                if bool(result.get("matched")):
+                    matches.append(result)
+
+        payload = {
+            "cache_key": cache_key,
+            "cache_path": str(cache_path),
+            "cache_hit": False,
+            "layer": layer,
+            "threshold": scene_threshold if scene_threshold is not None else "per_scene",
+            "scene_ids": scene_ids,
+            "match_count": len(matches),
+            "matches": matches,
+            "updated_at": time.time(),
+        }
+        if use_cache:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return payload
+
+    def _runtime_graph_scene_candidate_ids(self, ctx: dict[str, Any], *, max_layer: int) -> list[int]:
+        images = ctx.get("images") or {}
+        if not isinstance(images, dict):
+            return []
+        tree = ctx.get("asset_tree")
+        if isinstance(tree, list):
+            result: list[int] = []
+            for node in build_recognition_tree_nodes(tree, images):
+                if not node.is_root:
+                    continue
+                if int(node.layer) > int(max_layer):
+                    continue
+                if int(max_layer) <= 2 and is_explicit_local_identity_only_scene(node.image):
+                    continue
+                if node.scene_id not in result:
+                    result.append(node.scene_id)
+            return result
+        runtime_ids = [
+            int(scene_id)
+            for scene_id in self._runtime_scene_candidate_ids(ctx)
+            if isinstance(images.get(int(scene_id)), dict)
+        ]
+        if runtime_ids:
+            return runtime_ids
+        if max_layer >= 3:
+            return [int(scene_id) for scene_id, image in images.items() if isinstance(image, dict)]
+        return [
+            int(scene_id)
+            for scene_id, image in images.items()
+            if isinstance(image, dict)
+            and int(View(image).layer) <= int(max_layer)
+            and not is_explicit_local_identity_only_scene(image)
+        ]
+
+    def _asset_parent_match_edges_for_candidates(self, ctx: dict[str, Any], scene_ids: list[int]) -> list[dict[str, Any]]:
+        tree = ctx.get("asset_tree")
+        images = ctx.get("images") or {}
+        if not isinstance(tree, list) or not isinstance(images, dict):
+            return []
+        candidate_set = {int(scene_id) for scene_id in scene_ids}
+        edges: list[dict[str, Any]] = []
+        for node in build_recognition_tree_nodes(tree, images):
+            if node.scene_id not in candidate_set:
+                continue
+            for parent_id in node.parent_scene_ids:
+                if int(parent_id) in candidate_set:
+                    edges.append({"s": int(parent_id), "x": int(node.scene_id), "matched": True, "source": "asset_parent"})
+        return edges
+
+    def _scene_match_edges_for_candidates(
+        self,
+        ctx: dict[str, Any],
+        scene_ids: list[int],
+        *,
+        trace: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(int(scene_id) for scene_id in scene_ids))
+        if len(ids) <= 1:
+            return []
+        edges: list[dict[str, Any]] = []
+        for reference_id in ids:
+            for fact_id in ids:
+                if int(reference_id) == int(fact_id):
+                    continue
+                try:
+                    result = self.match_scene_frame(ctx, reference_id, fact_id)
+                except Exception as exc:
+                    if trace is not None:
+                        trace.append({
+                            "event": "graph_edge_error",
+                            "s": int(reference_id),
+                            "x": int(fact_id),
+                            "error": str(exc)[:200],
+                        })
+                    continue
+                if bool(result.get("matched")):
+                    edges.append(result)
+        return edges
+
+    def _identify_scene_number_by_graph(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        preferred_scene_ids: list[int] | None = None,
+        trace: list[dict[str, Any]] | None = None,
+    ) -> tuple[int | None, float, str]:
+        images = ctx.get("images") or {}
+        if not isinstance(images, dict) or not images:
+            return None, 0.0, "unavailable"
+        if preferred_scene_ids is None and not isinstance(ctx.get("asset_tree"), list):
+            return None, 0.0, "unavailable"
+
+        if preferred_scene_ids is not None:
+            candidate_ids = [int(scene_id) for scene_id in preferred_scene_ids if int(scene_id) in images]
+            tree = ctx.get("asset_tree")
+            if isinstance(tree, list):
+                candidate_ids = layer0_recognition_candidate_ids(tree, images, candidate_ids) or candidate_ids
+            return self._identify_scene_number_in_graph_candidates(
+                ctx,
+                frame_data_url,
+                candidate_ids,
+                layer_label="layer0",
+                trace=trace,
+            )
+
+        for layer in (1, 2, 3):
+            candidate_ids = self._runtime_graph_scene_candidate_ids(ctx, max_layer=layer)
+            scene_id, score, status = self._identify_scene_number_in_graph_candidates(
+                ctx,
+                frame_data_url,
+                candidate_ids,
+                layer_label=f"layer{layer}",
+                trace=trace,
+                allow_similarity_fallback=layer == 3,
+            )
+            if status in {"matched", "graph_specific", "similarity_tiebreak", "similarity_fallback", "unknown"}:
+                return scene_id, score, status
+            if status == "ambiguous" and layer == 3:
+                return scene_id, score, status
+        return None, 0.0, "unavailable"
+
+    def _identify_scene_number_in_graph_candidates(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        candidate_scene_ids: list[int],
+        *,
+        layer_label: str,
+        trace: list[dict[str, Any]] | None = None,
+        allow_similarity_fallback: bool = True,
+    ) -> tuple[int | None, float, str]:
+        if not candidate_scene_ids:
+            return None, 0.0, "no_candidates"
+        if 86 in candidate_scene_ids:
+            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            if self._leave_scene_confirm_text(text):
+                if trace is not None:
+                    trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr", "model": "graph"})
+                return 86, 100.0, "matched"
+
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        candidates: list[SceneGraphCandidate] = []
+        for scene_id in list(dict.fromkeys(int(item) for item in candidate_scene_ids)):
+            image = images.get(scene_id)
+            if not isinstance(image, dict):
+                continue
+            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+            candidates.append(SceneGraphCandidate(scene_id=scene_id, score=score, matched=score >= self._scene_match_threshold(scene_id)))
+
+        matched_ids = [item.scene_id for item in candidates if item.matched]
+        edges = self._asset_parent_match_edges_for_candidates(ctx, matched_ids)
+        if len(matched_ids) > 1:
+            edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids, trace=trace))
+        result = choose_scene_from_graph(candidates, edges)
+        if not allow_similarity_fallback and result.status in {"similarity_fallback", "unknown"}:
+            if trace is not None:
+                trace.append({
+                    "event": "graph_layer_miss",
+                    "layer": layer_label,
+                    "candidate_count": len(candidates),
+                    "best_scene_id": result.best_similarity_scene_id,
+                    "best_score": round(float(result.best_similarity_score), 3),
+                })
+            return None, float(result.score), "no_match"
+        if result.status == "ambiguous":
+            if trace is not None:
+                trace.append({
+                    "event": "graph_ambiguous",
+                    "layer": layer_label,
+                    "candidates": list(result.unresolved_candidates),
+                    "best_scene_id": result.best_similarity_scene_id,
+                    "best_score": round(float(result.best_similarity_score), 3),
+            })
+            return None, float(result.score), "ambiguous"
+        if (
+            result.scene_id is not None
+            and isinstance(ctx.get("asset_tree"), list)
+            and not self._scene_number_ocr_confirmed(ctx, frame_data_url, int(result.scene_id), float(result.score))
+        ):
+            if trace is not None:
+                trace.append({
+                    "event": "final_rejected",
+                    "model": "graph",
+                    "layer": layer_label,
+                    "scene_id": int(result.scene_id),
+                    "score": round(float(result.score), 3),
+                    "reason": "ocr_confirm_failed",
+                })
+            return None, float(result.score), "ocr_confirm_failed"
+        if trace is not None:
+            trace.append({
+                "event": "graph_result",
+                "layer": layer_label,
+                "status": result.status,
+                "scene_id": result.scene_id,
+                "score": round(float(result.score), 3),
+                "matched_candidates": [
+                    {"scene_id": item.scene_id, "score": round(float(item.score), 3)}
+                    for item in result.matched_candidates[:12]
+                ],
+                "best_similarity_scene_id": result.best_similarity_scene_id,
+                "best_similarity_score": round(float(result.best_similarity_score), 3),
+            })
+        return result.scene_id, float(result.score), result.status
+
     def _scene_key_order(self) -> list[str]:
         return [
             "duplicated",
@@ -6390,6 +6768,17 @@ class DataAnnotationRuntimeRunner(
         preferred_scene_ids: list[int] | None = None,
         trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
+        graph_scene_id, graph_score, graph_status = self._identify_scene_number_by_graph(
+            ctx,
+            frame_data_url,
+            preferred_scene_ids,
+            trace=trace,
+        )
+        if graph_status in {"matched", "graph_specific", "similarity_tiebreak"}:
+            return graph_scene_id, graph_score
+        if trace is not None:
+            trace.append({"event": "graph_fallback_legacy_tree", "status": graph_status})
+
         candidate_scene_ids = preferred_scene_ids
         if candidate_scene_ids is None:
             if 86 in self._runtime_scene_candidate_ids(ctx):
@@ -6406,9 +6795,11 @@ class DataAnnotationRuntimeRunner(
             if isinstance(tree, list) and isinstance(images, dict) and root_candidate_ids:
                 allowed_scene_ids.update(layer0_recognition_candidate_ids(tree, images, root_candidate_ids))
             if trace is None:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=root_candidate_ids)
+                tree_preferred_scene_ids = root_candidate_ids if len(root_candidate_ids) == 1 else None
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=tree_preferred_scene_ids)
             else:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=root_candidate_ids, trace=trace)
+                tree_preferred_scene_ids = root_candidate_ids if len(root_candidate_ids) == 1 else None
+                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=tree_preferred_scene_ids, trace=trace)
             if scene_id is not None and self._is_explicit_local_scene_result(ctx, int(scene_id), root_candidate_ids):
                 if trace is not None:
                     trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "local_identity_without_layer0_context"})
@@ -6536,6 +6927,15 @@ class DataAnnotationRuntimeRunner(
         scene_id: int,
         score: float,
     ) -> bool:
+        if int(scene_id) == 71:
+            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            if self._game_cover_scene_ocr_text(text):
+                self._log("detail", f"场景识别降级：#71 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 是 #18 登录封面，OCR={text[:120]}")
+                return False
+            if not self._youli_scene_ocr_confirmed_text(text):
+                self._log("detail", f"场景识别降级：#71 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像修仙传游历，OCR={text[:120]}")
+                return False
+            return True
         if int(scene_id) == 180:
             text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
             if self._daily_boss_fighting_scene_ocr_confirmed_text(text):
@@ -6543,6 +6943,8 @@ class DataAnnotationRuntimeRunner(
             self._log("detail", f"场景识别降级：#180 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像首领战斗，OCR={text[:120]}")
             return False
         if int(scene_id) != 34:
+            return True
+        if not isinstance(ctx.get("asset_tree"), list):
             return True
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
         if self._world_scene_ocr_confirmed_text(text):
@@ -6579,14 +6981,27 @@ class DataAnnotationRuntimeRunner(
         world_markers = ("大地图", "储物袋", "仙市", "仙府", "天机阁", "角色", "装备", "星海", "功法书")
         return sum(1 for marker in world_markers if marker in compact) >= 2
 
-    def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
-        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+    def _game_cover_scene_ocr_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if (
+        return (
             "进入游戏" in compact
             and ("AppVer" in compact or "ResVer" in compact or "适龄提示" in compact)
             and ("账号" in compact or "公告" in compact or "协议" in compact)
-        ):
+        )
+
+    def _youli_scene_ocr_confirmed_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if not compact:
+            return False
+        blockers = ("进入游戏", "适龄提示", "游戏公告", "限时上线", "锁定官方", "照妖镜")
+        if any(marker in compact for marker in blockers):
+            return False
+        return any(marker in compact for marker in ("游历", "游历值", "探索完成", "当前区域", "区域列表"))
+
+    def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
+        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if self._game_cover_scene_ocr_text(text):
             self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过局部标题候选")
             return 18
         if "日程" in compact and "凡人历" in compact and re.search(r"\d{2}月\d{2}日", compact):
@@ -7613,10 +8028,9 @@ class DataAnnotationRuntimeRunner(
             raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
         similarity = float(result.get("similarity") or 0)
         result_ocr_matched = bool(ocr_enabled and self._shape_match_result_ocr_matches(shape, result))
-        if ocr_enabled and not result_ocr_matched:
+        if ocr_enabled and not result_ocr_matched and self._has_cached_ocr_lines(ctx, frame_data_url):
             existing_fixed_box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else None
             existing_resolved_box = result.get("resolved_box") if isinstance(result.get("resolved_box"), dict) else None
-            self._cached_ocr_lines(ctx, frame_data_url)
             frame_ocr_result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
             if bool(frame_ocr_result.get("matched")):
                 if existing_fixed_box is not None:

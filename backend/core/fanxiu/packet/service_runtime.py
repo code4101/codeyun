@@ -206,53 +206,97 @@ def _worker_substate_stale(worker: dict[str, Any], key: str, interval_key: str, 
     return age_seconds > stale_after
 
 
-def _latest_live_capture_summary(capture_runtime: dict[str, Any]) -> dict[str, Any]:
-    current_path = Path(str(capture_runtime.get("current_pcap_path") or ""))
-    if current_path.is_file():
-        try:
-            stat = current_path.stat()
-            return {
-                "path": str(current_path),
-                "name": current_path.name,
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "mtime_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
-                "age_seconds": max(0.0, time.time() - stat.st_mtime),
-                "source": "current_capture",
-            }
-        except OSError:
-            pass
+def _live_capture_summary_from_path(path_value: Any, *, source: str) -> dict[str, Any] | None:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {
+        "path": str(path),
+        "name": path.name,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "mtime_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+        "age_seconds": max(0.0, time.time() - stat.st_mtime),
+        "source": source,
+    }
+
+
+def _latest_live_capture_summary(capture_runtime: dict[str, Any], packet_worker: dict[str, Any] | None = None) -> dict[str, Any]:
+    candidate_paths = [
+        (capture_runtime.get("current_pcap_path"), "current_capture"),
+        (capture_runtime.get("packet_sync_active_path"), "packet_sync_active"),
+    ]
+    if isinstance(packet_worker, dict):
+        candidate_paths.extend([
+            (packet_worker.get("latest_scanned_pcap"), "worker_latest_scanned"),
+            (packet_worker.get("confirmed_cursor_pcap"), "worker_confirmed_cursor"),
+            (packet_worker.get("cursor_pcap"), "worker_cursor"),
+        ])
+
+    candidate_summaries: list[dict[str, Any]] = []
+    for path_value, source in candidate_paths:
+        summary = _live_capture_summary_from_path(path_value, source=source)
+        if summary is not None:
+            candidate_summaries.append(summary)
+    if candidate_summaries:
+        freshest_candidate = max(
+            candidate_summaries,
+            key=lambda item: (
+                float(item.get("mtime") or 0.0),
+                float(item.get("size") or 0.0),
+                str(item.get("path") or ""),
+            ),
+        )
+        freshest_age = freshest_candidate.get("age_seconds")
+        if isinstance(freshest_age, (int, float)) and freshest_age <= 120:
+            return freshest_candidate
+
     live_dir = get_settings().data_dir / "fanxiu" / "tcp-flow" / "live-captures"
     try:
         candidates = [path for path in live_dir.glob("*.pcap") if path.is_file()]
     except OSError:
         candidates = []
-    if not candidates:
-        return {"path": "", "name": "", "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
-    latest_with_stat = None
-    for path in candidates:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        if latest_with_stat is None or stat.st_mtime > latest_with_stat[1].st_mtime:
-            latest_with_stat = (path, stat)
-    if latest_with_stat is None:
-        return {"path": "", "name": "", "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
-    latest, stat = latest_with_stat
-    try:
-        stat = latest.stat()
-    except OSError:
-        return {"path": str(latest), "name": latest.name, "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
-    return {
-        "path": str(latest),
-        "name": latest.name,
-        "size": stat.st_size,
-        "mtime": stat.st_mtime,
-        "mtime_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
-        "age_seconds": max(0.0, time.time() - stat.st_mtime),
-        "source": "latest_live_dir",
-    }
+    if candidates:
+        latest_with_stat = None
+        for path in candidates:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if latest_with_stat is None or stat.st_mtime > latest_with_stat[1].st_mtime:
+                latest_with_stat = (path, stat)
+        if latest_with_stat is not None:
+            latest, stat = latest_with_stat
+            candidate_summaries.append(
+                {
+                    "path": str(latest),
+                    "name": latest.name,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "mtime_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                    "age_seconds": max(0.0, time.time() - stat.st_mtime),
+                    "source": "latest_live_dir",
+                }
+            )
+
+    if candidate_summaries:
+        return max(
+            candidate_summaries,
+            key=lambda item: (
+                float(item.get("mtime") or 0.0),
+                float(item.get("size") or 0.0),
+                str(item.get("path") or ""),
+            ),
+        )
+
+    return {"path": "", "name": "", "size": 0, "mtime": 0.0, "mtime_text": "", "age_seconds": None}
 
 
 def _mail_database_freshness() -> dict[str, Any]:
@@ -288,10 +332,31 @@ def _mail_database_freshness() -> dict[str, Any]:
     }
 
 
+def _realtime_cursor_lag_seconds(worker: dict[str, Any], latest_capture: dict[str, Any]) -> float | None:
+    substate = worker.get("realtime") if isinstance(worker.get("realtime"), dict) else {}
+    cursor_path = str(
+        substate.get("confirmed_cursor_pcap")
+        or worker.get("confirmed_cursor_pcap")
+        or substate.get("latest_scanned_pcap")
+        or worker.get("latest_scanned_pcap")
+        or ""
+    ).strip()
+    if not cursor_path:
+        return None
+    try:
+        cursor_mtime = Path(cursor_path).stat().st_mtime
+    except OSError:
+        return None
+    latest_mtime = latest_capture.get("mtime") if isinstance(latest_capture, dict) else None
+    if not isinstance(latest_mtime, (int, float)):
+        return None
+    return max(0.0, float(latest_mtime) - float(cursor_mtime))
+
+
 def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]:
     capture = status.get("capture_runtime") if isinstance(status.get("capture_runtime"), dict) else {}
     worker = status.get("packet_worker") if isinstance(status.get("packet_worker"), dict) else {}
-    latest_capture = _latest_live_capture_summary(capture)
+    latest_capture = _latest_live_capture_summary(capture, worker)
     mail = _mail_database_freshness()
     issues: list[str] = []
     warnings: list[str] = []
@@ -315,6 +380,14 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         issues.append("realtime_result_stale")
     if worker and _worker_substate_stale(worker, "maintenance", "maintenance_interval_seconds", 600.0):
         issues.append("maintenance_result_stale")
+    realtime_cursor_lag_seconds = _realtime_cursor_lag_seconds(worker, latest_capture) if worker else None
+    if (
+        worker
+        and worker.get("has_unconfirmed_gap")
+        and isinstance(realtime_cursor_lag_seconds, (int, float))
+        and realtime_cursor_lag_seconds > 180
+    ):
+        issues.append("realtime_cursor_lagging")
     if worker and worker.get("skipped") and worker.get("skip_reason"):
         warnings.append(f"worker_skipped:{worker.get('skip_reason')}")
     mail_seen_age = mail.get("latest_seen_age_seconds") if isinstance(mail, dict) else None
@@ -329,6 +402,7 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         "worker_updated_age_seconds": _age_seconds(worker.get("updated_at")) if worker else None,
         "worker_realtime_age_seconds": _worker_substate_age_seconds(worker, "realtime") if worker else None,
         "worker_maintenance_age_seconds": _worker_substate_age_seconds(worker, "maintenance") if worker else None,
+        "realtime_cursor_lag_seconds": realtime_cursor_lag_seconds,
         "capture_watchdog_age_seconds": _age_seconds(capture.get("watchdog_last_check_at")) if capture else None,
     }
 

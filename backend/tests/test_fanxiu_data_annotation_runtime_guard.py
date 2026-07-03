@@ -1632,6 +1632,41 @@ def test_strong_ocr_scene_number_detects_game_cover_before_route_candidates(monk
     assert runner._strong_ocr_scene_number(ctx, "frame") == 18
 
 
+def test_youli_scene_ocr_confirm_rejects_game_cover(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [
+        {"text": "AppVer:2.46.700211 ResVer:cecdbe"},
+        {"text": "账号 公告 协议 修仙传 人界篇"},
+        {"text": "进入游戏 适龄提示"},
+    ])
+
+    assert runner._scene_number_ocr_confirmed(ctx, "frame", 71, 80.0) is False
+
+
+def test_youli_scene_ocr_confirm_rejects_promo_overlay(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [
+        {"text": "凡人修仙传 照妖镜 限时上线"},
+        {"text": "7月4日17点锁定官方抖音直播间"},
+        {"text": "世界 储物袋 角色 装备 星海"},
+    ])
+
+    assert runner._scene_number_ocr_confirmed(ctx, "frame", 71, 80.0) is False
+
+
+def test_youli_scene_ocr_confirm_accepts_youli_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {}
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [
+        {"text": "修仙传游历 游历值 120/200"},
+        {"text": "当前区域 人界 探索完成"},
+    ])
+
+    assert runner._scene_number_ocr_confirmed(ctx, "frame", 71, 80.0) is True
+
+
 def test_strong_ocr_scene_number_detects_calendar_schedule(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {}
@@ -3003,6 +3038,30 @@ def test_auto_close_guard_requires_high_confidence_during_task(tmp_path, monkeyp
     assert clicked == []
 
 
+def test_auto_close_guard_skips_login_maintenance_screen(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
+    tree = [{
+        "type": "folder",
+        "title": "弹窗",
+        "children": [_image("所有提示窗口", "0047.jpg", [blank_shape])],
+    }]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
+
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{"text": "AppVer 适龄提示 停更码字中，敬请期待更新 进入游戏"}],
+    )
+    monkeypatch.setattr(runner, "_popup_score", lambda *_args, **_kwargs: pytest.fail("登录/维护页不应进入通用弹窗匹配"))
+
+    assert not runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    status = runner.status()
+    assert status["last_guard_event"]["kind"] == "login_or_maintenance"
+    assert status["last_guard_event"]["action"] == "skip_popup_guard"
+
+
 def test_auto_close_guard_clicks_popup_blank_without_jump_target(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     tree = [{
@@ -4084,6 +4143,96 @@ def test_debug_eval_context_shape_score_is_readonly_probe():
     assert ctx.shape_score(265, "返回", frame=_png_data_url()) == 79.0
 
 
+def test_debug_eval_context_exposes_match_relation_probe():
+    from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
+
+    calls: list[tuple] = []
+
+    class FakeRunner:
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+        def match_scene_frame(self, ctx, s, x, *, threshold=None, frame_data_url=None):
+            calls.append((ctx, s, x, threshold, frame_data_url))
+            return {"s": s, "x": x, "score": 91.0, "threshold": threshold or 80.0, "matched": True}
+
+        def match_scene_matrix(self, ctx, scene_ids=None, *, layer=2, threshold=None, use_cache=True):
+            calls.append((ctx, scene_ids, layer, threshold, use_cache))
+            return {"scene_ids": scene_ids or [], "matches": [], "cache_hit": False}
+
+    raw_ctx = {"images": {}}
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), raw_ctx, threading.Event())
+
+    assert ctx.match(101, 102, threshold=80.0, frame="frame")["matched"] is True
+    assert ctx.match_matrix([101, 102], layer=2)["scene_ids"] == [101, 102]
+    assert calls == [
+        (raw_ctx, 101, 102, 80.0, "frame"),
+        (raw_ctx, [101, 102], 2, None, True),
+    ]
+
+
+def test_runtime_match_scene_matrix_uses_cache(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    images = {
+        1: _scene_image("a", "0001.png", layer=2),
+        2: _scene_image("b", "0002.png", layer=2),
+    }
+    ctx = {"images": images}
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(runner, "_scene_match_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_scene_frame_data_url_from_reference", lambda _ctx, image: f"frame:{image['filename']}")
+
+    def fake_scene_score(_ctx, reference_image, frame):
+        calls.append((frame, reference_image["filename"]))
+        if frame == "frame:0001.png" and reference_image["filename"] == "0002.png":
+            return 91.0
+        return 40.0
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+
+    result = runner.match_scene_matrix(ctx, [1, 2], threshold=80.0)
+
+    assert result["cache_hit"] is False
+    assert result["match_count"] == 1
+    assert result["matches"] == [{"s": 2, "x": 1, "score": 91.0, "threshold": 80.0, "matched": True}]
+    assert len(calls) == 2
+
+    monkeypatch.setattr(
+        runner,
+        "_scene_score",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("cache was not used")),
+    )
+    cached = runner.match_scene_matrix(ctx, [1, 2], threshold=80.0)
+
+    assert cached["cache_hit"] is True
+    assert cached["matches"] == result["matches"]
+
+
+def test_runtime_scene_identification_prefers_graph_specific_candidate(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    images = {
+        34: _scene_image("世界", "0034.png", layer=2),
+        266: _scene_image("法则详情", "0266.png", layer=2),
+    }
+    ctx = {"asset_tree": [images[34], images[266]], "images": images}
+
+    def fake_scene_score(_ctx, image, _frame):
+        if image["filename"] == "0034.png":
+            return 99.0
+        if image["filename"] == "0266.png":
+            return 88.0
+        return 0.0
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+    monkeypatch.setattr(runner, "_scene_match_edges_for_candidates", lambda _ctx, _ids, trace=None: [{"s": 34, "x": 266, "matched": True}])
+
+    scene_id, score = runner._identify_scene_number(ctx, _png_data_url())
+
+    assert scene_id == 266
+    assert score == 88.0
+
+
 def test_debug_eval_context_exposes_ocr_words_in_shapes():
     from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
 
@@ -5150,7 +5299,13 @@ def test_daily_lundao_seat_confirmation_retries_transient_unknown():
 
     class FakeRuntime:
         def __init__(self):
-            self.scenes = iter([(None, 0.0, "unknown"), (301, 100.0, "seat"), (303, 100.0, "dialog")])
+            self.scenes = iter([
+                (302, 100.0, "confirm"),
+                (None, 0.0, "unknown"),
+                (301, 100.0, "seat"),
+                (301, 100.0, "seat"),
+                (303, 100.0, "dialog"),
+            ])
             self.actions = []
 
         def wait_click_then_view(self, *args, **kwargs):
@@ -5170,19 +5325,29 @@ def test_daily_lundao_seat_confirmation_retries_transient_unknown():
         def current_scene(self, *_args, **_kwargs):
             return next(self.scenes)
 
-        def ocr_text(self, _frame):
+        def ocr_text(self, frame):
+            if frame == "confirm":
+                return "提示 是否在该空位入座 当前道场 三清道场 论道收益 35/分 剩余时间"
+            if frame == "seat":
+                return "听道座位 此处座位甚佳 再看看别的座位 入座"
             return ""
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
 
     runtime = FakeRuntime()
     result = _drain_generator(runner._advance_daily_lundao_seat_confirmation(runtime, FakeStopEvent(), 302))
 
     assert result == (303, 100.0)
     assert [action[0] for action in runtime.actions] == [
-        "wait_click",
+        "click_shape_center",
         "settle",
         "settle",
-        "wait_click_then_view",
+        "click_shape_center",
+        "settle",
     ]
+    assert runtime.actions[0] == ("click_shape_center", (302, "确定"), {})
+    assert runtime.actions[3] == ("click_shape_center", (301, "入座"), {})
 
 
 def test_daily_lundao_empty_seat_confirms_go_to_dojo_popup_before_continuing():
@@ -5238,7 +5403,7 @@ def test_daily_lundao_empty_seat_confirms_go_to_dojo_popup_before_continuing():
     assert runtime.actions[4] == ("settle", 1.5)
 
 
-def test_daily_lundao_request_seat_reuses_go_to_dojo_flow():
+def test_daily_lundao_request_seat_clicks_go_dojo_before_confirmation():
     runner = create_fanxiu_runtime_runner()
 
     class FakeStopEvent:
@@ -5247,7 +5412,12 @@ def test_daily_lundao_request_seat_reuses_go_to_dojo_flow():
 
     class FakeRuntime:
         def __init__(self):
-            self.scenes = iter([(329, 100.0, "confirm"), (303, 100.0, "dialog"), (53, 100.0, "leave"), (34, 100.0, "world")])
+            self.scenes = iter([
+                (297, 100.0, "request"),
+                (329, 100.0, "confirm"),
+                (186, 100.0, "seated"),
+                (34, 100.0, "world"),
+            ])
             self.actions = []
 
         def wait_click_then_view(self, *args, **kwargs):
@@ -5258,8 +5428,19 @@ def test_daily_lundao_request_seat_reuses_go_to_dojo_flow():
         def current_scene(self, *_args, **_kwargs):
             return next(self.scenes)
 
-        def ocr_text(self, _frame):
-            return ""
+        def cur_frame(self, *_args, **_kwargs):
+            return "seated"
+
+        def ocr_text(self, frame):
+            if frame == "seated":
+                return "闻道感悟 剩余座位 离开"
+            return "三清道场 前往道场 剩余座位：0/30"
+
+        def ocr_lines(self, _frame):
+            return [{"text": "前往道场", "x": 650, "y": 520, "w": 120, "h": 40}]
+
+        def click_frame_point(self, *args, **kwargs):
+            self.actions.append(("click_frame_point", args, kwargs))
 
         def click_shape_center(self, *args, **kwargs):
             self.actions.append(("click_shape_center", args, kwargs))
@@ -5273,21 +5454,77 @@ def test_daily_lundao_request_seat_reuses_go_to_dojo_flow():
 
     assert result == "success"
     assert runtime.actions[0] == (
-        "wait_click_then_view",
-        (297, "请他让座", [329, 301, 302, 303, 52, 53, 186, 69, 34]),
-        {"settle_seconds": 2.0, "timeout": 60.0},
+        "click_frame_point",
+        (297, 710.0, 540.0),
+        {},
     )
-    assert runtime.actions[1] == (
+    assert runtime.actions[1] == ("settle", 2.0)
+    assert runtime.actions[2] == (
         "wait_click_then_view",
         (329, "确认", [301, 302, 303, 52, 53, 186]),
         {"settle_seconds": 1.5, "timeout": 20.0},
     )
+    assert runtime.actions[3] == ("click_shape_center", (186, "离开"), {})
+
+
+def test_daily_lundao_request_seat_falls_back_to_request_button_when_go_dojo_stays():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.scenes = iter([
+                (297, 100.0, "request"),
+                (297, 100.0, "request"),
+                (303, 100.0, "dialog"),
+                (53, 100.0, "leave"),
+                (34, 100.0, "world"),
+            ])
+            self.actions = []
+
+        def current_scene(self, *_args, **_kwargs):
+            return next(self.scenes)
+
+        def ocr_text(self, frame):
+            return "三清道场 前往道场 请他让座 剩余座位：0/30" if frame == "request" else ""
+
+        def ocr_lines(self, _frame):
+            return [{"text": "前往道场", "x": 650, "y": 520, "w": 120, "h": 40}]
+
+        def click_frame_point(self, *args, **kwargs):
+            self.actions.append(("click_frame_point", args, kwargs))
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return True
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._continue_daily_lundao_scene(runtime, FakeStopEvent(), 297))
+
+    assert result == "success"
+    assert runtime.actions[0] == ("click_frame_point", (297, 710.0, 540.0), {})
+    assert runtime.actions[1] == ("settle", 2.0)
     assert runtime.actions[2] == (
+        "wait_click_then_view",
+        (297, "请他让座", [329, 301, 302, 303, 52, 53, 186, 69, 34]),
+        {"settle_seconds": 2.0, "timeout": 20.0},
+    )
+    assert runtime.actions[3] == (
         "wait_click_then_view",
         (303, "对话", [52, 53]),
         {"settle_seconds": 1.5, "timeout": 30.0},
     )
-    assert runtime.actions[3] == ("click_shape_center", (53, "离开"), {})
 
 
 def test_daily_lundao_seated_scene_exits_to_world_before_success():
@@ -5353,8 +5590,25 @@ def test_daily_lundao_seat_confirmation_accepts_direct_seated_scene():
     result = _drain_generator(runner._advance_daily_lundao_seat_confirmation(runtime, FakeStopEvent(), 301))
 
     assert result == (186, 100.0)
-    assert runtime.actions[0][0] == "wait_click_then_view"
-    assert runtime.actions[0][2]["wait_leave"] is True
+    assert runtime.actions == []
+
+
+def test_daily_lundao_seat_confirmation_rejects_unrelated_301_false_positive():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def current_scene(self, *_args, **_kwargs):
+            return 301, 83.0, "quick_result"
+
+        def ocr_text(self, _frame):
+            return "小助手 一键执行 游历 总共获得宝物 确定"
+
+    with pytest.raises(RuntimeError, match="非论道页面"):
+        _drain_generator(runner._advance_daily_lundao_seat_confirmation(FakeRuntime(), FakeStopEvent(), 301))
 
 
 def test_daily_lingzu_is_not_independent_scheduler_task():

@@ -99,6 +99,7 @@ const refundHistoryPage = ref(1)
 const refundHistoryPageSize = ref(20)
 const refundHistoryTotal = ref(0)
 const refundHistoryLoaded = ref(false)
+const refundHistoryPending = ref(false)
 const restoredInputDraftStorageKey = ref<string | null>(null)
 const restoredQueryDraftStorageKey = ref<string | null>(null)
 const restoredRefundDraftStorageKey = ref<string | null>(null)
@@ -1008,21 +1009,26 @@ function clearRefundHistoryDeferredTimer() {
     window.clearTimeout(refundHistoryDeferredTimer)
     refundHistoryDeferredTimer = null
   }
+  refundHistoryPending.value = false
 }
 
 function scheduleRefundHistoryLoad(delayMs = 160) {
   if (refundHistoryLoaded.value || refundHistoryLoading.value || refundHistoryLoadPromise || refundHistoryDeferredTimer !== null) {
     return
   }
+  refundHistoryPending.value = true
   refundHistoryDeferredTimer = window.setTimeout(() => {
     refundHistoryDeferredTimer = null
     if (activeSubview.value === 'refund') {
       void ensureRefundHistoryLoaded()
+    } else {
+      refundHistoryPending.value = false
     }
   }, delayMs)
 }
 
 async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refundHistoryPageSize.value) {
+  refundHistoryPending.value = false
   refundHistoryLoading.value = true
   try {
     const result = await fetchAttendanceOrderRefundHistory({
@@ -1557,7 +1563,9 @@ onBeforeUnmount(() => {
       <section class="panel-card">
         <div class="panel-header">
           <h2>退款历史</h2>
-          <span v-if="refundHistoryLoading" class="panel-header__status" aria-live="polite">刷新中...</span>
+          <span v-if="refundHistoryLoading || refundHistoryPending" class="panel-header__status" aria-live="polite">
+            {{ refundHistoryLoaded ? '刷新中...' : '加载中...' }}
+          </span>
         </div>
 
         <div v-if="refundHistoryLoaded || refundHistoryLoading" class="history-table-shell">
@@ -1626,9 +1634,7 @@ onBeforeUnmount(() => {
             <div v-if="!refundHistoryItems.length" class="mobile-history-empty">暂无退款历史</div>
           </div>
         </div>
-        <div v-else class="history-placeholder" aria-live="polite">
-          首屏已优先加载退款工作区，退款历史稍后补齐。
-        </div>
+        <div v-else-if="refundHistoryPending" class="history-table-shell history-table-shell--pending" aria-hidden="true"></div>
 
         <div v-if="refundHistoryLoaded && refundHistoryTotal > 0" class="history-pagination-row">
           <StandardPagination
@@ -1980,13 +1986,8 @@ onBeforeUnmount(() => {
   -webkit-overflow-scrolling: touch;
 }
 
-.history-placeholder {
-  padding: 18px 16px;
-  border: 1px dashed rgba(133, 100, 59, 0.18);
-  border-radius: 12px;
-  background: rgba(255, 251, 244, 0.7);
-  color: #7a6445;
-  font-size: 14px;
+.history-table-shell--pending {
+  min-height: 88px;
 }
 
 .mobile-history-list {

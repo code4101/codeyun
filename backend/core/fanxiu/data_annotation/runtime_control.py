@@ -162,15 +162,33 @@ def _doctor_watch_latest_candidates() -> list[Path]:
     return candidates
 
 
+def _doctor_watch_direct_latest_candidates(heartbeat: dict[str, Any]) -> list[Path]:
+    stable_path = doctor_watch_latest_path()
+    candidates: list[Path] = []
+    for key in ("latest_path", "stable_latest_path"):
+        text = str(heartbeat.get(key) or "").strip()
+        if not text:
+            continue
+        candidate = Path(text)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if stable_path not in candidates:
+        candidates.append(stable_path)
+    return candidates
+
+
 def read_doctor_watch_latest(path: Path | None = None) -> dict[str, Any]:
     heartbeat = read_doctor_watch_heartbeat()
     if path is not None:
         snapshot_path = path
     else:
-        heartbeat_latest_text = str(heartbeat.get("latest_path") or "")
-        heartbeat_candidates = [Path(heartbeat_latest_text)] if bool(heartbeat.get("active")) and heartbeat_latest_text else []
-        candidates = heartbeat_candidates + _doctor_watch_latest_candidates()
-        snapshot_path = next((candidate for candidate in candidates if candidate.exists()), doctor_watch_latest_path())
+        direct_candidates = _doctor_watch_direct_latest_candidates(heartbeat)
+        snapshot_path = next((candidate for candidate in direct_candidates if candidate.exists()), None)
+        if snapshot_path is None:
+            snapshot_path = next(
+                (candidate for candidate in _doctor_watch_latest_candidates() if candidate.exists()),
+                doctor_watch_latest_path(),
+            )
     payload = read_data_annotation_json(snapshot_path, None)
     if not isinstance(payload, dict):
         return {

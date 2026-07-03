@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "4422a85ea5cc237017e9080fd5373a09e4aed63e"
-last_audited_at: "2026-07-03T12:49:24.0406340+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-4422a85/report.md"
-last_frontend_commit_summary: "完成 64b872eb..4422a85e：浏览文件与重复文件工作台在无对象时收回空壳 chrome，相关笔记链路复验通过。"
-audited_commit_count: 67
+last_audited_commit: "da1575be28606b8d2a9199603cb06f3b418e778b"
+last_audited_at: "2026-07-03T16:38:10.7544454+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-da1575be/report.md"
+last_frontend_commit_summary: "完成 4422a85e..da1575be：重复文件前置条件复验通过，并收回退款历史首屏解释占位。"
+audited_commit_count: 68
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-03（第四轮）
+
+- 完整范围：`4422a85ea5cc237017e9080fd5373a09e4aed63e..da1575be28606b8d2a9199603cb06f3b418e778b`
+- 覆盖提交：`da1575be28606b8d2a9199603cb06f3b418e778b`
+- 前端入口提交：`da1575be28606b8d2a9199603cb06f3b418e778b`
+- 入口如何牵引到旧问题：这次提交同时动了 `cluster/files`、`cluster/storage -> 重复文件` 和 `attendance/orders` 的同一条“对象先成立，再展开下游工作台”链路。真实页面复验后，`cluster/storage` 的前置条件收口方向成立，`cluster/files` 当前样本也未暴露新的布局回归；真正继续被牵出的旧问题落在 `attendance/orders`：为了把退款工作区优先呈现，页面首屏又多出一块解释为什么退款历史还没加载完的虚线提示框。它不承载新的业务事实，只是在解释内部加载节奏，因此可以继续收回。
+- 本轮减法：不新增功能、入口、字段或状态。在 [`frontend/src/standard/attendance/orders/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/attendance/orders/page.vue) 新增 `refundHistoryPending` 只作为静默待载阶段的内部状态；一级页面删除 `首屏已优先加载退款工作区，退款历史稍后补齐。` 这块虚线解释框，改成沿用同一张历史卡片里的简洁待载壳层。`cluster/storage` 的 `重复文件` 子页则按提交方向复验为：根目录下只保留一句前置条件提示，不再提前显示零统计分析器壳层。
+- 信息量保持：`attendance/orders` 仍保留查询输入、退款执行、退款结果、退款历史与分页；减少的是解释内部延迟加载的额外说明区。`cluster/storage` 仍保留重复文件规则、统计和结果，只是继续收回到进入具体磁盘或目录之后。`cluster/files` 当前样本仍保留媒体工作台与普通文件表，没有因为本轮巡检再增加额外概念。
+- 概念图/线框图：报告里的 Mermaid 把 `cluster/files`、`cluster/storage`、`attendance/orders` 都收敛到同一个基础模型：`前置对象成立 -> 再展开下游工作台`；ASCII 线框图则直接对比了退款页“解释内部节奏”与“静默待载”的差异。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-da1575be/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，并重新加载前端代码后，对 `cluster/files`、`cluster/storage`、`attendance/orders` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口截图，证据见 `evidence.json` 与对应 `*.png`。`cluster/files` 三视口都满足 `bodyOverflowX = 0`、`hasMediaToolbar = true`、`hasOtherFiles = true`；`cluster/storage` 三视口都满足 `activeTab = 重复文件`、`duplicatePrerequisite = 请先进入具体磁盘或目录，再分析重复文件。`、`duplicateSummaryExists = false`；`attendance/orders` 三视口 settled 状态都满足 `placeholderExists = false`、`hasHistoryTable = true`、`hasPagination = true`、`bodyOverflowX = 0`。同时 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`cluster/storage` 仍是前端信息层级问题，本轮只做复验；`cluster/files` 当前样本未暴露新的高优先级问题；`attendance/orders` 则是前端交互节奏问题，内部延后加载一度被升级成了一级说明区。
+- 剩余风险：`cluster/files` 当前真实样本路径 `D:\home\chenkunze\data` 仍含可预览媒体，未再次构造“只有普通文件、没有媒体”的专门目录样本；但本轮入口链路在真实页面中未复现新的 UI 回归。当前工作树也仍有用户未提交的后端改动，本轮未触碰这些文件。
+- 处理结果：本轮已完成完整增量范围的提交归类、页面级建模、真实多视口取证、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `da1575be28606b8d2a9199603cb06f3b418e778b`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-03（第三轮）
 
