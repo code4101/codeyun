@@ -264,112 +264,13 @@
       </section>
       </template>
 
-      <template v-else-if="shouldShowDuplicates">
-        <StorageDuplicateControls
-          v-model:rule-fields="duplicateRuleFields"
-          v-model:min-size-mb="duplicateMinSizeMb"
-          v-model:sort-mode="duplicateSortMode"
-          v-model:source="duplicateSource"
-          v-model:filter-rules="duplicateFilterRules"
-          :can-browse="canBrowse"
-          :duplicate-loading="duplicateLoading"
-          :enabled-filter-count="duplicateEnabledFilterCount"
-          :page="duplicateListing?.page ?? 1"
-          :page-size="duplicateListing?.page_size ?? 1"
-          :page-count="duplicateTotalPages"
-          @add-filter-rule="addDuplicateFilterRule"
-          @analyze="analyzeDuplicates(1, false)"
-          @page-change="loadDuplicatePage"
-          @remove-filter-rule="removeDuplicateFilterRule"
-          @reset-filter-rules="resetDuplicateFilterRules"
-        />
-
-        <section class="storage-summary duplicate-summary">
-          <span class="summary-path" :title="duplicateDisplayPath">
-            <strong>范围</strong>
-            <code>{{ duplicateDisplayPath }}</code>
-          </span>
-          <span><strong>重复组</strong>{{ duplicateListing?.total_groups ?? 0 }}</span>
-          <span><strong>重复文件</strong>{{ duplicateListing?.duplicate_file_count ?? 0 }}</span>
-          <span><strong>可释放</strong>{{ formatBytes(duplicateListing?.total_reclaimable_bytes ?? 0) }}</span>
-          <span><strong>已扫描</strong>{{ duplicateListing?.scanned_file_count ?? 0 }}</span>
-          <span><strong>候选</strong>{{ duplicateListing?.candidate_file_count ?? 0 }}</span>
-          <span v-if="duplicateListing"><strong>状态</strong>{{ formatDuplicateTaskStatus(duplicateListing) }}</span>
-          <span v-if="duplicateListing"><strong>来源</strong>{{ formatDuplicateSource(duplicateListing.source) }}</span>
-          <span v-if="duplicateListing?.hit_scan_limit" class="summary-warning">
-            <strong>未完成</strong>已达到扫描上限
-          </span>
-        </section>
-
-        <section
-          class="storage-table-shell duplicate-table-shell"
-        >
-          <div v-if="duplicateError" class="storage-error">
-            {{ duplicateError }}
-          </div>
-          <div v-else-if="!duplicateListing" class="storage-empty">
-            设置范围和规则后开始分析。
-          </div>
-          <div v-else-if="!duplicateListing.groups.length" class="storage-empty">
-            当前页没有重复文件组。
-          </div>
-          <table v-else class="storage-table duplicate-table" aria-label="重复文件组">
-            <thead>
-              <tr class="storage-table-head">
-                <th class="storage-cell duplicate-cell-name" scope="col">组 / 文件</th>
-                <th class="storage-cell duplicate-cell-size" scope="col">单文件</th>
-                <th class="storage-cell duplicate-cell-total" scope="col">整组</th>
-                <th class="storage-cell duplicate-cell-total" scope="col">可释放</th>
-                <th class="storage-cell duplicate-cell-count" scope="col">数量</th>
-                <th class="storage-cell duplicate-cell-time" scope="col">修改时间</th>
-                <th class="storage-cell duplicate-cell-path" scope="col">路径</th>
-                <th class="storage-cell storage-cell-spacer" scope="col" aria-hidden="true"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="group in duplicateListing.groups" :key="group.id">
-                <tr class="storage-table-row duplicate-group-row">
-                  <td class="storage-cell duplicate-cell-name">
-                    <span class="duplicate-group-title" :title="group.key_label">
-                      {{ group.key_label }}
-                    </span>
-                  </td>
-                  <td class="storage-cell duplicate-cell-size">{{ formatBytes(group.file_size) }}</td>
-                  <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.group_total_bytes) }}</td>
-                  <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.reclaimable_bytes) }}</td>
-                  <td class="storage-cell duplicate-cell-count">{{ group.file_count }}</td>
-                  <td class="storage-cell duplicate-cell-time">--</td>
-                  <td class="storage-cell duplicate-cell-path">--</td>
-                  <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
-                </tr>
-                <tr
-                  v-for="file in group.files"
-                  :key="file.absolute_path"
-                  class="storage-table-row duplicate-file-row"
-                >
-                  <td class="storage-cell duplicate-cell-name">
-                    <div class="entry-label duplicate-file-label">
-                      <span class="entry-toggle"></span>
-                      <el-icon class="entry-icon entry-icon-file"><Document /></el-icon>
-                      <span class="entry-name" :title="file.name">{{ file.name }}</span>
-                    </div>
-                  </td>
-                  <td class="storage-cell duplicate-cell-size">{{ formatBytes(file.size) }}</td>
-                  <td class="storage-cell duplicate-cell-total">--</td>
-                  <td class="storage-cell duplicate-cell-total">--</td>
-                  <td class="storage-cell duplicate-cell-count">1</td>
-                  <td class="storage-cell duplicate-cell-time">{{ formatTime(file.modified_at) }}</td>
-                  <td class="storage-cell duplicate-cell-path">
-                    <span :title="file.absolute_path || file.path">{{ file.absolute_path || file.path }}</span>
-                  </td>
-                  <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </section>
-
-      </template>
+      <StorageDuplicatePane
+        v-else-if="shouldShowDuplicates"
+        :key="duplicatePaneKey"
+        :can-browse="canBrowse"
+        :entry-id="selectedEntryId"
+        :request="duplicateRequest"
+      />
     </template>
 
     <teleport to="body">
@@ -458,20 +359,11 @@ import {
   fetchDeviceEntryDeleteTask,
   fetchDeviceEntryDeleteTasks,
   fetchDeviceDirectoryItems,
-  fetchDeviceDuplicateAnalysis,
-  startDeviceDuplicateAnalysis,
   startDeviceEntryDelete,
   type DeviceDirectoryItem,
   type DeviceDirectoryListing,
   type DeviceDirectorySortProgram,
   type DeviceDeleteTask,
-  type DeviceDuplicateFilterAction,
-  type DeviceDuplicateFilterMatch,
-  type DeviceDuplicateFilterRule,
-  type DeviceDuplicateAnalysis,
-  type DeviceDuplicateRule,
-  type DeviceDuplicateSortMode,
-  type DeviceDuplicateSource,
   type DeviceFileSelector,
 } from '@/api/deviceFiles';
 import {
@@ -482,7 +374,7 @@ import {
 import { taskStore, type Device } from '@/store/taskStore';
 import { monitorPolledTask } from '@/utils/longTask';
 
-const StorageDuplicateControls = defineAsyncComponent(() => import('./StorageDuplicateControls.vue'));
+const StorageDuplicatePane = defineAsyncComponent(() => import('./StorageDuplicatePane.vue'));
 
 type StorageSource = 'cluster' | 'wechat';
 type WechatArchiveApi = typeof import('@/api/wechatArchive');
@@ -503,17 +395,11 @@ const SIZE_BAR_MODE_STORAGE_KEY = 'codeyun.storage.sizeBarMode';
 const SIZE_BAR_COLOR_MODE_STORAGE_KEY = 'codeyun.storage.sizeBarColorMode';
 const SIZE_VALUE_MODE_STORAGE_KEY = 'codeyun.storage.sizeValueMode';
 const STORAGE_VIEW_STORAGE_KEY = 'codeyun.storage.activeView';
-const DUPLICATE_SETTINGS_STORAGE_KEY = 'codeyun.storage.duplicateSettings.v1';
 const WORKSPACE_STATE_STORAGE_KEY = 'codeyun.storage.workspaceState.v1';
 const WECHAT_WORKSPACE_STATE_STORAGE_KEY = 'codeyun.storage.wechat.workspaceState.v1';
 const WECHAT_ACTIVE_VIEW_STORAGE_KEY = 'codeyun.storage.wechat.activeView';
 const NODE_PAGE_SIZE = 100;
 const MAX_VISIBLE_LIMIT = 100000;
-const DUPLICATE_PAGE_SIZE = 10;
-const DEFAULT_DUPLICATE_FILTER_RULES: DeviceDuplicateFilterRule[] = [
-  { enabled: true, action: 'exclude', match: 'contains', value: '$Recycle.Bin' },
-  { enabled: true, action: 'exclude', match: 'contains', value: 'System Volume Information' },
-];
 type SizeValueMode = 'total' | 'direct';
 type SizeBarMode = 'siblingMax' | 'siblingTotal' | 'globalMax';
 type SizeBarColorMode = 'depth' | 'uniform';
@@ -631,15 +517,6 @@ interface WeChatSourceEntry {
   name: string;
 }
 
-interface DuplicateSettingsState {
-  version: 1;
-  rules: DeviceDuplicateRule[];
-  filterRules: DeviceDuplicateFilterRule[];
-  minSizeMb: number;
-  sortMode: DeviceDuplicateSortMode;
-  source: DeviceDuplicateSource;
-}
-
 interface LoadRootOptions {
   workspaceState?: StorageWorkspaceState | null;
   restoreExpanded?: boolean;
@@ -684,20 +561,12 @@ const activeView = ref<StorageView>('tree');
 const sizeValueMode = ref<SizeValueMode>('total');
 const sizeBarMode = ref<SizeBarMode>('siblingMax');
 const sizeBarColorMode = ref<SizeBarColorMode>('depth');
-const duplicateRuleFields = ref<DeviceDuplicateRule[]>(['size']);
-const duplicateFilterRules = ref<DeviceDuplicateFilterRule[]>(DEFAULT_DUPLICATE_FILTER_RULES.map((rule) => ({ ...rule })));
-const duplicateMinSizeMb = ref(100);
-const duplicateSortMode = ref<DeviceDuplicateSortMode>('reclaimable');
-const duplicateSource = ref<DeviceDuplicateSource>('auto');
-const duplicateListing = ref<DeviceDuplicateAnalysis | null>(null);
 const rootVisibleLimit = ref(NODE_PAGE_SIZE);
 const loadingDevices = ref(false);
 const loadingRoots = ref(false);
 const loading = ref(false);
 const refreshing = ref(false);
-const duplicateLoading = ref(false);
 const loadError = ref('');
-const duplicateError = ref('');
 const deleteSubmittingNodeId = ref('');
 const activeDeleteTask = ref<ActiveDeleteTask | null>(null);
 const tableShellRef = ref<HTMLElement | null>(null);
@@ -714,7 +583,6 @@ const tableConfigMenu = ref<TableConfigMenuState>({
 });
 let nodeSeq = 0;
 let deleteTaskPollVersion = 0;
-let duplicateTaskPollVersion = 0;
 let workspaceStateReady = false;
 let workspacePersistTimer: number | null = null;
 let lastTableScrollTop = 0;
@@ -777,20 +645,6 @@ const currentDisplayPath = computed(() => {
   return currentRequest.value.absolute_path || currentRequest.value.path || '根目录';
 });
 
-const duplicateDisplayPath = computed(() => {
-  if (duplicateListing.value?.absolute_path) {
-    return duplicateListing.value.absolute_path;
-  }
-  if (duplicateListing.value?.path) {
-    return duplicateListing.value.path;
-  }
-  const request = currentRequest.value ?? buildInputRequest();
-  if (request.absolute_path === DEVICE_ROOT_SENTINEL) {
-    return '请选择具体磁盘或目录';
-  }
-  return request.absolute_path || request.path || '根目录';
-});
-
 const visibleRows = computed<StorageVisibleRow[]>(() => {
   const rows: StorageVisibleRow[] = [];
   appendVisibleGroup(rows, rootNodes.value, null);
@@ -805,16 +659,6 @@ const currentKnownBytes = computed(() =>
 );
 const globalReferenceBytes = computed(() =>
   rootNodes.value.reduce((max, node) => Math.max(max, getNodeSize(node) ?? 0), 0)
-);
-const duplicateTotalPages = computed(() => {
-  const listing = duplicateListing.value;
-  if (!listing) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(listing.total_groups / Math.max(1, listing.page_size)));
-});
-const duplicateEnabledFilterCount = computed(() =>
-  duplicateFilterRules.value.filter((rule) => rule.enabled && rule.value.trim()).length
 );
 const sizeValueModeOptions: SizeValueModeOption[] = [
   { value: 'total', label: '包含总量' },
@@ -845,6 +689,13 @@ const sizeBarColumnTitle = computed(() => currentSizeBarModeOption.value.columnT
 const activeViewStorageKey = computed(() =>
   isWechatMode.value ? WECHAT_ACTIVE_VIEW_STORAGE_KEY : STORAGE_VIEW_STORAGE_KEY
 );
+const duplicateRequest = computed<DeviceFileSelector | null>(() => {
+  if (!selectedEntryId.value || !selectedRoot.value) {
+    return null;
+  }
+  return currentRequest.value ?? buildInputRequest();
+});
+const duplicatePaneKey = computed(() => `${selectedEntryId.value}::${getRequestStateKey(duplicateRequest.value)}`);
 
 function normalizeMaybeNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -881,126 +732,6 @@ function normalizeDeviceFileSelector(value: unknown): DeviceFileSelector | null 
 
 function normalizeStorageView(value: string | null): StorageView | null {
   return value === 'tree' || value === 'duplicates' ? value : null;
-}
-
-function normalizeDuplicateRuleFields(value: unknown): DeviceDuplicateRule[] {
-  const allowed = new Set<DeviceDuplicateRule>(['size', 'name', 'extension', 'modified_at', 'sha256']);
-  const normalized: DeviceDuplicateRule[] = ['size'];
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (typeof item !== 'string' || !allowed.has(item as DeviceDuplicateRule)) {
-        continue;
-      }
-      const rule = item as DeviceDuplicateRule;
-      if (!normalized.includes(rule)) {
-        normalized.push(rule);
-      }
-    }
-  }
-  return normalized;
-}
-
-function cloneDefaultDuplicateFilterRules(): DeviceDuplicateFilterRule[] {
-  return DEFAULT_DUPLICATE_FILTER_RULES.map((rule) => ({ ...rule }));
-}
-
-function normalizeDuplicateFilterAction(value: unknown): DeviceDuplicateFilterAction {
-  return value === 'include' || value === 'exclude' ? value : 'exclude';
-}
-
-function normalizeDuplicateFilterMatch(value: unknown): DeviceDuplicateFilterMatch {
-  return value === 'contains' || value === 'prefix' || value === 'suffix' || value === 'equals' || value === 'glob'
-    ? value
-    : 'contains';
-}
-
-function normalizeDuplicateFilterRules(
-  value: unknown,
-  fallback: DeviceDuplicateFilterRule[] = cloneDefaultDuplicateFilterRules(),
-): DeviceDuplicateFilterRule[] {
-  if (!Array.isArray(value)) {
-    return fallback.map((rule) => ({ ...rule }));
-  }
-  return value
-    .map((item) => {
-      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : null;
-      if (!raw) {
-        return null;
-      }
-      const ruleValue = typeof raw.value === 'string' ? raw.value.trim() : '';
-      if (!ruleValue) {
-        return null;
-      }
-      return {
-        enabled: raw.enabled !== false,
-        action: normalizeDuplicateFilterAction(raw.action),
-        match: normalizeDuplicateFilterMatch(raw.match),
-        value: ruleValue,
-      };
-    })
-    .filter((rule): rule is DeviceDuplicateFilterRule => rule !== null)
-    .slice(0, 50);
-}
-
-function normalizeDuplicateSortMode(value: unknown): DeviceDuplicateSortMode {
-  return value === 'file_size' || value === 'group_total' || value === 'reclaimable'
-    ? value
-    : 'reclaimable';
-}
-
-function normalizeDuplicateSource(value: unknown): DeviceDuplicateSource {
-  return value === 'auto' || value === 'everything' || value === 'filesystem'
-    ? value
-    : 'auto';
-}
-
-function normalizeDuplicateMinSizeMb(value: unknown): number {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue < 0) {
-    return 100;
-  }
-  return Math.min(1048576, Math.floor(numericValue));
-}
-
-function readDuplicateSettings(): DuplicateSettingsState | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(DUPLICATE_SETTINGS_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as Partial<DuplicateSettingsState>;
-    if (parsed.version !== 1) {
-      return null;
-    }
-    return {
-      version: 1,
-      rules: normalizeDuplicateRuleFields(parsed.rules),
-      filterRules: normalizeDuplicateFilterRules(parsed.filterRules),
-      minSizeMb: normalizeDuplicateMinSizeMb(parsed.minSizeMb),
-      sortMode: normalizeDuplicateSortMode(parsed.sortMode),
-      source: normalizeDuplicateSource(parsed.source),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistDuplicateSettings() {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  const payload: DuplicateSettingsState = {
-    version: 1,
-    rules: normalizeDuplicateRuleFields(duplicateRuleFields.value),
-    filterRules: normalizeDuplicateFilterRules(duplicateFilterRules.value, []),
-    minSizeMb: normalizeDuplicateMinSizeMb(duplicateMinSizeMb.value),
-    sortMode: duplicateSortMode.value,
-    source: duplicateSource.value,
-  };
-  window.localStorage.setItem(DUPLICATE_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
 }
 
 function getRequestStateKey(request: DeviceFileSelector | null | undefined): string {
@@ -1713,7 +1444,6 @@ function handleRootChange() {
   if (isWechatMode.value && selectedRootKey.value) {
     selectedEntryId.value = selectedRootKey.value;
   }
-  clearDuplicateListing();
   schedulePersistWorkspaceState();
 }
 
@@ -1747,172 +1477,6 @@ function setActiveView(view: StorageView) {
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(activeViewStorageKey.value, view);
   }
-}
-
-function addDuplicateFilterRule() {
-  duplicateFilterRules.value.push({
-    enabled: true,
-    action: 'exclude',
-    match: 'contains',
-    value: '',
-  });
-}
-
-function removeDuplicateFilterRule(index: number) {
-  duplicateFilterRules.value.splice(index, 1);
-}
-
-function resetDuplicateFilterRules() {
-  duplicateFilterRules.value = cloneDefaultDuplicateFilterRules();
-}
-
-function buildDuplicateRules(): DeviceDuplicateRule[] {
-  return normalizeDuplicateRuleFields(duplicateRuleFields.value);
-}
-
-function buildDuplicateRequest(page: number, reuseSnapshot: boolean) {
-  const request = buildInputRequest();
-  if (request.absolute_path === DEVICE_ROOT_SENTINEL) {
-    throw new Error('请先进入具体磁盘或目录，再分析重复文件。');
-  }
-  return {
-    ...request,
-    recursive: true,
-    rules: buildDuplicateRules(),
-    filter_rules: normalizeDuplicateFilterRules(duplicateFilterRules.value, []),
-    sort_mode: duplicateSortMode.value,
-    source: duplicateSource.value,
-    min_size: duplicateMinSizeMb.value * 1024 * 1024,
-    scan_limit: 200000,
-    page,
-    page_size: DUPLICATE_PAGE_SIZE,
-    snapshot_id: reuseSnapshot ? duplicateListing.value?.snapshot_id || '' : '',
-  };
-}
-
-function stopDuplicateTaskPolling() {
-  duplicateTaskPollVersion += 1;
-}
-
-async function refreshDuplicateTask(taskId: string, page: number, showError = false) {
-  if (!selectedEntryId.value || !taskId) {
-    return;
-  }
-  try {
-    const analysis = await fetchDeviceDuplicateAnalysis(selectedEntryId.value, taskId, {
-      page,
-      page_size: DUPLICATE_PAGE_SIZE,
-    });
-    duplicateListing.value = analysis;
-    duplicateLoading.value = analysis.running;
-    if (!analysis.running) {
-      stopDuplicateTaskPolling();
-      if (analysis.status === 'failed') {
-        const detail = analysis.error || analysis.message || '重复文件分析失败';
-        duplicateError.value = detail;
-        if (showError) {
-          ElMessage.error(detail);
-        }
-      }
-    }
-  } catch (error: any) {
-    if (!showError) {
-      return;
-    }
-    const detail = error?.response?.data?.detail || error?.message || '重复文件分析失败';
-    duplicateError.value = detail;
-    ElMessage.error(detail);
-  }
-}
-
-function startDuplicateTaskPolling(taskId: string) {
-  const entryId = selectedEntryId.value;
-  const initial = duplicateListing.value;
-  if (!entryId || !initial?.running) {
-    return;
-  }
-  const pollVersion = ++duplicateTaskPollVersion;
-  void monitorPolledTask<DeviceDuplicateAnalysis>({
-    initial,
-    poll: async (task) => {
-      if (pollVersion !== duplicateTaskPollVersion) {
-        return { ...task, running: false };
-      }
-      const page = duplicateListing.value?.page ?? task.page ?? 1;
-      return fetchDeviceDuplicateAnalysis(entryId, taskId, {
-        page,
-        page_size: DUPLICATE_PAGE_SIZE,
-      });
-    },
-    isRunning: (task) => task.running && pollVersion === duplicateTaskPollVersion,
-    getUpdatedAt: (task) => task.updated_at,
-    getError: (task) => task.status === 'failed' ? (task.error || task.message || '重复文件分析失败') : '',
-    pollIntervalMs: 1200,
-    idleTimeoutMs: 30_000,
-    onUpdate: (analysis) => {
-      if (pollVersion !== duplicateTaskPollVersion) {
-        return;
-      }
-      duplicateListing.value = analysis;
-      duplicateLoading.value = analysis.running;
-    },
-  }).then((analysis) => {
-    if (pollVersion !== duplicateTaskPollVersion) {
-      return;
-    }
-    duplicateListing.value = analysis;
-    duplicateLoading.value = false;
-  }).catch((error: any) => {
-    if (pollVersion !== duplicateTaskPollVersion) {
-      return;
-    }
-    const detail = error?.message || '重复文件分析失败';
-    duplicateError.value = detail;
-    duplicateLoading.value = false;
-    ElMessage.error(detail);
-  });
-}
-
-async function analyzeDuplicates(page = 1, reuseSnapshot = false) {
-  if (!selectedEntryId.value) {
-    return;
-  }
-  duplicateLoading.value = true;
-  duplicateError.value = '';
-  stopDuplicateTaskPolling();
-  try {
-    if (reuseSnapshot && duplicateListing.value?.task_id) {
-      await refreshDuplicateTask(duplicateListing.value.task_id, page, true);
-      return;
-    }
-    const payload = buildDuplicateRequest(page, false);
-    const analysis = await startDeviceDuplicateAnalysis(selectedEntryId.value, payload);
-    duplicateListing.value = analysis;
-    duplicateLoading.value = analysis.running;
-    if (analysis.running) {
-      startDuplicateTaskPolling(analysis.task_id);
-    }
-  } catch (error: any) {
-    const detail = error?.response?.data?.detail || error?.message || '重复文件分析失败';
-    duplicateError.value = detail;
-    ElMessage.error(detail);
-  } finally {
-    if (!duplicateListing.value?.running) {
-      duplicateLoading.value = false;
-    }
-  }
-}
-
-async function loadDuplicatePage(page: number) {
-  const normalizedPage = Math.max(1, page);
-  await analyzeDuplicates(normalizedPage, true);
-}
-
-function clearDuplicateListing() {
-  stopDuplicateTaskPolling();
-  duplicateListing.value = null;
-  duplicateError.value = '';
-  duplicateLoading.value = false;
 }
 
 async function toggleNode(node: StorageNode) {
@@ -1990,7 +1554,6 @@ async function handleDeviceChange() {
   currentListing.value = null;
   currentRequest.value = null;
   pathInput.value = '';
-  clearDuplicateListing();
   activeDeleteTask.value = null;
   stopDeleteTaskPolling();
   if (isWechatMode.value) {
@@ -2177,32 +1740,6 @@ function formatDeleteTask(task: ActiveDeleteTask): string {
   };
   const pidText = task.pid ? ` · PID ${task.pid}` : '';
   return `${statusLabel[task.status] ?? '未知'} ${task.name}${pidText}`;
-}
-
-function formatDuplicateSource(source: string): string {
-  if (source === 'everything') {
-    return 'Everything';
-  }
-  if (source === 'filesystem') {
-    return '遍历';
-  }
-  return source || '--';
-}
-
-function formatDuplicateTaskStatus(task: DeviceDuplicateAnalysis): string {
-  if (task.status === 'queued') {
-    return '排队';
-  }
-  if (task.status === 'failed') {
-    return '失败';
-  }
-  if (task.running) {
-    return task.message || '分析中';
-  }
-  if (task.stage === 'cached') {
-    return task.message || '缓存';
-  }
-  return '完成';
 }
 
 async function confirmDeleteNode(node: StorageNode) {
@@ -2471,14 +2008,6 @@ watch(sizeBarColorMode, (mode) => {
   }
 });
 
-watch([duplicateRuleFields, duplicateFilterRules, duplicateMinSizeMb, duplicateSortMode, duplicateSource], () => {
-  if (!duplicateRuleFields.value.includes('size')) {
-    duplicateRuleFields.value = normalizeDuplicateRuleFields(duplicateRuleFields.value);
-  }
-  clearDuplicateListing();
-  persistDuplicateSettings();
-}, { deep: true });
-
 onMounted(async () => {
   const savedWorkspaceState = readWorkspaceState();
   if (typeof window !== 'undefined') {
@@ -2490,14 +2019,6 @@ onMounted(async () => {
       if (isWechatMode.value && savedView === 'duplicates') {
         activeView.value = 'tree';
       }
-    }
-    const duplicateSettings = readDuplicateSettings();
-    if (duplicateSettings) {
-      duplicateRuleFields.value = duplicateSettings.rules;
-      duplicateFilterRules.value = duplicateSettings.filterRules;
-      duplicateMinSizeMb.value = duplicateSettings.minSizeMb;
-      duplicateSortMode.value = duplicateSettings.sortMode;
-      duplicateSource.value = duplicateSettings.source;
     }
     const savedSizeValueMode = window.localStorage.getItem(SIZE_VALUE_MODE_STORAGE_KEY);
     const normalizedSizeValueMode = normalizeSizeValueMode(savedSizeValueMode);
@@ -2775,110 +2296,6 @@ onBeforeUnmount(() => {
   color: #b45309;
 }
 
-.duplicate-toolbar {
-  padding: 0 16px 4px;
-  display: flex;
-  align-items: end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.duplicate-field {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.duplicate-field-rules {
-  min-width: 420px;
-}
-
-.duplicate-field-min-size {
-  width: 140px;
-}
-
-.duplicate-field-select {
-  width: 136px;
-}
-
-.duplicate-field-filter {
-  width: 132px;
-}
-
-.duplicate-rule-group {
-  min-height: 32px;
-  padding: 0 10px;
-  border: 1px solid #d5dde8;
-  border-radius: 4px;
-  background: #ffffff;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.duplicate-rule-group :deep(.el-checkbox) {
-  margin-right: 10px;
-}
-
-.duplicate-number-input,
-.duplicate-select {
-  width: 100%;
-}
-
-.duplicate-filter-button {
-  width: 100%;
-}
-
-.duplicate-filter-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.duplicate-filter-header,
-.duplicate-filter-rule {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.duplicate-filter-header {
-  justify-content: space-between;
-}
-
-.duplicate-filter-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.duplicate-filter-action {
-  width: 82px;
-}
-
-.duplicate-filter-match {
-  width: 86px;
-}
-
-.duplicate-filter-value {
-  flex: 1;
-}
-
-.duplicate-filter-remove {
-  width: 24px;
-  height: 24px;
-  border: 1px solid #fecaca;
-  border-radius: 4px;
-  background: #fff5f5;
-  color: #b42318;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.duplicate-filter-remove:hover {
-  background: #fee2e2;
-}
-
 .storage-table-shell {
   flex: 1;
   min-height: 360px;
@@ -2981,74 +2398,6 @@ onBeforeUnmount(() => {
   width: auto;
   min-width: 24px;
   padding: 0;
-}
-
-.duplicate-cell-name {
-  width: 1%;
-  min-width: 300px;
-  max-width: 520px;
-}
-
-.duplicate-cell-size,
-.duplicate-cell-total,
-.duplicate-cell-count,
-.duplicate-cell-time,
-.duplicate-cell-path {
-  width: 1%;
-}
-
-.duplicate-cell-size,
-.duplicate-cell-total {
-  min-width: 110px;
-}
-
-.duplicate-cell-count {
-  min-width: 72px;
-}
-
-.duplicate-cell-time {
-  min-width: 150px;
-}
-
-.duplicate-cell-path span {
-  display: inline-block;
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #64748b;
-}
-
-.duplicate-group-row .storage-cell {
-  background: #f8fafc;
-  font-weight: 600;
-}
-
-.duplicate-group-title {
-  display: inline-block;
-  max-width: 520px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #334155;
-}
-
-.duplicate-file-label {
-  padding-inline-start: 18px;
-}
-
-.duplicate-pagination {
-  min-height: 36px;
-  padding: 0 16px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.duplicate-page-label {
-  color: #475569;
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .storage-more-row {
@@ -3287,20 +2636,6 @@ onBeforeUnmount(() => {
 
   .storage-actions {
     justify-content: flex-end;
-  }
-
-  .duplicate-field-rules,
-  .duplicate-field-min-size,
-  .duplicate-field-select,
-  .duplicate-field-filter {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .duplicate-rule-group {
-    flex-wrap: wrap;
-    min-height: 40px;
-    padding: 6px 10px;
   }
 
   .summary-path code {

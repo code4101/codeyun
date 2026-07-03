@@ -169,6 +169,9 @@ def _daily_retry_should_defer_to_next_trigger(task: dict[str, Any], current_time
     retry_ts = parse_data_annotation_task_time(task.get("retry_after"))
     if retry_ts is None:
         return None
+    window_deferred = _daily_window_next_trigger_if_not_runnable_now(task, current_time)
+    if window_deferred:
+        return window_deferred
     next_time = next_data_annotation_scheduler_time(task, current_time)
     next_ts = parse_data_annotation_task_time(next_time)
     if not next_time or next_ts is None:
@@ -177,6 +180,34 @@ def _daily_retry_should_defer_to_next_trigger(task: dict[str, Any], current_time
         return next_time
     if retry_ts <= next_ts and next_ts - retry_ts <= _DAILY_RETRY_TO_NEXT_TRIGGER_GRACE.total_seconds():
         return next_time
+    return None
+
+
+def _daily_window_next_trigger_if_not_runnable_now(task: dict[str, Any], current_time: datetime) -> str | None:
+    if str(task.get("schedule_kind") or "") != "daily":
+        return None
+    window = task.get("window")
+    if not isinstance(window, list) or len(window) != 2:
+        return None
+    start_clock = parse_data_annotation_daily_clock(window[0])
+    end_clock = parse_data_annotation_daily_clock(window[1])
+    if start_clock is None or end_clock is None:
+        return None
+    start_at = datetime.combine(current_time.date(), start_clock)
+    end_at = datetime.combine(current_time.date(), end_clock)
+    if end_at <= start_at:
+        if current_time < end_at:
+            start_at -= timedelta(days=1)
+        else:
+            end_at += timedelta(days=1)
+    next_time = next_data_annotation_scheduler_time(task, current_time)
+    next_ts = parse_data_annotation_task_time(next_time)
+    if current_time < start_at or current_time >= end_at:
+        return next_time
+    if next_time and next_ts is not None:
+        next_dt = datetime.fromtimestamp(next_ts)
+        if next_dt.date() == current_time.date() and next_dt > current_time:
+            return next_time
     return None
 
 
@@ -815,8 +846,21 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("schedule_kind") or "") == "daily"
+            and not explicit_world_fact_next_time
+        ):
+            deferred_next_time = _daily_window_next_trigger_if_not_runnable_now(task, current_time)
+            if deferred_next_time:
+                task["next_time"] = deferred_next_time
+                task["retry_after"] = None
+                daily_retry_deferred = True
+                changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and task.get("next_time")
             and str(task.get("id") or "") not in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
+            and not daily_retry_deferred
             and not explicit_world_fact_next_time
         ):
             task["next_time"] = None
@@ -825,6 +869,7 @@ def repair_data_annotation_scheduler_tasks(
             task.get("enabled")
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and not task.get("retry_after")
+            and not daily_retry_deferred
             and not (
                 str(task.get("id") or "") in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
                 and task.get("next_time")

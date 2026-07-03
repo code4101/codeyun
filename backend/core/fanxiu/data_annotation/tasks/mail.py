@@ -316,40 +316,56 @@ class MailTaskMixin:
                     detail_probe_row = mail
             if action_row is not None:
                 action_started_at = time.monotonic()
-                actual_policy = yield from self._claim_runtime_mail_row(runtime, action_row)
-                action_elapsed = time.monotonic() - action_started_at
-                self._log("detail", f"邮件_清理：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
-                self._update_packet_mail_action_for_row(
-                    action_row.raw,
-                    status=f"{actual_policy}_requested",
-                    evidence={
-                        "runtime_requested_action": actual_policy,
-                        "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "runtime_action_source": "mail_cleanup",
-                    },
-                )
-                processed_count += 1
-                self._refresh_recent_mail_packets_for_runtime_log("领取后同步", flush_capture=True)
-                continue
+                try:
+                    actual_policy = yield from self._claim_runtime_mail_row(runtime, action_row)
+                except TimeoutError as exc:
+                    action_elapsed = time.monotonic() - action_started_at
+                    self._log(
+                        "warning",
+                        f"邮件_清理：打开/处理「{action_row.title}」超时 {action_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                    )
+                else:
+                    action_elapsed = time.monotonic() - action_started_at
+                    self._log("detail", f"邮件_清理：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
+                    self._update_packet_mail_action_for_row(
+                        action_row.raw,
+                        status=f"{actual_policy}_requested",
+                        evidence={
+                            "runtime_requested_action": actual_policy,
+                            "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "runtime_action_source": "mail_cleanup",
+                        },
+                    )
+                    processed_count += 1
+                    self._refresh_recent_mail_packets_for_runtime_log("领取后同步", flush_capture=True)
+                    continue
 
             if detail_probe_row is not None:
                 probe_started_at = time.monotonic()
-                status = yield from self._process_mail_row_by_detail(
-                    ctx,
-                    stop_event,
-                    image121,
-                    detail_probe_row.raw,
-                    allowed_policies={"claim", "delete"},
-                )
-                probe_elapsed = time.monotonic() - probe_started_at
-                self._log(
-                    "detail",
-                    f"邮件_清理：详情页探测「{detail_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
-                )
-                if status == "processed":
-                    processed_count += 1
-                    self._refresh_recent_mail_packets_for_runtime_log("详情页领取后同步", flush_capture=True)
-                    continue
+                try:
+                    status = yield from self._process_mail_row_by_detail(
+                        ctx,
+                        stop_event,
+                        image121,
+                        detail_probe_row.raw,
+                        allowed_policies={"claim", "delete"},
+                    )
+                except TimeoutError as exc:
+                    probe_elapsed = time.monotonic() - probe_started_at
+                    self._log(
+                        "warning",
+                        f"邮件_清理：详情页探测「{detail_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                    )
+                else:
+                    probe_elapsed = time.monotonic() - probe_started_at
+                    self._log(
+                        "detail",
+                        f"邮件_清理：详情页探测「{detail_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
+                    )
+                    if status == "processed":
+                        processed_count += 1
+                        self._refresh_recent_mail_packets_for_runtime_log("详情页领取后同步", flush_capture=True)
+                        continue
 
             if rows:
                 counts_text = ",".join(f"{key}={value}" for key, value in sorted(page_packet_counts.items()))

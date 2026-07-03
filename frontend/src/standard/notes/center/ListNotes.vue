@@ -350,6 +350,7 @@ const runDataProgram = async (program = getAppliedDataProgram(), persist: boolea
 
 const applyDataProgram = async () => {
   await runDataProgram(dataProgram.value, true);
+  backendFilterExpanded.value = false;
 };
 
 const refreshData = async () => {
@@ -358,6 +359,7 @@ const refreshData = async () => {
 
 const resetDataProgram = () => {
   dataProgram.value = createDefaultRecentMonthProgram('start_at');
+  backendFilterExpanded.value = false;
 };
 
 const expandFrontFilter = () => {

@@ -29,11 +29,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "fd0c1918d535a5a68d17f1016cc3717bf309f1c6"
-last_audited_at: "2026-07-03T02:33:32.6833184+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-fd0c1918/report.md"
-last_frontend_commit_summary: "完成 01cc40d7..fd0c1918：确认设备代理已退出运行管理与 AI 配置一级入口，退款页把失败事实留在本地闭环。"
-audited_commit_count: 64
+last_audited_commit: "64b872eb783ae8b4a7706650a121f3b14ac7ed07"
+last_audited_at: "2026-07-03T06:32:43.6489696+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-64b872eb/report.md"
+last_frontend_commit_summary: "完成 fd0c1918..64b872eb：Notes 列表页把后端筛选真正收回摘要态，编辑后执行/恢复默认都会自动回收。"
+audited_commit_count: 65
 pending_or_skipped_ranges: []
 ```
 
@@ -257,6 +257,20 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-03（第二轮）
+
+- 完整范围：`fd0c1918d535a5a68d17f1016cc3717bf309f1c6..64b872eb783ae8b4a7706650a121f3b14ac7ed07`
+- 覆盖提交：`64b872eb783ae8b4a7706650a121f3b14ac7ed07`
+- 前端入口提交：`64b872eb783ae8b4a7706650a121f3b14ac7ed07`
+- 入口如何牵引到旧问题：这次提交把 `notes/center?tab=list` 的 `后端筛选` 收成摘要条，试图把一级页面从“常驻规则编辑器”拉回“当前工作集事实 + 节点列表”的主闭环。真实页面复验后发现旧问题并不在视觉皮肤，而在交互闭环：一旦点 `编辑规则`，规则栏就会永久停留展开态，等于把旧复杂度重新带回一级页面。因此本轮继续沿同一页面、同一筛选模型追到 `ListNotes.vue` 的展开状态管理，而不是停留在提交表面的折叠外观。
+- 本轮减法：在 [`frontend/src/standard/notes/center/ListNotes.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/notes/center/ListNotes.vue) 让 `applyDataProgram()` 与 `resetDataProgram()` 在完成后都把 `backendFilterExpanded` 置回 `false`。没有新增任何常驻控件，只让已经引入的摘要态真正成为稳定默认，而不是一次性的首屏幻觉。
+- 信息量保持：用户仍然能看到当前加载范围摘要、进入规则链、执行后端加载、浏览节点列表、进入详情编辑；减少的是“规则栏展开后长期霸占一级页面”的重复复杂度。
+- 概念图/线框图：报告里的 Mermaid 和 ASCII 线框图把 `一级列表页`、`后端筛选摘要`、`临时规则编辑器` 三层分开，并明确 `执行/恢复默认 -> 回到摘要态` 才是这个模型成立的闭环。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-64b872eb/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，authenticated 打开 `notes/center?tab=list`；先记录 `initial`、`afterEdit`，再验证 `afterReset.backendCollapsed = true` 与 `afterApply.backendCollapsed = true`。三视口宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图与结构探针写入 `evidence.json`，三视口 `bodyOverflowX = 0`，console `warn/error` 为空。`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：这是前端状态投影问题，不涉及后端 API 投影或业务建模债务；提交已经做了“默认折叠”的第一步，但还缺少“执行后收回摘要态”的第二步。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念建模、真实多视口取证、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `64b872eb783ae8b4a7706650a121f3b14ac7ed07`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-03
 
