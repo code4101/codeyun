@@ -357,7 +357,7 @@
             </div>
 
             <section
-              v-if="selectedImageNode"
+              v-if="selectedImageNode && selectedSceneRelationCount > 0"
               class="scene-relation-graph"
               :class="{ 'is-resizing': sceneRelationGraphResizing }"
               :style="{ height: `${sceneRelationGraphHeight}px`, minHeight: `${sceneRelationGraphHeight}px` }"
@@ -402,7 +402,7 @@
               </div>
             </section>
             <div
-              v-if="selectedImageNode"
+              v-if="selectedImageNode && selectedSceneRelationCount > 0"
               class="scene-relation-resizer"
               :class="{ 'is-resizing': sceneRelationGraphResizing }"
               title="拖拽调整图结构高度"
@@ -7139,11 +7139,13 @@ const runtimeTaskTypeLabel = (taskType: string) => {
   return labels[taskType] || taskType || '任务';
 };
 const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (task.source === 'legacy_behavior_tree') return '旧行为树';
-  if (task.schedule_kind === 'daily') return '每日';
-  if (task.schedule_kind === 'weekly') return '每周';
-  if (task.schedule_kind === 'dynamic') return '动态';
-  return '手动';
+  const triggerLabels: Record<string, string> = {
+    daily: '每日',
+    weekly: '每周',
+    dynamic: '动态',
+    manual: '按需',
+  };
+  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '按需';
 };
 const formatRuntimeScheduleTime = (value: string) => {
   const text = String(value || '').trim();
@@ -8375,6 +8377,9 @@ const selectedSceneRelationEdges = computed(() => {
 
 const selectedSceneIncomingEdges = computed(() => selectedSceneRelationEdges.value.incoming);
 const selectedSceneOutgoingEdges = computed(() => selectedSceneRelationEdges.value.outgoing);
+const selectedSceneRelationCount = computed(() => (
+  selectedSceneIncomingEdges.value.length + selectedSceneOutgoingEdges.value.length
+));
 
 const sceneGraphNodeId = (imageId: number | null, fallback: string) => (
   imageId === null ? `external:${fallback}` : `scene:${imageId}`
@@ -13120,7 +13125,7 @@ const showRuntimeHelp = () => {
       title: '3. 守护',
       lines: [
         '守护开关只控制对应高优先级节点是否参与 tick。',
-        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响手动作业入队。',
+        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响作业队列入队。',
       ],
     },
     {

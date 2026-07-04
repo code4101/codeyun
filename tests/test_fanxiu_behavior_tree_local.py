@@ -168,22 +168,48 @@ def test_external_behavior_tree_service_requests_shutdown_for_stale_foreign_owne
     assert result["pid"] == 4321
 
 
-def test_external_behavior_tree_service_does_not_duplicate_existing_service_process(monkeypatch, tmp_path):
+def test_external_behavior_tree_service_restarts_stale_existing_service_process(monkeypatch, tmp_path):
     calls: list[dict] = []
+
+    class FakeProcess:
+        pid = 5678
+
+    class FakePsutilProcess:
+        def __init__(self, pid):
+            self.pid = int(pid)
+
+        def terminate(self):
+            calls.append({"terminate": self.pid})
+
+    services = [
+        [{"pid": 4321, "cmdline": ["fanxiu_bt.py", "service"]}],
+        [{"pid": 4321, "cmdline": ["fanxiu_bt.py", "service"]}],
+        [],
+    ]
+
+    owners = [
+        {"exists": True, "active": False, "stale": True, "pid": 1234},
+        {"exists": True, "active": False, "stale": True, "pid": 1234},
+        {"exists": True, "active": True, "stale": False, "pid": 5678},
+    ]
 
     monkeypatch.setattr(bt, "ROOT_DIR", tmp_path)
     script = tmp_path / "scripts" / "fanxiu_bt.py"
     script.parent.mkdir(parents=True)
     script.write_text("", encoding="utf-8")
-    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", lambda: {"exists": True, "active": False, "stale": True, "pid": 1234})
-    monkeypatch.setattr(bt, "_fanxiu_service_processes", lambda: [{"pid": 4321, "cmdline": ["fanxiu_bt.py", "service"]}])
-    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args}) or object())
+    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", lambda: owners.pop(0) if owners else {"exists": True, "active": True, "stale": False, "pid": 5678})
+    monkeypatch.setattr(bt, "_fanxiu_service_processes", lambda: services.pop(0) if services else [])
+    monkeypatch.setattr(bt, "request_fanxiu_behavior_tree_service_shutdown", lambda **kwargs: calls.append({"shutdown": kwargs}))
+    monkeypatch.setattr(bt.psutil, "Process", FakePsutilProcess)
+    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args, "kwargs": kwargs}) or FakeProcess())
+    monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
 
     result = bt._start_external_fanxiu_behavior_tree_service("entry-1")
 
-    assert result["started"] is False
-    assert result["reason"] == "service_process_already_running"
-    assert calls == []
+    assert result["started"] is True
+    assert result["pid"] == 5678
+    assert calls[0]["shutdown"]["reason"] == "stale_external_service_takeover"
+    assert any(call.get("popen") for call in calls)
 
 
 def test_local_enqueue_ensures_behavior_tree_service_before_queue(monkeypatch, tmp_path):
@@ -1849,7 +1875,7 @@ def test_fanxiu_bt_watch_doctor_stops_when_ok_no_due(monkeypatch, tmp_path):
     assert event["due_task_count"] == 0
 
 
-def test_fanxiu_bt_watch_doctor_auto_runs_due_when_safe(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_engineering_scheduler_active(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-auto.ndjson"
@@ -1918,16 +1944,13 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_safe(monkeypatch, tmp_path):
         ],
     )
 
-    assert fanxiu_bt.main() == 0
+    assert fanxiu_bt.main() == 1
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert len(run_due_calls) == 1
-    assert run_due_calls[0]["entry_id"] == "entry"
-    assert event["severity"] == "ok"
+    assert run_due_calls == []
+    assert event["severity"] == "attention"
     assert event["auto_run_due_enabled"] is True
-    assert event["auto_run_due"]["triggered"] is True
-    assert event["auto_run_due"]["phase"] == "scheduler_run_due"
-    assert run_due_calls[0]["ignore_job_group_disabled"] is True
+    assert event["auto_run_due"].get("triggered") is not True
 
 
 def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatch, tmp_path):

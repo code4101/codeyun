@@ -2502,6 +2502,8 @@ class DataAnnotationRuntimeRunner(
 ):
     default_guard_enabled = True
     default_guard_interval_seconds = 2.0
+    engineering_idle_guard_interval_seconds = 60.0
+    device_health_guard_interval_seconds = 60.0
     idle_recovery_interval_seconds = 300.0
     idle_recovery_max_popup_ticks = 6
     idle_recovery_settle_seconds = 1.0
@@ -2624,6 +2626,7 @@ class DataAnnotationRuntimeRunner(
         self._guard_entry_id = ""
         self._guard_interval_seconds = self.default_guard_interval_seconds
         self._guard_items: dict[str, dict[str, Any]] = json.loads(json.dumps(self.default_guard_items, ensure_ascii=False))
+        self._last_device_health_guard_at = 0.0
         self._auto_close_candidates_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
         self._missing_match_source_filenames: set[str] = set()
         self._log_scope = ""
@@ -3202,7 +3205,8 @@ class DataAnnotationRuntimeRunner(
                 time.sleep(0.05)
 
     def _run_service_loop(self, *, stop_event: threading.Event, tick_seconds: float, generation: int) -> None:
-        last_idle_recovery_at = 0.0
+        last_engineering_idle_guard_at = 0.0
+        engineering_idle_guard_fast_mode = False
         while not stop_event.is_set():
             with self._lock:
                 if generation != self._service_generation:
@@ -3217,15 +3221,6 @@ class DataAnnotationRuntimeRunner(
             entry, entry_id, asset_tree_path = context
             try:
                 if not self.status().get("running"):
-                    guard_handled = False
-                    if self._guard_group_enabled and self._guard_enabled:
-                        self._mark_service_heartbeat("idle_guard")
-                        guard_handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
-                        self._mark_service_heartbeat("idle_guard_done")
-                    if guard_handled and self._pending_manual_job_count() <= 0:
-                        self._service_wake_event.wait(0.1)
-                        self._service_wake_event.clear()
-                        continue
                     self._mark_service_heartbeat("manual_job_poll")
                     if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
                         self._mark_service_heartbeat("manual_job_started")
@@ -3243,18 +3238,24 @@ class DataAnnotationRuntimeRunner(
                             self._service_wake_event.clear()
                             continue
                     now = time.time()
-                    if (
-                        self._guard_group_enabled
-                        and now - last_idle_recovery_at >= max(30.0, float(self.idle_recovery_interval_seconds))
-                        and (
-                            not bool(_read_data_annotation_scheduler_settings().get("job_group_enabled", True))
-                            or not self._scheduler_task_due_soon(within_seconds=180.0)
-                        )
-                    ):
-                        last_idle_recovery_at = now
+                    engineering_idle_guard_due = now - last_engineering_idle_guard_at >= max(1.0, float(self.engineering_idle_guard_interval_seconds))
+                    if self._engineering_scheduler_enabled() and self._guard_group_enabled and (engineering_idle_guard_fast_mode or engineering_idle_guard_due):
+                        if not engineering_idle_guard_fast_mode:
+                            last_engineering_idle_guard_at = now
                         self._mark_service_heartbeat("idle_guard")
-                        self._run_idle_recovery(entry, entry_id, asset_tree_path, stop_event=stop_event)
+                        guard_handled = self._run_engineering_idle_guard_tick(
+                            entry,
+                            entry_id,
+                            asset_tree_path,
+                            stop_event=stop_event,
+                            include_device_health=not engineering_idle_guard_fast_mode,
+                        )
                         self._mark_service_heartbeat("idle_guard_done")
+                        engineering_idle_guard_fast_mode = guard_handled
+                        if guard_handled:
+                            self._service_wake_event.wait(max(0.2, min(1.0, float(tick_seconds or 1.0))))
+                            self._service_wake_event.clear()
+                            continue
             except Exception as exc:
                 with self._lock:
                     self._log_locked("error", f"行为树 tick 失败：{exc}")
@@ -3435,6 +3436,7 @@ class DataAnnotationRuntimeRunner(
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
                 "entry": entry,
+                "entry_id": entry_id,
                 "asset_tree": tree,
                 "asset_tree_path": asset_tree_path,
                 "images": self._index_images(tree),
@@ -3490,17 +3492,48 @@ class DataAnnotationRuntimeRunner(
                     return True
         return False
 
-    def _run_idle_guard_tick(self, entry: Any, entry_id: str, asset_tree_path: Path) -> bool:
+    def _engineering_scheduler_enabled(self) -> bool:
+        try:
+            settings = _read_data_annotation_scheduler_settings()
+        except Exception:
+            settings = {}
+        return bool(settings.get("job_group_enabled", True)) and not self._job_group_isolated()
+
+    def _run_engineering_idle_guard_tick(
+        self,
+        entry: Any,
+        entry_id: str,
+        asset_tree_path: Path,
+        *,
+        stop_event: threading.Event,
+        include_device_health: bool = True,
+    ) -> bool:
+        handled = False
+        if include_device_health:
+            handled = self._run_device_health_guard_tick(entry_id) or handled
+        if self._runtime_guard_enabled("close_popups"):
+            handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path, stop_event=stop_event) or handled
+        return handled
+
+    def _run_idle_guard_tick(
+        self,
+        entry: Any,
+        entry_id: str,
+        asset_tree_path: Path,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> bool:
         try:
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
                 "entry": entry,
+                "entry_id": entry_id,
                 "asset_tree": tree,
                 "asset_tree_path": asset_tree_path,
                 "images": self._index_images(tree),
             }
             self._require_assets(ctx)
-            result = self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, threading.Event())
+            result = self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, stop_event or threading.Event())
             frame = self._screencap(ctx)
             key, score = self._identify_scene(ctx, frame)
             scene_id = self.scene_ids.get(key)
@@ -3542,6 +3575,7 @@ class DataAnnotationRuntimeRunner(
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
                 "entry": entry,
+                "entry_id": entry_id,
                 "asset_tree": tree,
                 "asset_tree_path": asset_tree_path,
                 "images": self._index_images(tree),
@@ -3586,9 +3620,17 @@ class DataAnnotationRuntimeRunner(
             with self._lock:
                 self._log_locked("error", f"空闲复原失败：{exc}", scope="guard", item_id="close_popups")
 
-    def _run_device_health_guard_tick(self, entry_id: str) -> None:
+    def _run_device_health_guard_tick(self, entry_id: str, *, force: bool = False) -> bool:
         if not self._runtime_guard_enabled("device_health"):
-            return
+            return False
+        now = time.time()
+        if (
+            not force
+            and self._last_device_health_guard_at > 0
+            and now - self._last_device_health_guard_at < max(1.0, float(self.device_health_guard_interval_seconds))
+        ):
+            return False
+        self._last_device_health_guard_at = now
         try:
             state = ensure_mumu_device_healthy(recover=True, reason="resident_heartbeat")
         except Exception as exc:
@@ -3608,6 +3650,7 @@ class DataAnnotationRuntimeRunner(
             self._sync_guard_status_locked()
         if recovered:
             self._persist_status()
+        return recovered
 
     def stop_current_task(self, entry_id: str) -> dict[str, Any]:
         with self._lock:
@@ -3818,7 +3861,7 @@ class DataAnnotationRuntimeRunner(
                 "task_type": task_type,
                 "current_task": label,
                 "phase": "manual_job",
-                "message": f"手动作业已启动：{label}",
+                "message": f"作业已启动：{label}",
                 "total": 1,
                 "current_task_id": task_id,
                 "interruptible": bool(task.get("interruptible", True)),
@@ -4296,10 +4339,18 @@ class DataAnnotationRuntimeRunner(
         with self._lock:
             if not self._guard_group_enabled:
                 return False
-            if guard_id == "close_popups":
-                return bool(self._guard_enabled)
-            state = self._guard_items.get(guard_id)
-            return bool(state.get("enabled")) if isinstance(state, dict) else False
+            return self._runtime_guard_item_enabled_locked(guard_id)
+
+    def _runtime_guard_item_enabled(self, guard_id: str) -> bool:
+        guard_id = str(guard_id or "").strip()
+        with self._lock:
+            return self._runtime_guard_item_enabled_locked(guard_id)
+
+    def _runtime_guard_item_enabled_locked(self, guard_id: str) -> bool:
+        if guard_id == "close_popups":
+            return bool(self._guard_enabled)
+        state = self._guard_items.get(guard_id)
+        return bool(state.get("enabled")) if isinstance(state, dict) else False
 
     def _runtime_guard_service_tick(
         self,
@@ -4309,11 +4360,21 @@ class DataAnnotationRuntimeRunner(
         stop_event: threading.Event,
         *,
         allow_during_task: bool = False,
+        guard_override: bool | None = None,
     ) -> BehaviorTreeStatus:
         self._raise_if_stopped(stop_event)
         guard_id = str(guard_id or "").strip()
-        if not self._runtime_guard_enabled(guard_id):
+        if guard_override is False:
             return BehaviorTreeStatus.SKIP
+        if guard_override is True:
+            enabled = self._runtime_guard_item_enabled(guard_id)
+        else:
+            enabled = self._runtime_guard_enabled(guard_id)
+        if not enabled:
+            return BehaviorTreeStatus.SKIP
+        if guard_id == "device_health":
+            entry_id = str(runtime_ctx.get("entry_id") or self._status.get("entry_id") or "")
+            return BehaviorTreeStatus.RUNNING if self._run_device_health_guard_tick(entry_id) else BehaviorTreeStatus.SKIP
         if guard_id != "close_popups":
             return BehaviorTreeStatus.SKIP
         if not allow_during_task:
@@ -4348,12 +4409,14 @@ class DataAnnotationRuntimeRunner(
         label: str,
         tick_seconds: float = 1.0,
         max_runtime_seconds: float | None = None,
+        guard_override: bool | None = None,
     ) -> Any:
         return _DataAnnotationRuntimeContainer(
             self,
             runtime_ctx=runtime_ctx,
             asset_tree_path=asset_tree_path,
             stop_event=stop_event,
+            guard_override=guard_override,
         ).run_job_until_complete(
             action=action,
             label=label,
@@ -4369,6 +4432,21 @@ class DataAnnotationRuntimeRunner(
         except (TypeError, ValueError):
             value = 600.0
         return max(30.0, min(21600.0, value))
+
+    def _runtime_guard_override_from_payload(self, payload: dict[str, Any] | None) -> bool | None:
+        if not isinstance(payload, dict) or "guard" not in payload:
+            return None
+        value = payload.get("guard")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on", "enable", "enabled", "开启", "开", "启用"}:
+            return True
+        if text in {"0", "false", "no", "off", "disable", "disabled", "关闭", "关", "禁用"}:
+            return False
+        return None
 
     def _run_direct_runtime_action(
         self,
@@ -4411,6 +4489,7 @@ class DataAnnotationRuntimeRunner(
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
                 "entry": entry,
+                "entry_id": entry_id,
                 "asset_tree": tree,
                 "asset_tree_path": asset_tree_path,
                 "images": self._index_images(tree),
@@ -4424,6 +4503,7 @@ class DataAnnotationRuntimeRunner(
                 label=self._runtime_task_label(task_type, payload),
                 tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
                 max_runtime_seconds=self._task_timeout_seconds(payload),
+                guard_override=self._runtime_guard_override_from_payload(payload),
             )
             task_result, task_message = self._normalize_runtime_task_result(raw_task_result)
             if task_id:
@@ -4486,16 +4566,24 @@ class DataAnnotationRuntimeRunner(
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
                 "entry": entry,
+                "entry_id": entry_id,
                 "asset_tree": tree,
                 "asset_tree_path": asset_tree_path,
                 "images": self._index_images(tree),
             }
             self._require_assets(ctx)
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-            result = self._run_direct_runtime_action(
-                lambda: self._execute_runtime_task(ctx, str(task.get("task_type") or ""), payload, stop_event),
+            task_type = str(task.get("task_type") or "")
+            task_label = str(task.get("label") or self._runtime_task_label(task_type, payload) or task_id or "作业")
+            result = self._run_runtime_behavior_tree(
+                runtime_ctx=ctx,
+                asset_tree_path=asset_tree_path,
                 stop_event=stop_event,
+                action=lambda: self._execute_runtime_task(ctx, task_type, payload, stop_event),
+                label=task_label,
+                tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
                 max_runtime_seconds=self._task_timeout_seconds(payload),
+                guard_override=self._runtime_guard_override_from_payload(payload),
             )
             task_result, task_message = self._normalize_runtime_task_result(result)
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
@@ -4503,30 +4591,30 @@ class DataAnnotationRuntimeRunner(
                 tasks = _read_data_annotation_scheduler_tasks()
                 self._mark_scheduler_task(tasks, scheduler_task_id, task_result)
             elif task_result == "success":
-                self._mark_matching_scheduler_tasks_for_manual_success(str(task.get("task_type") or ""), payload)
+                self._mark_matching_scheduler_tasks_for_manual_success(task_type, payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
                     "status": "success" if task_result == "success" else task_result,
                     "phase": "done",
-                    "message": task_message or f"手动作业完成：{task.get('label') or task.get('task_type') or task_id}",
+                    "message": task_message or f"作业完成：{task.get('label') or task.get('task_type') or task_id}",
                     "finished_at": time.time(),
                     "updated_at": time.time(),
                     "current_index": 1,
                 })
                 self._log_locked("success" if task_result == "success" else "skip", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
-                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
-                    source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
+                    title=f"作业：{task.get('label') or self._runtime_task_label(task_type, payload)}",
+                    source=self._runtime_task_cell_source(task_type, payload),
                 )
         except InterruptedError:
             with self._lock:
                 self._clear_current_task_locked()
-                self._status.update({"status": "stopped", "phase": "stopped", "message": "手动作业已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", self._manual_job_log_message(task_id, "手动作业已停止"), scope="manual_job", item_id="manual_job")
+                self._status.update({"status": "stopped", "phase": "stopped", "message": "作业已停止", "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("stop", self._manual_job_log_message(task_id, "作业已停止"), scope="manual_job", item_id="manual_job")
                 payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
                 self._append_runtime_cell_log_locked(
-                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
+                    title=f"作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
                     source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
                 )
         except Exception as exc:
@@ -4541,7 +4629,7 @@ class DataAnnotationRuntimeRunner(
                 self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
                 self._log_locked("error", self._manual_job_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
-                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
+                    title=f"作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
                     source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
                 )
         finally:
@@ -4605,18 +4693,20 @@ class DataAnnotationRuntimeRunner(
                         )
                         self._log_locked("action", f"开始到期任务：{label}")
                     self._mark_scheduler_task(all_tasks, task_id, "running")
+                    task_payload = _data_annotation_task_payload_with_meta(task)
                     raw_result = self._run_runtime_behavior_tree(
                         runtime_ctx=ctx,
                         asset_tree_path=asset_tree_path,
                         stop_event=stop_event,
-                        action=lambda task=task: self._execute_runtime_task(
+                        action=lambda task=task, task_payload=task_payload: self._execute_runtime_task(
                             ctx,
                             str(task.get("task_type") or ""),
-                            _data_annotation_task_payload_with_meta(task),
+                            task_payload,
                             stop_event,
                         ),
                         label=label,
-                        max_runtime_seconds=self._task_timeout_seconds(_data_annotation_task_payload_with_meta(task)),
+                        max_runtime_seconds=self._task_timeout_seconds(task_payload),
+                        guard_override=self._runtime_guard_override_from_payload(task_payload),
                     )
                     result, _result_message = self._normalize_runtime_task_result(raw_result)
                     self._mark_scheduler_task(all_tasks, task_id, result or "success")
@@ -5090,7 +5180,7 @@ class DataAnnotationRuntimeRunner(
         if not normalized_task_type:
             return
         if normalized_task_type == "daily_boss":
-            self._log("detail", "日常_首领手动作业不使用通用成功同步；只按奖励次数或刷新 CD 写入下次复查")
+            self._log("detail", "日常_首领作业不使用通用成功同步；只按奖励次数或刷新 CD 写入下次复查")
             return
         tasks = _read_data_annotation_scheduler_tasks()
         matched = False
@@ -5107,7 +5197,7 @@ class DataAnnotationRuntimeRunner(
             self._mark_scheduler_task(tasks, str(item.get("id") or ""), "success")
             matched = True
         if matched:
-            self._log("detail", f"手动作业成功后已同步清理同类 Scheduler 重试：{normalized_task_type}")
+            self._log("detail", f"作业成功后已同步清理同类 Scheduler 重试：{normalized_task_type}")
 
     def _execute_runtime_task(self, ctx: dict[str, Any], task_type: str, payload: dict[str, Any], stop_event: threading.Event) -> str:
         task_type = self._canonical_runtime_task_type(task_type)

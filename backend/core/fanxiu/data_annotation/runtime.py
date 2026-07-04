@@ -40,7 +40,7 @@ class DataAnnotationRuntimeContainer:
 
     group_definitions = (
         DataAnnotationRuntimeGroupSpec("guard", "守护", 10, preempt_same_group=False),
-        DataAnnotationRuntimeGroupSpec("manual_job", "手动作业", 50, preempt_same_group=False),
+        DataAnnotationRuntimeGroupSpec("manual_job", "作业", 50, preempt_same_group=False),
         DataAnnotationRuntimeGroupSpec("job", "作业", 100, preempt_same_group=False),
     )
 
@@ -51,11 +51,13 @@ class DataAnnotationRuntimeContainer:
         runtime_ctx: dict[str, Any],
         asset_tree_path: Path,
         stop_event: threading.Event,
+        guard_override: bool | None = None,
     ) -> None:
         self.owner = owner
         self.runtime_ctx = runtime_ctx
         self.asset_tree_path = asset_tree_path
         self.stop_event = stop_event
+        self.guard_override = guard_override
 
     def group_specs(self) -> list[DataAnnotationRuntimeGroupSpec]:
         return sorted(self.group_definitions, key=lambda item: item.priority)
@@ -67,10 +69,19 @@ class DataAnnotationRuntimeContainer:
                 group_id="guard",
                 label=str(definition.get("label") or guard_id),
                 priority=int(definition.get("priority") or 100),
-                enabled=self.owner._runtime_guard_enabled(guard_id),
+                enabled=self._guard_enabled(guard_id),
             )
             for guard_id, definition in self.owner.guard_definitions.items()
         ]
+
+    def _guard_enabled(self, guard_id: str) -> bool:
+        if self.guard_override is False:
+            return False
+        if self.guard_override is True:
+            item_enabled = getattr(self.owner, "_runtime_guard_item_enabled", None)
+            if callable(item_enabled):
+                return bool(item_enabled(guard_id))
+        return bool(self.owner._runtime_guard_enabled(guard_id))
 
     def guard_nodes(self) -> list[Node]:
         return [
@@ -79,6 +90,7 @@ class DataAnnotationRuntimeContainer:
                 label=spec.label,
             )
             for spec in self.guard_specs()
+            if spec.enabled
         ]
 
     def _run_guard_service(self, guard_id: str):
@@ -89,6 +101,7 @@ class DataAnnotationRuntimeContainer:
                 self.asset_tree_path,
                 self.stop_event,
                 allow_during_task=True,
+                guard_override=self.guard_override,
             )
             if status == BehaviorTreeStatus.RUNNING:
                 yield 1

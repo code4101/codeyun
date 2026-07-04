@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { ArrowUp, Document, Download, Folder, View } from '@element-plus/icons-vue';
 
 import api from '@/api';
 import { importPdfDocumentFromLocalPath } from '@/api/pdfDocuments';
-import GenericFileViewer from '@/components/GenericFileViewer.vue';
 import DocPage from '@/components/DocPage.vue';
 import {
   formatPreviewKindLabel,
@@ -42,6 +41,7 @@ const selectedFilePath = computed(() => selectedFile.value?.path || '');
 const selectedMimeType = computed(() => previewBlob.value?.type || '');
 const selectedSize = computed(() => selectedFile.value?.size ?? previewBlob.value?.size);
 const selectedKindLabel = computed(() => formatPreviewKindLabel(selectedPreviewKind.value));
+const GenericFileViewer = defineAsyncComponent(() => import('@/components/GenericFileViewer.vue'));
 
 const sortedFiles = computed(() => files.value);
 

@@ -1,5 +1,5 @@
 import { fetchNoteCategoryPalette, updateNoteCategoryPalette } from '@/api/noteTypes';
-import { fromHex, getReadableTextColor, mixWeightedColors, toHex } from '@/utils/colorToolkit';
+import { fromHex, getReadableTextColor, mixWeightedColors, toHex } from '@/utils/colorMath';
 import {
   getNoteTypePaletteLoadPromiseState,
   noteTypePaletteItemsState,

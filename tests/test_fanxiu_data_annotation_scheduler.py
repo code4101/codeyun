@@ -3097,6 +3097,65 @@ def test_data_annotation_service_run_due_endpoint_uses_service_entry_and_shared_
     assert calls["asset_tree_path"] == tmp_path / "resolved-run-due-entry.json"
 
 
+def test_data_annotation_scheduler_settings_enable_engineering_ensures_kernel(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    entry = type("Entry", (), {"entry_id": "resolved-mf-entry"})()
+    calls = {}
+
+    monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda _session, _user, _entry_id: entry)
+
+    def fake_set_kernel_enabled(**kwargs):
+        calls.update(kwargs)
+        return {"ok": True, "entry_id": kwargs["entry_id"], "status": "idle", "running": False}
+
+    monkeypatch.setattr(fanxiu._runtime_framework, "set_kernel_enabled", fake_set_kernel_enabled)
+
+    response = fanxiu.put_fanxiu_data_annotation_scheduler_settings(
+        fanxiu.FanxiuDataAnnotationSchedulerSettingsRequest(job_group_enabled=True, entry_id="request-mf-entry"),
+        current_user=object(),
+        session=object(),
+    )
+
+    assert response.job_group_enabled is True
+    assert calls["entry"] is entry
+    assert calls["entry_id"] == "resolved-mf-entry"
+    assert calls["enabled"] is True
+    assert calls["asset_tree_path"] == tmp_path / "resolved-mf-entry.json"
+    assert calls["scheduler_settings_path"] == _scheduler_settings_path(tmp_path)
+    assert calls["runtime_state_path"] == tmp_path / "runtime_state.json"
+    assert calls["world_facts_path"] == tmp_path / "world_facts.json"
+
+
+def test_data_annotation_scheduler_plan_self_heals_missing_engineering_kernel(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    entry = type("Entry", (), {"entry_id": "resolved-mf-entry"})()
+    calls = {}
+
+    monkeypatch.setattr(fanxiu, "resolve_fanxiu_entry", lambda _entry_id: entry)
+    monkeypatch.setattr(fanxiu, "_data_annotation_runtime_status", lambda include_cell_logs=True: {"service_running": False})
+    monkeypatch.setattr(
+        fanxiu._runtime_control,
+        "build_scheduler_plan",
+        lambda **_kwargs: {"next_action": "idle", "message": "", "job_group_enabled": True, "tasks": [], "due_tasks": []},
+    )
+
+    def fake_ensure_kernel(**kwargs):
+        calls.update(kwargs)
+        return {"ok": True, "service_running": True}
+
+    monkeypatch.setattr(fanxiu._runtime_framework, "ensure_kernel", fake_ensure_kernel)
+
+    response = fanxiu.get_fanxiu_data_annotation_scheduler_plan(current_user=object(), session=object())
+
+    assert response.next_action == "idle"
+    assert calls["entry"] is entry
+    assert calls["entry_id"] == "resolved-mf-entry"
+    assert calls["asset_tree_path"] == tmp_path / "resolved-mf-entry.json"
+    assert calls["scheduler_settings_path"] == _scheduler_settings_path(tmp_path)
+    assert calls["runtime_state_path"] == tmp_path / "runtime_state.json"
+    assert calls["world_facts_path"] == tmp_path / "world_facts.json"
+
+
 def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(monkeypatch):
     calls = []
     task_type = "codex_debug_probe"
