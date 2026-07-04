@@ -231,6 +231,37 @@ def test_update_note_form_preserves_existing_empty_category(client, auth_user):
     assert payload["primary_category"] is None
 
 
+def test_update_note_title_preserves_existing_empty_category(client, auth_user):
+    create_response = client.post(
+        "/api/notes/",
+        json={
+            "title": "Empty Category Note",
+            "content": "",
+            "node_type": "note",
+            "node_status": "idea",
+            "note_categories": [],
+            "primary_category": None,
+            "note_form": "note",
+            "note_scene": "note",
+            "lifecycle_stage": "idea",
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+
+    update_response = client.put(
+        f"/api/notes/{created['id']}",
+        json={
+            "title": "Renamed Empty Category Note",
+        },
+    )
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["title"] == "Renamed Empty Category Note"
+    assert payload["note_categories"] == []
+    assert payload["primary_category"] is None
+
+
 def test_create_note_accepts_extended_note_forms(client, auth_user):
     response = client.post(
         "/api/notes/",

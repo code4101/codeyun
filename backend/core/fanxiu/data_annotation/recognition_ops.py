@@ -209,6 +209,7 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
             "cache_missing": bool(matrix.get("cache_missing")),
             "cache_partial": bool(matrix.get("cache_partial")),
             "cache_stale": bool(matrix.get("cache_stale")),
+            "score_mode": matrix.get("score_mode"),
             "layer": matrix.get("layer"),
             "threshold": matrix.get("threshold"),
             "updated_at": matrix.get("updated_at"),
@@ -223,6 +224,7 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
             {**category, "count": int(category_counts.get(category["id"], 0))}
             for category in RECOGNITION_OPS_CATEGORIES
         ],
+        "edges": edges,
         "issues": issues,
         "summary": {
             "node_count": len(scene_ids),

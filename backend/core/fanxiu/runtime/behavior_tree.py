@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 import psutil
+from filelock import FileLock, Timeout
 from pyxllib.prog import (
     acquire_json_lease,
     clear_job_queue,
@@ -191,6 +192,10 @@ def fanxiu_behavior_tree_service_owner_path() -> Path:
 
 def fanxiu_behavior_tree_control_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "behavior_tree_control.json"
+
+
+def fanxiu_behavior_tree_service_start_lock_path() -> Path:
+    return fanxiu_data_annotation_runtime_dir() / "behavior_tree_service_start.lock"
 
 
 def _fanxiu_process_exists(pid: int) -> bool:
@@ -372,6 +377,30 @@ def _external_behavior_tree_service_enabled() -> bool:
 
 
 def _start_external_fanxiu_behavior_tree_service(
+    entry_id: str,
+    *,
+    tick_seconds: float = 1.0,
+    wait_seconds: float = 5.0,
+) -> dict[str, Any]:
+    if _current_process_is_fanxiu_service_host():
+        owner = read_fanxiu_behavior_tree_service_owner()
+        return {"started": False, "reason": "current_process_is_service_host", "owner": owner}
+    lock = FileLock(str(fanxiu_behavior_tree_service_start_lock_path()))
+    try:
+        with lock.acquire(timeout=8.0):
+            return _start_external_fanxiu_behavior_tree_service_locked(
+                entry_id,
+                tick_seconds=tick_seconds,
+                wait_seconds=wait_seconds,
+            )
+    except Timeout:
+        owner = read_fanxiu_behavior_tree_service_owner()
+        if bool(owner.get("active")) and not bool(owner.get("stale")):
+            return {"started": False, "reason": "owner_already_active_after_lock_timeout", "owner": owner}
+        return {"started": False, "reason": "service_start_lock_timeout", "owner": owner}
+
+
+def _start_external_fanxiu_behavior_tree_service_locked(
     entry_id: str,
     *,
     tick_seconds: float = 1.0,

@@ -7011,6 +7011,7 @@ type SceneRelationEdge = {
   targetId: number | null;
   sourceLabel: string;
   targetLabel: string;
+  score?: number | string | null;
   shapeId?: string;
   shapeTitle?: string;
   focusImageId: number | null;
@@ -8409,6 +8410,32 @@ const recognitionOpsEdgeValue = (value: number | string | null | undefined) => {
   return Number.isFinite(numeric) ? numeric.toFixed(1).replace(/\.0$/, '') : String(value);
 };
 
+const recognitionScorePercentLabel = (value: number | string | null | undefined) => {
+  if (value === undefined || value === null || value === '') return '';
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '';
+  const percent = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
+  return `${Math.trunc(percent)}%`;
+};
+
+const recognitionOpsScoreByPair = computed(() => {
+  const result = new Map<string, number | string | null | undefined>();
+  for (const edge of recognitionOpsReport.value?.edges ?? []) {
+    result.set(`${Number(edge.source_id)}:${Number(edge.target_id)}`, edge.score);
+  }
+  for (const issue of recognitionOpsReport.value?.issues ?? []) {
+    for (const edge of issue.edges ?? []) {
+      result.set(`${Number(edge.source_id)}:${Number(edge.target_id)}`, edge.score);
+    }
+  }
+  return result;
+});
+
+const recognitionPairScore = (sourceId: number | null, targetId: number | null) => {
+  if (sourceId === null || targetId === null) return undefined;
+  return recognitionOpsScoreByPair.value.get(`${sourceId}:${targetId}`);
+};
+
 const stopRecognitionOpsPolling = () => {
   if (!recognitionOpsPollTimer) return;
   window.clearInterval(recognitionOpsPollTimer);
@@ -8482,6 +8509,7 @@ const sceneRelationKindLabel = (kind: SceneRelationEdgeKind) => ({
 const buildSceneRelationTooltip = (edge: Omit<SceneRelationEdge, 'tooltip'>) => (
   [
     `${edge.kindLabel}: ${edge.sourceLabel} -> ${edge.targetLabel}`,
+    edge.score !== undefined && edge.score !== null ? `score: ${recognitionScorePercentLabel(edge.score)}` : '',
     edge.shapeTitle ? `shape: ${edge.shapeTitle}` : '',
   ].filter(Boolean).join('\n')
 );
@@ -8508,6 +8536,7 @@ const buildSceneRelationEdges = (nodes: DataAnnotationAssetNode[]) => {
     if (sourceId === null) continue;
     const recognitionParentId = assetRecognitionParentId(image);
     if (recognitionParentId !== null) {
+      const score = recognitionPairScore(recognitionParentId, sourceId);
       pushEdge({
         id: `recognition:${recognitionParentId}:${sourceId}`,
         kind: 'recognition',
@@ -8516,6 +8545,7 @@ const buildSceneRelationEdges = (nodes: DataAnnotationAssetNode[]) => {
         targetId: sourceId,
         sourceLabel: sceneImageLabel(recognitionParentId, imagesByNumber),
         targetLabel: sceneImageLabel(sourceId, imagesByNumber),
+        score,
         focusImageId: recognitionParentId,
       });
     }
@@ -8904,14 +8934,17 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
         targetId,
         sourceLabel,
         targetLabel,
+        score: edge.score,
         focusImageId: targetId,
         tooltip: `${sourceLabel} -> ${targetLabel}${score}${threshold}${matched}`,
       };
+      const label = recognitionScorePercentLabel(edge.score);
       return {
         id: `scene-graph:${relationEdge.id}`,
         source: sceneGraphNodeId(sourceId, String(sourceId)),
         target: sceneGraphNodeId(targetId, String(targetId)),
         type: 'elk',
+        label,
         animated: true,
         markerEnd: {
           type: MarkerType.ArrowClosed,
@@ -8932,11 +8965,13 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
 
   return selectedSceneGraphRelations.value.map((edge, index) => {
   const color = sceneRelationColor(edge.kind);
+  const label = edge.kind === 'recognition' ? recognitionScorePercentLabel(edge.score) : '';
   return {
     id: `scene-graph:${edge.id}:${index}`,
     source: sceneGraphNodeId(edge.sourceId, edge.sourceLabel),
     target: sceneGraphNodeId(edge.targetId, edge.targetLabel),
     type: 'elk',
+    label,
     animated: edge.kind === 'recognition',
     markerEnd: {
       type: MarkerType.ArrowClosed,
@@ -10411,6 +10446,22 @@ watch(assetTreeViewMode, (mode) => {
   ]));
   queueAssetTreeExpansionSync();
 });
+
+watch(
+  [selectedEntryId, selectedSceneRelationGraphVisible, activeSceneRelationGraphTab],
+  () => {
+    if (
+      selectedEntryId.value
+      && selectedSceneRelationGraphVisible.value
+      && activeSceneRelationGraphTab.value === 'recognition'
+      && !recognitionOpsReport.value
+      && !recognitionOpsLoading.value
+    ) {
+      void loadRecognitionOps(false, true);
+    }
+  },
+  { immediate: true },
+);
 
 watch(
   [selectedAssetId, selectedShapeId, expandedAssetNodeIds, expandedShapeNodeIds, assetTreeViewMode],

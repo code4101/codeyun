@@ -4731,6 +4731,13 @@ def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) 
         "note_scene",
         "lifecycle_stage",
     } & set(note_data.keys()))
+    uses_legacy_taxonomy_input = bool({
+        "note_types",
+        "node_type",
+        "note_kind",
+        "node_status",
+        "color",
+    } & set(note_data.keys()))
 
     if uses_new_taxonomy_input:
         effective_categories = note_data.get("note_categories", db_note.note_categories)
@@ -4788,7 +4795,7 @@ def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) 
                     note_data["note_types"] = [{"key": legacy_color_type_key, "weight": 100}]
                     note_data["node_type"] = legacy_color_type_key
 
-    if not uses_new_taxonomy_input:
+    if not uses_new_taxonomy_input and uses_legacy_taxonomy_input:
         effective_note_types = note_data.get("note_types", db_note.note_types)
         effective_node_type = note_data.get("node_type", db_note.node_type)
         effective_note_kind = note_data.get("note_kind", db_note.note_kind)

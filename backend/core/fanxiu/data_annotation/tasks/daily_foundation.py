@@ -2721,14 +2721,14 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([330, 319, 69, 34], update=True)
+        raid_scenes = {319, 320, 321, 322, 323, 324, 331}
+        scene_id, _score, frame = runtime.current_scene([330, *sorted(raid_scenes), 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 330:
             self._log("action", "日常_奇袭魔界：起点检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")
             yield from runtime.wait_click(330, "确定")
             yield from runtime.wait_view(319, label="日常_奇袭魔界：等待 #330 后的奇袭魔界 #319")
             scene_id = 319
-        raid_scenes = {319, 320, 321, 322, 323, 324, 331}
         if scene_id not in {69, *raid_scenes}:
             scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
         if scene_id not in {69, *raid_scenes}:
@@ -2736,13 +2736,15 @@ class DailyFoundationTaskMixin:
         if scene_id == 69:
             status = yield from runtime.open_daily_entry(
                 label="日常_奇袭魔界",
-                title_pattern="魔界",
+                title_pattern=r"参与.{0,4}奇|奇.{0,4}魔|魔界",
                 progress_can_mark_done=False,
                 max_scrolls=int(payload.get("max_scrolls") or 30),
                 reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
             )
             if status == "not_found":
                 raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
+            if status == "done":
+                raise RuntimeError("日常_奇袭魔界：入口行完成态不能作为奇袭魔界完成判据")
             if payload.get("stop_after_daily_entry") or payload.get("pause_after_daily_entry"):
                 yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
                 current_scene_id, score, frame = runtime.current_scene(update=True)
@@ -2794,7 +2796,13 @@ class DailyFoundationTaskMixin:
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
-            yield from runtime.wait_click_then_view(320, "检索区域/修罗", 321)
+            self._log("action", "日常_奇袭魔界：点击 #320 顶部可进攻据点")
+            yield from runtime.click_shape_center_then_view(
+                320,
+                "检索区域/修罗",
+                321,
+                label="日常_奇袭魔界：点击 #320 顶部据点后等待 #321",
+            )
             scene_id = 321
         if scene_id == 321:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)

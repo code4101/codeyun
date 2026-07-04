@@ -407,6 +407,8 @@ export const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
   ...(() => {
     const hasExplicitCategories = Array.isArray(raw.note_categories);
+    const hasLegacyCategoryInput = (Array.isArray(raw.note_types) && raw.note_types.length > 0)
+      || (typeof raw.node_type === 'string' && raw.node_type.trim() && !['note', 'doc', 'memo'].includes(raw.node_type.trim()));
     const hasNormalizedTaxonomyPayload = hasExplicitCategories
       && ('primary_category' in raw)
       && ('note_form' in raw)
@@ -424,7 +426,7 @@ export const normalizeNote = (raw: any): NoteNode => ({
         node_status: raw.node_status ?? null,
         lifecycle_stage: raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
       }
-      : Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
+      : Array.isArray(raw.note_categories) || raw.primary_category
         ? deriveLegacySemanticsFromTaxonomy(
           raw.note_categories,
           raw.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
@@ -432,6 +434,14 @@ export const normalizeNote = (raw: any): NoteNode => ({
           raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
           raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
         )
+        : (raw.note_form || raw.note_scene || raw.lifecycle_stage) && !hasLegacyCategoryInput
+          ? deriveLegacySemanticsFromTaxonomy(
+            [],
+            null,
+            raw.note_form ?? NOTE_FORM_DEFAULT,
+            raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
+            raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+          )
         : {
           ...deriveNoteTaxonomyFromLegacy(
             raw.note_types,

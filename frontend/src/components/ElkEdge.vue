@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BaseEdge, getSmoothStepPath, type EdgeProps } from '@vue-flow/core';
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@vue-flow/core';
 import { computed, toRefs } from 'vue';
 
 const props = defineProps<EdgeProps>();
@@ -62,26 +62,65 @@ const pointsToPath = (points: Point[]) => {
   return `M ${first.x} ${first.y} ${rest.map(point => `L ${point.x} ${point.y}`).join(' ')}`.trim();
 };
 
-const path = computed(() => {
-  const routePoints = Array.isArray(props.data?.routePoints) && props.data.routePoints.length > 1
+const edgeLabel = computed(() => String(props.label ?? '').trim());
+
+const routePoints = computed<Point[] | null>(() => {
+  const rawPoints = Array.isArray(props.data?.routePoints) && props.data.routePoints.length > 1
     ? props.data.routePoints
     : Array.isArray(props.data?.elkSections) && props.data.elkSections.length > 0
       ? flattenElkSections(props.data.elkSections)
       : null;
 
-  if (routePoints && routePoints.length > 1) {
-    return pointsToPath(compressOrthogonalPoints(routePoints));
-  }
+  if (!rawPoints || rawPoints.length <= 1) return null;
+  return compressOrthogonalPoints(rawPoints);
+});
 
-  return getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    targetPosition: props.targetPosition,
-    borderRadius: 0
-  })[0];
+const smoothStepPath = computed(() => getSmoothStepPath({
+  sourceX: props.sourceX,
+  sourceY: props.sourceY,
+  sourcePosition: props.sourcePosition,
+  targetX: props.targetX,
+  targetY: props.targetY,
+  targetPosition: props.targetPosition,
+  borderRadius: 0
+}));
+
+const midpointOfPolyline = (points: Point[]) => {
+  let totalLength = 0;
+  const segments = points.slice(0, -1).map((point, index) => {
+    const next = points[index + 1];
+    const length = Math.hypot(next.x - point.x, next.y - point.y);
+    totalLength += length;
+    return { point, next, length };
+  });
+
+  let walked = 0;
+  const targetLength = totalLength / 2;
+  for (const segment of segments) {
+    if (walked + segment.length >= targetLength) {
+      const ratio = segment.length > 0 ? (targetLength - walked) / segment.length : 0;
+      return {
+        x: segment.point.x + (segment.next.x - segment.point.x) * ratio,
+        y: segment.point.y + (segment.next.y - segment.point.y) * ratio,
+      };
+    }
+    walked += segment.length;
+  }
+  return points[Math.floor(points.length / 2)] ?? { x: props.sourceX, y: props.sourceY };
+};
+
+const path = computed(() => {
+  if (routePoints.value && routePoints.value.length > 1) {
+    return pointsToPath(routePoints.value);
+  }
+  return smoothStepPath.value[0];
+});
+
+const labelPosition = computed(() => {
+  if (routePoints.value && routePoints.value.length > 1) {
+    return midpointOfPolyline(routePoints.value);
+  }
+  return { x: smoothStepPath.value[1], y: smoothStepPath.value[2] };
 });
 </script>
 
@@ -91,8 +130,30 @@ const path = computed(() => {
     :marker-end="markerEnd" 
     :style="style" 
   />
+  <EdgeLabelRenderer v-if="edgeLabel">
+    <div
+      class="elk-edge-label"
+      :style="{
+        transform: `translate(-50%, -50%) translate(${labelPosition.x}px, ${labelPosition.y}px)`,
+      }"
+    >
+      {{ edgeLabel }}
+    </div>
+  </EdgeLabelRenderer>
 </template>
 
 <style scoped>
-/* 可以添加 hover 效果等 */
+.elk-edge-label {
+  position: absolute;
+  padding: 1px 5px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #303133;
+  font-size: 11px;
+  line-height: 16px;
+  pointer-events: none;
+  transform-origin: center;
+  white-space: nowrap;
+}
 </style>

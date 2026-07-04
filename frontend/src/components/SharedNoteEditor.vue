@@ -1157,7 +1157,9 @@ const normalizeIncomingNote = (note: NoteNode) => {
   if (cloned.updated_at && cloned.updated_at < 10000000000) cloned.updated_at *= 1000;
   if (cloned.created_at && cloned.created_at < 10000000000) cloned.created_at *= 1000;
   const hasExplicitCategories = Array.isArray(cloned.note_categories);
-  const taxonomy = Array.isArray(cloned.note_categories) || cloned.primary_category || cloned.note_form || cloned.note_scene || cloned.lifecycle_stage
+  const hasLegacyCategoryInput = (Array.isArray(cloned.note_types) && cloned.note_types.length > 0)
+    || (typeof cloned.node_type === 'string' && cloned.node_type.trim() && !['note', 'doc', 'memo'].includes(cloned.node_type.trim()));
+  const taxonomy = Array.isArray(cloned.note_categories) || cloned.primary_category
     ? deriveLegacySemanticsFromTaxonomy(
       cloned.note_categories,
       cloned.primary_category ?? (hasExplicitCategories ? null : NOTE_CATEGORY_DEFAULT),
@@ -1165,6 +1167,14 @@ const normalizeIncomingNote = (note: NoteNode) => {
       cloned.note_scene ?? cloned.note_kind ?? NOTE_SCENE_DEFAULT,
       cloned.lifecycle_stage ?? cloned.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
     )
+    : (cloned.note_form || cloned.note_scene || cloned.lifecycle_stage) && !hasLegacyCategoryInput
+      ? deriveLegacySemanticsFromTaxonomy(
+        [],
+        null,
+        cloned.note_form ?? NOTE_FORM_DEFAULT,
+        cloned.note_scene ?? cloned.note_kind ?? NOTE_SCENE_DEFAULT,
+        cloned.lifecycle_stage ?? cloned.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+      )
     : deriveNoteTaxonomyFromLegacy(
       cloned.note_types,
       cloned.node_type ?? 'note',

@@ -584,8 +584,6 @@ class FanxiuRuntime(Runtime):
             if key in parent_raw:
                 raw[key] = parent_raw.get(key)
         raw["_wait_click_action_title"] = shape.title or shape.raw.get("id")
-        if self.runner._shape_ocr_role(raw) != "off" and not str(raw.get("ocrText") or "").strip() and str(shape.title or "").strip():
-            raw["ocrText"] = str(shape.title).strip()
         return raw
 
     def _current_view_from_frame(self) -> View | None:
@@ -2014,7 +2012,10 @@ class FanxiuRuntime(Runtime):
         left = float(box.get("x") or 0)
         top = float(box.get("y") or 0)
         right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
+        height = float(box.get("h") or 0)
+        bottom = top + height
+        safe_top = top + height * 0.02
+        safe_bottom = bottom - height * 0.08
         matches: list[tuple[float, float, str]] = []
         for line in lines:
             text = _sanitize_ocr_text(line.get("text"))
@@ -2030,9 +2031,36 @@ class FanxiuRuntime(Runtime):
             h = float(line.get("h") or 0)
             cx = x + w / 2
             cy = y + h / 2
-            if left <= cx <= right and top <= cy <= bottom:
+            if left <= cx <= right and safe_top <= cy <= safe_bottom:
                 matches.append((cx, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
+
+    def _daily_visible_list_signature(self, lines: list[dict[str, Any]], view69: View) -> tuple[tuple[str, int], ...]:
+        list_shape = self.resolve_shape_selector(view69, "滚动窗口")
+        box = self.runner._box(list_shape.raw, view69.raw)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        height = float(box.get("h") or 0)
+        bottom = top + height
+        safe_top = top + height * 0.02
+        safe_bottom = bottom - height * 0.08
+        signature: list[tuple[str, int]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text:
+                continue
+            if re.search(r"活动报名.*小助手.*奖励找回|日常.*周常", text):
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            cx = x + w / 2
+            cy = y + h / 2
+            if left <= cx <= right and safe_top <= cy <= safe_bottom:
+                signature.append((text, int(round(cy / 12.0))))
+        return tuple(signature)
 
     def daily_entry_matches(
         self,
@@ -2072,6 +2100,8 @@ class FanxiuRuntime(Runtime):
 
     def _daily_text_is_daily_list(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        # These are #69 bottom tab OCR anchors, not the business meaning of the
+        # currently visible scroll window. Daily tasks still search the list rows.
         if (
             "日常" in compact
             and "活跃度" in compact
@@ -2156,7 +2186,13 @@ class FanxiuRuntime(Runtime):
                 if scroll_index >= scroll_count:
                     break
                 self.runner._log("action", f"{label}：未找到入口，{direction} 滚动日常列表 {scroll_index + 1}")
+                before_visible_signature = self._daily_visible_list_signature(lines, view69)
                 changed = yield from self.scroll_shape_content(view69, list_shape, direction=direction)
+                after_frame = self.cur_frame(update=True)
+                after_lines = self.runner._cached_ocr_lines(self.ctx, after_frame)
+                after_visible_signature = self._daily_visible_list_signature(after_lines, view69)
+                if after_visible_signature and after_visible_signature != before_visible_signature:
+                    changed = True
                 if not changed:
                     unchanged_scrolls += 1
                     self.runner._log(
@@ -6471,7 +6507,7 @@ class DataAnnotationRuntimeRunner(
         threshold: float | None,
     ) -> str:
         payload: dict[str, Any] = {
-            "version": 1,
+            "version": 2,
             "scene_ids": [int(scene_id) for scene_id in scene_ids],
             "threshold": round(float(threshold), 4) if threshold is not None else None,
         }
@@ -6616,6 +6652,7 @@ class DataAnnotationRuntimeRunner(
             "cache_key": cache_key,
             "cache_path": str(cache_path),
             "cache_hit": False,
+            "score_mode": "strict_scene_identity",
             "layer": layer,
             "threshold": scene_threshold if scene_threshold is not None else "per_scene",
             "scene_ids": scene_ids,
@@ -8188,14 +8225,35 @@ class DataAnnotationRuntimeRunner(
         return ShapeMatchPlanner().ocr_role(shape)
 
     def _shape_image_role(self, shape: dict[str, Any]) -> str:
-        return ShapeMatchPlanner().image_role(shape)
+        return ShapeMatchPlanner().match_role(shape, "imageMatchRole", "off")
 
     def _shape_runtime_match_payload_flags(self, shape: dict[str, Any], *, condition: str = "auto") -> dict[str, Any]:
-        return ShapeMatchPlanner().runtime_match_payload_flags(shape, condition=condition)
+        ocr_text = str(shape.get("ocrText") or "").strip()
+        image_role = self._shape_image_role(shape)
+        ocr_role = self._shape_ocr_role(shape)
+        force_image = condition == "image"
+        force_ocr = condition == "ocr"
+        ocr_enabled = bool(not force_image and ocr_role != "off" and ocr_text)
+        scan_enabled = bool(shape.get("floating") and not ocr_enabled)
+        jitter_enabled = bool(shape.get("jitterEnabled") and not scan_enabled and not ocr_enabled)
+        return {
+            "image_role": image_role,
+            "ocr_role": ocr_role,
+            "ocr_enabled": ocr_enabled,
+            "scan": scan_enabled,
+            "match_strategy": "auto" if (force_ocr or scan_enabled or jitter_enabled) else "anchor_pixel",
+        }
 
     def _shape_match_conditions(self, shape: dict[str, Any]) -> list[str]:
         first = "ocr" if self._shape_prefers_ocr_first(shape) else "image"
-        return ShapeMatchPlanner().match_conditions(shape, first=first)
+        conditions: list[str] = []
+        if self._shape_image_role(shape) != "off":
+            conditions.append("image")
+        if self._shape_ocr_role(shape) != "off" and str(shape.get("ocrText") or "").strip():
+            conditions.append("ocr")
+        if first == "ocr":
+            conditions.sort(key=lambda item: 0 if item == "ocr" else 1)
+        return conditions
 
     def _shape_prefers_ocr_first(self, shape: dict[str, Any]) -> bool:
         title = str(shape.get("title") or "")
@@ -8439,7 +8497,12 @@ class DataAnnotationRuntimeRunner(
         frame_data_url: str,
     ) -> float:
         return SceneScorer(
-            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
+            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(
+                score_ctx,
+                score_image,
+                score_shape,
+                score_frame,
+            ),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(
                 self._match_shape(
                     score_ctx,
@@ -8453,12 +8516,22 @@ class DataAnnotationRuntimeRunner(
             log_detail=lambda message: self._log("detail", message),
         ).scene_identity_shape_score(ctx, image, shape, frame_data_url)
 
-    def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
+    def _scene_score(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        frame_data_url: str,
+    ) -> float:
         scene_identity_shapes = self._scene_identity_shapes(image)
         if not scene_identity_shapes and self._image_layer(image) == 3:
             return 0.0
         scorer = SceneScorer(
-            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
+            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(
+                score_ctx,
+                score_image,
+                score_shape,
+                score_frame,
+            ),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(
                 self._match_shape(
                     score_ctx,
@@ -8488,46 +8561,7 @@ class DataAnnotationRuntimeRunner(
         if self._shape_ocr_role(shape) == "required" and str(shape.get("ocrText") or "").strip():
             return 0.0
         score = self._shape_score(ctx, image, shape, frame_data_url, ocr_fallback=False)
-        if score >= float(self.scene_threshold):
-            return score
-        title_ocr_score = self._scene_identity_title_ocr_score(ctx, shape, frame_data_url)
-        return max(score, title_ocr_score)
-
-    def _scene_identity_title_ocr_score(self, ctx: dict[str, Any], shape: dict[str, Any], frame_data_url: str) -> float:
-        title = _sanitize_ocr_text(shape.get("title"))
-        if len(title) < 3 or title.endswith("标识"):
-            return 0.0
-        action_titles = {
-            "空白",
-            "返回",
-            "关闭",
-            "退出",
-            "确认",
-            "确定",
-            "取消",
-            "继续",
-            "扫荡",
-            "购买",
-            "前往",
-            "领取",
-            "执行",
-            "挑战",
-            "开始",
-            "离开",
-            "回退",
-            "回到世界",
-            "设置",
-            "日常",
-        }
-        if title in action_titles:
-            return 0.0
-        text = _sanitize_ocr_text(self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url)))
-        compact_title = re.sub(r"\s+", "", title)
-        compact_text = re.sub(r"\s+", "", text)
-        if compact_title and compact_title in compact_text:
-            self._log("detail", f"场景身份标题 OCR 兜底命中：{compact_title}")
-            return float(self.scene_threshold)
-        return 0.0
+        return score
 
     def _scene_discriminator_groups(self, ctx: dict[str, Any]) -> list[list[dict[str, Any]]]:
         images = ctx.get("images") or {}
