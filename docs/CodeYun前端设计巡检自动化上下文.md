@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "a9116dabfe300755ced35ffce3c6f7d4f269bbfa"
-last_audited_at: "2026-07-04T12:39:58.9818816+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-a9116dab/report.md"
-last_frontend_commit_summary: "完成 63724108..a9116dab：确认 FanXiu runtime 减法成立，并复验 file-viewer 入口隔离。"
-audited_commit_count: 71
+last_audited_commit: "7a29a6239a99dad60e9fcf54285642f0433d854b"
+last_audited_at: "2026-07-04T16:55:38.8180052+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-7a29a623-closeout/report.md"
+last_frontend_commit_summary: "关闭 a9116dab..7a29a623 pending：补齐 data-annotation 干净宽屏/桌面证据并完成 handsontable 入口污染检查，确认左侧重复模式轴问题后推进游标。"
+audited_commit_count: 72
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,36 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-04（第九轮，关闭 pending）
+
+- 完整范围：`a9116dabfe300755ced35ffce3c6f7d4f269bbfa..7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 覆盖提交：`7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 前端入口提交：`7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 入口如何牵引到旧问题：入口仍是 `fanxiu/data-annotation` 左侧工作台模型膨胀。上一轮已经完成提交归类、概念建模和同链路页面巡检，只差因为主仓库同文件未提交回收改动而缺失的纯 commit 宽屏 / 桌面证据；本轮仅为关闭这段 pending，复核 `attendance/orders` 同轮依赖整理没有衍生新的 UI 回退，并补做 `handsontableOrderSetup` 触发的入口依赖污染检查。
+- 本轮减法：不改主仓库源码，只在 detached worktree 里用干净 `7a29a623` 前端快照完成构建与截图，证明 `识别运维` 只是左侧工作台的另一种模式，不该和 `资产树 / 场景归纳` 并列成长为第二条模式轴。`attendance/orders` 继续保持上一轮已确认的“筛选 -> 工单/历史 -> 分页”单层闭环，没有被这次 closeout 扩写新概念。
+- 信息量保持：`data-annotation` 仍保留直播画面、资产树、场景归纳、识别运维、节点/边统计与回到画面的操作能力；减少的是同一左侧工作模式被两套控件重复表达。`attendance/orders` 仍保留筛选、工单列表、历史记录与分页，没有新增冗余说明或常驻控件。
+- 概念图/线框图：沿用上一轮报告中的 Mermaid 单轴工作台模型；本轮真实宽屏 / 桌面 / 窄屏截图已经补齐，可与概念图一一对应。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-7a29a623-closeout/report.md`
+- 验证：为避免主仓库脏工作区污染证据，本轮在 detached worktree 构建生产 `dist`，再通过临时静态 + 反向代理服务 `http://127.0.0.1:4273 -> http://127.0.0.1:8000` 完成登录与页面取证。新增有效截图为 `data-annotation-wide.png`、`data-annotation-desktop.png`、`data-annotation-narrow.png`、`data-annotation-desktop-recognition-ops.png`；上一轮 `attendance-orders-wide.png`、`attendance-orders-desktop.png`、`attendance-orders-narrow.png` 继续有效。入口污染检查结果：`dist/index.html` 未预加载 `handsontable-vendor` / `file-viewer-vendor` / `pdfjs-vendor` / `formula-vendor`；`dist/assets/main-9w4PXgYy.js` 顶层 import 未静态引入这些局部重依赖；真实 `fanxiu/data-annotation` 页面已加载脚本里也未出现 `handsontable`、`file-viewer`、`attendance`、`formula`、`pdfjs` 相关 chunk。
+- 根因分层：`data-annotation` 问题仍属于前端状态投影 / 工作台模型膨胀，不是后端 DTO 或表现层细节；`attendance/orders` 这轮相关文件更多是重依赖装配边界与路由级表格依赖整理，本轮污染检查未发现主入口被拖脏。
+- 剩余风险：主仓库当前 `frontend/src/standard/fanxiu/data-annotation/page.vue` 仍存在同方向未提交回收改动，但它现在应视为后续新的候选增量，而不是继续阻塞 `7a29a623` 的关闭；如果这份本地回收随后提交，下一轮要按新的提交范围重新巡检。
+- 处理结果：本轮已补齐上一轮缺失的纯 commit 截图证据，并完成需要的入口依赖污染检查，因此清空 `pending_or_skipped_ranges`，把 `last_audited_commit` 推进到 `7a29a6239a99dad60e9fcf54285642f0433d854b`。
+
+### 2026-07-04（第八轮）
+
+- 完整范围：`a9116dabfe300755ced35ffce3c6f7d4f269bbfa..7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 覆盖提交：`7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 前端入口提交：`7a29a6239a99dad60e9fcf54285642f0433d854b`
+- 入口如何牵引到旧问题：这次提交同时触达 `fanxiu/data-annotation`、`attendance/orders`、`handsontableOrderSetup` 与凡修前端联调 API。真正被牵出的旧问题不在新功能数量，而在左侧工作台模型：提交为了补“识别运维”入口，在 `data-annotation` 左侧再叠加了一层 `annotation-panel-tabs`，使同一事实同时由 `leftWorkbenchTab` 和 `assetTreeViewMode` 两套状态表达；`attendance/orders` 则只是同轮路由级表格依赖收口，需要做页面复验但没有暴露同等模型膨胀。
+- 本轮减法：不直接改仓库源码。报告把 `data-annotation` 左侧结构收敛为单一模式轴：`业务树 / 场景树 / 识别运维` 应属于同一左侧工作台枚举，而不是先切 tab、再切树视角。当前工作区同一文件已经存在同方向未提交回收，因此本轮不重复改写冲突区域。
+- 信息量保持：标注页仍保留画面、资产树、识别运维、历史矩阵、节点/边统计和回到画面的操作能力；减少的是“同一个左侧面板模式被两套控件表达”的重复概念。`attendance/orders` 仍保留筛选、工单列表、历史表格与分页；本轮未发现新的布局回退。
+- 概念图/线框图：报告里的 Mermaid 对比了“`leftWorkbenchTab + assetTreeViewMode` 双轴”与“单轴左侧模式”两种投影，证明 `识别运维` 应回收到基础工作台模型，而不是长成新的常驻一级 tab。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-7a29a623/report.md`
+- 验证：复用并重启本地 `5173/8000` 开发环境，对 `attendance/orders`、`fanxiu/data-annotation` 同链路页面以及 `cluster/runtime` 关键旧页完成真实页面取证。`attendance/orders` 已补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口，`bodyOverflowX = 0`，未见新溢出；`fanxiu/data-annotation` 已拿到 `识别运维` 真实页与窄屏主工作台截图，但默认 live 工作台的宽屏/桌面实图受同文件未提交改动与会话态漂移影响，不能作为纯 commit 闭环证据。本轮提交不涉及重依赖、Vite/Rollup 插件、`manualChunks` 或公开入口，因此未触发入口依赖污染检查。
+- 根因分层：`data-annotation` 问题属于前端状态投影 / 工作台模型膨胀，不是后端 DTO 或样式细节问题；`attendance/orders` 变更属于前端工程层的局部依赖整理，本轮未发现新的表现层问题。`cluster/runtime` 截到的部分 500/功能权限噪音属于既有环境现象，与本轮提交无直接因果。
+- 剩余风险：当前工作区在 `frontend/src/standard/fanxiu/data-annotation/page.vue` 已有同链路未提交回收改动，且默认 live 工作台截图会混入这份本地状态；如果直接推进游标，下一轮将失去对 `7a29a623` 原始提交形态的纯证据。需要等待该文件的本地改动稳定或并入提交后，再关闭这段范围。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图和多页实拍，但由于同文件同链路未提交改动使 `data-annotation` 无法形成纯 commit 闭环证据，暂不推进 `last_audited_commit`；`pending_or_skipped_ranges` 记录 `a9116dab..7a29a623`，待本地改动稳定后优先关闭。
 
 ### 2026-07-04（第七轮）
 

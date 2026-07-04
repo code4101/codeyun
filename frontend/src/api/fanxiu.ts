@@ -710,13 +710,25 @@ export interface FanxiuDataAnnotationRecognitionOpsResponse {
     cache_path?: string | null;
     cache_hit: boolean;
     cache_missing?: boolean;
+    cache_partial?: boolean;
+    cache_stale?: boolean;
     layer?: number | string | null;
     threshold?: number | string | null;
     updated_at?: number | null;
     node_count: number;
+    expected_node_count?: number | null;
+    covered_node_count?: number | null;
+    skipped_node_ids?: number[];
     edge_count: number;
     ignored_self_loop_count: number;
   };
+  recompute?: {
+    cache_key?: string | null;
+    running: boolean;
+    started_at?: number | null;
+    finished_at?: number | null;
+    error?: string | null;
+  } | null;
   categories: FanxiuDataAnnotationRecognitionOpsCategory[];
   issues: FanxiuDataAnnotationRecognitionOpsIssue[];
   summary: {

@@ -34,10 +34,11 @@ def test_recognition_ops_report_classifies_match_graph_issues():
     assert {tuple(issue["node_ids"]) for issue in issues_by_category["mutual_match"]} == {(1, 2)}
     assert any(issue["node_ids"][0] == 2 and set(issue["node_ids"][1:]) == {1, 3} for issue in issues_by_category["multi_parent"])
     assert any(set(issue["node_ids"]) == {3, 4, 5} for issue in issues_by_category["cycle_group"])
-    assert {issue["node_ids"][0] for issue in issues_by_category["isolated"]} == {6}
+    assert "isolated" not in issues_by_category
+    assert all(category["id"] != "isolated" for category in report["categories"])
 
 
-def test_recognition_ops_report_can_skip_isolated_when_matrix_cache_missing():
+def test_recognition_ops_report_does_not_treat_unmatched_nodes_as_issues():
     report = build_recognition_ops_report(
         {
             "scene_ids": [1, 2],
@@ -48,7 +49,6 @@ def test_recognition_ops_report_can_skip_isolated_when_matrix_cache_missing():
             1: {"title": "a", "filename": "0001.png"},
             2: {"title": "b", "filename": "0002.png"},
         },
-        include_isolated=False,
     )
 
     assert report["matrix"]["cache_missing"] is True

@@ -10,7 +10,6 @@ RECOGNITION_OPS_CATEGORIES: tuple[dict[str, str], ...] = (
     {"id": "mutual_match", "label": "互相匹配"},
     {"id": "multi_parent", "label": "多上游匹配"},
     {"id": "cycle_group", "label": "循环匹配组"},
-    {"id": "isolated", "label": "未入图节点"},
 )
 
 
@@ -122,7 +121,7 @@ def _strongly_connected_components(nodes: Iterable[int], outgoing: Mapping[int, 
     return result
 
 
-def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any, Any], *, include_isolated: bool = True) -> dict[str, Any]:
+def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any, Any]) -> dict[str, Any]:
     normalized_images = _normalize_images(images)
     scene_ids = [
         int(item)
@@ -197,20 +196,6 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
             }
         )
 
-    if include_isolated:
-        connected = set(outgoing) | set(incoming)
-        for scene_id in sorted(set(scene_ids) - connected):
-            issues.append(
-                {
-                    "id": f"isolated:{scene_id}",
-                    "category": "isolated",
-                    "severity": "info",
-                    "label": _scene_label(scene_id, normalized_images),
-                    "node_ids": [scene_id],
-                    "edges": [],
-                }
-            )
-
     category_counts = {item["id"]: 0 for item in RECOGNITION_OPS_CATEGORIES}
     for issue in issues:
         category = str(issue.get("category") or "")
@@ -222,10 +207,15 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
             "cache_path": matrix.get("cache_path"),
             "cache_hit": bool(matrix.get("cache_hit")),
             "cache_missing": bool(matrix.get("cache_missing")),
+            "cache_partial": bool(matrix.get("cache_partial")),
+            "cache_stale": bool(matrix.get("cache_stale")),
             "layer": matrix.get("layer"),
             "threshold": matrix.get("threshold"),
             "updated_at": matrix.get("updated_at"),
             "node_count": len(scene_ids),
+            "expected_node_count": matrix.get("expected_node_count"),
+            "covered_node_count": len(scene_ids),
+            "skipped_node_ids": matrix.get("skipped_node_ids") if isinstance(matrix.get("skipped_node_ids"), list) else [],
             "edge_count": len(edges),
             "ignored_self_loop_count": self_loop_count,
         },

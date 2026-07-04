@@ -5,8 +5,40 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileViewerRenderers } from '@file-viewer/vite-plugin'
 import path from 'path'
 
+const devOptimizedDeps = [
+  '@element-plus/icons-vue',
+  '@file-viewer/preset-lite',
+  '@file-viewer/preset-office',
+  '@file-viewer/renderer-archive',
+  '@file-viewer/renderer-email',
+  '@file-viewer/vue3',
+  '@handsontable/vue3',
+  '@vue-flow/background',
+  '@vue-flow/controls',
+  '@vue-flow/core',
+  '@wangeditor/editor',
+  '@wangeditor/editor-for-vue',
+  'axios',
+  'dagre',
+  'dompurify',
+  'echarts',
+  'element-plus',
+  'handsontable',
+  'hyperformula',
+  'javascript-lp-solver',
+  'jwt-decode',
+  'lunar-javascript',
+  'marked',
+  'pdfjs-dist',
+  'pinia',
+  'sortablejs',
+  'vue',
+  'vue-router',
+]
+
 // https://vitejs.dev/config/
 export default defineConfig({
+  cacheDir: 'node_modules/.vite-codeyun',
   plugins: [
     vue(),
     fileViewerRenderers({
@@ -15,7 +47,7 @@ export default defineConfig({
       // Keep file-viewer renderers local to GenericFileViewer instead of
       // injecting them into every Vite HTML entry and unrelated page.
       inject: false,
-      copyAssets: true,
+      copyAssets: { mode: 'build' },
       missingRenderer: 'warn',
     }),
     Components({
@@ -151,11 +183,24 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: devOptimizedDeps,
+  },
   server: {
     // Bind IPv6 as well so localhost -> ::1 does not stall before falling back to IPv4 on Windows.
     host: '::',
     port: 5173,
+    strictPort: true,
     allowedHosts: ['code4101.com'],
+    watch: {
+      ignored: [
+        '**/dist/**',
+        '**/node_modules/.vite/**',
+        '**/node_modules/.vite-codeyun/**',
+        '**/public/flyfish-viewer-assets.json',
+        '**/public/vendor/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8000',

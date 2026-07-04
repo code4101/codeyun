@@ -31,6 +31,7 @@ from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor,
 from backend.core.runtime.management import (
     ensure_data_annotation_behavior_tree_service_on_startup,
     ensure_local_builtin_services_on_startup,
+    warm_runtime_status_caches_on_startup,
 )
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
@@ -97,6 +98,11 @@ async def lifespan(app: FastAPI):
             # Startup must not fail just because the local game runtime is unavailable.
             logger.warning("Skipping Fanxiu behavior backend startup: %s", exc)
             pass
+    if not settings.is_test:
+        warm_results = warm_runtime_status_caches_on_startup()
+        for cache_key, result in warm_results.items():
+            if isinstance(result, dict) and result.get("status") == "error":
+                logger.warning("Skipping runtime status warmup %s: %s", cache_key, result.get("error"))
     if not settings.is_test:
         start_enabled_codex_bridges()
     yield

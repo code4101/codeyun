@@ -571,7 +571,9 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert assistant["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
     assert dongtian["label"] == "洞天_领取"
     assert dongtian_clear["label"] == "洞天_行动力"
+    assert dongtian_clear["cooldown_seconds"] == 300
     assert lingmai_clear["label"] == "灵脉_清体力"
+    assert lingmai_clear["cooldown_seconds"] == 300
     assert baiye["task_type"] == "daily_baiye"
     assert baiye["source"] == "data_annotation_runtime"
     assert baiye["payload"] == {"args": ["魔道"]}
@@ -12707,6 +12709,36 @@ def test_data_annotation_mark_scheduler_task_stopped_sets_retry(tmp_path, monkey
     assert task["last_result"] == "stopped"
     assert task["next_time"] is None
     assert task["retry_after"] == "2026-06-02 06:10:00"
+
+
+def test_data_annotation_clear_runtime_tasks_retry_after_five_minutes(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    fixed_now = datetime(2026, 7, 4, 21, 40, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    monkeypatch.setattr(runtime_runner_core, "datetime", FixedDatetime)
+    runner = create_fanxiu_runtime_runner()
+    tasks = [
+        item
+        for item in fanxiu._default_data_annotation_scheduler_tasks()
+        if item["id"] in {"legacy-daily-dongtian-clear", "legacy-daily-lingmai-clear"}
+    ]
+
+    runner._mark_scheduler_task(tasks, "legacy-daily-dongtian-clear", "error")
+    runner._mark_scheduler_task(tasks, "legacy-daily-lingmai-clear", "stopped")
+
+    by_id = {item["id"]: item for item in tasks}
+    assert by_id["legacy-daily-dongtian-clear"]["retry_after"] == "2026-07-04 21:45:00"
+    assert by_id["legacy-daily-lingmai-clear"]["retry_after"] == "2026-07-04 21:45:00"
 
 
 def test_scheduler_interrupted_task_marks_stopped_with_retry(tmp_path, monkeypatch):

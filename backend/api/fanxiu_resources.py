@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 from html import escape
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -60,6 +62,7 @@ from backend.core.fanxiu.runtime.download_bridge import (
     build_fanxiu_il2cpp_download_inventory,
     build_fanxiu_lua_download_bridge_report,
 )
+from backend.core.settings import get_settings
 from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_bluestarsea_authority_boundary_probe,
     build_fanxiu_bluestarsea_catalog_probe,
@@ -2014,6 +2017,48 @@ def _wiki_link_index_source_key(export_root: str | None = None) -> tuple[str, in
     return (str(root), *values)
 
 
+def _fanxiu_wiki_link_index_cache_path(
+    export_root_text: str,
+    gongfa_mtime_ns: int,
+    gongfa_size: int,
+    item_mtime_ns: int,
+    item_size: int,
+) -> Path:
+    digest = hashlib.sha1(
+        f"{export_root_text}|{gongfa_mtime_ns}|{gongfa_size}|{item_mtime_ns}|{item_size}".encode("utf-8")
+    ).hexdigest()[:16]
+    return get_settings().data_dir / "fanxiu" / "wiki-link-index" / f"{digest}.json"
+
+
+def _read_fanxiu_wiki_link_index_disk_cache(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    total = payload.get("total")
+    return {
+        "items": items,
+        "total": int(total) if isinstance(total, int) else len(items),
+    }
+
+
+def _write_fanxiu_wiki_link_index_disk_cache(path: Path, payload: dict[str, Any]) -> None:
+    if not isinstance(payload.get("items"), list):
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        return
+
+
 @lru_cache(maxsize=4)
 def _build_fanxiu_wiki_link_index_cached(
     export_root_text: str,
@@ -2022,7 +2067,19 @@ def _build_fanxiu_wiki_link_index_cached(
     item_mtime_ns: int,
     item_size: int,
 ) -> dict[str, Any]:
-    return _build_fanxiu_wiki_link_index_uncached(export_root=export_root_text)
+    cache_path = _fanxiu_wiki_link_index_cache_path(
+        export_root_text,
+        gongfa_mtime_ns,
+        gongfa_size,
+        item_mtime_ns,
+        item_size,
+    )
+    cached = _read_fanxiu_wiki_link_index_disk_cache(cache_path)
+    if cached is not None:
+        return cached
+    payload = _build_fanxiu_wiki_link_index_uncached(export_root=export_root_text)
+    _write_fanxiu_wiki_link_index_disk_cache(cache_path, payload)
+    return payload
 
 
 def build_fanxiu_wiki_link_index(export_root: str | None = None) -> dict[str, Any]:

@@ -3530,7 +3530,7 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_论道资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34, 296, 299, 297, 298, 329, 301, 302, 303, 52, 53, 54], update=True)
+        scene_id, _score, frame = runtime.current_scene([69, 34, 296, 297, 298, 329, 301, 302, 303, 52, 53, 54], update=True)
         text = runtime.ocr_text(frame)
         if self._daily_lundao_text_is_seated(text):
             self._log("success", "日常_论道：已处于听道中，按完成处理")

@@ -187,23 +187,7 @@
 
             <aside class="annotation-panel" :style="annotationPanelStyle">
               <div class="annotation-panel-head">
-                <div class="annotation-panel-tabs">
-                  <button
-                    type="button"
-                    :class="{ active: leftWorkbenchTab === 'live' }"
-                    @click="leftWorkbenchTab = 'live'"
-                  >
-                    直播画面
-                  </button>
-                  <button
-                    type="button"
-                    :class="{ active: leftWorkbenchTab === 'recognitionOps' }"
-                    @click="leftWorkbenchTab = 'recognitionOps'"
-                  >
-                    识别运维
-                  </button>
-                </div>
-                <div v-if="leftWorkbenchTab === 'live'" class="annotation-panel-actions">
+                <div class="annotation-panel-actions">
                   <el-select
                     v-model="assetTreeViewMode"
                     class="asset-view-select"
@@ -218,6 +202,7 @@
                     />
                   </el-select>
                   <el-input
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
                     v-model="assetFrameSearchText"
                     class="asset-frame-search"
                     size="small"
@@ -235,6 +220,7 @@
                     @click="addAssetFolder"
                   />
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
                     :icon="Picture"
                     title="保存当前帧"
@@ -244,6 +230,7 @@
                     @click="saveCurrentFrame"
                   />
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
                     plain
                     title="按识别层视图体检并归纳 scene/sub-scene"
@@ -254,6 +241,7 @@
                     场景归纳
                   </el-button>
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
                     :type="burstCaptureRunning ? 'primary' : 'default'"
                     :icon="burstCaptureRunning ? VideoPause : VideoPlay"
@@ -263,6 +251,7 @@
                     @click="toggleBurstCapture"
                   />
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
                     plain
                     :icon="Picture"
@@ -270,24 +259,23 @@
                     aria-label="连拍缓存"
                     @click="openBurstDialog"
                   />
-                </div>
-                <div v-else class="recognition-ops-toolbar">
-                  <span>{{ recognitionOpsMatrixText }}</span>
-                  <span v-if="recognitionOpsReport">异常 {{ recognitionOpsReport.summary.issue_count }}</span>
-                  <el-button
-                    size="small"
-                    plain
-                    :loading="recognitionOpsLoading"
-                    :disabled="!selectedEntryId"
-                    title="按当前资产树签名重算识别矩阵"
-                    @click="loadRecognitionOps(true)"
-                  >
-                    重算脏节点
-                  </el-button>
+                  <div v-if="assetTreeViewMode === 'recognitionOps'" class="recognition-ops-toolbar">
+                    <span>{{ recognitionOpsMatrixText }}</span>
+                    <el-button
+                      size="small"
+                      plain
+                      :loading="recognitionOpsLoading || recognitionOpsRecomputing"
+                      :disabled="!selectedEntryId || recognitionOpsRecomputing"
+                      :title="recognitionOpsCacheMissing ? '生成当前资产树的识别矩阵' : '按当前资产树签名重算识别矩阵'"
+                      @click="loadRecognitionOps(true)"
+                    >
+                      {{ recognitionOpsRecomputing ? '重算中' : recognitionOpsCacheMissing ? '生成矩阵' : '重算脏节点' }}
+                    </el-button>
+                  </div>
                 </div>
               </div>
 
-              <div v-if="leftWorkbenchTab === 'live'" ref="assetTreeScrollRef" class="asset-tree-scroll">
+              <div v-if="assetTreeViewMode !== 'recognitionOps'" ref="assetTreeScrollRef" class="asset-tree-scroll">
                 <el-tree
                   ref="assetTreeRef"
                   class="asset-tree"
@@ -333,51 +321,34 @@
                   </template>
                 </el-tree>
               </div>
-              <div v-else class="recognition-ops-panel">
-                <div v-if="recognitionOpsError" class="recognition-ops-error">{{ recognitionOpsError }}</div>
-                <div v-else-if="recognitionOpsLoading && !recognitionOpsReport" class="recognition-ops-empty">计算中</div>
-                <template v-else>
-                  <el-tree
-                    class="recognition-ops-tree"
-                    :data="recognitionOpsTreeData"
-                    node-key="id"
-                    default-expand-all
-                    :expand-on-click-node="false"
-                    @node-click="handleRecognitionOpsNodeClick"
-                  >
-                    <template #default="{ data }">
-                      <span
-                        class="recognition-ops-node"
-                        :class="{ 'is-issue': data.type === 'issue' }"
-                        :title="data.label"
-                      >
-                        {{ data.label }}
-                      </span>
-                    </template>
-                  </el-tree>
-                  <div v-if="!recognitionOpsReport?.summary.issue_count" class="recognition-ops-empty">暂无异常</div>
-                  <div v-if="selectedRecognitionOpsIssue" class="recognition-ops-detail">
-                    <div class="recognition-ops-detail-title">{{ selectedRecognitionOpsIssue.label }}</div>
-                    <div class="recognition-ops-node-actions">
-                      <button
-                        v-for="imageId in selectedRecognitionOpsIssue.node_ids"
-                        :key="imageId"
-                        type="button"
-                        @click="focusRecognitionOpsImage(imageId)"
-                      >
-                        #{{ imageId }}
-                      </button>
-                    </div>
-                    <div v-if="selectedRecognitionOpsIssue.edges.length" class="recognition-ops-edge-list">
-                      <div
-                        v-for="(edge, index) in selectedRecognitionOpsIssue.edges"
-                        :key="`${edge.source_id}-${edge.target_id}-${index}`"
-                      >
-                        {{ recognitionOpsEdgeLine(edge) }}
-                      </div>
-                    </div>
+                <div v-else class="recognition-ops-panel">
+                  <div v-if="recognitionOpsError" class="recognition-ops-error">{{ recognitionOpsError }}</div>
+                  <div v-else-if="recognitionOpsLoading && !recognitionOpsReport" class="recognition-ops-empty">计算中</div>
+                  <div v-else-if="recognitionOpsCacheMissing" class="recognition-ops-empty">
+                    全量匹配矩阵未生成，当前无法判断 match 异常
                   </div>
-                  <div v-if="recognitionOpsUpdatedText" class="recognition-ops-updated">{{ recognitionOpsUpdatedText }}</div>
+                  <template v-else>
+                    <div class="recognition-ops-tree-wrap">
+                      <el-tree
+                        class="recognition-ops-tree"
+                        :data="recognitionOpsTreeData"
+                        node-key="id"
+                        default-expand-all
+                        :expand-on-click-node="false"
+                        @node-click="handleRecognitionOpsNodeClick"
+                      >
+                        <template #default="{ data }">
+                          <span
+                            class="recognition-ops-node"
+                            :class="{ 'is-issue': data.type === 'issue', 'is-selected': data.issueId === selectedRecognitionOpsIssueId }"
+                            :title="data.label"
+                          >
+                            {{ data.label }}
+                          </span>
+                        </template>
+                      </el-tree>
+                      <div v-if="!recognitionOpsReport?.summary.issue_count" class="recognition-ops-empty">暂无异常</div>
+                    </div>
                 </template>
               </div>
 
@@ -434,7 +405,7 @@
             </div>
 
             <section
-              v-if="selectedImageNode && selectedSceneRelationCount > 0"
+              v-if="selectedSceneRelationGraphVisible"
               class="scene-relation-graph"
               :class="{ 'is-resizing': sceneRelationGraphResizing }"
               :style="{ height: `${sceneRelationGraphHeight}px`, minHeight: `${sceneRelationGraphHeight}px` }"
@@ -479,7 +450,7 @@
               </div>
             </section>
             <div
-              v-if="selectedImageNode && selectedSceneRelationCount > 0"
+              v-if="selectedSceneRelationGraphVisible"
               class="scene-relation-resizer"
               :class="{ 'is-resizing': sceneRelationGraphResizing }"
               title="拖拽调整图结构高度"
@@ -529,7 +500,11 @@
                         v-for="shape in annotationShapes"
                         :key="shape.id"
                         class="annotation-shape"
-                        :class="{ 'is-active': isShapeSelected(shape.id), 'is-locked': isShapeLocked(shape) }"
+                        :class="{
+                          'is-active': isShapeSelected(shape.id),
+                          'is-locked': isShapeLocked(shape),
+                          'is-scene-identity': isSceneIdentityShape(shape),
+                        }"
                         :style="shapeBoxStyle(shape)"
                         @pointerdown.stop="startShapeMove($event, shape.id)"
                         @contextmenu.prevent.stop="openShapeContextMenu($event, shape.id)"
@@ -579,7 +554,14 @@
                     @contextmenu.prevent="openShapeTreeBlankContextMenu"
                   >
                     <template #default="{ data }">
-                      <span class="shape-tree-node" :class="{ 'is-group': data.kind === 'group', 'is-selected': isShapeSelected(data.id) }">
+                      <span
+                        class="shape-tree-node"
+                        :class="{
+                          'is-group': data.kind === 'group',
+                          'is-selected': isShapeSelected(data.id),
+                          'is-scene-identity': data.kind !== 'group' && isSceneIdentityShape(data),
+                        }"
+                      >
                         {{ data.title || 'shape' }}
                       </span>
                     </template>
@@ -1665,7 +1647,7 @@ type SceneIdentityScope = 'none' | 'local' | 'global';
 type FrameLayer = 1 | 2 | 3;
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
 type ShapeOcrMaskMode = 'inherit-envelope' | 'custom' | 'off' | 'raw-alpha';
-type AssetTreeViewMode = 'business' | 'scene';
+type AssetTreeViewMode = 'business' | 'scene' | 'recognitionOps';
 
 type GameMacroConfig = {
   version: number;
@@ -6901,6 +6883,7 @@ onBeforeUnmount(() => {
   stopShapeToleranceSampling();
   stopShapeDiscriminatorSampling();
   stopRuntimeTaskPolling();
+  stopRecognitionOpsPolling();
   cancelShapeDraft();
   finishShapeDrag();
   resizeObserver?.disconnect();
@@ -6997,8 +6980,6 @@ type RuntimeLogEntry = FanxiuDataAnnotationRuntimeLogEntry & {
   message: string;
 };
 
-type LeftWorkbenchTab = 'live' | 'recognitionOps';
-
 type RecognitionOpsTreeNode = {
   id: string;
   label: string;
@@ -7040,6 +7021,8 @@ type SceneRelationEdge = {
 type SceneGraphNodeData = {
   label: string;
   imageId: number | null;
+  depth?: number;
+  issueId?: string;
 };
 
 type SceneGraphEdgeData = {
@@ -7108,7 +7091,6 @@ const selectedShapeId = ref<string | null>(null);
 const selectedShapeIds = ref<string[]>([]);
 const shapeSelectionAnchorId = ref<string | null>(null);
 const assetTreeViewMode = ref<AssetTreeViewMode>('business');
-const leftWorkbenchTab = ref<LeftWorkbenchTab>('live');
 const assetFrameSearchText = ref('');
 const globalOcclusionMaskEnabled = ref(false);
 const copiedShapes = ref<DataAnnotationShape[]>([]);
@@ -7138,6 +7120,7 @@ const recognitionOpsLoading = ref(false);
 const recognitionOpsReport = ref<FanxiuDataAnnotationRecognitionOpsResponse | null>(null);
 const recognitionOpsError = ref('');
 const selectedRecognitionOpsIssueId = ref<string | null>(null);
+let recognitionOpsPollTimer: number | null = null;
 const imageCompareCanvasSizeOf = (image: HTMLImageElement | null) => {
   const fallbackImage = imageCompareSavedImage.value || imageCompareLiveImage.value;
   const source = image || fallbackImage;
@@ -7428,6 +7411,7 @@ const LAYER_TREE_ROOT_IDS = ['__frame_layer_1__', '__frame_layer_2__', '__frame_
 const assetTreeViewModeOptions: Array<{ label: string; value: AssetTreeViewMode }> = [
   { label: '资产树', value: 'business' },
   { label: '识别层', value: 'scene' },
+  { label: '识别运维', value: 'recognitionOps' },
 ];
 const shapeTreeProps = {
   children: 'children',
@@ -8387,6 +8371,9 @@ const selectedRecognitionOpsIssue = computed(() => (
   selectedRecognitionOpsIssueId.value ? recognitionOpsIssueById.value.get(selectedRecognitionOpsIssueId.value) ?? null : null
 ));
 
+const recognitionOpsCacheMissing = computed(() => Boolean(recognitionOpsReport.value?.matrix?.cache_missing));
+const recognitionOpsRecomputing = computed(() => Boolean(recognitionOpsReport.value?.recompute?.running));
+
 const recognitionOpsTreeData = computed<RecognitionOpsTreeNode[]>(() => (
   (recognitionOpsReport.value?.categories ?? []).map((category) => ({
     id: `category:${category.id}`,
@@ -8406,44 +8393,75 @@ const recognitionOpsTreeData = computed<RecognitionOpsTreeNode[]>(() => (
 const recognitionOpsMatrixText = computed(() => {
   const matrix = recognitionOpsReport.value?.matrix;
   if (!matrix) return '矩阵 --';
-  if (matrix.cache_missing) return `未生成 ${matrix.node_count}`;
+  const expected = Number(matrix.expected_node_count || 0);
+  const nodeCoverage = expected > 0 && expected !== matrix.node_count ? `${matrix.node_count}/${expected}节点` : `${matrix.node_count}节点`;
+  if (matrix.cache_missing) return `矩阵未生成 ${nodeCoverage}`;
+  if (matrix.cache_stale || matrix.cache_partial) {
+    return `历史矩阵 ${nodeCoverage}`;
+  }
   const cacheText = matrix.cache_hit ? '缓存' : '新算';
-  return `${cacheText} ${matrix.node_count}/${matrix.edge_count}`;
+  return `${cacheText} ${nodeCoverage}`;
 });
 
-const recognitionOpsUpdatedText = computed(() => {
-  const updatedAt = Number(recognitionOpsReport.value?.matrix?.updated_at || 0);
-  if (!updatedAt) return '';
-  return new Date(updatedAt * 1000).toLocaleString();
-});
-
-const recognitionOpsEdgeLine = (edge: FanxiuDataAnnotationRecognitionOpsIssue['edges'][number]) => {
-  const source = sceneImageLabel(Number(edge.source_id), assetImagesByNumber.value);
-  const target = sceneImageLabel(Number(edge.target_id), assetImagesByNumber.value);
-  const score = edge.score === undefined || edge.score === null ? '' : ` ${edge.score}`;
-  return `${source} -> ${target}${score}`;
+const recognitionOpsEdgeValue = (value: number | string | null | undefined) => {
+  if (value === undefined || value === null || value === '') return '--';
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(1).replace(/\.0$/, '') : String(value);
 };
 
-const loadRecognitionOps = async (recompute = false) => {
+const stopRecognitionOpsPolling = () => {
+  if (!recognitionOpsPollTimer) return;
+  window.clearInterval(recognitionOpsPollTimer);
+  recognitionOpsPollTimer = null;
+};
+
+const startRecognitionOpsPolling = () => {
+  if (recognitionOpsPollTimer) return;
+  recognitionOpsPollTimer = window.setInterval(() => {
+    if (assetTreeViewMode.value !== 'recognitionOps' || !selectedEntryId.value) {
+      stopRecognitionOpsPolling();
+      return;
+    }
+    void loadRecognitionOps(false, true);
+  }, 2000);
+};
+
+const syncRecognitionOpsPolling = (response: FanxiuDataAnnotationRecognitionOpsResponse) => {
+  if (response.recompute?.running) {
+    startRecognitionOpsPolling();
+    return;
+  }
+  stopRecognitionOpsPolling();
+  if (response.recompute?.error) {
+    ElMessage.error(response.recompute.error);
+  }
+};
+
+const loadRecognitionOps = async (recompute = false, silent = false) => {
   if (!selectedEntryId.value) return;
-  recognitionOpsLoading.value = true;
+  if (!silent) recognitionOpsLoading.value = true;
   recognitionOpsError.value = '';
   try {
     const response = await getFanxiuDataAnnotationRecognitionOps(selectedEntryId.value, recompute);
     recognitionOpsReport.value = response;
+    syncRecognitionOpsPolling(response);
     if (selectedRecognitionOpsIssueId.value && !response.issues.some((issue) => issue.id === selectedRecognitionOpsIssueId.value)) {
       selectedRecognitionOpsIssueId.value = null;
     }
   } catch (error) {
     recognitionOpsError.value = getErrorMessage(error);
+    stopRecognitionOpsPolling();
   } finally {
-    recognitionOpsLoading.value = false;
+    if (!silent) recognitionOpsLoading.value = false;
   }
 };
 
 const handleRecognitionOpsNodeClick = (node: RecognitionOpsTreeNode) => {
   if (node.type !== 'issue' || !node.issueId) return;
   selectedRecognitionOpsIssueId.value = node.issueId;
+  activeSceneRelationGraphTab.value = 'recognition';
+  const firstImageId = recognitionOpsIssueById.value.get(node.issueId)?.node_ids[0];
+  if (firstImageId !== undefined) void focusRecognitionOpsImage(firstImageId);
 };
 
 const focusRecognitionOpsImage = async (imageId: number) => {
@@ -8452,8 +8470,6 @@ const focusRecognitionOpsImage = async (imageId: number) => {
     ElMessage.warning(`#${imageId} 不在当前资产树`);
     return;
   }
-  leftWorkbenchTab.value = 'live';
-  await nextTick();
   await focusAssetImage(image);
 };
 
@@ -8564,8 +8580,17 @@ const selectedSceneRelationEdges = computed(() => {
 
 const selectedSceneIncomingEdges = computed(() => selectedSceneRelationEdges.value.incoming);
 const selectedSceneOutgoingEdges = computed(() => selectedSceneRelationEdges.value.outgoing);
+const selectedRecognitionOpsGraphActive = computed(() => (
+  assetTreeViewMode.value === 'recognitionOps' && Boolean(selectedRecognitionOpsIssue.value)
+));
 const selectedSceneRelationCount = computed(() => (
-  selectedSceneIncomingEdges.value.length + selectedSceneOutgoingEdges.value.length
+  selectedRecognitionOpsGraphActive.value
+    ? (selectedRecognitionOpsIssue.value?.node_ids.length ?? 0) + (selectedRecognitionOpsIssue.value?.edges.length ?? 0)
+    : selectedSceneIncomingEdges.value.length + selectedSceneOutgoingEdges.value.length
+));
+const selectedSceneRelationGraphVisible = computed(() => (
+  selectedSceneRelationCount.value > 0
+  && (selectedRecognitionOpsGraphActive.value || Boolean(selectedImageNode.value))
 ));
 
 const sceneGraphNodeId = (imageId: number | null, fallback: string) => (
@@ -8585,11 +8610,17 @@ const sceneRelationGraphKinds = (tab: SceneRelationGraphTab) => (
 );
 
 const selectedSceneGraphEmptyText = computed(() => (
-  activeSceneRelationGraphTab.value === 'recognition' ? '无上游识别结构' : '无上游跳转流转'
+  selectedRecognitionOpsGraphActive.value
+    ? '无匹配边'
+    : activeSceneRelationGraphTab.value === 'recognition'
+      ? '无上游识别结构'
+      : '无上游跳转流转'
 ));
 
 const selectedSceneGraphKey = computed(() => (
-  `${activeSceneRelationGraphTab.value}:${selectedImageNode.value?.id ?? 'none'}`
+  selectedRecognitionOpsGraphActive.value
+    ? `recognition-ops:${selectedRecognitionOpsIssue.value?.id ?? 'none'}:${selectedImageNode.value?.id ?? 'none'}`
+    : `${activeSceneRelationGraphTab.value}:${selectedImageNode.value?.id ?? 'none'}`
 ));
 
 const sceneRelationGraphEdgeTypes = {
@@ -8684,6 +8715,46 @@ const buildFallbackSceneGraphNodes = (baseNodes: Node<SceneGraphNodeData>[]) => 
 };
 
 const selectedSceneGraphBaseNodes = computed<Node<SceneGraphNodeData>[]>(() => {
+  if (selectedRecognitionOpsGraphActive.value && selectedRecognitionOpsIssue.value) {
+    const issue = selectedRecognitionOpsIssue.value;
+    const nodeIds = Array.from(new Set([
+      ...issue.node_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0),
+      ...issue.edges.flatMap((edge) => [Number(edge.source_id), Number(edge.target_id)])
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ]));
+    const selectedImageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
+    const centerImageId = selectedImageId !== null && nodeIds.includes(selectedImageId)
+      ? selectedImageId
+      : nodeIds[0] ?? null;
+    return nodeIds.map((imageId, index) => {
+      const isCenter = imageId === centerImageId;
+      return {
+        id: sceneGraphNodeId(imageId, String(imageId)),
+        position: { x: 0, y: 0 },
+        data: {
+          label: sceneImageLabel(imageId, assetImagesByNumber.value, `#${imageId}`),
+          imageId,
+          depth: isCenter ? 0 : index + 1,
+          issueId: issue.id,
+        },
+        style: {
+          width: `${SCENE_GRAPH_NODE_WIDTH}px`,
+          minHeight: `${SCENE_GRAPH_NODE_HEIGHT}px`,
+          padding: '7px 10px',
+          color: isCenter ? '#111827' : '#303133',
+          fontSize: '12px',
+          lineHeight: '16px',
+          border: isCenter ? '2px solid #409eff' : '1px solid #dcdfe6',
+          borderRadius: '5px',
+          background: isCenter ? '#ecf5ff' : '#fff',
+          boxShadow: isCenter ? '0 2px 7px rgba(64, 158, 255, 0.16)' : '0 1px 4px rgba(31, 41, 55, 0.12)',
+          textAlign: 'center',
+          whiteSpace: 'normal',
+        },
+      };
+    });
+  }
+
   const imageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
   if (imageId === null) return [];
 
@@ -8813,7 +8884,53 @@ const selectedSceneGraphBaseNodes = computed<Node<SceneGraphNodeData>[]>(() => {
   return nodes;
 });
 
-const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => selectedSceneGraphRelations.value.map((edge, index) => {
+const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
+  if (selectedRecognitionOpsGraphActive.value && selectedRecognitionOpsIssue.value) {
+    const issue = selectedRecognitionOpsIssue.value;
+    return issue.edges.map((edge, index) => {
+      const sourceId = Number(edge.source_id);
+      const targetId = Number(edge.target_id);
+      const sourceLabel = sceneImageLabel(sourceId, assetImagesByNumber.value, `#${sourceId}`);
+      const targetLabel = sceneImageLabel(targetId, assetImagesByNumber.value, `#${targetId}`);
+      const color = sceneRelationColor('recognition');
+      const score = edge.score === undefined || edge.score === null ? '' : ` score ${recognitionOpsEdgeValue(edge.score)}`;
+      const threshold = edge.threshold === undefined || edge.threshold === null ? '' : ` threshold ${recognitionOpsEdgeValue(edge.threshold)}`;
+      const matched = edge.matched === false ? ' unmatched' : ' matched';
+      const relationEdge: SceneRelationEdge = {
+        id: `recognition-ops:${issue.id}:${sourceId}-${targetId}:${index}`,
+        kind: 'recognition',
+        kindLabel: '识别',
+        sourceId,
+        targetId,
+        sourceLabel,
+        targetLabel,
+        focusImageId: targetId,
+        tooltip: `${sourceLabel} -> ${targetLabel}${score}${threshold}${matched}`,
+      };
+      return {
+        id: `scene-graph:${relationEdge.id}`,
+        source: sceneGraphNodeId(sourceId, String(sourceId)),
+        target: sceneGraphNodeId(targetId, String(targetId)),
+        type: 'elk',
+        animated: true,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color,
+          width: 16,
+          height: 16,
+        },
+        style: {
+          stroke: color,
+          strokeWidth: 2,
+        },
+        data: {
+          relationEdge,
+        },
+      };
+    });
+  }
+
+  return selectedSceneGraphRelations.value.map((edge, index) => {
   const color = sceneRelationColor(edge.kind);
   return {
     id: `scene-graph:${edge.id}:${index}`,
@@ -8835,7 +8952,8 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => s
       relationEdge: edge,
     },
   };
-}));
+  });
+});
 
 const selectedSceneGraphNodes = ref<Node<SceneGraphNodeData>[]>([]);
 const selectedSceneGraphEdges = ref<Edge<SceneGraphEdgeData>[]>([]);
@@ -8910,10 +9028,7 @@ const handleSceneGraphNodeClick = async ({ node }: { node: Node }) => {
   if (!Number.isFinite(imageId) || imageId <= 0) return;
   const image = findAssetImageByNumericId(assetTree.value, imageId);
   if (!image) return;
-  selectedAssetId.value = image.id;
-  await nextTick();
-  assetTreeRef.value?.setCurrentKey?.(image.id);
-  scrollCurrentTreeNodeIntoView('asset-tree');
+  await focusAssetImage(image);
 };
 
 const handleSceneGraphEdgeClick = ({ edge }: { edge: Edge }) => {
@@ -9213,7 +9328,11 @@ const syncShapeTreeExpansionFromState = async () => {
 
 const restoreDataAnnotationUiState = () => {
   const state = loadDataAnnotationUiState();
-  assetTreeViewMode.value = state.assetTreeViewMode === 'scene' ? 'scene' : 'business';
+  assetTreeViewMode.value = (
+    state.assetTreeViewMode === 'scene' || state.assetTreeViewMode === 'recognitionOps'
+      ? state.assetTreeViewMode
+      : 'business'
+  );
   const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
   const savedAsset = savedAssetId ? findAssetNode(assetTree.value, savedAssetId) : null;
   selectedAssetId.value = savedAsset?.id ?? findFirstImageNode(assetTree.value)?.id ?? null;
@@ -10232,17 +10351,12 @@ watch(assetFrameSearchText, (value) => {
   expandAssetSearchMatches(value);
 });
 
-watch(leftWorkbenchTab, (tab) => {
-  if (tab === 'recognitionOps' && !recognitionOpsReport.value && !recognitionOpsLoading.value) {
-    void loadRecognitionOps(false);
-  }
-});
-
 watch(selectedEntryId, () => {
+  stopRecognitionOpsPolling();
   recognitionOpsReport.value = null;
   recognitionOpsError.value = '';
   selectedRecognitionOpsIssueId.value = null;
-  if (leftWorkbenchTab.value === 'recognitionOps') void loadRecognitionOps(false);
+  if (assetTreeViewMode.value === 'recognitionOps') void loadRecognitionOps(false);
 });
 
 watch(selectedRuntimeTaskType, (value) => {
@@ -10283,6 +10397,13 @@ watch(selectedShapeId, (id) => {
 });
 
 watch(assetTreeViewMode, (mode) => {
+  if (mode === 'recognitionOps') {
+    if (!recognitionOpsReport.value && !recognitionOpsLoading.value) {
+      void loadRecognitionOps(false);
+    }
+    return;
+  }
+  stopRecognitionOpsPolling();
   if (mode !== 'scene') return;
   expandedAssetNodeIds.value = Array.from(new Set([
     ...expandedAssetNodeIds.value,
@@ -15668,37 +15789,6 @@ const finishShapeDrag = () => {
   gap: 6px;
 }
 
-.annotation-panel-tabs {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.annotation-panel-tabs button {
-  height: 24px;
-  padding: 0 10px;
-  border: 0;
-  border-right: 1px solid #dcdfe6;
-  background: #fff;
-  color: #606266;
-  font-size: 12px;
-  line-height: 24px;
-  cursor: pointer;
-}
-
-.annotation-panel-tabs button:last-child {
-  border-right: 0;
-}
-
-.annotation-panel-tabs button.active {
-  background: #ecf5ff;
-  color: #1677ff;
-  font-weight: 600;
-}
-
 .recognition-ops-toolbar {
   display: inline-flex;
   flex: 1 1 auto;
@@ -15788,6 +15878,14 @@ const finishShapeDrag = () => {
 }
 
 .recognition-ops-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.recognition-ops-tree-wrap {
   flex: 1 1 auto;
   min-height: 0;
   padding: 6px 8px;
@@ -15812,6 +15910,11 @@ const finishShapeDrag = () => {
   font-weight: 400;
 }
 
+.recognition-ops-node.is-selected {
+  color: #1677ff;
+  font-weight: 600;
+}
+
 .recognition-ops-empty,
 .recognition-ops-error {
   padding: 10px 4px;
@@ -15821,56 +15924,6 @@ const finishShapeDrag = () => {
 
 .recognition-ops-error {
   color: #c45656;
-}
-
-.recognition-ops-detail {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #ebeef5;
-  color: #303133;
-  font-size: 12px;
-}
-
-.recognition-ops-detail-title {
-  margin-bottom: 6px;
-  font-weight: 600;
-  line-height: 18px;
-}
-
-.recognition-ops-node-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.recognition-ops-node-actions button {
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  background: #fff;
-  color: #409eff;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.recognition-ops-node-actions button:hover {
-  border-color: #409eff;
-  background: #ecf5ff;
-}
-
-.recognition-ops-edge-list {
-  display: grid;
-  gap: 4px;
-  color: #606266;
-  line-height: 18px;
-}
-
-.recognition-ops-updated {
-  margin-top: 8px;
-  color: #a8abb2;
-  font-size: 12px;
 }
 
 :global(.frame-structure-confirm .el-message-box__message) {
@@ -16219,6 +16272,7 @@ const finishShapeDrag = () => {
 .annotation-shape {
   position: absolute;
   border: 2px solid #409eff;
+  color: #409eff;
   background: transparent;
   box-sizing: border-box;
   cursor: move;
@@ -16227,6 +16281,19 @@ const finishShapeDrag = () => {
 
 .annotation-shape.is-active {
   border-color: #e6a23c;
+  color: #e6a23c;
+}
+
+.annotation-shape.is-scene-identity {
+  border-color: #f56c6c;
+  color: #f56c6c;
+  background: rgba(245, 108, 108, 0.1);
+}
+
+.annotation-shape.is-scene-identity.is-active {
+  border-color: #d93026;
+  color: #d93026;
+  background: rgba(217, 48, 38, 0.14);
 }
 
 .annotation-shape.is-locked {
@@ -16304,6 +16371,10 @@ const finishShapeDrag = () => {
 
 .shape-tree-node.is-selected {
   color: #409eff;
+}
+
+.shape-tree-node.is-scene-identity {
+  color: #d93026;
 }
 
 .shape-fields {
