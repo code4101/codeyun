@@ -1,5 +1,6 @@
 from sqlmodel import Session, SQLModel, create_engine
 
+from backend.api import admin as admin_module
 from backend.api import task_manager as task_manager_module
 from backend.core.devices.device import TaskStatus
 from backend.core.runtime import management
@@ -112,3 +113,68 @@ def test_scan_running_tasks_skips_recent_repeat_and_rescans_after_ttl(monkeypatc
         (False, ["service-1"]),
         (True, ["service-1"]),
     ]
+
+
+def test_warm_runtime_status_caches_on_startup_continues_after_errors(monkeypatch):
+    calls: list[str] = []
+
+    class DummySessionContext:
+        def __enter__(self):
+            calls.append("session_enter")
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            calls.append("session_exit")
+            return False
+
+    monkeypatch.setattr(management.task_manager, "scan_running_tasks", lambda restore_timeouts=False: calls.append("scan"))
+    monkeypatch.setattr(management, "Session", lambda _engine: DummySessionContext())
+    monkeypatch.setattr(management, "_collect_builtin_jobs", lambda _session: (_ for _ in ()).throw(RuntimeError("jobs failed")))
+    monkeypatch.setattr(management, "_collect_builtin_services", lambda: calls.append("services"))
+
+    result = management.warm_runtime_status_caches_on_startup()
+
+    assert calls == ["scan", "session_enter", "session_exit", "services"]
+    assert result == {
+        "scan_running_tasks": {"status": "ok"},
+        "builtin_jobs": {"status": "error", "error": "jobs failed"},
+        "builtin_services": {"status": "ok"},
+    }
+
+
+def test_collect_builtin_jobs_uses_short_cache(monkeypatch):
+    calls: list[str] = []
+    monotonic_values = iter([100.0, 100.1, 106.0])
+
+    monkeypatch.setattr(management.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(management, "_builtin_jobs_status_cache", None)
+
+    def fake_status(_session):
+        calls.append("status")
+        return {
+            "tasks": [
+                {
+                    "key": "job-a",
+                    "title": "Job A",
+                    "category": "默认",
+                    "enabled": True,
+                    "active": False,
+                    "runner_running": True,
+                }
+            ],
+            "queue": None,
+            "runner_running": True,
+            "next_wake_at": None,
+            "runner_error": None,
+        }
+
+    monkeypatch.setattr(admin_module, "get_background_task_status", fake_status)
+
+    first = management._collect_builtin_jobs(object())
+    first["items"][0]["title"] = "mutated"
+    second = management._collect_builtin_jobs(object())
+    third = management._collect_builtin_jobs(object())
+
+    assert calls == ["status", "status"]
+    assert second["items"][0]["title"] == "Job A"
+    assert third["items"][0]["title"] == "Job A"

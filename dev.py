@@ -955,6 +955,9 @@ def is_backend_watch_path(root_dir, path):
     if any(part in IGNORED_DIRS for part in parts):
         return False
 
+    if len(parts) >= 2 and parts[0] == "backend" and parts[1] == "tests":
+        return False
+
     if parts[0] == "backend":
         return should_watch_backend_file(abs_path)
 

@@ -43,3 +43,12 @@ def test_pythonw_dev_runner_is_not_console_host(monkeypatch):
     monkeypatch.delenv(dev.DEV_CONSOLE_HOST_ENV, raising=False)
 
     assert dev.is_console_host_enabled() is False
+
+
+def test_backend_tests_do_not_trigger_dev_backend_reload(tmp_path):
+    root = tmp_path
+    source_path = root / "backend" / "api" / "example.py"
+    test_path = root / "backend" / "tests" / "test_example.py"
+
+    assert dev.is_backend_watch_path(os.fspath(root), os.fspath(source_path)) is True
+    assert dev.is_backend_watch_path(os.fspath(root), os.fspath(test_path)) is False

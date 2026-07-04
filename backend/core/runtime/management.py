@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import os
@@ -102,6 +103,8 @@ FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
 CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
 _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 10.0
 _builtin_services_status_cache: tuple[float, tuple[bool, bool, bool, bool], dict[str, Any]] | None = None
+_BUILTIN_JOBS_STATUS_CACHE_TTL_SECONDS = 5.0
+_builtin_jobs_status_cache: tuple[float, dict[str, Any]] | None = None
 _ATTENDANCE_BEHAVIOR_TREE_HOST_HINT = "考勤行为树只在 mi15 执行主机上管理"
 _FANXIU_BEHAVIOR_TREE_HOST_HINT = "凡修行为树未在当前机器启用；当前正式运行目标默认是 codepc_mf"
 
@@ -109,6 +112,11 @@ _FANXIU_BEHAVIOR_TREE_HOST_HINT = "凡修行为树未在当前机器启用；当
 def _invalidate_builtin_services_status_cache() -> None:
     global _builtin_services_status_cache
     _builtin_services_status_cache = None
+
+
+def _invalidate_builtin_jobs_status_cache() -> None:
+    global _builtin_jobs_status_cache
+    _builtin_jobs_status_cache = None
 
 
 def _env_enabled(value: str | None) -> bool | None:
@@ -933,6 +941,30 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
     return results
 
 
+def warm_runtime_status_caches_on_startup() -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    try:
+        task_manager.scan_running_tasks()
+        results["scan_running_tasks"] = {"status": "ok"}
+    except Exception as exc:
+        results["scan_running_tasks"] = {"status": "error", "error": str(exc)}
+
+    try:
+        with Session(engine) as session:
+            _collect_builtin_jobs(session)
+        results["builtin_jobs"] = {"status": "ok"}
+    except Exception as exc:
+        results["builtin_jobs"] = {"status": "error", "error": str(exc)}
+
+    try:
+        _collect_builtin_services()
+        results["builtin_services"] = {"status": "ok"}
+    except Exception as exc:
+        results["builtin_services"] = {"status": "error", "error": str(exc)}
+
+    return results
+
+
 def ensure_local_critical_command_services() -> dict[str, Any]:
     """Keep local always-on command services alive.
 
@@ -1615,6 +1647,13 @@ def _serialize_builtin_job_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
+    global _builtin_jobs_status_cache
+    now = time.monotonic()
+    if _builtin_jobs_status_cache is not None:
+        cached_at, cached_payload = _builtin_jobs_status_cache
+        if now - cached_at <= _BUILTIN_JOBS_STATUS_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached_payload)
+
     from backend.api.admin import get_background_task_status
 
     status = get_background_task_status(session)
@@ -1624,13 +1663,15 @@ def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
         for item in payload.get("tasks", [])
         if isinstance(item, dict)
     ]
-    return {
+    result = {
         "items": items,
         "queue": payload.get("queue"),
         "runner_running": payload.get("runner_running"),
         "next_wake_at": payload.get("next_wake_at"),
         "runner_error": payload.get("runner_error"),
     }
+    _builtin_jobs_status_cache = (now, copy.deepcopy(result))
+    return result
 
 
 def _collect_builtin_services() -> dict[str, Any]:
@@ -1859,6 +1900,7 @@ def get_runtime_item_logs(
 def trigger_builtin_runtime_job(task_key: str, session: Session) -> dict[str, Any]:
     from backend.api.admin import trigger_background_task
 
+    _invalidate_builtin_jobs_status_cache()
     result = trigger_background_task(task_key, session=session)
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
@@ -1873,6 +1915,7 @@ def list_builtin_runtime_job_catalog(session: Session) -> dict[str, Any]:
 def add_builtin_runtime_job(task_key: str) -> dict[str, Any]:
     from backend.api.admin import add_background_task
 
+    _invalidate_builtin_jobs_status_cache()
     return add_background_task(task_key)
 
 
@@ -2017,6 +2060,7 @@ def configure_builtin_runtime_item_autostart(task_key: str, enabled: bool) -> di
 def toggle_builtin_runtime_job(task_key: str, enabled: bool, session: Session) -> dict[str, Any]:
     from backend.api.admin import BackgroundTaskToggleRequest, toggle_background_task
 
+    _invalidate_builtin_jobs_status_cache()
     return toggle_background_task(
         task_key,
         BackgroundTaskToggleRequest(enabled=enabled),
@@ -2034,6 +2078,7 @@ def configure_builtin_runtime_job_schedule(
 ) -> dict[str, Any]:
     from backend.api.admin import BackgroundTaskScheduleRequest, configure_background_task_schedule
 
+    _invalidate_builtin_jobs_status_cache()
     payload: dict[str, Any] = {"schedule_policy": schedule_policy}
     if next_run_at_provided:
         payload["next_run_at"] = next_run_at
@@ -2047,18 +2092,21 @@ def configure_builtin_runtime_job_schedule(
 def delete_builtin_runtime_job(task_key: str) -> dict[str, Any]:
     from backend.api.admin import delete_background_task
 
+    _invalidate_builtin_jobs_status_cache()
     return delete_background_task(task_key)
 
 
 def delete_builtin_runtime_queue_task(task_id: str) -> dict[str, Any]:
     from backend.api.admin import delete_background_queue_task
 
+    _invalidate_builtin_jobs_status_cache()
     return delete_background_queue_task(task_id)
 
 
 def reset_builtin_runtime_job_schedule(task_key: str) -> dict[str, Any]:
     from backend.api.admin import reset_background_task_schedule_api
 
+    _invalidate_builtin_jobs_status_cache()
     return reset_background_task_schedule_api(task_key)
 
 

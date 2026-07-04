@@ -3908,6 +3908,167 @@ class _FanxiuRuntimeRunnerProxy:
 
 
 _DATA_ANNOTATION_RUNTIME_RUNNER: Any = _FanxiuRuntimeRunnerProxy()
+_RECOGNITION_OPS_RECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-recognition-ops")
+_RECOGNITION_OPS_RECOMPUTE_LOCK = threading.Lock()
+_RECOGNITION_OPS_RECOMPUTE_RUNNING: set[str] = set()
+
+
+def _recognition_ops_recompute_state_path(cache_key: str) -> Path:
+    return _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.recompute.json"
+
+
+def _read_recognition_ops_recompute_state(cache_key: str) -> dict[str, Any] | None:
+    path = _recognition_ops_recompute_state_path(cache_key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_recognition_ops_recompute_state(cache_key: str, payload: dict[str, Any]) -> None:
+    path = _recognition_ops_recompute_state_path(cache_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _recognition_ops_recompute_view(cache_key: str) -> dict[str, Any] | None:
+    payload = _read_recognition_ops_recompute_state(cache_key)
+    if not payload:
+        return None
+    running = bool(payload.get("running")) and cache_key in _RECOGNITION_OPS_RECOMPUTE_RUNNING
+    return {
+        "cache_key": cache_key,
+        "running": running,
+        "started_at": payload.get("started_at"),
+        "finished_at": payload.get("finished_at"),
+        "error": str(payload.get("error") or ("" if running or not payload.get("running") else "重算任务已中断")),
+    }
+
+
+def _submit_recognition_ops_recompute(
+    *,
+    cache_key: str,
+    ctx: dict[str, Any],
+    layer: int,
+    scene_ids: list[int],
+) -> dict[str, Any]:
+    with _RECOGNITION_OPS_RECOMPUTE_LOCK:
+        if cache_key in _RECOGNITION_OPS_RECOMPUTE_RUNNING:
+            return _recognition_ops_recompute_view(cache_key) or {"cache_key": cache_key, "running": True}
+        _RECOGNITION_OPS_RECOMPUTE_RUNNING.add(cache_key)
+        _write_recognition_ops_recompute_state(
+            cache_key,
+            {
+                "cache_key": cache_key,
+                "running": True,
+                "started_at": time.time(),
+                "finished_at": None,
+                "error": "",
+            },
+        )
+
+    def run() -> None:
+        try:
+            matrix = _DATA_ANNOTATION_RUNTIME_RUNNER.match_scene_matrix(ctx, scene_ids=scene_ids, layer=int(layer), use_cache=False)
+            if isinstance(matrix, dict) and matrix.get("cache_path"):
+                cache_path = Path(str(matrix["cache_path"]))
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_recognition_ops_recompute_state(
+                cache_key,
+                {
+                    "cache_key": cache_key,
+                    "running": False,
+                    "started_at": _read_recognition_ops_recompute_state(cache_key).get("started_at") if _read_recognition_ops_recompute_state(cache_key) else None,
+                    "finished_at": time.time(),
+                    "error": "",
+                },
+            )
+        except Exception as exc:
+            started_at = (_read_recognition_ops_recompute_state(cache_key) or {}).get("started_at")
+            _write_recognition_ops_recompute_state(
+                cache_key,
+                {
+                    "cache_key": cache_key,
+                    "running": False,
+                    "started_at": started_at,
+                    "finished_at": time.time(),
+                    "error": str(exc),
+                },
+            )
+        finally:
+            with _RECOGNITION_OPS_RECOMPUTE_LOCK:
+                _RECOGNITION_OPS_RECOMPUTE_RUNNING.discard(cache_key)
+
+    _RECOGNITION_OPS_RECOMPUTE_EXECUTOR.submit(run)
+    return _recognition_ops_recompute_view(cache_key) or {"cache_key": cache_key, "running": True}
+
+
+def _recognition_ops_match_edge_scene_ids(edge: dict[str, Any]) -> tuple[int, int] | None:
+    if "s" in edge:
+        source = edge.get("s")
+        target = edge.get("x")
+    elif "reference" in edge:
+        source = edge.get("reference")
+        target = edge.get("frame")
+    else:
+        source = edge.get("y")
+        target = edge.get("x")
+    try:
+        return int(str(source).lstrip("#")), int(str(target).lstrip("#"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_recognition_ops_matrix_subset(
+    matrix: dict[str, Any],
+    *,
+    scene_ids: list[int],
+    cache_key: str,
+    cache_path: Path,
+    layer: int,
+) -> dict[str, Any] | None:
+    current_ids = list(dict.fromkeys(int(scene_id) for scene_id in scene_ids))
+    current_set = set(current_ids)
+    cached_ids = [
+        int(scene_id)
+        for scene_id in matrix.get("scene_ids", [])
+        if isinstance(scene_id, int) or (isinstance(scene_id, str) and scene_id.isdigit())
+    ]
+    if not current_ids or not cached_ids or not current_set.issubset(set(cached_ids)):
+        return None
+
+    matches: list[dict[str, Any]] = []
+    for edge in matrix.get("matches") if isinstance(matrix.get("matches"), list) else []:
+        if not isinstance(edge, dict):
+            continue
+        pair = _recognition_ops_match_edge_scene_ids(edge)
+        if pair is None:
+            continue
+        source_id, target_id = pair
+        if source_id in current_set and target_id in current_set:
+            matches.append(edge)
+
+    return {
+        **matrix,
+        "cache_key": cache_key,
+        "cache_path": str(cache_path),
+        "cache_hit": True,
+        "cache_stale": False,
+        "cache_partial": False,
+        "cache_derived": True,
+        "derived_from_cache_key": matrix.get("cache_key"),
+        "derived_removed_node_ids": sorted(set(cached_ids) - current_set),
+        "layer": int(layer),
+        "scene_ids": current_ids,
+        "match_count": len(matches),
+        "matches": matches,
+        "expected_node_count": len(current_ids),
+        "updated_at": matrix.get("updated_at") or time.time(),
+    }
 
 
 def __getattr__(name: str) -> Any:
@@ -5138,6 +5299,66 @@ def get_fanxiu_data_annotation_recognition_ops(
     path = _data_annotation_asset_tree_path(entry_id)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="资产树不存在")
+
+    def load_latest_shared_scene_matrix(
+        scene_ids: list[int],
+        *,
+        layer: int,
+        expected_cache_key: str,
+        expected_cache_path: Path,
+        allow_derive_subset: bool,
+    ) -> dict[str, Any] | None:
+        scene_set = {int(scene_id) for scene_id in scene_ids}
+        cache_dir = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir()
+        candidates: list[tuple[float, int, dict[str, Any]]] = []
+        for candidate_path in cache_dir.glob("*.json"):
+            try:
+                payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("cache_key") == expected_cache_key:
+                continue
+            if int(payload.get("layer") or layer) != int(layer):
+                continue
+            cached_ids = [
+                int(scene_id)
+                for scene_id in payload.get("scene_ids", [])
+                if isinstance(scene_id, int) or (isinstance(scene_id, str) and scene_id.isdigit())
+            ]
+            if not cached_ids:
+                continue
+            overlap = len(scene_set.intersection(cached_ids))
+            if overlap <= 0:
+                continue
+            try:
+                mtime = candidate_path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            if allow_derive_subset and scene_set.issubset(set(cached_ids)):
+                derived = _derive_recognition_ops_matrix_subset(
+                    payload,
+                    scene_ids=scene_ids,
+                    cache_key=expected_cache_key,
+                    cache_path=expected_cache_path,
+                    layer=int(layer),
+                )
+                if derived is not None:
+                    expected_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    expected_cache_path.write_text(json.dumps(derived, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return derived
+            payload["cache_path"] = str(candidate_path)
+            payload["cache_hit"] = True
+            payload["cache_stale"] = True
+            payload["cache_partial"] = set(cached_ids) != scene_set
+            payload["expected_node_count"] = len(scene_ids)
+            candidates.append((mtime, overlap, payload))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[1], item[0]), reverse=True)
+        return candidates[0][2]
+
     try:
         tree = _DATA_ANNOTATION_RUNTIME_RUNNER._load_asset_tree(path)
         images = _DATA_ANNOTATION_RUNTIME_RUNNER._index_images(tree)
@@ -5152,46 +5373,60 @@ def get_fanxiu_data_annotation_recognition_ops(
             for scene_id, image in images.items()
             if isinstance(image, dict) and int(View(image).layer) == int(layer)
         ]
-        cache_key = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_key(ctx, scene_ids, threshold=None)
+        image_dir = path.parent / "images"
+        computable_scene_ids = [
+            int(scene_id)
+            for scene_id in scene_ids
+            if str(images.get(int(scene_id), {}).get("filename") or "").strip()
+            and (image_dir / str(images.get(int(scene_id), {}).get("filename") or "")).is_file()
+        ]
+        computable_scene_id_set = set(computable_scene_ids)
+        skipped_scene_ids = [int(scene_id) for scene_id in scene_ids if int(scene_id) not in computable_scene_id_set]
+        cache_key = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_key(ctx, computable_scene_ids, threshold=None)
         cache_path = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.json"
-        include_isolated = True
-        if not bool(recompute) and cache_path.is_file():
+        recompute_state: dict[str, Any] | None = None
+        if bool(recompute):
+            recompute_state = _submit_recognition_ops_recompute(cache_key=cache_key, ctx=ctx, layer=int(layer), scene_ids=computable_scene_ids)
+        if cache_path.is_file():
             matrix = json.loads(cache_path.read_text(encoding="utf-8"))
             if not isinstance(matrix, dict) or matrix.get("cache_key") != cache_key:
                 matrix = {}
             matrix["cache_hit"] = True
-        elif not bool(recompute):
-            matrix = {
-                "cache_key": cache_key,
-                "cache_path": str(cache_path),
-                "cache_hit": False,
-                "cache_missing": True,
-                "layer": int(layer),
-                "threshold": "per_scene",
-                "scene_ids": scene_ids,
-                "match_count": 0,
-                "matches": [],
-                "updated_at": None,
-            }
-            include_isolated = False
         else:
-            matrix = _DATA_ANNOTATION_RUNTIME_RUNNER.match_scene_matrix(
-                ctx,
+            matrix = load_latest_shared_scene_matrix(
+                computable_scene_ids,
                 layer=int(layer),
-                use_cache=False,
+                expected_cache_key=cache_key,
+                expected_cache_path=cache_path,
+                allow_derive_subset=not bool(recompute),
             )
-            if isinstance(matrix, dict) and matrix.get("cache_path"):
-                cache_path = Path(str(matrix["cache_path"]))
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")
+            if matrix is None:
+                matrix = {
+                    "cache_key": cache_key,
+                    "cache_path": str(cache_path),
+                    "cache_hit": False,
+                    "cache_missing": True,
+                    "layer": int(layer),
+                    "threshold": "per_scene",
+                    "scene_ids": computable_scene_ids,
+                    "match_count": 0,
+                    "matches": [],
+                    "updated_at": None,
+                    "expected_node_count": len(computable_scene_ids),
+                }
+        matrix["expected_node_count"] = len(scene_ids)
+        matrix["skipped_node_ids"] = skipped_scene_ids
+        if recompute_state is None:
+            recompute_state = _recognition_ops_recompute_view(cache_key)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = build_recognition_ops_report(matrix, images, include_isolated=include_isolated)
+    result = build_recognition_ops_report(matrix, images)
     result.update(
         {
             "ok": True,
             "entry_id": entry_id,
             "asset_tree_updated_at": path.stat().st_mtime if path.is_file() else 0,
+            "recompute": recompute_state,
         }
     )
     return result
