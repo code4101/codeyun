@@ -212,6 +212,48 @@ def test_external_behavior_tree_service_restarts_stale_existing_service_process(
     assert any(call.get("popen") for call in calls)
 
 
+def test_external_behavior_tree_service_lock_timeout_reuses_active_owner(monkeypatch):
+    calls: list[dict] = []
+
+    class TimeoutLock:
+        def __init__(self, _path):
+            pass
+
+        def acquire(self, *, timeout):
+            del timeout
+            raise bt.Timeout("busy")
+
+    monkeypatch.setattr(bt, "FileLock", TimeoutLock)
+    monkeypatch.setattr(
+        bt,
+        "read_fanxiu_behavior_tree_service_owner",
+        lambda: {"exists": True, "active": True, "stale": False, "pid": 1234},
+    )
+    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args}))
+
+    result = bt._start_external_fanxiu_behavior_tree_service("entry-1")
+
+    assert result["reason"] == "owner_already_active_after_lock_timeout"
+    assert calls == []
+
+
+def test_external_behavior_tree_service_does_not_spawn_from_service_host(monkeypatch):
+    calls: list[dict] = []
+
+    monkeypatch.setattr(bt, "_current_process_is_fanxiu_service_host", lambda: True)
+    monkeypatch.setattr(
+        bt,
+        "read_fanxiu_behavior_tree_service_owner",
+        lambda: {"exists": True, "active": True, "stale": False, "pid": 1234},
+    )
+    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args}))
+
+    result = bt._start_external_fanxiu_behavior_tree_service("entry-1")
+
+    assert result["reason"] == "current_process_is_service_host"
+    assert calls == []
+
+
 def test_local_enqueue_ensures_behavior_tree_service_before_queue(monkeypatch, tmp_path):
     events: list[tuple[str, str]] = []
 

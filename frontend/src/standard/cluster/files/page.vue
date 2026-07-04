@@ -14,13 +14,14 @@
         v-if="shouldShowBrowserWorkspace"
         class="waterfall-media-section"
       >
-        <div v-if="showWorkspaceChrome" class="media-actions">
+        <div v-if="shouldUseGalleryWorkspace && showWorkspaceChrome" class="media-actions">
           <el-button size="small" class="collapse-toggle-btn" @click="showSidebar = !showSidebar">
             {{ showSidebar ? '收起边栏和目录' : '展开边栏和目录' }}
           </el-button>
         </div>
 
-        <ImageGalleryWorkspace
+        <AsyncImageGalleryWorkspace
+          v-if="shouldUseGalleryWorkspace"
           ref="galleryWorkspaceRef"
           :images="displayMediaItems"
           :show-sidebar="showSidebarPanel"
@@ -170,7 +171,7 @@
                 </button>
               </div>
               <div v-if="directoryEntries.length > DEFAULT_DIRECTORY_PAGE_SIZE" class="directory-pagination">
-                <StandardPagination
+                <AsyncStandardPagination
                   :page="currentDirectoryPage"
                   :page-size="DEFAULT_DIRECTORY_PAGE_SIZE"
                   :page-count="directoryPageCount"
@@ -284,7 +285,7 @@
               </div>
 
               <div v-if="showMediaToolbar" class="media-pagination-inline media-pagination-inline-top">
-                <StandardPagination
+                <AsyncStandardPagination
                   :page="currentMediaPage"
                   :page-size="mediaPageSize"
                   :total="mediaTotalCount"
@@ -362,10 +363,181 @@
               </template>
             </div>
           </template>
-        </ImageGalleryWorkspace>
+        </AsyncImageGalleryWorkspace>
+
+        <section v-else class="directory-lite-shell">
+          <section class="device-directory-panel">
+            <div class="directory-config-row">
+              <div class="directory-config-field">
+                <span class="directory-config-label">{{ deviceFieldLabel }}</span>
+                <el-select
+                  v-model="selectedEntryId"
+                  size="large"
+                  class="directory-config-select"
+                  placeholder="选择设备"
+                  :disabled="isLoadingDevices || !devices.length || isDeviceLocked"
+                >
+                  <el-option
+                    v-for="device in devices"
+                    :key="device.id"
+                    :label="device.name || device.device_id"
+                    :value="device.id"
+                  />
+                </el-select>
+              </div>
+
+              <div class="directory-config-field directory-config-field-limit">
+                <span class="directory-config-label">加载上限</span>
+                <el-input-number
+                  v-model="mediaScanLimitInput"
+                  size="large"
+                  class="directory-config-limit"
+                  :min="MIN_DEVICE_MEDIA_SCAN_LIMIT"
+                  :max="MAX_DEVICE_MEDIA_SCAN_LIMIT"
+                  :step="500"
+                  :precision="0"
+                  controls-position="right"
+                  @change="handleMediaScanLimitChange"
+                />
+              </div>
+            </div>
+
+            <slot
+              name="config-after"
+              :selected-entry-id="selectedEntryId"
+              :selected-path="normalizedPathInput"
+              :devices="devices"
+              :can-browse="canBrowse"
+            />
+
+            <div class="directory-toolbar">
+              <el-input
+                v-model="pathInputValue"
+                size="large"
+                clearable
+                class="directory-path-input"
+                :placeholder="pathInputPlaceholder"
+                :disabled="!selectedEntryId"
+                @keyup.enter="handleSubmitPath"
+                @blur="handlePathBlur"
+              />
+              <el-button
+                type="primary"
+                size="large"
+                class="directory-action-button"
+                :loading="isLoadingListing"
+                :disabled="!canBrowse"
+                @click="handleSubmitPath"
+              >
+                进入目录
+              </el-button>
+              <el-button
+                size="large"
+                class="directory-action-button"
+                :disabled="!canGoUp || isLoadingListing"
+                @click="goToParentDirectory"
+              >
+                上一级
+              </el-button>
+              <el-switch
+                v-model="recursiveDisplay"
+                class="directory-recursive-toggle"
+                inline-prompt
+                active-text="递归检索"
+                inactive-text="当前目录"
+                :width="112"
+                aria-label="是否递归检索"
+              />
+              <span class="directory-section-count">{{ directoryEntries.length }}项</span>
+            </div>
+
+            <div v-if="hasFixedRootBoundary" class="directory-fixed-root-hint">
+              当前页面限制在 {{ normalizedFixedRootPath }} 及其子目录。
+            </div>
+
+            <slot
+              name="directory-after"
+              :selected-entry-id="selectedEntryId"
+              :selected-path="normalizedPathInput"
+              :directory-entries="directoryEntries"
+              :media-items="mediaItems"
+              :can-browse="canBrowse"
+              :reload-directory="loadDirectory"
+            />
+
+            <div v-if="directoryEntries.length" class="directory-strip">
+              <button
+                v-for="entry in pagedDirectoryEntries"
+                :key="entry.path"
+                type="button"
+                class="directory-chip"
+                @click="openDirectory(entry.path)"
+              >
+                <el-icon class="directory-chip-icon"><FolderOpened /></el-icon>
+                <span class="directory-chip-name" :title="entry.name">{{ entry.name }}</span>
+              </button>
+            </div>
+            <div v-if="directoryEntries.length > DEFAULT_DIRECTORY_PAGE_SIZE" class="directory-pagination">
+              <AsyncStandardPagination
+                :page="currentDirectoryPage"
+                :page-size="DEFAULT_DIRECTORY_PAGE_SIZE"
+                :page-count="directoryPageCount"
+                :show-page-size="false"
+                @page-change="handleDirectoryPageChange"
+              />
+            </div>
+            <div v-if="!directoryEntries.length" class="directory-empty-state">
+              当前目录下没有子目录
+            </div>
+            <section v-if="fallbackFileEntries.length" class="fallback-file-panel">
+              <div class="fallback-file-header">
+                <span>其他文件</span>
+                <span>{{ fallbackFileEntries.length }}项</span>
+              </div>
+              <el-table
+                :data="fallbackFileEntries"
+                table-layout="auto"
+                :fit="false"
+                max-height="260"
+              >
+                <el-table-column label="名称" min-width="260">
+                  <template #default="{ row }">
+                    <span class="fallback-file-name" :title="row.name">{{ row.name }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="类型" width="110">
+                  <template #default="{ row }">
+                    {{ formatPreviewKindLabel(resolveCodeyunPreviewKind(row.name)) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="大小" width="110">
+                  <template #default="{ row }">{{ formatDirectoryFileSize(row) }}</template>
+                </el-table-column>
+                <el-table-column label="修改时间" width="168">
+                  <template #default="{ row }">{{ formatDirectoryModifiedAt(row) }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="104" fixed="right">
+                  <template #default="{ row }">
+                    <el-button
+                      :icon="View"
+                      text
+                      title="预览"
+                      :loading="genericPreviewLoading && genericPreviewFile?.path === row.path"
+                      @click="openFallbackFilePreview(row)"
+                    />
+                  </template>
+                </el-table-column>
+              </el-table>
+            </section>
+          </section>
+
+          <div class="media-empty-inline">
+            {{ mediaEmptyInlineText }}
+          </div>
+        </section>
 
         <div v-if="showMediaToolbar" class="media-pagination-bar">
-          <StandardPagination
+          <AsyncStandardPagination
             :page="currentMediaPage"
             :page-size="mediaPageSize"
             :total="mediaTotalCount"
@@ -454,8 +626,6 @@ import {
   type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
 import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
-import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
-import StandardPagination from '@/components/StandardPagination.vue';
 import { taskStore } from '@/store/taskStore';
 import {
   cloneGallerySortProgram,
@@ -527,6 +697,8 @@ const STREAMABLE_VIDEO_EXTENSIONS = ['.mp4', '.webm'];
 const DEFAULT_BACKEND_SORT_PROGRAM = createDefaultGallerySortProgram();
 const AsyncGenericFileViewer = defineAsyncComponent(() => import('@/components/GenericFileViewer.vue'));
 const AsyncGallerySortProgramBar = defineAsyncComponent(() => import('@/components/GallerySortProgramBar.vue'));
+const AsyncImageGalleryWorkspace = defineAsyncComponent(() => import('@/components/ImageGalleryWorkspace.vue'));
+const AsyncStandardPagination = defineAsyncComponent(() => import('@/components/StandardPagination.vue'));
 
 const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
   { value: 'name', label: '目录名' },
@@ -1028,6 +1200,9 @@ const mediaVisualHashHint = computed(() => {
 const showMediaToolbar = computed(() => displayMediaItems.value.length > 0);
 const showDirectorySortTools = computed(() =>
   directoryEntries.value.length > 1 || showDirectorySortEditor.value
+);
+const shouldUseGalleryWorkspace = computed(() =>
+  displayMediaItems.value.length > 0 || showDirectorySortTools.value
 );
 const showWorkspaceChrome = computed(() => showDirectorySortTools.value || showMediaToolbar.value);
 const showSidebarPanel = computed(() => showWorkspaceChrome.value && showSidebar.value);
@@ -2320,6 +2495,12 @@ defineExpose({
 }
 
 .waterfall-media-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.directory-lite-shell {
   display: flex;
   flex-direction: column;
   gap: 16px;

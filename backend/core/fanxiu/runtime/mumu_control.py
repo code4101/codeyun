@@ -1320,38 +1320,51 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
         parsed = _parse_adb_serial_host_port(serial)
         if parsed is None:
             continue
-        try:
-            run_quiet(
-                [str(adb_path), "connect", serial],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=3,
-            )
-            size_process = run_quiet(
-                [str(adb_path), "-s", serial, "shell", "wm size"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-            )
-            if size_process.returncode != 0:
-                raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
-            input_process = run_quiet(
-                [str(adb_path), "-s", serial, "shell", command],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_s,
-            )
-            if input_process.returncode != 0:
-                raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
-            return _mumu_adb_meta(serial, input_name="adb-cli", adb_size=size_process.stdout.strip())
-        except Exception as exc:
-            errors.append(f"{serial}: {exc}")
+        serial_errors: list[str] = []
+        for attempt in range(2):
+            try:
+                if attempt:
+                    run_quiet(
+                        [str(adb_path), "disconnect", serial],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    time.sleep(0.2)
+                run_quiet(
+                    [str(adb_path), "connect", serial],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=3,
+                )
+                size_process = run_quiet(
+                    [str(adb_path), "-s", serial, "shell", "wm size"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                )
+                if size_process.returncode != 0:
+                    raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
+                input_process = run_quiet(
+                    [str(adb_path), "-s", serial, "shell", command],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout_s,
+                )
+                if input_process.returncode != 0:
+                    raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
+                return _mumu_adb_meta(serial, input_name="adb-cli", adb_size=size_process.stdout.strip())
+            except Exception as exc:
+                serial_errors.append(str(exc))
+        errors.append(f"{serial}: {'; '.join(serial_errors)}")
     raise RuntimeError("ADB 输入失败：" + "; ".join(errors))
 
 

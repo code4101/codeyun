@@ -504,7 +504,7 @@ const getTitleColor = (note: NoteNode) => {
   return theme.baseColor;
 };
 
-const getCategoryLabel = (type: string | null) => getNodeTypeConfig(type || 'general').label;
+const getCategoryLabel = (type: string | null) => type ? getNodeTypeConfig(type).label : '-';
 const getTitleStyle = (note: NoteNode) => {
     return {
         color: getTitleColor(note),

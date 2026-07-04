@@ -712,6 +712,7 @@ export interface FanxiuDataAnnotationRecognitionOpsResponse {
     cache_missing?: boolean;
     cache_partial?: boolean;
     cache_stale?: boolean;
+    score_mode?: string | null;
     layer?: number | string | null;
     threshold?: number | string | null;
     updated_at?: number | null;
@@ -729,6 +730,7 @@ export interface FanxiuDataAnnotationRecognitionOpsResponse {
     finished_at?: number | null;
     error?: string | null;
   } | null;
+  edges?: FanxiuDataAnnotationRecognitionOpsEdge[];
   categories: FanxiuDataAnnotationRecognitionOpsCategory[];
   issues: FanxiuDataAnnotationRecognitionOpsIssue[];
   summary: {

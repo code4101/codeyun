@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import time
 import io
+import subprocess
 
 from PIL import Image
 
@@ -123,6 +124,37 @@ def test_mumu_adb_serial_candidates_env_has_priority(monkeypatch):
     candidates = rotate._mumu_adb_serial_candidates()
 
     assert candidates == ["10.0.0.8:5555"]
+
+
+def test_mumu_adb_input_reconnects_and_retries_after_input_failure(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run_quiet(args, **_kwargs):
+        args = [str(item) for item in args]
+        calls.append(args)
+        if args[1] == "connect":
+            return subprocess.CompletedProcess(args, 0, stdout="connected", stderr="")
+        if args[1] == "disconnect":
+            return subprocess.CompletedProcess(args, 0, stdout="disconnected", stderr="")
+        if args[-1] == "wm size":
+            return subprocess.CompletedProcess(args, 0, stdout="Physical size: 900x1600", stderr="")
+        if args[-1] == "input tap 1 2":
+            input_attempts = sum(1 for call in calls if call[-1] == "input tap 1 2")
+            if input_attempts == 1:
+                return subprocess.CompletedProcess(args, 255, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(rotate, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(rotate, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "adb_path", lambda: "adb")
+    monkeypatch.setattr(rotate, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(rotate.time, "sleep", lambda _seconds: None)
+
+    result = rotate._run_mumu_adb_input("input tap 1 2")
+
+    assert result["adb_serial"] == "192.168.31.181:5555"
+    assert [call[1] for call in calls] == ["connect", "-s", "-s", "disconnect", "connect", "-s", "-s"]
 
 
 def test_screencap_success_clears_cached_adb_failure(monkeypatch):

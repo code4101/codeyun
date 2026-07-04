@@ -538,6 +538,102 @@ def _aggregate_workload_turn_by_local_day(
         current = next_day
 
 
+def _build_compact_codex_workload(
+    context: dict[str, Any],
+    session: Session | None,
+    *,
+    start_at: float | None = None,
+    end_at: float | None = None,
+    historical_day_summary_before: float | None = None,
+) -> dict[str, Any]:
+    base_turn_filters = [CodexTextCacheTurn.root_key == context["root_key"]]
+    if start_at is not None:
+        base_turn_filters.append(CodexTextCacheTurn.end_at > float(start_at))
+    if end_at is not None:
+        base_turn_filters.append(CodexTextCacheTurn.start_at < float(end_at))
+
+    day_seconds: dict[str, float] = {}
+    summarized_turns = 0
+
+    with _session_scope(session) as session:
+        if historical_day_summary_before is not None:
+            historical_rows = session.exec(
+                select(CodexTextCacheTurn.start_at, CodexTextCacheTurn.end_at)
+                .where(*base_turn_filters, CodexTextCacheTurn.end_at <= float(historical_day_summary_before))
+                .order_by(CodexTextCacheTurn.start_at, CodexTextCacheTurn.thread_id, CodexTextCacheTurn.turn_index)
+            ).all()
+            for historical_start_at, historical_end_at in historical_rows:
+                _aggregate_workload_turn_by_local_day(
+                    day_seconds,
+                    start_at=float(historical_start_at),
+                    end_at=float(historical_end_at),
+                )
+            summarized_turns = len(historical_rows)
+
+        detail_filters = list(base_turn_filters)
+        if historical_day_summary_before is not None:
+            detail_filters.append(CodexTextCacheTurn.end_at > float(historical_day_summary_before))
+
+        detail_rows = session.exec(
+            select(
+                CodexTextCacheTurn.thread_id,
+                CodexTextCacheTurn.turn_index,
+                CodexTextCacheTurn.start_at,
+                CodexTextCacheTurn.end_at,
+                CodexTextCacheTurn.duration_seconds,
+                CodexTextCacheTurn.completed,
+            )
+            .where(*detail_filters)
+            .order_by(CodexTextCacheTurn.start_at, CodexTextCacheTurn.thread_id, CodexTextCacheTurn.turn_index)
+        ).all()
+
+        if start_at is None and end_at is None:
+            total_threads = len(
+                session.exec(
+                    select(CodexTextCacheThread.thread_id).where(CodexTextCacheThread.root_key == context["root_key"])
+                ).all()
+            )
+        else:
+            total_threads = len(
+                set(
+                    session.exec(
+                        select(CodexTextCacheTurn.thread_id)
+                        .where(*base_turn_filters)
+                        .distinct()
+                    ).all()
+                )
+            )
+
+    turns = [
+        {
+            "id": f"{thread_id}:{turn_index}",
+            "start_at": float(turn_start_at),
+            "end_at": float(turn_end_at),
+            "duration_seconds": float(duration_seconds),
+            "completed": bool(completed),
+        }
+        for thread_id, turn_index, turn_start_at, turn_end_at, duration_seconds, completed in detail_rows
+    ]
+
+    time_range_start = turns[0]["start_at"] if turns else None
+    time_range_end = max((float(item["end_at"]) for item in turns), default=None)
+
+    return {
+        "root_dir": context["root_dir"],
+        "total_threads": total_threads,
+        "total_turns": summarized_turns + len(turns),
+        "returned_turns": len(turns),
+        "summarized_turns": summarized_turns,
+        "skipped_threads": 0,
+        "max_concurrency": 0,
+        "time_range_start": time_range_start,
+        "time_range_end": time_range_end,
+        "day_seconds": day_seconds,
+        "turns": turns,
+        "segments": [],
+    }
+
+
 def _file_signature(path: Path) -> tuple[int | None, int | None]:
     try:
         stat = path.stat()
@@ -1393,6 +1489,14 @@ def build_codex_workload(
     historical_day_summary_before: float | None = None,
 ) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session)
+    if compact and not include_segments:
+        return _build_compact_codex_workload(
+            context,
+            session,
+            start_at=start_at,
+            end_at=end_at,
+            historical_day_summary_before=historical_day_summary_before,
+        )
     with _session_scope(session) as session:
         thread_rows = session.exec(
             select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == context["root_key"])

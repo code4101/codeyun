@@ -1012,7 +1012,7 @@ function clearRefundHistoryDeferredTimer() {
   refundHistoryPending.value = false
 }
 
-function scheduleRefundHistoryLoad(delayMs = 160) {
+function scheduleRefundHistoryLoad(delayMs = 0) {
   if (refundHistoryLoaded.value || refundHistoryLoading.value || refundHistoryLoadPromise || refundHistoryDeferredTimer !== null) {
     return
   }

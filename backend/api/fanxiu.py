@@ -5318,6 +5318,8 @@ def get_fanxiu_data_annotation_recognition_ops(
                 continue
             if not isinstance(payload, dict):
                 continue
+            if payload.get("score_mode") != "strict_scene_identity":
+                continue
             if payload.get("cache_key") == expected_cache_key:
                 continue
             if int(payload.get("layer") or layer) != int(layer):
@@ -5406,6 +5408,7 @@ def get_fanxiu_data_annotation_recognition_ops(
                     "cache_path": str(cache_path),
                     "cache_hit": False,
                     "cache_missing": True,
+                    "score_mode": "strict_scene_identity",
                     "layer": int(layer),
                     "threshold": "per_scene",
                     "scene_ids": computable_scene_ids,

@@ -203,6 +203,7 @@ watch(
       JSON.stringify(note.custom_fields ?? []),
       note.weight,
       note.private_level,
+      JSON.stringify(note.note_categories ?? []),
       note.primary_category,
       note.note_form,
       note.lifecycle_stage,

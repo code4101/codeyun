@@ -360,7 +360,7 @@ def test_runtime_child_shape_overrides_parent_shape_with_same_title():
     assert found.parent_view.id == 75
 
 
-def test_open_daily_entry_requires_two_unchanged_scrolls_before_boundary(monkeypatch):
+def test_open_daily_entry_keeps_scrolling_when_ocr_rows_move(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     daily = _scene_image(
         "日常",
@@ -374,8 +374,22 @@ def test_open_daily_entry_requires_two_unchanged_scrolls_before_boundary(monkeyp
     )
     scroll_calls: list[str] = []
 
-    monkeypatch.setattr(runtime, "cur_frame", lambda update=False: "frame")
-    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda ctx, frame: [])
+    frame_index = {"value": 0}
+
+    def fake_cur_frame(update=False):
+        frame_index["value"] += 1
+        return f"frame-{frame_index['value']}"
+
+    def fake_ocr(_ctx, frame):
+        index = int(str(frame).rsplit("-", 1)[-1])
+        offset = min(index, 6) * 20
+        return [
+            {"text": "日常 活跃度100", "x": 80, "y": 250, "w": 740, "h": 70},
+            {"text": "接受韩立指导", "x": 410, "y": 460 - offset, "w": 220, "h": 44},
+        ]
+
+    monkeypatch.setattr(runtime, "cur_frame", fake_cur_frame)
+    monkeypatch.setattr(runner, "_cached_ocr_lines", fake_ocr)
     monkeypatch.setattr(runtime, "_ensure_daily_list_frame", lambda frame, lines, label: None)
     monkeypatch.setattr(runtime, "_daily_entry_matches", lambda lines, view, title_pattern, exclude_pattern=None: [])
     monkeypatch.setattr(runtime, "_emit_runtime_action", lambda *args, **kwargs: None)
@@ -396,7 +410,7 @@ def test_open_daily_entry_requires_two_unchanged_scrolls_before_boundary(monkeyp
     ))
 
     assert result == "not_found"
-    assert scroll_calls == ["down", "down"]
+    assert scroll_calls == ["down", "down", "down", "down", "down"]
 
 
 def test_runtime_click_inherited_shape_uses_parent_shape_source(monkeypatch):
@@ -2361,6 +2375,54 @@ def test_runtime_shape_payload_scans_floating_image_without_ocr():
     assert payload["ocr_enabled"] is False
 
 
+def test_runtime_shape_match_flags_follow_explicit_image_and_ocr_roles():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._shape_runtime_match_payload_flags({"id": "legacy", "title": "旧shape"}) == {
+        "image_role": "off",
+        "ocr_role": "off",
+        "ocr_enabled": False,
+        "scan": False,
+        "match_strategy": "anchor_pixel",
+    }
+
+    image_shape = {"id": "image", "imageMatchRole": "required", "ocrMatchRole": "off"}
+    assert runner._shape_match_conditions(image_shape) == ["image"]
+
+    ocr_shape = {"id": "ocr", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "邮件"}
+    assert runner._shape_match_conditions(ocr_shape) == ["ocr"]
+    assert runner._shape_runtime_match_payload_flags(ocr_shape)["ocr_enabled"] is True
+
+    missing_text_shape = {"id": "ocr-title-only", "title": "邮件", "imageMatchRole": "off", "ocrMatchRole": "required"}
+    assert runner._shape_match_conditions(missing_text_shape) == []
+    assert runner._shape_runtime_match_payload_flags(missing_text_shape)["ocr_enabled"] is False
+
+
+def test_wait_click_shape_does_not_infer_ocr_text_from_title():
+    runner = create_fanxiu_runtime_runner()
+    image = _image("邮件", "0121.png", [])
+    view = runtime_runner_core.View(image)
+    raw = {
+        "id": "mail",
+        "kind": "rect",
+        "title": "邮件",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "required",
+    }
+    shape = runtime_runner_core.Shape(raw, parent_view=view)
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"entry": object()},
+        asset_tree_path=Path("asset-tree.json"),
+        stop_event=threading.Event(),
+    )
+
+    search_shape = runtime._shape_match_search_shape(shape)
+
+    assert search_shape.get("ocrText") in (None, "")
+    assert runner._shape_match_conditions(search_shape) == []
+
+
 def test_auto_close_guard_images_use_only_top_level_popup_entries():
     runner = create_fanxiu_runtime_runner()
     top_level = _image("所有提示窗口", "0047.jpg")
@@ -4231,7 +4293,7 @@ def test_runtime_match_scene_matrix_uses_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_scene_match_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(runner, "_scene_frame_data_url_from_reference", lambda _ctx, image: f"frame:{image['filename']}")
 
-    def fake_scene_score(_ctx, reference_image, frame):
+    def fake_scene_score(_ctx, reference_image, frame, **_kwargs):
         calls.append((frame, reference_image["filename"]))
         if frame == "frame:0001.png" and reference_image["filename"] == "0002.png":
             return 91.0
@@ -4255,6 +4317,49 @@ def test_runtime_match_scene_matrix_uses_cache(tmp_path, monkeypatch):
 
     assert cached["cache_hit"] is True
     assert cached["matches"] == result["matches"]
+
+
+def test_scene_score_does_not_infer_ocr_from_shape_title(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {
+        "id": "map",
+        "kind": "rect",
+        "title": "大地图",
+        "isSceneIdentity": True,
+        "imageMatchRole": "required",
+        "ocrMatchRole": "off",
+    }
+    image = _image("世界", "0034.png", [shape])
+
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda *_args, **_kwargs: [{"text": "大地图"}])
+
+    assert runner._scene_score({"entry": object()}, image, "frame") == 0.0
+
+
+def test_runtime_match_scene_matrix_uses_scene_score_without_inferred_title_ocr(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    images = {
+        1: _scene_image("a", "0001.png", layer=2),
+        2: _scene_image("b", "0002.png", layer=2),
+    }
+    ctx = {"images": images}
+    calls = 0
+
+    monkeypatch.setattr(runner, "_scene_match_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_scene_frame_data_url_from_reference", lambda _ctx, image: f"frame:{image['filename']}")
+
+    def fake_scene_score(_ctx, _reference_image, _frame):
+        nonlocal calls
+        calls += 1
+        return 0.0
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+
+    result = runner.match_scene_matrix(ctx, [1, 2], threshold=80.0)
+
+    assert calls == 2
+    assert result["matches"] == []
 
 
 def test_runtime_scene_identification_prefers_graph_specific_candidate(monkeypatch):
@@ -7532,7 +7637,7 @@ def test_wait_manual_job_done_when_removed_and_runtime_idle_without_terminal_log
             "running": False,
             "current_task_id": "",
             "logs": [
-                {"kind": "detail", "message": "场景身份标题 OCR 兜底命中：大地图"},
+                {"kind": "detail", "message": "Runtime 空闲"},
             ],
         },
     )
@@ -9944,6 +10049,37 @@ def test_runtime_open_daily_entry_returns_done_when_row_progress_is_full(monkeyp
     assert clicked == []
 
 
+def test_runtime_open_daily_entry_ignores_bottom_navigation_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.08, "y": 0.25, "w": 0.88, "h": 0.65},
+    ])
+    ctx = {"images": {69: image69}, "entry": type("Entry", (), {"mode": "local"})()}
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _views=None: (69, 100.0))
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [
+            {"text": "日常 活跃度100", "x": 80, "y": 250, "w": 740, "h": 70},
+            {"text": "活动报名小助手奖励找回", "x": 130, "y": 1386, "w": 590, "h": 43},
+        ],
+    )
+    monkeypatch.setattr(runner, "_drag_frame_point", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runtime_runner_core.FanxiuRuntime, "image_signature_bytes_in_shape", lambda *_args, **_kwargs: b"same")
+
+    runtime = runtime_runner_core.FanxiuRuntime(runner, ctx, stop_event=threading.Event())
+    result = runner._run_direct_runtime_action(
+        lambda: runtime.open_daily_entry(label="日常_报名", title_pattern="报名", max_scrolls=0),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "not_found"
+
+
 def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
@@ -11119,13 +11255,19 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     assert definition is not None
     assert definition.label == "日常_奇袭魔界"
     assert calls == [
-        ("current_scene", (330, 319, 69, 34), True),
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
         ("ocr_text",),
-        ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
+        ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
         ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}),
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
         ("wait_click_then_view", 319, "参与进攻", (320,), {}),
-        ("wait_click_then_view", 320, "检索区域/修罗", (321,), {}),
+        (
+            "click_shape_center_then_view",
+            320,
+            "检索区域/修罗",
+            (321,),
+            {"label": "日常_奇袭魔界：点击 #320 顶部据点后等待 #321"},
+        ),
         ("wait_click_then_view", 321, "创建队伍", (322,), {}),
         ("wait_click_then_view", 322, "下拉选项", (323,), {}),
         ("wait_click_then_view", 323, "开启", (322,), {}),
@@ -11187,12 +11329,62 @@ def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch):
 
     assert result == "skipped"
     assert calls == [
-        ("current_scene", (330, 319, 69, 34), True),
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
         ("ocr_text", "daily-frame"),
-        ("open_daily_entry", "日常_奇袭魔界", "魔界", False),
+        ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
         ("wait_action_settle", 1.5),
         ("current_scene", (), True),
         ("ocr_text", "popup-frame"),
+    ]
+
+
+def test_daily_mojie_raid_rejects_daily_entry_done_as_weekly_success(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": path, "asset_tree": [], "images": {}}
+    calls: list[tuple] = []
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    class FakeRuntime:
+        def current_scene(self, preferred, *, update=False):
+            calls.append(("current_scene", tuple(preferred), update))
+            return 69, 100.0, "daily-frame"
+
+        def ocr_text(self, frame):
+            calls.append(("ocr_text", frame))
+            return "日常"
+
+        def open_daily_entry(self, **kwargs):
+            calls.append((
+                "open_daily_entry",
+                kwargs.get("label"),
+                kwargs.get("title_pattern"),
+                kwargs.get("progress_can_mark_done"),
+            ))
+            return done("done")
+
+        def wait_view(self, *_args, **_kwargs):
+            raise AssertionError("completed daily entry must not enter raid scene")
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    with pytest.raises(RuntimeError, match="入口行完成态不能作为奇袭魔界完成判据"):
+        _drain_generator(
+            runner._execute_daily_mojie_raid_task(
+                ctx,
+                threading.Event(),
+                {"__scheduler_task_id": "legacy-daily-mojie-raid"},
+            )
+        )
+
+    assert calls == [
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
+        ("ocr_text", "daily-frame"),
+        ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
     ]
 
 

@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "7a29a6239a99dad60e9fcf54285642f0433d854b"
-last_audited_at: "2026-07-04T16:55:38.8180052+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-7a29a623-closeout/report.md"
-last_frontend_commit_summary: "关闭 a9116dab..7a29a623 pending：补齐 data-annotation 干净宽屏/桌面证据并完成 handsontable 入口污染检查，确认左侧重复模式轴问题后推进游标。"
-audited_commit_count: 72
+last_audited_commit: "1a2511806db719879b192d325e95f4df3642b77a"
+last_audited_at: "2026-07-04T23:02:27.0163716+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-1a251180/report.md"
+last_frontend_commit_summary: "审完 7a29a623..1a251180：确认 data-annotation 把识别运维收回到单一左侧模式轴，runtime 三视口复验通过，vite 入口未被局部重依赖污染。"
+audited_commit_count: 73
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-04（第十轮）
+
+- 完整范围：`7a29a6239a99dad60e9fcf54285642f0433d854b..1a2511806db719879b192d325e95f4df3642b77a`
+- 覆盖提交：`1a2511806db719879b192d325e95f4df3642b77a`
+- 前端入口提交：`1a2511806db719879b192d325e95f4df3642b77a`
+- 入口如何牵引到旧问题：这次提交同时改了 `fanxiu/data-annotation`、`fanxiu.ts`、`vite.config.ts` 与锁文件。真正需要复核的不是“多了识别运维能力”，而是它是否继续长成第二条左侧模式轴；同时因为命中了 Vite 和依赖锁文件，也必须补做入口依赖污染检查，确认局部重依赖没有反向拖脏主入口。
+- 本轮减法：提交方向成立，`识别运维` 已从并列 tab 收回到单一 `assetTreeViewMode` 里，左侧工作台从“两套模式状态”收回到“一套基础枚举”。runtime 页继续保持 `内核 / 守护 / 作业 / 日志` 的基础闭环，没有把识别运维再混成一级常驻结构。本轮不改仓库源码，只关闭审计与验证闭环。
+- 信息量保持：标注页仍保留资产树、识别层、识别运维、关系图/编辑与回到画面的操作能力；runtime 仍保留守护、作业、运行状态与 cell 日志。减少的是重复概念，不是业务能力。
+- 概念图/线框图：本轮报告里的 Mermaid 继续把链路收回到 `数据标注入口 -> 左侧单一模式轴 -> 主工作区 / runtime`。它证明 `识别运维` 是左侧视图模式，而不是另一条一级导航轴。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-1a251180/report.md`
+- 验证：为避开主仓库当前未提交改动，本轮继续在 detached worktree 构建 clean `1a251180` 快照，并通过临时静态 + 反向代理服务 `http://127.0.0.1:4273 -> http://127.0.0.1:18000` 做真实取证。`data-annotation`、`识别运维`、`runtime` 三条链路都补齐了宽屏 / 桌面 / 窄屏截图，`bodyOverflowX = 0`、`documentOverflowX = 0`。`runtime` 初次出现的 `/403` 已确认只是取证脚本先缓存匿名 `feature-access-context`、随后临时 JWT 又过期造成的假阳性；修正为首屏前注入有效 token 后，`/api/auth/me` 返回 `200`、`/api/access/context` 为 superuser、runtime 页三视口均正常打开。入口污染检查结果：`dist/index.html` 未预加载 `handsontable-vendor` / `file-viewer-vendor` / `pdfjs-vendor` / `formula-vendor`；`dist/assets/main-BUAvxJVE.js` 顶层 import 未静态拉入这些局部重依赖；真实 `fanxiu/data-annotation` 与 `fanxiu/data-annotation/runtime` 页面资源列表中也未出现这些 chunk。附加静态校验：`npm run build --prefix frontend`、`npm run typecheck --prefix frontend` 通过。
+- 根因分层：本轮核心仍是前端状态投影 / 工作台模型收敛，不是后端 DTO 问题；`vite.config.ts` 与锁文件改动属于前端工程边界问题，本轮污染检查未发现主入口被拖脏。
+- 剩余风险：主仓库 `frontend/src/standard/fanxiu/data-annotation/page.vue`、`frontend/vite.config.ts`、`frontend/src/api/fanxiu.ts` 仍有未提交工作区改动，但它们不属于本轮 commit 快照证据；后续若这些本地改动形成新提交，需要按新的完整增量范围重新巡检。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、三视口真实取证和入口依赖污染检查，没有发现需要继续自动修复的新 UI 回归，因此把 `last_audited_commit` 推进到 `1a2511806db719879b192d325e95f4df3642b77a`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-04（第九轮，关闭 pending）
 
