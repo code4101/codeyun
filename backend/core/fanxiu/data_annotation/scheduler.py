@@ -44,6 +44,11 @@ _STANDARD_ENABLED_TASK_IDS = {
 _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS = {
     "legacy-daily-green-bottle-baiye",
 }
+_DEFAULT_LABEL_SYNC_TASK_IDS = {
+    "legacy-daily-dongtian",
+    "legacy-daily-dongtian-clear",
+    "legacy-daily-lingmai-clear",
+}
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-lingta",
     "legacy-daily-shuangxiu",
@@ -769,6 +774,9 @@ def repair_data_annotation_scheduler_tasks(
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True
+        if str(task.get("id") or "") in _DEFAULT_LABEL_SYNC_TASK_IDS and task.get("label") != default_task.get("label"):
+            task["label"] = default_task.get("label")
+            changed = True
         if (
             str(task.get("id") or "") in _STANDARD_ENABLED_TASK_IDS
             and default_task.get("enabled") is True
@@ -934,6 +942,7 @@ def repair_data_annotation_scheduler_tasks(
             and isinstance(task.get("schedule_times"), list)
             and len([value for value in task.get("schedule_times", []) if str(value or "").strip()]) > 1
             and not task.get("retry_after")
+            and not explicit_world_fact_next_time
         ):
             expected_next_time = next_data_annotation_scheduler_time(task, current_time)
             expected_ts = parse_data_annotation_task_time(expected_next_time)

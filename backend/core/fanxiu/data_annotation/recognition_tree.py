@@ -74,8 +74,9 @@ def build_recognition_tree_nodes(
     """Project asset-tree facts into a runtime recognition-tree node list.
 
     Folder nesting stays in ``asset_path`` as classification metadata.
-    ``recognitionParentId`` is the preferred recognition-layer relation;
-    legacy ``image.children`` remains supported for older asset trees.
+    ``recognitionParentId`` is the only recognition-layer relation.
+    Folder/image nesting stays as asset metadata and must not create
+    recognition parent edges.
     """
 
     records: list[dict[str, Any]] = []
@@ -84,7 +85,6 @@ def build_recognition_tree_nodes(
         items: list[dict[str, Any]],
         *,
         asset_path: tuple[str, ...],
-        parent_scene_ids: tuple[int, ...],
         depth: int,
     ) -> None:
         for item in items:
@@ -93,7 +93,6 @@ def build_recognition_tree_nodes(
             node_type = str(item.get("type") or "")
             title = str(item.get("title") or "").strip()
             current_asset_path = (*asset_path, title) if title else asset_path
-            current_parent_scene_ids = parent_scene_ids
             current_depth = depth
             if node_type == "image":
                 scene_id = image_number(item)
@@ -102,32 +101,28 @@ def build_recognition_tree_nodes(
                         {
                             "scene_id": int(scene_id),
                             "image": images[int(scene_id)],
-                            "legacy_parent_scene_ids": parent_scene_ids,
                             "asset_path": current_asset_path,
                             "order": len(records),
                             "in_popup_path": any("弹窗" in part for part in current_asset_path),
                         }
                     )
-                    current_parent_scene_ids = (*parent_scene_ids, int(scene_id))
                     current_depth = depth + 1
             children = item.get("children")
             if isinstance(children, list):
                 visit(
                     [child for child in children if isinstance(child, dict)],
                     asset_path=current_asset_path,
-                    parent_scene_ids=current_parent_scene_ids,
                     depth=current_depth,
                 )
 
-    visit(asset_tree, asset_path=(), parent_scene_ids=(), depth=0)
+    visit(asset_tree, asset_path=(), depth=0)
     record_by_id = {int(record["scene_id"]): record for record in records}
 
     def direct_parent_id(record: dict[str, Any]) -> int | None:
         explicit_parent_id = recognition_parent_id(record["image"])
         if explicit_parent_id is not None and explicit_parent_id in record_by_id and explicit_parent_id != int(record["scene_id"]):
             return explicit_parent_id
-        legacy_parents = record["legacy_parent_scene_ids"]
-        return int(legacy_parents[-1]) if legacy_parents else None
+        return None
 
     parent_by_id = {
         int(record["scene_id"]): direct_parent_id(record)

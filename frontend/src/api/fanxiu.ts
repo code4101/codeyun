@@ -678,6 +678,55 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
+export interface FanxiuDataAnnotationRecognitionOpsEdge {
+  source_id: number;
+  target_id: number;
+  score?: number | string | null;
+  threshold?: number | string | null;
+  matched?: boolean;
+}
+
+export interface FanxiuDataAnnotationRecognitionOpsIssue {
+  id: string;
+  category: string;
+  severity: 'error' | 'warning' | 'info' | string;
+  label: string;
+  node_ids: number[];
+  edges: FanxiuDataAnnotationRecognitionOpsEdge[];
+}
+
+export interface FanxiuDataAnnotationRecognitionOpsCategory {
+  id: string;
+  label: string;
+  count: number;
+}
+
+export interface FanxiuDataAnnotationRecognitionOpsResponse {
+  ok: boolean;
+  entry_id: string;
+  asset_tree_updated_at: number;
+  matrix: {
+    cache_key?: string | null;
+    cache_path?: string | null;
+    cache_hit: boolean;
+    cache_missing?: boolean;
+    layer?: number | string | null;
+    threshold?: number | string | null;
+    updated_at?: number | null;
+    node_count: number;
+    edge_count: number;
+    ignored_self_loop_count: number;
+  };
+  categories: FanxiuDataAnnotationRecognitionOpsCategory[];
+  issues: FanxiuDataAnnotationRecognitionOpsIssue[];
+  summary: {
+    node_count: number;
+    edge_count: number;
+    issue_count: number;
+    category_counts: Record<string, number>;
+  };
+}
+
 export interface FanxiuDataAnnotationSaveFramePayload {
   entry_id: string;
   current_frame_data_url: string;
@@ -5339,6 +5388,15 @@ export const runDueFanxiuDataAnnotationSchedulerTasks = (entryId: string) => {
 export const getFanxiuDataAnnotationAssetTree = (entryId: string) => {
   return api
     .get<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { params: { entry_id: entryId } })
+    .then(res => res.data);
+};
+
+export const getFanxiuDataAnnotationRecognitionOps = (entryId: string, recompute = false) => {
+  return api
+    .get<FanxiuDataAnnotationRecognitionOpsResponse>('/fanxiu/data-annotation/recognition-ops', {
+      params: { entry_id: entryId, layer: 2, recompute },
+      timeout: 600000,
+    })
     .then(res => res.data);
 };
 

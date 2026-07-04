@@ -128,12 +128,12 @@ const loadHotTableAssets = async () => {
 const loadHotTableComponent = async () => {
   if (!hotTableComponentLoader) {
     hotTableComponentLoader = (async () => {
-      const [, { registerCodeyunHandsontableModules }, handsontableVue3] = await Promise.all([
+      const [, { registerAttendanceOrderHandsontableModules }, handsontableVue3] = await Promise.all([
         loadHotTableAssets(),
-        import('@/utils/handsontableSetup'),
+        import('@/utils/handsontableOrderSetup'),
         import('@handsontable/vue3'),
       ])
-      registerCodeyunHandsontableModules()
+      registerAttendanceOrderHandsontableModules()
       return handsontableVue3.HotTable
     })()
   }

@@ -407,7 +407,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_vip_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_dongtian", "日常_洞天福地", scheduler_supported=True)
+    @register_fanxiu_data_annotation_manual_job("daily_dongtian", "洞天_领取", scheduler_supported=True)
     def _run_data_annotation_daily_dongtian_manual_job(
         runner: Any,
         ctx: dict[str, Any],
@@ -416,7 +416,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_dongtian_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_dongtian_clear", "日常_洞天福地_清行动力", scheduler_supported=True)
+    @register_fanxiu_data_annotation_manual_job("daily_dongtian_clear", "洞天_行动力", scheduler_supported=True)
     def _run_data_annotation_daily_dongtian_clear_manual_job(
         runner: Any,
         ctx: dict[str, Any],
@@ -434,7 +434,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_lingmai_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_lingmai_clear", "日常_灵脉_清体力", scheduler_supported=True)
+    @register_fanxiu_data_annotation_manual_job("daily_lingmai_clear", "灵脉_清体力", scheduler_supported=True)
     def _run_data_annotation_daily_lingmai_clear_manual_job(
         runner: Any,
         ctx: dict[str, Any],
