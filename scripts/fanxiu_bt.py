@@ -170,7 +170,7 @@ def _print_owner(owner: dict[str, Any]) -> None:
 
 def _print_manual_jobs(jobs: list[dict[str, Any]]) -> None:
     if not jobs:
-        print("手动作业队列为空")
+        print("作业队列为空")
         return
     for job in jobs:
         print(json.dumps(
@@ -434,7 +434,7 @@ def _runtime_error_task_label(message: str) -> str:
     if not match:
         return ""
     label = match.group(1).strip()
-    if not label.startswith(("日常_", "邮件_", "AI保底", "手动作业")):
+    if not label.startswith(("日常_", "邮件_", "AI保底", "作业", "手动作业")):
         return ""
     return label
 
@@ -777,7 +777,7 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     isolation = report.get("isolation") if isinstance(report.get("isolation"), dict) else {}
     next_action = str(scheduler.get("next_action") or "")
-    if next_action not in {"run_due", "job_group_disabled"}:
+    if next_action != "job_group_disabled":
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
         return False
@@ -1293,7 +1293,7 @@ def main() -> int:
     _configure_stdout()
     parser = argparse.ArgumentParser(description="本地提交凡修行为树任务到 resident kernel。")
     parser.add_argument("--entry-id", default=os.environ.get("FANXIU_ENTRY_ID") or DEFAULT_FANXIU_ENTRY_ID)
-    parser.add_argument("--no-isolate-jobs", action="store_true", help="本次运行期间不隔离普通作业组")
+    parser.add_argument("--no-isolate-jobs", action="store_true", help="本次运行期间不隔离工程作业")
     parser.add_argument("--timeout-seconds", type=float, default=0)
     parser.add_argument("--payload", default="", help="附加 payload JSON")
     parser.add_argument("--wait", action="store_true", help="如果任务进入队列，则等待 queued job 完成")
@@ -1332,7 +1332,7 @@ def main() -> int:
     stop = subparsers.add_parser("stop", help="请求 resident service 停止当前任务")
     stop.add_argument("--reason", default="local_cli")
 
-    enqueue = subparsers.add_parser("enqueue", help="写入本地手动作业队列，由 resident service 串行执行")
+    enqueue = subparsers.add_parser("enqueue", help="写入本地作业队列，由 resident service 串行执行")
     enqueue.add_argument("task_type")
     enqueue.add_argument("--label", default="")
     enqueue.add_argument("--target-scene-id", default="")
@@ -1342,14 +1342,14 @@ def main() -> int:
     enqueue.add_argument("--wait", action="store_true", help="等待 queued job 完成")
     enqueue.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
-    queue = subparsers.add_parser("queue", help="查看本地手动作业队列")
+    queue = subparsers.add_parser("queue", help="查看本地作业队列")
     queue.add_argument("--json", action="store_true", help="输出 JSON")
 
-    cancel = subparsers.add_parser("cancel", help="取消本地手动作业队列中的任务")
+    cancel = subparsers.add_parser("cancel", help="取消本地作业队列中的任务")
     cancel.add_argument("job_id")
     cancel.add_argument("--force", action="store_true", help="允许删除 running 记录；停止执行仍应优先用 stop")
 
-    clear_queue = subparsers.add_parser("clear-queue", help="清空本地手动作业队列")
+    clear_queue = subparsers.add_parser("clear-queue", help="清空本地作业队列")
     clear_queue.add_argument("--force", action="store_true", help="同时删除 running 记录")
 
     status_parser = subparsers.add_parser("status", help="查看本地 Runtime 状态")
@@ -1404,15 +1404,15 @@ def main() -> int:
     owner_parser.add_argument("--stale-after-seconds", type=float, default=120.0)
     owner_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
 
-    isolation = subparsers.add_parser("isolation", help="查看普通作业组隔离锁")
+    isolation = subparsers.add_parser("isolation", help="查看工程作业隔离锁")
     isolation.add_argument("--json", action="store_true", help="输出 JSON")
     isolation.add_argument("--clear-stale", action="store_true", help="清理已过期隔离锁")
 
-    isolate = subparsers.add_parser("isolate", help="手动隔离普通作业组")
+    isolate = subparsers.add_parser("isolate", help="手动隔离工程作业")
     isolate.add_argument("--reason", default="local_cli")
     isolate.add_argument("--ttl-seconds", type=float, default=300.0)
 
-    release_isolation = subparsers.add_parser("release-isolation", help="按 token 释放普通作业组隔离锁")
+    release_isolation = subparsers.add_parser("release-isolation", help="按 token 释放工程作业隔离锁")
     release_isolation.add_argument("token")
 
     subparsers.add_parser("clear-logs", help="清空本地 Runtime 日志")

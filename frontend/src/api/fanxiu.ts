@@ -611,6 +611,10 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
   task_type: string;
   label: string;
   supported?: boolean;
+  template_id?: string;
+  template_label?: string;
+  template_source?: string;
+  trigger_kind?: string;
   source: string;
   schedule_kind: string;
   legacy_name: string;
@@ -639,6 +643,10 @@ export interface FanxiuDataAnnotationSchedulerPlanItem {
   task_type: string;
   label: string;
   supported?: boolean;
+  template_id?: string;
+  template_label?: string;
+  template_source?: string;
+  trigger_kind?: string;
   enabled: boolean;
   due: boolean;
   runnable: boolean;
@@ -5296,9 +5304,9 @@ export const saveFanxiuDataAnnotationSchedulerTasks = (tasks: FanxiuDataAnnotati
   return api.put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks', tasks).then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolean) => {
+export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolean, entryId = '') => {
   return api
-    .put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/settings', { job_group_enabled: jobGroupEnabled })
+    .put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/settings', { job_group_enabled: jobGroupEnabled, entry_id: entryId })
     .then(res => res.data);
 };
 

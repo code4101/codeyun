@@ -1562,12 +1562,12 @@ async function handleDeviceChange() {
     }
   }
   const prefetchedRootListing = await loadRootsForDevice();
-  if (!isWechatMode.value) {
-    await syncLatestDeleteTaskForCurrentDevice();
-  }
   await loadRoot(buildInputRequest(), {
     prefetchedListing: prefetchedRootListing,
   });
+  if (!isWechatMode.value) {
+    void syncLatestDeleteTaskForCurrentDevice(selectedEntryId.value);
+  }
 }
 
 function closeContextMenu() {
@@ -1708,14 +1708,17 @@ function startDeleteTaskPolling() {
   });
 }
 
-async function syncLatestDeleteTaskForCurrentDevice() {
-  if (!selectedEntryId.value) {
+async function syncLatestDeleteTaskForCurrentDevice(entryId = selectedEntryId.value) {
+  if (!entryId) {
     activeDeleteTask.value = null;
     stopDeleteTaskPolling();
     return;
   }
   try {
-    const tasks = await fetchDeviceEntryDeleteTasks(selectedEntryId.value);
+    const tasks = await fetchDeviceEntryDeleteTasks(entryId);
+    if (entryId !== selectedEntryId.value) {
+      return;
+    }
     const runningTask = tasks.find((task) => isActiveDeleteStatus(task.status));
     activeDeleteTask.value = runningTask ? toActiveDeleteTask(runningTask) : null;
     if (runningTask) {
@@ -1724,6 +1727,9 @@ async function syncLatestDeleteTaskForCurrentDevice() {
       stopDeleteTaskPolling();
     }
   } catch {
+    if (entryId !== selectedEntryId.value) {
+      return;
+    }
     activeDeleteTask.value = null;
     stopDeleteTaskPolling();
   }
@@ -2065,7 +2071,6 @@ onMounted(async () => {
       selectedEntryId.value = (savedDevice ?? localDevice ?? devices.value[0])?.id ?? '';
       canRestoreSelectedEntry = Boolean(savedDevice);
       const prefetchedRootListing = await loadRootsForDevice();
-      await syncLatestDeleteTaskForCurrentDevice();
       if (selectedEntryId.value) {
         const savedRequest = canRestoreSelectedEntry && requestMatchesAvailableScope(savedWorkspaceState?.currentRequest ?? null)
           ? savedWorkspaceState?.currentRequest ?? null
@@ -2082,6 +2087,7 @@ onMounted(async () => {
             prefetchedListing: prefetchedRootListing,
           });
         }
+        void syncLatestDeleteTaskForCurrentDevice(selectedEntryId.value);
       }
       return;
     }

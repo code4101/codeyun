@@ -1059,7 +1059,7 @@ def queue_manual_job_status(
     status.update({
         "entry_id": entry_id,
         "phase": "manual_job_queued",
-        "message": f"手动作业已排队：{job.get('label') or job.get('task_type')}",
+        "message": f"作业实例已排队：{job.get('label') or job.get('task_type')}",
         "queued_job": {
             "id": job.get("id"),
             "task_type": job.get("task_type"),
@@ -1154,7 +1154,14 @@ def sync_scheduler_tasks_from_world_facts(
 
 
 def scheduler_task_view(task: dict[str, Any]) -> dict[str, Any]:
-    return {**task, "supported": task_supported(task)}
+    return {
+        **task,
+        "supported": task_supported(task),
+        "template_id": str(task.get("template_id") or task.get("task_type") or ""),
+        "template_label": str(task.get("template_label") or task.get("label") or task.get("task_type") or ""),
+        "template_source": str(task.get("template_source") or "preset"),
+        "trigger_kind": str(task.get("trigger_kind") or task.get("schedule_kind") or "manual"),
+    }
 
 
 def scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
@@ -1385,7 +1392,7 @@ def run_now_scheduler_task(
         entry_id=entry_id,
         task_type=str(run_task.get("task_type") or ""),
         payload=task_payload_with_meta(run_task),
-        label=f"手动任务：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
+        label=f"作业实例：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
         interruptible=bool(run_task.get("interruptible", True)),
         asset_tree_path=asset_tree_path,
         manual_job_path=manual_job_path,

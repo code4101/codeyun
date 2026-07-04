@@ -164,7 +164,11 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     task_type: str
     label: str = ""
     supported: bool = False
-    source: str = "manual"
+    template_id: str = ""
+    template_label: str = ""
+    template_source: str = "preset"
+    trigger_kind: str = "manual"
+    source: str = "data_annotation_runtime"
     schedule_kind: str = "manual"
     legacy_name: str = ""
     enabled: bool = False
@@ -193,6 +197,10 @@ class FanxiuDataAnnotationSchedulerPlanItem(BaseModel):
     task_type: str
     label: str = ""
     supported: bool = False
+    template_id: str = ""
+    template_label: str = ""
+    template_source: str = "preset"
+    trigger_kind: str = "manual"
     enabled: bool = False
     due: bool = False
     runnable: bool = False
@@ -227,6 +235,7 @@ class FanxiuDataAnnotationSchedulerAdvanceNextRequest(BaseModel):
 
 class FanxiuDataAnnotationSchedulerSettingsRequest(BaseModel):
     job_group_enabled: bool
+    entry_id: str = ""
 
 
 class FanxiuDataAnnotationSchedulerRunNowRequest(BaseModel):

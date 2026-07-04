@@ -14,6 +14,7 @@
 
 - `D:/home/chenkunze/slns/skills/前端UI规范/SKILL.md`
 - `D:/home/chenkunze/slns/skills/设计品味/SKILL.md`
+- `D:/home/chenkunze/slns/skills/前端工程架构/SKILL.md`
 
 本自动化文档只记录操作流程、增量记忆和本自动化的验收口径。不要把长期 UI 原则复制到 automation prompt 里。
 
@@ -29,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "90ed802e5c3660ae3a316d8c8a5620bdc411872e"
-last_audited_at: "2026-07-03T22:35:56.8875503+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-03-frontend-design-90ed802e/report.md"
-last_frontend_commit_summary: "完成 da1575be..90ed802e：收回运行管理状态表的填满型回归，并复验退款历史与复制节点对话框。"
-audited_commit_count: 69
+last_audited_commit: "63724108d7334bfdc4285b92db49941516024555"
+last_audited_at: "2026-07-04T02:36:06.6969529+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-63724108/report.md"
+last_frontend_commit_summary: "完成 90ed802e..63724108：收回数据标注页无关系节点的空图结构工作区，并复验 runtime/files。"
+audited_commit_count: 70
 pending_or_skipped_ranges: []
 ```
 
@@ -93,6 +94,7 @@ pending_or_skipped_ranges: []
 - `AGENTS.md`
 - `D:/home/chenkunze/slns/skills/前端UI规范/SKILL.md`
 - `D:/home/chenkunze/slns/skills/设计品味/SKILL.md`
+- `D:/home/chenkunze/slns/skills/前端工程架构/SKILL.md`
 - 本文档
 
 只在需要服务验证时再读取对应服务验证技能。
@@ -105,12 +107,32 @@ pending_or_skipped_ranges: []
 - 改动文件
 - 前端页面、组件、路由、菜单、权限、API 调用
 - 是否涉及新增页面或子页面
+- 是否引入或扩展重依赖、Vite/Rollup 插件、`manualChunks`、全局样式、worker、wasm、文件解析器、预览器、编辑器、图表库等可能污染主入口的前端工程变化
 
 如果新增页面需要左侧导航可见，必须同步检查：
 
 - `frontend/src/standard/**/index.ts`
 - `frontend/src/features/access/permissionRegistry.json`
 - `frontend/src/layout/MainLayout.vue`
+
+### 2.1 入口依赖污染检查
+
+如果本轮前端相关提交涉及下列任一情况，必须把“入口依赖污染”纳入巡检对象，不能只做视觉截图：
+
+- 新增或升级重依赖：文件预览、PDF、富文本、图表、地图、OCR、音视频、游戏、worker、wasm、压缩包解析、邮件解析等。
+- 修改 `frontend/vite.config.ts`、`frontend/package.json`、`frontend/package-lock.json`、Vite/Rollup 插件、`manualChunks`、自动导入、组件注册或全局样式。
+- 局部功能组件被主布局、全局 store、公共 util、注册表或页面路由静态 import。
+- 公开入口、微信传播入口、匿名访问入口、考勤/表格/反馈页等用户高频入口在本轮相关链路上。
+
+检查顺序：
+
+1. 先按 `前端工程架构` skill 判断依赖边界：局部能力是否只在局部路由、局部组件或用户触发后加载。
+2. 运行 `npm run build --prefix frontend` 后检查 `frontend/dist/index.html`，确认无关入口没有预加载局部功能 chunk 的 `modulepreload` 或 `stylesheet`。
+3. 检查 `frontend/dist/assets/main-*.js`，确认主入口没有顶层 import 局部功能 chunk 或局部依赖。
+4. 如果使用 `manualChunks`，额外确认 Vite preload helper 等公共 helper 没有落入局部功能 chunk，避免主入口为了 helper 反向加载局部 chunk。
+5. 对公开 URL 或用户高频 URL，用生产构建或公网实例打开真实入口，确认页面离开 shell loading、控制台没有入口 chunk 执行期错误、资源列表没有加载不相关高风险 chunk。
+
+这类问题属于前端工程架构污染，不是传统 UI 样式问题；但它会直接破坏用户可见入口，因此归入本自动化的前端巡检体系。若只发现污染风险但无法低风险修复，应报告并通知，不得推进 `last_audited_commit` 时隐瞒该风险。
 
 ### 3. 先做业务和交互建模
 
@@ -257,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-04（第六轮）
+
+- 完整范围：`90ed802e5c3660ae3a316d8c8a5620bdc411872e..63724108d7334bfdc4285b92db49941516024555`
+- 覆盖提交：`63724108d7334bfdc4285b92db49941516024555`
+- 前端入口提交：`63724108d7334bfdc4285b92db49941516024555`
+- 入口如何牵引到旧问题：这次提交同时改了 `fanxiu/data-annotation`、`cluster/runtime` 和 `cluster/files`。`cluster/runtime` 只是延续上轮已经验证过的“表格按内容收口”方向，`cluster/files` 则是把 `GenericFileViewer` 改成异步加载，不改变页面信息架构。真正被牵出的旧问题落在 `fanxiu/data-annotation`：提交为标注页增加关系图与识别投影标记后，真实页面里的很多图片节点其实没有任何识别/跳转关系边，但一级编辑区前仍常驻一整块 224px 的关系图画布，只剩孤立节点和大块留白。
+- 本轮减法：在 [`frontend/src/standard/fanxiu/data-annotation/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/fanxiu/data-annotation/page.vue) 只在选中图片存在任一关系边时才渲染 `scene-relation-graph` 与 resizer。没有新增按钮、入口、字段、状态或说明；有关系边的节点仍保留原关系图能力。
+- 信息量保持：`fanxiu/data-annotation` 仍保留资产树、场景归纳、关系图、图片对比、图片/shape 编辑与识别投影标记；减少的是“无关系边节点也要先经过空图结构工作区”的重复层级。`cluster/runtime` 仍保留设备 tabs、服务/作业状态与资源监控；`cluster/files` 仍保留文件浏览与预览。
+- 概念图/线框图：本轮报告里的 Mermaid 直接把标注页关系图区收敛到一个更基础的判断：`选中图片 -> 若存在关系边则显示关系图 -> 否则直接进入编辑`。它证明关系图属于辅助诊断，而不是所有图片都必须经过的一级工作区。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-63724108/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `fanxiu/data-annotation`、`cluster/runtime`、`cluster/files` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图。`fanxiu/data-annotation` 用 `#260 0260.png` 验证无关系边节点不再渲染图结构区，用 `#15 登录` 验证有关系边节点仍保留关系图，DOM 采样到 `edgeCount = 1`、`nodeCount = 2`。同时 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`fanxiu/data-annotation` 是前端状态投影 / 信息层级问题；关系能力本身成立，但前端把“有时成立的辅助诊断”升级成了“总是成立的一级工作区”。`cluster/runtime` 与 `cluster/files` 本轮未发现新的表现层或投影问题。
+- 剩余风险：`fanxiu/data-annotation` 当前仍保留“当前 tab 无边但另一类关系可能有边”时的空图状态；本轮只收掉了“完全无关系边却常驻空画布”的明确回归，没有继续改 tab 自动切换策略。该风险与本轮入口强相关但优先级低于已修复问题。
+- 处理结果：本轮已完成完整增量范围的提交归类、页面级建模、真实多视口取证、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `63724108d7334bfdc4285b92db49941516024555`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-03（第五轮）
 

@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 
+def _task_template_fields(task_type: str, label: str, *, source: str = "preset", trigger_kind: str = "") -> dict[str, Any]:
+    return {
+        "template_id": task_type,
+        "template_label": label,
+        "template_source": source,
+        **({"trigger_kind": trigger_kind} if trigger_kind else {}),
+    }
+
+
 def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
     def manual_task(
         task_id: str,
@@ -16,8 +25,9 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "id": task_id,
             "task_type": task_type,
             "label": label,
-            "source": "manual",
+            "source": "data_annotation_runtime",
             "schedule_kind": "manual",
+            **_task_template_fields(task_type, label, trigger_kind="manual"),
             "legacy_name": "",
             "enabled": False,
             "interruptible": interruptible,
@@ -39,6 +49,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "label": legacy_name.replace("_", " "),
             "source": "legacy_behavior_tree",
             "schedule_kind": "dynamic",
+            **_task_template_fields("legacy_dynamic_task", legacy_name.replace("_", " "), trigger_kind="dynamic"),
             "legacy_name": legacy_name,
             "enabled": False,
             "interruptible": True,
@@ -68,6 +79,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "label": legacy_name.replace("_", " "),
             "source": "legacy_behavior_tree",
             "schedule_kind": "daily",
+            **_task_template_fields(task_type, legacy_name.replace("_", " "), trigger_kind="daily"),
             "legacy_name": legacy_name,
             "enabled": False,
             "interruptible": True,
@@ -99,6 +111,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "label": label,
             "source": "data_annotation_runtime",
             "schedule_kind": "daily",
+            **_task_template_fields(task_type, label, trigger_kind="daily"),
             "legacy_name": label,
             "enabled": enabled,
             "interruptible": interruptible,
@@ -131,6 +144,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "label": label,
             "source": "data_annotation_runtime",
             "schedule_kind": "weekly",
+            **_task_template_fields(task_type, label, trigger_kind="weekly"),
             "legacy_name": label,
             "enabled": enabled,
             "interruptible": interruptible,
@@ -162,6 +176,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "label": label,
             "source": "data_annotation_runtime",
             "schedule_kind": "dynamic",
+            **_task_template_fields(task_type, label, trigger_kind="dynamic"),
             "legacy_name": label,
             "enabled": enabled,
             "interruptible": interruptible,
@@ -181,8 +196,9 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "id": "gift-code-weekly",
             "task_type": "gift_code_redeem",
             "label": "每周礼包码",
-            "source": "manual",
+            "source": "data_annotation_runtime",
             "schedule_kind": "manual",
+            **_task_template_fields("gift_code_redeem", "每周礼包码", trigger_kind="manual"),
             "legacy_name": "",
             "enabled": False,
             "interruptible": True,

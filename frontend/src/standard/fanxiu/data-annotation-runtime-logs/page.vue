@@ -19,7 +19,7 @@ let pollTimer: number | null = null;
 
 const scopeText = computed(() => {
   if (scope.value === 'guard') return '守护';
-  if (scope.value === 'manual_job') return '手动作业';
+  if (scope.value === 'manual_job') return '作业';
   if (scope.value === 'job') return '作业';
   return '运行';
 });

@@ -69,7 +69,7 @@ class SignupMiscTaskMixin:
                 opened_state = yield from runtime.wait_any(
                     {
                         "scene": runtime.view_visible(23),
-                        "已完成": runtime.ocr_contains(text="已完成", label="日常_报名：活动报名已完成"),
+                        "已完成": runtime.ocr_contains(all_of=("已完成",), label="日常_报名：活动报名已完成"),
                         "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
                     },
                     label="日常_报名：等待报名列表 #23",

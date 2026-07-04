@@ -33,7 +33,7 @@ _RUNTIME_PHASE_LABELS = {
     "idle_tick": "空闲",
     "idle_guard": "空闲巡检中",
     "idle_guard_done": "空闲巡检完成",
-    "manual_job_poll": "检查手动作业",
+    "manual_job_poll": "检查作业队列",
     "scheduler_poll": "检查定时作业",
     "scheduler_isolated": "执行定时作业",
     "waiting_context": "等待运行环境",
@@ -520,9 +520,19 @@ def normalize_data_annotation_runtime_guard_items(
 
 
 def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None:
-    task = normalize_scheduled_task_record(item, default_source="manual", default_schedule_kind="manual")
+    task = normalize_scheduled_task_record(item, default_source="data_annotation_runtime", default_schedule_kind="manual")
     if task is None:
         return None
+    template_id = str(task.get("template_id") or task.get("task_type") or "").strip()
+    template_label = str(task.get("template_label") or task.get("label") or template_id).strip()
+    source = str(task.get("source") or "").strip()
+    template_source = str(task.get("template_source") or "").strip()
+    if not template_source:
+        template_source = "custom" if source in {"ai", "custom", "debug_eval"} else "preset"
+    task["template_id"] = template_id
+    task["template_label"] = template_label
+    task["template_source"] = template_source
+    task["trigger_kind"] = str(task.get("trigger_kind") or task.get("schedule_kind") or "manual").strip() or "manual"
     weekdays = item.get("weekdays") if isinstance(item, dict) else None
     if isinstance(weekdays, list):
         parsed_weekdays: list[int] = []

@@ -4048,7 +4048,7 @@ def _set_fanxiu_data_annotation_runtime_isolation(
     token = str(req.token or "").strip()
     if req.enabled:
         if active and not _is_human_runtime_isolation(status):
-            raise HTTPException(status_code=409, detail="普通作业组已有非人工隔离锁，不能覆盖")
+            raise HTTPException(status_code=409, detail="工程作业已有非人工隔离锁，不能覆盖")
         token = token or uuid.uuid4().hex
         acquire_fanxiu_job_group_isolation(
             reason="human_using_runtime",
@@ -4059,7 +4059,7 @@ def _set_fanxiu_data_annotation_runtime_isolation(
     else:
         if active:
             if not _is_human_runtime_isolation(status) and token != str(status.get("token") or ""):
-                raise HTTPException(status_code=409, detail="普通作业组已有非人工隔离锁，不能解除")
+                raise HTTPException(status_code=409, detail="工程作业已有非人工隔离锁，不能解除")
             release_token = token or str(status.get("token") or "")
             if not release_token:
                 raise HTTPException(status_code=400, detail="缺少隔离锁 token")
@@ -4213,6 +4213,7 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
         entry = resolve_fanxiu_entry(entry_id)
     except Exception:
         entry = None
+    _ensure_engineering_scheduler_kernel(entry, entry_id)
     return _runtime_control.build_scheduler_plan(
         entry=entry,
         entry_id=entry_id,
@@ -4222,6 +4223,30 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
         world_facts_path=_data_annotation_world_facts_path(),
         manual_job_path=_data_annotation_manual_job_state_path(),
     )
+
+
+def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> None:
+    settings = _runtime_control.read_scheduler_settings(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    )
+    if not (bool(settings.get("job_group_enabled", True)) and bool(settings.get("behavior_tree_enabled", True))):
+        return
+    status = _data_annotation_runtime_status(include_cell_logs=False)
+    if bool(status.get("service_running")):
+        fanxiu_runtime_runner_wake()
+        return
+    if entry is None:
+        return
+    resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
+    _runtime_framework.ensure_kernel(
+        entry=entry,
+        entry_id=resolved_entry_id,
+        asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    fanxiu_runtime_runner_wake()
 
 
 def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
@@ -5824,7 +5849,7 @@ def _tick_fanxiu_data_annotation_runtime_task(
         log_source["source"] = source
     status = _record_runtime_cell_log(
         status,
-        title=f"{'服务任务' if source == 'service' else '兼容手动作业'} tick：{req.task_type}",
+        title=f"{'服务任务' if source == 'service' else '作业实例'} tick：{req.task_type}",
         source=log_source,
         before_keys=before_keys,
     )
@@ -5962,8 +5987,8 @@ def _runtime_cell_source(payload: dict[str, Any]) -> str:
         return (
             f"{prefix}行为树.tick(\n"
             f"    守护={_runtime_cell_bool(policy.get('guard', True))},\n"
-            f"    手动作业={_runtime_cell_bool(policy.get('manual_job', True))},\n"
-            f"    普通作业={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
+            f"    作业队列={_runtime_cell_bool(policy.get('manual_job', True))},\n"
+            f"    到期作业={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
             f"    运行模式={_runtime_cell_py_literal(mode_name)},\n"
             f"    最大次数={int(policy.get('max_ticks') or 1)},\n"
             f"    超时秒={float(policy.get('timeout_seconds') or 10.0):g},\n"
@@ -6061,7 +6086,7 @@ def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
     if "启动" in message and "任务" in message:
         return message
     if entry.scope == "manual_job":
-        return "手动作业 cell"
+        return "作业 cell"
     if entry.scope == "job":
         return "自动作业 cell"
     if entry.scope == "guard":
@@ -6071,7 +6096,7 @@ def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
 
 def _runtime_cell_log_boundary(entry: FanxiuDataAnnotationRuntimeLogEntry) -> bool:
     message = entry.message
-    return ("启动" in message and "任务" in message) or "手动作业已启动" in message or "Scheduler：启动" in message
+    return ("启动" in message and "任务" in message) or "作业已启动" in message or "手动作业已启动" in message or "Scheduler：启动" in message
 
 
 @status_router.get("/data-annotation/runtime/cell-logs", response_model=FanxiuDataAnnotationRuntimeCellLogResponse)
@@ -6303,6 +6328,18 @@ def put_fanxiu_data_annotation_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
     )
     _sync_data_annotation_runtime_runner_to_core()
+    if req.job_group_enabled and req.entry_id:
+        entry = _get_user_device_or_404(session, current_user, req.entry_id)
+        entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+        _runtime_framework.set_kernel_enabled(
+            entry=entry,
+            entry_id=entry_id,
+            enabled=True,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
     fanxiu_runtime_runner_wake()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[

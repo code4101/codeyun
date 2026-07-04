@@ -49,6 +49,7 @@ from backend.core.fanxiu.data_annotation.runner import (
     register_fanxiu_runtime_runner_class,
 )
 from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.storage import (
     DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID,
     data_annotation_asset_tree_path,
@@ -365,7 +366,39 @@ def _start_external_fanxiu_behavior_tree_service(
         return {"started": False, "reason": "owner_already_active", "owner": before}
     existing_services = _fanxiu_service_processes()
     if existing_services:
-        return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": before}
+        owner_missing_or_stale = not bool(before.get("exists")) or bool(before.get("stale"))
+        if not owner_missing_or_stale:
+            return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": before}
+        request_fanxiu_behavior_tree_service_shutdown(entry_id=entry_id, reason="stale_external_service_takeover")
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            existing_services = _fanxiu_service_processes()
+            if not existing_services:
+                break
+            time.sleep(0.2)
+        if existing_services:
+            stopped: list[int] = []
+            for item in existing_services:
+                try:
+                    process = psutil.Process(int(item.get("pid") or 0))
+                    process.terminate()
+                    stopped.append(process.pid)
+                except Exception:
+                    continue
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                existing_services = _fanxiu_service_processes()
+                if not existing_services:
+                    break
+                time.sleep(0.2)
+            if existing_services:
+                return {
+                    "started": False,
+                    "reason": "stale_service_process_stop_failed",
+                    "stopped_pids": stopped,
+                    "process": existing_services[0],
+                    "owner": read_fanxiu_behavior_tree_service_owner(),
+                }
     if bool(before.get("exists")) and before.get("pid"):
         request_fanxiu_behavior_tree_service_shutdown(entry_id=entry_id, reason="external_service_takeover")
         time.sleep(1.0)
@@ -376,18 +409,33 @@ def _start_external_fanxiu_behavior_tree_service(
     env[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
-    process = popen_python_script_service(
-        script_path,
-        "--entry-id",
-        str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
-        "service",
-        "--tick-seconds",
-        str(max(0.2, float(tick_seconds or 1.0))),
-        preferred_root=ROOT_DIR,
-        executable=sys.executable,
-        cwd=os.fspath(ROOT_DIR),
-        env=env,
-    )
+    log_dir = codeyun_temp_root("fanxiu-runtime")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stdout_path = log_dir / f"behavior_tree_service_{stamp}.stdout.log"
+    stderr_path = log_dir / f"behavior_tree_service_{stamp}.stderr.log"
+    stdout_file = stdout_path.open("ab")
+    stderr_file = stderr_path.open("ab")
+    try:
+        process = popen_python_script_service(
+            script_path.resolve(strict=False),
+            "--entry-id",
+            str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
+            "service",
+            "--tick-seconds",
+            str(max(0.2, float(tick_seconds or 1.0))),
+            preferred_root=ROOT_DIR,
+            executable=sys.executable,
+            cwd=os.fspath(ROOT_DIR),
+            env=env,
+            stdout=stdout_file,
+            stderr=stderr_file,
+        )
+    except Exception:
+        stdout_file.close()
+        stderr_file.close()
+        raise
+    stdout_file.close()
+    stderr_file.close()
     deadline = time.time() + max(0.1, float(wait_seconds or 5.0))
     owner: dict[str, Any] = {}
     while time.time() < deadline:
@@ -399,6 +447,8 @@ def _start_external_fanxiu_behavior_tree_service(
         "started": True,
         "pid": process.pid,
         "owner": owner,
+        "stdout_path": os.fspath(stdout_path),
+        "stderr_path": os.fspath(stderr_path),
     }
 
 
@@ -643,7 +693,10 @@ def fanxiu_data_annotation_runtime_status(
             status["task_type"] = ""
             status["updated_at"] = time.time()
     else:
-        status = runner.status(include_cell_logs=include_cell_logs)
+        try:
+            status = runner.status(include_cell_logs=include_cell_logs)
+        except TypeError:
+            status = runner.status()
     owner_error = str(owner.get("error") or "") if isinstance(owner, dict) else ""
     if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
@@ -843,8 +896,8 @@ def wait_fanxiu_local_manual_job(
                     "runtime_status": status,
                 }
             return {
-                "done": True,
-                "result": "removed_after_idle",
+                "done": False,
+                "result": "missing_completion_evidence",
                 "job_id": resolved_job_id,
                 "runtime_status": status,
             }

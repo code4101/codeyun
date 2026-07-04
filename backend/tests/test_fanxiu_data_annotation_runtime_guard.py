@@ -4036,6 +4036,54 @@ def test_runtime_guard_group_switch_disables_execution_without_clearing_items(tm
     assert specs == {"device_health": False, "close_popups": False, "wanling_invite": False}
 
 
+def test_runtime_container_guard_override_controls_this_job_only(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+
+    with runner._lock:
+        runner._guard_group_enabled = False
+        runner._guard_enabled = True
+        runner._guard_items["wanling_invite"] = {"enabled": True}
+
+    disabled_container = _DataAnnotationRuntimeContainer(
+        runner,
+        runtime_ctx={"entry": object()},
+        asset_tree_path=path,
+        stop_event=threading.Event(),
+        guard_override=False,
+    )
+    assert {spec.node_id: spec.enabled for spec in disabled_container.guard_specs()} == {
+        "device_health": False,
+        "close_popups": False,
+        "wanling_invite": False,
+    }
+
+    forced_container = _DataAnnotationRuntimeContainer(
+        runner,
+        runtime_ctx={"entry": object()},
+        asset_tree_path=path,
+        stop_event=threading.Event(),
+        guard_override=True,
+    )
+    assert {spec.node_id: spec.enabled for spec in forced_container.guard_specs()} == {
+        "device_health": True,
+        "close_popups": True,
+        "wanling_invite": True,
+    }
+
+
+def test_runtime_guard_override_payload_parser():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._runtime_guard_override_from_payload({}) is None
+    assert runner._runtime_guard_override_from_payload({"guard": True}) is True
+    assert runner._runtime_guard_override_from_payload({"guard": "false"}) is False
+    assert runner._runtime_guard_override_from_payload({"guard": "关闭"}) is False
+    assert runner._runtime_guard_override_from_payload({"guard": "开启"}) is True
+    assert runner._runtime_guard_override_from_payload({"guard": "unknown"}) is None
+
+
 def test_runtime_container_groups_are_prioritized_and_non_preemptive(tmp_path):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
@@ -10376,8 +10424,8 @@ class _FakeSignupRuntime:
     def shape_visible(self, view_id: int, shape: str, **_kwargs):
         return ("shape", view_id, shape)
 
-    def ocr_contains(self, **kwargs):
-        return ("ocr", kwargs)
+    def ocr_contains(self, *, all_of=(), any_of=(), normalize=True, label="OCR 文本"):
+        return ("ocr", {"all_of": all_of, "any_of": any_of, "normalize": normalize, "label": label})
 
     def ocr_matches(self, matcher, **kwargs):
         return ("ocr_matches", matcher, kwargs)
@@ -13466,7 +13514,7 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     runner._run_manual_runtime_task(
         entry=object(),
         entry_id="entry",
-        task={"id": "manual-1", "task_type": "daily_signup", "label": "日常_报名", "payload": {}},
+        task={"id": "manual-1", "task_type": "daily_signup", "label": "日常_报名", "payload": {"guard": False}},
         asset_tree_path=tmp_path / "entry.json",
         stop_event=threading.Event(),
     )
@@ -13482,6 +13530,33 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     assert fact["retry_after"] is None
     assert fact["discovered_next_time"] == signup["next_time"]
     assert fact["discovered_next_time"] != "2026-06-06 05:00:00"
+
+
+def test_manual_runtime_task_passes_payload_guard_override_to_behavior_tree(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+
+    def fake_run_runtime_behavior_tree(**kwargs):
+        captured["guard_override"] = kwargs.get("guard_override")
+        return kwargs["action"]()
+
+    monkeypatch.setattr(runner, "_run_runtime_behavior_tree", fake_run_runtime_behavior_tree)
+
+    runner._run_manual_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task={"id": "manual-guard", "task_type": "daily_signup", "label": "日常_报名", "payload": {"guard": "false"}},
+        asset_tree_path=tmp_path / "entry.json",
+        stop_event=threading.Event(),
+    )
+
+    assert captured["guard_override"] is False
 
 
 def test_scheduler_success_advances_weekly_next_time(tmp_path, monkeypatch):
@@ -13855,6 +13930,45 @@ def test_device_health_guard_tick_respects_item_switch(monkeypatch):
     assert calls == [{"recover": True, "reason": "resident_heartbeat"}]
 
 
+def test_device_health_guard_tick_reports_recovered_and_throttles(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runtime_runner_core.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        runtime_runner_core,
+        "ensure_mumu_device_healthy",
+        lambda **kwargs: calls.append(kwargs) or {"status": "healthy", "recovered": True},
+    )
+
+    with runner._lock:
+        runner._guard_group_enabled = True
+        runner._guard_items["device_health"] = {"enabled": True, "updated_at": 1710000001.0}
+
+    assert runner._run_device_health_guard_tick("entry") is True
+    assert runner._run_device_health_guard_tick("entry") is False
+    assert calls == [{"recover": True, "reason": "resident_heartbeat"}]
+
+
+def test_runtime_guard_service_tick_runs_device_health_guard(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda entry_id: calls.append(entry_id) or True)
+
+    with runner._lock:
+        runner._guard_group_enabled = True
+        runner._guard_items["device_health"] = {"enabled": True, "updated_at": 1710000001.0}
+
+    result = runner._runtime_guard_service_tick(
+        "device_health",
+        {"entry_id": "mf-entry"},
+        tmp_path / "asset-tree.json",
+        threading.Event(),
+    )
+
+    assert result == BehaviorTreeStatus.RUNNING
+    assert calls == ["mf-entry"]
+
+
 def test_runtime_display_adds_layered_status_projection():
     status = {
         "entry_id": "mf-entry",
@@ -13970,6 +14084,56 @@ def test_idle_recovery_runs_device_health_and_bounded_popup_ticks(tmp_path, monk
     assert status["current_scene"] == 34
     assert status["phase"] == "idle_tick"
     assert status["message"] == "空闲复原识别：#34 world 100%"
+
+
+def test_engineering_idle_guard_tick_runs_health_then_popup_when_engineering_enabled(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[str] = []
+
+    with runner._lock:
+        runner._guard_group_enabled = True
+        runner._guard_enabled = True
+        runner._guard_items["device_health"] = {"enabled": True, "updated_at": 1710000001.0}
+
+    monkeypatch.setattr(runtime_runner_core, "_read_data_annotation_scheduler_settings", lambda: {"job_group_enabled": True})
+    monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
+    monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda entry_id: events.append(f"health:{entry_id}") or False)
+    monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args, **_kwargs: events.append("popup") or True)
+
+    assert runner._engineering_scheduler_enabled() is True
+    handled = runner._run_engineering_idle_guard_tick(
+        object(),
+        "mf-entry",
+        tmp_path / "asset-tree.json",
+        stop_event=threading.Event(),
+    )
+
+    assert handled is True
+    assert events == ["health:mf-entry", "popup"]
+
+
+def test_engineering_idle_guard_tick_skips_health_during_fast_cleanup(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[str] = []
+
+    with runner._lock:
+        runner._guard_group_enabled = True
+        runner._guard_enabled = True
+
+    monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda entry_id: events.append(f"health:{entry_id}") or True)
+    monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args, **_kwargs: events.append("popup") or False)
+
+    handled = runner._run_engineering_idle_guard_tick(
+        object(),
+        "mf-entry",
+        tmp_path / "asset-tree.json",
+        stop_event=threading.Event(),
+        include_device_health=False,
+    )
+
+    assert handled is False
+    assert events == ["popup"]
+
 
 def test_runtime_cell_tick_respects_group_flags(monkeypatch):
     runner = create_fanxiu_runtime_runner()

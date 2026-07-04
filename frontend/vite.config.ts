@@ -46,8 +46,22 @@ export default defineConfig({
         manualChunks(id) {
           const normalizedId = id.replace(/\\/g, '/')
 
+          if (normalizedId.includes('vite/preload-helper')) {
+            return 'vendor'
+          }
+
           if (!normalizedId.includes('/node_modules/')) {
             return undefined
+          }
+
+          if (
+            normalizedId.includes('/node_modules/@file-viewer/')
+            || normalizedId.includes('/node_modules/@kenjiuno/msgreader/')
+            || normalizedId.includes('/node_modules/postal-mime/')
+            || normalizedId.includes('/node_modules/iconv-lite/')
+            || normalizedId.includes('/node_modules/billboard.js/')
+          ) {
+            return 'file-viewer-vendor'
           }
 
           if (normalizedId.includes('/node_modules/pdfjs-dist/')) {
