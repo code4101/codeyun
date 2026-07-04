@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "63724108d7334bfdc4285b92db49941516024555"
-last_audited_at: "2026-07-04T02:36:06.6969529+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-63724108/report.md"
-last_frontend_commit_summary: "完成 90ed802e..63724108：收回数据标注页无关系节点的空图结构工作区，并复验 runtime/files。"
-audited_commit_count: 70
+last_audited_commit: "a9116dabfe300755ced35ffce3c6f7d4f269bbfa"
+last_audited_at: "2026-07-04T12:39:58.9818816+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-a9116dab/report.md"
+last_frontend_commit_summary: "完成 63724108..a9116dab：确认 FanXiu runtime 减法成立，并复验 file-viewer 入口隔离。"
+audited_commit_count: 71
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-04（第七轮）
+
+- 完整范围：`63724108d7334bfdc4285b92db49941516024555..a9116dabfe300755ced35ffce3c6f7d4f269bbfa`
+- 覆盖提交：`a9116dabfe300755ced35ffce3c6f7d4f269bbfa`
+- 前端入口提交：`a9116dabfe300755ced35ffce3c6f7d4f269bbfa`
+- 入口如何牵引到旧问题：这次提交同时触达 `fanxiu/data-annotation/runtime`、`fanxiu/data-annotation`、`cluster/storage`、`FileExplorer` 和 `vite.config.ts`。其中 `runtime` 延续了前几轮一直在收敛的同一条主闭环：一级页只保留“现在是否在跑、哪些守护开启、哪些作业会触发”；`FileExplorer + vite.config` 则把 `GenericFileViewer` 及邮件/图表等重依赖继续压回局部异步 chunk。因此本轮既要复核 `runtime` 的减法是否真实成立，也必须额外执行入口依赖污染检查，确认公开入口和主入口没有被局部能力反向拉脏。
+- 本轮减法：不新增仓库代码改动，只做完整复验。真实页面确认 `fanxiu/data-annotation/runtime` 首屏已经从一组混杂的运行控制收回到更基础的三层模型：`内核开关 -> 守护列表 -> 作业列表`。`fanxiu/data-annotation` 也继续保持上轮收掉“无关系节点空图工作区”后的结构，没有把空关系图区带回一级编辑区。`cluster/storage` 当前 canonical path 已固定重定向到 `/cluster/treesize`，首屏保留设备/路径/目录树两层基础模型，没有再额外引入并列工作台。
+- 信息量保持：`runtime` 仍保留守护、作业、调度器与工程入口；`data-annotation` 仍保留画面、资产树、场景归纳和关系图（仅在有关系边时出现）；`cluster/storage` 仍保留目录树/重复文件分析；`FileExplorer` 仍保留重文件预览能力。减少的是一级运行页的重复控制，以及主入口对局部重依赖的错误耦合，不是减少业务能力。
+- 概念图/线框图：报告里的 Mermaid 把这次提交拆成两条收敛链路：`runtime` 把首屏收回到状态事实与下一步动作，`file-viewer` 把重依赖收回到局部异步边界。它证明这轮的“前端设计巡检”不仅是看视觉，也要看主入口对象边界有没有被打穿。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-a9116dab/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `fanxiu/data-annotation/runtime`、`fanxiu/data-annotation`、`cluster/storage`（实际落到 `/cluster/treesize`）以及公开页 `https://code4101.com/sheet/58855?view=lookup` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图，证据见同目录 `evidence.json` 与 12 张 `*.png`。同时执行 `npm run build --prefix frontend`，检查 `frontend/dist/index.html` 与 `frontend/dist/assets/main-*.js`，确认没有预加载或顶层 import `file-viewer-vendor` / `GenericFileViewer` / `postal-mime` / `@kenjiuno/msgreader` / `billboard.js`；`GenericFileViewer` chunk 则按预期单独引用 `file-viewer-vendor-*`。公开 `sheet lookup` 三视口都能离开 shell loading，资源列表未误拉 `file-viewer` 相关 chunk。
+- 根因分层：`fanxiu/data-annotation/runtime` 的问题属于前端状态投影，提交本身已经完成有效减法；`FileExplorer + vite chunks` 属于前端工程架构边界收敛；公开 `sheet lookup` 上的 `401` / websocket `404` 属于既有工程噪音，不是本轮局部依赖污染。
+- 剩余风险：`fanxiu/data-annotation` 窄屏仍是既有“大画面优先、右侧树依赖下滚”的旧结构，但本轮提交没有加重它，也没有牵出可单独低风险收掉的新重复控件。公开 `sheet lookup` 的匿名态 `401/ws404` 控制台噪音仍值得后续单列工程清洁任务，但不影响本轮把游标推进。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、入口依赖污染检查和真实多视口取证，没有发现需要继续自动修复的新 UI 回归，因此把 `last_audited_commit` 推进到 `a9116dabfe300755ced35ffce3c6f7d4f269bbfa`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-04（第六轮）
 

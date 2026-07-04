@@ -2778,9 +2778,17 @@ class DailyFoundationTaskMixin:
             remaining = int(numbers[0])
             self._log("detail", f"日常_奇袭魔界：剩余次数 {remaining}，OCR={text[:80]}")
             if remaining <= 0:
-                self._log("skip", "日常_奇袭魔界：剩余次数为 0，点击返回结束")
+                next_time = self._next_mojie_raid_week_start_time_text()
+                self._record_scheduler_task_discovered_next_time(
+                    str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid"),
+                    next_time,
+                    task_type="daily_mojie_raid",
+                    label="日常_奇袭魔界",
+                    last_result="success",
+                )
+                self._log("success", f"日常_奇袭魔界：剩余次数为 0，本周已完成，下次 {next_time}")
                 yield from runtime.wait_click(319, "返回")
-                return "skipped"
+                return "success"
             yield from runtime.wait_click_then_view(319, "参与进攻", 320)
             scene_id = 320
         else:
@@ -2816,6 +2824,14 @@ class DailyFoundationTaskMixin:
             return None
         token = str(match.group(1) or "").upper()
         return 8 if token == "B" else int(token)
+
+    def _next_mojie_raid_week_start_time_text(self) -> str:
+        now = _runtime_runner._now()
+        days_until_next_monday = (7 - now.weekday()) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
+        next_monday = now + timedelta(days=days_until_next_monday)
+        return next_monday.replace(hour=13, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
     def _handle_daily_mojie_raid_open_blocker_placeholder(
         self,
@@ -3918,9 +3934,9 @@ class DailyFoundationTaskMixin:
             str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
             next_time,
             task_type="daily_dongtian",
-            label="日常_洞天福地",
+            label="洞天_领取",
         )
-        self._log("success", f"日常_洞天福地：{message}，下次 {next_time}")
+        self._log("success", f"洞天_领取：{message}，下次 {next_time}")
         return next_time
 
     def _daily_dongtian_sleep_window_next_time(self, now: datetime | None = None) -> str | None:
@@ -4008,10 +4024,10 @@ class DailyFoundationTaskMixin:
                 str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
                 sleep_window_next_time,
                 task_type="daily_dongtian",
-                label="日常_洞天福地",
+                label="洞天_领取",
                 last_result="skipped",
             )
-            self._log("skip", f"日常_洞天福地：当前在 22:00-次日10:00不可操作窗口，本轮按完成处理，下次 {sleep_window_next_time}")
+            self._log("skip", f"洞天_领取：当前在 22:00-次日10:00不可操作窗口，本轮按完成处理，下次 {sleep_window_next_time}")
             return "skipped"
         outside_window_next_time = self._runtime_daily_window_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
@@ -4022,10 +4038,10 @@ class DailyFoundationTaskMixin:
                 str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian"),
                 outside_window_next_time,
                 task_type="daily_dongtian",
-                label="日常_洞天福地",
+                label="洞天_领取",
                 last_result="skipped",
             )
-            self._log("skip", f"日常_洞天福地：当前不在运行窗口或触发时间内，下次 {outside_window_next_time}")
+            self._log("skip", f"洞天_领取：当前不在运行窗口或触发时间内，下次 {outside_window_next_time}")
             return "skipped"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
@@ -4034,7 +4050,7 @@ class DailyFoundationTaskMixin:
         if not isinstance(images.get(279), dict):
             raise RuntimeError("缺少 #279「洞天福地」标注，无法确认洞天主页")
 
-        task_label = "日常_洞天福地"
+        task_label = "洞天_领取"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
         text = runtime.ocr_text(frame)
@@ -4042,7 +4058,7 @@ class DailyFoundationTaskMixin:
             yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
             self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
             with self._lock:
-                self._set_status_locked("success", "日常_洞天福地：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
+                self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
             return "success"
 
         if scene_id != 69:
@@ -4053,7 +4069,7 @@ class DailyFoundationTaskMixin:
                     yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
                     self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
                     with self._lock:
-                        self._set_status_locked("success", "日常_洞天福地：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
+                        self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
                     return "success"
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
@@ -4080,7 +4096,7 @@ class DailyFoundationTaskMixin:
         yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
         self._record_daily_dongtian_done(payload, message="已从日常进入洞天福地并领取收益")
         with self._lock:
-            self._set_status_locked("success", "日常_洞天福地：已进入洞天福地并领取收益", phase="daily_dongtian_done", current_scene=279)
+            self._set_status_locked("success", "洞天_领取：已进入洞天福地并领取收益", phase="daily_dongtian_done", current_scene=279)
         return "success"
 
     def _execute_daily_lingmai_task(
@@ -4165,19 +4181,19 @@ class DailyFoundationTaskMixin:
                 str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai-clear"),
                 outside_window_next_time,
                 task_type="daily_lingmai_clear",
-                label="日常_灵脉_清体力",
+                label="灵脉_清体力",
                 last_result="skipped",
             )
-            self._log("skip", f"日常_灵脉_清体力：当前不在运行窗口内，下次 {outside_window_next_time}")
+            self._log("skip", f"灵脉_清体力：当前不在运行窗口内，下次 {outside_window_next_time}")
             return "skipped"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_灵脉_清体力资产树路径，无法执行作业")
+            raise RuntimeError("缺少灵脉_清体力资产树路径，无法执行作业")
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         if not isinstance(images.get(285), dict):
-            raise RuntimeError("日常_灵脉_清体力：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
+            raise RuntimeError("灵脉_清体力：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
 
-        task_label = "日常_灵脉_清体力"
+        task_label = "灵脉_清体力"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
@@ -4212,12 +4228,12 @@ class DailyFoundationTaskMixin:
                 str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian-clear"),
                 outside_window_next_time,
                 task_type="daily_dongtian_clear",
-                label="日常_洞天福地_清行动力",
+                label="洞天_行动力",
                 last_result="skipped",
             )
-            self._log("skip", f"日常_洞天福地_清行动力：当前不在 10:00-22:00 可操作窗口内，下次 {outside_window_next_time}")
+            self._log("skip", f"洞天_行动力：当前不在 10:00-22:00 可操作窗口内，下次 {outside_window_next_time}")
             return "skipped"
-        raise RuntimeError("日常_洞天福地_清行动力：已迁移到 runtime 作业，但清行动力真实动作尚未实现")
+        raise RuntimeError("洞天_行动力：已迁移到 runtime 作业，但清行动力真实动作尚未实现")
 
     def _runtime_daily_window_next_time(self, task_id: str, task_type: str, now: datetime | None = None) -> str | None:
         now = now or _runtime_runner._now()

@@ -470,6 +470,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     resolve_fanxiu_entry,
 )
 from backend.core.fanxiu.data_annotation.frame_structure_organizer import organize_frame_structure_file
+from backend.core.fanxiu.data_annotation.recognition_ops import build_recognition_ops_report
 from backend.core.fanxiu.data_annotation.storage import (
     decode_data_annotation_image_data_url,
     resolve_data_annotation_image_asset,
@@ -5122,6 +5123,78 @@ def get_fanxiu_data_annotation_asset_tree(
         "updated_at": path.stat().st_mtime,
         "frame_structure": _read_frame_structure_diagnostics_snapshot(entry_id, tree),
     }
+
+
+@status_router.get("/data-annotation/recognition-ops")
+def get_fanxiu_data_annotation_recognition_ops(
+    entry_id: str,
+    layer: int = 2,
+    recompute: bool = False,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    path = _data_annotation_asset_tree_path(entry_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="资产树不存在")
+    try:
+        tree = _DATA_ANNOTATION_RUNTIME_RUNNER._load_asset_tree(path)
+        images = _DATA_ANNOTATION_RUNTIME_RUNNER._index_images(tree)
+        ctx = {
+            "entry_id": entry_id,
+            "asset_tree_path": path,
+            "asset_tree": tree,
+            "images": images,
+        }
+        scene_ids = [
+            int(scene_id)
+            for scene_id, image in images.items()
+            if isinstance(image, dict) and int(View(image).layer) == int(layer)
+        ]
+        cache_key = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_key(ctx, scene_ids, threshold=None)
+        cache_path = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.json"
+        include_isolated = True
+        if not bool(recompute) and cache_path.is_file():
+            matrix = json.loads(cache_path.read_text(encoding="utf-8"))
+            if not isinstance(matrix, dict) or matrix.get("cache_key") != cache_key:
+                matrix = {}
+            matrix["cache_hit"] = True
+        elif not bool(recompute):
+            matrix = {
+                "cache_key": cache_key,
+                "cache_path": str(cache_path),
+                "cache_hit": False,
+                "cache_missing": True,
+                "layer": int(layer),
+                "threshold": "per_scene",
+                "scene_ids": scene_ids,
+                "match_count": 0,
+                "matches": [],
+                "updated_at": None,
+            }
+            include_isolated = False
+        else:
+            matrix = _DATA_ANNOTATION_RUNTIME_RUNNER.match_scene_matrix(
+                ctx,
+                layer=int(layer),
+                use_cache=False,
+            )
+            if isinstance(matrix, dict) and matrix.get("cache_path"):
+                cache_path = Path(str(matrix["cache_path"]))
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = build_recognition_ops_report(matrix, images, include_isolated=include_isolated)
+    result.update(
+        {
+            "ok": True,
+            "entry_id": entry_id,
+            "asset_tree_updated_at": path.stat().st_mtime if path.is_file() else 0,
+        }
+    )
+    return result
 
 
 def _backup_data_annotation_asset_tree_before_save(path: Path) -> None:

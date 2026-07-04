@@ -40,7 +40,7 @@ def test_recognition_tree_keeps_folder_nesting_as_asset_path_not_parent_relation
     assert runtime_root_scene_candidate_ids(tree, images) == [34]
 
 
-def test_recognition_tree_uses_image_children_as_sub_scene_structure():
+def test_recognition_tree_does_not_use_image_children_as_recognition_structure():
     child = _image(266, "法则详情", layer=2)
     parent = _image(265, "法则选择", layer=1, children=[child])
     tree = [{"type": "folder", "title": "拜谒", "children": [parent]}]
@@ -50,8 +50,9 @@ def test_recognition_tree_uses_image_children_as_sub_scene_structure():
     by_id = {node.scene_id: node for node in nodes}
 
     assert by_id[265].parent_scene_ids == ()
-    assert by_id[266].parent_scene_ids == (265,)
-    assert runtime_root_scene_candidate_ids(tree, images) == [265]
+    assert by_id[266].parent_scene_ids == ()
+    assert by_id[266].asset_path == ("拜谒", "法则选择", "法则详情")
+    assert runtime_root_scene_candidate_ids(tree, images) == [265, 266]
 
 
 def test_recognition_tree_uses_recognition_parent_without_asset_reparenting():
@@ -71,8 +72,8 @@ def test_recognition_tree_uses_recognition_parent_without_asset_reparenting():
 
 
 def test_layer0_candidates_expand_to_parent_and_preferred_subtree():
-    detail = _image(266, "法则详情", layer=2)
-    sibling = _image(267, "无关子页", layer=2)
+    detail = {**_image(266, "法则详情", layer=2), "recognitionParentId": 265}
+    sibling = {**_image(267, "无关子页", layer=2), "recognitionParentId": 265}
     parent = _image(265, "法则选择", layer=1, children=[detail, sibling])
     world = _image(34, "世界", layer=1)
     tree = [world, parent]

@@ -4469,6 +4469,7 @@ class DataAnnotationRuntimeRunner(
                 status = next(result)
             except StopIteration as stop:
                 return stop.value
+            self._mark_service_heartbeat("task_running")
             if status == BehaviorTreeStatus.FAILURE:
                 raise RuntimeError("行为树节点失败")
             stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
@@ -4936,6 +4937,10 @@ class DataAnnotationRuntimeRunner(
                 item["last_run_at"] = now_text
                 item["retry_after"] = None
                 if str(item.get("schedule_kind") or "") in {"daily", "weekly"}:
+                    if fact_next_time:
+                        fact_next_ts = parse_data_annotation_task_time(fact_next_time)
+                        if fact_next_ts is None or fact_next_ts <= time.time():
+                            fact_next_time = ""
                     item["next_time"] = fact_next_time if fact_next_time else _next_data_annotation_scheduler_time(item)
                 else:
                     fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
@@ -6657,7 +6662,7 @@ class DataAnnotationRuntimeRunner(
             and not is_explicit_local_identity_only_scene(image)
         ]
 
-    def _asset_parent_match_edges_for_candidates(self, ctx: dict[str, Any], scene_ids: list[int]) -> list[dict[str, Any]]:
+    def _recognition_parent_match_edges_for_candidates(self, ctx: dict[str, Any], scene_ids: list[int]) -> list[dict[str, Any]]:
         tree = ctx.get("asset_tree")
         images = ctx.get("images") or {}
         if not isinstance(tree, list) or not isinstance(images, dict):
@@ -6669,7 +6674,7 @@ class DataAnnotationRuntimeRunner(
                 continue
             for parent_id in node.parent_scene_ids:
                 if int(parent_id) in candidate_set:
-                    edges.append({"s": int(parent_id), "x": int(node.scene_id), "matched": True, "source": "asset_parent"})
+                    edges.append({"s": int(parent_id), "x": int(node.scene_id), "matched": True, "source": "recognition_parent"})
         return edges
 
     def _scene_match_edges_for_candidates(
@@ -6773,7 +6778,7 @@ class DataAnnotationRuntimeRunner(
             candidates.append(SceneGraphCandidate(scene_id=scene_id, score=score, matched=score >= self._scene_match_threshold(scene_id)))
 
         matched_ids = [item.scene_id for item in candidates if item.matched]
-        edges = self._asset_parent_match_edges_for_candidates(ctx, matched_ids)
+        edges = self._recognition_parent_match_edges_for_candidates(ctx, matched_ids)
         if len(matched_ids) > 1:
             edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids, trace=trace))
         result = choose_scene_from_graph(candidates, edges)

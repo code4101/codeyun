@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -306,6 +307,26 @@ def request_fanxiu_behavior_tree_service_shutdown(
     )
 
 
+def _clear_stale_fanxiu_behavior_tree_shutdown_request() -> None:
+    control_path = fanxiu_behavior_tree_control_path()
+    try:
+        payload = json.loads(control_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    if str(payload.get("command") or "") != "shutdown_service":
+        return
+    try:
+        control_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def read_fanxiu_behavior_tree_service_owner(
     path: Path | None = None,
     *,
@@ -405,6 +426,7 @@ def _start_external_fanxiu_behavior_tree_service(
         existing_services = _fanxiu_service_processes()
         if existing_services:
             return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": read_fanxiu_behavior_tree_service_owner()}
+    _clear_stale_fanxiu_behavior_tree_shutdown_request()
     env = os.environ.copy()
     env[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
     env.setdefault("PYTHONIOENCODING", "utf-8")

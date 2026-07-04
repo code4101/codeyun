@@ -547,8 +547,12 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     baiye = next(item for item in tasks if item["id"] == "legacy-daily-baiye")
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
     signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
+    dongtian = next(item for item in tasks if item["id"] == "legacy-daily-dongtian")
+    dongtian_clear = next(item for item in tasks if item["id"] == "legacy-daily-dongtian-clear")
+    lingmai_clear = next(item for item in tasks if item["id"] == "legacy-daily-lingmai-clear")
     gift = next(item for item in tasks if item["id"] == "gift-code-weekly")
     weekly_dungeon = next(item for item in tasks if item["id"] == "daily-weekly-dungeon")
+    mojie_raid = next(item for item in tasks if item["id"] == "legacy-daily-mojie-raid")
 
     assert legacy_tasks
     assert daily_tasks
@@ -565,6 +569,9 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert assistant["source"] == "data_annotation_runtime"
     assert assistant["enabled"] is True
     assert assistant["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
+    assert dongtian["label"] == "洞天_领取"
+    assert dongtian_clear["label"] == "洞天_行动力"
+    assert lingmai_clear["label"] == "灵脉_清体力"
     assert baiye["task_type"] == "daily_baiye"
     assert baiye["source"] == "data_annotation_runtime"
     assert baiye["payload"] == {"args": ["魔道"]}
@@ -574,6 +581,10 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert weekly_dungeon["schedule_kind"] == "weekly"
     assert weekly_dungeon["weekdays"] == [0]
     assert weekly_dungeon["schedule_times"] == ["05:00"]
+    assert mojie_raid["task_type"] == "daily_mojie_raid"
+    assert mojie_raid["source"] == "data_annotation_runtime"
+    assert mojie_raid["enabled"] is True
+    assert mojie_raid["schedule_times"] == ["13:00", "21:30"]
     assert not any(item["id"] == "daily-locate" for item in tasks)
 
 
@@ -3754,6 +3765,13 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["legacy-daily-vip"]["label"] == "日常_vip"
     assert by_id["legacy-daily-vip"]["enabled"] is True
     assert by_id["legacy-daily-vip"]["schedule_times"] == ["00:00"]
+    assert by_id["legacy-daily-dongtian"]["label"] == "洞天_领取"
+    assert by_id["legacy-daily-dongtian-clear"]["label"] == "洞天_行动力"
+    assert by_id["legacy-daily-lingmai-clear"]["label"] == "灵脉_清体力"
+    assert by_id["legacy-daily-mojie-raid"]["task_type"] == "daily_mojie_raid"
+    assert by_id["legacy-daily-mojie-raid"]["label"] == "日常_奇袭魔界"
+    assert by_id["legacy-daily-mojie-raid"]["enabled"] is True
+    assert by_id["legacy-daily-mojie-raid"]["schedule_times"] == ["13:00", "21:30"]
 
 
 def test_daily_vip_recovers_world_then_claims_free_xiuwei(tmp_path, monkeypatch):
@@ -5132,6 +5150,85 @@ def test_daily_mojie_raid_remaining_ocr_fallback_accepts_b_as_eight():
     assert runner._daily_mojie_raid_remaining_ocr_fallback("进攻次数：B") == 8
     assert runner._daily_mojie_raid_remaining_ocr_fallback("剩余次数：8") == 8
     assert runner._daily_mojie_raid_remaining_ocr_fallback("其他次数：B") is None
+
+
+def test_daily_mojie_raid_remaining_zero_marks_week_complete(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 7, 4, 13, 5, 0))
+    runner = create_fanxiu_runtime_runner()
+    asset_tree = tmp_path / "asset-tree.json"
+    asset_tree.write_text("[]", encoding="utf-8")
+
+    class FakeRuntime:
+        def __init__(self):
+            self.clicks: list[tuple[int, str]] = []
+
+        def current_scene(self, scene_ids=None, *, update=False):
+            return 319, 100, "frame"
+
+        def ocr_text(self, frame):
+            return "剩余次数：0"
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, *, padding=16):
+            return [0], "剩余次数：0"
+
+        def wait_click(self, scene_id, shape_title, *args, **kwargs):
+            self.clicks.append((scene_id, shape_title))
+            if False:
+                yield None
+            return "clicked"
+
+    runtime = FakeRuntime()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: runtime)
+
+    result = _drain_generator(runner._execute_daily_mojie_raid_task(
+        {"asset_tree_path": asset_tree},
+        threading.Event(),
+        {"__scheduler_task_id": "legacy-daily-mojie-raid"},
+    ))
+
+    facts = json.loads((tmp_path / "world_facts.json").read_text(encoding="utf-8"))
+    fact = facts["discoveries"]["task"]["legacy-daily-mojie-raid"]
+    assert result == "success"
+    assert runtime.clicks == [(319, "返回")]
+    assert fact["task_type"] == "daily_mojie_raid"
+    assert fact["label"] == "日常_奇袭魔界"
+    assert fact["last_result"] == "success"
+    assert fact["discovered_next_time"] == "2026-07-06 13:00:00"
+    assert fact["next_time"] == "2026-07-06 13:00:00"
+
+
+def test_data_annotation_scheduler_preserves_mojie_raid_week_complete_next_time():
+    raw = [{
+        "id": "legacy-daily-mojie-raid",
+        "task_type": "daily_mojie_raid",
+        "label": "日常_奇袭魔界",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "interruptible": True,
+        "schedule_times": ["13:00", "21:30"],
+        "next_time": "2026-07-06 13:00:00",
+        "last_result": "success",
+        "last_run_at": "2026-07-04 13:05:00",
+        "retry_after": None,
+        "payload": {},
+        "checkpoint": {
+            "world_fact_synced_at": "2026-07-04 13:05:01",
+            "world_fact_updated_at": 1783155901.0,
+        },
+    }]
+
+    tasks, _changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        raw,
+        fanxiu._default_data_annotation_scheduler_tasks(),
+        {},
+        task_supported=lambda task: True,
+        now=datetime(2026, 7, 4, 13, 10, 0),
+    )
+
+    mojie = next(item for item in tasks if item["id"] == "legacy-daily-mojie-raid")
+    assert mojie["next_time"] == "2026-07-06 13:00:00"
 
 
 def test_fanxiu_runtime_wait_click_ocr_floating_child_uses_shape_center(monkeypatch):
@@ -12232,6 +12329,73 @@ def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_p
     assert error_task["last_result"] == "error"
     assert error_task["next_time"] is None
     assert error_task["retry_after"] == "2026-06-02 06:02:00"
+
+
+def test_data_annotation_mark_scheduler_task_ignores_expired_runtime_next_time(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    fixed_now = datetime(2026, 6, 2, 12, 10, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    monkeypatch.setattr(runtime_runner_core, "datetime", FixedDatetime)
+    monkeypatch.setattr(runtime_runner_core.time, "time", lambda: fixed_now.timestamp())
+    fanxiu._write_data_annotation_world_facts({
+        "discoveries": {
+            "task": {
+                "legacy-daily-assistant": {
+                    "id": "legacy-daily-assistant",
+                    "task_type": "daily_assistant",
+                    "discovered_next_time": "2026-06-02 12:00:00",
+                    "updated_at": fixed_now.timestamp() + 1,
+                }
+            }
+        }
+    })
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "legacy-daily-assistant",
+        "task_type": "daily_assistant",
+        "schedule_kind": "daily",
+        "schedule_times": ["00:00", "06:00", "12:00", "18:00"],
+        "next_time": "2026-06-02 12:00:00",
+        "last_result": "running",
+        "last_run_at": "2026-06-02 12:08:00",
+        "retry_after": None,
+    }
+
+    runner._mark_scheduler_task([task], "legacy-daily-assistant", "success")
+
+    assert task["last_result"] == "success"
+    assert task["next_time"] == "2026-06-02 18:00:00"
+    assert task["retry_after"] is None
+
+
+def test_data_annotation_runtime_action_ticks_refresh_service_heartbeat(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    heartbeats: list[str] = []
+    monkeypatch.setattr(runner, "_mark_service_heartbeat", lambda step: heartbeats.append(step))
+
+    def action():
+        yield runtime_runner_core.BehaviorTreeStatus.RUNNING
+        yield runtime_runner_core.BehaviorTreeStatus.RUNNING
+        return "done"
+
+    result = runner._run_direct_runtime_action(
+        action,
+        stop_event=threading.Event(),
+        tick_seconds=0.1,
+    )
+
+    assert result == "done"
+    assert heartbeats == ["task_running", "task_running"]
 
 
 def test_data_annotation_mark_scheduler_task_skipped_retries_without_advancing_daily(tmp_path, monkeypatch):
