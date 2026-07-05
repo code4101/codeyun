@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "d74182548ac33389a577751f5cbad158e77b7846"
-last_audited_at: "2026-07-05T21:23:27.3349251+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-d7418254/report.md"
-last_frontend_commit_summary: "审完 048ce749..d7418254：修复 workbook/7 报名表动作行被旧 header entity action 覆盖，`更新用户匹配` 三视口已恢复为按钮。"
-audited_commit_count: 76
+last_audited_commit: "1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2"
+last_audited_at: "2026-07-05T22:40:05.4495859+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-1dd2c8ae/report.md"
+last_frontend_commit_summary: "审完 d7418254..1dd2c8ae：收起 cluster/services 左侧被 Token 长列表拉高的空白设备壳层，报名表动作与运行管理复验通过。"
+audited_commit_count: 77
 pending_or_skipped_ranges: []
 ```
 
@@ -281,6 +281,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-05（第十二轮）
+
+- 完整范围：`d74182548ac33389a577751f5cbad158e77b7846..1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2`
+- 覆盖提交：`1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2`
+- 前端入口提交：`1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2`
+- 入口如何牵引到旧问题：这次提交同时把性能与守卫继续压进 `NoteSheetWorkspace` 和 `cluster/services`。真实三视口复验后，`workbook/7?sheet=20` 的动作行仍维持统一按钮模型，`workbook/14?sheet=58855` 与 `cluster/runtime` 也没有新增复杂度回退；真正被同链路牵出的旧问题落在 `cluster/services` 本身，左侧设备面板只有 2 个入口，却被右侧 Token 长列表拉成整列高卡片，放大了一整块没有新增信息的空白壳层。
+- 本轮减法：不新增任何控件、入口、字段或说明区，只在 [`frontend/src/standard/cluster/services/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/cluster/services/page.vue) 给 `.device-panel` 补了 `align-self: start;`，让设备列表按内容高度结束，不再和右侧 Token 列表等高。`NoteSheetWorkspace` 入口本轮只做复验，没有继续增殖局部状态或解释。
+- 信息量保持：服务页仍保留 `设备 -> OCR 状态 -> Token 管理` 的完整闭环，`NoteSheetWorkspace` 仍保留报名表动作与考勤表浏览能力；减少的是“设备列表外再包一整列空白卡壳”，不是减少操作能力。
+- 概念图/线框图：报告中的 Mermaid 已把链路收回到 `提交 1dd2c8ae -> NoteSheetWorkspace / cluster/services -> workbook/7 动作行复验 + services 设备页复验 -> 发现左侧设备卡被 Token 长列表拉高 -> 收回为空间按内容结束的设备列表`，证明修复是在删除空结构，而不是补新控件。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-1dd2c8ae/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `workbook/7?sheet=20`、`workbook/14?sheet=58855`、`cluster/services?entry_id=da2d06f2-ab06-4c05-a614-e396e2e6e6a3`、`cluster/runtime?entry_id=da2d06f2-ab06-4c05-a614-e396e2e6e6a3` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`workbook-registration` 三视口都确认动作行仍包含 `导入excel / 新增学员 / 更新订单匹配 / 更新用户匹配 / 综合更新`，`cluster-services` 远端设备三视口都稳定为 `19 个，19 启用`，`cluster-runtime` 稳定态 `hasRuntimeIssue = false`。静态校验：`uv run pytest tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮虽然未改 `vite.config.ts`，但提交仍落在 `NoteSheetWorkspace / handsontable / formula` 链路上，因此补做了构建与真实入口核查。`frontend/dist/index.html` 没有 `handsontable` / `formula` 相关 `modulepreload` 或 `stylesheet`；`frontend/dist/assets/main-U27EBVlQ.js` 只在依赖映射表中提到 `NoteSheetWorkspace` 异步 chunk，没有主入口顶层命中 `handsontable-vendor` / `formula-vendor` 的直接 import；真实 `cluster/runtime` 与 `notes/center?tab=list` 资源列表也都未命中这些高风险 chunk。
+- 根因分层：`cluster/services` 的问题属于表现层/信息层级，根因是 grid 默认拉伸让设备列表壳层和右侧长列表等高；`NoteSheetWorkspace` 本轮没有再暴露新的表现层、前端状态投影或后端数据投影回退，无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：`NoteSheetWorkspace` 窄屏本质仍是宽表浏览场景，继续依赖工作表内部横向滚动；`cluster/services` 的 Token 行数很多，但当前已经通过内容驱动左栏高度避免再制造第二个空白结构。这两点都属于既有业务形态，不是本轮新增复杂度。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`048ce7494b660cd0a559e6d1514c5169f38b37fd..d74182548ac33389a577751f5cbad158e77b7846`
 - 覆盖提交：`d74182548ac33389a577751f5cbad158e77b7846`

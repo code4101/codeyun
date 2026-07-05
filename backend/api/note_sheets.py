@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, delete, func, select
 
 from backend.core.ai.app_config import (
@@ -458,6 +459,7 @@ class NoteSheetDetailResponse(NoteSheetSummaryResponse):
     version: int
     document_json: dict[str, Any] = Field(default_factory=dict)
     pagination: Optional["NoteSheetPaginationResponse"] = None
+    defined_names_context: Optional[dict[str, Any]] = None
 
 
 class NoteSheetPaginationResponse(BaseModel):
@@ -15338,6 +15340,7 @@ def _serialize_sheet_detail(
     document_json: dict[str, Any] | None = None,
     pagination: NoteSheetPaginationResponse | None = None,
     access: NoteSheetResourceAccess | None = None,
+    defined_names_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         **_serialize_sheet_summary(
@@ -15352,6 +15355,32 @@ def _serialize_sheet_detail(
         "version": int(document.version or 1),
         "document_json": dict(document_json if document_json is not None else (document.document_json or {})),
         "pagination": pagination,
+        "defined_names_context": defined_names_context,
+    }
+
+
+def _build_sheet_defined_names_context(
+    session: Session,
+    document: SheetDocument,
+    workbook: WorkbookDocument | None,
+) -> dict[str, Any] | None:
+    if workbook is None:
+        return None
+    workbook_names = _get_workbook_defined_names(session, workbook)
+    worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
+    return {
+        "workbook_id": _require_workbook_numeric_id(workbook),
+        "sheet_id": _require_sheet_numeric_id(document),
+        "sheet_version": int(document.version or 1),
+        "workbook": workbook_names,
+        "worksheet": worksheet_names,
+        "worksheets": [{
+            "sheet_id": _require_sheet_numeric_id(document),
+            "sheet_title": document.title or "未命名工作表",
+            "sheet_version": int(document.version or 1),
+            "names": worksheet_names,
+        }],
+        "effective": _merge_effective_defined_names(workbook_names, worksheet_names),
     }
 
 
@@ -16563,6 +16592,57 @@ def _serialize_workbook_summary(
     }
 
 
+def _load_sheet_summaries_by_refs(
+    session: Session,
+    refs: list[str],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, SheetDocument]:
+    normalized_refs = {str(ref or "").strip() for ref in refs}
+    normalized_refs.discard("")
+    if not normalized_refs:
+        return {}
+
+    legacy_refs = [ref for ref in normalized_refs if not ref.isdecimal()]
+    numeric_refs = [int(ref) for ref in normalized_refs if ref.isdecimal()]
+    conditions = []
+    if legacy_refs:
+        conditions.append(SheetDocument.id.in_(legacy_refs))
+        conditions.append(SheetDocument.legacy_id.in_(legacy_refs))
+    if numeric_refs:
+        conditions.append(SheetDocument.numeric_id.in_(numeric_refs))
+    if not conditions:
+        return {}
+
+    query = select(SheetDocument).options(load_only(
+        SheetDocument.id,
+        SheetDocument.numeric_id,
+        SheetDocument.legacy_id,
+        SheetDocument.scope,
+        SheetDocument.owner_type,
+        SheetDocument.owner_key,
+        SheetDocument.sheet_key,
+        SheetDocument.title,
+        SheetDocument.engine,
+        SheetDocument.version,
+        SheetDocument.owner_user_id,
+        SheetDocument.created_by_user_id,
+        SheetDocument.updated_by_user_id,
+        SheetDocument.created_at,
+        SheetDocument.updated_at,
+        SheetDocument.deleted_at,
+        SheetDocument.deleted_by_user_id,
+    ))
+    if not include_deleted:
+        query = query.where(_active_sheet_condition())
+    query = query.where(or_(*conditions) if len(conditions) > 1 else conditions[0])
+    return {
+        ref: document
+        for document in session.exec(query).all()
+        for ref in sheet_ref_aliases(document)
+    }
+
+
 def _serialize_workbook_detail(
     session: Session,
     workbook: WorkbookDocument,
@@ -16576,7 +16656,7 @@ def _serialize_workbook_detail(
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     sheet_ids = [link.sheet_id for link in links]
-    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    sheet_map = _load_sheet_summaries_by_refs(session, sheet_ids)
     sheets = list({str(sheet.id): sheet for sheet in sheet_map.values()}.values())
     sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(session, sheet_ids, current_user)
     parent_workbook_id = _require_workbook_numeric_id(workbook)
@@ -17097,6 +17177,11 @@ def get_note_sheet(
             document_json=page_document,
             pagination=pagination,
             access=access,
+            defined_names_context=_build_sheet_defined_names_context(
+                session,
+                document,
+                workbook if include_workbook_context else None,
+            ),
         ),
     )
 
@@ -17151,6 +17236,11 @@ def query_note_sheet(
         document_json=page_document,
         pagination=pagination,
         access=access,
+        defined_names_context=_build_sheet_defined_names_context(
+            session,
+            document,
+            workbook if payload.include_workbook_context else None,
+        ),
     )
 
 

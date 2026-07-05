@@ -561,6 +561,7 @@ onUnmounted(() => {
 .device-panel {
   padding: 14px;
   min-height: 0;
+  align-self: start;
 }
 
 .service-panel {

@@ -84,6 +84,7 @@ export interface NoteSheetDetail extends NoteSheetSummary {
   sheet_key: string
   document_json: Record<string, unknown>
   pagination?: NoteSheetPaginationState | null
+  defined_names_context?: NoteSheetDefinedNamesResponse | null
 }
 
 export interface NoteSheetPaginationState {

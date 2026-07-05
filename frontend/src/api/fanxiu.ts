@@ -5208,11 +5208,13 @@ export const getFanxiuDataAnnotationRuntimeStatus = (
   entryId = '',
   options: {
     includeCellLogs?: boolean;
+    includeLogs?: boolean;
   } = {},
 ) => {
   const params: Record<string, string | boolean> = {};
   if (entryId) params.entry_id = entryId;
   if (options.includeCellLogs !== undefined) params.include_cell_logs = options.includeCellLogs;
+  if (options.includeLogs !== undefined) params.include_logs = options.includeLogs;
   return api
     .get<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params })
     .then(res => res.data);

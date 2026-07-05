@@ -432,7 +432,7 @@ const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
 };
 
 const refreshStatus = async () => {
-  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value, { includeCellLogs: false });
+  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value, { includeCellLogs: false, includeLogs: false });
   applyStatus(status);
 };
 
@@ -613,10 +613,7 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
   const willEnable = !task.enabled;
   actionLoading.value = `enable:${task.id}`;
   try {
-    const tasks = schedulerTasks.value.map((item) => (
-      item.id === task.id ? { ...item, enabled: willEnable } : { ...item }
-    ));
-    const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
+    const response = await saveFanxiuDataAnnotationSchedulerTasks([{ ...task, enabled: willEnable }]);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
     const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];

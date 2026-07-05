@@ -28,7 +28,7 @@ from backend.core.attendance.course_data_sheet_storage import (
     materialize_course_sheets,
     normalize_row,
     normalize_text,
-    set_grid_cell_inline_link,
+    set_grid_cell_inline_links,
     update_course_sheet_document,
     video_lesson_url_from_lesson_id2,
 )
@@ -450,11 +450,16 @@ def materialize_fanbei_course_sheets(
     return {"course_name": course_name, **summary}
 
 
-def _load_fanbei_course_sheet_bundle(session: Session, *, attendance: Any) -> dict[str, Any]:
+def _load_fanbei_course_sheet_bundle(
+    session: Session,
+    *,
+    attendance: Any,
+    sheet_keys: list[str] | tuple[str, ...] = COURSE_STORAGE_SHEET_KEYS,
+) -> dict[str, Any]:
     return load_course_sheet_bundle(
         session,
         attendance=attendance,
-        sheet_keys=COURSE_STORAGE_SHEET_KEYS,
+        sheet_keys=sheet_keys,
         default_owner_key=FANBEI_OWNER_KEY,
         course_label="梵呗",
     )
@@ -765,8 +770,7 @@ def _apply_fanbei_attendance_header_links(
         return document, 0
 
     header_row_index = document_field_row_index(document)
-    next_document = document
-    changed_count = 0
+    link_updates: list[tuple[int, str]] = []
     for binding in _build_lesson_bindings(video_config_rows):
         try:
             lesson_number = int(binding.get("lesson_number") or 0)
@@ -776,15 +780,8 @@ def _apply_fanbei_attendance_header_links(
         url = normalize_text(binding.get("url"))
         if column_index is None or not url:
             continue
-        next_document, changed = set_grid_cell_inline_link(
-            next_document,
-            row_index=header_row_index,
-            column_index=column_index,
-            url=url,
-        )
-        if changed:
-            changed_count += 1
-    return next_document, changed_count
+        link_updates.append((column_index, url))
+    return set_grid_cell_inline_links(document, row_index=header_row_index, links=link_updates)
 
 
 def rebuild_fanbei_attendance_from_course_sheets(
@@ -879,7 +876,11 @@ def apply_course_attendance_header_links_for_response(
         return document_json, 0
 
     try:
-        bundle = _load_fanbei_course_sheet_bundle(session, attendance=attendance)
+        bundle = _load_fanbei_course_sheet_bundle(
+            session,
+            attendance=attendance,
+            sheet_keys=(VIDEO_CONFIG_SHEET_KEY,),
+        )
     except RuntimeError:
         return document_json, 0
 

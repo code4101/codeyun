@@ -3122,6 +3122,41 @@ def test_fanxiu_bt_doctor_maintenance_reports_daily_audit_visual_incomplete():
     assert "日常页复核" in summary["action_required"][0]
 
 
+def test_fanxiu_bt_doctor_maintenance_reports_failed_mail_cleanup_without_due_task():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "runtime": {"status": "idle", "phase": "scheduler_poll", "message": "idle", "running": False},
+        "scheduler": {
+            "next_action": "idle",
+            "message": "当前没有到期任务",
+            "due_tasks": [],
+            "enabled_tasks": [
+                {
+                    "id": "mail-cleanup",
+                    "task_type": "mail_cleanup",
+                    "label": "邮件_清理",
+                    "enabled": True,
+                    "schedule_times": ["00:05"],
+                    "last_run_at": "2026-07-06 01:02:12",
+                    "last_result": "stopped",
+                    "retry_after": "2026-07-06 01:13:14",
+                }
+            ],
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "attention"
+    assert summary["summary"] == "关键作业失败或残留：邮件_清理"
+    assert summary["critical_failed_count"] == 1
+    assert summary["critical_failed_ids"] == ["mail-cleanup"]
+    assert summary["critical_failed_tasks"][0]["last_result"] == "stopped"
+    assert "关键作业今日失败或残留：邮件_清理" in summary["action_required"][0]
+    assert "当前没有到期任务" not in summary["action_required"][0]
+
+
 def test_fanxiu_bt_doctor_maintenance_ignores_stale_daily_audit_visual_incomplete():
     import scripts.fanxiu_bt as fanxiu_bt
 

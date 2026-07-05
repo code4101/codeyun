@@ -74,45 +74,76 @@ def set_grid_cell_inline_link(
     column_index: int,
     url: str,
 ) -> tuple[dict[str, Any], bool]:
-    normalized_url = normalize_text(url)
-    if not normalized_url:
-        return document, False
+    next_document, changed_count = set_grid_cell_inline_links(document, row_index=row_index, links=[(column_index, url)])
+    return next_document, changed_count > 0
 
+
+def set_grid_cell_inline_links(
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    links: Iterable[tuple[int, str]],
+) -> tuple[dict[str, Any], int]:
     columns = _normalize_document_columns(document)
-    if column_index < 0 or column_index >= len(columns):
-        return document, False
+    if not columns or row_index < 0:
+        return document, 0
+
+    normalized_links: list[tuple[int, str]] = []
+    seen_columns: set[int] = set()
+    for column_index, url in links:
+        normalized_url = normalize_text(url)
+        if not normalized_url or column_index < 0 or column_index >= len(columns):
+            continue
+        if column_index in seen_columns:
+            continue
+        seen_columns.add(column_index)
+        normalized_links.append((column_index, normalized_url))
+    if not normalized_links:
+        return document, 0
 
     source_grid_rows = document.get("grid_rows")
-    if not isinstance(source_grid_rows, list) or row_index < 0:
-        return document, False
+    if not isinstance(source_grid_rows, list):
+        return document, 0
 
     grid_rows = [normalize_row(row, len(columns)) for row in source_grid_rows]
     while len(grid_rows) <= row_index:
         grid_rows.append([""] * len(columns))
 
     next_document = dict(document)
-    changed = False
-
-    old_value = grid_rows[row_index][column_index]
-    new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
-    if new_value != old_value:
-        grid_rows[row_index][column_index] = new_value
-        next_document["grid_rows"] = grid_rows
-        changed = True
+    changed_count = 0
+    grid_changed = False
 
     cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
-    meta_key = f"{row_index}:{column_index}"
-    previous_meta = cell_meta.get(meta_key)
-    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
-    previous_link = next_meta.get("link")
-    previous_url = normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
-    if previous_url != normalized_url:
-        next_meta["link"] = {"url": normalized_url}
-        cell_meta[meta_key] = next_meta
-        next_document["cell_meta"] = cell_meta
-        changed = True
+    meta_changed = False
 
-    return next_document, changed
+    for column_index, normalized_url in normalized_links:
+        cell_changed = False
+        old_value = grid_rows[row_index][column_index]
+        new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
+        if new_value != old_value:
+            grid_rows[row_index][column_index] = new_value
+            grid_changed = True
+            cell_changed = True
+
+        meta_key = f"{row_index}:{column_index}"
+        previous_meta = cell_meta.get(meta_key)
+        next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+        previous_link = next_meta.get("link")
+        previous_url = normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
+        if previous_url != normalized_url:
+            next_meta["link"] = {"url": normalized_url}
+            cell_meta[meta_key] = next_meta
+            meta_changed = True
+            cell_changed = True
+
+        if cell_changed:
+            changed_count += 1
+
+    if grid_changed:
+        next_document["grid_rows"] = grid_rows
+    if meta_changed:
+        next_document["cell_meta"] = cell_meta
+    return next_document, changed_count
 
 
 def json_safe_value(value: Any) -> Any:

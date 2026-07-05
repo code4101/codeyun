@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
+const NoteSheetWorkspace = defineAsyncComponent(() => import('../components/NoteSheetWorkspace.vue'))
 
 const route = useRoute()
 const router = useRouter()

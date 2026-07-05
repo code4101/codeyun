@@ -952,12 +952,19 @@ const reconcileMasonryAfterRemoval = () => {
   masonryLoadedSourceCount.value = Math.min(Math.max(renderedCount, masonryLoadedSourceCount.value), masonryTargetCount.value);
 };
 
-const appendRenderedMasonryBatch = (images: GalleryImage[]) => {
+const appendRenderedMasonryBatch = (
+  images: GalleryImage[],
+  options?: { allowPending?: boolean },
+) => {
   ensureMasonryColumnState();
   const renderedIdSet = new Set(masonryRenderedColumnIds.value.flat());
   for (const image of images) {
     const currentImage = props.images.find((item) => item.id === image.id);
-    if (!currentImage || !isMasonryRenderable(currentImage) || renderedIdSet.has(currentImage.id)) {
+    if (
+      !currentImage
+      || renderedIdSet.has(currentImage.id)
+      || (!options?.allowPending && !isMasonryRenderable(currentImage))
+    ) {
       continue;
     }
     let targetColumnIndex = 0;
@@ -1027,12 +1034,13 @@ const ensureMasonryBatches = () => {
       }
 
       isMasonryBatchLoading.value = true;
+      // Render masonry placeholders first so the first screen does not wait for every
+      // thumbnail in the batch to finish warming before showing the layout.
+      appendRenderedMasonryBatch(nextBatch, { allowPending: true });
       await warmMasonryBatch(nextBatch, session);
       if (session !== masonryBatchSession) {
         return;
       }
-
-      appendRenderedMasonryBatch(nextBatch);
     }
   })()
     .finally(() => {

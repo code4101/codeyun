@@ -18,6 +18,9 @@ import {
 import { STANDALONE_PREFIX } from '@/router/standalone'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
+
+markBootPerf('router.module')
 
 const normalizedMainChildRoutes = normalizeChildRoutes([
   ...buildMainPageRoutes(),
@@ -54,7 +57,7 @@ const routes: Array<RouteRecordRaw> = [
       {
         path: '',
         name: 'PublicWorkbookResource',
-        component: () => import('@/standard/notes/resource-view/page.vue'),
+        component: () => markBootPerfAsync('route.public-workbook-resource.import', () => import('@/standard/notes/resource-view/page.vue')),
         meta: { requiresAuth: false, skipFeatureAccess: true },
       },
     ],
@@ -67,7 +70,7 @@ const routes: Array<RouteRecordRaw> = [
       {
         path: '',
         name: 'PublicSheetResource',
-        component: () => import('@/standard/notes/resource-view/page.vue'),
+        component: () => markBootPerfAsync('route.public-sheet-resource.import', () => import('@/standard/notes/resource-view/page.vue')),
         meta: { requiresAuth: false, skipFeatureAccess: true },
       },
     ],
@@ -125,10 +128,12 @@ const routes: Array<RouteRecordRaw> = [
   },
 ]
 
+markBootPerf('router.before-create')
 const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+markBootPerf('router.after-create')
 
 function getMatchedPermissionKey(to: RouteLocationNormalized): string | null {
   const matchedPermissionKey = [...to.matched]
@@ -187,8 +192,10 @@ function assertFeatureAccessRouteCoverage() {
 }
 
 assertFeatureAccessRouteCoverage()
+markBootPerf('router.access-coverage-ready')
 
 router.beforeEach(async (to) => {
+  markBootPerf('router.beforeEach.start', { path: to.fullPath, name: String(to.name ?? '') })
   const userStore = useUserStore()
   const featureAccessStore = useFeatureAccessStore()
 
@@ -219,6 +226,7 @@ router.beforeEach(async (to) => {
   }
 
   if (to.matched.some((record) => record.meta.skipFeatureAccess)) {
+    markBootPerf('router.beforeEach.skip-feature-access', { path: to.fullPath })
     return true
   }
 
@@ -242,11 +250,13 @@ router.beforeEach(async (to) => {
     return { name: 'Forbidden' }
   }
 
+  markBootPerf('router.beforeEach.end', { path: to.fullPath })
   return true
 })
 
 router.afterEach((to) => {
   document.title = buildDocumentTitle(to)
+  markBootPerf('router.afterEach', { path: to.fullPath, name: String(to.name ?? '') })
 })
 
 export default router
