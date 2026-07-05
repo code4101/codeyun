@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "1a2511806db719879b192d325e95f4df3642b77a"
-last_audited_at: "2026-07-04T23:02:27.0163716+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-04-frontend-design-1a251180/report.md"
-last_frontend_commit_summary: "审完 7a29a623..1a251180：确认 data-annotation 把识别运维收回到单一左侧模式轴，runtime 三视口复验通过，vite 入口未被局部重依赖污染。"
-audited_commit_count: 73
+last_audited_commit: "3aea6f94afbccf3ce35b4207a6f9e0111ce186fc"
+last_audited_at: "2026-07-05T04:35:19.1329250+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-3aea6f94/report.md"
+last_frontend_commit_summary: "审完 1a251180..3aea6f94：修复 notes/list 首屏未预载分类 palette 导致的内部 key 泄漏，相关页面三视口复验通过。"
+audited_commit_count: 74
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-05（第十一轮）
+
+- 完整范围：`1a2511806db719879b192d325e95f4df3642b77a..3aea6f94afbccf3ce35b4207a6f9e0111ce186fc`
+- 覆盖提交：`3aea6f94afbccf3ce35b4207a6f9e0111ce186fc`
+- 前端入口提交：`3aea6f94afbccf3ce35b4207a6f9e0111ce186fc`
+- 入口如何牵引到旧问题：这次提交同时触达 `fanxiu/data-annotation`、`frontend/src/api/notes.ts`、`SharedNoteEditor`、`NoteDetailPanel`、`ListNotes`、`cluster/files` 和 `attendance/orders`。真正被牵出的旧问题落在 `notes/center?tab=list`：提交把笔记 taxonomy 归一逻辑继续收向 `primary_category / note_form / lifecycle_stage` 后，真实列表页首屏开始直接暴露内部 palette key，例如 `custom_mmxc...`、`旧色E6A23C`，把内部编码当成一级分类事实展示。
+- 本轮减法：在 [`frontend/src/standard/notes/center/ListNotes.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/notes/center/ListNotes.vue) 补齐与 `CalendarNotes` 一致的 `ensureNoteTypePaletteLoaded()` 预载，让列表页首屏直接使用人类可读的分类标签，而不是等用户进入编辑器后才偶然加载 palette。没有新增控件、字段、解释区或状态，只把泄漏出的内部编码收回到已有分类模型后面。
+- 信息量保持：`notes/list` 仍保留标题、分类、形态、阶段、权重、私密和起始时间；减少的是“把 palette key 暴露给用户”的无效噪音。`fanxiu/data-annotation`、`cluster/files`、`attendance/orders` 本轮只做同链路复验，没有额外扩写新概念。
+- 概念图/线框图：报告中的 Mermaid 把这轮链路收回到 `笔记 taxonomy -> 分类 palette -> 列表首屏标签`，证明一级列表应承载“用户可读分类”，而不是“内部 key”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-3aea6f94/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，分别对 `fanxiu/data-annotation`、`cluster/files`、`notes/center?tab=list`、`attendance/orders` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口取证，12 张截图与 `evidence.json` 写入同目录；所有页面 `bodyOverflowX = 0`、`documentOverflowX = 0`。`notes/list` 首屏分类列从 `custom_mmxc...` / `旧色...` 恢复为 `CodeYun/资源`、`CodeYun/集群`、`考勤`、`后勤` 等可读标签。附加静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 根因分层：`notes/list` 问题属于前端状态投影 / 基础数据准备缺失，不是后端 taxonomy 建模错误；`ListNotes` 之前直接读取 `getNodeTypeConfig()`，但自身没有像 `CalendarNotes` 一样先加载 category palette，所以首屏只能退化成原始 key。`fanxiu/data-annotation`、`cluster/files`、`attendance/orders` 本轮未发现新的表现层或工程边界回归。
+- 剩余风险：当前 `fanxiu/data-annotation` 样本的识别矩阵仍处于 `未生成 145/148 节点` 状态，所以本轮只能验证“识别运维页面在三视口下稳定打开且不会因新增 score 字段回退”，没有拿到带真实分数边标签的现场截图；这属于低风险未覆盖点，不影响关闭当前提交范围。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、真实多视口取证、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `3aea6f94afbccf3ce35b4207a6f9e0111ce186fc`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-04（第十轮）
 

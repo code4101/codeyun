@@ -148,7 +148,6 @@ const HotTable = defineAsyncComponent({
 const orderContentWidth = computed(() => Math.max(280, Math.floor(viewportWidth.value || 0)))
 const isCompactViewport = computed(() => orderContentWidth.value <= 640)
 const tableRowHeaderWidth = computed(() => (isCompactViewport.value ? 36 : 50))
-const tableAutoColumnSize = computed(() => !isCompactViewport.value)
 const inputTableStretchMode = computed<'none' | 'all'>(() => (isCompactViewport.value ? 'all' : 'none'))
 const dataTableStretchMode = computed<'none'>(() => 'none')
 const currentExecutionDevice = computed(() => config.value?.current_execution_device ?? null)
@@ -179,13 +178,17 @@ const queryTableHeight = computed(() => queryMeasuredHeight.value ?? queryFallba
 const refundTableHeight = computed(() => getAdaptiveTableHeight(refundRows.value.length))
 const editableTableContentWidth = computed(() => Math.max(260, orderContentWidth.value - tableRowHeaderWidth.value - 2))
 const inputColWidths = computed<number[] | undefined>(() => {
-  if (!isCompactViewport.value) return undefined
+  if (!isCompactViewport.value) {
+    return [320, 180]
+  }
 
   const orderColumnWidth = Math.max(178, Math.floor(editableTableContentWidth.value * 0.66))
   return [orderColumnWidth, Math.max(82, editableTableContentWidth.value - orderColumnWidth)]
 })
 const queryColWidths = computed<number[] | undefined>(() => {
-  if (!isCompactViewport.value) return undefined
+  if (!isCompactViewport.value) {
+    return [120, 208, 188, 96, 96, 96, 110, 208]
+  }
 
   const moneyWidth = orderContentWidth.value <= 430 ? 66 : 76
   return [
@@ -200,7 +203,9 @@ const queryColWidths = computed<number[] | undefined>(() => {
   ]
 })
 const refundColWidths = computed<number[] | undefined>(() => {
-  if (!isCompactViewport.value) return undefined
+  if (!isCompactViewport.value) {
+    return [120, 208, 188, 96, 96, 96, 220]
+  }
 
   const moneyWidth = orderContentWidth.value <= 430 ? 66 : 76
   return [
@@ -1439,11 +1444,11 @@ onBeforeUnmount(() => {
             :row-headers="true"
             :row-header-width="tableRowHeaderWidth"
             :manual-column-resize="true"
-            :auto-column-size="tableAutoColumnSize"
+            :auto-column-size="false"
             :manual-row-resize="true"
             :copy-paste="true"
             :context-menu="true"
-            :auto-row-size="true"
+            :auto-row-size="false"
             :min-spare-rows="1"
             :render-all-rows="true"
             :stretch-h="inputTableStretchMode"
@@ -1488,11 +1493,11 @@ onBeforeUnmount(() => {
             :row-headers="true"
             :row-header-width="tableRowHeaderWidth"
             :manual-column-resize="true"
-            :auto-column-size="tableAutoColumnSize"
+            :auto-column-size="false"
             :manual-row-resize="true"
             :copy-paste="true"
             :context-menu="true"
-            :auto-row-size="true"
+            :auto-row-size="false"
             :min-spare-rows="0"
             :render-all-rows="true"
             :stretch-h="dataTableStretchMode"
@@ -1541,7 +1546,7 @@ onBeforeUnmount(() => {
             :row-headers="true"
             :row-header-width="tableRowHeaderWidth"
             :manual-column-resize="true"
-            :auto-column-size="tableAutoColumnSize"
+            :auto-column-size="false"
             :manual-row-resize="true"
             :copy-paste="true"
             :context-menu="true"

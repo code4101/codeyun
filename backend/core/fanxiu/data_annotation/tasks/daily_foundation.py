@@ -2734,6 +2734,13 @@ class DailyFoundationTaskMixin:
         if scene_id not in {69, *raid_scenes}:
             raise RuntimeError("日常_奇袭魔界：未能进入 #69 日常列表")
         if scene_id == 69:
+            debug_payload = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+            stop_after_daily_entry = bool(
+                payload.get("stop_after_daily_entry")
+                or payload.get("pause_after_daily_entry")
+                or debug_payload.get("stop_after_daily_entry")
+                or debug_payload.get("pause_after_daily_entry")
+            )
             status = yield from runtime.open_daily_entry(
                 label="日常_奇袭魔界",
                 title_pattern=r"参与.{0,4}奇|奇.{0,4}魔|魔界",
@@ -2745,7 +2752,7 @@ class DailyFoundationTaskMixin:
                 raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
             if status == "done":
                 raise RuntimeError("日常_奇袭魔界：入口行完成态不能作为奇袭魔界完成判据")
-            if payload.get("stop_after_daily_entry") or payload.get("pause_after_daily_entry"):
+            if stop_after_daily_entry:
                 yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
                 current_scene_id, score, frame = runtime.current_scene(update=True)
                 text = runtime.ocr_text(frame)
@@ -4878,6 +4885,35 @@ class DailyFoundationTaskMixin:
             self._log_locked("action", "日常_绿瓶拜谒：点击 #20「绿瓶」")
         yield from runtime.wait_click(20, "绿瓶")
         yield from runtime.wait_action_settle(float(payload.get("green_bottle_settle_seconds") or 2.0))
+        entry_scene_id, _entry_score, entry_frame = runtime.current_scene([282, 301, 20], update=True)
+        if entry_scene_id == 301:
+            entry_text = runtime.ocr_text(entry_frame)
+            compact_entry_text = re.sub(r"\s+", "", _sanitize_ocr_text(entry_text))
+            if "已达巅峰" in compact_entry_text:
+                with self._lock:
+                    self._log_locked("success", "日常_绿瓶拜谒：掌天瓶已达巅峰，今日绿瓶状态已确认")
+                    self._log_locked("action", "日常_绿瓶拜谒：点击 #301「返回」退出掌天瓶详情")
+                yield from runtime.wait_click(301, "返回")
+                yield from runtime.wait_action_settle(float(payload.get("green_bottle_rank_back_settle_seconds") or 2.0))
+                with self._lock:
+                    self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
+                    self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动回到 #34")
+                yield from runtime.goto_view(34)
+                final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
+                if final_scene_id != 34:
+                    raise RuntimeError(f"日常_绿瓶拜谒：掌天瓶已达巅峰，但收尾未回到 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
+                self._record_daily_entry_done(
+                    payload,
+                    task_id="legacy-daily-green-bottle-baiye",
+                    task_type="daily_green_bottle_baiye",
+                    label="日常_绿瓶拜谒",
+                    message="掌天瓶已达巅峰，今日绿瓶状态已确认",
+                )
+                with self._lock:
+                    self._set_status_locked("success", "日常_绿瓶拜谒完成，已回到 #34", phase="daily_green_bottle_baiye_done", current_scene=34)
+                    self._log_locked("success", "日常_绿瓶拜谒完成")
+                return "success"
+            raise RuntimeError(f"日常_绿瓶拜谒：进入 #301 但未识别为已达巅峰，OCR={entry_text[:120]}")
         with self._lock:
             self._set_status_locked("running", f"日常_绿瓶拜谒：点击 #{rank_scene_id}「境界排行」", phase="daily_green_bottle_baiye_click_rank", current_scene=rank_scene_id)
             self._log_locked("success", "日常_绿瓶拜谒：已点击 #20「绿瓶」")

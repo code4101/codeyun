@@ -39,9 +39,54 @@ export interface Device {
   owner_id?: number;
 }
 
+const DEVICE_CACHE_KEY = 'codeyun.devices.v1';
+const DEVICE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+type DeviceCachePayload = {
+  savedAt: number;
+  devices: Device[];
+};
+
+const cloneDevices = (devices: Device[]): Device[] => devices.map(device => ({ ...device }));
+
+const restoreCachedDevices = (): Device[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(DEVICE_CACHE_KEY);
+    if (!raw) return [];
+    const payload = JSON.parse(raw) as Partial<DeviceCachePayload>;
+    if (
+      !payload
+      || typeof payload.savedAt !== 'number'
+      || !Array.isArray(payload.devices)
+      || Date.now() - payload.savedAt > DEVICE_CACHE_TTL_MS
+    ) {
+      window.localStorage.removeItem(DEVICE_CACHE_KEY);
+      return [];
+    }
+    return cloneDevices(payload.devices as Device[]);
+  } catch (error) {
+    console.warn('Failed to restore cached devices', error);
+    return [];
+  }
+};
+
+const persistDevices = (devices: Device[]) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const payload: DeviceCachePayload = {
+      savedAt: Date.now(),
+      devices: cloneDevices(devices),
+    };
+    window.localStorage.setItem(DEVICE_CACHE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Failed to persist device cache', error);
+  }
+};
+
 export const taskStore = reactive({
     tasks: {} as Record<string, Task[]>,
-    devices: [] as Device[],
+    devices: restoreCachedDevices() as Device[],
     lastDeviceFetch: 0,
     lastDeviceFetchError: '',
     
@@ -60,17 +105,19 @@ export const taskStore = reactive({
                     owner_id: item.user_id
                 };
             });
-            
+            persistDevices(this.devices);
             this.lastDeviceFetch = Date.now();
             this.lastDeviceFetchError = '';
         } catch (error) {
             console.error('Failed to fetch devices:', error);
-            this.devices = [];
             const detail = (error as any)?.response?.data?.detail;
             const message = typeof detail === 'string' ? detail : (error as any)?.message;
             this.lastDeviceFetchError = typeof message === 'string' && message.trim()
                 ? message
                 : '读取设备列表失败';
+            if (!this.devices.length) {
+                this.devices = [];
+            }
         }
     },
 
@@ -135,6 +182,7 @@ export const taskStore = reactive({
     async reorderDevices(entryIds: string[]) {
         try {
             await api.post('/devices/reorder', entryIds);
+            persistDevices(this.devices);
         } catch (error) {
             console.error('Failed to reorder devices:', error);
             throw error;

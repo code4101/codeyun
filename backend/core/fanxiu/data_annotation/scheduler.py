@@ -41,9 +41,7 @@ _STANDARD_ENABLED_TASK_IDS = {
     "legacy-daily-xianyuan",
     "legacy-daily-vip",
 }
-_DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS = {
-    "legacy-daily-green-bottle-baiye",
-}
+_DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS: set[str] = set()
 _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "legacy-daily-dongtian",
     "legacy-daily-dongtian-clear",

@@ -506,7 +506,7 @@ def test_scheduler_does_not_overwrite_newer_retry_with_stale_success_fact():
     assert tasks[0]["next_time"] is None
 
 
-def test_scheduler_defers_green_bottle_retry_to_5am_reset():
+def test_scheduler_retries_green_bottle_after_cooldown_on_error():
     tasks = [
         {
             "id": "legacy-daily-green-bottle-baiye",
@@ -534,8 +534,8 @@ def test_scheduler_defers_green_bottle_retry_to_5am_reset():
     )
 
     assert changed is True
-    assert repaired[0]["retry_after"] is None
-    assert repaired[0]["next_time"] == "2026-06-29 05:00:00"
+    assert repaired[0]["retry_after"] == "2026-06-29 00:48:59"
+    assert repaired[0]["next_time"] is None
 
 
 def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():

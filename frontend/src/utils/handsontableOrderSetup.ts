@@ -1,5 +1,4 @@
 import { AutoColumnSize } from 'handsontable/plugins/autoColumnSize'
-import { AutoRowSize } from 'handsontable/plugins/autoRowSize'
 import { ContextMenu } from 'handsontable/plugins/contextMenu'
 import { CopyPaste } from 'handsontable/plugins/copyPaste'
 import { ManualColumnResize } from 'handsontable/plugins/manualColumnResize'
@@ -20,7 +19,6 @@ export function registerAttendanceOrderHandsontableModules() {
   registered = true
 
   registerPlugin(AutoColumnSize)
-  registerPlugin(AutoRowSize)
   registerPlugin(ContextMenu)
   registerPlugin(CopyPaste)
   registerPlugin(ManualColumnResize)
