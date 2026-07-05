@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { useUserStore } from '@/store/userStore';
+import { isBootPerfEnabled } from '@/utils/bootPerf';
 
 export const getDeviceEntryPath = (entryId: string, path = '') => {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -18,6 +19,9 @@ api.interceptors.request.use(
     const token = localStorage.getItem('token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    if (isBootPerfEnabled()) {
+      config.headers['X-CodeYun-BootPerf'] = '1';
     }
     return config;
   },

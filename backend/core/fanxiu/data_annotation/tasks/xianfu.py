@@ -453,7 +453,10 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：离开仙府", phase="xianfu_return_leave_home", current_scene=171)
                     self._log_locked("action", f"{task_label}：点击 #171「离开」")
                 leave_shape.click(runtime)
-                yield from runtime.wait_view(34, timeout=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
+                leave_result = yield from runtime.wait_view(86, 34, timeout=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
+                leave_scene_id = leave_result.id if isinstance(leave_result, View) else None
+                if leave_scene_id == 86:
+                    yield from self._confirm_xianfu_leave_to_world(runtime, task_label=task_label)
                 continue
             if scene_id == 172:
                 self._log("warning", f"{task_label}：停在 #172 寻仙台，回退通用场景图返回 #34")

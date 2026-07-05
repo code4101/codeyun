@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { User } from '@element-plus/icons-vue'
 
@@ -351,6 +351,17 @@ function isAccessDeniedStatus(status: number | null) {
   return status === 401 || status === 403
 }
 
+function getCleanWorkbookRouteQuery(targetSheetId?: number | null): LocationQueryRaw {
+  const query: Record<string, string> = {}
+  if (targetSheetId != null) {
+    query.sheet = String(targetSheetId)
+  }
+  if (routeWorkspaceView.value) {
+    query.view = routeWorkspaceView.value
+  }
+  return query
+}
+
 function setResourceAccessIssue(resourceType: ResourceAccessIssue['resourceType'], status: number | null, message?: string) {
   resourceAccessIssue.value = {
     resourceType,
@@ -415,7 +426,7 @@ function syncActiveSheetFromWorkbookRoute() {
   if (nextSheetId != null && nextSheetId !== querySheetId.value) {
     void router.replace({
       path: `/workbook/${workbook.value.id}`,
-      query: { ...route.query, sheet: String(nextSheetId) },
+      query: getCleanWorkbookRouteQuery(nextSheetId),
     })
   }
   return true
@@ -449,7 +460,7 @@ async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
 
   void router.replace({
     path: `/workbook/${targetWorkbookId}`,
-    query: { ...route.query, sheet: String(targetSheetId) },
+    query: getCleanWorkbookRouteQuery(targetSheetId),
   })
   return true
 }
@@ -488,7 +499,7 @@ async function loadWorkbookResource() {
           'resource-view.prefetchSheet',
           () => fetchNoteSheet(targetSheetId, {
             workbookId: targetWorkbookId,
-            includeWorkbookContext: true,
+            includeWorkbookContext: false,
           }),
         ).catch((error) => {
           console.warn('Failed to prefetch workbook sheet:', error)
@@ -527,7 +538,7 @@ async function loadWorkbookResource() {
     if (activeSheetId.value != null && activeSheetId.value !== querySheetId.value) {
       void router.replace({
         path: `/workbook/${detail.id}`,
-        query: { ...route.query, sheet: String(activeSheetId.value) },
+        query: getCleanWorkbookRouteQuery(activeSheetId.value),
       })
     }
   } catch (error) {
@@ -573,7 +584,7 @@ function selectSheet(nextSheetId: number) {
   }
   void router.push({
     path: `/workbook/${workbook.value.id}`,
-    query: { ...route.query, sheet: String(nextSheetId) },
+    query: getCleanWorkbookRouteQuery(nextSheetId),
   })
 }
 
@@ -661,15 +672,9 @@ async function refreshWorkbookAfterSheetMutation(preferredSheetId?: number | nul
     detail.sheets[0]?.id ?? null,
   ].find((id) => id != null && validIds.has(id)) ?? null
   activeSheetId.value = nextSheetId
-  const nextQuery = { ...route.query }
-  if (nextSheetId != null) {
-    nextQuery.sheet = String(nextSheetId)
-  } else {
-    delete nextQuery.sheet
-  }
   void router.replace({
     path: `/workbook/${detail.id}`,
-    query: nextQuery,
+    query: getCleanWorkbookRouteQuery(nextSheetId),
   })
 }
 
@@ -774,17 +779,9 @@ function resolveSheetResourceHref(targetSheetId: number) {
 }
 
 function resolveWorkbookResourceHref(targetWorkbookId: number, targetSheetId?: number | null) {
-  const query: Record<string, string> = {}
-  if (targetSheetId != null) {
-    query.sheet = String(targetSheetId)
-  }
-  if (routeWorkspaceView.value) {
-    query.view = routeWorkspaceView.value
-  }
-
   return router.resolve({
     path: `/workbook/${targetWorkbookId}`,
-    query: Object.keys(query).length ? query : undefined,
+    query: getCleanWorkbookRouteQuery(targetSheetId),
   }).href
 }
 

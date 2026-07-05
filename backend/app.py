@@ -16,6 +16,7 @@ from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
 from backend.api.proxy_traffic_audit import router as proxy_traffic_audit_router
+from backend.api.pokemon_tcg import router as pokemon_tcg_router
 from backend.api.services import control_router as service_control_router
 from backend.api.services import router as services_router
 from backend.api.task_manager import (
@@ -144,6 +145,7 @@ app.include_router(services_router, prefix="/api/services", tags=["services"])
 app.include_router(service_control_router, prefix="/api/service-control", tags=["service-control"])
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
 app.include_router(proxy_traffic_audit_router, prefix="/api/proxy-traffic-audit", tags=["proxy-traffic-audit"])
+app.include_router(pokemon_tcg_router, prefix="/api/pokemon-tcg", tags=["pokemon-tcg"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(
     admin_feature_access_router,

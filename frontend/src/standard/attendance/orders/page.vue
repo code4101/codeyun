@@ -73,6 +73,7 @@ const HOT_TABLE_MAX_VISIBLE_ROWS = 12
 const INPUT_TABLE_MIN_VISIBLE_ROWS = 6
 const QUERY_TABLE_MIN_VISIBLE_ROWS = 4
 const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const SECONDARY_DRAFT_RESTORE_DELAY_MS = 300
 
 const loading = ref(false)
 const querying = ref(false)
@@ -114,6 +115,9 @@ let hotTableComponentLoader: Promise<unknown> | null = null
 let hotTableAssetsLoader: Promise<void> | null = null
 let refundHistoryLoadPromise: Promise<void> | null = null
 let refundHistoryDeferredTimer: number | null = null
+let secondaryDraftRestoreFrame: number | null = null
+let secondaryDraftRestoreTimer: number | null = null
+let secondaryDraftsReady = false
 
 const loadHotTableAssets = async () => {
   if (!hotTableAssetsLoader) {
@@ -1018,6 +1022,50 @@ function clearRefundHistoryDeferredTimer() {
   refundHistoryPending.value = false
 }
 
+function restoreSecondaryDrafts() {
+  const queryKey = queryDraftStorageKey.value
+  if (queryKey) {
+    restoreQueryDraftRows(queryKey)
+  }
+
+  const refundKey = refundDraftStorageKey.value
+  if (refundKey) {
+    restoreRefundDraftRows(refundKey)
+  }
+
+  const detailKey = detailDraftStorageKey.value
+  if (detailKey) {
+    restoreDetailDraftValue(detailKey)
+  }
+}
+
+function clearSecondaryDraftRestoreFrame() {
+  if (secondaryDraftRestoreFrame !== null) {
+    window.cancelAnimationFrame(secondaryDraftRestoreFrame)
+    secondaryDraftRestoreFrame = null
+  }
+}
+
+function clearSecondaryDraftRestoreTimer() {
+  if (secondaryDraftRestoreTimer !== null) {
+    window.clearTimeout(secondaryDraftRestoreTimer)
+    secondaryDraftRestoreTimer = null
+  }
+}
+
+function scheduleSecondaryDraftRestore() {
+  if (!secondaryDraftsReady) return
+  clearSecondaryDraftRestoreFrame()
+  clearSecondaryDraftRestoreTimer()
+  secondaryDraftRestoreFrame = window.requestAnimationFrame(() => {
+    secondaryDraftRestoreFrame = null
+    secondaryDraftRestoreTimer = window.setTimeout(() => {
+      secondaryDraftRestoreTimer = null
+      restoreSecondaryDrafts()
+    }, SECONDARY_DRAFT_RESTORE_DELAY_MS)
+  })
+}
+
 function scheduleRefundHistoryLoad(delayMs = 0) {
   if (refundHistoryLoaded.value || refundHistoryLoading.value || refundHistoryLoadPromise || refundHistoryDeferredTimer !== null) {
     return
@@ -1331,28 +1379,25 @@ watch(
 watch(
   queryDraftStorageKey,
   (storageKey) => {
-    if (!storageKey) return
+    if (!storageKey || !secondaryDraftsReady) return
     restoreQueryDraftRows(storageKey)
-  },
-  { immediate: true }
+  }
 )
 
 watch(
   refundDraftStorageKey,
   (storageKey) => {
-    if (!storageKey) return
+    if (!storageKey || !secondaryDraftsReady) return
     restoreRefundDraftRows(storageKey)
-  },
-  { immediate: true }
+  }
 )
 
 watch(
   detailDraftStorageKey,
   (storageKey) => {
-    if (!storageKey) return
+    if (!storageKey || !secondaryDraftsReady) return
     restoreDetailDraftValue(storageKey)
-  },
-  { immediate: true }
+  }
 )
 
 watch(
@@ -1391,11 +1436,20 @@ onMounted(() => {
   if (userStore.isAuthenticated && !userStore.user && !userStore.loading) {
     void userStore.fetchUserProfile()
   }
-  void loadPageData()
+  void (async () => {
+    try {
+      await loadPageData()
+    } finally {
+      secondaryDraftsReady = true
+      scheduleSecondaryDraftRestore()
+    }
+  })()
 })
 
 onBeforeUnmount(() => {
   clearRefundHistoryDeferredTimer()
+  clearSecondaryDraftRestoreFrame()
+  clearSecondaryDraftRestoreTimer()
   cleanupOrderViewportObserver()
 })
 </script>
