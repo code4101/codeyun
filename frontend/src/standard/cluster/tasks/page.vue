@@ -29,6 +29,8 @@ const RuntimeSystemMetricsChart = defineAsyncComponent(
   () => import('@/components/RuntimeSystemMetricsChart.vue')
 );
 
+const RUNTIME_SELECTED_DEVICE_KEY = 'codeyun.runtime-selected-device.v1';
+
 const router = useRouter();
 const route = useRoute();
 const devices = computed(() => taskStore.devices);
@@ -160,11 +162,47 @@ const addJobTypeLoadingKey = ref('');
 const scheduleDialogVisible = ref(false);
 const scheduleTarget = ref<RuntimeItem | null>(null);
 const deviceDialogVisible = ref(false);
-const currentDeviceId = ref<string>(
-  Array.isArray(route.query.entry_id)
+const readStoredRuntimeDeviceId = () => {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(RUNTIME_SELECTED_DEVICE_KEY) || '';
+  } catch (error) {
+    console.warn('Failed to read runtime selected device cache', error);
+    return '';
+  }
+};
+const persistRuntimeDeviceId = (deviceId: string) => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (deviceId) {
+      window.localStorage.setItem(RUNTIME_SELECTED_DEVICE_KEY, deviceId);
+    } else {
+      window.localStorage.removeItem(RUNTIME_SELECTED_DEVICE_KEY);
+    }
+  } catch (error) {
+    console.warn('Failed to persist runtime selected device cache', error);
+  }
+};
+const resolveInitialRuntimeDeviceId = () => {
+  const routeEntryId = Array.isArray(route.query.entry_id)
     ? (route.query.entry_id[0] || '')
-    : ((route.query.entry_id as string) || (Array.isArray(route.query.device_id) ? (route.query.device_id[0] || '') : ((route.query.device_id as string) || '')))
-);
+    : ((route.query.entry_id as string) || '');
+  if (routeEntryId) return routeEntryId;
+
+  const routeDeviceId = Array.isArray(route.query.device_id)
+    ? (route.query.device_id[0] || '')
+    : ((route.query.device_id as string) || '');
+  if (routeDeviceId) return routeDeviceId;
+
+  const storedDeviceId = readStoredRuntimeDeviceId();
+  if (!storedDeviceId) {
+    return taskStore.devices[0]?.id || '';
+  }
+
+  const cachedDevice = taskStore.devices.find(device => device.id === storedDeviceId || device.device_id === storedDeviceId);
+  return cachedDevice?.id || taskStore.devices[0]?.id || storedDeviceId;
+};
+const currentDeviceId = ref<string>(resolveInitialRuntimeDeviceId());
 const primeRuntimeStatusCache = (deviceId: string) => {
   if (!deviceId || runtimeStatuses.value[deviceId]) {
     return false;
@@ -423,6 +461,7 @@ const startEditingDevice = () => {
 
 // Watch for device switching to refresh tasks and restart polling
 watch(currentDeviceId, async (newId, oldId) => {
+  persistRuntimeDeviceId(newId || '');
   if (newId && newId !== oldId) {
     stopEditingDevice();
     deviceError.value = false;

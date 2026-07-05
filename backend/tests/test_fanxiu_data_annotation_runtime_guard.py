@@ -5797,6 +5797,68 @@ def test_daily_green_bottle_baiye_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
+def test_daily_green_bottle_baiye_treats_peak_bottle_detail_as_done(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            20: _image("绿瓶", "0020.png", []),
+            282: _image("0282.png", "0282.png", []),
+            283: _image("0283.png", "0283.png", []),
+        },
+    }
+    calls: list[tuple[str, object]] = []
+    records: list[dict[str, object]] = []
+
+    class FakeRuntime:
+        def goto_view(self, scene_id):
+            calls.append(("goto_view", scene_id))
+            if False:
+                yield None
+
+        def current_scene(self, preferred=None, update=False):
+            calls.append(("current_scene", tuple(preferred or ())))
+            if preferred == [20]:
+                return 20, 91.0, "frame20"
+            if preferred == [282, 301, 20]:
+                return 301, 85.0, "frame301"
+            if preferred == [34]:
+                return 34, 100.0, "frame34"
+            return None, 0.0, None
+
+        def wait_click(self, scene_id, shape_title):
+            calls.append(("wait_click", (scene_id, shape_title)))
+            if False:
+                yield None
+
+        def wait_action_settle(self, seconds):
+            calls.append(("settle", seconds))
+            if False:
+                yield None
+
+        def ocr_text(self, frame=None, update=False):
+            calls.append(("ocr_text", frame))
+            return "掌天瓶 桎梏境界 金仙前期 已达巅峰"
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_record_daily_entry_done", lambda payload, **kwargs: records.append(kwargs))
+
+    result = _drain_generator(runner._execute_daily_green_bottle_baiye_task(ctx, FakeStopEvent(), {}))
+
+    assert result == "success"
+    assert ("wait_click", (301, "返回")) in calls
+    assert ("goto_view", 34) in calls
+    assert records[0]["task_id"] == "legacy-daily-green-bottle-baiye"
+    assert records[0]["message"] == "掌天瓶已达巅峰，今日绿瓶状态已确认"
+
+
 def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image20 = _image("绿瓶", "0020.png", [
@@ -6920,6 +6982,76 @@ def test_daily_assistant_accepts_world_like_text_without_storage_bag_word():
     runner = create_fanxiu_runtime_runner()
 
     assert runner._daily_assistant_text_is_world_like("止清羊驼角色装备星海功法书 修为：14.5亿")
+
+
+def test_daily_assistant_one_key_rejects_direct_world_without_result(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def wait_click(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+        def wait_action_settle(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+        def current_scene(self, *_args, **_kwargs):
+            return 34, 100.0, "world"
+
+        def ocr_text(self, _frame):
+            return "世界 大地图 角色 装备"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _drain_generator(runner._run_daily_assistant_one_key_from_overview(
+            {"images": {}},
+            FakeStopEvent(),
+            {},
+            _image("小助手总览", "0204.png", [{"title": "一键执行"}]),
+        ))
+
+    _assert_daily_assistant_unverified_error(exc_info, "直接回到 #34")
+
+
+def test_daily_assistant_one_key_rejects_overview_without_result(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def wait_click(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+        def wait_action_settle(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+        def current_scene(self, *_args, **_kwargs):
+            return 204, 100.0, "overview"
+
+        def ocr_text(self, _frame):
+            return "小助手 一键执行 游历 妖王来袭"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _drain_generator(runner._run_daily_assistant_one_key_from_overview(
+            {"images": {}},
+            FakeStopEvent(),
+            {"assistant_one_key_confirm_timeout": 0.001},
+            _image("小助手总览", "0204.png", [{"title": "一键执行"}]),
+        ))
+
+    _assert_daily_assistant_unverified_error(exc_info, "仍在小助手总览")
 
 
 def test_world_scene_leave_matches_only_right_side_leave_text():
@@ -10657,10 +10789,10 @@ def test_daily_signup_flow_reads_like_business_steps():
 
     result = _drain_generator(runner.日常报名流程(runtime))
 
-    assert result == {"result": "success", "claimed": 2}
+    assert result == {"result": "success", "claimed": 2, "signup_page_opened": True, "evidence": "claimed_rewards"}
     assert runtime.actions == [
         ("wait_click_then_view", 34, "日常", 69),
-        ("wait_click", 75, "活动报名"),
+        ("wait_click_then_view", 75, "活动报名", 23),
         ("wait_view", 23),
         ("ocr_rows", 23, "报名列"),
         ("point", 23, 720.0, 415.0),
@@ -10691,7 +10823,7 @@ def test_daily_signup_stops_scanning_when_claim_returns_daily_page():
 
     result = _drain_generator(runner.日常报名流程(runtime))
 
-    assert result == {"result": "success", "claimed": 1}
+    assert result == {"result": "success", "claimed": 1, "signup_page_opened": True, "evidence": "claimed_rewards"}
     assert ("point", 23, 720.0, 637.5) not in runtime.actions
 
 
@@ -10701,8 +10833,20 @@ def test_daily_signup_flow_returns_world_when_already_done():
 
     result = _drain_generator(runner.日常报名流程(runtime))
 
-    assert result == {"result": "success", "claimed": 0, "already_done": True}
-    assert runtime.actions == [("goto", 69), ("goto", 34)]
+    assert result["result"] == "skipped"
+    assert result["claimed"] == 0
+    assert "未领取任何报名项" in result["message"]
+    assert runtime.actions == [
+        ("goto", 69),
+        ("wait_click_then_view", 75, "活动报名", 23),
+        ("wait_view", 23),
+        ("ocr_rows", 23, "报名列"),
+        ("scroll", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
+        ("scroll", 23, "报名列"),
+        ("wait_click", 23, "返回"),
+        ("goto", 34),
+    ]
 
 
 def test_daily_signup_activity_page_is_successful_idempotent_tail():
@@ -10711,7 +10855,7 @@ def test_daily_signup_activity_page_is_successful_idempotent_tail():
 
     result = _drain_generator(runner.日常报名流程(runtime))
 
-    assert result == {"result": "success", "claimed": 1, "activity_opened": True}
+    assert result == {"result": "success", "claimed": 1, "activity_opened": True, "evidence": "activity_page"}
     assert runtime.actions == [("point", 23, 80.0, 1482.0), ("wait_view", 34)]
 
 
@@ -11279,7 +11423,14 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     ]
 
 
-def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"stop_after_daily_entry": True},
+        {"debug": {"stop_after_daily_entry": True}},
+    ],
+)
+def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch, payload):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
@@ -11323,9 +11474,7 @@ def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
 
-    result = _drain_generator(
-        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {"stop_after_daily_entry": True})
-    )
+    result = _drain_generator(runner._execute_daily_mojie_raid_task(ctx, threading.Event(), payload))
 
     assert result == "skipped"
     assert calls == [

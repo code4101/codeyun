@@ -210,7 +210,7 @@ import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
-import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
+import { ensureNoteTypePaletteLoaded, getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
@@ -589,6 +589,9 @@ const currentListQueryIncludesCustomFields = () => {
 };
 
 onMounted(() => {
+  ensureNoteTypePaletteLoaded().catch(error => {
+    console.warn('Failed to load note category palette:', error);
+  });
   const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
   if (!hasCachedNotes || (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields())) {
     void refreshData();

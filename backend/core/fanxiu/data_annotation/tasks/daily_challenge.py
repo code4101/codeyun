@@ -1752,17 +1752,20 @@ class DailyChallengeTaskMixin:
 
         confirm_timeout = float(payload.get("assistant_one_key_confirm_timeout") or 20.0)
         start = time.monotonic()
+        execution_evidence = ""
         while True:
             self._raise_if_stopped(stop_event)
             scene_id, score, frame = runtime.current_scene([276, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             if scene_id in {69, 34}:
-                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=int(scene_id))
-                self._log("success", f"日常_助手：一键执行后回到 #{scene_id}，按已处理收尾")
-                return "success"
+                raise RuntimeError(
+                    "日常_助手：不能把未确认执行结果标记为成功；"
+                    f"点击一键执行后直接回到 #{scene_id}，未看到 #276/#277/#275/#237"
+                )
             if scene_id == 276 or self._daily_assistant_text_is_one_key_confirm(text):
                 if not isinstance(image276, dict) or self._find_shape(image276, "是") is None:
                     raise RuntimeError("日常_助手：检测到一键执行消耗确认，但缺少 #276「是」标注")
+                execution_evidence = "confirm"
                 with self._lock:
                     self._set_status_locked(
                         "running",
@@ -1775,12 +1778,14 @@ class DailyChallengeTaskMixin:
                 yield from runtime.wait_action_settle(float(payload.get("assistant_one_key_confirm_settle_seconds") or 2.0))
                 break
             if scene_id == 277 or self._daily_assistant_text_is_one_key_progress(text):
+                execution_evidence = "progress"
                 break
             if time.monotonic() - start >= confirm_timeout:
                 if self._daily_assistant_scene_or_text_is_list(scene_id, text):
-                    yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
-                    self._log("success", "日常_助手：一键执行后仍在小助手总览，按已完成/无需重复执行收尾")
-                    return "success"
+                    raise RuntimeError(
+                        "日常_助手：不能把未确认执行结果标记为成功；"
+                        "点击一键执行后仍在小助手总览，未看到 #276/#277/#275/#237"
+                    )
                 raise TimeoutError(
                     "日常_助手：点击一键执行后未检测到消耗确认或执行落点，"
                     f"最后 #{scene_id or 'unknown'} {score:.0f}%，OCR={text[:120]}"
@@ -1833,13 +1838,19 @@ class DailyChallengeTaskMixin:
                 self._log("success", "日常_助手：新版小助手一键执行结果已关闭")
                 return "success"
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
+                if not execution_evidence:
+                    raise RuntimeError(
+                        "日常_助手：不能把未确认执行结果标记为成功；"
+                        "当前已在小助手总览，但没有确认/进度/结果证据"
+                    )
                 yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
-                self._log("success", "日常_助手：新版小助手一键执行已确认，当前已在总览")
+                self._log("success", f"日常_助手：新版小助手一键执行已确认，当前已在总览，证据={execution_evidence}")
                 return "success"
             if scene_id in {69, 34}:
-                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=int(scene_id))
-                self._log("success", f"日常_助手：新版小助手一键执行后回到 #{scene_id}")
-                return "success"
+                raise RuntimeError(
+                    "日常_助手：不能把未确认执行结果标记为成功；"
+                    f"一键执行后回到 #{scene_id}，但未经过 #275/#237 结果页或 #204 总览复核"
+                )
             if time.monotonic() - start >= result_timeout:
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 raise TimeoutError(

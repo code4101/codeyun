@@ -8,11 +8,9 @@ class SignupMiscTaskMixin:
         起点状态 = yield from self._日常报名进入日常页(runtime)
         if 起点状态 == "活动页":
             yield from self._日常报名返回世界(runtime)
-            return {"result": "success", "claimed": 1, "activity_opened": True}
-        入口状态 = "报名页" if 起点状态 == "报名页" else (yield from self._日常报名打开活动报名(runtime))
-        if 入口状态 == "已完成":
-            yield from runtime.goto_view(34)
-            return {"result": "success", "claimed": 0, "already_done": True}
+            return {"result": "success", "claimed": 1, "activity_opened": True, "evidence": "activity_page"}
+        if 起点状态 != "报名页":
+            yield from self._日常报名打开活动报名(runtime)
 
         领取数量 = yield from self._日常报名处理报名列(runtime)
         yield from self._日常报名返回日常页(runtime)
@@ -23,7 +21,7 @@ class SignupMiscTaskMixin:
                 "claimed": 0,
                 "message": "日常_报名：未领取任何报名项，不能确认最后两条已处理，稍后重试",
             }
-        return {"result": "success", "claimed": 领取数量}
+        return {"result": "success", "claimed": 领取数量, "signup_page_opened": True, "evidence": "claimed_rewards"}
 
     def _日常报名进入日常页(self, runtime: Any):
         scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
@@ -56,31 +54,19 @@ class SignupMiscTaskMixin:
         current_text = runtime.ocr_text(runtime.cur_frame(update=True))
         if self._日常报名文本是报名页(current_text):
             return "报名页"
-        max_scrolls = int(getattr(runtime, "payload", {}).get("max_scrolls", 30) or 30)
-        for scroll_index in range(max(1, max_scrolls) + 1):
-            if hasattr(runtime, "daily_entry_matches"):
-                matches = runtime.daily_entry_matches(title_pattern=r"活动报名")
-            else:
-                if getattr(runtime, "claim_available", True) is False:
-                    return "已完成"
-                matches = ["活动报名"]
-            if matches:
-                yield from runtime.wait_click(75, "活动报名")
-                opened_state = yield from runtime.wait_any(
-                    {
-                        "scene": runtime.view_visible(23),
-                        "已完成": runtime.ocr_contains(all_of=("已完成",), label="日常_报名：活动报名已完成"),
-                        "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
-                    },
-                    label="日常_报名：等待报名列表 #23",
-                )
-                if opened_state == "已完成":
-                    return "已完成"
-                return "报名页"
-            if scroll_index >= max_scrolls:
-                break
-            yield from runtime.scroll_shape_content(69, "滚动窗口", direction="down")
-        raise RuntimeError("日常_报名：#69 日常列表未找到「活动报名」入口")
+        if hasattr(runtime, "wait_click_then_view"):
+            yield from runtime.wait_click_then_view(75, "活动报名", 23, label="日常_报名：打开活动报名 #23")
+        else:
+            yield from runtime.wait_click(75, "活动报名")
+            yield from runtime.wait_view(23)
+        yield from runtime.wait_any(
+            {
+                "scene": runtime.view_visible(23),
+                "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
+            },
+            label="日常_报名：等待报名列表 #23",
+        )
+        return "报名页"
 
     def _日常报名处理报名列(self, runtime: Any) -> int:
         领取数量 = 0
