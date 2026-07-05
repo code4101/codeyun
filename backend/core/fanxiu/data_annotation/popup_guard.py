@@ -348,6 +348,54 @@ class PopupGuardMixin:
         )
         return True
 
+    def _popup_guard_leave_confirm_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return bool(("是否离开" in compact or "离开当前场景" in compact) and ("确认" in compact or "确定" in compact))
+
+    def _handle_auto_close_popup_47_leave_confirm_ocr(
+        self,
+        runtime: Any,
+        popup_view: View,
+        event: dict[str, Any],
+    ) -> bool:
+        try:
+            text = runtime.ocr_text(runtime.cur_frame(update=False))
+        except Exception:
+            return False
+        if not self._popup_guard_leave_confirm_text(text):
+            return False
+        for view_id in self._LEAVE_CONFIRM_VIEW_IDS:
+            child_view = runtime.get_view(int(view_id), root=popup_view) or runtime.get_view(int(view_id))
+            if child_view is None:
+                continue
+            confirm_shape = child_view.get_shape("确认") or child_view.get_shape("确定")
+            if confirm_shape is None:
+                continue
+            child_score = runtime.popup_score(child_view)
+            child_event = {
+                **event,
+                "image": f"#{int(view_id)}",
+                "title": child_view.title,
+                "score": round(float(child_score or 0.0), 1),
+                "parent_score": event.get("score"),
+                "ocr": _sanitize_ocr_text(text)[:120],
+            }
+            runtime.click_shape(child_view, confirm_shape)
+            self._record_popup_guard_click(
+                int(view_id),
+                f"守护处理：#47/#{int(view_id)} OCR离开确认点击「{confirm_shape.title or '确认'}」 {event.get('score', 0):.0f}%/{float(child_score or 0.0):.0f}%",
+                child_event,
+                confirm_shape.title or "确认",
+            )
+            return True
+        self._record_popup_guard_missing(
+            None,
+            "守护命中：#47 OCR离开确认，但缺少 #86/#289「确认」标注",
+            {**event, "ocr": _sanitize_ocr_text(text)[:120]},
+            "missing_leave_confirm",
+        )
+        return True
+
     def _handle_auto_close_popup_47_child_84(
         self,
         runtime: Any,
@@ -658,6 +706,8 @@ class PopupGuardMixin:
                 event,
                 allow_confirm_actions=allow_confirm_actions,
             ):
+                return True
+            if view.id == 47 and self._handle_auto_close_popup_47_leave_confirm_ocr(runtime, view, event):
                 return True
 
             try:

@@ -279,11 +279,16 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败'
 }
 
+function isCurrentLoadRequest(entryId: string, requestToken: number) {
+  return requestToken === loadRequestToken && entryId === currentEntryId.value
+}
+
 async function refreshDevices() {
   deviceLoading.value = true
   try {
     await taskStore.fetchDevices()
-    if (!currentEntryId.value && devices.value.length) {
+    const hasCurrentDevice = devices.value.some(device => device.id === currentEntryId.value)
+    if ((!currentEntryId.value || !hasCurrentDevice) && devices.value.length) {
       selectDevice(devices.value[0].id, false)
     }
   } finally {
@@ -307,28 +312,43 @@ async function loadCurrentDevice() {
   const entryId = currentEntryId.value
   const requestToken = ++loadRequestToken
   summaryLoading.value = true
-  tokensLoading.value = userStore.isAdmin
-  const [summaryResult, tokensResult] = await Promise.allSettled([
-    fetchClusterServiceSummary(entryId, ocrSummaryOptions),
-    userStore.isAdmin ? fetchClusterServiceTokens(entryId) : Promise.resolve<ServiceAccessToken[] | null>(null),
-  ])
-  if (requestToken !== loadRequestToken || entryId !== currentEntryId.value) {
+  const summaryPromise = fetchClusterServiceSummary(entryId, ocrSummaryOptions)
+    .then((payload) => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      summary.value = payload
+    })
+    .catch((error) => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      ElMessage.error(getErrorMessage(error))
+    })
+    .finally(() => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      summaryLoading.value = false
+    })
+
+  if (!userStore.isAdmin) {
+    tokens.value = []
+    tokensLoading.value = false
+    await summaryPromise
     return
   }
-  if (summaryResult.status === 'fulfilled') {
-    summary.value = summaryResult.value
-  } else {
-    ElMessage.error(getErrorMessage(summaryResult.reason))
-  }
-  summaryLoading.value = false
-  if (userStore.isAdmin) {
-    if (tokensResult.status === 'fulfilled') {
-      tokens.value = tokensResult.value || []
-    } else {
-      ElMessage.error(getErrorMessage(tokensResult.reason))
-    }
-    tokensLoading.value = false
-  }
+
+  tokensLoading.value = true
+  const tokensPromise = fetchClusterServiceTokens(entryId)
+    .then((payload) => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      tokens.value = payload || []
+    })
+    .catch((error) => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      ElMessage.error(getErrorMessage(error))
+    })
+    .finally(() => {
+      if (!isCurrentLoadRequest(entryId, requestToken)) return
+      tokensLoading.value = false
+    })
+
+  await Promise.allSettled([summaryPromise, tokensPromise])
 }
 
 async function resetOcr() {
@@ -501,7 +521,7 @@ onMounted(async () => {
     mountingInitialDevice = true
     initialLoadStarted = false
     const queryEntryId = Array.isArray(route.query.entry_id) ? route.query.entry_id[0] : route.query.entry_id
-    currentEntryId.value = queryEntryId || ''
+    currentEntryId.value = queryEntryId || devices.value[0]?.id || ''
     await refreshDevices()
     if (!currentEntryId.value && devices.value.length) {
       currentEntryId.value = devices.value[0].id
@@ -681,6 +701,8 @@ h3 {
   min-height: 34px;
   padding: 4px 0;
   border-top: 1px solid #edf2f7;
+  content-visibility: auto;
+  contain-intrinsic-size: 34px;
 }
 
 .token-row:first-child {

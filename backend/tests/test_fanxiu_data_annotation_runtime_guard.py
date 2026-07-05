@@ -3374,6 +3374,40 @@ def test_auto_close_guard_popup_47_child_289_clicks_confirm(tmp_path, monkeypatc
     assert clicked == [("0289.png", "确认")]
 
 
+def test_auto_close_guard_popup_47_leave_confirm_ocr_fallback_clicks_confirm(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.64, "w": 0.18, "h": 0.06}
+    child_289 = _image("0289.png", "0289.png", [
+        {"id": "identity", "kind": "rect", "title": "退出灵脉", "isSceneIdentity": True, "x": 0.3, "y": 0.42, "w": 0.4, "h": 0.08},
+        confirm_shape,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [
+        {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
+    ])
+    popup_47["children"] = [child_289]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+
+    def popup_score(_ctx, image, _frame):
+        if image["title"] == "所有提示窗口":
+            return 70
+        if image["title"] == "0289.png":
+            return 0
+        return 0
+
+    monkeypatch.setattr(runner, "_popup_score", popup_score)
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [{"text": "是否离开当前场景 取消 确认"}])
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(
+        runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
+        allow_confirm_actions=False,
+    )
+    assert clicked == [("0289.png", "确认")]
+
+
 def test_auto_close_guard_popup_47_child_287_clicks_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.58, "y": 0.64, "w": 0.2, "h": 0.05}

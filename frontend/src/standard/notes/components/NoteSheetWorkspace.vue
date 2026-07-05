@@ -666,6 +666,7 @@ type SheetPerfLogContext = Partial<Omit<SheetPerfLogEntry, 'id' | 'type' | 'at' 
 
 type SheetPerfPatchedHandsontable = Handsontable & {
   __codeyunSheetPerfPatched?: boolean
+  __codeyunSheetPerfPendingRenderReason?: string
   __codeyunSheetPerfOriginalRender?: (...args: unknown[]) => unknown
   __codeyunSheetPerfOriginalUpdateSettings?: (...args: unknown[]) => unknown
   __codeyunSheetPerfOriginalLoadData?: (...args: unknown[]) => unknown
@@ -2109,15 +2110,20 @@ function patchSheetPerfHotInstance() {
 
   hot.render = (...args: unknown[]) => {
     const start = getSheetPerfNow()
-    const result = originalRender(...args)
-    recordSheetPerfEvent('handsontable.renderCall', {
-      duration: roundSheetPerfMs(getSheetPerfNow() - start),
-      detail: {
-        ...getSheetPerfSelectedCellContext(),
-        stack: getSheetPerfStackTrace(),
-      },
-    })
-    return result
+    const reason = hot.__codeyunSheetPerfPendingRenderReason ?? ''
+    try {
+      return originalRender(...args)
+    } finally {
+      delete hot.__codeyunSheetPerfPendingRenderReason
+      recordSheetPerfEvent('handsontable.renderCall', {
+        duration: roundSheetPerfMs(getSheetPerfNow() - start),
+        detail: {
+          reason: reason || 'unattributed',
+          ...getSheetPerfSelectedCellContext(),
+          stack: getSheetPerfStackTrace(),
+        },
+      })
+    }
   }
 
   hot.updateSettings = (...args: unknown[]) => {
@@ -2172,7 +2178,23 @@ function unpatchSheetPerfHotInstance() {
   delete hot.__codeyunSheetPerfOriginalRender
   delete hot.__codeyunSheetPerfOriginalUpdateSettings
   delete hot.__codeyunSheetPerfOriginalLoadData
+  delete hot.__codeyunSheetPerfPendingRenderReason
   delete hot.__codeyunSheetPerfPatched
+}
+
+function renderHotWithReason(hot: Handsontable | null | undefined, reason: string) {
+  if (!hot) {
+    return
+  }
+  const patchedHot = hot as SheetPerfPatchedHandsontable
+  if (sheetPerfLoggingEnabled.value && patchedHot.__codeyunSheetPerfPatched) {
+    patchedHot.__codeyunSheetPerfPendingRenderReason = reason
+  }
+  hot.render()
+}
+
+function renderCurrentHotWithReason(reason: string) {
+  renderHotWithReason(getHotInstance(), reason)
 }
 
 function startSheetPerfFrameMonitor() {
@@ -3007,7 +3029,7 @@ function restoreSheetWorkspaceViewFromLocalStorage(options?: { applyInitialWorks
   if (nextView === 'sheet') {
     void nextTick(() => {
       void updateSheetViewportHeight()
-      getHotInstance()?.render()
+      renderCurrentHotWithReason('workspace-view-restore')
     })
   }
 }
@@ -3023,7 +3045,7 @@ function setSheetWorkspaceView(view: SheetWorkspaceView) {
   persistSheetWorkspaceViewToLocalStorage(view)
   if (view === 'sheet') {
     void updateSheetViewportHeight().then(() => {
-      getHotInstance()?.render()
+      renderCurrentHotWithReason('workspace-view-switch')
     })
   }
 }
@@ -4439,6 +4461,7 @@ let sheetRemoteConflictActive = false
 let cellPatchQueue: Promise<void> = Promise.resolve()
 let cellPatchInFlight = false
 let suppressNextRemoteSaveWatcher = false
+let suppressNextFormulaDisplayStructureWatcher = false
 let loadedSheetContentIdentity = ''
 let sheetResourceSocket: WebSocket | null = null
 let sheetResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -5894,7 +5917,7 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
     if (status.status !== 'idle') {
       userMatchUseBrowserFallback.value = status.use_browser_fallback
       applyRegistrationActionRunSheetDetail(status)
-      getHotInstance()?.render()
+      renderCurrentHotWithReason('registration-run-poll')
     }
     if (isRegistrationMatchRunActive(status)) {
       scheduleUserMatchRunPolling()
@@ -5970,7 +5993,7 @@ async function refreshClockinLinkDetectionRunStatus(runId?: string, options: { s
     clockinLinkDetectionRunStatus.value = status.status === 'idle' ? null : status
     if (status.status !== 'idle') {
       applyClockinLinkDetectionRunSheetDetail(status)
-      getHotInstance()?.render()
+      renderCurrentHotWithReason('clockin-link-detection-poll')
     }
     if (isClockinLinkDetectionRunActive(status)) {
       scheduleClockinLinkDetectionRunPolling()
@@ -6157,7 +6180,7 @@ async function startClockinLinkDetectionRun(forceRestart = false) {
     )
     clockinLinkDetectionRunStatus.value = status
     applyClockinLinkDetectionRunSheetDetail(status)
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('clockin-link-detection-start')
     ElMessage.success(status.already_running ? '已有打卡链接检测任务正在运行' : '已在后台开始自动检测打卡链接')
     if (isClockinLinkDetectionRunActive(status)) {
       scheduleClockinLinkDetectionRunPolling()
@@ -6255,7 +6278,7 @@ async function applyRegistrationMatchAction(
     )
     userMatchRunStatus.value = status
     applyRegistrationActionRunSheetDetail(status)
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('registration-action-start')
     ElMessage.success(status.already_running ? '已有报名表任务正在运行' : `已在后台开始${SHEET_CELL_ACTION_LABELS[type]}`)
     if (isRegistrationMatchRunActive(status)) {
       scheduleUserMatchRunPolling()
@@ -6302,7 +6325,7 @@ async function startUserMatchRun(forceRestart = false, useBrowserFallback = user
     userMatchRunStatus.value = status
     userMatchUseBrowserFallback.value = status.use_browser_fallback
     applyRegistrationActionRunSheetDetail(status)
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('registration-user-match-start')
     closeUserMatchDialog()
     ElMessage.success(status.already_running ? '已有用户匹配任务正在运行' : '已在后台开始用户匹配')
     if (isRegistrationMatchRunActive(status)) {
@@ -8147,6 +8170,23 @@ function mergeCellMetaEntries(
   })
 }
 
+function reconcileHeaderEntityCellMeta(
+  normalizedMeta: SheetCellMeta | null | undefined,
+  existingMeta: SheetCellMeta | null | undefined,
+) {
+  const mergedMeta = mergeCellMetaEntries(normalizedMeta, existingMeta)
+  if (!mergedMeta) {
+    return null
+  }
+  const nextMeta: SheetCellMeta = { ...mergedMeta }
+  if (normalizedMeta?.action) {
+    nextMeta.action = normalizedMeta.action
+  } else {
+    delete nextMeta.action
+  }
+  return normalizeCellMetaEntry(nextMeta)
+}
+
 function replaceEntityCellMeta(entry: SheetEntityCell, meta: SheetCellMeta | null): SheetEntityCell {
   const nextEntry = { ...entry }
   delete nextEntry.link
@@ -8259,7 +8299,7 @@ function addLegacySheetCellActions(
       }
       const key = createCellMetaKey(rowIndex, columnIndex)
       const currentMeta = sourceMeta[key]
-      if (currentMeta?.action) {
+      if (currentMeta?.action?.type === actionType) {
         return
       }
       pendingActions.push({ key, actionType })
@@ -8282,33 +8322,159 @@ function addLegacySheetCellActions(
   return normalizeCellMetaMap(nextMeta, columnCount)
 }
 
+function pruneInvalidRegistrationHeaderActions(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  headers: string[],
+  dataStartRow: number,
+) {
+  if (dataStartRow <= 0 || !Object.keys(sourceMeta).length) {
+    return sourceMeta
+  }
+
+  let changed = false
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  for (const [key, meta] of Object.entries(sourceMeta)) {
+    const position = parseCellMetaKey(key)
+    const action = meta?.action
+    if (!position || !action || position.row >= dataStartRow) {
+      continue
+    }
+    if (
+      action.type !== SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT
+      && action.type !== SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+      && action.type !== SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+      && action.type !== SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
+    ) {
+      continue
+    }
+    if (
+      isSheetCellActionAllowedInRows(
+        action,
+        position.row,
+        position.column,
+        headers,
+        normalizedGridRows,
+        dataStartRow,
+      )
+    ) {
+      continue
+    }
+
+    const nextEntry = { ...meta }
+    delete nextEntry.action
+    if (Object.keys(nextEntry).length) {
+      nextMeta[key] = nextEntry
+    } else {
+      delete nextMeta[key]
+    }
+    changed = true
+  }
+
+  return changed ? normalizeCellMetaMap(nextMeta, headers.length) : sourceMeta
+}
+
+function finalizeNormalizedSheetCellMeta(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  headers: string[],
+  dataStartRow: number,
+  normalizeTrace?: SheetPerfTrace | null,
+) {
+  const cellMetaWithLegacyActions = addLegacySheetCellActions(
+    sourceMeta,
+    normalizedGridRows,
+    headers.length,
+  )
+  normalizeTrace?.mark('cell-meta-legacy-actions')
+  const cellMetaWithPrunedRegistrationActions = pruneInvalidRegistrationHeaderActions(
+    cellMetaWithLegacyActions,
+    normalizedGridRows,
+    headers,
+    dataStartRow,
+  )
+  normalizeTrace?.mark('cell-meta-registration-pruned-actions')
+  const cellMetaWithRegistrationAddAction = addDefaultRegistrationAddStudentAction(
+    cellMetaWithPrunedRegistrationActions,
+    normalizedGridRows,
+    headers,
+    dataStartRow,
+  )
+  normalizeTrace?.mark('cell-meta-registration-add-action')
+  const cellMetaWithRegistrationUserMatchAction = addDefaultRegistrationUserMatchAction(
+    cellMetaWithRegistrationAddAction,
+    normalizedGridRows,
+    headers,
+    dataStartRow,
+  )
+  normalizeTrace?.mark('cell-meta-registration-user-match-action')
+  const normalizedCellMeta = addDefaultRegistrationCompositeUpdateAction(
+    cellMetaWithRegistrationUserMatchAction,
+    normalizedGridRows,
+    headers,
+    dataStartRow,
+  )
+  normalizeTrace?.mark('cell-meta-registration-composite-action')
+  return normalizedCellMeta
+}
+
 function cellMetaHasActionType(meta: SheetCellMeta | null | undefined, actionType: SheetCellActionType) {
   return meta?.action?.type === actionType
 }
 
-function getNormalizedHeaderAt(columnIndex: number) {
-  return normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim()
+function hasNormalizedHeader(headers: string[], target: string) {
+  return headers.some((header) => normalizeCellValue(header).trim() === target)
 }
 
-function getHeaderGridCellText(documentRow: number, columnIndex: number) {
-  if (documentRow < 0 || documentRow >= sheetHeaderRowCount.value) {
+function getNormalizedHeaderValue(headers: string[], columnIndex: number) {
+  return normalizeCellValue(headers[columnIndex] ?? '').trim()
+}
+
+function getHeaderGridCellTextFromRows(gridRows: SheetRow[], documentRow: number, columnIndex: number) {
+  if (documentRow < 0 || documentRow >= gridRows.length) {
     return ''
   }
-  return normalizeCellValue(sheetGridRows.value[documentRow]?.[columnIndex] ?? '').trim()
+  return normalizeCellValue(gridRows[documentRow]?.[columnIndex] ?? '').trim()
 }
 
-function isActionCellTextCompatible(action: SheetCellAction, documentRow: number, columnIndex: number) {
-  const text = getHeaderGridCellText(documentRow, columnIndex)
+function isActionCellTextCompatibleInRows(
+  action: SheetCellAction,
+  documentRow: number,
+  columnIndex: number,
+  gridRows: SheetRow[],
+) {
+  const text = getHeaderGridCellTextFromRows(gridRows, documentRow, columnIndex)
   return !text || normalizeLegacySheetCellActionType(text) === action.type
 }
 
-function isRegistrationActionHostColumn(actionType: SheetCellActionType, columnIndex: number) {
-  const header = getNormalizedHeaderAt(columnIndex)
+function canRestoreDefaultSheetCellActionInRows(
+  targetActionType: SheetCellActionType,
+  currentMeta: SheetCellMeta | null | undefined,
+  documentRow: number,
+  columnIndex: number,
+  gridRows: SheetRow[],
+) {
+  if (currentMeta?.action?.type && currentMeta.action.type !== targetActionType) {
+    return false
+  }
+  const cellText = getHeaderGridCellTextFromRows(gridRows, documentRow, columnIndex)
+  return !cellText || normalizeLegacySheetCellActionType(cellText) === targetActionType
+}
+
+function resolveRegistrationOrderMatchHostHeader(headers: string[]) {
+  if (hasNormalizedHeader(headers, '微信支付订单号')) {
+    return '微信支付订单号'
+  }
+  return hasNormalizedHeader(headers, '错误手机号') ? '错误手机号' : ''
+}
+
+function isRegistrationActionHostColumnInHeaders(actionType: SheetCellActionType, columnIndex: number, headers: string[]) {
+  const header = getNormalizedHeaderValue(headers, columnIndex)
   if (actionType === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
     return header === STUDENT_LOOKUP_SUBMITTED_AT_HEADER
   }
   if (actionType === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH) {
-    return header === '错误手机号' || header === '微信支付订单号'
+    return header === resolveRegistrationOrderMatchHostHeader(headers)
   }
   if (actionType === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
     return header === '用户ID'
@@ -8319,7 +8485,14 @@ function isRegistrationActionHostColumn(actionType: SheetCellActionType, columnI
   return true
 }
 
-function isSheetCellActionAllowedAt(action: SheetCellAction, documentRow: number, columnIndex: number) {
+function isSheetCellActionAllowedInRows(
+  action: SheetCellAction,
+  documentRow: number,
+  columnIndex: number,
+  headers: string[],
+  gridRows: SheetRow[],
+  headerRowCount: number,
+) {
   if (documentRow < 0 || columnIndex < 0) {
     return false
   }
@@ -8330,12 +8503,23 @@ function isSheetCellActionAllowedAt(action: SheetCellAction, documentRow: number
     || action.type === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
   ) {
     return (
-      documentRow < sheetHeaderRowCount.value
-      && isRegistrationActionHostColumn(action.type, columnIndex)
-      && isActionCellTextCompatible(action, documentRow, columnIndex)
+      documentRow < headerRowCount
+      && isRegistrationActionHostColumnInHeaders(action.type, columnIndex, headers)
+      && isActionCellTextCompatibleInRows(action, documentRow, columnIndex, gridRows)
     )
   }
   return true
+}
+
+function isSheetCellActionAllowedAt(action: SheetCellAction, documentRow: number, columnIndex: number) {
+  return isSheetCellActionAllowedInRows(
+    action,
+    documentRow,
+    columnIndex,
+    columnHeaders.value,
+    sheetGridRows.value,
+    sheetHeaderRowCount.value,
+  )
 }
 
 function addDefaultRegistrationAddStudentAction(
@@ -8369,7 +8553,16 @@ function addDefaultRegistrationAddStudentAction(
 
     const key = createCellMetaKey(rowIndex, submittedAtColumn)
     const currentMeta = nextMeta[key]
-    if (currentMeta?.action || normalizeCellValue(row[submittedAtColumn]).trim()) {
+    if (!canRestoreDefaultSheetCellActionInRows(
+      SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT,
+      currentMeta,
+      rowIndex,
+      submittedAtColumn,
+      normalizedGridRows,
+    )) {
+      return sourceMeta
+    }
+    if (currentMeta?.action?.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
       return sourceMeta
     }
     nextMeta[key] = {
@@ -8419,7 +8612,16 @@ function addDefaultRegistrationCompositeUpdateAction(
 
     const key = createCellMetaKey(rowIndex, scoreColumn)
     const currentMeta = nextMeta[key]
-    if (currentMeta?.action || normalizeCellValue(row[scoreColumn]).trim()) {
+    if (!canRestoreDefaultSheetCellActionInRows(
+      SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
+      currentMeta,
+      rowIndex,
+      scoreColumn,
+      normalizedGridRows,
+    )) {
+      return sourceMeta
+    }
+    if (currentMeta?.action?.type === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE) {
       return sourceMeta
     }
     nextMeta[key] = {
@@ -8427,6 +8629,61 @@ function addDefaultRegistrationCompositeUpdateAction(
       action: {
         type: SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
         label: SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE],
+      },
+    }
+    return normalizeCellMetaMap(nextMeta, headers.length)
+  }
+
+  return sourceMeta
+}
+
+function addDefaultRegistrationUserMatchAction(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  headers: string[],
+  dataStartRow: number,
+) {
+  const userIdColumn = headers.findIndex((header) => normalizeCellValue(header).trim() === '用户ID')
+  if (userIdColumn < 0 || !headers.some((header) => normalizeCellValue(header).trim() === '姓名')) {
+    return sourceMeta
+  }
+
+  const prefixRowCount = Math.min(Math.max(dataStartRow, 0), normalizedGridRows.length)
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  for (let rowIndex = 0; rowIndex < prefixRowCount; rowIndex += 1) {
+    const row = normalizedGridRows[rowIndex]
+    const hasRegistrationAction = row.some((value, columnIndex) => {
+      const key = createCellMetaKey(rowIndex, columnIndex)
+      const actionType = nextMeta[key]?.action?.type || normalizeLegacySheetCellActionType(value)
+      return (
+        actionType === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+        || actionType === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
+        || actionType === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET
+      )
+    })
+    if (!hasRegistrationAction) {
+      continue
+    }
+
+    const key = createCellMetaKey(rowIndex, userIdColumn)
+    const currentMeta = nextMeta[key]
+    if (!canRestoreDefaultSheetCellActionInRows(
+      SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+      currentMeta,
+      rowIndex,
+      userIdColumn,
+      normalizedGridRows,
+    )) {
+      return sourceMeta
+    }
+    if (currentMeta?.action?.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
+      return sourceMeta
+    }
+    nextMeta[key] = {
+      ...(currentMeta ?? {}),
+      action: {
+        type: SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+        label: SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_USER_MATCH],
       },
     }
     return normalizeCellMetaMap(nextMeta, headers.length)
@@ -9017,6 +9274,39 @@ function serializeDefinedNameItems(source: NoteSheetDefinedNameItem[]) {
   }))
 }
 
+function areDefinedNameItemsEqual(left: NoteSheetDefinedNameItem[], right: NoteSheetDefinedNameItem[]) {
+  const normalizedLeft = normalizeDefinedNameItems(left)
+  const normalizedRight = normalizeDefinedNameItems(right)
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false
+  }
+  return normalizedLeft.every((item, index) => {
+    const other = normalizedRight[index]
+    return !!other
+      && item.name === other.name
+      && item.formula === other.formula
+      && (item.comment ?? '') === (other.comment ?? '')
+      && item.scope === other.scope
+  })
+}
+
+function areDefinedNameWorksheetScopesEqual(
+  left: NoteSheetDefinedNameWorksheetScope[],
+  right: NoteSheetDefinedNameWorksheetScope[],
+) {
+  if (left.length !== right.length) {
+    return false
+  }
+  return left.every((item, index) => {
+    const other = right[index]
+    return !!other
+      && item.sheet_id === other.sheet_id
+      && item.sheet_title === other.sheet_title
+      && item.sheet_version === other.sheet_version
+      && areDefinedNameItemsEqual(item.names, other.names)
+  })
+}
+
 function getDefinedNameWorksheetScopeKey(sheetId: number): DefinedNameScopeKey {
   return `worksheet:${sheetId}`
 }
@@ -9093,31 +9383,43 @@ function serializeDefinedNameWorksheetScopes(
 }
 
 function syncDefinedNamesFromResponse(response: NoteSheetDefinedNamesResponse) {
-  workbookDefinedNames.value = normalizeDefinedNameItems(response.workbook, 'workbook')
+  const nextWorkbookDefinedNames = normalizeDefinedNameItems(response.workbook, 'workbook')
   const responseWorksheets = normalizeDefinedNameWorksheetScopes(response.worksheets)
   const fallbackWorksheetNames = normalizeDefinedNameItems(response.worksheet, 'worksheet')
   const currentSheetId = Number(props.sheetId)
+  let nextWorksheetScopes: NoteSheetDefinedNameWorksheetScope[] = []
   if (responseWorksheets.length) {
-    definedNameWorksheetScopes.value = responseWorksheets
+    nextWorksheetScopes = responseWorksheets
   } else if (Number.isInteger(currentSheetId) && currentSheetId > 0) {
-    definedNameWorksheetScopes.value = [{
+    nextWorksheetScopes = [{
       sheet_id: currentSheetId,
       sheet_title: sheetTitle.value || `工作表${currentSheetId}`,
       sheet_version: Number.isFinite(response.sheet_version) ? Number(response.sheet_version) : null,
       names: fallbackWorksheetNames,
     }]
-  } else {
-    definedNameWorksheetScopes.value = []
   }
 
-  const activeWorksheet = definedNameWorksheetScopes.value.find((item) => item.sheet_id === currentSheetId)
-  sheetDefinedNames.value = activeWorksheet
+  const activeWorksheet = nextWorksheetScopes.find((item) => item.sheet_id === currentSheetId)
+  const nextSheetDefinedNames = activeWorksheet
     ? normalizeDefinedNameItems(activeWorksheet.names, 'worksheet')
     : fallbackWorksheetNames
+  const formulaContextChanged = !areDefinedNameItemsEqual(workbookDefinedNames.value, nextWorkbookDefinedNames)
+    || !areDefinedNameItemsEqual(sheetDefinedNames.value, nextSheetDefinedNames)
+
+  if (!areDefinedNameItemsEqual(workbookDefinedNames.value, nextWorkbookDefinedNames)) {
+    workbookDefinedNames.value = nextWorkbookDefinedNames
+  }
+  if (!areDefinedNameWorksheetScopesEqual(definedNameWorksheetScopes.value, nextWorksheetScopes)) {
+    definedNameWorksheetScopes.value = nextWorksheetScopes
+  }
+  if (!areDefinedNameItemsEqual(sheetDefinedNames.value, nextSheetDefinedNames)) {
+    sheetDefinedNames.value = nextSheetDefinedNames
+  }
   const activeSheetVersion = activeWorksheet?.sheet_version ?? response.sheet_version
   if (Number.isFinite(activeSheetVersion)) {
     sheetVersion.value = Number(activeSheetVersion)
   }
+  return formulaContextChanged
 }
 
 function normalizeColumnConfigs(source: unknown, headers: string[]): Record<string, SheetColumnConfig> {
@@ -9750,26 +10052,13 @@ function normalizeSheetDocument(
     : sourceCellMetaWithInlineRowLinks
   const sourceCellMetaWithInlineLinks = normalizeCellMetaMap(sourceCellMetaWithInlineGridLinks, headers.length)
   normalizeTrace?.mark('cell-meta-inline-grid-links')
-  const cellMetaWithLegacyActions = addLegacySheetCellActions(
+  const normalizedCellMeta = finalizeNormalizedSheetCellMeta(
     sourceCellMetaWithInlineLinks,
     normalizedGridRows,
-    headers.length,
-  )
-  normalizeTrace?.mark('cell-meta-legacy-actions')
-  const cellMetaWithRegistrationAddAction = addDefaultRegistrationAddStudentAction(
-    cellMetaWithLegacyActions,
-    normalizedGridRows,
     headers,
     dataStartRow,
+    normalizeTrace,
   )
-  normalizeTrace?.mark('cell-meta-registration-add-action')
-  const normalizedCellMeta = addDefaultRegistrationCompositeUpdateAction(
-    cellMetaWithRegistrationAddAction,
-    normalizedGridRows,
-    headers,
-    dataStartRow,
-  )
-  normalizeTrace?.mark('cell-meta-registration-composite-action')
   normalizeTrace?.mark('cell-meta')
   const normalizedEntityColumns = normalizeEntityColumns(record.entity_columns, headers)
   const normalizedEntityRows = normalizeEntityRows(
@@ -9786,20 +10075,22 @@ function normalizeSheetDocument(
   const normalizedFormulaHeaderRows = normalizedGridRows
     .slice(0, dataStartRow)
     .map((row) => normalizeRow(row, headers))
-  const formulaDisplayForWidths = buildFormulaDisplayStateForRows(
-    headers,
-    normalizedRows,
-    normalizedColumnConfigs,
-    {
-      ...formulaOptions,
-      headerRows: normalizedFormulaHeaderRows,
-      headerRowCount: dataStartRow,
-    },
-  )
+  const formulaDisplayForWidths = formulaEngineClass.value
+    ? buildFormulaDisplayStateForRows(
+        headers,
+        normalizedRows,
+        normalizedColumnConfigs,
+        {
+          ...formulaOptions,
+          headerRows: normalizedFormulaHeaderRows,
+          headerRowCount: dataStartRow,
+        },
+      )
+    : createEmptyFormulaDisplayState(dataStartRow)
+  normalizeTrace?.mark('formula-display')
   const normalizedWidths = headers.map((_, index) => {
     const width = Number(sourceWidths[index])
-    const widthMode = normalizeColumnConfig(normalizedColumnConfigs[headers[index]]).width_mode
-    if (widthMode === 'fixed' && Number.isFinite(width) && width > 0) {
+    if (Number.isFinite(width) && width > 0) {
       return normalizeColumnWidthValue(width)
     }
     return getAutoColumnWidth(index, headers, normalizedRows, normalizedColumnConfigs, formulaDisplayForWidths)
@@ -10165,7 +10456,10 @@ function initializeSheetEntitiesFromDocument(
         ?? null
       const existingMeta = getEntityCellMeta(existingCell)
       const legacyMeta = normalizedCellMeta[createCellMetaKey(documentRow, columnIndex)] ?? null
-      const cell = extractEntityCellForSave(row[columnIndex] ?? '', mergeCellMetaEntries(legacyMeta, existingMeta))
+      const effectiveMeta = documentRow < dataStartRow
+        ? reconcileHeaderEntityCellMeta(legacyMeta, existingMeta)
+        : mergeCellMetaEntries(legacyMeta, existingMeta)
+      const cell = extractEntityCellForSave(row[columnIndex] ?? '', effectiveMeta)
       if (cell) {
         rowCells[column.id] = cell
       }
@@ -11349,7 +11643,7 @@ async function ensureFormulaEngineLoaded() {
         registerSheetFormulaPlugins(module)
         formulaEngineClass.value = module.HyperFormula as FormulaEngineClass
         refreshFormulaDisplayState()
-        getHotInstance()?.render()
+        renderCurrentHotWithReason('formula-engine-loaded')
         refreshAdaptiveFormulaColumnWidths()
         return formulaEngineClass.value
       })
@@ -11363,11 +11657,11 @@ async function ensureFormulaEngineLoaded() {
   return formulaEngineImportPromise
 }
 
-function createEmptyFormulaDisplayState(): FormulaDisplayState {
+function createEmptyFormulaDisplayState(dataStartRow = 0): FormulaDisplayState {
   return {
     cells: [],
     errorKeys: new Set(),
-    dataStartRow: 0,
+    dataStartRow,
   }
 }
 
@@ -13471,7 +13765,7 @@ async function refreshComputedRowHeights(options: { force?: boolean } = {}) {
     trace?.mark('update-settings')
     await nextTick()
     trace?.mark('next-tick')
-    hot.render()
+    renderHotWithReason(hot, 'row-heights-refresh')
     trace?.mark('render')
     void updateSheetViewportHeight()
     trace?.finish({
@@ -13917,7 +14211,7 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
       hot.updateSettings({
         colWidths: [...nextWidths],
       })
-      hot.render()
+      renderHotWithReason(hot, 'column-width-update')
     }
     changed = true
   }
@@ -14132,7 +14426,7 @@ async function updateSheetViewportHeight(reason = 'unknown') {
     const changed = sheetViewportHeight.value !== 'auto'
     sheetViewportHeight.value = 'auto'
     if (changed) {
-      getHotInstance()?.render()
+      renderCurrentHotWithReason('viewport-height-auto')
     }
     finishPerfLog('auto', changed, changed, {
       hasSheetFrame: !!sheetFrame,
@@ -14156,7 +14450,7 @@ async function updateSheetViewportHeight(reason = 'unknown') {
   const changed = sheetViewportHeight.value !== availableHeight
   if (changed) {
     sheetViewportHeight.value = availableHeight
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('viewport-height-changed')
   }
   finishPerfLog(availableHeight, changed, changed, {
     frameClientHeight: sheetFrame.clientHeight,
@@ -14365,7 +14659,7 @@ function syncRowsFromGrid() {
     && (workspaceLoading.value || suppressPersistence || sheetRenderPhase.value !== 'ready')
   ) {
     hot.loadData(currentHotGridRows)
-    hot.render()
+    renderHotWithReason(hot, 'sync-rows-revert-during-load')
     return rows.value
   }
   rows.value = sourceRows
@@ -14397,7 +14691,7 @@ function refreshGridStructure() {
     ...getCurrentSheetHotRenderSettings(),
   })
   loadCurrentHotGridRows(hot)
-  hot.render()
+  renderHotWithReason(hot, 'grid-structure-refresh')
 }
 
 function selectColumnMarker(columnIndex: number, extendSelection = false) {
@@ -15000,7 +15294,7 @@ function moveDataRowsToFinalIndex(movedRows: number[], finalIndex: number, reaso
   const hot = getHotInstance()
   if (hot) {
     loadCurrentHotGridRows(hot)
-    hot.render()
+    renderHotWithReason(hot, 'row-move')
     void nextTick(() => {
       hot.selectRows(getGridRowIndex(movedRangeStart), getGridRowIndex(movedRangeEnd))
     })
@@ -15087,7 +15381,7 @@ function handleBeforeColumnMove(
       mergeCells: sheetHotRenderMergeCells.value,
     })
     loadCurrentHotGridRows(hot)
-    hot.render()
+    renderHotWithReason(hot, 'column-move')
     void nextTick(() => {
       hot.selectColumns(toHotColumnIndex(movedRangeStart), toHotColumnIndex(movedRangeEnd))
     })
@@ -16433,7 +16727,7 @@ async function applyDefinedNamesDialog() {
       syncDefinedNamesFromResponse(sheetResponse)
     }
     refreshFormulaDisplayState()
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('defined-names-save')
     closeDefinedNamesDialog()
     ElMessage.success('名称管理器已保存')
   } catch (error) {
@@ -16605,6 +16899,7 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
     : [createEmptyRow(normalizedHeaders.length)]
   trace?.mark('normalize-rows')
 
+  suppressNextFormulaDisplayStructureWatcher = true
   columnHeaders.value = normalizedHeaders
   headerGroups.value = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length)
   columnConfigs.value = normalizeColumnConfigs(document.column_configs, normalizedHeaders)
@@ -16643,11 +16938,21 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   trace?.mark('normalize-merge-cells')
   const cachedCellMeta = normalizedDocumentCellMetaCache.get(document)
   cellMeta.value = cachedCellMeta
-    ?? mergeSourceDocumentInlineLinksIntoCellMeta(
-      normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length),
-      sourceDocument ?? document,
-      dataStartRow,
+    ?? finalizeNormalizedSheetCellMeta(
+      mergeSourceDocumentInlineLinksIntoCellMeta(
+        normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length),
+        sourceDocument ?? document,
+        dataStartRow,
+        normalizedHeaders,
+      ),
+      Array.isArray(document.grid_rows)
+        ? document.grid_rows.map((row) => normalizeRow(row, normalizedHeaders))
+        : [
+          normalizedHeaders,
+          ...document.rows.map((row) => normalizeRow(row, normalizedHeaders)),
+        ],
       normalizedHeaders,
+      dataStartRow,
     )
   trace?.mark('cell-meta')
   sheetViewSettings.value = normalizeSheetViewSettings(
@@ -17238,7 +17543,7 @@ function sortColumnLocally(columnIndex: number, direction: SortDirection) {
   const hot = getHotInstance()
   if (hot) {
     loadCurrentHotGridRows(hot)
-    hot.render()
+    renderHotWithReason(hot, 'sort-rows')
   }
   syncRowsFromGrid()
   refreshFormulaDisplayState()
@@ -18160,19 +18465,23 @@ async function syncDefinedNamesForRestoreRequest(
   try {
     const response = await fetchSheetDefinedNames(requestSheetId, { workbookId: definedNamesWorkbookId })
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
-      return
+      return false
     }
-    syncDefinedNamesFromResponse(response)
+    return syncDefinedNamesFromResponse(response)
   } catch (error) {
     if (getNoteSheetApiErrorStatus(error) !== 404) {
       console.warn('Failed to load note sheet defined names:', error)
     }
     if (isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      const formulaContextChanged = workbookDefinedNames.value.length > 0
+        || sheetDefinedNames.value.length > 0
       workbookDefinedNames.value = []
       sheetDefinedNames.value = []
       definedNameWorksheetScopes.value = []
+      return formulaContextChanged
     }
   }
+  return false
 }
 
 function scheduleDefinedNamesSyncAfterSheetLoad(
@@ -18186,14 +18495,17 @@ function scheduleDefinedNamesSyncAfterSheetLoad(
     requestSheetId,
     requestWorkbookId,
     definedNamesWorkbookId,
-  ).then(() => {
+  ).then((formulaContextChanged) => {
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
+    if (!formulaContextChanged) {
       return
     }
     refreshFormulaDisplayState()
     syncFormulaBarDraftFromSelectedCell(true)
     refreshAdaptiveFormulaColumnWidths()
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('deferred-defined-names-sync')
   })
 }
 
@@ -18868,7 +19180,7 @@ function clearSelectedEditableDataCellsFromKeyboard(event: KeyboardEvent) {
   syncFormulaBarDraftFromSelectedCell(true)
   const hot = getHotInstance()
   loadCurrentHotGridRows(hot)
-  hot?.render()
+  renderHotWithReason(hot, 'cell-clear')
   queueImmediateCellPatchSave(operations)
   event.preventDefault()
   event.stopImmediatePropagation()
@@ -19005,7 +19317,7 @@ function handleAfterChange(_changes: unknown, source?: string) {
   if (mergedAnchorSynced || registrationDefaultsUpdated) {
     refreshGridStructure()
   } else {
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('cell-change')
   }
   if (hasEffectiveChanges || metaPatchResults.length) {
     if (immediateCellPatchOperations && !mergedAnchorSynced && !registrationDefaultsUpdated) {
@@ -19920,7 +20232,7 @@ function handleAfterCreateRow(index = 0, amount = 1) {
   if (applyDefaultRegistrationSubmittedAtRows(dataIndex, amount, documentDataIndex)) {
     const hot = getHotInstance()
     loadCurrentHotGridRows(hot)
-    hot?.render()
+    renderHotWithReason(hot, 'insert-row-registration-defaults')
   }
   const insertedIds = dataRowEntityIds.value.slice(dataIndex, dataIndex + amount)
   const insertedRows = rows.value.slice(dataIndex, dataIndex + amount).map((row) => normalizeRow(row, columnHeaders.value))
@@ -20939,7 +21251,7 @@ function cancelRichTextContentEditor() {
   }
   hideRichTextInlineToolbar({ force: true })
   syncFormulaBarDraftFromSelectedCell(true)
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('rich-text-editor-close')
 }
 
 function focusRichTextContentEditor(selectionStart: number, selectionEnd = selectionStart) {
@@ -21363,7 +21675,7 @@ function applyFormulaReferenceRangeFromKeyboard(
   setFormulaReferenceTargetValue(editTarget, nextValue)
   setFormulaReferenceReplacementSpan(editTarget, selectionStart, reference)
   setFormulaReferencePreviewRange(bounds)
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('formula-reference-insert')
   setFormulaReferenceTargetCaret(editTarget, cursorPosition)
 }
 
@@ -21931,7 +22243,7 @@ function commitFormulaBarDraft() {
     syncFormulaBarDraftFromSelectedCell(true)
     clearFormulaReferenceReplacementSpan()
     clearFormulaReferencePreviewRange()
-    getHotInstance()?.render()
+    renderCurrentHotWithReason('formula-bar-commit-structure')
     return
   }
 
@@ -21967,7 +22279,7 @@ function commitFormulaBarDraft() {
   syncFormulaBarDraftFromSelectedCell(true)
   clearFormulaReferenceReplacementSpan()
   clearFormulaReferencePreviewRange()
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('formula-bar-commit-value')
   void refreshComputedRowHeights()
 }
 
@@ -22609,7 +22921,7 @@ function updateCellMetaEntry(
     delete nextMeta[key]
   }
   cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('cell-meta-set')
   return {
     documentRow: targetRow,
     column: targetColumn,
@@ -22733,7 +23045,7 @@ function updateCellMetaEntries(
     })
   })
   cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('cell-meta-batch-set')
   return results
 }
 
@@ -24819,7 +25131,7 @@ function cutSelectedRows() {
     return
   }
   cutRowBounds = { start: bounds.start, end: bounds.end }
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('row-cut-mark')
   ElMessage.success(`已剪切${getDataRowRangeLabel(cutRowBounds)}`)
 }
 
@@ -24860,7 +25172,7 @@ function pasteCutRowsFromSelection(side: 'above' | 'below') {
   }
 
   cutRowBounds = null
-  getHotInstance()?.render()
+  renderCurrentHotWithReason('row-cut-paste-clear')
   ElMessage.success(`已移动到${getDataRowRangeLabel(targetBounds)}${side === 'above' ? '上方' : '下方'}`)
 }
 
@@ -26603,11 +26915,15 @@ function handleAfterRenderer(
     : normalizeCellValue(value)
   const header = renderColumn >= 0 ? columnHeaders.value[renderColumn] ?? '' : ''
   const columnConfig = header ? columnConfigs.value[header] : undefined
-  const link = documentRow >= 0 && renderColumn >= 0
-    ? getCellLinkAt(documentRow, renderColumn)
+  const cellMetaEntry = documentRow >= 0 && renderColumn >= 0
+    ? getCellMetaAt(documentRow, renderColumn)
     : null
-  const action = documentRow >= 0 && renderColumn >= 0
-    ? getCellActionAt(documentRow, renderColumn)
+  const link = cellMetaEntry?.link ?? null
+  const sourceAction = cellMetaEntry?.action ?? null
+  const action = sourceAction
+    && sourceAction.type !== SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA
+    && isSheetCellActionAllowedAt(sourceAction, documentRow, renderColumn)
+    ? sourceAction
     : null
   const linkDisplayText = rawText.trim() ? '' : (link?.title || link?.url || '')
   const formulaCell = dataRow >= 0 && renderColumn >= 0 && isFormulaExpression(rawText)
@@ -26632,7 +26948,7 @@ function handleAfterRenderer(
     && documentRow >= 0
     && renderColumn >= 0
   )
-    ? getCellRichTextAt(documentRow, renderColumn, rawText)
+    ? normalizeRichTextForText(cellMetaEntry?.rich_text, rawText)
     : null
 
   if (action) {
@@ -26651,9 +26967,7 @@ function handleAfterRenderer(
   const isFormulaReferencePreview = dataRow >= 0 && renderColumn >= 0 && isCellInFormulaReferencePreview(dataRow, renderColumn)
   const displayMode = normalizeColumnDisplayMode(columnConfig?.display_mode)
 
-  const cellStyle = documentRow >= 0 && renderColumn >= 0
-    ? getCellStyleAt(documentRow, renderColumn)
-    : null
+  const cellStyle = cellMetaEntry?.style ?? null
   let backgroundColor = ''
   let textColor = ''
   let fontFamilyStyle = ''
@@ -26810,7 +27124,11 @@ watch(
   [rows, columnHeaders, headerGroups, columnConfigs, sheetViewSettings],
   () => {
     const columnNotesRestored = syncColumnNotesFromHeaderPrefixRows()
-    refreshFormulaDisplayState()
+    if (suppressNextFormulaDisplayStructureWatcher) {
+      suppressNextFormulaDisplayStructureWatcher = false
+    } else {
+      refreshFormulaDisplayState()
+    }
     if (columnNotesRestored) {
       refreshGridStructure()
     }
@@ -26860,7 +27178,7 @@ watch(
         cells: sheetHotRenderCellMetaResolver.value,
         readOnly: sheetHotRenderReadOnly.value,
       })
-      hot.render()
+      renderHotWithReason(hot, 'access-capabilities')
     }
   },
   { deep: true },
@@ -27125,7 +27443,7 @@ watch(
         indicators: false,
       },
     })
-    hot.render()
+    renderHotWithReason(hot, 'hidden-rows-filter')
     void refreshComputedRowHeights()
     void updateSheetViewportHeight()
   },
