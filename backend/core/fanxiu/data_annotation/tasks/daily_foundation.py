@@ -4214,9 +4214,9 @@ class DailyFoundationTaskMixin:
         scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 285:
-            self._log("success", f"{task_label}：已在 #285 造化灵脉，当前先停在入口，OCR={text[:160]}")
-            return "success"
-        yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
+            self._log("success", f"{task_label}：已在 #285 造化灵脉，继续清理体力，OCR={text[:160]}")
+            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+        scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
             ctx,
             stop_event,
             payload,
@@ -4226,6 +4226,8 @@ class DailyFoundationTaskMixin:
             text,
             task_label=task_label,
         )
+        if scene_after == 285:
+            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
         return "success"
 
     def _execute_daily_dongtian_clear_task(
@@ -4637,10 +4639,13 @@ class DailyFoundationTaskMixin:
         scene_next, score_next, frame_next = runtime.current_scene([287, 285, 286, 47], update=True)
         text_next = runtime.ocr_text(frame_next)
         text_compact = _sanitize_ocr_text(text_next)
-        if scene_next == 287 or "前往灵脉" in text_compact:
+        if scene_next == 287:
             self._log("success", f"{task_label}：已到达 #287 前往灵脉确认弹窗，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，点击「确认」")
             yield from runtime.wait_click(287, "确认")
             yield from runtime.wait_action_settle(float(payload.get("lingmai_confirm_settle_seconds") or 2.0))
+        elif "前往灵脉" in text_compact:
+            self._click_daily_lingmai_go_button(runtime, frame_next, task_label=task_label)
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_go_button_settle_seconds") or 2.0))
         else:
             self._log(
                 "warning",
@@ -4657,6 +4662,32 @@ class DailyFoundationTaskMixin:
         text_after = runtime.ocr_text(frame_after)
         self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
         return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+
+    def _click_daily_lingmai_go_button(
+        self,
+        runtime: FanxiuRuntime,
+        frame: str | None,
+        *,
+        task_label: str,
+    ) -> None:
+        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        target_box: dict[str, float] | None = None
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if "前往灵脉" not in text:
+                continue
+            box = self._ocr_match_resolved_box(line, "前往灵脉", "contains") or self._ocr_line_box(line)
+            if box is None:
+                continue
+            target_box = box
+            break
+        if target_box is None:
+            raise RuntimeError(f"{task_label}：#286 已出现「前往灵脉」文本，但未取到可点击 OCR 坐标")
+        click_x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
+        click_y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
+        self._log("action", f"{task_label}：点击 #286 OCR「前往灵脉」")
+        runtime.click_frame_point(286, click_x, click_y)
 
     def _continue_daily_lingmai_from_final_occupy(
         self,

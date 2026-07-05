@@ -3610,12 +3610,22 @@ def test_daily_lingmai_clear_inside_window_continues_runtime_flow(tmp_path, monk
             return "造化灵脉"
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    continued: list[tuple[int, str]] = []
+
+    def continue_lingmai(_ctx, _stop_event, _payload, _runtime, frame, *, task_label):
+        continued.append((285, frame))
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_continue_daily_lingmai_from_zaohua", continue_lingmai)
 
     result = _drain_generator(
         runner._execute_daily_lingmai_clear_task(ctx, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-lingmai-clear"})
     )
 
     assert result == "success"
+    assert continued == [(285, "frame")]
 
 
 def test_daily_green_bottle_baiye_first_step_goto_20(tmp_path, monkeypatch):

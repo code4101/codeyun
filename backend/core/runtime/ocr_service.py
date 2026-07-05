@@ -209,7 +209,7 @@ def get_ocr_service_status() -> dict[str, Any]:
     processes = list_ocr_service_processes()
     host = get_ocr_service_host()
     port = get_ocr_service_port()
-    if not processes and not _is_tcp_port_open(host, port, timeout=0.1):
+    if not processes and not _is_tcp_port_open(host, port, timeout=0.02):
         return _default_status(processes=processes, state="stopped", last_error="")
     try:
         response = requests.get(_endpoint("/api/services/ocr/status"), timeout=_request_timeout())

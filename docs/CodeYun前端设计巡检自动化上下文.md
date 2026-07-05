@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "048ce7494b660cd0a559e6d1514c5169f38b37fd"
-last_audited_at: "2026-07-05T16:39:01.4354230+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-048ce749/report.md"
-last_frontend_commit_summary: "审完 3aea6f94..048ce749：修复 attendance/orders 在 820px 下退款历史仍用桌面宽表导致的关键信息截断，runtime 与 notes/list 复验通过。"
-audited_commit_count: 75
+last_audited_commit: "d74182548ac33389a577751f5cbad158e77b7846"
+last_audited_at: "2026-07-05T21:23:27.3349251+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-d7418254/report.md"
+last_frontend_commit_summary: "审完 048ce749..d7418254：修复 workbook/7 报名表动作行被旧 header entity action 覆盖，`更新用户匹配` 三视口已恢复为按钮。"
+audited_commit_count: 76
 pending_or_skipped_ranges: []
 ```
 
@@ -281,6 +281,20 @@ pending_or_skipped_ranges: []
 ## 巡检记录
 
 ### 2026-07-05（第十二轮）
+
+- 完整范围：`048ce7494b660cd0a559e6d1514c5169f38b37fd..d74182548ac33389a577751f5cbad158e77b7846`
+- 覆盖提交：`d74182548ac33389a577751f5cbad158e77b7846`
+- 前端入口提交：`d74182548ac33389a577751f5cbad158e77b7846`
+- 入口如何牵引到旧问题：这次提交同时触达 `ImageGalleryWorkspace`、`attendance/orders`、`cluster/view-mn`、`ListNotes` 和 `NoteSheetWorkspace`。真实多视口复验后，`attendance/orders`、`cluster/view-mn`、`notes/center` 没有新增复杂度回退；真正被同链路牵出的旧问题落在 `workbook/7?sheet=20` 的报名表动作行，因为这次提交刚治理同一工作台的性能与守护链路，结果历史 header entity 脏数据把 `更新用户匹配` 从统一按钮模型打回成纯文本，动作闭环缺了一环。
+- 本轮减法：没有新增任何控件、入口、字段或说明区，只在 [`frontend/src/standard/notes/components/NoteSheetWorkspace.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/notes/components/NoteSheetWorkspace.vue) 收紧两段旧数据兼容逻辑。第一步允许默认注册动作在“同类型旧文案文本”上恢复 action；第二步新增 header entity action 清洗，让规范化后的 `cell_meta` 成为动作唯一来源，不再被旧 `entity_cells` 反向覆盖。结果是报名表动作行重新收回到既有 5 个动作概念：`导入excel / 新增学员 / 更新订单匹配 / 更新用户匹配 / 综合更新`。
+- 信息量保持：`workbook` 的动作、提示、说明、列结构和业务能力都不变；减少的是“同一动作有的列是按钮、有的列是纯文本”的双轨表达，不是减少操作能力。`attendance/orders`、`cluster/view-mn`、`notes/center` 本轮只做同链路复验，没有扩写新概念。
+- 概念图/线框图：报告中的 Mermaid 已把链路收回到 `提交 d7418254 -> 报名表动作行复验 -> cell_meta 已规范化 -> header entity_cells 旧 action 覆盖 -> 用户ID列退化为纯文本 -> 清洗 header entity action`，证明这次修复是在减少旧模型分裂，而不是补新控件。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-d7418254/report.md`
+- 验证：先收敛本地 `uv run dev.py` 重复 supervisor / `uvicorn_hidden`，恢复稳定 `5173/8000`；随后用真实 `http://127.0.0.1:5173/workbook/7?sheet=20` 采集 `1600x1000`、`1366x900`、`820x1180` 三视口截图与结构 JSON，见 `workbook-7-sheet-20-localhost-stable-*.png/.json` 与 `workbook-7-sheet-20-localhost-stable-summary.json`。最终三档视口都确认 `registration_user_match` 已恢复为按钮，`buttonTypes` 在动作行 index `15` 为 `registration_user_match`。静态校验：`uv run pytest tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮提交未涉及 `vite.config`、重依赖、`manualChunks`、worker、wasm、预览器或公开/匿名入口，也未改变主入口依赖边界，因此未触发额外的“入口依赖污染检查”；仅完成常规 `npm run build --prefix frontend` 收口。
+- 根因分层：表现层无问题；真正根因属于前端状态投影链路，具体是 `loadSheetDocument()` 后的规范化 `cell_meta` 已正确，但 `initializeSheetEntitiesFromDocument()` 又让旧 header `entity_cells.action` 覆盖回来。后端数据层仍返回历史错位 action，但前端现在已能把这类旧数据收回到统一按钮模型。
+- 剩余风险：当前 API 返回的历史 `cell_meta` / `entity_cells` 仍含错位动作。本轮前端兼容已把同类 UI 回退压住，但如果后端未来继续写入新的 header 动作脏数据，仍建议后续在生成链路补一次根治。
+- 处理结果：本轮已完成完整增量范围的提交归类、真实多视口截图、低风险修复和构建验证，因此把 `last_audited_commit` 推进到 `d74182548ac33389a577751f5cbad158e77b7846`，保持 `pending_or_skipped_ranges` 为空。
 
 - 完整范围：`3aea6f94afbccf3ce35b4207a6f9e0111ce186fc..048ce7494b660cd0a559e6d1514c5169f38b37fd`
 - 覆盖提交：`048ce7494b660cd0a559e6d1514c5169f38b37fd`
