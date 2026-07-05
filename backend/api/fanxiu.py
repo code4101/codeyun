@@ -5743,6 +5743,7 @@ def get_fanxiu_game_window2_match_image_service(
 def get_fanxiu_data_annotation_runtime_status(
     entry_id: str = Query("", max_length=128),
     include_cell_logs: bool = Query(True),
+    include_logs: bool = Query(True),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -5762,6 +5763,8 @@ def get_fanxiu_data_annotation_runtime_status(
     payload = dict(_data_annotation_runtime_status(include_cell_logs=include_cell_logs))
     if not include_cell_logs:
         payload.pop("cell_logs", None)
+    if not include_logs:
+        payload.pop("logs", None)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
 
 
@@ -5772,6 +5775,7 @@ def get_fanxiu_data_annotation_runtime_status(
 )
 def get_fanxiu_data_annotation_runtime_service_status(
     entry_id: str = Query("", max_length=128),
+    include_logs: bool = Query(True),
     session: Session = Depends(get_session),
 ):
     if entry_id:
@@ -5790,6 +5794,8 @@ def get_fanxiu_data_annotation_runtime_service_status(
     # Cell logs have their own endpoint; omitting them here avoids shipping the same
     # large history twice during runtime page bootstrap.
     payload.pop("cell_logs", None)
+    if not include_logs:
+        payload.pop("logs", None)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
 
 

@@ -3,6 +3,79 @@
   <head>
     <meta charset="UTF-8" />
     <script>
+      (() => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const enabled = ['1', 'true'].includes(params.get('bootPerf') || params.get('sheetPerf') || params.get('perf') || '');
+          if (!enabled) return;
+          const startedAt = performance.now();
+          window.__codeyunBootPerf = {
+            enabled: true,
+            startedAt,
+            marks: [{
+              name: 'html.head',
+              time: Math.round(startedAt * 10) / 10,
+              delta: 0,
+            }],
+          };
+          const mark = (name, detail) => {
+            const state = window.__codeyunBootPerf;
+            if (!state?.enabled) return;
+            const now = performance.now();
+            const previous = state.marks[state.marks.length - 1];
+            const item = {
+              name,
+              time: Math.round(now * 10) / 10,
+              delta: Math.round((now - (previous?.time ?? state.startedAt)) * 10) / 10,
+              ...(detail === undefined ? {} : { detail }),
+            };
+            state.marks.push(item);
+            console.info(`[CodeYun bootPerf] ${JSON.stringify(item)}`);
+          };
+          const snapshotTimings = (reason) => {
+            try {
+              const navigation = performance.getEntriesByType('navigation')[0];
+              const resources = performance.getEntriesByType('resource')
+                .map((entry) => ({
+                  name: entry.name,
+                  initiatorType: entry.initiatorType,
+                  startTime: Math.round(entry.startTime),
+                  duration: Math.round(entry.duration),
+                  transferSize: entry.transferSize,
+                  encodedBodySize: entry.encodedBodySize,
+                }))
+                .filter((entry) => entry.duration >= 500)
+                .sort((left, right) => right.duration - left.duration)
+                .slice(0, 20);
+              mark(`browser.${reason}.timingSnapshot`, {
+                navigation: navigation ? {
+                  domInteractive: Math.round(navigation.domInteractive),
+                  domContentLoadedEventEnd: Math.round(navigation.domContentLoadedEventEnd),
+                  loadEventStart: Math.round(navigation.loadEventStart),
+                  loadEventEnd: Math.round(navigation.loadEventEnd),
+                  duration: Math.round(navigation.duration),
+                } : null,
+                slowResources: resources,
+                resourceCount: performance.getEntriesByType('resource').length,
+              });
+            } catch (error) {
+              mark(`browser.${reason}.timingSnapshot.error`, {
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+          window.addEventListener('DOMContentLoaded', () => mark('browser.domContentLoaded'));
+          window.addEventListener('load', () => {
+            mark('browser.load');
+            snapshotTimings('load');
+            window.setTimeout(() => snapshotTimings('loadPlus5s'), 5000);
+          });
+        } catch {
+          // Boot performance diagnostics must never block app startup.
+        }
+      })();
+    </script>
+    <script>
       if (window.location.pathname === '/attendance-feedback') {
         window.location.replace(`/attendance-feedback/${window.location.search}${window.location.hash}`)
       }

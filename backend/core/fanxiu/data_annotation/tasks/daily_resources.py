@@ -1112,7 +1112,16 @@ class DailyResourceTaskMixin:
             return "skipped"
 
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = runtime.current_scene([247, 34], update=True)
+        scene_id, _score, _frame = runtime.current_scene([316, 247, 34], update=True)
+        claimed: list[str] = []
+        if scene_id == 316:
+            if phase != "midnight":
+                raise RuntimeError(f"{task_label}：当前停在商品详情 #316，非 00:00-05:00 补领窗口不自动领取")
+            claimed_item = yield from self._claim_current_xianshi_weekly_resource_detail(runtime, current_prayer_cycle())
+            if claimed_item:
+                claimed.append(claimed_item)
+            yield from runtime.wait_view(247, label=f"{task_label}：等待返回秘藏阁 #247")
+            scene_id = 247
         if scene_id != 247:
             if scene_id != 34:
                 yield from runtime.goto_view(34)
@@ -1128,11 +1137,13 @@ class DailyResourceTaskMixin:
                 max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
             )
 
-        claimed: list[str] = []
         if phase == "midnight":
             target = current_prayer_cycle()
-            for _ in range(2):
-                claimed.append((yield from self._claim_xianshi_weekly_resource_slot(runtime, "第1个物品", target)))
+            for _ in range(max(0, 2 - len(claimed))):
+                claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, "第1个物品", target)
+                if not claimed_item:
+                    break
+                claimed.append(claimed_item)
         else:
             skipped_groups = 0
             skipped_group = next_prayer_cycle()
@@ -1142,11 +1153,15 @@ class DailyResourceTaskMixin:
                     continue
                 slot = "第3个物品" if skipped_groups else "第1个物品"
                 for _ in range(2):
-                    claimed.append((yield from self._claim_xianshi_weekly_resource_slot(runtime, slot, group)))
+                    claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, slot, group)
+                    if not claimed_item:
+                        break
+                    claimed.append(claimed_item)
 
-        yield from runtime.wait_click_then_view(247, "返回", 47, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
+        yield from runtime.wait_click_then_view(247, "返回", 34, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
         suffix = f"，跳过 {next_prayer_cycle()} 资源" if phase == "after_reset" else ""
-        self._log("success", f"{task_label}：已领取 {', '.join(claimed)}{suffix}")
+        claimed_text = ", ".join(claimed) if claimed else "目标资源已领完"
+        self._log("success", f"{task_label}：已领取 {claimed_text}{suffix}")
         return "success"
 
     def _xianshi_weekly_resources_phase(self, payload: dict[str, Any]) -> str:
@@ -1176,14 +1191,37 @@ class DailyResourceTaskMixin:
 
     def _claim_xianshi_weekly_resource_slot(self, runtime: Any, slot: str, expected_group: str):
         yield from runtime.wait_click_then_view(247, slot, 316)
+        return (yield from self._claim_current_xianshi_weekly_resource_detail(runtime, expected_group, slot=slot))
+
+    def _claim_current_xianshi_weekly_resource_detail(self, runtime: Any, expected_group: str, *, slot: str = "当前物品"):
         name_text = runtime.ocr_text_in_shapes(316, ("物品名称",), padding=8)
         group = self._classify_xianshi_weekly_resource_name(str(name_text or ""))
         if group != expected_group:
-            raise RuntimeError(f"仙市_每周资源：{slot} 识别到「{name_text}」={group or '未知'}，预期 {expected_group}，停止领取")
+            self._log("skip", f"仙市_每周资源：{slot} 识别到「{name_text}」={group or '未知'}，预期 {expected_group}，视为目标资源已领完")
+            yield from self._return_xianshi_weekly_resource_detail(runtime)
+            return None
         yield from runtime.wait_click(316, "领取")
         yield from runtime.wait_action_settle(1.2)
         self._log("success", f"仙市_每周资源：已领取 {name_text}")
         return str(name_text or expected_group)
+
+    def _return_xianshi_weekly_resource_detail(self, runtime: Any):
+        last_error: Exception | None = None
+        for shape_title in ("返回", "shape 3"):
+            try:
+                yield from runtime.wait_click_then_view(
+                    316,
+                    shape_title,
+                    247,
+                    settle_seconds=1.0,
+                    timeout=6.0,
+                )
+                return True
+            except Exception as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return False
 
     def _execute_daily_vip_task(
         self,

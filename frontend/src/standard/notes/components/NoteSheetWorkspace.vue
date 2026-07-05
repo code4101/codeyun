@@ -5,9 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { User } from '@element-plus/icons-vue'
 import type Handsontable from 'handsontable/base'
 
-import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
 import StandardPagination from '@/components/StandardPagination.vue'
-import NoteSheetAccessDialog from './NoteSheetAccessDialog.vue'
 import {
   checkAttendanceSheetRefundedAmounts,
   fetchAttendanceFeedbackHistory,
@@ -63,8 +61,6 @@ import {
   updateNoteSheet,
   type NoteSheetDetail,
 } from '@/api/noteSheets'
-import { StandardColorPickerPopover } from '@/features/color-tools'
-import { mixWeightedColors, toHex } from '@/utils/colorToolkit'
 import {
   getStableVisualToken,
   resolveStableVisualTokens,
@@ -78,8 +74,11 @@ import {
   type CodeyunLinkVariant,
 } from '@/utils/codeyunLinks'
 import { useUserStore } from '@/store/userStore'
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
 
-const HotTable = defineAsyncComponent(async () => {
+markBootPerf('note-sheet-workspace.module')
+
+const HotTable = defineAsyncComponent(() => markBootPerfAsync('note-sheet-workspace.HotTable.import', async () => {
   const [
     hotTableModule,
     handsontableSetupModule,
@@ -90,9 +89,14 @@ const HotTable = defineAsyncComponent(async () => {
     import('handsontable/styles/ht-theme-main.css'),
   ])
 
+  markBootPerf('note-sheet-workspace.HotTable.modules-loaded')
   handsontableSetupModule.registerCodeyunHandsontableModules()
+  markBootPerf('note-sheet-workspace.HotTable.modules-registered')
   return hotTableModule.HotTable
-})
+}))
+const AttendanceFeedbackHistoryList = defineAsyncComponent(() => import('@/components/attendance/AttendanceFeedbackHistoryList.vue'))
+const NoteSheetAccessDialog = defineAsyncComponent(() => import('./NoteSheetAccessDialog.vue'))
+const StandardColorPickerPopover = defineAsyncComponent(() => import('@/features/color-tools/components/StandardColorPickerPopover.vue'))
 
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
@@ -132,6 +136,8 @@ const ROW_MARKER_MIN_COLUMN_WIDTH = 40
 const ROW_MARKER_MAX_COLUMN_WIDTH = 76
 const ROW_MARKER_WIDTH_PADDING = 18
 const HEADER_WIDTH_PADDING = 34
+const SHEET_VIEWPORT_BOTTOM_GAP = 18
+const SHEET_HOT_ROW_RENDERING_OFFSET = 3
 const INLINE_HEADER_INPUT_PADDING = 16
 const INVALID_VALUE_HIGHLIGHT_COLOR = '#E98296'
 const DUPLICATE_HIGHLIGHT_PALETTE = Object.freeze([
@@ -1286,6 +1292,8 @@ interface Props {
   baseRowFilterPrograms?: ExternalSheetRowFilterProgram[] | null
   rowFilterProgram?: ExternalSheetRowFilterProgram | null
   defaultHeightMode?: SheetHeightMode | null
+  runtimeHeightMode?: SheetHeightMode | null
+  runtimeMaxGridHeight?: number | null
 }
 
 type RestoreInitialDocumentOptions = {
@@ -1313,6 +1321,8 @@ const props = withDefaults(defineProps<Props>(), {
   baseRowFilterPrograms: null,
   rowFilterProgram: null,
   defaultHeightMode: null,
+  runtimeHeightMode: null,
+  runtimeMaxGridHeight: null,
 })
 
 const emit = defineEmits<{
@@ -1619,13 +1629,14 @@ const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
 const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
-const SHEET_PERF_LOG_STORAGE_KEY = 'codeyun.sheetPerf.enabled.v2'
 const SHEET_PERF_LOG_LIMIT = 1000
 const SHEET_PERF_LOG_FLUSH_URL = '/api/note-sheets/perf-logs'
 const SHEET_PERF_LOG_FLUSH_DELAY_MS = 800
 const SHEET_PERF_LOG_FLUSH_BATCH_SIZE = 40
 const SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE = 160
 const SHEET_PERF_FRAME_GAP_THRESHOLD_MS = 80
+const SHEET_PERF_FRAME_GAP_LOG_INTERVAL_MS = 5000
+const SHEET_PERF_RUNTIME_EVENT_LOG_LIMIT = 80
 const SHEET_VISIBILITY_FRAME_SIZE_TOLERANCE_PX = 2
 const sheetPerfLoggingEnabled = ref(readSheetPerfLoggingEnabledPreference())
 const sheetPerfLogEntries: SheetPerfLogEntry[] = []
@@ -1727,6 +1738,8 @@ let sheetPerfLastSelectionEntry: SheetPerfLogEntry | null = null
 let sheetPerfLongTaskObserver: PerformanceObserver | null = null
 let sheetPerfFrameMonitorId: number | null = null
 let sheetPerfLastFrameTime: number | null = null
+let sheetPerfLastFrameGapLogTime = 0
+let sheetPerfRuntimeEventLogCount = 0
 let restoringStudentLookupSelection = false
 let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
@@ -1751,13 +1764,6 @@ function readSheetPerfLoggingEnabledPreference() {
     }
     if (queryValue === '0' || queryValue === 'false') {
       return false
-    }
-    const storedValue = window.localStorage.getItem(SHEET_PERF_LOG_STORAGE_KEY)
-    if (storedValue === '0') {
-      return false
-    }
-    if (storedValue === '1') {
-      return true
     }
     return false
   } catch {
@@ -1858,13 +1864,6 @@ function isSheetNavigationKey(event: KeyboardEvent) {
 
 function setSheetPerfLoggingEnabled(enabled: boolean) {
   sheetPerfLoggingEnabled.value = enabled
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(SHEET_PERF_LOG_STORAGE_KEY, enabled ? '1' : '0')
-    } catch {
-      // Ignore private-mode storage failures; the in-memory switch still works.
-    }
-  }
   if (!enabled) {
     clearSheetPerfLogFlushTimer()
     sheetPerfLogPendingEntries.splice(0, sheetPerfLogPendingEntries.length)
@@ -1894,6 +1893,18 @@ function getSheetPerfBackendPayload(entries: SheetPerfLogEntry[]) {
       phases: entry.phases ? entry.phases.map((phase) => ({ ...phase })) : undefined,
       detail: entry.detail ? { ...entry.detail } : undefined,
     })),
+  }
+}
+
+function getSheetPerfRuntimeAssetDetail() {
+  const scriptUrls = typeof document !== 'undefined'
+    ? Array.from(document.scripts)
+      .map((script) => script.src)
+      .filter((src) => /\/assets\/(?:main|NoteSheetWorkspace)-/.test(src))
+    : []
+  return {
+    workspaceModuleUrl: import.meta.url,
+    scriptUrls,
   }
 }
 
@@ -2197,6 +2208,18 @@ function renderCurrentHotWithReason(reason: string) {
   renderHotWithReason(getHotInstance(), reason)
 }
 
+function shouldRecordSheetPerfRuntimeEvent(timestamp: number) {
+  if (sheetPerfRuntimeEventLogCount >= SHEET_PERF_RUNTIME_EVENT_LOG_LIMIT) {
+    return false
+  }
+  if (timestamp - sheetPerfLastFrameGapLogTime < SHEET_PERF_FRAME_GAP_LOG_INTERVAL_MS) {
+    return false
+  }
+  sheetPerfLastFrameGapLogTime = timestamp
+  sheetPerfRuntimeEventLogCount += 1
+  return true
+}
+
 function startSheetPerfFrameMonitor() {
   if (typeof window === 'undefined' || sheetPerfFrameMonitorId != null) {
     return
@@ -2211,7 +2234,7 @@ function startSheetPerfFrameMonitor() {
 
     if (sheetPerfLastFrameTime != null) {
       const duration = roundSheetPerfMs(timestamp - sheetPerfLastFrameTime)
-      if (duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS) {
+      if (duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS && shouldRecordSheetPerfRuntimeEvent(timestamp)) {
         recordSheetPerfEvent('browser.frameGap', {
           duration,
           perfStart: roundSheetPerfMs(sheetPerfLastFrameTime),
@@ -2219,7 +2242,6 @@ function startSheetPerfFrameMonitor() {
           detail: {
             thresholdMs: SHEET_PERF_FRAME_GAP_THRESHOLD_MS,
             ...getSheetPerfSelectedCellContext(),
-            viewport: getSheetPerfHotViewport(),
           },
         })
       }
@@ -2239,6 +2261,7 @@ function stopSheetPerfFrameMonitor() {
   }
   sheetPerfFrameMonitorId = null
   sheetPerfLastFrameTime = null
+  sheetPerfLastFrameGapLogTime = 0
 }
 
 function startSheetPerfLongTaskObserver() {
@@ -2252,6 +2275,9 @@ function startSheetPerfLongTaskObserver() {
 
   sheetPerfLongTaskObserver = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
+      if (!shouldRecordSheetPerfRuntimeEvent(entry.startTime)) {
+        continue
+      }
       recordSheetPerfEvent('browser.longTask', {
         duration: roundSheetPerfMs(entry.duration),
         perfStart: roundSheetPerfMs(entry.startTime),
@@ -2260,7 +2286,6 @@ function startSheetPerfLongTaskObserver() {
           name: entry.name,
           entryType: entry.entryType,
           ...getSheetPerfSelectedCellContext(),
-          viewport: getSheetPerfHotViewport(),
         },
       })
     }
@@ -2283,6 +2308,8 @@ function startSheetPerfRuntimeObservers() {
   if (!sheetPerfLoggingEnabled.value) {
     return
   }
+  sheetPerfRuntimeEventLogCount = 0
+  sheetPerfLastFrameGapLogTime = 0
   void nextTick(() => {
     patchSheetPerfHotInstance()
   })
@@ -2295,6 +2322,7 @@ function stopSheetPerfRuntimeObservers() {
   stopSheetPerfLongTaskObserver()
   stopSheetPerfFrameMonitor()
   sheetPerfCurrentRender = null
+  sheetPerfRuntimeEventLogCount = 0
 }
 
 function pushSheetPerfLogEntry(
@@ -2466,6 +2494,11 @@ function installSheetPerfLogger() {
   ;(window as SheetPerfWindow).__codeyunSheetPerf = logger
   if (sheetPerfLoggingEnabled.value) {
     startSheetPerfRuntimeObservers()
+    recordSheetPerfEvent('sheet.perfSession', {
+      detail: getSheetPerfRuntimeAssetDetail(),
+    })
+    clearSheetPerfLogFlushTimer()
+    scheduleSheetPerfLogFlush(100)
     console.info('[sheet-perf] enabled; use __codeyunSheetPerf.summary() / copy() after reproducing')
   }
 }
@@ -3797,6 +3830,9 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   ])
 })
 
+const EMPTY_SHEET_HOT_GRID_ROWS: SheetRow[] = []
+const sheetHotInitialGridRows = computed<SheetRow[]>(() => EMPTY_SHEET_HOT_GRID_ROWS)
+
 const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'standalone'}`)
 
 const rowMarkerColumnWidth = computed(() => {
@@ -3861,7 +3897,12 @@ const fixedHotColumnsStart = computed(() => (
     ? rowMarkerColumnCount.value + fixedColumnsStart.value
     : 0
 ))
-const sheetHotViewportColumnRenderingOffset = computed(() => Math.max(8, fixedHotColumnsStart.value + 6))
+const SHEET_HOT_MIN_COLUMN_RENDERING_OFFSET = 3
+const SHEET_HOT_FROZEN_COLUMN_RENDERING_BUFFER = 2
+const sheetHotViewportColumnRenderingOffset = computed(() => Math.max(
+  SHEET_HOT_MIN_COLUMN_RENDERING_OFFSET,
+  fixedHotColumnsStart.value + SHEET_HOT_FROZEN_COLUMN_RENDERING_BUFFER,
+))
 
 function getDocumentColumnNote(header: string, sourceConfigs: Record<string, SheetColumnConfig>) {
   return normalizeColumnNote(sourceConfigs[header]?.note)
@@ -4412,7 +4453,11 @@ const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => 
 const sheetRowHeaders = computed<false | ((index: number) => string)>(() => (
   sheetViewSettings.value.show_row_numbers ? getSheetRowHeaderLabel : false
 ))
-const isContentHeightMode = computed(() => sheetViewSettings.value.height_mode === 'content')
+const runtimeSheetHeightMode = computed(() => normalizeSheetHeightMode(
+  props.runtimeHeightMode,
+  sheetViewSettings.value.height_mode,
+))
+const isContentHeightMode = computed(() => runtimeSheetHeightMode.value === 'content')
 
 function findColumnIndexByBinding(binding: { header: string, fallbackIndex: number }) {
   const headerIndex = columnHeaders.value.findIndex((header) => normalizeCellValue(header).trim() === binding.header)
@@ -4442,7 +4487,11 @@ const sheetGridHeight = computed(() => {
   if (isContentHeightMode.value || sheetViewportHeight.value === 'auto') {
     return 'auto'
   }
-  return Math.max(sheetViewportHeight.value, 80)
+  const maxGridHeight = Math.floor(Number(props.runtimeMaxGridHeight))
+  const constrainedHeight = Number.isFinite(maxGridHeight) && maxGridHeight > 0
+    ? Math.min(sheetViewportHeight.value, maxGridHeight)
+    : sheetViewportHeight.value
+  return Math.max(constrainedHeight, 80)
 })
 
 let suppressPersistence = false
@@ -4463,17 +4512,22 @@ let cellPatchInFlight = false
 let suppressNextRemoteSaveWatcher = false
 let suppressNextFormulaDisplayStructureWatcher = false
 let loadedSheetContentIdentity = ''
+let hotInitialDataLoadedContentIdentity = ''
+let hotInitialDataLoadedInstance: Handsontable | null = null
 let sheetResourceSocket: WebSocket | null = null
 let sheetResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let sheetResourceReconnectAttempt = 0
 let sheetResourceSocketCloseRequested = false
 let sheetLayoutObserver: ResizeObserver | null = null
+let pendingSheetViewportHeightUpdate: Promise<void> | null = null
+let pendingSheetViewportHeightUpdateReasons = new Set<string>()
 let rowDetailDialogResizeObserver: ResizeObserver | null = null
 let rowDetailDialogResizeInitialized = false
 let rowDetailDialogResizeSaveTimer: ReturnType<typeof setTimeout> | null = null
 let editingHeaderInputEl: HTMLInputElement | null = null
 let formulaEngineImportPromise: Promise<FormulaEngineClass | null> | null = null
 let sheetFormulaPluginRegistered = false
+const FORMULA_ENGINE_INITIAL_PRELOAD_BUDGET_MS = 45
 let columnMarkerSelectionAnchor: number | null = null
 let userMatchRunPollTimer: ReturnType<typeof setTimeout> | null = null
 let initialSheetActionStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -5341,7 +5395,65 @@ function loadCurrentHotGridRows(hot: Handsontable | null | undefined) {
   if (!hot) {
     return
   }
-  hot.loadData(sheetHotGridRows.value)
+  const rows = sheetHotGridRows.value
+  markBootPerf('note-sheet-workspace.hot.loadData.start', {
+    rows: rows.length,
+    columns: rows[0]?.length ?? 0,
+  })
+  try {
+    hot.loadData(rows)
+  } finally {
+    markBootPerf('note-sheet-workspace.hot.loadData.end')
+  }
+}
+
+function resetHotInitialGridRowsLoaded() {
+  hotInitialDataLoadedContentIdentity = ''
+  hotInitialDataLoadedInstance = null
+}
+
+function ensureHotInitialGridRowsLoaded(reason: string) {
+  const hot = getHotInstance()
+  if (!hot || !sheetContentReady.value || !loadedSheetContentIdentity) {
+    return false
+  }
+  if (
+    hotInitialDataLoadedInstance === hot
+    && hotInitialDataLoadedContentIdentity === loadedSheetContentIdentity
+  ) {
+    return true
+  }
+  loadCurrentHotGridRows(hot)
+  hotInitialDataLoadedInstance = hot
+  hotInitialDataLoadedContentIdentity = loadedSheetContentIdentity
+  markBootPerf('note-sheet-workspace.hot.initialLoadData.done', {
+    reason,
+    identity: loadedSheetContentIdentity,
+    rows: sheetHotGridRows.value.length,
+    columns: sheetHotGridRows.value[0]?.length ?? 0,
+  })
+  recordSheetPerfEvent('handsontable.initialLoadData', {
+    detail: {
+      reason,
+      identity: loadedSheetContentIdentity,
+      gridRows: sheetHotGridRows.value.length,
+      gridColumns: sheetHotGridRows.value[0]?.length ?? 0,
+    },
+  })
+  return true
+}
+
+async function waitForHotInitialGridRowsLoaded(reason: string) {
+  if (ensureHotInitialGridRowsLoaded(reason)) {
+    return 'ready'
+  }
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await nextTick()
+    if (ensureHotInitialGridRowsLoaded(reason)) {
+      return `next-tick-${attempt}`
+    }
+  }
+  return 'pending'
 }
 
 function isSheetDocumentHidden() {
@@ -5445,6 +5557,7 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
     const hot = getHotInstance()
     if (hot) {
       trace?.mark('hot-ready')
+      ensureHotInitialGridRowsLoaded('render-enhancement')
       void updateSheetViewportHeight('renderEnhancement')
     }
     if (isCurrent && !isCurrent()) {
@@ -7029,6 +7142,7 @@ function handleGlobalMouseDown(event: MouseEvent) {
 function resetWorkspaceState() {
   finishSheetRenderEnhancement()
   loadedSheetContentIdentity = ''
+  resetHotInitialGridRowsLoaded()
   resetLocalUndoHistory()
   clearEditingColumnState()
   clearFormulaBarSelection()
@@ -9691,6 +9805,54 @@ function getDuplicateHighlightBaseColor(seed: string) {
   return DUPLICATE_HIGHLIGHT_PALETTE[colorIndex] ?? DUPLICATE_HIGHLIGHT_PALETTE[0]
 }
 
+function parseHexColorToRgb(color: string): { r: number; g: number; b: number } | null {
+  const match = color.trim().match(/^#?([0-9a-fA-F]{6})$/)
+  if (!match) {
+    return null
+  }
+  const value = match[1]
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16),
+  }
+}
+
+function rgbChannelToHex(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0').toUpperCase()
+}
+
+function mixDuplicateHighlightColors(sourceColors: string[]) {
+  const fillColor = parseHexColorToRgb('#FFFFFF')
+  if (!fillColor) {
+    return null
+  }
+
+  const entries = sourceColors
+    .map((color) => parseHexColorToRgb(color))
+    .filter((color): color is { r: number; g: number; b: number } => !!color)
+  if (!entries.length) {
+    return null
+  }
+
+  const sourceWeight = 100
+  const fillWeight = entries.length * sourceWeight + 220
+  const totalWeight = entries.length * sourceWeight + fillWeight
+  const mixed = entries.reduce(
+    (acc, color) => ({
+      r: acc.r + color.r * sourceWeight,
+      g: acc.g + color.g * sourceWeight,
+      b: acc.b + color.b * sourceWeight,
+    }),
+    {
+      r: fillColor.r * fillWeight,
+      g: fillColor.g * fillWeight,
+      b: fillColor.b * fillWeight,
+    },
+  )
+  return `#${rgbChannelToHex(mixed.r / totalWeight)}${rgbChannelToHex(mixed.g / totalWeight)}${rgbChannelToHex(mixed.b / totalWeight)}`
+}
+
 function mixCellAccentStyle(sourceColors: string[]) {
   const normalizedSourceColors = sourceColors.filter(Boolean)
   if (!normalizedSourceColors.length) {
@@ -9703,20 +9865,13 @@ function mixCellAccentStyle(sourceColors: string[]) {
     return cached
   }
 
-  const mixedColor = mixWeightedColors(
-    normalizedSourceColors.map((color) => ({
-      color,
-      weight: 100,
-    })),
-    { fillColor: '#FFFFFF', fillToWeight: normalizedSourceColors.length * 100 + 220 },
-  )
-
-  if (!mixedColor) {
+  const backgroundColor = mixDuplicateHighlightColors(normalizedSourceColors)
+  if (!backgroundColor) {
     return null
   }
 
   const style = {
-    backgroundColor: toHex(mixedColor),
+    backgroundColor,
   }
   duplicateHighlightStyleCache.set(cacheKey, style)
   return style
@@ -11632,9 +11787,9 @@ function registerSheetFormulaPlugins(module: unknown) {
   sheetFormulaPluginRegistered = true
 }
 
-async function ensureFormulaEngineLoaded() {
+function loadFormulaEngineClass() {
   if (formulaEngineClass.value) {
-    return formulaEngineClass.value
+    return Promise.resolve(formulaEngineClass.value)
   }
 
   if (!formulaEngineImportPromise) {
@@ -11642,9 +11797,6 @@ async function ensureFormulaEngineLoaded() {
       .then((module) => {
         registerSheetFormulaPlugins(module)
         formulaEngineClass.value = module.HyperFormula as FormulaEngineClass
-        refreshFormulaDisplayState()
-        renderCurrentHotWithReason('formula-engine-loaded')
-        refreshAdaptiveFormulaColumnWidths()
         return formulaEngineClass.value
       })
       .catch((error) => {
@@ -11657,12 +11809,74 @@ async function ensureFormulaEngineLoaded() {
   return formulaEngineImportPromise
 }
 
+async function ensureFormulaEngineLoaded() {
+  if (formulaEngineClass.value) {
+    return formulaEngineClass.value
+  }
+
+  const FormulaEngine = await loadFormulaEngineClass()
+  if (!FormulaEngine) {
+    return null
+  }
+  const formulaDisplayChanged = refreshFormulaDisplayState()
+  if (formulaDisplayChanged) {
+    renderCurrentHotWithReason('formula-engine-loaded')
+  }
+  refreshAdaptiveFormulaColumnWidths()
+  return FormulaEngine
+}
+
+async function waitForInitialFormulaEnginePreload(
+  promise: Promise<FormulaEngineClass | null>,
+  budgetMs = FORMULA_ENGINE_INITIAL_PRELOAD_BUDGET_MS,
+) {
+  if (formulaEngineClass.value) {
+    return 'ready'
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const timeoutPromise = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), budgetMs)
+  })
+  const result = await Promise.race([
+    promise.then((FormulaEngine) => (FormulaEngine ? 'ready' : 'unavailable')),
+    timeoutPromise,
+  ])
+  if (timer != null) {
+    clearTimeout(timer)
+  }
+  return result
+}
+
 function createEmptyFormulaDisplayState(dataStartRow = 0): FormulaDisplayState {
   return {
     cells: [],
     errorKeys: new Set(),
     dataStartRow,
   }
+}
+
+function hasFormulaDisplayCells(displayState: FormulaDisplayState | null | undefined) {
+  return !!displayState?.cells.some((row) => row.some(Boolean))
+}
+
+function rowsHaveFormulaExpressions(sourceRows: SheetRow[]) {
+  return sourceRows.some((row) => row.some(isFormulaExpression))
+}
+
+function shouldReuseCachedFormulaDisplayState(
+  cachedState: FormulaDisplayState | null | undefined,
+  headers: string[],
+  sourceRows: SheetRow[],
+) {
+  if (!cachedState) {
+    return false
+  }
+  if (!formulaEngineClass.value || hasFormulaDisplayCells(cachedState)) {
+    return true
+  }
+  const formulaHeaderRows = getCurrentFormulaHeaderRows(headers)
+    .map((row) => normalizeRow(row, headers))
+  return !rowsHaveFormulaExpressions(formulaHeaderRows) && !rowsHaveFormulaExpressions(sourceRows)
 }
 
 function buildFormulaDisplayStateForRows(
@@ -11875,9 +12089,45 @@ function buildFormulaDisplayState(): FormulaDisplayState {
   )
 }
 
+function areFormulaDisplayCellsVisuallyEqual(left: FormulaCellModel | null | undefined, right: FormulaCellModel | null | undefined) {
+  if (!left && !right) {
+    return true
+  }
+  if (!left || !right) {
+    return false
+  }
+  return left.formula === right.formula
+    && left.text === right.text
+}
+
+function areFormulaDisplayStatesVisuallyEqual(left: FormulaDisplayState, right: FormulaDisplayState) {
+  if (left.dataStartRow !== right.dataStartRow || left.errorKeys.size !== right.errorKeys.size) {
+    return false
+  }
+  for (const key of left.errorKeys) {
+    if (!right.errorKeys.has(key)) {
+      return false
+    }
+  }
+  if (left.cells.length !== right.cells.length) {
+    return false
+  }
+  return left.cells.every((leftRow, rowIndex) => {
+    const rightRow = right.cells[rowIndex] ?? []
+    if (leftRow.length !== rightRow.length) {
+      return false
+    }
+    return leftRow.every((leftCell, columnIndex) => (
+      areFormulaDisplayCellsVisuallyEqual(leftCell, rightRow[columnIndex])
+    ))
+  })
+}
+
 function refreshFormulaDisplayState() {
-  formulaDisplayState.value = buildFormulaDisplayState()
-  return formulaDisplayState.value
+  const nextState = buildFormulaDisplayState()
+  const changed = !areFormulaDisplayStatesVisuallyEqual(formulaDisplayState.value, nextState)
+  formulaDisplayState.value = nextState
+  return changed
 }
 
 function getFormulaDisplayTextFromState(
@@ -14388,7 +14638,21 @@ function resolveCoreRowHeight(rowIndex: number) {
   }
 }
 
-async function updateSheetViewportHeight(reason = 'unknown') {
+function updateSheetViewportHeight(reason = 'unknown') {
+  pendingSheetViewportHeightUpdateReasons.add(reason)
+  if (pendingSheetViewportHeightUpdate) {
+    return pendingSheetViewportHeightUpdate
+  }
+  pendingSheetViewportHeightUpdate = updateSheetViewportHeightNow(() => (
+    Array.from(pendingSheetViewportHeightUpdateReasons).join('+') || 'unknown'
+  )).finally(() => {
+    pendingSheetViewportHeightUpdate = null
+    pendingSheetViewportHeightUpdateReasons = new Set<string>()
+  })
+  return pendingSheetViewportHeightUpdate
+}
+
+async function updateSheetViewportHeightNow(getReason: () => string) {
   if (isSheetDocumentHidden()) {
     return
   }
@@ -14409,7 +14673,7 @@ async function updateSheetViewportHeight(reason = 'unknown') {
       perfStart: roundSheetPerfMs(perfStart),
       perfEnd: roundSheetPerfMs(perfEnd),
       detail: {
-        reason,
+        reason: getReason(),
         previousHeight,
         nextHeight,
         changed,
@@ -14437,10 +14701,21 @@ async function updateSheetViewportHeight(reason = 'unknown') {
   }
 
   const frameRect = sheetFrame.getBoundingClientRect()
-  const availableHeight = Math.floor(sheetFrame.clientHeight || frameRect.height)
+  const containerHeight = Math.floor(sheetFrame.clientHeight || frameRect.height)
+  const windowHeight = Math.floor(window.innerHeight || document.documentElement.clientHeight || 0)
+  const viewportRemainingHeight = windowHeight > 0
+    ? Math.floor(windowHeight - frameRect.top - SHEET_VIEWPORT_BOTTOM_GAP)
+    : 0
+  const availableHeight = viewportRemainingHeight > 0
+    ? Math.min(containerHeight, viewportRemainingHeight)
+    : containerHeight
   if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
     finishPerfLog(previousHeight, false, false, {
       availableHeight,
+      containerHeight,
+      viewportRemainingHeight,
+      windowHeight,
+      frameTop: frameRect.top,
       frameClientHeight: sheetFrame.clientHeight,
       frameRectHeight: frameRect.height,
     })
@@ -14453,6 +14728,10 @@ async function updateSheetViewportHeight(reason = 'unknown') {
     renderCurrentHotWithReason('viewport-height-changed')
   }
   finishPerfLog(availableHeight, changed, changed, {
+    containerHeight,
+    viewportRemainingHeight,
+    windowHeight,
+    frameTop: frameRect.top,
     frameClientHeight: sheetFrame.clientHeight,
     frameRectHeight: frameRect.height,
   })
@@ -16962,8 +17241,15 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   )
   pageSize.value = sheetViewSettings.value.pagination.page_size
   const cachedFormulaDisplayState = normalizedDocumentFormulaDisplayCache.get(document)
-  const formulaDisplayForWidths = cachedFormulaDisplayState
+  const formulaDisplayCacheReusable = shouldReuseCachedFormulaDisplayState(
+    cachedFormulaDisplayState,
+    normalizedHeaders,
+    normalizedRows,
+  )
+  const formulaDisplayForWidths = formulaDisplayCacheReusable
+    ? cachedFormulaDisplayState
     ?? buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
+    : buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
   columnWidths.value = document.column_widths?.length
     ? document.column_widths.slice(0, normalizedHeaders.length)
     : normalizedHeaders.map((_, index) => getAutoColumnWidth(
@@ -16996,7 +17282,7 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
       mergedCells: mergedCells.value.length,
       hotApplied: false,
       hotDeferredToVue: !!getHotInstance(),
-      formulaDisplayCacheHit: !!cachedFormulaDisplayState,
+      formulaDisplayCacheHit: formulaDisplayCacheReusable,
       cellMetaCacheHit: !!cachedCellMeta,
     },
   })
@@ -17250,6 +17536,7 @@ function applyInlineSheetDocument() {
     pendingDeletedPageRowIndexes.value = []
     sheetContentReady.value = true
     loadedSheetContentIdentity = ''
+    resetHotInitialGridRowsLoaded()
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -18448,6 +18735,26 @@ function getUsableInitialSheetDetail(detail: NoteSheetDetail | null | undefined)
   return detail && props.sheetId != null && detail.id === props.sheetId ? detail : null
 }
 
+function getUsableDefinedNamesContext(
+  detail: NoteSheetDetail,
+  requestSheetId: number,
+  definedNamesWorkbookId: number | null,
+) {
+  const context = detail.defined_names_context
+  if (!context || context.sheet_id !== requestSheetId) {
+    return null
+  }
+  const contextWorkbookId = Number(context.workbook_id)
+  if (
+    definedNamesWorkbookId != null
+    && Number.isInteger(contextWorkbookId)
+    && contextWorkbookId !== definedNamesWorkbookId
+  ) {
+    return null
+  }
+  return context
+}
+
 function isCurrentRestoreInitialDocumentRequest(seq: number, sheetId: number, workbookId: number | null) {
   return (
     seq === restoreInitialDocumentSeq
@@ -18617,6 +18924,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   const trace = startSheetPerfTrace('sheet.load', {
     detail: traceDetail,
   })
+  markBootPerf('note-sheet-workspace.restore.start', traceDetail)
   workspaceLoading.value = true
   if (!shouldPreserveContent) {
     if (cachedEntry) {
@@ -18624,6 +18932,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     } else {
       sheetContentReady.value = false
       loadedSheetContentIdentity = ''
+      resetHotInitialGridRowsLoaded()
       sheetLoadSettled.value = false
     }
   }
@@ -18636,19 +18945,26 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     const paginationPreference = shouldUseInitialDetail ? null : resolveFetchPaginationPreference(localDraft)
     let remote: NoteSheetDetail | null = shouldUseInitialDetail
       ? initialDetail
-      : await fetchNoteSheetForCurrentView(paginationPreference
-          ? {
-            page: paginationPreference.paginate ? currentPage.value : undefined,
-            pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
-            paginate: paginationPreference.paginate,
-            workbookId: requestWorkbookId,
-            includeWorkbookContext,
-          }
-          : {
-            workbookId: requestWorkbookId,
-            includeWorkbookContext,
-          })
+      : await markBootPerfAsync(
+          'note-sheet-workspace.fetchSheet',
+          () => fetchNoteSheetForCurrentView(paginationPreference
+            ? {
+              page: paginationPreference.paginate ? currentPage.value : undefined,
+              pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
+              paginate: paginationPreference.paginate,
+              workbookId: requestWorkbookId,
+              includeWorkbookContext,
+            }
+            : {
+              workbookId: requestWorkbookId,
+              includeWorkbookContext,
+            }),
+        )
     trace?.mark(shouldUseInitialDetail ? 'initial-detail' : 'fetch')
+    markBootPerf(shouldUseInitialDetail ? 'note-sheet-workspace.initialDetail.ready' : 'note-sheet-workspace.fetchSheet.ready', {
+      hasRemote: !!remote,
+      sheetId: remote?.id ?? null,
+    })
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
@@ -18656,6 +18972,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       if (!shouldPreserveContent || shouldClearOnError) {
         sheetContentReady.value = false
         loadedSheetContentIdentity = ''
+        resetHotInitialGridRowsLoaded()
       }
       emit('missing', requestSheetId)
       return
@@ -18668,8 +18985,14 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     }
 
     applyPaginationState(remote.pagination)
+    markBootPerf('note-sheet-workspace.normalize.start')
     let remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
     trace?.mark('normalize')
+    markBootPerf('note-sheet-workspace.normalize.end', {
+      columns: remoteDocument.columns.length,
+      gridRows: remoteDocument.grid_rows?.length ?? null,
+      rows: remoteDocument.rows.length,
+    })
     const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings, remoteDocument.columns.length)
     if (
       paginationPreference
@@ -18696,6 +19019,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
         if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
           loadedSheetContentIdentity = ''
+          resetHotInitialGridRowsLoaded()
         }
         emit('missing', requestSheetId)
         return
@@ -18721,6 +19045,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
         if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
           loadedSheetContentIdentity = ''
+          resetHotInitialGridRowsLoaded()
         }
         emit('missing', requestSheetId)
         return
@@ -18788,17 +19113,40 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     const definedNamesWorkbookId = Number.isInteger(remote.parent_workbook_id)
       ? Number(remote.parent_workbook_id)
       : requestWorkbookId
-    scheduleDefinedNamesSyncAfterSheetLoad(requestSeq, requestSheetId, requestWorkbookId, definedNamesWorkbookId)
-    trace?.mark('defined-names-deferred')
+    const embeddedDefinedNamesContext = getUsableDefinedNamesContext(remote, requestSheetId, definedNamesWorkbookId)
+    if (embeddedDefinedNamesContext) {
+      syncDefinedNamesFromResponse(embeddedDefinedNamesContext)
+      trace?.mark('defined-names-embedded')
+    } else {
+      scheduleDefinedNamesSyncAfterSheetLoad(requestSeq, requestSheetId, requestWorkbookId, definedNamesWorkbookId)
+      trace?.mark('defined-names-deferred')
+    }
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
+    if (sheetDocumentHasFormulaExpressions(activeDocument) && !formulaEngineClass.value) {
+      markBootPerf('note-sheet-workspace.formulaEngine.preload.start')
+      const formulaEnginePreloadResult = await waitForInitialFormulaEnginePreload(loadFormulaEngineClass())
+      trace?.mark(`formula-engine-preload-${formulaEnginePreloadResult}`)
+      markBootPerf('note-sheet-workspace.formulaEngine.preload.end', {
+        result: formulaEnginePreloadResult,
+      })
+      if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+        return
+      }
+    }
     beginSheetCoreRenderPhase()
+    markBootPerf('note-sheet-workspace.loadSheetDocument.start')
     loadSheetDocument(activeDocument, activeSourceDocument)
     trace?.mark('load-document')
+    markBootPerf('note-sheet-workspace.loadSheetDocument.end', {
+      rows: rows.value.length,
+      columns: columnHeaders.value.length,
+    })
     sheetContentReady.value = true
     loadedSheetContentIdentity = requestContentIdentity
     trace?.mark('content-ready-state')
+    markBootPerf('note-sheet-workspace.contentReady')
     scheduleRemoteSheetDetailCacheAfterSheetLoad(remote, {
       workbookId: requestWorkbookId,
       document: remoteDocument,
@@ -18818,8 +19166,18 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     resetLocalUndoHistory()
     invalidateColumnFilterGlobalOptionsCache()
     trace?.mark('reset-runtime-state')
+    markBootPerf('note-sheet-workspace.before-nextTick')
     await nextTick()
     trace?.mark('next-tick')
+    markBootPerf('note-sheet-workspace.after-nextTick')
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
+    const initialHotLoadDataResult = await waitForHotInitialGridRowsLoaded('restore-initial-document')
+    trace?.mark(`initial-hot-load-data-${initialHotLoadDataResult}`)
+    markBootPerf('note-sheet-workspace.initialHotLoadData.result', {
+      result: initialHotLoadDataResult,
+    })
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
@@ -18845,6 +19203,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (!shouldPreserveContent || shouldClearOnError) {
       sheetContentReady.value = false
       loadedSheetContentIdentity = ''
+      resetHotInitialGridRowsLoaded()
     }
     sheetLoadErrorText.value = message
     console.warn('Failed to load note sheet document:', error)
@@ -18867,6 +19226,13 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (isCurrentRequest) {
       workspaceLoading.value = false
     }
+    markBootPerf('note-sheet-workspace.restore.finally', {
+      current: isCurrentRequest,
+      contentReady: sheetContentReady.value,
+      rows: rows.value.length,
+      columns: columnHeaders.value.length,
+      workspaceLoading: workspaceLoading.value,
+    })
     trace?.finish({
       detail: {
         ...traceDetail,
@@ -27238,6 +27604,7 @@ watch(
     sheetVersion.value = 0
     sheetContentReady.value = false
     loadedSheetContentIdentity = ''
+    resetHotInitialGridRowsLoaded()
     clearHotMergeCellsPlugin(getHotInstance())
     pageRowOffset.value = 0
     pageLoadedRowCount.value = 0
@@ -27451,6 +27818,12 @@ watch(
 )
 
 onMounted(() => {
+  markBootPerf('note-sheet-workspace.mounted', {
+    sheetId: props.sheetId ?? null,
+    workbookId: props.workbookId ?? null,
+    hasInitialDetail: !!props.initialDetail,
+    hasInlineDocument: hasInlineDocument.value,
+  })
   installSheetPerfLogger()
   touchContextMenuFallbackEnabled.value = shouldEnableTouchContextMenuFallback()
   bindSheetLayoutObserver()
@@ -27467,6 +27840,7 @@ onMounted(() => {
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
     }).finally(() => {
+      markBootPerf('note-sheet-workspace.mounted.restore.finally')
       connectSheetResourceSocket()
       void updateSheetViewportHeight()
     })
@@ -27819,7 +28193,7 @@ defineExpose({
         :key="hotTableInstanceKey"
         ref="hotTableRef"
         class="ht-theme-main"
-        :data="sheetHotGridRows"
+        :data="sheetHotInitialGridRows"
         :language="'zh-CN'"
         :col-headers="sheetColumnHeaders"
         :col-widths="sheetHotColumnWidths"
@@ -27839,6 +28213,7 @@ defineExpose({
         :context-menu="sheetHotRenderContextMenu"
         :cells="sheetHotRenderCellMetaResolver"
         :row-heights="sheetHotRenderRowHeightResolver"
+        :auto-column-size="false"
         :auto-row-size="false"
         :auto-wrap-row="false"
         :auto-wrap-col="false"
@@ -27846,6 +28221,7 @@ defineExpose({
         :viewport-column-rendering-offset="sheetHotViewportColumnRenderingOffset"
         :min-spare-rows="0"
         :render-all-rows="false"
+        :viewport-row-rendering-offset="SHEET_HOT_ROW_RENDERING_OFFSET"
         :height="sheetGridHeight"
         :stretch-h="'none'"
         :selection-mode="'range'"

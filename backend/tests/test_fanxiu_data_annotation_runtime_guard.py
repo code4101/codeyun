@@ -1008,6 +1008,31 @@ def test_runtime_status_can_skip_cell_logs(monkeypatch):
     assert response.cell_logs == []
 
 
+def test_runtime_status_can_skip_logs(monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "ensure_feature_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        fanxiu_api,
+        "_data_annotation_runtime_status",
+        lambda **_kwargs: {
+            "ok": True,
+            "status": "idle",
+            "message": "ready",
+            "logs": [{"message": "huge"}],
+        },
+    )
+    current_user = User(id=1, username="tester", hashed_password="x", is_active=True)
+
+    response = fanxiu_api.get_fanxiu_data_annotation_runtime_status(
+        entry_id="",
+        include_logs=False,
+        current_user=current_user,
+        session=None,
+    )
+
+    assert response.message == "ready"
+    assert response.logs == []
+
+
 def test_ocr_row_clicks_in_shape_uses_shape_center_x_and_filters_text():
     runner = create_fanxiu_runtime_runner()
     image = _image(

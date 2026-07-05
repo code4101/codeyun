@@ -955,11 +955,6 @@ def repair_data_annotation_scheduler_tasks(
             ):
                 task["next_time"] = expected_next_time
                 changed = True
-    for task in tasks:
-        if not task_supported(task) and task.get("enabled"):
-            task["enabled"] = False
-            task["last_result"] = "unsupported"
-            changed = True
     if raw != tasks:
         changed = True
     return tasks, changed

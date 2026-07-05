@@ -265,7 +265,14 @@ class MailTaskMixin:
                 )
                 self._log_locked("action", f"邮件_清理：启动时位于 #{scene_id}，点击「{action_title}」后继续扫描")
             yield from runtime.wait_click(scene_id, action_title, timeout=8.0)
-            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_清理：遗留详情页处理后返回邮件 #121")
+            yield from self._wait_mail_list_after_detail_action(
+                ctx,
+                stop_event,
+                runtime,
+                scene_id,
+                timeout=18.0,
+                label="邮件_清理：遗留详情页处理后返回邮件 #121",
+            )
         else:
             with self._lock:
                 self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
@@ -813,6 +820,42 @@ class MailTaskMixin:
             back_shape.click(runtime)
             yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：详情页返回邮件 #121")
         return actual_policy
+
+    def _wait_mail_list_after_detail_action(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        runtime: FanxiuRuntime,
+        scene_id: int,
+        *,
+        timeout: float,
+        label: str,
+    ):
+        detail_image = (ctx.get("images") or {}).get(scene_id)
+        if isinstance(detail_image, dict):
+            detail_view = View(detail_image)
+            wait_result = yield from self._wait_mail_list_or_reopen_from_world_after_action(
+                runtime,
+                detail_view,
+                timeout=timeout,
+                label=label,
+            )
+            if wait_result in {"list", "reopened"}:
+                return wait_result
+            if wait_result in {"timeout", "detail_still_open"}:
+                back_shape = detail_view.get_shape("空白-返回")
+                if back_shape is not None:
+                    self._log("info", f"{label}：详情页未自动回列表，点击详情页返回")
+                    back_shape.click(runtime)
+                    yield from self._wait_mail_list_ready_or_restore_world(
+                        ctx,
+                        stop_event,
+                        timeout=12.0,
+                        label=label,
+                    )
+                    return "list"
+        yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=timeout, label=label)
+        return "list"
 
     def _wait_mail_list_or_reopen_from_world_after_action(
         self,
@@ -2250,7 +2293,14 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_历史扫描：详情页确认 #{scene_id}，点击「{action_title}」：{title}")
         yield from runtime.wait_click(scene_id, action_title, timeout=8.0)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
+        yield from self._wait_mail_list_after_detail_action(
+            ctx,
+            stop_event,
+            runtime,
+            scene_id,
+            timeout=18.0,
+            label="邮件_历史扫描：返回邮件 #121",
+        )
         self._update_packet_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
@@ -2320,7 +2370,14 @@ class MailTaskMixin:
             )
             return "seen"
         yield from runtime.wait_click(target_scene_id, action_title, timeout=8.0)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
+        yield from self._wait_mail_list_after_detail_action(
+            ctx,
+            stop_event,
+            runtime,
+            target_scene_id,
+            timeout=18.0,
+            label="邮件_历史扫描：返回邮件 #121",
+        )
         self._update_packet_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
@@ -2369,7 +2426,14 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_历史扫描：UI确认 #123，点击「删除」：{title}")
         yield from runtime.wait_click(123, "删除")
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
+        yield from self._wait_mail_list_after_detail_action(
+            ctx,
+            stop_event,
+            runtime,
+            123,
+            timeout=18.0,
+            label="邮件_历史扫描：返回邮件 #121",
+        )
         self._update_packet_mail_action_for_row(
             row,
             status="delete_requested",

@@ -8,18 +8,23 @@ import App from './App.vue'
 import router from './router'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
+import { markBootPerf } from '@/utils/bootPerf'
 import { resetNoteTypePaletteState } from '@/utils/noteTypePaletteState'
 
+markBootPerf('main.module')
 const app = createApp(App)
 const pinia = createPinia()
 
+markBootPerf('main.before-use')
 app.use(pinia)
 app.use(router)
+markBootPerf('main.after-use')
 
 // Initialize User Store
 const userStore = useUserStore(pinia)
 const featureAccessStore = useFeatureAccessStore(pinia)
 userStore.initialize()
+markBootPerf('main.user-store-initialized')
 
 watch(
   () => userStore.token,
@@ -42,4 +47,6 @@ watch(
   { immediate: true }
 )
 
+markBootPerf('main.before-mount')
 app.mount('#app')
+markBootPerf('main.after-mount')

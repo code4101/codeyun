@@ -553,6 +553,45 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         for item in (daily_audit.get("unmapped_incomplete") or [])
         if isinstance(item, dict)
     ]
+    now_dt = datetime.now()
+    critical_failed_tasks: list[dict[str, Any]] = []
+    critical_task_ids = {"mail-cleanup"}
+    for task_id in critical_task_ids:
+        task = enabled_by_id.get(task_id)
+        if not isinstance(task, dict):
+            continue
+        result = str(task.get("last_result") or "")
+        retry_after = str(task.get("retry_after") or "").strip()
+        last_run_at = str(task.get("last_run_at") or "").strip()
+        schedule_times = task.get("schedule_times") if isinstance(task.get("schedule_times"), list) else []
+        schedule_passed_today = False
+        for schedule_time in schedule_times:
+            try:
+                hour_text, minute_text = str(schedule_time).split(":", 1)
+                scheduled_dt = now_dt.replace(hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0)
+            except (TypeError, ValueError):
+                continue
+            if scheduled_dt <= now_dt:
+                schedule_passed_today = True
+                break
+        ran_today = last_run_at.startswith(now_dt.strftime("%Y-%m-%d"))
+        stale_running = result == "running" and not bool(runtime.get("running"))
+        failed_after_trigger = result in {"error", "stopped", "blocked"} and (
+            bool(retry_after) or ran_today or schedule_passed_today
+        )
+        if not (failed_after_trigger or stale_running):
+            continue
+        critical_failed_tasks.append(
+            {
+                "id": task_id,
+                "label": str(task.get("label") or task_id),
+                "last_result": result,
+                "last_run_at": task.get("last_run_at"),
+                "retry_after": task.get("retry_after"),
+                "next_time": task.get("next_time"),
+                "reason": "stale_running" if stale_running else "failed_after_trigger",
+            }
+        )
     if global_human_blocking_items:
         blocked_by_id = {str(item.get("id") or ""): item for item in blocked_due}
         for item in due_state:
@@ -589,6 +628,9 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         action_required.append("当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务")
     elif scheduler.get("next_action") == "run_due" and due_tasks:
         action_required.append("当前有到期任务且未发现阻断，等待 resident service 执行或检查服务调度日志")
+    elif critical_failed_tasks:
+        labels = "、".join(str(item.get("label") or item.get("id")) for item in critical_failed_tasks)
+        action_required.append(f"关键作业今日失败或残留：{labels}；需要立即诊断日志、清理运行残留并按公开入口监督重跑或 observe-only 验证")
     elif visual_incomplete_tasks or visual_unmapped_incomplete:
         action_required.append("日常页复核发现任务次数未满；已映射任务应重新到期执行，未映射任务需要补 Scheduler 能力或映射规则")
     elif not due_tasks:
@@ -619,6 +661,10 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif due_tasks and scheduler.get("next_action") == "run_due":
         severity = "attention"
         summary = f"{len(due_tasks)} 个任务已到期，等待自动执行"
+    elif critical_failed_tasks:
+        severity = "attention"
+        labels = "、".join(str(item.get("label") or item.get("id")) for item in critical_failed_tasks)
+        summary = f"关键作业失败或残留：{labels}"
     elif visual_incomplete_tasks or visual_unmapped_incomplete:
         severity = "attention"
         summary = (
@@ -643,6 +689,9 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         "stale_due_success_count": len(stale_due_success),
         "blocked_due_count": len(blocked_due),
         "blocked_due_ids": [str(item.get("id") or "") for item in blocked_due],
+        "critical_failed_count": len(critical_failed_tasks),
+        "critical_failed_ids": [str(item.get("id") or "") for item in critical_failed_tasks],
+        "critical_failed_tasks": critical_failed_tasks,
         "visual_incomplete_count": len(visual_incomplete_tasks),
         "visual_incomplete_ids": [str(item.get("id") or "") for item in visual_incomplete_tasks],
         "visual_unmapped_incomplete_count": len(visual_unmapped_incomplete),

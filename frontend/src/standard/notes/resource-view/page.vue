@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { User } from '@element-plus/icons-vue'
@@ -31,8 +31,15 @@ import {
   resolveCodeyunUrl,
   type CodeyunLinkVariant,
 } from '@/utils/codeyunLinks'
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
 import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
-import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
+
+markBootPerf('resource-view.module')
+
+const NoteSheetWorkspace = defineAsyncComponent(() => markBootPerfAsync(
+  'resource-view.NoteSheetWorkspace.import',
+  () => import('../components/NoteSheetWorkspace.vue'),
+))
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
@@ -41,6 +48,7 @@ const RESOURCE_LINK_SUBMENU_WIDTH = 176
 const SHEET_ADVANCED_SUBMENU_WIDTH = 196
 const WORKBOOK_CONTEXT_MENU_WIDTH = 148
 const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
+const SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT = 960
 
 type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
@@ -106,6 +114,12 @@ type SheetWorkspaceLoadErrorPayload = {
   message: string
 }
 
+type NoteSheetWorkspaceExpose = {
+  openSheetSettings?: () => void
+  hideEmptyColumns?: () => void
+  detectAndSetOptionFilters?: () => void
+}
+
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
@@ -123,7 +137,7 @@ const workbook = ref<WorkbookDetail | null>(null)
 const activeSheetId = ref<number | null>(null)
 const prefetchedSheetDetail = ref<NoteSheetDetail | null>(null)
 const sheetTabsRef = ref<HTMLElement | null>(null)
-const sheetWorkspaceRef = ref<InstanceType<typeof NoteSheetWorkspace> | null>(null)
+const sheetWorkspaceRef = ref<NoteSheetWorkspaceExpose | null>(null)
 const standaloneSheetTitle = ref('')
 const standaloneWorkbookTitle = ref('')
 const standaloneParentWorkbookId = ref<number | null>(null)
@@ -447,6 +461,10 @@ async function loadWorkbookResource() {
   const requestSeq = ++workbookLoadSeq
   const targetWorkbookId = workbookId.value
   const targetSheetId = querySheetId.value
+  markBootPerf('resource-view.loadWorkbook.start', {
+    workbookId: targetWorkbookId,
+    sheetId: targetSheetId,
+  })
   if (targetWorkbookId == null) {
     errorText.value = '工作簿地址无效'
     workbook.value = null
@@ -460,17 +478,28 @@ async function loadWorkbookResource() {
   clearResourceAccessIssue()
   prefetchedSheetDetail.value = null
   try {
-    const workbookRequest = fetchWorkbook(targetWorkbookId)
+    const workbookRequest = markBootPerfAsync(
+      'resource-view.fetchWorkbook',
+      () => fetchWorkbook(targetWorkbookId),
+    )
     const sheetRequest = targetSheetId == null
       ? Promise.resolve<NoteSheetDetail | null>(null)
-      : fetchNoteSheet(targetSheetId, {
-          workbookId: targetWorkbookId,
-          includeWorkbookContext: false,
-        }).catch((error) => {
+      : markBootPerfAsync(
+          'resource-view.prefetchSheet',
+          () => fetchNoteSheet(targetSheetId, {
+            workbookId: targetWorkbookId,
+            includeWorkbookContext: true,
+          }),
+        ).catch((error) => {
           console.warn('Failed to prefetch workbook sheet:', error)
           return null
         })
     const [detail, prefetchedDetail] = await Promise.all([workbookRequest, sheetRequest])
+    markBootPerf('resource-view.loadWorkbook.responses', {
+      hasWorkbook: !!detail,
+      hasPrefetchedSheet: !!prefetchedDetail,
+      prefetchedSheetId: prefetchedDetail?.id ?? null,
+    })
     if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
       return
     }
@@ -490,6 +519,11 @@ async function loadWorkbookResource() {
     workbook.value = detail
     activeSheetId.value = resolveSheetId()
     prefetchedSheetDetail.value = prefetchedDetail?.id === activeSheetId.value ? prefetchedDetail : null
+    markBootPerf('resource-view.loadWorkbook.state-ready', {
+      activeSheetId: activeSheetId.value,
+      sheetCount: detail.workbook_items?.length ?? detail.sheets?.length ?? null,
+      prefetchedUsable: !!prefetchedSheetDetail.value,
+    })
     if (activeSheetId.value != null && activeSheetId.value !== querySheetId.value) {
       void router.replace({
         path: `/workbook/${detail.id}`,
@@ -518,6 +552,10 @@ async function loadWorkbookResource() {
   } finally {
     if (requestSeq === workbookLoadSeq) {
       loading.value = false
+      markBootPerf('resource-view.loadWorkbook.finally', {
+        activeSheetId: activeSheetId.value,
+        hasWorkbook: !!workbook.value,
+      })
     }
   }
 }
@@ -1321,6 +1359,11 @@ watch(
 )
 
 onMounted(() => {
+  markBootPerf('resource-view.mounted', {
+    workbookMode: isWorkbookMode.value,
+    workbookId: workbookId.value,
+    sheetId: querySheetId.value,
+  })
   document.addEventListener('mousedown', handleGlobalMouseDown)
   document.addEventListener('keydown', handleGlobalKeydown)
   if (isWorkbookMode.value) {
@@ -1573,6 +1616,8 @@ onBeforeUnmount(() => {
         :initial-detail="activeSheetPrefetchedDetail"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
+        runtime-height-mode="fill"
+        :runtime-max-grid-height="SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
         :show-title-input="false"
         empty-text="请选择工作表"
@@ -1591,6 +1636,8 @@ onBeforeUnmount(() => {
         :sheet-id="sheetId"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
+        runtime-height-mode="fill"
+        :runtime-max-grid-height="SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT"
         :show-title-input="false"
         :show-back-button="standaloneWorkbookBackTo !== ''"
         show-user-identity

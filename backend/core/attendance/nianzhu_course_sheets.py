@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlencode
 
 from sqlmodel import Session, select
@@ -3013,10 +3013,11 @@ def _load_course_sheet_bundle(
     session: Session,
     *,
     attendance: SheetDocument,
+    sheet_keys: Iterable[str] | None = None,
 ) -> dict[str, SheetDocument]:
     owner_key = _normalize_text(attendance.owner_key) or NIANZHU_OWNER_KEY
     result: dict[str, SheetDocument] = {}
-    for sheet_key in [VIDEO_CONFIG_SHEET_KEY, VIDEO_DATA_SHEET_KEY, CLOCKIN_CONFIG_SHEET_KEY, CLOCKIN_DATA_SHEET_KEY]:
+    for sheet_key in sheet_keys or [VIDEO_CONFIG_SHEET_KEY, VIDEO_DATA_SHEET_KEY, CLOCKIN_CONFIG_SHEET_KEY, CLOCKIN_DATA_SHEET_KEY]:
         sheet = _find_course_sheet(session, owner_key=owner_key, sheet_key=sheet_key)
         if sheet is None:
             raise RuntimeError(f"念住闯关课程工作簿缺少 sheet：{sheet_key}")
@@ -3024,52 +3025,72 @@ def _load_course_sheet_bundle(
     return result
 
 
-def _set_grid_cell_inline_link(
+def _set_grid_cell_inline_links(
     document: dict[str, Any],
     *,
     row_index: int,
-    column_index: int,
-    url: str,
-) -> tuple[dict[str, Any], bool]:
-    normalized_url = _normalize_text(url)
-    if not normalized_url:
-        return document, False
-
+    links: Iterable[tuple[int, str]],
+) -> tuple[dict[str, Any], int]:
     columns = _normalize_document_columns(document)
-    if column_index < 0 or column_index >= len(columns):
-        return document, False
+    if not columns or row_index < 0:
+        return document, 0
+
+    normalized_links: list[tuple[int, str]] = []
+    seen_columns: set[int] = set()
+    for column_index, url in links:
+        normalized_url = _normalize_text(url)
+        if not normalized_url or column_index < 0 or column_index >= len(columns):
+            continue
+        if column_index in seen_columns:
+            continue
+        seen_columns.add(column_index)
+        normalized_links.append((column_index, normalized_url))
+    if not normalized_links:
+        return document, 0
 
     source_grid_rows = document.get("grid_rows")
-    if not isinstance(source_grid_rows, list) or row_index < 0:
-        return document, False
+    if not isinstance(source_grid_rows, list):
+        return document, 0
 
     grid_rows = [note_sheet_inline_links.normalize_row(row, len(columns)) for row in source_grid_rows]
     while len(grid_rows) <= row_index:
         grid_rows.append([""] * len(columns))
 
     next_document = dict(document)
-    changed = False
-
-    old_value = grid_rows[row_index][column_index]
-    new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
-    if new_value != old_value:
-        grid_rows[row_index][column_index] = new_value
-        next_document["grid_rows"] = grid_rows
-        changed = True
-
+    changed_count = 0
+    grid_changed = False
+    meta_changed = False
     cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
-    meta_key = f"{row_index}:{column_index}"
-    previous_meta = cell_meta.get(meta_key)
-    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
-    previous_link = next_meta.get("link")
-    previous_url = _normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
-    if previous_url != normalized_url:
-        next_meta["link"] = {"url": normalized_url}
-        cell_meta[meta_key] = next_meta
-        next_document["cell_meta"] = cell_meta
-        changed = True
 
-    return next_document, changed
+    for column_index, normalized_url in normalized_links:
+        cell_changed = False
+        old_value = grid_rows[row_index][column_index]
+        new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
+        if new_value != old_value:
+            grid_rows[row_index][column_index] = new_value
+            grid_changed = True
+            cell_changed = True
+
+        meta_key = f"{row_index}:{column_index}"
+        previous_meta = cell_meta.get(meta_key)
+        next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+        previous_link = next_meta.get("link")
+        previous_url = _normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
+        if previous_url != normalized_url:
+            next_meta["link"] = {"url": normalized_url}
+            cell_meta[meta_key] = next_meta
+            meta_changed = True
+            cell_changed = True
+
+        if cell_changed:
+            changed_count += 1
+
+    if grid_changed:
+        next_document["grid_rows"] = grid_rows
+    if meta_changed:
+        next_document["cell_meta"] = cell_meta
+
+    return next_document, changed_count
 
 
 def apply_course_attendance_header_links_for_response(
@@ -3082,7 +3103,11 @@ def apply_course_attendance_header_links_for_response(
         return document_json, 0
 
     try:
-        bundle = _load_course_sheet_bundle(session, attendance=attendance)
+        bundle = _load_course_sheet_bundle(
+            session,
+            attendance=attendance,
+            sheet_keys=[VIDEO_CONFIG_SHEET_KEY, CLOCKIN_CONFIG_SHEET_KEY],
+        )
     except RuntimeError:
         return document_json, 0
 
@@ -3109,8 +3134,7 @@ def apply_course_attendance_header_links_for_response(
         if name and url:
             clockin_url_by_name.setdefault(name, url)
 
-    next_document = document_json
-    changed_count = 0
+    link_updates: list[tuple[int, str]] = []
     for column_index, column in enumerate(columns):
         url = ""
         if _normalize_text(column) == "打卡数":
@@ -3120,16 +3144,9 @@ def apply_course_attendance_header_links_for_response(
             url = video_url_by_key.get(key, "") if key else ""
         if not url:
             continue
-        next_document, changed = _set_grid_cell_inline_link(
-            next_document,
-            row_index=header_row_index,
-            column_index=column_index,
-            url=url,
-        )
-        if changed:
-            changed_count += 1
+        link_updates.append((column_index, url))
 
-    return next_document, changed_count
+    return _set_grid_cell_inline_links(document_json, row_index=header_row_index, links=link_updates)
 
 
 def has_nianzhu_course_storage_sheets(session: Session, *, attendance_sheet: SheetDocument) -> bool:
