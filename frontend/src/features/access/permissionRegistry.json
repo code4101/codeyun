@@ -524,6 +524,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "pokemon-tcg.catalog",
+      "title": "宝可梦卡牌",
+      "node_type": "feature",
+      "parent_key": "game-tools",
+      "sort_order": 26,
+      "route_paths": ["/pokemon-tcg/catalog"],
+      "menu_paths": ["/pokemon-tcg/catalog"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "magic-craft",
       "title": "魔法工艺",
       "node_type": "group",

@@ -147,6 +147,11 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./mystia/wiki/page.vue'),
   },
   {
+    routeName: 'PokemonTcgCatalog',
+    canonicalPath: '/pokemon-tcg/catalog',
+    component: () => import('./pokemon-tcg/page.vue'),
+  },
+  {
     routeName: 'XorMatrix',
     canonicalPath: '/magic-craft/xor-matrix',
     component: () => import('./magic-craft/xor-matrix/page.vue'),

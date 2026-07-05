@@ -7,6 +7,9 @@ WORKSPACE_COMPONENT = REPO_ROOT / "frontend/src/standard/notes/components/NoteSh
 NOTE_SHEETS_API = REPO_ROOT / "backend/api/note_sheets.py"
 NOTE_SHEETS_TS_API = REPO_ROOT / "frontend/src/api/noteSheets.ts"
 RESOURCE_VIEW_PAGE = REPO_ROOT / "frontend/src/standard/notes/resource-view/page.vue"
+FRONTEND_MAIN_TS = REPO_ROOT / "frontend/src/main.ts"
+FRONTEND_INDEX_HTML = REPO_ROOT / "frontend/index.html"
+FRONTEND_API_INDEX_TS = REPO_ROOT / "frontend/src/api/index.ts"
 
 
 def _workspace_source() -> str:
@@ -25,6 +28,18 @@ def _resource_view_source() -> str:
     return RESOURCE_VIEW_PAGE.read_text(encoding="utf-8")
 
 
+def _frontend_main_source() -> str:
+    return FRONTEND_MAIN_TS.read_text(encoding="utf-8")
+
+
+def _frontend_index_source() -> str:
+    return FRONTEND_INDEX_HTML.read_text(encoding="utf-8")
+
+
+def _frontend_api_index_source() -> str:
+    return FRONTEND_API_INDEX_TS.read_text(encoding="utf-8")
+
+
 def test_note_sheet_workspace_data_refresh_uses_load_data_instead_of_update_settings():
     source = _workspace_source()
 
@@ -33,6 +48,94 @@ def test_note_sheet_workspace_data_refresh_uses_load_data_instead_of_update_sett
     assert "hot.loadData(rows)" in source
     assert "updateSettings({ data: sheetHotGridRows.value" not in source
     assert "updateSettings({\n      data: sheetHotGridRows.value" not in source
+
+
+def test_public_sheet_boot_does_not_eagerly_load_feature_access_context():
+    source = _frontend_main_source()
+
+    assert "useFeatureAccessStore" not in source
+    assert "featureAccessStore.ensureLoaded()" not in source
+    assert "featureAccessStore.refreshContext()" not in source
+    assert "router.beforeEach" not in source
+
+
+def test_boot_perf_snapshot_captures_api_resources_and_long_tasks():
+    source = _frontend_index_source()
+
+    assert "longTasks: []" in source
+    assert "PerformanceObserver((list) =>" in source
+    assert "longTaskObserver.observe({ type: 'longtask', buffered: true })" in source
+    assert "entry.duration >= 500 || entry.name.includes('/api/')" in source
+    assert "longTasks: (window.__codeyunBootPerf?.longTasks || []).slice(0, 20)" in source
+
+
+def test_boot_perf_requests_backend_server_timing_headers():
+    api_source = _frontend_api_index_source()
+    backend_source = _note_sheets_api_source()
+
+    assert "import { isBootPerfEnabled } from '@/utils/bootPerf'" in api_source
+    assert "config.headers['X-CodeYun-BootPerf'] = '1'" in api_source
+    assert "x_codeyun_boot_perf: str | None = Header(default=None, alias=\"X-CodeYun-BootPerf\")" in backend_source
+    assert "response.headers[\"Server-Timing\"] = _format_note_sheet_server_timing(timings)" in backend_source
+    assert "_record_note_sheet_timing(timings, checkpoint, \"resolve\")" in backend_source
+    assert "_record_note_sheet_timing(timings, checkpoint, \"payload_total\")" in backend_source
+
+
+def test_public_workbook_routes_do_not_propagate_diagnostic_query_params():
+    source = _resource_view_source()
+
+    assert "function getCleanWorkbookRouteQuery(targetSheetId?: number | null)" in source
+    assert "routeWorkspaceView.value" in source
+    assert "query: { ...route.query" not in source
+    assert "const nextQuery = { ...route.query }" not in source
+
+
+def test_public_workbook_initial_load_keeps_workbook_and_sheet_requests_parallel():
+    source = _resource_view_source()
+    start = source.index("async function loadWorkbookResource()")
+    end = source.index("\nfunction selectSheet", start)
+    body = source[start:end]
+
+    assert "() => fetchWorkbook(targetWorkbookId)" in body
+    assert "resource-view.prefetchSheet" in body
+    assert "Promise.all([workbookRequest, sheetRequest])" in body
+    assert "active_sheet_detail" not in body
+
+
+def test_note_sheet_get_path_reuses_normalized_document_for_attendance_sheets():
+    source = _note_sheets_api_source()
+
+    assert "def _sheet_identity_list_is_complete(" in source
+    assert "_sheet_identity_list_is_complete(source_document.get(\"row_ids\"), count=len(rows))" in source
+    assert "_sheet_identity_list_is_complete(source_document.get(\"column_ids\"), count=len(columns))" in source
+    assert "return source_document if document_json is not None else _normalize_document_json(source_document)" in source
+    assert "assume_normalized: bool = False" in source
+    assert "_normalize_attendance_dual_clockin_refund_formulas(\n        document_json,\n        assume_normalized=True,\n    )" in source
+    assert "_normalize_attendance_managed_refund_formulas(\n        document_json,\n        assume_normalized=True,\n    )" in source
+    assert "if _header_link_count:\n        full_document = _normalize_document_json(full_document)" in source
+    assert "page_document[\"row_ids\"] = [" in source
+
+
+def test_workbook_detail_reuses_loaded_sheet_summaries_and_access():
+    source = _note_sheets_api_source()
+    start = source.index("def _serialize_workbook_detail(")
+    end = source.index("\ndef _serialize_resource_access_grants", start)
+    body = source[start:end]
+
+    assert "workbook_access: NoteSheetResourceAccess | None = None" in source
+    assert "if workbook_access is not None" in source
+    assert "sheet_map: dict[str, SheetDocument] | None = None" in source
+    assert "sheet_map=sheet_map" in body
+    assert "workbook_access=access" in body
+
+
+def test_note_sheet_workspace_accepts_page_scoped_row_ids():
+    source = _workspace_source()
+
+    assert "const sourceRowIds = Array.isArray(document.row_ids) ? document.row_ids : []" in source
+    assert "const rowIdsArePaged = sourceRowIds.length === normalizedRows.length" in source
+    assert "const sourceRowIdIndex = rowIdsArePaged ? localIndex : getDocumentRowIndex(localIndex)" in source
+    assert "normalizeSheetEntityId(sourceRowIds[sourceRowIdIndex])" in source
 
 
 def test_note_sheet_workspace_defers_non_initial_child_components():
@@ -48,7 +151,7 @@ def test_note_sheet_workspace_defers_non_initial_child_components():
     assert "function mixDuplicateHighlightColors(" in source
 
 
-def test_note_sheet_workspace_defers_initial_hot_data_until_after_mount():
+def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     source = _workspace_source()
     restore_start = source.index("async function restoreInitialDocument(")
     restore_end = source.index("\nasync function handlePageChange", restore_start)
@@ -57,15 +160,17 @@ def test_note_sheet_workspace_defers_initial_hot_data_until_after_mount():
     enhance_end = source.index("\ntype SheetContextMenuItem", enhance_start)
     enhance_body = source[enhance_start:enhance_end]
 
-    assert "const EMPTY_SHEET_HOT_GRID_ROWS: SheetRow[] = []" in source
-    assert "const sheetHotInitialGridRows = computed<SheetRow[]>(() => EMPTY_SHEET_HOT_GRID_ROWS)" in source
-    assert ':data="sheetHotInitialGridRows"' in source
-    assert ':data="sheetHotGridRows"' not in source
+    assert "const EMPTY_SHEET_HOT_GRID_ROWS: SheetRow[] = []" not in source
+    assert "const sheetHotInitialGridRows" not in source
+    assert ':data="sheetHotGridRows"' in source
+    assert ':data="sheetHotInitialGridRows"' not in source
     assert "function ensureHotInitialGridRowsLoaded(reason: string)" in source
     assert "async function waitForHotInitialGridRowsLoaded(reason: string)" in source
     assert "hotInitialDataLoadedContentIdentity" in source
     assert "hotInitialDataLoadedInstance" in source
     assert "recordSheetPerfEvent('handsontable.initialLoadData'" in source
+    assert "function requestHotInitialGridRowsLoaded(reason: string)" in source
+    assert "requestHotInitialGridRowsLoaded('hot-instance-ready')" in source
     assert "await waitForHotInitialGridRowsLoaded('restore-initial-document')" in restore_body
     assert "trace?.mark(`initial-hot-load-data-${initialHotLoadDataResult}`)" in restore_body
     assert restore_body.index("await nextTick()") < restore_body.index("await waitForHotInitialGridRowsLoaded('restore-initial-document')")
@@ -75,6 +180,21 @@ def test_note_sheet_workspace_defers_initial_hot_data_until_after_mount():
     wait_end = source.index("\nfunction isSheetDocumentHidden", wait_start)
     wait_body = source[wait_start:wait_end]
     assert "requestAnimationFrame" not in wait_body
+
+
+def test_note_sheet_workspace_skips_irrelevant_action_status_requests_on_initial_load():
+    source = _workspace_source()
+    start = source.index("function refreshInitialSheetActionStatuses()")
+    end = source.index("\nfunction scheduleInitialSheetActionStatusRefresh", start)
+    body = source[start:end]
+
+    assert "function hasSheetCellAction(" in source
+    assert "function hasRegistrationAsyncActionCells()" in source
+    assert "function hasClockinLinkDetectionActionCells()" in source
+    assert "if (hasRegistrationAsyncActionCells())" in body
+    assert "void refreshUserMatchRunStatus(undefined, { silent: true })" in body
+    assert "if (hasClockinLinkDetectionActionCells())" in body
+    assert "void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })" in body
 
 
 def test_note_sheet_workspace_load_document_defers_hot_updates_to_vue_wrapper():
@@ -308,7 +428,7 @@ def test_note_sheet_workspace_uses_embedded_defined_names_context_before_first_m
     assert restore_body.index("syncDefinedNamesFromResponse(embeddedDefinedNamesContext)") < restore_body.index("loadSheetDocument(activeDocument, activeSourceDocument)")
 
 
-def test_workbook_prefetch_includes_workbook_context_for_initial_sheet_detail():
+def test_workbook_prefetch_skips_duplicate_workbook_context_for_initial_sheet_detail():
     source = _resource_view_source()
     load_start = source.index("async function loadWorkbookResource()")
     load_end = source.index("\n\nfunction handleSheetTabClick", load_start)
@@ -316,8 +436,8 @@ def test_workbook_prefetch_includes_workbook_context_for_initial_sheet_detail():
 
     assert "fetchNoteSheet(targetSheetId, {" in load_body
     assert "workbookId: targetWorkbookId" in load_body
-    assert "includeWorkbookContext: true" in load_body
-    assert "includeWorkbookContext: false" not in load_body
+    assert "includeWorkbookContext: false" in load_body
+    assert "includeWorkbookContext: true" not in load_body
 
 
 def test_note_sheet_detail_serializes_embedded_defined_names_context():
@@ -337,6 +457,9 @@ def test_note_sheet_detail_serializes_embedded_defined_names_context():
     query_start = source.index("def query_note_sheet(")
     query_end = source.index("\n\n@router.get(\"/sheets/{sheet_id}/column-options\"", query_start)
     query_body = source[query_start:query_end]
+    payload_start = source.index("def _build_note_sheet_detail_payload(")
+    payload_end = source.index("\n\ndef _build_sheet_defined_names_context", payload_start)
+    payload_body = source[payload_start:payload_end]
 
     assert "defined_names_context: Optional[dict[str, Any]] = None" in detail_body
     assert "defined_names_context: dict[str, Any] | None = None" in serialize_body
@@ -344,8 +467,11 @@ def test_note_sheet_detail_serializes_embedded_defined_names_context():
     assert '"workbook": workbook_names' in helper_body
     assert '"worksheets": [{' in helper_body
     assert "_merge_effective_defined_names(workbook_names, worksheet_names)" in helper_body
-    assert "workbook if include_workbook_context else None" in get_body
-    assert "workbook if payload.include_workbook_context else None" in query_body
+    assert "include_workbook_context=include_workbook_context" in get_body
+    assert "workbook if include_workbook_context else None" not in payload_body
+    assert "workbook if payload.include_workbook_context else None" not in query_body
+    assert "defined_names_context = _build_sheet_defined_names_context(\n        session,\n        document,\n        workbook,\n    )" in payload_body
+    assert "document,\n            workbook," in query_body
 
 
 def test_note_sheet_workspace_renders_formula_engine_loaded_only_when_display_changes():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 import io
@@ -20,11 +21,11 @@ from urllib.parse import quote
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import attributes, load_only
 from sqlmodel import Session, delete, func, select
 
 from backend.core.ai.app_config import (
@@ -182,6 +183,10 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_DEVICE_NAME",
     "codepc_mi15",
 )
+NOTE_SHEET_DOCUMENT_JSON_CACHE_TTL_SECONDS = 300
+NOTE_SHEET_DOCUMENT_JSON_CACHE_MAX_ITEMS = 3
+_NOTE_SHEET_DOCUMENT_JSON_CACHE_LOCK = threading.RLock()
+_NOTE_SHEET_DOCUMENT_JSON_CACHE: OrderedDict[str, tuple[int, float, float, dict[str, Any]]] = OrderedDict()
 NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
     "900",
@@ -1113,7 +1118,7 @@ def _normalize_registration_sheet_header_persisted(
 ) -> dict[str, Any]:
     source_document = dict(document_json if document_json is not None else (document.document_json or {}))
     if not _is_registration_sheet(document):
-        return _normalize_document_json(source_document)
+        return source_document if document_json is not None else _normalize_document_json(source_document)
     next_document, changed = _normalize_registration_sheet_header_document(source_document)
     if changed:
         document.document_json = next_document
@@ -1721,6 +1726,18 @@ def _normalize_sheet_identity_list(source: Any, *, count: int, prefix: str) -> t
     return ids, changed
 
 
+def _sheet_identity_list_is_complete(source: Any, *, count: int) -> bool:
+    if not isinstance(source, list) or len(source) != count:
+        return False
+    seen: set[str] = set()
+    for value in source:
+        identity = str(value).strip()
+        if not identity or identity in seen:
+            return False
+        seen.add(identity)
+    return True
+
+
 def _ensure_sheet_document_identity(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -1741,7 +1758,17 @@ def _ensure_sheet_document_identity(document_json: dict[str, Any]) -> tuple[dict
 
 
 def _ensure_sheet_document_identity_persisted(session: Session, document: SheetDocument) -> dict[str, Any]:
-    next_document, changed = _ensure_sheet_document_identity(dict(document.document_json or {}))
+    source_document = dict(document.document_json or {})
+    if isinstance(source_document, dict):
+        columns = _normalize_document_columns(source_document)
+        rows = _extract_document_rows(source_document)
+        if (
+            _sheet_identity_list_is_complete(source_document.get("row_ids"), count=len(rows))
+            and _sheet_identity_list_is_complete(source_document.get("column_ids"), count=len(columns))
+        ):
+            return source_document
+
+    next_document, changed = _ensure_sheet_document_identity(source_document)
     if changed:
         document.document_json = next_document
         document.updated_at = time.time()
@@ -2498,6 +2525,14 @@ def _slice_paged_document_row_metadata(
     }
     data_start_row = _normalize_document_data_start_row(normalized)
     page_document_rows = {data_start_row + index for index in page_data_indexes if index >= 0}
+
+    row_ids = normalized.get("row_ids")
+    if isinstance(row_ids, list):
+        page_document["row_ids"] = [
+            row_ids[index]
+            for index in page_data_indexes
+            if 0 <= index < len(row_ids)
+        ]
 
     cell_meta = normalized.get("cell_meta")
     if isinstance(cell_meta, dict):
@@ -7384,18 +7419,11 @@ def _build_attendance_refund_config_formula(columns: list[str], *, row_number: i
 
 def _normalize_attendance_managed_refund_formulas(
     document_json: dict[str, Any],
+    *,
+    assume_normalized: bool = False,
 ) -> tuple[dict[str, Any], int]:
-    normalized = _normalize_document_json(document_json)
+    normalized = dict(document_json) if assume_normalized else _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
-    rows = [
-        _normalize_sheet_row(row, len(columns))
-        for row in _extract_document_rows(normalized)
-    ]
-    if not rows:
-        return document_json, 0
-
-    row_reference_offset = _get_formula_reference_row_offset(normalized)
-    standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
     formula_builders = {
         "禅客": lambda row_number: _build_attendance_zen_guest_formula(columns, row_number=row_number),
         "完成视频数": lambda row_number: _build_attendance_completed_video_formula(columns, row_number=row_number),
@@ -7408,6 +7436,23 @@ def _normalize_attendance_managed_refund_formulas(
         "当前应返款": lambda row_number: _build_attendance_current_refund_formula(columns, row_number=row_number),
         "返款配置": lambda row_number: _build_attendance_refund_config_formula(columns, row_number=row_number),
     }
+    target_column_indexes = {
+        _get_column_index(columns, header)
+        for header in formula_builders
+    }
+    target_column_indexes.discard(-1)
+    if not target_column_indexes:
+        return document_json, 0
+
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(normalized)
+    ]
+    if not rows:
+        return document_json, 0
+
+    row_reference_offset = _get_formula_reference_row_offset(normalized)
+    standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
     changed_cells: list[tuple[int, int]] = []
     for row_index, row in enumerate(rows):
         if _is_archived_attendance_row(row, columns) or not _attendance_row_has_identity_payload(row, columns):
@@ -7415,7 +7460,7 @@ def _normalize_attendance_managed_refund_formulas(
         row_number = row_reference_offset + row_index + 1
         for header, builder in formula_builders.items():
             column_index = _get_column_index(columns, header)
-            if column_index < 0:
+            if column_index not in target_column_indexes:
                 continue
             formula = builder(row_number)
             if not formula:
@@ -7637,12 +7682,15 @@ def _normalize_attendance_current_refund_config_note(
 
 def _normalize_attendance_dual_clockin_refund_formulas(
     document_json: dict[str, Any],
+    *,
+    assume_normalized: bool = False,
 ) -> tuple[dict[str, Any], int]:
-    normalized = _normalize_document_json(document_json)
+    normalized = dict(document_json) if assume_normalized else _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     normalized, note_changed_count = _normalize_attendance_current_refund_config_note(normalized, columns)
     refund_index = _get_column_index(columns, "打卡应返款")
     total_index = _get_column_index(columns, "总应返款")
+    zen_guest_index = _get_column_index(columns, "禅客")
     has_dual_clockin_refund = (
         refund_index >= 0
         and _get_column_index(columns, "共学打卡") >= 0
@@ -7652,6 +7700,10 @@ def _normalize_attendance_dual_clockin_refund_formulas(
     if has_dual_clockin_refund:
         normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
 
+    if zen_guest_index < 0 and not has_dual_clockin_refund:
+        changed_count = note_changed_count + config_row_changed_count
+        return (normalized, changed_count) if changed_count else (document_json, 0)
+
     rows = [
         _normalize_sheet_row(row, len(columns))
         for row in _extract_document_rows(normalized)
@@ -7659,7 +7711,6 @@ def _normalize_attendance_dual_clockin_refund_formulas(
     changed_formula_cells: list[tuple[int, int]] = []
     row_reference_offset = _get_formula_reference_row_offset(normalized)
     standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
-    zen_guest_index = _get_column_index(columns, "禅客")
     for row_index, row in enumerate(rows):
         row_number = row_reference_offset + row_index + 1
         if zen_guest_index >= 0 and _is_legacy_nianzhu_zen_guest_formula(row[zen_guest_index]):
@@ -7717,7 +7768,10 @@ def _normalize_attendance_dual_clockin_refund_formulas_persisted(
     document: SheetDocument,
     document_json: dict[str, Any],
 ) -> dict[str, Any]:
-    next_document, changed_count = _normalize_attendance_dual_clockin_refund_formulas(document_json)
+    next_document, changed_count = _normalize_attendance_dual_clockin_refund_formulas(
+        document_json,
+        assume_normalized=True,
+    )
     if not changed_count:
         return next_document
     document.document_json = next_document
@@ -7733,7 +7787,10 @@ def _normalize_attendance_managed_refund_formulas_persisted(
     document: SheetDocument,
     document_json: dict[str, Any],
 ) -> dict[str, Any]:
-    next_document, changed_count = _normalize_attendance_managed_refund_formulas(document_json)
+    next_document, changed_count = _normalize_attendance_managed_refund_formulas(
+        document_json,
+        assume_normalized=True,
+    )
     if not changed_count:
         return next_document
     document.document_json = next_document
@@ -14949,14 +15006,72 @@ def _get_sheet_by_numeric_id_or_404(
     sheet_id: int,
     *,
     include_deleted: bool = False,
+    include_document_json: bool = True,
 ) -> SheetDocument:
     query = select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)
+    if not include_document_json:
+        query = query.options(
+            load_only(
+                SheetDocument.id,
+                SheetDocument.numeric_id,
+                SheetDocument.legacy_id,
+                SheetDocument.scope,
+                SheetDocument.owner_type,
+                SheetDocument.owner_key,
+                SheetDocument.sheet_key,
+                SheetDocument.title,
+                SheetDocument.engine,
+                SheetDocument.version,
+                SheetDocument.owner_user_id,
+                SheetDocument.created_by_user_id,
+                SheetDocument.updated_by_user_id,
+                SheetDocument.created_at,
+                SheetDocument.updated_at,
+                SheetDocument.deleted_at,
+                SheetDocument.deleted_by_user_id,
+            ),
+        )
     if not include_deleted:
         query = query.where(_active_sheet_condition())
     document = session.exec(query).first()
     if document is None or document.scope != "notes":
         raise HTTPException(status_code=404, detail="表格不存在")
     return document
+
+
+def _sheet_document_json_cache_key(document: SheetDocument) -> str:
+    return str(document.id)
+
+
+def _get_cached_sheet_document_json(session: Session, document: SheetDocument) -> dict[str, Any]:
+    key = _sheet_document_json_cache_key(document)
+    version = int(document.version or 1)
+    updated_at = float(document.updated_at or 0)
+    now = time.monotonic()
+    with _NOTE_SHEET_DOCUMENT_JSON_CACHE_LOCK:
+        cached = _NOTE_SHEET_DOCUMENT_JSON_CACHE.get(key)
+        if cached is not None:
+            cached_version, cached_updated_at, cached_at, cached_document = cached
+            if (
+                cached_version == version
+                and cached_updated_at == updated_at
+                and now - cached_at <= NOTE_SHEET_DOCUMENT_JSON_CACHE_TTL_SECONDS
+            ):
+                _NOTE_SHEET_DOCUMENT_JSON_CACHE.move_to_end(key)
+                return dict(cached_document)
+            _NOTE_SHEET_DOCUMENT_JSON_CACHE.pop(key, None)
+
+    document_json = session.exec(
+        select(SheetDocument.document_json).where(SheetDocument.id == document.id)
+    ).first()
+    normalized_document = dict(document_json or {})
+    attributes.set_committed_value(document, "document_json", normalized_document)
+    with _NOTE_SHEET_DOCUMENT_JSON_CACHE_LOCK:
+        _NOTE_SHEET_DOCUMENT_JSON_CACHE[key] = (version, updated_at, now, dict(normalized_document))
+        _NOTE_SHEET_DOCUMENT_JSON_CACHE.move_to_end(key)
+        while len(_NOTE_SHEET_DOCUMENT_JSON_CACHE) > NOTE_SHEET_DOCUMENT_JSON_CACHE_MAX_ITEMS:
+            _NOTE_SHEET_DOCUMENT_JSON_CACHE.popitem(last=False)
+    return dict(normalized_document)
 
 
 def _is_superuser_or_user_id(current_user: User | None, *user_ids: int | None) -> bool:
@@ -15014,6 +15129,7 @@ def _resolve_sheet_resource_access(
     current_user: User | None,
     *,
     workbook: WorkbookDocument | None = None,
+    workbook_access: NoteSheetResourceAccess | None = None,
 ) -> NoteSheetResourceAccess:
     if _is_sheet_resource_principal(current_user, document):
         return _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)
@@ -15034,7 +15150,11 @@ def _resolve_sheet_resource_access(
 
     inherited_role: str | None = None
     if workbook is not None:
-        inherited_role = _resolve_workbook_resource_access(session, workbook, current_user).role
+        inherited_role = (
+            workbook_access.role
+            if workbook_access is not None
+            else _resolve_workbook_resource_access(session, workbook, current_user).role
+        )
     else:
         for candidate in _get_workbooks_for_sheet(session, document):
             candidate_access = _resolve_workbook_resource_access(session, candidate, current_user)
@@ -15063,9 +15183,18 @@ def _get_note_sheet_or_404(
     *,
     required_role: Literal["viewer", "editor", "manager"] = "viewer",
     workbook_id: int | None = None,
+    include_document_json: bool = True,
+    timings: list[tuple[str, float]] | None = None,
 ) -> tuple[SheetDocument, NoteSheetResourceAccess, WorkbookDocument | None]:
-    document = _get_sheet_by_numeric_id_or_404(session, sheet_id)
+    checkpoint = time.perf_counter()
+    document = _get_sheet_by_numeric_id_or_404(
+        session,
+        sheet_id,
+        include_document_json=include_document_json,
+    )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve_sheet")
     workbook = _get_workbook_by_numeric_id_or_404(session, workbook_id) if workbook_id is not None else None
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve_workbook")
     if workbook is not None:
         link = session.exec(
             select(WorkbookSheetLink)
@@ -15074,9 +15203,12 @@ def _get_note_sheet_or_404(
         ).first()
         if link is None:
             raise HTTPException(status_code=404, detail="工作簿中不存在该工作表")
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve_link")
 
     access = _resolve_sheet_resource_access(session, document, current_user, workbook=workbook)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve_access")
     _require_resource_access(access, required_role)
+    _record_note_sheet_timing(timings, checkpoint, "resolve_require")
     return document, access, workbook
 
 
@@ -15154,11 +15286,13 @@ def _list_workbook_refs_for_sheet_ids(
     current_user: User | None,
     *,
     include_deleted: bool = False,
+    sheet_map: dict[str, SheetDocument] | None = None,
 ) -> dict[str, list[WorkbookRefItem]]:
     if not sheet_ids:
         return {}
 
-    sheet_map = load_sheets_by_refs(session, sheet_ids, include_deleted=include_deleted)
+    if sheet_map is None:
+        sheet_map = _load_sheet_summaries_by_refs(session, sheet_ids, include_deleted=include_deleted)
     unique_sheets = {str(sheet.id): sheet for sheet in sheet_map.values()}.values()
     sheet_refs = sorted({ref for sheet in unique_sheets for ref in sheet_ref_aliases(sheet)})
     if not sheet_refs:
@@ -15357,6 +15491,95 @@ def _serialize_sheet_detail(
         "pagination": pagination,
         "defined_names_context": defined_names_context,
     }
+
+
+def _record_note_sheet_timing(
+    timings: list[tuple[str, float]] | None,
+    previous: float,
+    name: str,
+) -> float:
+    now = time.perf_counter()
+    if timings is not None:
+        timings.append((name, (now - previous) * 1000))
+    return now
+
+
+def _format_note_sheet_server_timing(timings: list[tuple[str, float]]) -> str:
+    return ", ".join(
+        f"{name};dur={duration_ms:.1f}"
+        for name, duration_ms in timings
+    )
+
+
+def _build_note_sheet_detail_payload(
+    session: Session,
+    document: SheetDocument,
+    *,
+    access: NoteSheetResourceAccess,
+    workbook: WorkbookDocument | None,
+    current_user: User | None,
+    page: int = 1,
+    page_size: int | None = None,
+    paginate: bool | None = None,
+    include_workbook_context: bool = True,
+    timings: list[tuple[str, float]] | None = None,
+) -> dict[str, Any]:
+    checkpoint = time.perf_counter()
+    _sync_attendance_questionnaire_sheet_document_if_needed(session, document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "sync")
+    stored_document = _ensure_sheet_document_identity_persisted(session, document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "identity")
+    stored_document = _normalize_registration_sheet_header_persisted(session, document, stored_document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "registration")
+    stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "dual")
+    stored_document = _normalize_attendance_managed_refund_formulas_persisted(session, document, stored_document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "managed")
+    workbook_items, parent_workbook_id = _get_sheet_workbook_context(
+        session,
+        document,
+        current_user,
+        workbook=workbook,
+        include_workbook_context=include_workbook_context,
+    )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "workbook")
+    full_document = dict(stored_document)
+    full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
+    if _header_link_count:
+        full_document = _normalize_document_json(full_document)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "links")
+    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "styles")
+    document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
+    effective_paginate = document_paginate_enabled if paginate is None else paginate
+
+    if effective_paginate:
+        page_document, pagination = _build_paged_document(
+            full_document,
+            page=page,
+            page_size=page_size if page_size is not None else document_page_size,
+            assume_normalized=True,
+        )
+    else:
+        page_document = full_document
+        pagination = None
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "paginate")
+
+    defined_names_context = _build_sheet_defined_names_context(
+        session,
+        document,
+        workbook,
+    )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "names")
+    return _serialize_sheet_detail(
+        document,
+        workbook_items=workbook_items,
+        parent_workbook_id=parent_workbook_id,
+        document_json=page_document,
+        pagination=pagination,
+        access=access,
+        defined_names_context=defined_names_context,
+    )
 
 
 def _build_sheet_defined_names_context(
@@ -16658,14 +16881,25 @@ def _serialize_workbook_detail(
     sheet_ids = [link.sheet_id for link in links]
     sheet_map = _load_sheet_summaries_by_refs(session, sheet_ids)
     sheets = list({str(sheet.id): sheet for sheet in sheet_map.values()}.values())
-    sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(session, sheet_ids, current_user)
+    sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(
+        session,
+        sheet_ids,
+        current_user,
+        sheet_map=sheet_map,
+    )
     parent_workbook_id = _require_workbook_numeric_id(workbook)
     ordered_sheets: list[dict[str, Any]] = []
     for link in links:
         sheet = sheet_map.get(str(link.sheet_id))
         if sheet is None:
             continue
-        sheet_access = _resolve_sheet_resource_access(session, sheet, current_user, workbook=workbook)
+        sheet_access = _resolve_sheet_resource_access(
+            session,
+            sheet,
+            current_user,
+            workbook=workbook,
+            workbook_access=access,
+        )
         if not sheet_access.capabilities.can_read:
             continue
         ordered_sheets.append(_serialize_sheet_summary(
@@ -17124,66 +17358,49 @@ def create_note_sheet(
 @router.get("/sheets/{sheet_id}", response_model=NoteSheetDetailResponse)
 def get_note_sheet(
     sheet_id: int,
+    response: Response,
     page: int = Query(default=1, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=MAX_NOTE_SHEET_PAGE_SIZE),
     paginate: bool | None = Query(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
     include_workbook_context: bool = Query(default=True),
+    x_codeyun_boot_perf: str | None = Header(default=None, alias="X-CodeYun-BootPerf"),
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
+    timings: list[tuple[str, float]] | None = [] if x_codeyun_boot_perf else None
+    checkpoint = time.perf_counter()
     document, access, workbook = _get_note_sheet_or_404(
         session,
         current_user,
         sheet_id,
         required_role="viewer",
         workbook_id=workbook_id,
+        include_document_json=False,
+        timings=timings,
     )
-    _sync_attendance_questionnaire_sheet_document_if_needed(session, document)
-    stored_document = _ensure_sheet_document_identity_persisted(session, document)
-    stored_document = _normalize_registration_sheet_header_persisted(session, document, stored_document)
-    stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
-    stored_document = _normalize_attendance_managed_refund_formulas_persisted(session, document, stored_document)
-    workbook_items, parent_workbook_id = _get_sheet_workbook_context(
-        session,
-        document,
-        current_user,
-        workbook=workbook,
-        include_workbook_context=include_workbook_context,
-    )
-    full_document = dict(stored_document)
-    full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
-    full_document = _normalize_document_json(full_document)
-    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
-    document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
-    effective_paginate = document_paginate_enabled if paginate is None else paginate
-
-    if effective_paginate:
-        page_document, pagination = _build_paged_document(
-            full_document,
-            page=page,
-            page_size=page_size if page_size is not None else document_page_size,
-            assume_normalized=True,
-        )
-    else:
-        page_document = full_document
-        pagination = None
-
-    return NoteSheetDetailResponse.model_validate(
-        _serialize_sheet_detail(
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve")
+    document_json = _get_cached_sheet_document_json(session, document)
+    attributes.set_committed_value(document, "document_json", document_json)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "document_json")
+    result = NoteSheetDetailResponse.model_validate(
+        _build_note_sheet_detail_payload(
+            session,
             document,
-            workbook_items=workbook_items,
-            parent_workbook_id=parent_workbook_id,
-            document_json=page_document,
-            pagination=pagination,
             access=access,
-            defined_names_context=_build_sheet_defined_names_context(
-                session,
-                document,
-                workbook if include_workbook_context else None,
-            ),
+            workbook=workbook,
+            current_user=current_user,
+            page=page,
+            page_size=page_size,
+            paginate=paginate,
+            include_workbook_context=include_workbook_context,
+            timings=timings,
         ),
     )
+    _record_note_sheet_timing(timings, checkpoint, "payload_total")
+    if timings is not None:
+        response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
+    return result
 
 
 @router.post("/sheets/{sheet_id}/query")
@@ -17211,7 +17428,8 @@ def query_note_sheet(
         include_workbook_context=payload.include_workbook_context,
     )
     full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
-    full_document = _normalize_document_json(full_document)
+    if _header_link_count:
+        full_document = _normalize_document_json(full_document)
     full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
     document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
@@ -17239,7 +17457,7 @@ def query_note_sheet(
         defined_names_context=_build_sheet_defined_names_context(
             session,
             document,
-            workbook if payload.include_workbook_context else None,
+            workbook,
         ),
     )
 

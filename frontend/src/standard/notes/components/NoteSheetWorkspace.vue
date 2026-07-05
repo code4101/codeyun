@@ -1481,6 +1481,21 @@ function isRegistrationAsyncAction(type: SheetCellActionType) {
   )
 }
 
+function hasSheetCellAction(predicate: (type: SheetCellActionType) => boolean) {
+  return Object.values(cellMeta.value).some((meta) => {
+    const type = meta?.action?.type
+    return !!type && predicate(type)
+  })
+}
+
+function hasRegistrationAsyncActionCells() {
+  return hasSheetCellAction(isRegistrationAsyncAction)
+}
+
+function hasClockinLinkDetectionActionCells() {
+  return hasSheetCellAction((type) => type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT)
+}
+
 const activeRegistrationActionRun = computed(() => isRegistrationMatchRunActive(userMatchRunStatus.value))
 const activeClockinLinkDetectionRun = computed(() => isClockinLinkDetectionRunActive(clockinLinkDetectionRunStatus.value))
 const activeUserMatchRun = computed(() => (
@@ -3830,9 +3845,6 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   ])
 })
 
-const EMPTY_SHEET_HOT_GRID_ROWS: SheetRow[] = []
-const sheetHotInitialGridRows = computed<SheetRow[]>(() => EMPTY_SHEET_HOT_GRID_ROWS)
-
 const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'standalone'}`)
 
 const rowMarkerColumnWidth = computed(() => {
@@ -5456,6 +5468,15 @@ async function waitForHotInitialGridRowsLoaded(reason: string) {
   return 'pending'
 }
 
+function requestHotInitialGridRowsLoaded(reason: string) {
+  if (ensureHotInitialGridRowsLoaded(reason)) {
+    return
+  }
+  void nextTick(() => {
+    ensureHotInitialGridRowsLoaded(reason)
+  })
+}
+
 function isSheetDocumentHidden() {
   return typeof document !== 'undefined' && document.hidden
 }
@@ -5943,8 +5964,12 @@ function clearInitialSheetActionStatusRefreshTimer() {
 
 function refreshInitialSheetActionStatuses() {
   void refreshAttendanceCourseScriptStatuses()
-  void refreshUserMatchRunStatus(undefined, { silent: true })
-  void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })
+  if (hasRegistrationAsyncActionCells()) {
+    void refreshUserMatchRunStatus(undefined, { silent: true })
+  }
+  if (hasClockinLinkDetectionActionCells()) {
+    void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })
+  }
 }
 
 function scheduleInitialSheetActionStatusRefresh() {
@@ -10580,9 +10605,12 @@ function initializeSheetEntitiesFromDocument(
   headerRowEntityIds.value = Array.from({ length: dataStartRow }, (_, index) => (
     headerRows[index]?.id ?? fallbackHeaderRows[index]?.id ?? createSheetEntityId('header')
   ))
+  const sourceRowIds = Array.isArray(document.row_ids) ? document.row_ids : []
+  const rowIdsArePaged = sourceRowIds.length === normalizedRows.length
   dataRowEntityIds.value = normalizedRows.map((row, localIndex) => {
     const sourceIndex = getEntitySourceDataRowIndex(sourceEntityRows.length, dataStartRow, normalizedRows.length, localIndex)
-    return normalizeSheetEntityId(Array.isArray(document.row_ids) ? document.row_ids[getDocumentRowIndex(localIndex)] : '')
+    const sourceRowIdIndex = rowIdsArePaged ? localIndex : getDocumentRowIndex(localIndex)
+    return normalizeSheetEntityId(sourceRowIds[sourceRowIdIndex])
       || sourceEntityRows[sourceIndex]?.id
       || createFallbackSheetEntityId('row', getDocumentRowIndex(localIndex), row.join('\u001f'))
   })
@@ -27757,6 +27785,18 @@ watch(
 )
 
 watch(
+  [
+    () => hotTableRef.value?.hotInstance ?? null,
+    () => sheetContentReady.value,
+    () => sheetHotGridRows.value,
+  ],
+  () => {
+    requestHotInitialGridRowsLoaded('hot-instance-ready')
+  },
+  { flush: 'post' },
+)
+
+watch(
   [columnHeaders, columnConfigs],
   () => {
     pruneColumnFilters()
@@ -28193,7 +28233,7 @@ defineExpose({
         :key="hotTableInstanceKey"
         ref="hotTableRef"
         class="ht-theme-main"
-        :data="sheetHotInitialGridRows"
+        :data="sheetHotGridRows"
         :language="'zh-CN'"
         :col-headers="sheetColumnHeaders"
         :col-widths="sheetHotColumnWidths"

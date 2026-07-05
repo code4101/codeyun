@@ -17,6 +17,7 @@
               time: Math.round(startedAt * 10) / 10,
               delta: 0,
             }],
+            longTasks: [],
           };
           const mark = (name, detail) => {
             const state = window.__codeyunBootPerf;
@@ -32,6 +33,28 @@
             state.marks.push(item);
             console.info(`[CodeYun bootPerf] ${JSON.stringify(item)}`);
           };
+          if ('PerformanceObserver' in window) {
+            try {
+              const longTaskObserver = new PerformanceObserver((list) => {
+                const state = window.__codeyunBootPerf;
+                if (!state?.enabled) return;
+                for (const entry of list.getEntries()) {
+                  state.longTasks.push({
+                    startTime: Math.round(entry.startTime),
+                    duration: Math.round(entry.duration),
+                    name: entry.name,
+                  });
+                }
+                state.longTasks = state.longTasks
+                  .sort((left, right) => right.duration - left.duration)
+                  .slice(0, 20);
+              });
+              longTaskObserver.observe({ type: 'longtask', buffered: true });
+              window.addEventListener('codeyun:app-mounted', () => longTaskObserver.disconnect(), { once: true });
+            } catch {
+              // Long task diagnostics are best-effort only.
+            }
+          }
           const snapshotTimings = (reason) => {
             try {
               const navigation = performance.getEntriesByType('navigation')[0];
@@ -44,7 +67,7 @@
                   transferSize: entry.transferSize,
                   encodedBodySize: entry.encodedBodySize,
                 }))
-                .filter((entry) => entry.duration >= 500)
+                .filter((entry) => entry.duration >= 500 || entry.name.includes('/api/'))
                 .sort((left, right) => right.duration - left.duration)
                 .slice(0, 20);
               mark(`browser.${reason}.timingSnapshot`, {
@@ -56,6 +79,7 @@
                   duration: Math.round(navigation.duration),
                 } : null,
                 slowResources: resources,
+                longTasks: (window.__codeyunBootPerf?.longTasks || []).slice(0, 20),
                 resourceCount: performance.getEntriesByType('resource').length,
               });
             } catch (error) {
