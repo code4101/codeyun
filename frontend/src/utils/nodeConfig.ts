@@ -511,14 +511,11 @@ export const getNodeStyle = (
   return createBaseNodeVisualStyle(type, status);
 };
 
-export const getNodeDisplayStyle = (
-  typeStr: string | null | undefined,
+export const getNodeDisplayStyleFromTheme = (
+  type: NodeTypeItem,
   statusStr: string | null | undefined,
-  customColor?: string | null,
-  noteTypes?: unknown,
   completionProgress?: number | null
 ) => {
-  const type = getNodeTheme(typeStr, customColor, noteTypes);
   const status = NODE_STATUSES[normalizeNodeStatusId(statusStr)] || NODE_STATUSES.idea;
   const foregroundColor = getReadableTextColor(fromHex(type.baseColor));
   const clampedProgress = typeof completionProgress === 'number' && Number.isFinite(completionProgress)
@@ -552,6 +549,17 @@ export const getNodeDisplayStyle = (
   }
 
   return style;
+};
+
+export const getNodeDisplayStyle = (
+  typeStr: string | null | undefined,
+  statusStr: string | null | undefined,
+  customColor?: string | null,
+  noteTypes?: unknown,
+  completionProgress?: number | null
+) => {
+  const type = getNodeTheme(typeStr, customColor, noteTypes);
+  return getNodeDisplayStyleFromTheme(type, statusStr, completionProgress);
 };
 
 export const getOrderedNodeTypes = () => {

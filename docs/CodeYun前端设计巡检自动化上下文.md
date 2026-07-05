@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "3aea6f94afbccf3ce35b4207a6f9e0111ce186fc"
-last_audited_at: "2026-07-05T04:35:19.1329250+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-3aea6f94/report.md"
-last_frontend_commit_summary: "审完 1a251180..3aea6f94：修复 notes/list 首屏未预载分类 palette 导致的内部 key 泄漏，相关页面三视口复验通过。"
-audited_commit_count: 74
+last_audited_commit: "048ce7494b660cd0a559e6d1514c5169f38b37fd"
+last_audited_at: "2026-07-05T16:39:01.4354230+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-048ce749/report.md"
+last_frontend_commit_summary: "审完 3aea6f94..048ce749：修复 attendance/orders 在 820px 下退款历史仍用桌面宽表导致的关键信息截断，runtime 与 notes/list 复验通过。"
+audited_commit_count: 75
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-05（第十二轮）
+
+- 完整范围：`3aea6f94afbccf3ce35b4207a6f9e0111ce186fc..048ce7494b660cd0a559e6d1514c5169f38b37fd`
+- 覆盖提交：`048ce7494b660cd0a559e6d1514c5169f38b37fd`
+- 前端入口提交：`048ce7494b660cd0a559e6d1514c5169f38b37fd`
+- 入口如何牵引到旧问题：这次提交同时触达 `cluster/tasks`、`taskStore`、`attendance/orders`、`ListNotes` 和 `handsontableOrderSetup`。真实页面复验后，`cluster/runtime` 与 `fanxiu/data-annotation/runtime` 的任务状态同步方向成立，`notes/list` 的分类标签也恢复为可读文案；真正被同链路牵出的旧问题落在 `attendance/orders`，因为这次提交刚收紧了表格列宽和 auto sizing，结果 `820px` 视口下退款历史仍硬撑桌面宽表，右侧订单 / 退款原因 / 处理结果被截成半列，首屏判断闭环断裂。
+- 本轮减法：仅在 [`frontend/src/standard/attendance/orders/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/attendance/orders/page.vue) 把退款历史切到已有移动卡片视图的阈值提前到 `960px`，并把 `.mobile-history-list` / `.desktop-history-table` / 卡片详情样式上提到同一断点。没有新增入口、字段、说明区或状态，只是把同一份退款事实收回到已有的窄屏表达。
+- 信息量保持：宽屏 `1600x1000` 和普通桌面 `1366x900` 仍保留桌面表格；窄屏 `820x1180` 继续保留金额、时间、操作人、订单号、退款原因和处理结果，但不再要求用户在半截宽表里横向猜字段。`cluster/runtime`、`fanxiu/runtime`、`notes/list` 本轮只做同链路复验，没有继续扩写新概念。
+- 概念图/线框图：报告中的 Mermaid 把这轮链路收回到 `提交 -> 任务状态同步 / 表格装配 / 分类 palette -> 三条真实页面复验 -> attendance 窄屏历史闭环`，证明窄屏历史不该继续复用桌面宽表。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-048ce749/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `cluster/runtime`、`fanxiu/data-annotation/runtime`、`attendance/orders`、`notes/center?tab=list` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 三视口取证；初始 12 张截图与 `evidence.json` 写入同目录，所有页面 `overflowX = 0`，取证期未采到新的 `console error/warn`。修复后补拍 `attendance-orders-1600x1000-after.png`、`attendance-orders-1366x900-after.png` 与 `attendance-orders-820x1180-final.png`；最终 `820px` 窄屏已确认 `articleCount = 20`、桌面历史表隐藏、卡片历史正常显示。附加静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮虽然未改 `vite.config`，但命中了 `handsontable` 装配链，因此补做检查。`frontend/dist/index.html` 仅预加载 `_plugin-vue_export-helper`、`vue-vendor`、`dayjs-vendor`、`vendor`、`element-icons-vendor`、`element-plus-core`、`data-vendor`，未发现 `handsontable-vendor` / `attendance` / `formula` 相关 `modulepreload` 或 `stylesheet`；`frontend/dist/assets/main-*.js` 顶层也未命中这些局部依赖。真实入口资源检查里，`cluster/runtime` 和 `notes/center?tab=list` 都未观察到 `handsontable` / `formula` 相关资源名，说明表格重依赖仍停留在考勤局部入口。
+- 根因分层：本轮自动修复点属于前端断点与样式条件不同步，不是退款后端模型、分页接口或查询流程问题；`cluster/runtime` / `fanxiu/runtime` / `notes/list` 本轮未发现新的状态投影或工程边界回退。
+- 剩余风险：`attendance/orders` 的窄屏历史现在在 `<=960px` 统一改走卡片视图，后续如果产品想在平板宽度保留更密集的表格信息，需单独重新设计卡片与表格的切换边界；但本轮目标只是修复 `820px` 的真实截断，当前复杂度已下降。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、真实多视口取证、入口依赖污染检查、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `048ce7494b660cd0a559e6d1514c5169f38b37fd`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-05（第十一轮）
 

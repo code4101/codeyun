@@ -97,9 +97,12 @@ def test_daily_audit_visible_rows_maps_incomplete_runtime_tasks():
         {"text": "完成双人修炼1次", "x": 120, "y": 520, "w": 360, "h": 40},
         {"text": "活 10/次", "x": 420, "y": 590, "w": 120, "h": 36},
         {"text": "次 3/3", "x": 420, "y": 636, "w": 100, "h": 36},
-        {"text": "寻道历练1次", "x": 120, "y": 720, "w": 320, "h": 40},
-        {"text": "活 5/次", "x": 420, "y": 790, "w": 120, "h": 36},
-        {"text": "次 0/4", "x": 420, "y": 836, "w": 100, "h": 36},
+        {"text": "收取两万九曜玄墨", "x": 120, "y": 680, "w": 360, "h": 40},
+        {"text": "活 10/次", "x": 420, "y": 750, "w": 120, "h": 36},
+        {"text": "次 0/2 採炁中", "x": 420, "y": 796, "w": 180, "h": 36},
+        {"text": "寻道历练1次", "x": 120, "y": 980, "w": 320, "h": 40},
+        {"text": "活 5/次", "x": 420, "y": 1050, "w": 120, "h": 36},
+        {"text": "次 0/4", "x": 420, "y": 1096, "w": 100, "h": 36},
     ]
 
     rows = runner._daily_audit_visible_rows(lines, image69)
@@ -109,6 +112,8 @@ def test_daily_audit_visible_rows_maps_incomplete_runtime_tasks():
     assert by_task["daily_jianling"]["task_id"] == "legacy-daily-jianling"
     assert by_task["daily_jianling"]["done"] is False
     assert by_task["daily_shuangxiu"]["done"] is True
+    assert by_task["daily_dongtian"]["task_id"] == "legacy-daily-dongtian"
+    assert by_task["daily_dongtian"]["done"] is False
     assert unmapped[0]["title"].startswith("寻道历练")
     assert unmapped[0]["done"] is False
 

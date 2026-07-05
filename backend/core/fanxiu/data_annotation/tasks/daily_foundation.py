@@ -52,6 +52,7 @@ _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_lingzu", "legacy-daily-lingzu", r"灵祖|圣雷龙"),
     ("daily_yaowang", "legacy-daily-yaowang", r"妖王来袭|妖王"),
     ("daily_yaozu", "legacy-daily-yaozu", r"妖族袭城|妖族"),
+    ("daily_dongtian", "legacy-daily-dongtian", r"九曜\s*玄墨|玄墨|採炁|采炁"),
     ("daily_gongfeng", "legacy-daily-gongfeng", r"供奉"),
     ("daily_xianshi", "legacy-daily-xianshi", r"仙市"),
 )

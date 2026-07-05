@@ -210,7 +210,7 @@ import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
-import { ensureNoteTypePaletteLoaded, getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
+import { ensureNoteTypePaletteLoaded, getNodeDisplayStyleFromTheme, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
@@ -289,32 +289,10 @@ const visiblePageNotes = computed(() => {
   return filteredNotes.value.slice(start, start + pageSize.value);
 });
 const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
-    const statusStyle = getStatusBadgeStyle(note);
-    const ratio = statusStyle.partialFillRatio;
-    const lifecycleStageLabel = getLifecycleStageLabel(note.lifecycle_stage);
+    const ui = buildRowUi(note);
     return {
       ...note,
-      _ui: {
-        titleStyle: getTitleStyle(note),
-        typeTagStyle: getTypeTagStyle(note),
-        categoryLabel: getCategoryLabel(note.primary_category),
-        noteFormLabel: getNoteFormConfig(note.note_form).label,
-        lifecycleStageLabel,
-        statusStyle,
-        useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
-        statusFillLayerStyle: {
-          color: statusStyle.fillTextColor,
-          clipPath: `inset(0 ${(100 - (ratio ?? 0) * 100).toFixed(2)}% 0 0)`
-        },
-        statusEmptyLayerStyle: {
-          color: statusStyle.emptyTextColor,
-          clipPath: `inset(0 0 0 ${((ratio ?? 0) * 100).toFixed(2)}%)`
-        },
-        startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
-        formattedStartAt: formatDate(note.start_at),
-        privateLevelLabel: note.private_level > 0 ? `开(${note.private_level})` : '关',
-        privateLevelClass: note.private_level > 0 ? 'is-danger' : 'is-info',
-      }
+      _ui: ui
     };
 }));
 const selectedCount = computed(() => selectedNoteIds.value.length);
@@ -488,26 +466,19 @@ const mixHexWithWhite = (hex: string, ratio: number) => {
     .join('')}`.toUpperCase();
 };
 
-const getTitleColor = (note: NoteNode) => {
-  const theme = getNodeTheme(
-    note.primary_category ?? note.node_type,
-    note.color,
-    note.note_categories ?? note.note_types
-  );
-  const statusId = getNodeStatusConfig(note.lifecycle_stage ?? note.node_status ?? 'idea').id;
-
+const getTitleColor = (themeBaseColor: string, statusId: string) => {
   if (statusId === 'done') {
     // Keep the hue family but avoid reusing the full fill color on plain text.
-    return mixHexWithWhite(theme.baseColor, 0.32);
+    return mixHexWithWhite(themeBaseColor, 0.32);
   }
 
-  return theme.baseColor;
+  return themeBaseColor;
 };
 
 const getCategoryLabel = (type: string | null) => type ? getNodeTypeConfig(type).label : '-';
-const getTitleStyle = (note: NoteNode) => {
+const getTitleStyle = (themeBaseColor: string, statusId: string) => {
     return {
-        color: getTitleColor(note),
+        color: getTitleColor(themeBaseColor, statusId),
         fontWeight: '500',
         display: 'flex',
         alignItems: 'center',
@@ -516,10 +487,9 @@ const getTitleStyle = (note: NoteNode) => {
     };
 };
 
-const getTypeTagStyle = (note: NoteNode) => {
-    const config = getNodeDisplayStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
+const getTypeTagStyle = (color: string) => {
     return {
-        color: config.color,
+        color,
         fontWeight: 'bold',
         backgroundColor: 'transparent',
         border: 'none',
@@ -528,34 +498,44 @@ const getTypeTagStyle = (note: NoteNode) => {
 };
 
 const getLifecycleStageLabel = (status: string | null) => getNodeStatusConfig(status || 'idea').label;
-const getStatusBadgeStyle = (note: NoteNode) => {
-    return getNodeDisplayStyle(
-      note.primary_category ?? note.node_type,
-      note.lifecycle_stage ?? note.node_status,
-      note.color,
-      note.note_categories ?? note.note_types,
-      resolveCompletionProgressFillRatio({
-        lifecycleStage: note.lifecycle_stage ?? note.node_status,
-        completionProgress: note.completion_progress,
-        completionProgressExpr: note.completion_progress_expr,
-        customFields: note.custom_fields,
-      })
-    );
-};
+const buildRowUi = (note: NoteNode) => {
+  const noteTypeKey = note.primary_category ?? note.node_type;
+  const noteTypeAssignments = note.note_categories ?? note.note_types;
+  const lifecycleStage = note.lifecycle_stage ?? note.node_status;
+  const statusConfig = getNodeStatusConfig(lifecycleStage || 'idea');
+  const noteTheme = getNodeTheme(noteTypeKey, note.color, noteTypeAssignments);
+  const statusStyle = getNodeDisplayStyleFromTheme(
+    noteTheme,
+    lifecycleStage,
+    resolveCompletionProgressFillRatio({
+      lifecycleStage,
+      completionProgress: note.completion_progress,
+      completionProgressExpr: note.completion_progress_expr,
+      customFields: note.custom_fields,
+    })
+  );
+  const ratio = statusStyle.partialFillRatio;
 
-const useSplitStatusBadge = (note: NoteNode) => {
-  const ratio = getStatusBadgeStyle(note).partialFillRatio;
-  return typeof ratio === 'number' && ratio > 0 && ratio < 1;
-};
-
-const getStatusBadgeSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
-  const style = getStatusBadgeStyle(note);
-  const ratio = style.partialFillRatio ?? 0;
   return {
-    color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
-    clipPath: mode === 'fill'
-      ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
-      : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
+    titleStyle: getTitleStyle(noteTheme.baseColor, statusConfig.id),
+    typeTagStyle: getTypeTagStyle(statusStyle.color),
+    categoryLabel: getCategoryLabel(note.primary_category),
+    noteFormLabel: getNoteFormConfig(note.note_form).label,
+    lifecycleStageLabel: statusConfig.label,
+    statusStyle,
+    useSplitStatusBadge: typeof ratio === 'number' && ratio > 0 && ratio < 1,
+    statusFillLayerStyle: {
+      color: statusStyle.fillTextColor,
+      clipPath: `inset(0 ${(100 - (ratio ?? 0) * 100).toFixed(2)}% 0 0)`
+    },
+    statusEmptyLayerStyle: {
+      color: statusStyle.emptyTextColor,
+      clipPath: `inset(0 0 0 ${((ratio ?? 0) * 100).toFixed(2)}%)`
+    },
+    startAtBadgeStyle: getStartAtBadgeStyle(note.start_at),
+    formattedStartAt: formatDate(note.start_at),
+    privateLevelLabel: note.private_level > 0 ? `开(${note.private_level})` : '关',
+    privateLevelClass: note.private_level > 0 ? 'is-danger' : 'is-info',
   };
 };
 
