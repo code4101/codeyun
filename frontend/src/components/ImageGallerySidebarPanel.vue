@@ -34,7 +34,7 @@
     </div>
 
     <div v-if="showSortProgram" class="control-group">
-      <GallerySortProgramBar
+      <AsyncGallerySortProgramBar
         v-model="sortProgramModel"
         :caption="sortSummaryLabel"
         help-text="像星图笔记一样按规则链配置。"
@@ -106,9 +106,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import GallerySortProgramBar from '@/components/GallerySortProgramBar.vue';
+import { computed, defineAsyncComponent } from 'vue';
 import { formatFileSize, type FolderOption, type GallerySortProgram } from '@/utils/imageGallery';
+
+const AsyncGallerySortProgramBar = defineAsyncComponent(() => import('@/components/GallerySortProgramBar.vue'));
 
 const props = withDefaults(
   defineProps<{

@@ -3423,6 +3423,31 @@ def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, m
     assert clicked == []
 
 
+def test_auto_close_guard_defers_popup_47_during_daily_assistant_one_key(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    popup_47 = _image("所有提示窗口", "0047.jpg", [
+        {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"},
+    ])
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    with runner._lock:
+        runner._status.update({
+            "task_type": "daily_assistant",
+            "phase": "daily_assistant_one_key_wait_confirm",
+        })
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] == "所有提示窗口" else 0)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    result = runner._auto_close_popup_guard_step(
+        runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
+    )
+
+    assert result is False
+    assert clicked == []
+
+
 def test_auto_close_guard_popup_47_uses_best_child_before_special_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     event_blank = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
@@ -6606,6 +6631,14 @@ def test_daily_audit_xianyuan_identity_ignores_xianyuan_duel():
         "task_type": "daily_xianyuan",
         "task_id": "legacy-daily-xianyuan",
     }
+
+
+def test_daily_gongfeng_count_fraction_zero_keeps_zero_first_number():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_gongfeng_numbers("次数：0/1+")[:1] == [0]
+    assert runner._daily_gongfeng_numbers("次数：2/1+")[:1] == [2]
+    assert runner._daily_gongfeng_remaining("今日接受供奉次数：0") == 0
 
 
 def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch):

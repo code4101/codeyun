@@ -3,7 +3,7 @@
     fixed-device-id="codepc_mf"
     fixed-root-path="D:\home\chenkunze\data\m2510mn"
   >
-    <template #toolbar-after="{ selectedPath, canBrowse, reloadDirectory }">
+    <template #directory-after="{ selectedPath, canBrowse, reloadDirectory }">
       <div v-if="isLocalCandidatePool(selectedPath)" class="mn-media-sync-actions">
         <MediaSyncStatusProbe
           :selected-path="selectedPath"

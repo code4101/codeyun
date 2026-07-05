@@ -147,6 +147,7 @@ const HotTable = defineAsyncComponent({
 
 const orderContentWidth = computed(() => Math.max(280, Math.floor(viewportWidth.value || 0)))
 const isCompactViewport = computed(() => orderContentWidth.value <= 640)
+const useMobileRefundHistory = computed(() => orderContentWidth.value <= 960)
 const tableRowHeaderWidth = computed(() => (isCompactViewport.value ? 36 : 50))
 const inputTableStretchMode = computed<'none' | 'all'>(() => (isCompactViewport.value ? 'all' : 'none'))
 const dataTableStretchMode = computed<'none'>(() => 'none')
@@ -1575,7 +1576,7 @@ onBeforeUnmount(() => {
 
         <div v-if="refundHistoryLoaded || refundHistoryLoading" class="history-table-shell">
           <el-table
-            v-if="!isCompactViewport"
+            v-if="!useMobileRefundHistory"
             :data="refundHistoryItems"
             row-key="id"
             table-layout="fixed"
@@ -2025,9 +2026,99 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .history-table-shell {
+    overflow: visible;
+    border-radius: 12px;
+  }
+
+  .desktop-history-table {
+    display: none;
+  }
+
+  .mobile-history-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-history-item {
+    padding: 12px;
+    border-bottom: 1px solid rgba(133, 100, 59, 0.12);
+  }
+
+  .mobile-history-item:last-child {
+    border-bottom: 0;
+  }
+
+  .mobile-history-item__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 10px;
+  }
+
+  .mobile-history-item__title {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .mobile-history-item__title strong {
+    color: #322719;
+    line-height: 1.4;
+  }
+
+  .mobile-history-item__title span {
+    color: #8b704a;
+    font-size: 12px;
+  }
+
+  .mobile-history-item__amount {
+    flex: 0 0 auto;
+    color: #6b4d24;
+    font-size: 16px;
+    line-height: 1.4;
+    text-align: right;
+  }
+
+  .mobile-history-item__details {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin: 0;
+  }
+
+  .mobile-history-item__details div {
+    display: grid;
+    grid-template-columns: 68px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .mobile-history-item__details dt {
+    color: #8b704a;
+    font-size: 12px;
+  }
+
+  .mobile-history-item__details dd {
+    margin: 0;
+    min-width: 0;
+    color: #3f321f;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+
+  .mobile-history-empty {
+    padding: 28px 12px;
+    color: #9b8a72;
+    text-align: center;
+  }
+
   .history-pagination-row {
     justify-content: flex-start;
     overflow: auto;
+    margin-top: 10px;
   }
 }
 
@@ -2133,98 +2224,6 @@ onBeforeUnmount(() => {
     white-space: normal;
   }
 
-  .history-table-shell {
-    overflow: visible;
-    border-radius: 12px;
-  }
-
-  .desktop-history-table {
-    display: none;
-  }
-
-  .mobile-history-list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .mobile-history-item {
-    padding: 12px;
-    border-bottom: 1px solid rgba(133, 100, 59, 0.12);
-  }
-
-  .mobile-history-item:last-child {
-    border-bottom: 0;
-  }
-
-  .mobile-history-item__head {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: flex-start;
-    margin-bottom: 10px;
-  }
-
-  .mobile-history-item__title {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .mobile-history-item__title strong {
-    color: #322719;
-    line-height: 1.4;
-  }
-
-  .mobile-history-item__title span {
-    color: #8b704a;
-    font-size: 12px;
-  }
-
-  .mobile-history-item__amount {
-    flex: 0 0 auto;
-    color: #6b4d24;
-    font-size: 16px;
-    line-height: 1.4;
-    text-align: right;
-  }
-
-  .mobile-history-item__details {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
-    margin: 0;
-  }
-
-  .mobile-history-item__details div {
-    display: grid;
-    grid-template-columns: 68px minmax(0, 1fr);
-    gap: 10px;
-    align-items: start;
-  }
-
-  .mobile-history-item__details dt {
-    color: #8b704a;
-    font-size: 12px;
-  }
-
-  .mobile-history-item__details dd {
-    margin: 0;
-    min-width: 0;
-    color: #3f321f;
-    line-height: 1.45;
-    word-break: break-all;
-  }
-
-  .mobile-history-empty {
-    padding: 28px 12px;
-    color: #9b8a72;
-    text-align: center;
-  }
-
-  .history-pagination-row {
-    margin-top: 10px;
-  }
 }
 
 :global(.refund-safety-dialog) {

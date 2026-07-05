@@ -643,6 +643,15 @@ class PopupGuardMixin:
                 "action": "",
             }
 
+            if view.id == 47:
+                with self._lock:
+                    task_type = str(self._status.get("task_type") or "")
+                    phase = str(self._status.get("phase") or "")
+                    current_task = str(self._status.get("current_task") or "")
+                if task_type == "daily_assistant" or "日常_助手" in current_task:
+                    self._log("detail", f"守护跳过 #47：日常_助手业务弹窗由业务流程处理，phase={phase}")
+                    return False
+
             if view.id == 47 and self._handle_auto_close_popup_47_child(
                 runtime,
                 view,

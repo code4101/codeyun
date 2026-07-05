@@ -6928,12 +6928,6 @@ class DataAnnotationRuntimeRunner(
         preferred_scene_ids: list[int] | None = None,
         trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
-        if preferred_scene_ids is None and isinstance(ctx.get("asset_tree"), list):
-            strong_scene_id = self._strong_ocr_scene_number(ctx, frame_data_url)
-            if strong_scene_id is not None:
-                if trace is not None:
-                    trace.append({"event": "special_case", "scene_id": int(strong_scene_id), "reason": "strong_ocr"})
-                return int(strong_scene_id), float(self.scene_threshold)
         graph_scene_id, graph_score, graph_status = self._identify_scene_number_by_graph(
             ctx,
             frame_data_url,
@@ -9909,18 +9903,14 @@ class DataAnnotationRuntimeRunner(
             else:
                 scene_id, score = self._identify_scene_number(ctx, frame)
             if scene_id is None:
-                strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
-                if strong_scene_id is not None:
-                    scene_id, score = strong_scene_id, float(self.scene_threshold)
-                else:
-                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                    scene_id, score = self._identify_scene_number_for_route(
-                        ctx,
-                        frame,
-                        tree,
-                        target_scene_id,
-                        route_candidate_ids,
-                    )
+                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                scene_id, score = self._identify_scene_number_for_route(
+                    ctx,
+                    frame,
+                    tree,
+                    target_scene_id,
+                    route_candidate_ids,
+                )
             if scene_id is not None:
                 navigation_scene_id = self._navigation_scene_id(ctx, scene_id, frame)
                 if navigation_scene_id is not None:
@@ -10256,27 +10246,20 @@ class DataAnnotationRuntimeRunner(
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
-            current_scene_from_strong_ocr = False
             known_scene_id = ctx.pop("_go_scene_known_scene_id", None)
             if known_scene_id is not None:
                 current_scene_id, score = int(known_scene_id), float(self.scene_threshold)
             else:
                 current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
-                strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
-                if strong_scene_id is not None:
-                    current_scene_id, score = strong_scene_id, float(self.scene_threshold)
-                    current_scene_from_strong_ocr = True
-                    self._log("detail", f"场景强 OCR 命中 #{int(strong_scene_id)}，跳过局部路径候选")
-                else:
-                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                    current_scene_id, score = self._identify_scene_number_for_route(
-                        ctx,
-                        frame,
-                        tree,
-                        target_scene_id,
-                        route_candidate_ids,
-                    )
+                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                current_scene_id, score = self._identify_scene_number_for_route(
+                    ctx,
+                    frame,
+                    tree,
+                    target_scene_id,
+                    route_candidate_ids,
+                )
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
                     recovered_unknown_start = True
@@ -10314,12 +10297,6 @@ class DataAnnotationRuntimeRunner(
                     elapsed_seconds=0.0,
                     history=[f"起点识别 unknown {score:.0f}%"],
                 )
-            strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
-            if strong_scene_id is not None:
-                current_scene_id = int(strong_scene_id)
-                score = float(self.scene_threshold)
-                current_scene_from_strong_ocr = True
-                self._log("detail", f"场景强 OCR 命中 #{int(strong_scene_id)}，作为导航起点")
             if current_scene_id is not None and not self._scene_matches_id(int(current_scene_id), float(score or 0.0)):
                 self._log(
                     "detail",
@@ -10375,7 +10352,7 @@ class DataAnnotationRuntimeRunner(
                     last_failed_source_matches = int(last_failed_edge.get("source_id")) == int(current_scene_id)
                 except (TypeError, ValueError):
                     last_failed_source_matches = False
-            if not current_scene_from_strong_ocr and not has_navigation_edge and not last_failed_source_matches:
+            if not has_navigation_edge and not last_failed_source_matches:
                 current_scene_id = self._navigation_scene_id(ctx, current_scene_id, frame)
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
