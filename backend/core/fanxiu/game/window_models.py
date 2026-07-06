@@ -318,7 +318,7 @@ class FanxiuPseudoCodeCardRead(BaseModel):
 
 
 class FanxiuPseudoCodeCardListResponse(BaseModel):
-    items: List[FanxiuPseudoCodeCardRead] = Field(default_factory=list)
+    items: list[FanxiuPseudoCodeCardRead] = Field(default_factory=list)
 
 
 class FanxiuPseudoCodeCardCreateRequest(BaseModel):

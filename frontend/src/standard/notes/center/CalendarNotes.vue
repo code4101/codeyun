@@ -2912,6 +2912,7 @@ const buildCalendarSummaryRequest = (query: NoteProgramRequest): NoteCalendarSum
   if (calendarScale.value === 'year') {
     return {
       query: summaryQuery,
+      include_flat_nodes: false,
       buckets: Array.from({ length: 12 }, (_, monthIndex) => {
         const start = new Date(currentYear.value, monthIndex, 1).getTime();
         const end = new Date(currentYear.value, monthIndex + 1, 1).getTime() - 1;
@@ -2928,6 +2929,7 @@ const buildCalendarSummaryRequest = (query: NoteProgramRequest): NoteCalendarSum
   if (calendarScale.value === 'volume') {
     return {
       query: summaryQuery,
+      include_flat_nodes: false,
       buckets: volumeYears.value.flatMap(year => (
         Array.from({ length: 12 }, (_, monthIndex) => {
           const monthStart = new Date(year, monthIndex, 1).getTime();
@@ -2948,6 +2950,7 @@ const buildCalendarSummaryRequest = (query: NoteProgramRequest): NoteCalendarSum
   }
   return {
     query: summaryQuery,
+    include_flat_nodes: false,
     buckets: calendarVolumeRanges.value.flatMap(volume => {
       const start = new Date(volume.startTs);
       const end = new Date(volume.endTs - 1);

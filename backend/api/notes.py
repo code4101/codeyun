@@ -5710,7 +5710,7 @@ def _try_execute_note_calendar_summary_sql_scan(
             full_note_by_key[("id", str(note.get("id") or ""))] = note
 
     response_buckets: list[dict[str, Any]] = []
-    nodes_by_id: dict[Any, dict[str, Any]] = {}
+    flat_nodes_by_id: dict[Any, dict[str, Any]] = {} if request.include_flat_nodes else {}
     for bucket in buckets:
         state = bucket_states[bucket.key]
         source = state["ranked"]
@@ -5728,8 +5728,9 @@ def _try_execute_note_calendar_summary_sql_scan(
             if full_note is not None:
                 full_notes.append(full_note)
         nodes = [note_list_mapping_to_response_dict(note, current_user) for note in full_notes]
-        for node in nodes:
-            nodes_by_id[node["id"]] = node
+        if request.include_flat_nodes:
+            for node in nodes:
+                flat_nodes_by_id[node["id"]] = node
         response_buckets.append({
             "key": bucket.key,
             "total_nodes": int(state["total_nodes"]),
@@ -5738,7 +5739,7 @@ def _try_execute_note_calendar_summary_sql_scan(
 
     return {
         "buckets": response_buckets,
-        "nodes": list(nodes_by_id.values()),
+        "nodes": list(flat_nodes_by_id.values()) if request.include_flat_nodes else [],
         "total_nodes": int(total_nodes),
     }
 

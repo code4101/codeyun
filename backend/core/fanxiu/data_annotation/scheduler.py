@@ -40,6 +40,7 @@ _STANDARD_ENABLED_TASK_IDS = {
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
     "legacy-daily-vip",
+    "xianshi-weekly-resources",
 }
 _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS: set[str] = set()
 _DEFAULT_LABEL_SYNC_TASK_IDS = {
@@ -47,6 +48,7 @@ _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "legacy-daily-dongtian-clear",
     "legacy-daily-lingmai-clear",
 }
+_MAIL_CLEANUP_DONE_PREFIX = "邮件_清理：完成"
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-dungeon",
     "legacy-daily-lingta",
@@ -92,6 +94,14 @@ def _xianfu_initial_check_time(current_time: datetime) -> str:
 
 def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
     return first_valid_schedule_time_text(fact, *keys)
+
+
+def _mail_cleanup_running_fact_is_completed(task: dict[str, Any], fact: dict[str, Any]) -> bool:
+    return (
+        str(task.get("task_type") or "") == "mail_cleanup"
+        and str(fact.get("last_result") or "") == "running"
+        and str(fact.get("last_message") or "").startswith(_MAIL_CLEANUP_DONE_PREFIX)
+    )
 
 
 def _scheduler_task_has_runtime_state(task: dict[str, Any]) -> bool:
@@ -354,6 +364,13 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             fact.pop("discovered_next_time", None)
             fact.pop("next_time", None)
             filtered_task_facts[task_id] = fact
+        if _mail_cleanup_running_fact_is_completed(task, fact):
+            fact = dict(fact)
+            fact["last_result"] = "success"
+            fact.pop("discovered_retry_after", None)
+            fact.pop("retry_after", None)
+            filtered_task_facts[task_id] = fact
+            fact_result = "success"
         fact_updated_at = float(fact.get("updated_at") or 0)
         last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
         fact_last_run_at = parse_data_annotation_task_time(fact.get("last_run_at"))
@@ -780,7 +797,6 @@ def repair_data_annotation_scheduler_tasks(
             changed = True
         if (
             str(task.get("id") or "") in _STANDARD_ENABLED_TASK_IDS
-            and default_task.get("enabled") is True
             and task.get("enabled") is not True
         ):
             task["enabled"] = True

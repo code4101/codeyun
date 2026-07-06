@@ -284,6 +284,67 @@ def test_sync_capture_paths_decodes_only_given_pcaps_and_syncs_once(tmp_path, mo
     assert result["mail_packet_sync"]["record_count"] == 1
 
 
+def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monkeypatch):
+    pcap = tmp_path / "current.pcap"
+    pcap.write_bytes(b"pcap" * 16)
+    monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", lambda **_kwargs: {"ok": True})
+    sync_calls: list[tuple[list[str], dict]] = []
+
+    class FakeCaptureRuntime:
+        def flush_recent_capture(self, reason, *, restart=True):
+            return {
+                "ok": True,
+                "flushed": True,
+                "reason": reason,
+                "restarted": restart,
+                "pcap_path": str(pcap),
+                "pcap_size": pcap.stat().st_size,
+            }
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.capture_runtime.fanxiu_capture_runtime_service",
+        FakeCaptureRuntime(),
+    )
+
+    def fake_sync(paths, **kwargs):
+        sync_calls.append(([str(path) for path in paths], kwargs))
+        return {"ok": True, "decoded_count": 1, "new_decode_count": 1, "business_backfill_count": 0}
+
+    monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", fake_sync)
+
+    result = worker.catch_up_fanxiu_packet_facts(reason="test", data_dir=tmp_path, max_streams=3)
+
+    assert result["ok"] is True
+    assert result["mode"] == "packet_facts_catch_up"
+    assert result["flush"]["flushed"] is True
+    assert sync_calls == [([str(pcap)], {"data_dir": tmp_path, "max_streams": 3})]
+    assert result["sync"]["decoded_count"] == 1
+
+
+def test_packet_facts_catch_up_skips_when_no_capture_flushed(monkeypatch):
+    monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", lambda **_kwargs: {"ok": True})
+
+    class FakeCaptureRuntime:
+        def flush_recent_capture(self, reason, *, restart=True):
+            return {"ok": True, "flushed": False, "reason": reason}
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.capture_runtime.fanxiu_capture_runtime_service",
+        FakeCaptureRuntime(),
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_fanxiu_capture_paths",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not sync without pcap")),
+    )
+
+    result = worker.catch_up_fanxiu_packet_facts(reason="test")
+
+    assert result["ok"] is True
+    assert result["sync"]["skipped"] is True
+    assert result["sync"]["reason"] == "no_flushed_capture"
+
+
 def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, monkeypatch):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)

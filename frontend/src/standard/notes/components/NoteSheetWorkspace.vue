@@ -713,6 +713,9 @@ type SheetHotWithInternalView = Handsontable & {
 
 type SheetHotMergeCellsPlugin = {
   clearCollections?: () => void
+  mergedCellsCollection?: {
+    clear?: () => void
+  } | null
 }
 
 type SheetPerfInputMarker = {
@@ -2031,6 +2034,17 @@ function queueSheetPerfBackendLogEntry(entry: SheetPerfLogEntry) {
   scheduleSheetPerfLogFlush()
 }
 
+function logSheetPerfConsoleEntry(entry: SheetPerfLogEntry) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  try {
+    console.info(`[sheet-perf:event] ${JSON.stringify(entry)}`)
+  } catch {
+    console.info('[sheet-perf:event] <unserializable>')
+  }
+}
+
 function getSheetPerfHotViewport() {
   const hot = getHotInstance()
   if (!hot) {
@@ -2232,17 +2246,18 @@ function unpatchSheetPerfHotInstance() {
 
 function renderHotWithReason(hot: Handsontable | null | undefined, reason: string) {
   if (!hot) {
-    return
+    return false
   }
   const patchedHot = hot as SheetPerfPatchedHandsontable
   if (sheetPerfLoggingEnabled.value && patchedHot.__codeyunSheetPerfPatched) {
     patchedHot.__codeyunSheetPerfPendingRenderReason = reason
   }
   hot.render()
+  return true
 }
 
 function renderCurrentHotWithReason(reason: string) {
-  renderHotWithReason(getHotInstance(), reason)
+  return renderHotWithReason(getHotInstance(), reason)
 }
 
 function shouldRecordSheetPerfRuntimeEvent(timestamp: number) {
@@ -2428,6 +2443,7 @@ function pushSheetPerfLogEntry(
     sheetPerfLastSelectionEntry = nextEntry
   }
   queueSheetPerfBackendLogEntry(nextEntry)
+  logSheetPerfConsoleEntry(nextEntry)
   return nextEntry
 }
 
@@ -2624,6 +2640,7 @@ const sheetEmptyStateText = computed(() => (
     )
 ))
 const sheetWorkspaceView = ref<SheetWorkspaceView>('sheet')
+const sheetHotViewportMountPending = ref(false)
 const studentLookupGroup = ref('')
 const studentLookupStudentKey = ref('')
 const sheetWorkspaceViewStorageKey = computed(() => (
@@ -2757,6 +2774,11 @@ const isStudentLookupViewActive = computed(() => (
 ))
 const isOriginalSheetViewActive = computed(() => (
   !shouldShowStudentLookup.value || sheetWorkspaceView.value === 'sheet'
+))
+const shouldMountOriginalHotTable = computed(() => (
+  isOriginalSheetViewActive.value
+  && shouldRenderSheetContent.value
+  && !sheetHotViewportMountPending.value
 ))
 const shouldShowOriginalSheetArea = computed(() => (
   props.sheetId == null || !shouldRenderSheetContent.value || isOriginalSheetViewActive.value
@@ -4617,6 +4639,28 @@ const FORMULA_ENGINE_INITIAL_PRELOAD_BUDGET_MS = 45
 let columnMarkerSelectionAnchor: number | null = null
 let userMatchRunPollTimer: ReturnType<typeof setTimeout> | null = null
 let initialSheetActionStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function shouldGateHotMountForViewportHeight() {
+  return !isContentHeightMode.value
+}
+
+function beginSheetHotViewportMountGate() {
+  sheetHotViewportMountPending.value = shouldGateHotMountForViewportHeight()
+}
+
+function clearSheetHotViewportMountGate() {
+  sheetHotViewportMountPending.value = false
+}
+
+function markSheetContentReadyForHotMount() {
+  beginSheetHotViewportMountGate()
+  sheetContentReady.value = true
+}
+
+function markSheetContentNotReady() {
+  clearSheetHotViewportMountGate()
+  sheetContentReady.value = false
+}
 let lastNotifiedUserMatchRunId = ''
 let lastNotifiedUserMatchRunStatus = ''
 let clockinLinkDetectionRunPollTimer: ReturnType<typeof setTimeout> | null = null
@@ -5114,6 +5158,35 @@ const contextMenu = {
         void handleDetectRegistrationUserIdFromSelection()
       },
     },
+    hsep_mobile_text_clipboard: {
+      name: '---------',
+      hidden: () => !shouldShowMobileTextClipboardContextMenuGroup(),
+    },
+    mobile_text_clipboard: {
+      name: '文本',
+      hidden: () => !shouldShowMobileTextClipboardContextMenuGroup(),
+      submenu: {
+        items: [
+          {
+            key: 'mobile_text_clipboard:copy',
+            name: '复制',
+            hidden: () => !hasSheetCellSelection(),
+            callback: () => {
+              copySelectedTextFromMobileMenu()
+            },
+          },
+          {
+            key: 'mobile_text_clipboard:paste',
+            name: '粘贴',
+            hidden: () => !hasSheetCellSelection(),
+            disabled: () => !canPasteTextFromMobileMenu(),
+            callback: () => {
+              void pasteTextFromMobileMenu()
+            },
+          },
+        ],
+      },
+    },
     hsep_sheet_advanced: {
       name: '---------',
       hidden: () => !canEditConfig.value,
@@ -5453,7 +5526,10 @@ function clearHotMergeCellsPlugin(hot: Handsontable | null | undefined) {
   }
   try {
     const plugin = (hot as unknown as { getPlugin?: (name: string) => unknown }).getPlugin?.('mergeCells') as SheetHotMergeCellsPlugin | undefined
-    plugin?.clearCollections?.()
+    if (!plugin?.mergedCellsCollection?.clear) {
+      return
+    }
+    plugin.clearCollections?.()
   } catch (error) {
     console.warn('Failed to clear sheet merged cells plugin state:', error)
   }
@@ -5734,6 +5810,11 @@ type SheetContextMenuPlugin = {
   menu?: {
     hotMenu?: Handsontable
   }
+}
+
+type SheetCopyPastePlugin = {
+  copy?: (copyMode?: 'cells-only') => void
+  paste?: (pastableText?: string, pastableHtml?: string) => void
 }
 
 function warnReadOnlyAction() {
@@ -13909,8 +13990,9 @@ function restoreLocalHistorySnapshot(snapshot: SheetLocalHistorySnapshot) {
       {},
       getDefaultSheetHeightMode(),
     ), snapshotDocument)
-    sheetContentReady.value = true
+    markSheetContentReadyForHotMount()
     scheduleSheetRenderEnhancement()
+    void prepareSheetHotViewportBeforeMount('local-history-restore')
     invalidateColumnFilterGlobalOptionsCache()
     clearNativeUndoRedoHistory()
   } finally {
@@ -14149,6 +14231,73 @@ function getUndoRedoPlugin() {
 
 function getContextMenuPlugin() {
   return getHotInstance()?.getPlugin('contextMenu') as SheetContextMenuPlugin | null
+}
+
+function getCopyPastePlugin() {
+  return getHotInstance()?.getPlugin('copyPaste') as SheetCopyPastePlugin | null
+}
+
+function shouldShowMobileTextClipboardContextMenuGroup() {
+  return isMobileOrTabletDevice() && hasSheetCellSelection()
+}
+
+function canPasteTextFromMobileMenu() {
+  return shouldShowMobileTextClipboardContextMenuGroup() && (canEditData.value || canEditPartialData.value)
+}
+
+function copySelectedTextFromMobileMenu() {
+  const hot = getHotInstance()
+  const plugin = getCopyPastePlugin()
+  if (!hot || !plugin?.copy || !hasSheetCellSelection()) {
+    return
+  }
+
+  hot.listen()
+  getContextMenuPlugin()?.close?.()
+  plugin.copy('cells-only')
+  ElMessage.success('已复制文本')
+}
+
+async function readTextForMobilePaste() {
+  if (navigator.clipboard?.readText) {
+    try {
+      return await navigator.clipboard.readText()
+    } catch (error) {
+      console.warn('Failed to read clipboard for sheet mobile paste:', error)
+    }
+  }
+
+  try {
+    const result = await ElMessageBox.prompt('把要粘贴的文本放到这里', '粘贴文本', {
+      confirmButtonText: '粘贴',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+      inputPlaceholder: '支持多行和制表符分隔内容',
+    })
+    return result.value
+  } catch {
+    return null
+  }
+}
+
+async function pasteTextFromMobileMenu() {
+  const hot = getHotInstance()
+  const plugin = getCopyPastePlugin()
+  if (!hot || !plugin?.paste || !hasSheetCellSelection()) {
+    return
+  }
+  if (!canPasteTextFromMobileMenu()) {
+    warnReadOnlyAction()
+    return
+  }
+
+  getContextMenuPlugin()?.close?.()
+  const text = await readTextForMobilePaste()
+  if (text == null) {
+    return
+  }
+  hot.listen()
+  plugin.paste(text, text)
 }
 
 function handleColumnSortParentMenuMouseUp(event: MouseEvent) {
@@ -15052,15 +15201,16 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
   if (!sheetFrame || props.sheetId == null || isContentHeightMode.value) {
     const changed = sheetViewportHeight.value !== 'auto'
     sheetViewportHeight.value = 'auto'
+    let rendered = false
     if (changed) {
-      renderCurrentHotWithReason('viewport-height-auto')
+      rendered = renderCurrentHotWithReason('viewport-height-auto')
     }
-    finishPerfLog('auto', changed, changed, {
+    finishPerfLog('auto', changed, rendered, {
       hasSheetFrame: !!sheetFrame,
       sheetId: props.sheetId,
       isContentHeightMode: isContentHeightMode.value,
     })
-    return changed
+    return rendered
   }
 
   const frameRect = sheetFrame.getBoundingClientRect()
@@ -15070,7 +15220,7 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
     ? Math.floor(windowHeight - frameRect.top - SHEET_VIEWPORT_BOTTOM_GAP)
     : 0
   const availableHeight = viewportRemainingHeight > 0
-    ? viewportRemainingHeight
+    ? Math.min(containerHeight, viewportRemainingHeight)
     : containerHeight
   if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
     finishPerfLog(previousHeight, false, false, {
@@ -15086,11 +15236,12 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
   }
 
   const changed = sheetViewportHeight.value !== availableHeight
+  let rendered = false
   if (changed) {
     sheetViewportHeight.value = availableHeight
-    renderCurrentHotWithReason('viewport-height-changed')
+    rendered = renderCurrentHotWithReason('viewport-height-changed')
   }
-  finishPerfLog(availableHeight, changed, changed, {
+  finishPerfLog(availableHeight, changed, rendered, {
     containerHeight,
     viewportRemainingHeight,
     windowHeight,
@@ -15098,7 +15249,22 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
     frameClientHeight: sheetFrame.clientHeight,
     frameRectHeight: frameRect.height,
   })
-  return changed
+  return rendered
+}
+
+async function prepareSheetHotViewportBeforeMount(reason = 'beforeHotMount') {
+  if (!sheetHotViewportMountPending.value) {
+    return 'not-gated'
+  }
+  await nextTick()
+  if (!shouldRenderSheetContent.value || !isOriginalSheetViewActive.value || isContentHeightMode.value) {
+    clearSheetHotViewportMountGate()
+    return 'skipped'
+  }
+  await updateSheetViewportHeight(reason)
+  clearSheetHotViewportMountGate()
+  await nextTick()
+  return 'ready'
 }
 
 function handleWindowResize() {
@@ -17849,7 +18015,7 @@ function applyRemoteSheetDetail(
       effectiveDocument,
       effectiveDetail.document_json,
     )
-    sheetContentReady.value = true
+    markSheetContentReadyForHotMount()
     loadedSheetContentIdentity = getSheetContentIdentity(effectiveDetail.id, props.workbookId ?? null)
     cacheRemoteSheetDetail(effectiveDetail, {
       workbookId: props.workbookId ?? null,
@@ -17862,6 +18028,7 @@ function applyRemoteSheetDetail(
     restoreSheetWorkspaceViewFromLocalStorage({
       applyInitialWorkspaceView: options?.applyInitialWorkspaceView === true,
     })
+    void prepareSheetHotViewportBeforeMount('remote-detail')
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -17879,7 +18046,7 @@ function applyInlineSheetDocument() {
   if (!props.inlineDocument) {
     suppressPersistence = true
     resetWorkspaceState()
-    sheetContentReady.value = false
+    markSheetContentNotReady()
     suppressPersistence = false
     return
   }
@@ -17898,13 +18065,14 @@ function applyInlineSheetDocument() {
     )
     applyPaginationState(null)
     pendingDeletedPageRowIndexes.value = []
-    sheetContentReady.value = true
+    markSheetContentReadyForHotMount()
     loadedSheetContentIdentity = ''
     resetHotInitialGridRowsLoaded()
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
     restoreSheetWorkspaceViewFromLocalStorage()
+    void prepareSheetHotViewportBeforeMount('inline-document')
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -19063,9 +19231,10 @@ function applySheetDocumentCacheEntry(entry: SheetDocumentCacheEntry) {
       cloneSheetDocumentSnapshot(entry.document),
       cloneJsonValue(entry.sourceDocument),
     )
-    sheetContentReady.value = true
+    markSheetContentReadyForHotMount()
     sheetLoadSettled.value = false
     loadedSheetContentIdentity = getSheetContentIdentity(entry.sheetId, entry.workbookId)
+    void prepareSheetHotViewportBeforeMount('cache-entry')
     scheduleSheetRenderEnhancement()
     resetLocalUndoHistory()
     invalidateColumnFilterGlobalOptionsCache()
@@ -19375,7 +19544,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (cachedEntry) {
       applySheetDocumentCacheEntry(cachedEntry)
     } else {
-      sheetContentReady.value = false
+      markSheetContentNotReady()
       loadedSheetContentIdentity = ''
       resetHotInitialGridRowsLoaded()
       sheetLoadSettled.value = false
@@ -19414,7 +19583,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     }
     if (!remote) {
       if (!shouldPreserveContent || shouldClearOnError) {
-        sheetContentReady.value = false
+        markSheetContentNotReady()
         loadedSheetContentIdentity = ''
         resetHotInitialGridRowsLoaded()
       }
@@ -19475,7 +19644,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       }
       if (!remote) {
         if (!shouldPreserveContent || shouldClearOnError) {
-          sheetContentReady.value = false
+          markSheetContentNotReady()
           loadedSheetContentIdentity = ''
           resetHotInitialGridRowsLoaded()
         }
@@ -19501,7 +19670,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       }
       if (!remote) {
         if (!shouldPreserveContent || shouldClearOnError) {
-          sheetContentReady.value = false
+          markSheetContentNotReady()
           loadedSheetContentIdentity = ''
           resetHotInitialGridRowsLoaded()
         }
@@ -19601,7 +19770,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       rows: rows.value.length,
       columns: columnHeaders.value.length,
     })
-    sheetContentReady.value = true
+    markSheetContentReadyForHotMount()
     loadedSheetContentIdentity = requestContentIdentity
     trace?.mark('content-ready-state')
     markBootPerf('note-sheet-workspace.contentReady')
@@ -19634,8 +19803,8 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     invalidateColumnFilterGlobalOptionsCache()
     trace?.mark('reset-runtime-state')
     markBootPerf('note-sheet-workspace.before-nextTick')
-    await nextTick()
-    trace?.mark('next-tick')
+    const viewportPrepareResult = await prepareSheetHotViewportBeforeMount('before-hot-mount')
+    trace?.mark(`viewport-before-hot-mount-${viewportPrepareResult}`)
     markBootPerf('note-sheet-workspace.after-nextTick')
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
@@ -19668,7 +19837,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       return
     }
     if (!shouldPreserveContent || shouldClearOnError) {
-      sheetContentReady.value = false
+      markSheetContentNotReady()
       loadedSheetContentIdentity = ''
       resetHotInitialGridRowsLoaded()
     }
@@ -28078,7 +28247,7 @@ watch(
     totalRowCount.value = 0
     unfilteredTotalRowCount.value = 0
     sheetVersion.value = 0
-    sheetContentReady.value = false
+    markSheetContentNotReady()
     loadedSheetContentIdentity = ''
     resetHotInitialGridRowsLoaded()
     clearHotMergeCellsPlugin(getHotInstance())
@@ -28691,7 +28860,7 @@ defineExpose({
       @contextmenu.capture="openSheetContextMenuAt"
     >
       <HotTable
-        v-if="isOriginalSheetViewActive && shouldRenderSheetContent"
+        v-if="shouldMountOriginalHotTable"
         :key="hotTableInstanceKey"
         ref="hotTableRef"
         class="ht-theme-main"

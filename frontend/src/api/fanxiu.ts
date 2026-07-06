@@ -1,15 +1,5 @@
 import api from '@/api';
 import type { NoteNode } from './notes';
-import {
-  deriveLegacySemanticsFromTaxonomy,
-  deriveNoteTaxonomyFromLegacy,
-  NOTE_CATEGORY_DEFAULT,
-  NOTE_FORM_DEFAULT,
-  NOTE_KIND_DEFAULT,
-  NOTE_LIFECYCLE_STAGE_DEFAULT,
-  NOTE_SCENE_DEFAULT
-} from '@/utils/noteSemantics';
-import { createEffectiveNoteTypes } from '@/utils/nodeConfig';
 
 export interface FanxiuProcessItem {
   pid: number;
@@ -4554,73 +4544,29 @@ export interface FanxiuDoupoTDRewardConfigResponse {
   item: FanxiuDoupoTDRewardConfigSearchItem;
 }
 
-const normalizeFanxiuNote = (raw: any): NoteNode => {
-  const normalizeTimestamp = (value: unknown) => {
-    const numeric = typeof value === 'number' ? value : Number(value ?? 0);
-    if (!Number.isFinite(numeric)) return 0;
-    return numeric < 10000000000 ? numeric * 1000 : numeric;
-  };
+let fanxiuNoteHelpersPromise: Promise<typeof import('./fanxiuNoteHelpers')> | null = null;
 
-  const taxonomy = Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
-    ? deriveLegacySemanticsFromTaxonomy(
-      raw.note_categories,
-      raw.primary_category ?? NOTE_CATEGORY_DEFAULT,
-      raw.note_form ?? NOTE_FORM_DEFAULT,
-      raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
-      raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
-    )
-    : {
-      ...deriveNoteTaxonomyFromLegacy(
-        raw.note_types,
-        raw.node_type ?? 'memo',
-        raw.note_kind ?? NOTE_SCENE_DEFAULT,
-        raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
-      ),
-      note_types: raw.note_types,
-      node_type: raw.node_type ?? 'memo',
-      note_kind: raw.note_kind ?? NOTE_KIND_DEFAULT,
-      node_status: raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
-    };
-
-  return {
-    ...raw,
-    id: Number.isFinite(Number(raw.id)) ? Math.trunc(Number(raw.id)) : 0,
-    numeric_id: raw.numeric_id == null ? null : Number(raw.numeric_id),
-    created_at: normalizeTimestamp(raw.created_at),
-    updated_at: normalizeTimestamp(raw.updated_at),
-    start_at: normalizeTimestamp(raw.start_at),
-    note_types: createEffectiveNoteTypes(taxonomy.note_types ?? raw.note_types, taxonomy.node_type ?? raw.node_type ?? 'memo', raw.color ?? null),
-    note_categories: taxonomy.note_categories,
-    primary_category: taxonomy.primary_category,
-    note_form: taxonomy.note_form,
-    note_kind: taxonomy.note_kind ?? raw.note_kind ?? NOTE_KIND_DEFAULT,
-    note_scene: taxonomy.note_scene,
-    node_status: taxonomy.node_status ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
-    lifecycle_stage: taxonomy.lifecycle_stage,
-    weight_mode: raw.weight_mode ?? null,
-    private_level: typeof raw.private_level === 'number' ? raw.private_level : Number(raw.private_level ?? 0),
-    can_edit: Boolean(raw.can_edit)
-  };
-};
-
-const toFanxiuPayload = (data: Partial<NoteNode>) => {
-  const payload: Record<string, any> = { ...data };
-  if (typeof payload.start_at === 'number' && payload.start_at > 10000000000) {
-    payload.start_at /= 1000;
-  }
-  return payload;
+const loadFanxiuNoteHelpers = () => {
+  fanxiuNoteHelpersPromise ??= import('./fanxiuNoteHelpers');
+  return fanxiuNoteHelpersPromise;
 };
 
 export const getFanxiuChars = () => {
-  return api.get<NoteNode[]>('/fanxiu/chars').then(res => (res.data || []).map(normalizeFanxiuNote));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api.get<NoteNode[]>('/fanxiu/chars').then(res => (res.data || []).map(normalizeFanxiuNote))
+  ));
 };
 
 export const getFanxiuCharDetail = (charName: string) => {
-  return api.get<NoteNode>(`/fanxiu/chars/${charName}`).then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api.get<NoteNode>(`/fanxiu/chars/${charName}`).then(res => normalizeFanxiuNote(res.data))
+  ));
 };
 
 export const updateFanxiuChar = (charName: string, data: Partial<NoteNode>) => {
-  return api.put<NoteNode>(`/fanxiu/chars/${charName}`, toFanxiuPayload(data)).then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote, toFanxiuPayload }) => (
+    api.put<NoteNode>(`/fanxiu/chars/${charName}`, toFanxiuPayload(data)).then(res => normalizeFanxiuNote(res.data))
+  ));
 };
 
 export const getFanxiuProcesses = () => {
@@ -5567,15 +5513,19 @@ export const saveFanxiuWardrobeHall = (payload: FanxiuWardrobeHallSnapshot) => {
 };
 
 export const getFanxiuWardrobeNote = (itemId: string) => {
-  return api
-    .get<NoteNode | null>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`)
-    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api
+      .get<NoteNode | null>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`)
+      .then(res => (res.data ? normalizeFanxiuNote(res.data) : null))
+  ));
 };
 
 export const saveFanxiuWardrobeNote = (itemId: string, data: Partial<NoteNode>) => {
-  return api
-    .put<NoteNode>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
-    .then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote, toFanxiuPayload }) => (
+    api
+      .put<NoteNode>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+      .then(res => normalizeFanxiuNote(res.data))
+  ));
 };
 
 export const getFanxiuSpiritBeastHall = () => {
@@ -5587,15 +5537,19 @@ export const saveFanxiuSpiritBeastHall = (payload: FanxiuSpiritBeastHallSnapshot
 };
 
 export const getFanxiuSpiritBeastNote = (itemId: string) => {
-  return api
-    .get<NoteNode | null>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`)
-    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api
+      .get<NoteNode | null>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`)
+      .then(res => (res.data ? normalizeFanxiuNote(res.data) : null))
+  ));
 };
 
 export const saveFanxiuSpiritBeastNote = (itemId: string, data: Partial<NoteNode>) => {
-  return api
-    .put<NoteNode>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
-    .then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote, toFanxiuPayload }) => (
+    api
+      .put<NoteNode>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+      .then(res => normalizeFanxiuNote(res.data))
+  ));
 };
 
 export const getFanxiuMagicTreasureHall = () => {
@@ -5635,15 +5589,19 @@ export const recognizeFanxiuSpiritArtifactStorageBag = () => {
 };
 
 export const getFanxiuMagicTreasureNote = (itemId: string) => {
-  return api
-    .get<NoteNode | null>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`)
-    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api
+      .get<NoteNode | null>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`)
+      .then(res => (res.data ? normalizeFanxiuNote(res.data) : null))
+  ));
 };
 
 export const saveFanxiuMagicTreasureNote = (itemId: string, data: Partial<NoteNode>) => {
-  return api
-    .put<NoteNode>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
-    .then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote, toFanxiuPayload }) => (
+    api
+      .put<NoteNode>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+      .then(res => normalizeFanxiuNote(res.data))
+  ));
 };
 
 export const importFanxiuMagicTreasureFromOcr = (sectionKey: string, image: File) => {
@@ -5779,13 +5737,17 @@ export const importFanxiuShouyuanExplorationIncomeSpeedFromOcr = (image: File) =
 };
 
 export const getFanxiuActivityNote = (itemId: string) => {
-  return api
-    .get<NoteNode | null>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`)
-    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
+    api
+      .get<NoteNode | null>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`)
+      .then(res => (res.data ? normalizeFanxiuNote(res.data) : null))
+  ));
 };
 
 export const saveFanxiuActivityNote = (itemId: string, data: Partial<NoteNode>) => {
-  return api
-    .put<NoteNode>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
-    .then(res => normalizeFanxiuNote(res.data));
+  return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote, toFanxiuPayload }) => (
+    api
+      .put<NoteNode>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+      .then(res => normalizeFanxiuNote(res.data))
+  ));
 };

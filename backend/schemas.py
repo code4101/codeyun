@@ -377,6 +377,7 @@ class NoteCalendarSummaryBucketRequest(BaseModel):
 class NoteCalendarSummaryRequest(BaseModel):
     query: NoteProgramRequest
     buckets: List[NoteCalendarSummaryBucketRequest] = Field(default_factory=list)
+    include_flat_nodes: bool = True
 
 
 class NoteCalendarSummaryBucketResponse(BaseModel):

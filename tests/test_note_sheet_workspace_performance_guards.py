@@ -99,7 +99,7 @@ def test_note_sheet_workspace_marks_loaded_filter_key_before_post_load_filter_wa
     assert "const completedFilterReloadKey = buildSheetFilterReloadKey(completedFilters)" in body
     assert "completedSheetFilterReloadKey = completedFilterReloadKey" in body
     assert "trace?.mark('filter-reload-key-completed')" in body
-    assert body.index("completedSheetFilterReloadKey = completedFilterReloadKey") < body.index("await nextTick()")
+    assert body.index("completedSheetFilterReloadKey = completedFilterReloadKey") < body.index("await prepareSheetHotViewportBeforeMount('before-hot-mount')")
     assert body.index("completedSheetFilterReloadKey = completedFilterReloadKey") < body.index("scheduleSheetRenderEnhancement(")
     assert "if (!filters.active && pageRowIndexes.value === null)" in schedule_body
     assert schedule_body.index("if (!filters.active && pageRowIndexes.value === null)") < schedule_body.index("const reloadKey = buildSheetFilterReloadKey(filters)")
@@ -142,13 +142,18 @@ def test_boot_perf_requests_backend_server_timing_headers():
     assert "_record_note_sheet_timing(timings, checkpoint, \"payload_total\")" in backend_source
 
 
-def test_public_workbook_routes_do_not_propagate_diagnostic_query_params():
+def test_public_workbook_routes_preserve_sheet_perf_without_query_spread():
     source = _resource_view_source()
+    start = source.index("function getCleanWorkbookRouteQuery(targetSheetId?: number | null)")
+    end = source.index("\nfunction setResourceAccessIssue", start)
+    body = source[start:end]
 
     assert "function getCleanWorkbookRouteQuery(targetSheetId?: number | null)" in source
     assert "routeWorkspaceView.value" in source
     assert "query: { ...route.query" not in source
     assert "const nextQuery = { ...route.query }" not in source
+    assert "const sheetPerfQuery = Array.isArray(route.query.sheetPerf)" in body
+    assert "query.sheetPerf = String(sheetPerfQuery)" in body
 
 
 def test_public_workbook_initial_load_keeps_workbook_and_sheet_requests_parallel():
@@ -345,6 +350,22 @@ def test_note_sheet_workspace_frame_gap_monitor_ignores_background_throttling():
     assert "focused:" in monitor_body
 
 
+def test_note_sheet_workspace_logs_sheet_perf_events_to_console_when_enabled():
+    source = _workspace_source()
+    push_start = source.index("function pushSheetPerfLogEntry(")
+    push_end = source.index("\nfunction startSheetPerfTrace", push_start)
+    push_body = source[push_start:push_end]
+    console_start = source.index("function logSheetPerfConsoleEntry(")
+    console_end = source.index("\nfunction getSheetPerfHotViewport", console_start)
+    console_body = source[console_start:console_end]
+
+    assert "function logSheetPerfConsoleEntry(entry: SheetPerfLogEntry)" in source
+    assert "console.info(`[sheet-perf:event] ${JSON.stringify(entry)}`)" in console_body
+    assert "if (!sheetPerfLoggingEnabled.value)" in console_body
+    assert "logSheetPerfConsoleEntry(nextEntry)" in push_body
+    assert push_body.index("queueSheetPerfBackendLogEntry(nextEntry)") < push_body.index("logSheetPerfConsoleEntry(nextEntry)")
+
+
 def test_note_sheet_workspace_defers_non_initial_child_components():
     source = _workspace_source()
 
@@ -389,7 +410,8 @@ def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     assert "requestHotInitialGridRowsLoaded('hot-instance-ready')" in source
     assert "await waitForHotInitialGridRowsLoaded('restore-initial-document')" in restore_body
     assert "trace?.mark(`initial-hot-load-data-${initialHotLoadDataResult}`)" in restore_body
-    assert restore_body.index("await nextTick()") < restore_body.index("await waitForHotInitialGridRowsLoaded('restore-initial-document')")
+    assert "await prepareSheetHotViewportBeforeMount('before-hot-mount')" in restore_body
+    assert restore_body.index("await prepareSheetHotViewportBeforeMount('before-hot-mount')") < restore_body.index("await waitForHotInitialGridRowsLoaded('restore-initial-document')")
     assert restore_body.index("await waitForHotInitialGridRowsLoaded('restore-initial-document')") < restore_body.index("scheduleSheetRenderEnhancement(")
     assert "ensureHotInitialGridRowsLoaded('render-enhancement')" in enhance_body
     wait_start = source.index("async function waitForHotInitialGridRowsLoaded(reason: string)")
@@ -411,6 +433,29 @@ def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     assert hidden_rows_body.index("const hiddenRowsSignature = getHiddenRowsSignature(hiddenRows)") < hidden_rows_body.index("hot.updateSettings({")
     assert hidden_rows_body.index("hotRuntimeHiddenRowsSignature === hiddenRowsSignature") < hidden_rows_body.index("hot.updateSettings({")
     assert hidden_rows_body.index("markRuntimeHiddenRowsApplied(hiddenRows)") > hidden_rows_body.index("hot.updateSettings({")
+
+
+def test_note_sheet_workspace_mounts_merge_cells_with_initial_hot_settings():
+    source = _workspace_source()
+    ready_start = source.index("function markSheetContentReadyForHotMount()")
+    ready_end = source.index("\nfunction markSheetContentNotReady", ready_start)
+    ready_body = source[ready_start:ready_end]
+    not_ready_start = source.index("function markSheetContentNotReady()")
+    not_ready_end = source.index("\nlet lastNotifiedUserMatchRunId", not_ready_start)
+    not_ready_body = source[not_ready_start:not_ready_end]
+    ensure_start = source.index("function ensureHotInitialGridRowsLoaded(reason: string) {")
+    ensure_end = source.index("\nasync function waitForHotInitialGridRowsLoaded", ensure_start)
+    ensure_body = source[ensure_start:ensure_end]
+    merge_start = source.index("const sheetHotRenderMergeCells = computed(() => {")
+    merge_end = source.index("\n})", merge_start)
+    merge_body = source[merge_start:merge_end]
+
+    assert "hotDeferredMergeCellsPending" not in source
+    assert "sheetHotMergeCells.value.length ? sheetHotMergeCells.value : false" in merge_body
+    assert "getHotInstance() == null" not in ready_body
+    assert "sheetContentReady.value = false" in not_ready_body
+    assert "markSheetContentNotReady()" not in not_ready_body.split("{", 1)[1]
+    assert "mergeCells.enabled" not in ensure_body
 
 
 def test_note_sheet_workspace_does_not_render_when_rich_text_editor_is_already_closed():
@@ -437,6 +482,21 @@ def test_note_sheet_workspace_reuses_normalized_merged_cells_for_lookup():
     assert "normalizeMergedCells(" not in render_body
     assert "return normalizedSheetMergedCells.value.find((cell) => (" in lookup_body
     assert "normalizeMergedCells(" not in lookup_body
+
+
+def test_note_sheet_workspace_skips_merge_cells_clear_before_collection_ready():
+    source = _workspace_source()
+    type_start = source.index("type SheetHotMergeCellsPlugin = {")
+    type_end = source.index("\n}", type_start)
+    type_body = source[type_start:type_end]
+    clear_start = source.index("function clearHotMergeCellsPlugin(")
+    clear_end = source.index("\nfunction shouldClearHotMergeCellsBeforeSettings", clear_start)
+    clear_body = source[clear_start:clear_end]
+
+    assert "mergedCellsCollection?: {" in type_body
+    assert "clear?: () => void" in type_body
+    assert "if (!plugin?.mergedCellsCollection?.clear)" in clear_body
+    assert clear_body.index("if (!plugin?.mergedCellsCollection?.clear)") < clear_body.index("plugin.clearCollections?.()")
 
 
 def test_note_sheet_workspace_skips_irrelevant_action_status_requests_on_initial_load():
@@ -486,7 +546,7 @@ def test_note_sheet_workspace_keeps_horizontal_column_virtualization_enabled():
     assert "Math.max(8, fixedHotColumnsStart.value + 6)" not in source
 
 
-def test_workbook_resource_view_forces_runtime_fill_height_for_virtual_rows():
+def test_workbook_resource_view_forces_uncapped_runtime_fill_height_for_virtual_rows():
     source = _workspace_source()
     resource_source = _resource_view_source()
     height_start = source.index("async function updateSheetViewportHeightNow(")
@@ -502,15 +562,14 @@ def test_workbook_resource_view_forces_runtime_fill_height_for_virtual_rows():
     assert "const isContentHeightMode = computed(() => runtimeSheetHeightMode.value === 'content')" in source
     assert "const isContentHeightMode = computed(() => sheetViewSettings.value.height_mode === 'content')" not in source
     assert resource_source.count('runtime-height-mode="fill"') >= 2
-    assert "const SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT = 960" in resource_source
-    assert resource_source.count(':runtime-max-grid-height="SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT"') >= 2
+    assert "SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT" not in resource_source
+    assert ":runtime-max-grid-height=" not in resource_source
     assert "Math.min(sheetViewportHeight.value, maxGridHeight)" in grid_height_body
     assert "const SHEET_VIEWPORT_BOTTOM_GAP = 18" in source
     assert "const containerHeight = Math.floor(sheetFrame.clientHeight || frameRect.height)" in height_body
     assert "const windowHeight = Math.floor(window.innerHeight || document.documentElement.clientHeight || 0)" in height_body
     assert "windowHeight - frameRect.top - SHEET_VIEWPORT_BOTTOM_GAP" in height_body
-    assert "? viewportRemainingHeight" in height_body
-    assert "Math.min(containerHeight, viewportRemainingHeight)" not in height_body
+    assert "Math.min(containerHeight, viewportRemainingHeight)" in height_body
 
 
 def test_note_sheet_workspace_coalesces_viewport_height_updates():
@@ -529,6 +588,37 @@ def test_note_sheet_workspace_coalesces_viewport_height_updates():
     assert "updateSheetViewportHeightNow(() => (" in update_body
     assert "pendingSheetViewportHeightUpdateReasons = new Set<string>()" in update_body
     assert "reason: getReason()" in height_body
+
+
+def test_note_sheet_workspace_primes_viewport_height_before_hot_mount():
+    source = _workspace_source()
+    mount_start = source.index("const shouldMountOriginalHotTable = computed(() => (")
+    mount_end = source.index("\nconst shouldShowOriginalSheetArea", mount_start)
+    mount_body = source[mount_start:mount_end]
+    ready_start = source.index("function markSheetContentReadyForHotMount()")
+    ready_end = source.index("\nlet lastNotifiedUserMatchRunId", ready_start)
+    ready_body = source[ready_start:ready_end]
+    prepare_start = source.index("async function prepareSheetHotViewportBeforeMount(")
+    prepare_end = source.index("\nfunction handleWindowResize", prepare_start)
+    prepare_body = source[prepare_start:prepare_end]
+    restore_start = source.index("async function restoreInitialDocument(")
+    restore_end = source.index("\nasync function handlePageChange", restore_start)
+    restore_body = source[restore_start:restore_end]
+    template_start = source.index("<HotTable")
+    template_end = source.index(":key=\"hotTableInstanceKey\"", template_start)
+    template_body = source[template_start:template_end]
+
+    assert "const sheetHotViewportMountPending = ref(false)" in source
+    assert "&& !sheetHotViewportMountPending.value" in mount_body
+    assert "beginSheetHotViewportMountGate()" in ready_body
+    assert "clearSheetHotViewportMountGate()" in ready_body
+    assert "await updateSheetViewportHeight(reason)" in prepare_body
+    assert "clearSheetHotViewportMountGate()" in prepare_body
+    assert "await nextTick()" in prepare_body
+    assert "const viewportPrepareResult = await prepareSheetHotViewportBeforeMount('before-hot-mount')" in restore_body
+    assert "trace?.mark(`viewport-before-hot-mount-${viewportPrepareResult}`)" in restore_body
+    assert 'v-if="shouldMountOriginalHotTable"' in template_body
+    assert 'v-if="isOriginalSheetViewActive && shouldRenderSheetContent"' not in template_body
 
 
 def test_note_sheet_workspace_defers_defined_name_fetch_until_after_sheet_load():
@@ -671,7 +761,9 @@ def test_note_sheet_workspace_coalesces_workspace_view_and_height_render():
     assert "updateSheetViewportHeight('workspaceViewSwitch').then((rendered) => {" in switch_body
     assert "if (!rendered)" in switch_body
     assert "renderCurrentHotWithReason('workspace-view-switch')" in switch_body
-    assert "return changed" in height_body
+    assert "let rendered = false" in height_body
+    assert "rendered = renderCurrentHotWithReason('viewport-height-changed')" in height_body
+    assert "return rendered" in height_body
     assert "return false" in height_body
 
 
@@ -1083,8 +1175,8 @@ def test_note_sheet_workspace_splits_sheet_load_vue_flush_phases():
         "trace?.mark('cache-remote-detail-deferred')",
         "trace?.mark('restore-local-ui-state')",
         "trace?.mark('reset-runtime-state')",
-        "await nextTick()",
-        "trace?.mark('next-tick')",
+        "await prepareSheetHotViewportBeforeMount('before-hot-mount')",
+        "trace?.mark(`viewport-before-hot-mount-${viewportPrepareResult}`)",
     ]
     last_index = -1
     for marker in expected_order:

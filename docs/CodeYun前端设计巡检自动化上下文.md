@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "b3c8aa4b0933a1414223006e1153bea15923ade3"
-last_audited_at: "2026-07-06T12:34:12.0643393+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-b3c8aa4b/report.md"
-last_frontend_commit_summary: "审完 582d2be..b3c8aa4：确认 pokemon 中文详情、notes 列表首屏缓存与 sheet 工作区预加载均未新增 UI 回退。"
-audited_commit_count: 81
+last_audited_commit: "62b30e1480bfaa72d2259012bea6192c304a5285"
+last_audited_at: "2026-07-06T16:35:07.2435005+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-62b30e1/report.md"
+last_frontend_commit_summary: "审完 b3c8aa4..62b30e1：确认 pokemon 上下 inspector、orders 原生历史表与 workbook 性能护栏均未新增 UI 回退。"
+audited_commit_count: 82
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-06（第十五轮）
+
+- 完整范围：`b3c8aa4b0933a1414223006e1153bea15923ade3..62b30e1480bfaa72d2259012bea6192c304a5285`
+- 覆盖提交：`62b30e1480bfaa72d2259012bea6192c304a5285`
+- 前端入口提交：`62b30e1480bfaa72d2259012bea6192c304a5285`
+- 入口如何牵引到旧问题：这次提交同时触达 `pokemon-tcg/catalog`、`attendance/orders` 与共享 `NoteSheetWorkspace`。三者共享的不是同一个业务实体，而是同一类“把主决策闭环收回到更少 UI 概念”的减法动作：图鉴要回到 `候选浏览 -> 当前详情`，订单页要回到 `输入/执行 -> 历史结果`，工作表则要把性能护栏留在运行时内部，不能反向长出新的壳层或常驻状态。
+- 本轮减法：`pokemon-tcg` 从旧的并列分栏收回到 CodeYun 一致的上下 inspector，保留搜索、卡包、属性、分页和详情事实，但不再让右侧常驻详情压缩卡墙横向浏览面；`attendance/orders` 把退款历史桌面态收回到内容驱动的原生表格，`820px` 下直接切成卡片列表；`NoteSheetWorkspace` 这次主要减少公式显示、合并单元格和隐藏行更新里的重复 render/update 路径，没有新增任何一级界面实体。
+- 信息量保持：`pokemon-tcg` 仍保留完整中文标题、属性、招式、弱点/抵抗/撤退和来源链接，只是把详情放回卡墙之后；`attendance/orders` 仍保留输入、查询、执行退款、历史金额和处理结果，只是让历史区回到更轻的表格/卡片；`workbook` 仍保留 tab、公式栏和表格能力，性能护栏只收敛运行时更新，不改变用户可见能力。
+- 概念图/线框图：报告里的 Mermaid 把链路收回到 `62b30e1 -> Pokemon 上下 inspector / Orders 原生历史表 / Workbook 性能护栏 -> 先完成主闭环 -> 再检查是否引入重复控件或解释壳层`，证明本轮重点是模型减法，不是新增功能解释区。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-62b30e1/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `pokemon-tcg/catalog`、`attendance/orders`、`workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`pokemon-tcg` 三视口下详情区仍保持首屏可见，`attendance/orders` 在桌面态维持内容驱动表格、在 `820px` 下正确切成历史卡片，`workbook` 三视口都稳定落出公式栏与表格。静态校验：`uv run pytest tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；三页真实控制台均未采到页面级 `warn/error`。
+- 入口依赖污染检查：本轮未触发。提交未改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式或公开入口依赖边界，因此不额外做主入口污染专项；仅补跑构建确认无构建级回退。
+- 根因分层：`pokemon-tcg` 属于前端状态投影与布局模型重排，`attendance/orders` 属于表现层和表格投影收敛，`workbook` 属于运行时性能护栏；三者都没有暴露需要自动止血的新模型问题。
+- 剩余风险：当前本地工作树另有 `NoteSheetWorkspace` / `resource-view` / 性能护栏测试与设计文档的少量未提交跟进，它们不属于本轮 commit 范围；真实页面复核是在当前本地服务状态下完成，未观察到新增 UI 概念或可见回退，但若这些跟进继续扩大，后续应单独复核。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口取证与静态验证；没有发现需要追加自动修复的新 UI 回退，因此把 `last_audited_commit` 推进到 `62b30e1480bfaa72d2259012bea6192c304a5285`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-06（第十四轮）
 

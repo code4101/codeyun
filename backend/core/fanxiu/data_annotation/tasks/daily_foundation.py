@@ -61,6 +61,58 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL: dict[str, int] = {
     "daily_dungeon": 6,
 }
 
+_DONGTIAN_PLACE_LEVELS: tuple[dict[str, Any], ...] = (
+    {"level": 1, "prefix": "", "places": ("白玉京",)},
+    {"level": 2, "prefix": "", "places": ("大罗天墟", "太明玉墟")},
+    {
+        "level": 3,
+        "prefix": "[洞天]",
+        "places": ("紫琅阕", "璇霄崖", "云天柱", "青冥台", "月虹梁", "星岩廊"),
+    },
+    {
+        "level": 4,
+        "prefix": "[福地]",
+        "places": (
+            "蛰龙窟",
+            "琅霜涧",
+            "镇岳台",
+            "坠星滩",
+            "莲舟矾",
+            "芝云巢",
+            "八色圃",
+            "晦明渡",
+            "月胎穴",
+            "沉剑津",
+            "朽龙骨",
+            "太素窟",
+            "紫庭山",
+            "月虹窟",
+            "劫波礁",
+            "焚轮井",
+            "幽阳泉",
+            "罡煞渊",
+            "玉兵冢",
+            "霞金脉",
+            "蟠龙窟",
+            "青烟崖",
+            "天鬼廊",
+            "赤鼎洞",
+            "天符狱",
+            "斗罡峡",
+            "五光坛",
+            "巡天阁",
+            "天罗门",
+            "盖竹山",
+        ),
+    },
+)
+
+_DONGTIAN_PLACE_ANCHORS: tuple[str, ...] = tuple(
+    f"{level['prefix']}{place}" if level["prefix"] else place
+    for level in _DONGTIAN_PLACE_LEVELS
+    for place in level["places"]
+)
+
 
 class DailyFoundationTaskMixin:
     def _payload_int(self, payload: dict[str, Any], *keys: str, default: int) -> int:
@@ -4348,21 +4400,66 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = {"max_scrolls": 24, "reverse_scrolls": 6, **dict(payload or {})}
-        outside_window_next_time = self._runtime_daily_window_next_time(
-            str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian-clear"),
-            "daily_dongtian_clear",
-        )
-        if outside_window_next_time:
-            self._record_scheduler_task_discovered_next_time(
+        if not bool(payload.get("ignore_schedule_window")):
+            outside_window_next_time = self._runtime_daily_window_next_time(
                 str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian-clear"),
-                outside_window_next_time,
-                task_type="daily_dongtian_clear",
-                label="洞天_行动力",
-                last_result="skipped",
+                "daily_dongtian_clear",
             )
-            self._log("skip", f"洞天_行动力：当前不在 10:00-22:00 可操作窗口内，下次 {outside_window_next_time}")
-            return "skipped"
-        raise RuntimeError("洞天_行动力：已迁移到 runtime 作业，但清行动力真实动作尚未实现")
+            if outside_window_next_time:
+                self._record_scheduler_task_discovered_next_time(
+                    str(payload.get("__scheduler_task_id") or "legacy-daily-dongtian-clear"),
+                    outside_window_next_time,
+                    task_type="daily_dongtian_clear",
+                    label="洞天_行动力",
+                    last_result="skipped",
+                )
+                self._log("skip", f"洞天_行动力：当前不在 10:00-22:00 可操作窗口内，下次 {outside_window_next_time}")
+                return "skipped"
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少洞天_行动力资产树路径，无法执行作业")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if not isinstance(images.get(279), dict):
+            raise RuntimeError("洞天_行动力：缺少 #279「洞天福地」标注，无法确认洞天主页")
+
+        task_label = "洞天_行动力"
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 279 or self._daily_dongtian_text_is_home(text):
+            self._log("success", "洞天_行动力：已在 #279 洞天福地，等待下一步清行动力实现")
+            raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
+
+        if scene_id != 69:
+            if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
+                scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 279 or self._daily_dongtian_text_is_home(text):
+                    self._log("success", "洞天_行动力：已回到 #279 洞天福地，等待下一步清行动力实现")
+                    raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
+            if scene_id != 69:
+                scene_id = yield from self._enter_daily_from_world_like(
+                    ctx,
+                    runtime,
+                    stop_event,
+                    frame,
+                    scene_id,
+                    text,
+                    label=task_label,
+                )
+
+        daily_status = yield from self._open_daily_entry_from_daily(
+            ctx,
+            stop_event,
+            payload,
+            task_label=task_label,
+            title_pattern=r"收取\s*两?万\s*九|九曜\s*玄墨",
+            progress_can_mark_done=False,
+        )
+        if daily_status == "not_found":
+            raise RuntimeError("洞天_行动力：#69 日常列表未找到「收取两万九曜玄墨」入口，无法进入洞天")
+        yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
+        raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
 
     def _runtime_daily_window_next_time(self, task_id: str, task_type: str, now: datetime | None = None) -> str | None:
         now = now or _runtime_runner._now()

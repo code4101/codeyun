@@ -9,6 +9,7 @@ import {
   type PokemonTcgCard,
   type PokemonTcgMeta,
 } from '@/api/pokemonTcg'
+import StandardPagination from '@/components/StandardPagination.vue'
 import { useResizablePane } from '@/utils/useResizablePane'
 
 const SET_OPTIONS = [
@@ -186,13 +187,15 @@ onMounted(() => {
         </div>
       </div>
 
-      <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="pageSize"
+      <StandardPagination
         class="pagination"
-        layout="prev, pager, next, sizes, total"
-        :page-sizes="[30, 60, 120]"
+        :page="page"
+        :page-size="pageSize"
+        :page-size-options="[30, 60, 120]"
         :total="total"
+        align="right"
+        @update:page="value => page = value"
+        @update:page-size="value => pageSize = value"
       />
 
       <div
