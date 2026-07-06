@@ -311,6 +311,7 @@ def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monke
         return {"ok": True, "decoded_count": 1, "new_decode_count": 1, "business_backfill_count": 0}
 
     monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", fake_sync)
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 2})
 
     result = worker.catch_up_fanxiu_packet_facts(reason="test", data_dir=tmp_path, max_streams=3)
 
@@ -319,6 +320,7 @@ def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monke
     assert result["flush"]["flushed"] is True
     assert sync_calls == [([str(pcap)], {"data_dir": tmp_path, "max_streams": 3})]
     assert result["sync"]["decoded_count"] == 1
+    assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 2}
 
 
 def test_packet_facts_catch_up_skips_when_no_capture_flushed(monkeypatch):
@@ -337,12 +339,36 @@ def test_packet_facts_catch_up_skips_when_no_capture_flushed(monkeypatch):
         "sync_fanxiu_capture_paths",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not sync without pcap")),
     )
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 0})
 
     result = worker.catch_up_fanxiu_packet_facts(reason="test")
 
     assert result["ok"] is True
     assert result["sync"]["skipped"] is True
     assert result["sync"]["reason"] == "no_flushed_capture"
+    assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 0}
+
+
+def test_packet_facts_catch_up_keeps_ok_when_decoded_db_prune_fails(tmp_path, monkeypatch):
+    pcap = tmp_path / "current.pcap"
+    pcap.write_bytes(b"pcap" * 16)
+    monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", lambda **_kwargs: {"ok": True})
+
+    class FakeCaptureRuntime:
+        def flush_recent_capture(self, reason, *, restart=True):
+            return {"ok": True, "flushed": True, "reason": reason, "pcap_path": str(pcap)}
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.capture_runtime.fanxiu_capture_runtime_service",
+        FakeCaptureRuntime(),
+    )
+    monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", lambda *_args, **_kwargs: {"ok": True, "decoded_count": 1})
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": False, "error": "db busy"})
+
+    result = worker.catch_up_fanxiu_packet_facts(reason="test", data_dir=tmp_path)
+
+    assert result["ok"] is True
+    assert result["decoded_record_db_prune"] == {"ok": False, "error": "db busy"}
 
 
 def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, monkeypatch):
@@ -392,6 +418,7 @@ def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, mo
     monkeypatch.setattr(worker, "sync_fanxiu_decoded_record_backlog", lambda **_kwargs: {"ok": True, "scanned": 0})
     monkeypatch.setattr(worker, "sync_fanxiu_activity_packets", lambda **_kwargs: {"ok": True, "record_count": 0})
     monkeypatch.setattr(worker, "_sync_historical_business_backlog", lambda **_kwargs: ({"changed": True}, {"source_count": 1}))
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 3})
 
     result = worker.sync_fanxiu_capture_maintenance_backlog(data_dir=tmp_path, stable_seconds=1, limit=1)
 
@@ -399,6 +426,7 @@ def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, mo
     assert result["decoded_count"] == 1
     assert calls == ["0001-old-gap.pcap"]
     assert result["historical_mail_packet_sync"]["source_count"] == 1
+    assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 3}
     state = json.loads((state_dir / "maintenance_worker_state.json").read_text(encoding="utf-8"))
     assert state["mode"] == "maintenance"
     assert state["decoded_count"] == 1
@@ -429,6 +457,7 @@ def test_maintenance_backlog_does_not_overwrite_realtime_worker_state(tmp_path, 
     monkeypatch.setattr(worker, "sync_fanxiu_decoded_record_backlog", lambda **_kwargs: {"ok": True, "scanned": 0})
     monkeypatch.setattr(worker, "sync_fanxiu_activity_packets", lambda **_kwargs: {"ok": True, "record_count": 0})
     monkeypatch.setattr(worker, "_sync_historical_business_backlog", lambda **_kwargs: ({"changed": True}, {"source_count": 0}))
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 0})
 
     worker.sync_fanxiu_capture_maintenance_backlog(data_dir=tmp_path, stable_seconds=1, limit=1)
 

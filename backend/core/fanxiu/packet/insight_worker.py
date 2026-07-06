@@ -19,7 +19,7 @@ from backend.core.fanxiu.packet.insights import (
     sync_fanxiu_packet_runtime_insights_for_decode_result,
     sync_fanxiu_packet_runtime_insights,
 )
-from backend.core.fanxiu.packet.decoded_store import sync_fanxiu_decoded_record_backlog
+from backend.core.fanxiu.packet.decoded_store import prune_fanxiu_packet_decoded_records, sync_fanxiu_decoded_record_backlog
 from backend.core.fanxiu.packet.tcp_flow import (
     DEFAULT_FANXIU_SERVER_HOST,
     _iter_fanxiu_tcp_decoded_sources,
@@ -100,6 +100,18 @@ def _write_json(path: Path, payload: Any) -> None:
         raise
 
 
+def _prune_decoded_record_db_cache() -> dict[str, Any]:
+    try:
+        from sqlmodel import Session
+
+        from backend.db import engine
+
+        with Session(engine) as session:
+            return prune_fanxiu_packet_decoded_records(session)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def _compact_state_payload(value: Any, *, list_limit: int = 5) -> Any:
     if isinstance(value, dict):
         compacted: dict[str, Any] = {}
@@ -178,6 +190,32 @@ def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
         "skip": skip,
         "reason": "host_commit_pressure",
         "commit": commit,
+    }
+
+
+def _apply_small_input_pressure_override(
+    pressure: dict[str, Any],
+    paths: list[Path],
+) -> dict[str, Any]:
+    if not pressure.get("skip"):
+        return pressure
+    input_total_bytes = 0
+    for path in paths:
+        try:
+            if path.is_file():
+                input_total_bytes += int(path.stat().st_size)
+        except OSError:
+            continue
+    if input_total_bytes <= PACKET_DECODE_COMMIT_PRESSURE_SMALL_INPUT_BYTES:
+        return {
+            **pressure,
+            "skip": False,
+            "small_input_override": True,
+            "input_total_bytes": input_total_bytes,
+        }
+    return {
+        **pressure,
+        "input_total_bytes": input_total_bytes,
     }
 
 
@@ -500,6 +538,42 @@ def _previous_errors_by_digest(state: Any) -> dict[str, dict[str, Any]]:
         if digest:
             output[digest] = item
     return output
+
+
+def _error_is_resolved_by_decoded_sources(
+    error: dict[str, Any],
+    decoded_streams_by_digest: dict[str, set[int]],
+    decoded_sources_by_digest: dict[str, list[dict[str, Any]]],
+) -> bool:
+    digest = str(error.get("digest") or "").strip()
+    if not digest:
+        return False
+    decoded_sources = decoded_sources_by_digest.get(digest) or []
+    if not decoded_sources:
+        return False
+    target_stream_ids = error.get("target_stream_ids")
+    if isinstance(target_stream_ids, list):
+        target_ids: set[int] = set()
+        for value in target_stream_ids:
+            try:
+                target_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        if target_ids:
+            return target_ids.issubset(decoded_streams_by_digest.get(digest) or set())
+    return True
+
+
+def _prune_resolved_previous_errors(
+    previous_errors: dict[str, dict[str, Any]],
+    decoded_streams_by_digest: dict[str, set[int]],
+    decoded_sources_by_digest: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        digest: error
+        for digest, error in previous_errors.items()
+        if not _error_is_resolved_by_decoded_sources(error, decoded_streams_by_digest, decoded_sources_by_digest)
+    }
 
 
 def _pcap_state_item(path: Path, digest: str, *, status: str, reason: str = "", extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -985,23 +1059,10 @@ def sync_fanxiu_capture_paths(
     walking the historical live-capture backlog while keeping decode/upsert
     responsibilities inside the packet service.
     """
-    input_total_bytes = 0
-    for raw_path in paths:
-        try:
-            path = Path(raw_path).expanduser()
-            if path.is_file():
-                input_total_bytes += int(path.stat().st_size)
-        except OSError:
-            continue
-    pressure = _host_commit_pressure_for_packet_decode()
-    pressure_skip_allowed = bool(pressure.get("skip")) and input_total_bytes <= PACKET_DECODE_COMMIT_PRESSURE_SMALL_INPUT_BYTES
-    if pressure_skip_allowed:
-        pressure = {
-            **pressure,
-            "skip": False,
-            "small_input_override": True,
-            "input_total_bytes": input_total_bytes,
-        }
+    pressure = _apply_small_input_pressure_override(
+        _host_commit_pressure_for_packet_decode(),
+        [Path(raw_path).expanduser() for raw_path in paths],
+    )
     if pressure.get("skip"):
         return {
             "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
@@ -1155,6 +1216,7 @@ def catch_up_fanxiu_packet_facts(
 
     pcap_path = str(flush_result.get("pcap_path") or "").strip() if isinstance(flush_result, dict) else ""
     if not pcap_path:
+        decoded_record_db_prune = _prune_decoded_record_db_cache()
         return {
             "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
             "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True)),
@@ -1172,6 +1234,7 @@ def catch_up_fanxiu_packet_facts(
                 "new_decode_count": 0,
                 "business_backfill_count": 0,
             },
+            "decoded_record_db_prune": decoded_record_db_prune,
         }
 
     sync_result = sync_fanxiu_capture_paths(
@@ -1179,6 +1242,7 @@ def catch_up_fanxiu_packet_facts(
         data_dir=data_dir,
         max_streams=max(1, int(max_streams)),
     )
+    decoded_record_db_prune = _prune_decoded_record_db_cache()
     return {
         "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
         "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True) and sync_result.get("ok", True)),
@@ -1189,6 +1253,7 @@ def catch_up_fanxiu_packet_facts(
         "capture_runtime_backstop": capture_backstop,
         "flush": flush_result,
         "sync": sync_result,
+        "decoded_record_db_prune": decoded_record_db_prune,
     }
 
 
@@ -1214,7 +1279,11 @@ def sync_fanxiu_live_capture_backlog(
     decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
     worker_state_path = Path(state_path) if state_path is not None else _worker_state_path(data_dir)
     previous_state = _load_json(worker_state_path, {})
-    previous_errors = _previous_errors_by_digest(previous_state)
+    previous_errors = _prune_resolved_previous_errors(
+        _previous_errors_by_digest(previous_state),
+        decoded_streams_by_digest,
+        decoded_sources_by_digest,
+    )
     previous_cursor_mtime = float(
         previous_state.get("confirmed_cursor_mtime") or previous_state.get("cursor_mtime") or 0
     ) if isinstance(previous_state, dict) else 0.0
@@ -1231,6 +1300,15 @@ def sync_fanxiu_live_capture_backlog(
         max(1, int(limit)) * DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER,
         max(1, int(limit)),
     )
+    decode_limit = max(1, int(limit))
+    stable_paths = _iter_stable_live_pcaps(
+        data_dir=data_dir,
+        stable_seconds=stable_seconds,
+        max_age_seconds=max_capture_age_seconds,
+        min_mtime=previous_cursor_mtime if use_cursor else 0.0,
+        newest_first=newest_first,
+        now=now_epoch,
+    )
     confirmed_cursor_mtime = previous_cursor_mtime
     confirmed_cursor_pcap = str(
         previous_state.get("confirmed_cursor_pcap") or previous_state.get("cursor_pcap") or ""
@@ -1238,7 +1316,10 @@ def sync_fanxiu_live_capture_backlog(
     latest_scanned_mtime = float(previous_state.get("latest_scanned_mtime") or previous_cursor_mtime) if isinstance(previous_state, dict) else previous_cursor_mtime
     latest_scanned_pcap = str(previous_state.get("latest_scanned_pcap") or "") if isinstance(previous_state, dict) else ""
     cursor_blocked = False
-    pressure = _host_commit_pressure_for_packet_decode()
+    pressure = _apply_small_input_pressure_override(
+        _host_commit_pressure_for_packet_decode(),
+        stable_paths[:decode_limit],
+    )
     if pressure.get("skip"):
         payload = {
             "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
@@ -1270,19 +1351,11 @@ def sync_fanxiu_live_capture_backlog(
         _write_json(worker_state_path, _compact_worker_state_payload(payload))
         return payload
 
-    decode_limit = max(1, int(limit))
     # A few bad or slow recent pcaps should leave an auditable gap, but they
     # should not consume the whole success budget for this pass.
     max_decode_attempts = decode_limit * 3
 
-    for path in _iter_stable_live_pcaps(
-        data_dir=data_dir,
-        stable_seconds=stable_seconds,
-        max_age_seconds=max_capture_age_seconds,
-        min_mtime=previous_cursor_mtime if use_cursor else 0.0,
-        newest_first=newest_first,
-        now=now_epoch,
-    ):
+    for path in stable_paths:
         if len(decoded) >= decode_limit or decode_attempts >= max_decode_attempts or scanned >= max_scanned:
             break
         scanned += 1
@@ -1565,11 +1638,13 @@ def sync_fanxiu_capture_maintenance_backlog(
             "skipped": True,
             "reason": "disabled",
         }
+    decoded_record_db_prune = _prune_decoded_record_db_cache()
     payload = {
         **result,
         "mode": "maintenance",
         "updated_at": _now_text(),
         "decoded_record_db_sync": decoded_record_sync,
+        "decoded_record_db_prune": decoded_record_db_prune,
         "activity_packet_sync": activity_sync,
         "historical_runtime_business_sync": historical_runtime_sync,
         "historical_mail_packet_sync": historical_mail_sync,

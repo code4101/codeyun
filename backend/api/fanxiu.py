@@ -130,6 +130,7 @@ from backend.core.fanxiu.packet.proxy import fanxiu_packet_proxy_service
 from backend.core.fanxiu.packet.service_runtime import (
     get_fanxiu_packet_worker_status as get_fanxiu_packet_daemon_worker_status,
     get_fanxiu_packet_service_status,
+    request_fanxiu_packet_service_catch_up,
     start_fanxiu_packet_service,
     stop_fanxiu_packet_service,
 )
@@ -142,6 +143,11 @@ from backend.core.fanxiu.packet.insights import (
     get_fanxiu_packet_storage_bag_snapshot,
     sync_fanxiu_packet_runtime_insights,
 )
+from backend.core.fanxiu.packet.decoded_store import (
+    list_fanxiu_packet_decoded_records,
+    prune_fanxiu_packet_decoded_records,
+)
+from backend.core.fanxiu.packet.current_facts import catch_up_and_list_fanxiu_packet_decoded_records
 from backend.core.fanxiu.catalog.status_models import (
     FanxiuActivityPacketSyncRequest,
     FanxiuActivityPacketSyncResponse,
@@ -2432,6 +2438,63 @@ def list_fanxiu_packet_tcp_records(
     )
 
 
+@status_router.get("/packet-capture/tcp/decoded-records")
+def list_fanxiu_packet_decoded_records_api(
+    names: list[str] | None = Query(default=None),
+    pro_ids: list[int] | None = Query(default=None),
+    since_seconds: int | None = Query(default=None, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    return list_fanxiu_packet_decoded_records(
+        session,
+        names=names,
+        pro_ids=pro_ids,
+        since_seconds=since_seconds,
+        limit=limit,
+    )
+
+
+@status_router.post("/packet-capture/tcp/decoded-records/prune")
+def prune_fanxiu_packet_decoded_records_api(
+    max_age_seconds: int = Query(7 * 24 * 60 * 60, ge=1),
+    min_keep: int = Query(200, ge=0),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    return prune_fanxiu_packet_decoded_records(
+        session,
+        max_age_seconds=max_age_seconds,
+        min_keep=min_keep,
+    )
+
+
+@status_router.post("/packet-capture/tcp/decoded-records/catch-up")
+def catch_up_fanxiu_packet_decoded_records_api(
+    names: list[str] | None = Query(default=None),
+    pro_ids: list[int] | None = Query(default=None),
+    since_seconds: int | None = Query(default=None, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    reason: str = Query("decoded-records-api"),
+    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    return catch_up_and_list_fanxiu_packet_decoded_records(
+        session,
+        names=names,
+        pro_ids=pro_ids,
+        since_seconds=since_seconds,
+        limit=limit,
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
+
+
 @status_router.get("/packet-capture/tcp/business-entries", response_model=FanxiuTcpBusinessEntryListResponse)
 def list_fanxiu_packet_tcp_business_entries(
     page: int = Query(1, ge=1),
@@ -2808,6 +2871,28 @@ def run_fanxiu_packet_worker_realtime_scan(
         "status": "delegated",
         "action": "ensure-daemon",
         "start_result": start_result,
+        "worker": get_fanxiu_packet_daemon_worker_status(),
+    }
+
+
+@status_router.post("/packet-capture/tcp/worker/catch-up")
+def run_fanxiu_packet_worker_catch_up(
+    reason: str = Query("api"),
+    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    start_result = start_fanxiu_packet_service()
+    command_result = request_fanxiu_packet_service_catch_up(
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
+    return {
+        "status": command_result.get("status") or "pending",
+        "action": "packet-facts-catch-up",
+        "start_result": start_result,
+        "command": command_result,
         "worker": get_fanxiu_packet_daemon_worker_status(),
     }
 
