@@ -7,6 +7,7 @@ import { useAiAppStore } from '@/store/aiAppStore';
 import { useAiProviderStore } from '@/store/aiProviderStore';
 import { useUserStore } from '@/store/userStore';
 import { NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
+import { isBootPerfEnabled, markBootPerf } from '@/utils/bootPerf';
 import { createEffectiveNoteTypes, type NoteTypeAssignment } from '@/utils/nodeConfig';
 import {
   deriveLegacySemanticsFromTaxonomy,
@@ -1995,14 +1996,47 @@ export const useNoteStore = defineStore('notes', () => {
     if (!session) return null;
 
     const requestVersion = session.requestVersion + 1;
+    const perfEnabled = isBootPerfEnabled();
+    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const totalStartedAt = perfEnabled ? now() : 0;
     session.requestVersion = requestVersion;
     session.loading = true;
     bumpPending(1);
     try {
+      if (perfEnabled) {
+        markBootPerf('notes.query-program.start', {
+          tabId,
+          limit: request.limit ?? null,
+          includeCustomFields: request.include_custom_fields ?? false,
+          includeEdges: request.include_edges ?? true,
+        });
+      }
+      const requestStartedAt = perfEnabled ? now() : 0;
       const response = await api.post('/notes/query-program', request);
       const data = response.data as NoteProgramResponse;
+      if (perfEnabled) {
+        markBootPerf('notes.query-program.response', {
+          tabId,
+          duration: Math.round((now() - requestStartedAt) * 10) / 10,
+          nodes: data.nodes.length,
+          edges: data.edges.length,
+        });
+      }
       if (session.requestVersion !== requestVersion) return null;
+      const applyStartedAt = perfEnabled ? now() : 0;
       const applied = applyQueryResponseToTab(tabId, request, data);
+      if (perfEnabled) {
+        markBootPerf('notes.query-program.apply', {
+          tabId,
+          duration: Math.round((now() - applyStartedAt) * 10) / 10,
+          noteIds: applied.noteIds.length,
+          edgeIds: applied.edgeIds.length,
+        });
+        markBootPerf('notes.query-program.end', {
+          tabId,
+          duration: Math.round((now() - totalStartedAt) * 10) / 10,
+        });
+      }
       return {
         ...applied,
         data

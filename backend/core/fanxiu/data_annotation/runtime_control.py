@@ -236,7 +236,7 @@ def ensure_doctor_watch_background(
     output_path = watch_dir / f"doctor_watch_api_{stamp}.ndjson"
     stdout_path = watch_dir / f"doctor_watch_api_{stamp}.stdout.log"
     stderr_path = watch_dir / f"doctor_watch_api_{stamp}.stderr.log"
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[4]
     script_path = repo_root / "scripts" / "fanxiu_bt.py"
     command_args = [
         "watch-doctor",

@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlmodel import Session, select
 
 from backend.core.settings import get_settings
+from backend.db import get_session
+from backend.models import PokemonTcgCardRecord
 
 
 DATASET_ID = "childhood_base_jungle_fossil_rocket"
@@ -34,6 +37,19 @@ def _cards() -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _db_cards(session: Session) -> list[dict[str, Any]]:
+    records = session.exec(
+        select(PokemonTcgCardRecord).where(PokemonTcgCardRecord.dataset_id == DATASET_ID)
+    ).all()
+    cards: list[dict[str, Any]] = []
+    for record in records:
+        raw = dict(record.raw_json or {})
+        raw["zh"] = dict(record.zh_json or {})
+        raw["_storage"] = "database"
+        cards.append(raw)
+    return cards
+
+
 def _card_matches(card: dict[str, Any], query: str) -> bool:
     if not query:
         return True
@@ -49,15 +65,18 @@ def _card_matches(card: dict[str, Any], query: str) -> bool:
             "flavor_text",
         )
     ).lower()
+    zh = card.get("zh") if isinstance(card.get("zh"), dict) else {}
+    haystack = f"{haystack} " + " ".join(str(value or "") for value in zh.values()).lower()
     return query.lower() in haystack
 
 
 @router.get("/meta")
-def get_pokemon_tcg_meta() -> dict[str, Any]:
+def get_pokemon_tcg_meta(session: Session = Depends(get_session)) -> dict[str, Any]:
     root = _dataset_root()
     manifest = _read_json(root / "manifest.json", {})
     progress = _read_json(root / "progress.json", {})
-    cards = _cards()
+    db_cards = _db_cards(session)
+    cards = db_cards or _cards()
     set_counts: dict[str, int] = {}
     for card in cards:
         set_slug = str(card.get("set_slug") or "unknown")
@@ -69,6 +88,11 @@ def get_pokemon_tcg_meta() -> dict[str, Any]:
         "progress": progress,
         "card_count": len(cards),
         "set_counts": set_counts,
+        "storage": "database" if db_cards else "snapshot",
+        "translation": {
+            "available": bool(db_cards),
+            "version": str(db_cards[0].get("zh", {}).get("translation_version") or "") if db_cards else "",
+        },
     }
 
 
@@ -78,8 +102,9 @@ def list_pokemon_tcg_cards(
     set_slug: str = Query("", alias="set"),
     page: int = Query(1, ge=1),
     page_size: int = Query(60, ge=1, le=240),
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    cards = _cards()
+    cards = _db_cards(session) or _cards()
     filtered = [
         card
         for card in cards

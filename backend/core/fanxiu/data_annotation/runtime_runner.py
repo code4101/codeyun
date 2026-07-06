@@ -6978,7 +6978,7 @@ class DataAnnotationRuntimeRunner(
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
                 retry_ids = [int(item) for item in self._runtime_scene_candidate_ids(ctx) if int(item) != int(scene_id)]
-                if retry_ids:
+                if retry_ids and len(retry_ids) < len(self._runtime_scene_candidate_ids(ctx)):
                     retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
                     if retry_scene_id is not None:
                         return retry_scene_id, retry_score
@@ -7011,8 +7011,8 @@ class DataAnnotationRuntimeRunner(
             if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 if trace is not None:
                     trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
-                retry_ids = [int(item) for item in self._runtime_scene_candidate_ids(ctx) if int(item) != int(scene_id)]
-                if retry_ids:
+                retry_ids = [int(item) for item in preferred_scene_ids if int(item) != int(scene_id)]
+                if retry_ids and len(retry_ids) < len(preferred_scene_ids):
                     retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
                     if retry_scene_id is not None:
                         return retry_scene_id, retry_score
@@ -7073,7 +7073,7 @@ class DataAnnotationRuntimeRunner(
             if trace is not None:
                 trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
             retry_ids = [int(item) for item in candidate_scene_ids if int(item) != int(scene_id)]
-            if retry_ids:
+            if retry_ids and len(retry_ids) < len(candidate_scene_ids):
                 retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
                 if retry_scene_id is not None:
                     return retry_scene_id, retry_score

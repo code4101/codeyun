@@ -289,6 +289,12 @@ def test_note_sheet_workspace_frame_gap_monitor_ignores_background_throttling():
     assert "document.hasFocus()" in source
     assert "if (!isSheetPerfFrameMonitorActive())" in monitor_body
     assert "sheetPerfLastFrameTime = null" in monitor_body
+    assert "function isSheetPerfLikelyThrottledFrameGap(" in source
+    assert "function hasSheetPerfLongTaskNearFrameGap(" in source
+    assert "SHEET_PERF_FRAME_GAP_THROTTLE_MIN_MS" in source
+    assert "(!sheetPerfLongTaskObserver || hasSheetPerfLongTaskNearFrameGap(sheetPerfLastFrameTime, timestamp))" in monitor_body
+    assert "!isSheetPerfLikelyThrottledFrameGap(sheetPerfLastFrameTime, timestamp)" in monitor_body
+    assert "sheetPerfLastLongTaskEndTime = entry.startTime + entry.duration" in source
     assert "visibilityState:" in monitor_body
     assert "focused:" in monitor_body
 
@@ -324,6 +330,14 @@ def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     assert "hotInitialDataLoadedContentIdentity" in source
     assert "hotInitialDataLoadedInstance" in source
     assert "recordSheetPerfEvent('handsontable.initialLoadData'" in source
+    assert "const sheetMergeCellsRenderEnabled = ref(true)" in source
+    assert "if (!shouldUseEnhancedSheetRenderSettings.value || !sheetMergeCellsRenderEnabled.value)" in source
+    assert "sheetMergeCellsRenderEnabled.value = false" in source
+    assert "sheetMergeCellsRenderEnabled.value = true" in enhance_body
+    assert "function isCurrentHotGridRowsAlreadyLoaded(" in source
+    assert "const alreadyLoaded = isCurrentHotGridRowsAlreadyLoaded(hot)" in source
+    assert "if (!alreadyLoaded) {\n    loadCurrentHotGridRows(hot)\n  }" in source
+    assert "alreadyLoaded," in source
     assert "function requestHotInitialGridRowsLoaded(reason: string)" in source
     assert "requestHotInitialGridRowsLoaded('hot-instance-ready')" in source
     assert "await waitForHotInitialGridRowsLoaded('restore-initial-document')" in restore_body
@@ -663,7 +677,9 @@ def test_note_sheet_workspace_preloads_formula_engine_before_initial_document_mo
     assert "refreshFormulaDisplayState()" not in load_body
     assert "Promise.race([" in preload_body
     assert "formula-engine-preload-" in restore_body
+    assert "sheetDocumentSourceHasFormulaExpressions(remote.document_json)" in restore_body
     assert "waitForInitialFormulaEnginePreload(loadFormulaEngineClass())" in restore_body
+    assert restore_body.index("waitForInitialFormulaEnginePreload(loadFormulaEngineClass())") < restore_body.index("markBootPerf('note-sheet-workspace.normalize.start')")
     assert restore_body.index("waitForInitialFormulaEnginePreload(loadFormulaEngineClass())") < restore_body.index("loadSheetDocument(activeDocument, activeSourceDocument)")
 
 

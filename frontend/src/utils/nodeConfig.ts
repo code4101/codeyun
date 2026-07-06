@@ -87,6 +87,14 @@ export const NOTE_TYPE_WEIGHT_MAX = 100;
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const LEGACY_COLOR_TYPE_PREFIX = 'legacy_color_';
 const CUSTOM_NOTE_TYPE_PREFIX = 'custom_';
+const NOTE_TYPE_PALETTE_CACHE_KEY = 'codeyun:note-type-palette:v1';
+const NOTE_TYPE_PALETTE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+interface NoteTypePaletteCachePayload {
+  authKey: string;
+  savedAt: number;
+  items: NoteTypePaletteItem[];
+}
 
 const normalizeNodeStatusId = (value: string | null | undefined) => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -99,6 +107,23 @@ const paletteItems = noteTypePaletteItemsState as typeof noteTypePaletteItemsSta
   value: Record<string, NoteTypePaletteItem>;
 };
 const paletteLoaded = noteTypePaletteLoadedState;
+
+const hashToken = (value: string | null) => {
+  if (!value) return 'anonymous';
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `token:${(hash >>> 0).toString(36)}:${value.length}`;
+};
+
+const getPaletteAuthKey = () => {
+  if (typeof window === 'undefined') {
+    return 'anonymous';
+  }
+  return hashToken(window.localStorage.getItem('token'));
+};
 
 export const normalizeNodeColor = (value: string | null | undefined) => {
   if (!value) return null;
@@ -192,9 +217,57 @@ const applyPaletteItems = (items: NoteTypePaletteItem[]) => {
   paletteLoaded.value = true;
 };
 
+const readCachedPaletteItems = (): NoteTypePaletteItem[] | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(NOTE_TYPE_PALETTE_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const payload = JSON.parse(raw) as Partial<NoteTypePaletteCachePayload>;
+    if (
+      payload.authKey !== getPaletteAuthKey()
+      || typeof payload.savedAt !== 'number'
+      || !Array.isArray(payload.items)
+      || Date.now() - payload.savedAt > NOTE_TYPE_PALETTE_CACHE_TTL_MS
+    ) {
+      return null;
+    }
+    const normalized = normalizeNoteTypePaletteItems(payload.items);
+    return normalized.length > 0 ? normalized : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeCachedPaletteItems = (items: NoteTypePaletteItem[]) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const payload: NoteTypePaletteCachePayload = {
+      authKey: getPaletteAuthKey(),
+      savedAt: Date.now(),
+      items,
+    };
+    window.localStorage.setItem(NOTE_TYPE_PALETTE_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // localStorage may be unavailable or full; the network path remains the source of truth.
+  }
+};
+
 export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
   const paletteLoadPromise = getNoteTypePaletteLoadPromiseState() as Promise<NoteTypePaletteItem[]> | null;
   if (!force && paletteLoaded.value) return Object.values(paletteItems.value);
+  if (!force) {
+    const cachedItems = readCachedPaletteItems();
+    if (cachedItems) {
+      applyPaletteItems(cachedItems);
+      return cachedItems;
+    }
+  }
   if (!force && paletteLoadPromise) return paletteLoadPromise;
   const nextLoadPromise = fetchNoteCategoryPalette()
     .then(response => {
@@ -210,6 +283,7 @@ export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
         usageCount: item.usage_count ?? 0
       })));
       applyPaletteItems(normalized);
+      writeCachedPaletteItems(normalized);
       return normalized;
     })
     .finally(() => {
@@ -244,6 +318,7 @@ export const saveNoteTypePalette = async (items: NoteTypePaletteItem[]) => {
     usageCount: item.usage_count ?? 0
   })));
   applyPaletteItems(normalized);
+  writeCachedPaletteItems(normalized);
   return normalized;
 };
 

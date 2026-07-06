@@ -407,6 +407,37 @@ class GithubProject(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
 
 
+class PokemonTcgCardRecord(SQLModel, table=True):
+    __tablename__ = "pokemontcgcardrecord"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "source_card_slug", name="uq_pokemontcgcardrecord_dataset_slug"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    dataset_id: str = Field(index=True)
+    source: str = Field(default="pkmncards", index=True)
+    source_card_slug: str = Field(index=True)
+    source_url: str = Field(default="", sa_column=Column(Text))
+    set_slug: str = Field(default="", index=True)
+    set_name: str = Field(default="", index=True)
+    official_set_code: str = Field(default="", index=True)
+    official_number: str = Field(default="", index=True)
+    official_id: str = Field(default="", index=True)
+    official_name: str = Field(default="", index=True)
+    pokemon_species: str = Field(default="", index=True)
+    display_title: str = Field(default="", sa_column=Column(Text))
+    local_image_path: str = Field(default="", sa_column=Column(Text))
+    image_sha256: str = Field(default="", index=True)
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    zh_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    translation_version: str = Field(default="", index=True)
+    fetched_at: str = Field(default="", index=True)
+    translated_at: str = Field(default="", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class PdfDocument(SQLModel, table=True):
     __tablename__ = "pdfdocument"
     __table_args__ = (

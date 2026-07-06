@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
+from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.data_annotation import storage as storage_core
@@ -745,6 +748,76 @@ def test_runtime_runner_default_close_popups_guard_is_on():
     assert status["guard_enabled"] is True
     assert status["guard_running"] is False
     assert status["guard_items"]["close_popups"]["enabled"] is True
+
+
+def test_runtime_scene_rejects_out_of_candidate_ocr_failure_without_recursion(monkeypatch):
+    runner = bt.create_fanxiu_runtime_runner()
+    calls = []
+
+    class FakeRecognizer:
+        def identify_scene_tree_number(self, *_args, **_kwargs):
+            calls.append("tree")
+            return 180, 100.0
+
+        def identify_scene_number(self, *_args, **_kwargs):
+            calls.append("flat")
+            return 180, 100.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number_by_graph", lambda *_args, **_kwargs: (None, 0.0, "unknown"))
+    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+    monkeypatch.setattr(runner, "_scene_number_ocr_confirmed", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda _ctx: [326, 327])
+
+    scene_id, score = runner._identify_scene_number({}, "frame", [327, 326])
+
+    assert scene_id is None
+    assert score == 100.0
+    assert calls == ["tree"]
+
+
+def test_runtime_job_container_keeps_owner_heartbeat_during_long_tick(tmp_path):
+    heartbeats = []
+
+    class FakeOwner:
+        guard_definitions = {}
+
+        def _raise_if_stopped(self, stop_event):
+            if stop_event.is_set():
+                raise RuntimeError("stopped")
+
+        def _mark_service_heartbeat(self, step):
+            heartbeats.append((step, time.monotonic()))
+
+        def _log(self, *_args, **_kwargs):
+            return None
+
+        def _runtime_guard_enabled(self, _guard_id):
+            return False
+
+        def _runtime_guard_service_tick(self, *_args, **_kwargs):
+            raise AssertionError("guard should not run")
+
+    def slow_action():
+        time.sleep(1.3)
+        return "ok"
+
+    container = DataAnnotationRuntimeContainer(
+        FakeOwner(),
+        runtime_ctx={},
+        asset_tree_path=tmp_path / "asset-tree.json",
+        stop_event=threading.Event(),
+    )
+
+    result = container.run_job_until_complete(
+        action=slow_action,
+        label="slow-test",
+        tick_seconds=0.1,
+        max_runtime_seconds=5,
+    )
+
+    assert result == "ok"
+    task_heartbeats = [item for item in heartbeats if item[0] == "task_running"]
+    assert len(task_heartbeats) >= 2
 
 
 def test_runtime_status_migrates_legacy_close_popups_guard_off_to_on():

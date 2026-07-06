@@ -1644,6 +1644,7 @@ const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
 const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
+const sheetMergeCellsRenderEnabled = ref(true)
 const SHEET_PERF_LOG_LIMIT = 1000
 const SHEET_PERF_LOG_FLUSH_URL = '/api/note-sheets/perf-logs'
 const SHEET_PERF_LOG_FLUSH_DELAY_MS = 800
@@ -1651,6 +1652,9 @@ const SHEET_PERF_LOG_FLUSH_BATCH_SIZE = 40
 const SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE = 160
 const SHEET_PERF_FRAME_GAP_THRESHOLD_MS = 80
 const SHEET_PERF_FRAME_GAP_LOG_INTERVAL_MS = 5000
+const SHEET_PERF_FRAME_GAP_THROTTLE_MIN_MS = 950
+const SHEET_PERF_FRAME_GAP_THROTTLE_MAX_MS = 1050
+const SHEET_PERF_FRAME_GAP_LONG_TASK_GRACE_MS = 120
 const SHEET_PERF_RUNTIME_EVENT_LOG_LIMIT = 80
 const SHEET_VISIBILITY_FRAME_SIZE_TOLERANCE_PX = 2
 const sheetPerfLoggingEnabled = ref(readSheetPerfLoggingEnabledPreference())
@@ -1754,6 +1758,7 @@ let sheetPerfLongTaskObserver: PerformanceObserver | null = null
 let sheetPerfFrameMonitorId: number | null = null
 let sheetPerfLastFrameTime: number | null = null
 let sheetPerfLastFrameGapLogTime = 0
+let sheetPerfLastLongTaskEndTime: number | null = null
 let sheetPerfRuntimeEventLogCount = 0
 
 function isSheetPerfFrameMonitorActive() {
@@ -2245,6 +2250,33 @@ function shouldRecordSheetPerfRuntimeEvent(timestamp: number) {
   return true
 }
 
+function isSheetPerfLikelyThrottledFrameGap(startTime: number, endTime: number) {
+  const duration = endTime - startTime
+  if (
+    duration < SHEET_PERF_FRAME_GAP_THROTTLE_MIN_MS
+    || duration > SHEET_PERF_FRAME_GAP_THROTTLE_MAX_MS
+  ) {
+    return false
+  }
+  if (sheetPerfLastLongTaskEndTime == null) {
+    return true
+  }
+  return (
+    sheetPerfLastLongTaskEndTime < startTime - SHEET_PERF_FRAME_GAP_LONG_TASK_GRACE_MS
+    || sheetPerfLastLongTaskEndTime > endTime + SHEET_PERF_FRAME_GAP_LONG_TASK_GRACE_MS
+  )
+}
+
+function hasSheetPerfLongTaskNearFrameGap(startTime: number, endTime: number) {
+  if (sheetPerfLastLongTaskEndTime == null) {
+    return false
+  }
+  return (
+    sheetPerfLastLongTaskEndTime >= startTime - SHEET_PERF_FRAME_GAP_LONG_TASK_GRACE_MS
+    && sheetPerfLastLongTaskEndTime <= endTime + SHEET_PERF_FRAME_GAP_LONG_TASK_GRACE_MS
+  )
+}
+
 function startSheetPerfFrameMonitor() {
   if (typeof window === 'undefined' || sheetPerfFrameMonitorId != null) {
     return
@@ -2265,7 +2297,12 @@ function startSheetPerfFrameMonitor() {
 
     if (sheetPerfLastFrameTime != null) {
       const duration = roundSheetPerfMs(timestamp - sheetPerfLastFrameTime)
-      if (duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS && shouldRecordSheetPerfRuntimeEvent(timestamp)) {
+      if (
+        duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS
+        && (!sheetPerfLongTaskObserver || hasSheetPerfLongTaskNearFrameGap(sheetPerfLastFrameTime, timestamp))
+        && !isSheetPerfLikelyThrottledFrameGap(sheetPerfLastFrameTime, timestamp)
+        && shouldRecordSheetPerfRuntimeEvent(timestamp)
+      ) {
         recordSheetPerfEvent('browser.frameGap', {
           duration,
           perfStart: roundSheetPerfMs(sheetPerfLastFrameTime),
@@ -2297,6 +2334,7 @@ function stopSheetPerfFrameMonitor() {
   sheetPerfFrameMonitorId = null
   sheetPerfLastFrameTime = null
   sheetPerfLastFrameGapLogTime = 0
+  sheetPerfLastLongTaskEndTime = null
 }
 
 function startSheetPerfLongTaskObserver() {
@@ -2310,6 +2348,7 @@ function startSheetPerfLongTaskObserver() {
 
   sheetPerfLongTaskObserver = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
+      sheetPerfLastLongTaskEndTime = entry.startTime + entry.duration
       if (!shouldRecordSheetPerfRuntimeEvent(entry.startTime)) {
         continue
       }
@@ -2345,6 +2384,7 @@ function startSheetPerfRuntimeObservers() {
   }
   sheetPerfRuntimeEventLogCount = 0
   sheetPerfLastFrameGapLogTime = 0
+  sheetPerfLastLongTaskEndTime = null
   void nextTick(() => {
     patchSheetPerfHotInstance()
   })
@@ -3995,7 +4035,7 @@ const sheetHotMergeCells = computed(() => (
 const shouldUseEnhancedSheetRenderSettings = computed(() => sheetRenderPhase.value !== 'core')
 
 const sheetHotRenderMergeCells = computed(() => {
-  if (!shouldUseEnhancedSheetRenderSettings.value) {
+  if (!shouldUseEnhancedSheetRenderSettings.value || !sheetMergeCellsRenderEnabled.value) {
     return false
   }
   return sheetHotMergeCells.value.length ? sheetHotMergeCells.value : false
@@ -5439,6 +5479,17 @@ function loadCurrentHotGridRows(hot: Handsontable | null | undefined) {
   }
 }
 
+function isCurrentHotGridRowsAlreadyLoaded(hot: Handsontable | null | undefined) {
+  if (!hot) {
+    return false
+  }
+  const rows = sheetHotGridRows.value
+  return (
+    hot.countRows() === rows.length
+    && hot.countCols() === (rows[0]?.length ?? 0)
+  )
+}
+
 function resetHotInitialGridRowsLoaded() {
   hotInitialDataLoadedContentIdentity = ''
   hotInitialDataLoadedInstance = null
@@ -5455,12 +5506,16 @@ function ensureHotInitialGridRowsLoaded(reason: string) {
   ) {
     return true
   }
-  loadCurrentHotGridRows(hot)
+  const alreadyLoaded = isCurrentHotGridRowsAlreadyLoaded(hot)
+  if (!alreadyLoaded) {
+    loadCurrentHotGridRows(hot)
+  }
   hotInitialDataLoadedInstance = hot
   hotInitialDataLoadedContentIdentity = loadedSheetContentIdentity
   markBootPerf('note-sheet-workspace.hot.initialLoadData.done', {
     reason,
     identity: loadedSheetContentIdentity,
+    alreadyLoaded,
     rows: sheetHotGridRows.value.length,
     columns: sheetHotGridRows.value[0]?.length ?? 0,
   })
@@ -5468,6 +5523,7 @@ function ensureHotInitialGridRowsLoaded(reason: string) {
     detail: {
       reason,
       identity: loadedSheetContentIdentity,
+      alreadyLoaded,
       gridRows: sheetHotGridRows.value.length,
       gridColumns: sheetHotGridRows.value[0]?.length ?? 0,
     },
@@ -5538,25 +5594,30 @@ function beginSheetCoreRenderPhase() {
   clearInitialSheetActionStatusRefreshTimer()
   // Mounting once with enhanced settings is cheaper than mounting a core grid
   // and immediately forcing Handsontable through a second full updateSettings.
+  sheetMergeCellsRenderEnabled.value = false
   sheetRenderPhase.value = 'ready'
 }
 
 function finishSheetRenderEnhancement() {
   clearSheetRenderEnhancementFrame()
+  sheetMergeCellsRenderEnabled.value = true
   sheetRenderPhase.value = 'ready'
 }
 
 function scheduleSheetRenderEnhancement(isCurrent?: () => boolean) {
   clearSheetRenderEnhancementFrame()
   if (!sheetContentReady.value) {
+    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
   if (typeof window === 'undefined') {
+    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
   if (isSheetDocumentHidden()) {
+    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
@@ -5585,6 +5646,7 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
   })
   sheetRenderPhase.value = 'enhancing'
   try {
+    sheetMergeCellsRenderEnabled.value = true
     await nextTick()
     trace?.mark('vue-props-flush')
     if (isCurrent && !isCurrent()) {
@@ -18876,6 +18938,22 @@ function sheetDocumentHasFormulaExpressions(document: SheetDocument) {
   ))
 }
 
+function sheetDocumentSourceHasFormulaExpressions(source: unknown) {
+  if (!source || typeof source !== 'object') {
+    return false
+  }
+  const record = source as Record<string, unknown>
+  const headers = normalizeHeaders(record.columns)
+  const rowGroups = [
+    record.grid_rows,
+    record.rows,
+  ].filter((rows): rows is unknown[] => Array.isArray(rows))
+
+  return rowGroups.some((rows) => (
+    rows.some((row) => normalizeRow(row, headers).some(isFormulaExpression))
+  ))
+}
+
 function scheduleFilteredPaginationReload() {
   if (props.sheetId == null || !paginationEnabled.value) {
     return
@@ -19030,6 +19108,18 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     if (!canPersistSheet.value) {
       localDraft = null
       clearDraftStorage()
+    }
+
+    if (sheetDocumentSourceHasFormulaExpressions(remote.document_json) && !formulaEngineClass.value) {
+      markBootPerf('note-sheet-workspace.formulaEngine.preload.start')
+      const formulaEnginePreloadResult = await waitForInitialFormulaEnginePreload(loadFormulaEngineClass())
+      trace?.mark(`formula-engine-preload-${formulaEnginePreloadResult}`)
+      markBootPerf('note-sheet-workspace.formulaEngine.preload.end', {
+        result: formulaEnginePreloadResult,
+      })
+      if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+        return
+      }
     }
 
     applyPaginationState(remote.pagination)

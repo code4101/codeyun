@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2"
-last_audited_at: "2026-07-05T22:40:05.4495859+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-05-frontend-design-1dd2c8ae/report.md"
-last_frontend_commit_summary: "审完 d7418254..1dd2c8ae：收起 cluster/services 左侧被 Token 长列表拉高的空白设备壳层，报名表动作与运行管理复验通过。"
-audited_commit_count: 77
+last_audited_commit: "582d2becc74bd1b7fa1a104a58e6fbac4128cbf2"
+last_audited_at: "2026-07-06T10:40:04.0041828+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-582d2be/report.md"
+last_frontend_commit_summary: "审完 1dd2c8ae..582d2be：收回 pokemon-tcg 在 820px 下把当前详情挤到卡墙下方的过早单列布局，并确认主入口未被 sheet/file-viewer 重依赖拖脏。"
+audited_commit_count: 80
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-06（第十三轮）
+
+- 完整范围：`1dd2c8ae02e9d40b7caa6aa9b8ec73b8d4b51fa2..582d2becc74bd1b7fa1a104a58e6fbac4128cbf2`
+- 覆盖提交：`d4dfa2cb92da56735bc0b4ccada2a1e853e6eac0`、`46bd7400ab62e1a9c03b008f3f269a9daa5eabe6`、`582d2becc74bd1b7fa1a104a58e6fbac4128cbf2`
+- 前端入口提交：`d4dfa2cb92da56735bc0b4ccada2a1e853e6eac0`、`46bd7400ab62e1a9c03b008f3f269a9daa5eabe6`、`582d2becc74bd1b7fa1a104a58e6fbac4128cbf2`
+- 入口如何牵引到旧问题：这三次提交一条线同时触达 `NoteSheetWorkspace`、公共入口加载、`attendance/orders`、`cluster/services`、`fanxiu/data-annotation/runtime`，并新增了 `pokemon-tcg/catalog`。真实三视口复验后，`orders`、`services`、`runtime` 与两个 `workbook` 入口没有出现新的复杂度回退；真正被同链路牵出的旧问题落在新页面 `pokemon-tcg/catalog`，因为提交刚引入“卡墙 + 当前详情”的基础模型，但 `820px` 视口过早退成单列，导致当前选中卡详情被整面卡墙压到数千像素之后，首屏不再支持“选中一张卡后立即判断详情”。
+- 本轮减法：没有新增任何按钮、字段、说明区或状态，只在 [`frontend/src/standard/pokemon-tcg/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/pokemon-tcg/page.vue) 重排响应式断点。新增 `1180px` 和 `900px` 两层双栏收窄态，让详情栏在平板宽度继续与卡墙并排；把真正的单列堆叠阈值从 `980px` 收回到 `760px`。这样保留原有信息量，但删除了“选中详情掉到卡墙尾部”的结构性空转。
+- 信息量保持：`pokemon-tcg` 仍保留搜索、卡包筛选、卡牌分页、卡墙、详情图、招式/弱点/稀有度等完整事实；`orders`、`services`、`runtime` 和 `workbook` 入口本轮只做同链路复验，没有扩写新概念。减少的是过早改单列造成的闭环断裂，不是减少页面能力。
+- 概念图/线框图：报告中的 Mermaid 已把链路收回到 `增量提交 -> pokemon-tcg / workbook / runtime / orders / services -> 发现 820px 提前改单列 -> 详情跌出首屏 -> 保留双栏到 760px`，证明修复是在收回布局层级，而不是追加新控件。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-582d2be/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `pokemon-tcg/catalog`、`attendance/orders`、`cluster/services`、`fanxiu/data-annotation/runtime`、`workbook/7?sheet=20`、`workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图，证据见 `capture-results.json` 与全部页面截图。`pokemon-tcg` 修复前 `detailTop = 4368.83`、`detailVisibleInViewport = false`；修复后 `detailTop = 194.39`、`detailVisibleInViewport = true`。静态校验：`uv run pytest tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮命中 `frontend/index.html`、`src/main.ts`、`src/router/index.ts` 与 `NoteSheetWorkspace` 性能链路，因此补做构建与真实入口核查。`frontend/dist/index.html` 未预加载 `handsontable-vendor`、`formula-vendor`、`file-viewer-vendor`、`pdfjs-vendor` 或 `pokemon` / `NoteSheetWorkspace` 局部 chunk；`frontend/dist/assets/main-CTsgWEEW.js` 也没有这些高风险局部依赖的顶层直接 import。真实资源列表里，`pokemon-tcg/catalog` 与 `notes/center?tab=list` 都未命中 sheet/file-viewer/pdf 相关资源，而 `workbook/14?sheet=58855` 按预期加载了 `NoteSheetWorkspace`、`hyperformula` 与 `@handsontable/vue3`。说明主入口未被局部重依赖拖脏。
+- 根因分层：`pokemon-tcg` 的问题属于表现层/信息层级，根因是断点过早改单列，让同一业务对象的“浏览”和“判断”首屏分离；`orders`、`services`、`runtime`、`workbook` 本轮未暴露新的前端状态投影、后端数据投影或业务建模债务，无需新增 `docs/CodeYun自动化协作交接.md` 条目。
+- 剩余风险：`workbook` 两个入口的窄屏继续依赖工作表局部横向滚动，这是既有宽表形态；`pokemon-tcg` 在真正手机宽度下仍会改成单列，这符合移动端“先扫卡图、再向下看详情”的基础模型，不属于本轮风险。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、入口依赖污染检查、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `582d2becc74bd1b7fa1a104a58e6fbac4128cbf2`，保持 `pending_or_skipped_ranges` 为空。
 
 ### 2026-07-05（第十二轮）
 

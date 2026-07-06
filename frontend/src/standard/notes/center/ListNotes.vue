@@ -211,12 +211,14 @@ import { ElMessage } from 'element-plus';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import StandardPagination from '@/components/StandardPagination.vue';
 import { ensureNoteTypePaletteLoaded, getNodeDisplayStyleFromTheme, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig, getNoteFormConfig } from '@/utils/nodeConfig';
+import { isBootPerfEnabled, markBootPerf } from '@/utils/bootPerf';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 import { getStableBadgeStyle } from '@/utils/stableVisualColor';
 
 const noteStore = useNoteStore();
+markBootPerf('notes-list.module');
 const NoteProgramBar = defineAsyncComponent(() => import('@/components/NoteProgramBar.vue'));
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/BatchNoteEditDialog.vue'));
@@ -226,6 +228,11 @@ const props = defineProps<{
 }>();
 
 const session = computed(() => noteStore.getTabSession(props.tabId));
+const listPerfEnabled = isBootPerfEnabled();
+const getPerfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+let lastFilteredNotesPerfVersion = '';
+let lastVisibleRowsPerfVersion = '';
+let initialRowsMarked = false;
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
   session.value?.viewState.dataProgram ?? createDefaultRecentMonthProgram('start_at')
 );
@@ -281,20 +288,46 @@ const dataProgramSummary = computed(() => {
 
 // Computed
 const filteredNotes = computed(() => {
+  const startedAt = listPerfEnabled ? getPerfNow() : 0;
   const result = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
-  return [...result].sort((a, b) => b.updated_at - a.updated_at);
+  const sorted = [...result].sort((a, b) => b.updated_at - a.updated_at);
+  if (listPerfEnabled) {
+    const perfVersion = `${session.value?.noteDataVersion ?? 0}:${noteStore.noteRevision}`;
+    if (perfVersion !== lastFilteredNotesPerfVersion) {
+      lastFilteredNotesPerfVersion = perfVersion;
+      markBootPerf('notes-list.filteredNotes.ready', {
+        count: sorted.length,
+        duration: Math.round((getPerfNow() - startedAt) * 10) / 10,
+      });
+    }
+  }
+  return sorted;
 });
 const visiblePageNotes = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
   return filteredNotes.value.slice(start, start + pageSize.value);
 });
-const visiblePageRows = computed(() => visiblePageNotes.value.map(note => {
+const visiblePageRows = computed(() => {
+  const startedAt = listPerfEnabled ? getPerfNow() : 0;
+  const rows = visiblePageNotes.value.map(note => {
     const ui = buildRowUi(note);
     return {
       ...note,
       _ui: ui
     };
-}));
+  });
+  if (listPerfEnabled) {
+    const perfVersion = `${session.value?.noteDataVersion ?? 0}:${currentPage.value}:${pageSize.value}`;
+    if (perfVersion !== lastVisibleRowsPerfVersion) {
+      lastVisibleRowsPerfVersion = perfVersion;
+      markBootPerf('notes-list.visibleRows.ready', {
+        count: rows.length,
+        duration: Math.round((getPerfNow() - startedAt) * 10) / 10,
+      });
+    }
+  }
+  return rows;
+});
 const selectedCount = computed(() => selectedNoteIds.value.length);
 const allVisibleSelected = computed(() => (
   visiblePageRows.value.length > 0
@@ -311,11 +344,19 @@ const runDataProgram = async (program = getAppliedDataProgram(), persist: boolea
   loading.value = true;
   try {
     const normalizedProgram = normalizeNoteProgramChannel(program);
+    const startedAt = listPerfEnabled ? getPerfNow() : 0;
     await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
       limit: 1000,
       include_custom_fields: listViewNeedsCustomFields.value,
       include_edges: false
     }));
+    if (listPerfEnabled) {
+      markBootPerf('notes-list.runDataProgram.ready', {
+        persist,
+        duration: Math.round((getPerfNow() - startedAt) * 10) / 10,
+        noteCount: noteStore.getTabNotes(props.tabId).length,
+      });
+    }
     if (persist) {
       noteStore.updateTabViewState(props.tabId, {
         dataProgram: normalizedProgram
@@ -569,10 +610,23 @@ const currentListQueryIncludesCustomFields = () => {
 };
 
 onMounted(() => {
+  const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
+  if (listPerfEnabled) {
+    markBootPerf('notes-list.mounted', {
+      hasCachedNotes,
+      needsCustomFields: listViewNeedsCustomFields.value,
+    });
+  }
+  const paletteStartedAt = listPerfEnabled ? getPerfNow() : 0;
   ensureNoteTypePaletteLoaded().catch(error => {
     console.warn('Failed to load note category palette:', error);
+  }).finally(() => {
+    if (listPerfEnabled) {
+      markBootPerf('notes-list.palette.ready', {
+        duration: Math.round((getPerfNow() - paletteStartedAt) * 10) / 10,
+      });
+    }
   });
-  const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
   if (!hasCachedNotes || (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields())) {
     void refreshData();
   }
@@ -618,6 +672,17 @@ watch([filteredNotesVersion, pageSize], () => {
 watch(filteredNotesVersion, async () => {
   await pruneSelectionToVisibleNotes();
 });
+
+watch([loading, visiblePageRows], async ([nextLoading, rows]) => {
+  if (!listPerfEnabled || initialRowsMarked) return;
+  if (nextLoading || rows.length === 0) return;
+  await nextTick();
+  if (initialRowsMarked || loading.value || visiblePageRows.value.length === 0) return;
+  initialRowsMarked = true;
+  markBootPerf('notes-list.initialRows.painted', {
+    count: visiblePageRows.value.length,
+  });
+}, { deep: false });
 
 watch(isActive, async (active) => {
   if (!active) return;

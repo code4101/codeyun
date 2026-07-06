@@ -34,6 +34,28 @@ export interface PokemonTcgCard {
   image_bytes: number
   raw_text: string
   fetched_at: string
+  zh?: {
+    translation_version?: string
+    translated_at?: string
+    display_title?: string
+    set_name?: string
+    official_name?: string
+    pokemon_species?: string
+    hp_text?: string
+    color?: string
+    stage?: string
+    evolves_from?: string
+    evolves_into?: string
+    attacks_text?: string
+    weakness_text?: string
+    resistance_text?: string
+    retreat_cost?: number | string | null
+    rarity?: string
+    release_date_text?: string
+    illustrator_text?: string
+    flavor_text?: string
+    source_label?: string
+  }
 }
 
 export interface PokemonTcgCardListResponse {
@@ -50,6 +72,11 @@ export interface PokemonTcgMeta {
   progress: Record<string, unknown>
   card_count: number
   set_counts: Record<string, number>
+  storage?: string
+  translation?: {
+    available?: boolean
+    version?: string
+  }
 }
 
 export async function fetchPokemonTcgMeta() {

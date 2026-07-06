@@ -38,6 +38,16 @@ const progressText = computed(() => {
   return status
 })
 
+const cardTitle = (card: PokemonTcgCard) => card.zh?.display_title || card.display_title
+const cardName = (card: PokemonTcgCard) => card.zh?.official_name || card.official_name
+const cardSetName = (card: PokemonTcgCard) => card.zh?.set_name || card.set_name
+const cardBasicText = (card: PokemonTcgCard) => {
+  const name = card.zh?.official_name || card.official_name
+  const hp = card.zh?.hp_text || `${card.hp} HP`
+  const color = card.zh?.color || card.color
+  return [name, hp, color].filter(Boolean).join(' · ')
+}
+
 const loadMeta = async () => {
   meta.value = await fetchPokemonTcgMeta()
 }
@@ -117,26 +127,26 @@ onMounted(() => {
           type="button"
           @click="selected = card"
         >
-          <img :src="pokemonTcgImageUrl(card)" :alt="card.display_title" loading="lazy">
-          <span>{{ card.official_name }}</span>
+          <img :src="pokemonTcgImageUrl(card)" :alt="cardTitle(card)" loading="lazy">
+          <span>{{ cardName(card) }}</span>
           <em>{{ card.official_id || `${card.set_name} #${card.official_number}` }}</em>
         </button>
       </div>
 
       <aside class="detail" v-if="selected">
-        <img class="detail-image" :src="pokemonTcgImageUrl(selected)" :alt="selected.display_title">
+        <img class="detail-image" :src="pokemonTcgImageUrl(selected)" :alt="cardTitle(selected)">
         <div class="detail-body">
-          <h2>{{ selected.display_title }}</h2>
+          <h2>{{ cardTitle(selected) }}</h2>
           <dl>
-            <dt>卡包</dt><dd>{{ selected.set_name }} #{{ selected.official_number }}/{{ selected.official_total }}</dd>
-            <dt>基本</dt><dd>{{ selected.official_name }} · {{ selected.hp }} HP · {{ selected.color }}</dd>
-            <dt>阶段</dt><dd>{{ selected.stage || '—' }}</dd>
-            <dt>招式</dt><dd>{{ selected.attacks_text || '—' }}</dd>
+            <dt>卡包</dt><dd>{{ cardSetName(selected) }} #{{ selected.official_number }}/{{ selected.official_total }}</dd>
+            <dt>基本</dt><dd>{{ cardBasicText(selected) }}</dd>
+            <dt>阶段</dt><dd>{{ selected.zh?.stage || selected.stage || '—' }}</dd>
+            <dt>招式</dt><dd>{{ selected.zh?.attacks_text || selected.attacks_text || '—' }}</dd>
             <dt>弱点 / 抵抗 / 撤退</dt>
-            <dd>{{ selected.weakness_text || '—' }} / {{ selected.resistance_text || '—' }} / {{ selected.retreat_cost ?? '—' }}</dd>
-            <dt>稀有度 / 日期</dt><dd>{{ selected.rarity || '—' }} · {{ selected.release_date_text || '—' }}</dd>
-            <dt>插画</dt><dd>{{ selected.illustrator_text || '—' }}</dd>
-            <dt>图鉴文本</dt><dd>{{ selected.flavor_text || '—' }}</dd>
+            <dd>{{ selected.zh?.weakness_text || selected.weakness_text || '—' }} / {{ selected.zh?.resistance_text || selected.resistance_text || '—' }} / {{ selected.zh?.retreat_cost ?? selected.retreat_cost ?? '—' }}</dd>
+            <dt>稀有度 / 日期</dt><dd>{{ selected.zh?.rarity || selected.rarity || '—' }} · {{ selected.zh?.release_date_text || selected.release_date_text || '—' }}</dd>
+            <dt>插画</dt><dd>{{ selected.zh?.illustrator_text || selected.illustrator_text || '—' }}</dd>
+            <dt>图鉴文本</dt><dd>{{ selected.zh?.flavor_text || selected.flavor_text || '—' }}</dd>
           </dl>
           <a :href="selected.source_url" target="_blank" rel="noreferrer">PkmnCards</a>
         </div>
@@ -304,13 +314,47 @@ onMounted(() => {
   margin: 16px auto 0;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
+  .browser {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+
+  .card-list {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  }
+
+  .detail-image {
+    max-height: 420px;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-head,
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .browser {
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 12px;
+  }
+
+  .detail-body {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 760px) {
   .browser {
     grid-template-columns: 1fr;
   }
 
   .detail {
     position: static;
+  }
+
+  .card-list {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   }
 }
 </style>
