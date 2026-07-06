@@ -2882,14 +2882,17 @@ class DailyFoundationTaskMixin:
         runtime: FanxiuRuntimeSession,
         payload: dict[str, Any],
     ):
-        frame = runtime.cur_frame(update=True)
-        candidates = self._daily_mojie_raid_attack_count_candidates(runtime, frame, payload)
-        if not candidates:
-            text = runtime.ocr_text(frame)
-            raise RuntimeError(f"日常_奇袭魔界：#320 未识别到可进攻据点计数，OCR={text[:160]}")
-        x, y, text = candidates[0]
-        self._log("action", f"日常_奇袭魔界：点击 #320 顶部可进攻据点「{text}」")
-        runtime.click_frame_point(320, x, y)
+        target_shape = str(payload.get("mojie_raid_target_shape") or "修罗").strip() or "修罗"
+        match_timeout = float(
+            payload.get("mojie_raid_target_match_timeout")
+            or getattr(runtime, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)
+        )
+        self._log("action", f"日常_奇袭魔界：点击 #320「{target_shape}」")
+        yield from runtime.wait_click(
+            320,
+            target_shape,
+            timeout=match_timeout,
+        )
         yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
         return (yield from runtime.wait_view(
             321,

@@ -5546,37 +5546,18 @@ def test_daily_mojie_raid_remaining_ocr_fallback_accepts_b_as_eight():
     assert runner._daily_mojie_raid_remaining_ocr_fallback("其他次数：B") is None
 
 
-def test_daily_mojie_raid_top_attack_target_clicks_first_nonzero_count():
+def test_daily_mojie_raid_top_attack_target_clicks_configured_shape():
     runner = create_fanxiu_runtime_runner()
     actions: list[tuple[object, ...]] = []
 
-    class FakeFrameSizeRunner:
-        def _frame_size(self, image):
-            return 900, 1600
-
-    class FakeView:
-        raw = {"width": 900, "height": 1600}
-
     class FakeRuntime:
-        runner = FakeFrameSizeRunner()
+        default_wait_click_timeout = 12.0
 
-        def cur_frame(self, *, update=False):
-            return "frame"
-
-        def view(self, view_id):
-            assert view_id == 320
-            return FakeView()
-
-        def ocr_lines(self, frame):
-            assert frame == "frame"
-            return [
-                {"text": "0/30", "x": 600, "y": 360, "w": 70, "h": 30},
-                {"text": "9/30", "x": 410, "y": 390, "w": 80, "h": 32},
-                {"text": "4/30", "x": 100, "y": 520, "w": 80, "h": 32},
-            ]
-
-        def click_frame_point(self, view_id, x, y):
-            actions.append(("click_frame_point", view_id, x, y))
+        def wait_click(self, scene_id, shape, **kwargs):
+            actions.append(("wait_click", scene_id, shape, kwargs))
+            if False:
+                yield None
+            return "clicked"
 
         def wait_action_settle(self, seconds):
             actions.append(("wait_action_settle", seconds))
@@ -5593,46 +5574,46 @@ def test_daily_mojie_raid_top_attack_target_clicks_first_nonzero_count():
     result = _drain_generator(runner._click_daily_mojie_raid_top_attack_target(FakeRuntime(), {}))
 
     assert result == 321
-    assert actions[0][0:2] == ("click_frame_point", 320)
-    assert actions[0][2] == pytest.approx(450)
-    assert actions[0][3] == pytest.approx(166)
+    assert actions[0] == ("wait_click", 320, "修罗", {"timeout": 12.0})
     assert actions[1] == ("wait_action_settle", 1.5)
     assert actions[2][0] == "wait_view"
     assert actions[2][1] == (321,)
 
 
-def test_daily_mojie_raid_top_attack_target_ignores_empty_counts():
+def test_daily_mojie_raid_top_attack_target_allows_shape_override():
     runner = create_fanxiu_runtime_runner()
-
-    class FakeFrameSizeRunner:
-        def _frame_size(self, image):
-            return 900, 1600
-
-    class FakeView:
-        raw = {"width": 900, "height": 1600}
+    actions: list[tuple[object, ...]] = []
 
     class FakeRuntime:
-        runner = FakeFrameSizeRunner()
+        default_wait_click_timeout = 12.0
 
-        def cur_frame(self, *, update=False):
-            return "frame"
+        def wait_click(self, scene_id, shape, **kwargs):
+            actions.append(("wait_click", scene_id, shape, kwargs))
+            if False:
+                yield None
+            return "clicked"
 
-        def view(self, view_id):
-            assert view_id == 320
-            return FakeView()
+        def wait_action_settle(self, seconds):
+            actions.append(("wait_action_settle", seconds))
+            if False:
+                yield None
+            return "settled"
 
-        def ocr_lines(self, frame):
-            assert frame == "frame"
-            return [
-                {"text": "0/30", "x": 600, "y": 360, "w": 70, "h": 30},
-                {"text": "进攻倒计时：7:54:46", "x": 240, "y": 1360, "w": 400, "h": 50},
-            ]
+        def wait_view(self, *scene_ids, **kwargs):
+            actions.append(("wait_view", scene_ids, kwargs))
+            if False:
+                yield None
+            return 321
 
-        def ocr_text(self, frame):
-            return "0/30 进攻倒计时：7:54:46"
+    result = _drain_generator(
+        runner._click_daily_mojie_raid_top_attack_target(
+            FakeRuntime(),
+            {"mojie_raid_target_shape": "检索区域/修罗", "mojie_raid_target_match_timeout": 3},
+        )
+    )
 
-    with pytest.raises(RuntimeError, match="未识别到可进攻据点计数"):
-        _drain_generator(runner._click_daily_mojie_raid_top_attack_target(FakeRuntime(), {}))
+    assert result == 321
+    assert actions[0] == ("wait_click", 320, "检索区域/修罗", {"timeout": 3.0})
 
 
 def test_daily_mojie_raid_remaining_zero_marks_week_complete(tmp_path, monkeypatch):

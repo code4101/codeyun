@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from backend.core.settings import ROOT_DIR, get_settings
 
 FANXIU_PACKET_SERVICE_MODULE = "backend.services.fanxiu_packet_daemon"
 FANXIU_PACKET_SERVICE_TITLE = "凡修抓包"
+FANXIU_PACKET_SERVICE_COMMAND_SCHEMA_VERSION = 1
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
 
 
@@ -52,6 +54,22 @@ def get_fanxiu_packet_service_state_path() -> Path:
     if configured:
         return Path(configured).expanduser().resolve(strict=False)
     return (get_settings().data_dir / "fanxiu" / "packet-insights" / "packet_service_state.json").resolve(strict=False)
+
+
+def get_fanxiu_packet_service_command_dir() -> Path:
+    return (get_settings().data_dir / "fanxiu" / "packet-insights" / "commands").resolve(strict=False)
+
+
+def get_fanxiu_packet_service_result_dir() -> Path:
+    return (get_settings().data_dir / "fanxiu" / "packet-insights" / "command-results").resolve(strict=False)
+
+
+def _packet_service_command_path(command_id: str) -> Path:
+    return get_fanxiu_packet_service_command_dir() / f"{command_id}.json"
+
+
+def _packet_service_result_path(command_id: str) -> Path:
+    return get_fanxiu_packet_service_result_dir() / f"{command_id}.json"
 
 
 def _capture_watchdog_interval_seconds() -> float:
@@ -156,6 +174,127 @@ def _write_json(path: Path, payload: Any) -> None:
         if last_error is not None:
             raise last_error
         raise
+
+
+def submit_fanxiu_packet_service_command(
+    action: str,
+    *,
+    reason: str = "api",
+    wait_seconds: float = 30.0,
+) -> dict[str, Any]:
+    command_id = uuid.uuid4().hex
+    command = {
+        "schema_version": FANXIU_PACKET_SERVICE_COMMAND_SCHEMA_VERSION,
+        "command_id": command_id,
+        "action": action,
+        "reason": reason,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at_epoch": time.time(),
+        "pid": os.getpid(),
+    }
+    request_path = _packet_service_command_path(command_id)
+    result_path = _packet_service_result_path(command_id)
+    _write_json(request_path, command)
+
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    result: dict[str, Any] | None = None
+    while time.monotonic() <= deadline:
+        loaded = _read_json(result_path, None)
+        if isinstance(loaded, dict):
+            result = loaded
+            break
+        time.sleep(0.2)
+
+    payload = {
+        "ok": bool(result and result.get("ok")),
+        "status": "completed" if result is not None else "pending",
+        "command_id": command_id,
+        "action": action,
+        "request_path": os.fspath(request_path),
+        "result_path": os.fspath(result_path),
+        "wait_seconds": wait_seconds,
+        "result": result or {},
+    }
+    if result is None:
+        payload["message"] = "抓包服务已收到追平请求，但还没有在等待时间内返回结果。"
+    return payload
+
+
+def request_fanxiu_packet_service_catch_up(*, reason: str = "api", wait_seconds: float = 30.0) -> dict[str, Any]:
+    return submit_fanxiu_packet_service_command(
+        "packet_facts_catch_up",
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
+
+
+def _iter_pending_packet_service_commands() -> list[Path]:
+    command_dir = get_fanxiu_packet_service_command_dir()
+    try:
+        paths = [path for path in command_dir.glob("*.json") if path.is_file()]
+    except OSError:
+        return []
+
+    def sort_key(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    paths.sort(key=sort_key)
+    return paths
+
+
+def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
+    command = _read_json(path, {})
+    if not isinstance(command, dict):
+        return None
+    command_id = str(command.get("command_id") or path.stem).strip()
+    if not command_id:
+        return None
+    action = str(command.get("action") or "").strip()
+    reason = str(command.get("reason") or "service-command").strip() or "service-command"
+    result_path = _packet_service_result_path(command_id)
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        if action == "packet_facts_catch_up":
+            action_result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
+        else:
+            raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
+        payload = {
+            "ok": bool(action_result.get("ok", True)) if isinstance(action_result, dict) else True,
+            "command_id": command_id,
+            "action": action,
+            "reason": reason,
+            "started_at": started_at,
+            "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "result": action_result,
+        }
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "command_id": command_id,
+            "action": action,
+            "reason": reason,
+            "started_at": started_at,
+            "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "error": str(exc),
+        }
+    _write_json(result_path, payload)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return payload
+
+
+def process_pending_fanxiu_packet_service_commands(*, limit: int = 5) -> list[dict[str, Any]]:
+    processed: list[dict[str, Any]] = []
+    for path in _iter_pending_packet_service_commands()[: max(0, int(limit))]:
+        result = _process_packet_service_command(path)
+        if result is not None:
+            processed.append(result)
+    return processed
 
 
 def _parse_local_datetime(value: Any) -> datetime | None:
@@ -363,46 +502,36 @@ def _realtime_cursor_lag_issue_threshold_seconds(worker: dict[str, Any]) -> floa
 
 
 def _mail_protocol_probe_from_worker(worker: dict[str, Any]) -> dict[str, Any]:
-    def iter_probe_candidates() -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
-        for container in (
-            worker,
-            worker.get("realtime") if isinstance(worker.get("realtime"), dict) else None,
-            worker.get("maintenance") if isinstance(worker.get("maintenance"), dict) else None,
-        ):
-            if not isinstance(container, dict):
-                continue
-            for key in (
-                "mail_business_backlog_sync",
-                "bounded_mail_packet_sync",
-                "historical_mail_packet_sync",
-            ):
-                payload = container.get(key)
-                if not isinstance(payload, dict):
-                    continue
-                probe = payload.get("mail_source_probe")
-                if isinstance(probe, dict):
-                    candidates.append(probe)
-        return candidates
+    def recent_probe(container: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(container, dict):
+            return None
+        payload = container.get("mail_business_backlog_sync")
+        if not isinstance(payload, dict):
+            return None
+        probe = payload.get("mail_source_probe")
+        return probe if isinstance(probe, dict) else None
 
-    merged_counts: dict[str, int] = {}
-    has_any_mail_source = False
-    has_mail_action = False
-    source_count = 0
-    for probe in iter_probe_candidates():
-        source_count = max(source_count, int(probe.get("source_count") or 0))
-        has_any_mail_source = has_any_mail_source or bool(probe.get("has_any_mail_source"))
-        has_mail_action = has_mail_action or bool(probe.get("has_mail_action"))
-        for name, count in (probe.get("protocol_counts") or {}).items():
-            try:
-                merged_counts[str(name)] = merged_counts.get(str(name), 0) + int(count or 0)
-            except (TypeError, ValueError):
-                continue
+    for container in (
+        worker.get("realtime") if isinstance(worker.get("realtime"), dict) else None,
+        worker,
+    ):
+        probe = recent_probe(container)
+        if isinstance(probe, dict):
+            return {
+                "source_count": int(probe.get("source_count") or 0),
+                "protocol_counts": {
+                    str(name): int(count or 0)
+                    for name, count in (probe.get("protocol_counts") or {}).items()
+                },
+                "has_any_mail_source": bool(probe.get("has_any_mail_source")),
+                "has_mail_action": bool(probe.get("has_mail_action")),
+            }
+
     return {
-        "source_count": source_count,
-        "protocol_counts": merged_counts,
-        "has_any_mail_source": has_any_mail_source,
-        "has_mail_action": has_mail_action,
+        "source_count": 0,
+        "protocol_counts": {},
+        "has_any_mail_source": False,
+        "has_mail_action": False,
     }
 
 
@@ -630,13 +759,18 @@ def build_fanxiu_packet_service_log_lines(limit: int = 200) -> list[str]:
 def run_fanxiu_packet_service_loop(*, state_interval_seconds: float = 15.0) -> None:
     fanxiu_capture_runtime_service.start_watchdog(interval_seconds=_capture_watchdog_interval_seconds())
     fanxiu_packet_insight_worker.start()
+    next_state_at = 0.0
     try:
         while True:
             try:
-                write_fanxiu_packet_service_state()
+                processed_commands = process_pending_fanxiu_packet_service_commands()
+                now = time.monotonic()
+                if processed_commands or now >= next_state_at:
+                    write_fanxiu_packet_service_state({"processed_commands": processed_commands[-5:]})
+                    next_state_at = now + max(1.0, float(state_interval_seconds))
             except Exception as exc:
-                print(f"[fanxiu-packet-service] write state failed: {exc}", flush=True)
-            time.sleep(max(1.0, float(state_interval_seconds)))
+                print(f"[fanxiu-packet-service] loop tick failed: {exc}", flush=True)
+            time.sleep(0.5)
     finally:
         try:
             fanxiu_capture_runtime_service.stop_watchdog()

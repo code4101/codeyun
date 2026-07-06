@@ -396,6 +396,57 @@ def test_packet_service_health_keeps_mail_stale_warning_with_recent_mail_protoco
     assert health["mail_protocol_probe"]["protocol_counts"] == {"SM_NewMail": 2}
 
 
+def test_packet_service_health_ignores_historical_mail_probe_for_stale_warning(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture, _worker=None: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {
+            "ok": True,
+            "exists": True,
+            "record_count": 10,
+            "latest_seen_age_seconds": 7200,
+            "latest_seen_capture_at": "2026-06-28 19:00:00",
+        },
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True},
+            "packet_worker": {
+                "ok": True,
+                "realtime_running": True,
+                "mail_business_backlog_sync": {
+                    "mail_source_probe": {
+                        "source_count": 16,
+                        "protocol_counts": {},
+                        "has_any_mail_source": False,
+                        "has_mail_action": False,
+                    }
+                },
+                "maintenance": {
+                    "bounded_mail_packet_sync": {
+                        "mail_source_probe": {
+                            "source_count": 96,
+                            "protocol_counts": {"SM_NewMail": 4},
+                            "has_any_mail_source": True,
+                            "has_mail_action": True,
+                        }
+                    }
+                },
+            },
+        }
+    )
+
+    assert "mail_database_stale" not in health["warnings"]
+    assert health["mail_protocol_probe"]["protocol_counts"] == {}
+
+
 def test_latest_live_capture_summary_ignores_vanished_candidates(monkeypatch, tmp_path):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)

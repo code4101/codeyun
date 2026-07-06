@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,8 @@ from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_store_root
 from backend.models import FanxiuPacketDecodedRecord
 
 DECODED_RECORD_BACKLOG_SCHEMA_VERSION = 1
+DEFAULT_DECODED_RECORD_RETENTION_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_DECODED_RECORD_RETENTION_MIN_KEEP = 200
 
 
 def _text(value: Any) -> str:
@@ -27,6 +30,53 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
     return None
+
+
+def _parse_time_text(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _decoded_record_epoch(record: FanxiuPacketDecodedRecord) -> float:
+    parsed = _parse_time_text(record.captured_at)
+    if parsed is not None:
+        return parsed.timestamp()
+    return float(record.updated_at or record.created_at or 0.0)
+
+
+def fanxiu_packet_decoded_record_to_dict(record: FanxiuPacketDecodedRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "packet_id": record.packet_id,
+        "record_id": record.record_id,
+        "pcap_name": record.pcap_name,
+        "capture_sha256": record.capture_sha256,
+        "stream": record.stream,
+        "direction": record.direction,
+        "frame_index": record.frame_index,
+        "offset": record.offset,
+        "sn": record.sn,
+        "pro_id": record.pro_id,
+        "name": record.name,
+        "captured_at": record.captured_at,
+        "captured_date": record.captured_date,
+        "payload_len": record.payload_len,
+        "decode_error": record.decode_error,
+        "payload": record.payload,
+        "evidence": record.evidence,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
 
 
 def decoded_record_rows_from_decode_result(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -181,6 +231,73 @@ def upsert_fanxiu_packet_decoded_records(session: Session, rows: list[dict[str, 
     if created or updated:
         session.commit()
     return {"created": created, "updated": updated, "skipped_invalid": skipped_invalid, "skipped_duplicate": skipped_duplicate}
+
+
+def list_fanxiu_packet_decoded_records(
+    session: Session,
+    *,
+    names: list[str] | None = None,
+    pro_ids: list[int] | None = None,
+    since_seconds: int | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    query = select(FanxiuPacketDecodedRecord)
+    normalized_names = [str(item).strip() for item in (names or []) if str(item).strip()]
+    normalized_pro_ids = [int(item) for item in (pro_ids or []) if item is not None]
+    if normalized_names:
+        query = query.where(FanxiuPacketDecodedRecord.name.in_(normalized_names))
+    if normalized_pro_ids:
+        query = query.where(FanxiuPacketDecodedRecord.pro_id.in_(normalized_pro_ids))
+    if since_seconds and since_seconds > 0:
+        threshold = datetime.now() - timedelta(seconds=int(since_seconds))
+        query = query.where(FanxiuPacketDecodedRecord.captured_at >= threshold.strftime("%Y-%m-%d %H:%M:%S"))
+    rows = session.exec(
+        query.order_by(
+            FanxiuPacketDecodedRecord.captured_at.desc(),
+            FanxiuPacketDecodedRecord.updated_at.desc(),
+        ).limit(max(1, min(int(limit), 500)))
+    ).all()
+    return {
+        "ok": True,
+        "count": len(rows),
+        "records": [fanxiu_packet_decoded_record_to_dict(row) for row in rows],
+    }
+
+
+def prune_fanxiu_packet_decoded_records(
+    session: Session,
+    *,
+    max_age_seconds: int = DEFAULT_DECODED_RECORD_RETENTION_SECONDS,
+    min_keep: int = DEFAULT_DECODED_RECORD_RETENTION_MIN_KEEP,
+) -> dict[str, Any]:
+    rows = session.exec(
+        select(FanxiuPacketDecodedRecord).order_by(
+            FanxiuPacketDecodedRecord.captured_at.desc(),
+            FanxiuPacketDecodedRecord.updated_at.desc(),
+        )
+    ).all()
+    if max_age_seconds <= 0 or len(rows) <= max(0, int(min_keep)):
+        return {"ok": True, "scanned": len(rows), "deleted": 0, "kept": len(rows), "max_age_seconds": max_age_seconds}
+    threshold = time.time() - int(max_age_seconds)
+    keep_ids = {row.id for row in rows[: max(0, int(min_keep))]}
+    deleted = 0
+    for row in rows:
+        if row.id in keep_ids:
+            continue
+        if _decoded_record_epoch(row) >= threshold:
+            continue
+        session.delete(row)
+        deleted += 1
+    if deleted:
+        session.commit()
+    return {
+        "ok": True,
+        "scanned": len(rows),
+        "deleted": deleted,
+        "kept": len(rows) - deleted,
+        "max_age_seconds": max_age_seconds,
+        "min_keep": min_keep,
+    }
 
 
 def persist_fanxiu_packet_decoded_result(result: dict[str, Any]) -> dict[str, int]:

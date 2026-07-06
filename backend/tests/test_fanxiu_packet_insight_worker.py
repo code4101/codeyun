@@ -121,15 +121,17 @@ def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_
         "_host_commit_pressure_for_packet_decode",
         lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_percent": 94.0}},
     )
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda path, **kwargs: calls.append(Path(path)))
+    monkeypatch.setattr(
+        worker,
+        "decode_and_sync_fanxiu_runtime_capture",
+        lambda path, **kwargs: calls.append(Path(path)) or {"decoded_count": 0, "runtime_protocol_count": 0, "worship_protocol_count": 0, "decoded": []},
+    )
 
     result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
 
-    assert calls == []
+    assert calls == [pcap.resolve()]
     assert result["ok"] is True
-    assert result["skipped_count"] == 1
-    assert result["skipped"][0]["reason"] == "host_commit_pressure"
-    assert result["host_commit_pressure"]["commit"]["commit_percent"] == 94.0
+    assert result["new_decode_count"] == 1
 
 
 def test_packet_decode_pressure_thresholds_match_ocr_guard(monkeypatch):
@@ -255,6 +257,8 @@ def test_worker_start_writes_capture_runtime_backstop_state(monkeypatch, tmp_pat
 
 
 def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    pcap.write_bytes(b"x" * (worker.PACKET_DECODE_COMMIT_PRESSURE_SMALL_INPUT_BYTES + 1))
     monkeypatch.setattr(worker, "_worker_state_path", lambda _data_dir=None: tmp_path / "worker_state.json")
     monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
     monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
@@ -264,7 +268,7 @@ def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatc
         "_host_commit_pressure_for_packet_decode",
         lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_available_mb": 4096}},
     )
-    monkeypatch.setattr(worker, "_iter_stable_live_pcaps", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not scan")))
+    monkeypatch.setattr(worker, "_iter_stable_live_pcaps", lambda **_kwargs: [pcap])
 
     result = worker.sync_fanxiu_live_capture_backlog(data_dir=tmp_path)
 
@@ -273,6 +277,80 @@ def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatc
     assert result["skip_reason"] == "host_commit_pressure"
     assert result["decode_attempts"] == 0
     assert result["host_commit_pressure"]["commit"]["commit_available_mb"] == 4096
+
+
+def test_live_capture_backlog_allows_small_batch_under_host_commit_pressure(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    pcap.write_bytes(b"x" * 128)
+    state_path = tmp_path / "worker_state.json"
+    calls: list[Path] = []
+
+    monkeypatch.setattr(worker, "_worker_state_path", lambda _data_dir=None: state_path)
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_decoded_capture_sources_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(
+        worker,
+        "_host_commit_pressure_for_packet_decode",
+        lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_available_mb": 4096}},
+    )
+    monkeypatch.setattr(worker, "_iter_stable_live_pcaps", lambda **_kwargs: [pcap])
+    monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
+    monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0])
+    monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(
+        worker,
+        "_decode_runtime_capture_with_timeout",
+        lambda path, **_kwargs: calls.append(Path(path)) or {"decoded_count": 0, "runtime_protocol_count": 0, "worship_protocol_count": 0, "decoded": []},
+    )
+
+    result = worker.sync_fanxiu_live_capture_backlog(data_dir=tmp_path)
+
+    assert calls == [pcap]
+    assert result.get("skip_reason") is None
+
+
+def test_live_capture_backlog_prunes_resolved_previous_errors(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    pcap.write_bytes(b"x" * 128)
+    state_path = tmp_path / "worker_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "confirmed_cursor_mtime": 0,
+                "errors": [
+                    {
+                        "path": str(pcap),
+                        "digest": "digest-1",
+                        "error": "old error",
+                        "attempts": 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(worker, "_worker_state_path", lambda _data_dir=None: state_path)
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: {"digest-1"})
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {"digest-1": {0}})
+    monkeypatch.setattr(
+        worker,
+        "_decoded_capture_sources_by_digest",
+        lambda _data_dir=None: {"digest-1": [{"decoded_path": "stream0.json", "stream": 0}]},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_host_commit_pressure_for_packet_decode",
+        lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_available_mb": 4096}},
+    )
+    monkeypatch.setattr(worker, "_iter_stable_live_pcaps", lambda **_kwargs: [])
+
+    result = worker.sync_fanxiu_live_capture_backlog(data_dir=tmp_path)
+
+    assert result["known_error_count"] == 0
+    assert result["has_unconfirmed_gap"] is False
+    assert result["errors"] == []
 
 
 def test_realtime_loop_scans_before_wait(monkeypatch):

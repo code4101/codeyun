@@ -91,8 +91,10 @@ DEFAULT_TCP_CAPTURE_DIR = Path("tcp_captures")
 DEFAULT_TCP_STORE_DIR = Path("fanxiu") / "tcp-flow"
 DEFAULT_TCP_RETENTION_MAX_RECORDS = 0
 DEFAULT_TCP_RETENTION_MAX_RECORD_BYTES = 5 * 1024 * 1024 * 1024
+DEFAULT_TCP_RETENTION_MAX_RECORD_AGE_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_TCP_RETENTION_MAX_LIVE_CAPTURES = 0
 DEFAULT_TCP_RETENTION_MAX_LIVE_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_TCP_RETENTION_MAX_LIVE_AGE_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_TCP_RETENTION_MIN_KEEP = 20
 DEFAULT_TSHARK_TIMEOUT_SECONDS = 8.0
 DEFAULT_TEXT_ASSETS = Path(
@@ -411,6 +413,7 @@ def _prune_storage_entries(
     root: Path,
     max_count: int,
     max_bytes: int,
+    max_age_seconds: int,
     min_keep: int,
     preserve_paths: set[Path],
 ) -> dict[str, Any]:
@@ -418,6 +421,7 @@ def _prune_storage_entries(
     candidates = sorted(entries, key=lambda item: float(item.get("mtime") or 0), reverse=True)
     total_bytes = sum(int(item.get("size") or 0) for item in candidates)
     kept_count = len(candidates)
+    now = time.time()
     deleted: list[dict[str, Any]] = []
 
     for item in reversed(candidates):
@@ -425,7 +429,9 @@ def _prune_storage_entries(
             break
         count_ok = max_count <= 0 or kept_count <= max_count
         bytes_ok = max_bytes <= 0 or total_bytes <= max_bytes
-        if count_ok and bytes_ok:
+        mtime = float(item.get("mtime") or 0)
+        age_ok = max_age_seconds <= 0 or mtime <= 0 or now - mtime <= max_age_seconds
+        if count_ok and bytes_ok and age_ok:
             break
         paths = [Path(str(path)).resolve() for path in item.get("paths", [])]
         if any(path in preserved for path in paths):
@@ -441,6 +447,7 @@ def _prune_storage_entries(
     return {
         "kept_count": kept_count,
         "total_bytes": total_bytes,
+        "max_age_seconds": max_age_seconds,
         "deleted_count": len(deleted),
         "deleted_bytes": sum(int(item.get("size") or 0) for item in deleted),
         "deleted": deleted[:20],
@@ -460,8 +467,10 @@ def prune_fanxiu_tcp_storage(
     data_dir: str | Path | None = None,
     max_records: int = DEFAULT_TCP_RETENTION_MAX_RECORDS,
     max_record_bytes: int = DEFAULT_TCP_RETENTION_MAX_RECORD_BYTES,
+    max_record_age_seconds: int = DEFAULT_TCP_RETENTION_MAX_RECORD_AGE_SECONDS,
     max_live_captures: int = DEFAULT_TCP_RETENTION_MAX_LIVE_CAPTURES,
     max_live_bytes: int = DEFAULT_TCP_RETENTION_MAX_LIVE_BYTES,
+    max_live_age_seconds: int = DEFAULT_TCP_RETENTION_MAX_LIVE_AGE_SECONDS,
     min_keep: int = DEFAULT_TCP_RETENTION_MIN_KEEP,
     preserve_paths: set[Path] | None = None,
 ) -> dict[str, Any]:
@@ -497,11 +506,13 @@ def prune_fanxiu_tcp_storage(
         "record_policy": {
             "max_records": max_records,
             "max_bytes": max_record_bytes,
+            "max_age_seconds": max_record_age_seconds,
             "min_keep": min_keep,
         },
         "live_policy": {
             "max_captures": max_live_captures,
             "max_bytes": max_live_bytes,
+            "max_age_seconds": max_live_age_seconds,
             "min_keep": min_keep,
         },
         "records": _prune_storage_entries(
@@ -509,6 +520,7 @@ def prune_fanxiu_tcp_storage(
             root=root,
             max_count=max_records,
             max_bytes=max_record_bytes,
+            max_age_seconds=max_record_age_seconds,
             min_keep=min_keep,
             preserve_paths=preserve,
         ),
@@ -517,6 +529,7 @@ def prune_fanxiu_tcp_storage(
             root=root,
             max_count=max_live_captures,
             max_bytes=max_live_bytes,
+            max_age_seconds=max_live_age_seconds,
             min_keep=min_keep,
             preserve_paths=preserve,
         ),
@@ -2187,7 +2200,13 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
 
     record_rows: list[dict[str, Any]] = []
     if root.is_dir():
-        for meta_path in sorted(root.glob("*/meta.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        meta_candidates: list[tuple[float, Path]] = []
+        for meta_path in root.glob("*/meta.json"):
+            try:
+                meta_candidates.append((meta_path.stat().st_mtime, meta_path))
+            except OSError:
+                continue
+        for _, meta_path in sorted(meta_candidates, key=lambda item: item[0], reverse=True):
             meta = _load_json_file(meta_path) or {}
             record_dir = meta_path.parent
             decoded_path = Path(str(meta.get("decoded_path") or record_dir / "decoded.json"))
@@ -2233,7 +2252,13 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
 
     live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
     if live_dir.is_dir():
-        for decoded_path in sorted(live_dir.glob("*.decoded.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        live_candidates: list[tuple[float, Path]] = []
+        for decoded_path in live_dir.glob("*.decoded.json"):
+            try:
+                live_candidates.append((decoded_path.stat().st_mtime, decoded_path))
+            except OSError:
+                continue
+        for _, decoded_path in sorted(live_candidates, key=lambda item: item[0], reverse=True):
             data = _load_json_file(decoded_path) or {}
             key = (
                 str(data.get("pcap") or ""),
@@ -2242,7 +2267,10 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
             )
             if key in seen:
                 continue
-            stat = decoded_path.stat()
+            try:
+                stat = decoded_path.stat()
+            except OSError:
+                continue
             sources.append(
                 {
                     "decoded_path": decoded_path,
