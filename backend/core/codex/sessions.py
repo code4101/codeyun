@@ -1801,8 +1801,8 @@ def _build_codex_daily_summary_system_prompt(
     type_items: list[dict[str, Any]],
 ) -> str:
     chinese_date = _format_chinese_calendar_date(target_date)
-    blocked_labels = "、".join(("任务", "重点", "项目", "模块"))
-    type_labels = " / ".join(str(item["label"]) for item in type_items) or "综合 / 缺陷"
+    blocked_labels = "、".join(("任务", "重点", "项目", "模块", "缺陷"))
+    type_labels = " / ".join(str(item["label"]) for item in type_items) or "综合"
     return "\n".join(
         [
             "你在整理同一位用户的 Codex 工作日报。",

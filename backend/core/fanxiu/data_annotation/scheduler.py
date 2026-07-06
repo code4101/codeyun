@@ -48,6 +48,7 @@ _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "legacy-daily-lingmai-clear",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
+    "legacy-daily-dungeon",
     "legacy-daily-lingta",
     "legacy-daily-shuangxiu",
     "legacy-daily-lingzu",
@@ -55,6 +56,7 @@ _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-yaozu",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES = {
+    "daily_dungeon",
     "daily_lingta",
     "daily_shuangxiu",
     "daily_lingzu",
@@ -62,6 +64,7 @@ _OBSOLETE_ASSISTANT_COVERED_TASK_TYPES = {
     "daily_yaozu",
 }
 _OBSOLETE_ASSISTANT_COVERED_TASK_LABELS = {
+    "日常_每日副本",
     "日常_灵塔",
     "日常_双修",
     "日常_灵祖",

@@ -12,10 +12,18 @@ class SignupMiscTaskMixin:
         if 起点状态 != "报名页":
             yield from self._日常报名打开活动报名(runtime)
 
-        领取数量 = yield from self._日常报名处理报名列(runtime)
+        报名结果 = yield from self._日常报名处理报名列(runtime)
+        领取数量 = int(报名结果.get("claimed") or 0)
         yield from self._日常报名返回日常页(runtime)
         yield from self._日常报名返回世界(runtime)
         if 领取数量 <= 0:
+            if 报名结果.get("bottom_confirmed") and 报名结果.get("saw_signed_item"):
+                return {
+                    "result": "success",
+                    "claimed": 0,
+                    "signup_page_opened": True,
+                    "evidence": "all_items_already_signed",
+                }
             return {
                 "result": "skipped",
                 "claimed": 0,
@@ -68,11 +76,18 @@ class SignupMiscTaskMixin:
         )
         return "报名页"
 
-    def _日常报名处理报名列(self, runtime: Any) -> int:
+    def _日常报名处理报名列(self, runtime: Any) -> dict[str, Any]:
         领取数量 = 0
         无变化确认次数 = 0
+        看到已报名项 = False
         底部确认轮数 = int(getattr(runtime, "payload", {}).get("signup_bottom_confirmations", 2) or 2)
         while True:
+            已报名项 = runtime.ocr_row_clicks_in_shape(
+                23,
+                "报名列",
+                include=("已报名",),
+            )
+            看到已报名项 = 看到已报名项 or bool(已报名项)
             matches = runtime.ocr_row_clicks_in_shape(
                 23,
                 "报名列",
@@ -89,7 +104,11 @@ class SignupMiscTaskMixin:
                 无变化确认次数 = 0
                 领取后落点 = yield from self._日常报名等待领取后落点(runtime)
                 if 领取后落点 != "报名页":
-                    return 领取数量
+                    return {
+                        "claimed": 领取数量,
+                        "bottom_confirmed": False,
+                        "saw_signed_item": 看到已报名项,
+                    }
                 continue
 
             滚动有变化 = yield from runtime.scroll_shape_content(23, "报名列")
@@ -99,7 +118,11 @@ class SignupMiscTaskMixin:
             无变化确认次数 += 1
             if 无变化确认次数 >= max(1, 底部确认轮数):
                 break
-        return 领取数量
+        return {
+            "claimed": 领取数量,
+            "bottom_confirmed": True,
+            "saw_signed_item": 看到已报名项,
+        }
 
     def _日常报名等待领取页(self, runtime: Any) -> bool:
         try:

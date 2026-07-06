@@ -26,10 +26,12 @@ def _palette_lookup() -> dict[str, dict]:
         {"key": "general", "label": "综合", "color": "#808080", "order": 120},
         {"key": "bug", "label": "缺陷", "color": "#ff6b22", "order": 5},
         {"key": "legacy_color_67c23a", "label": "凡修", "color": "#73B839", "order": 10},
+        {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#E6A23C", "order": 15},
         {"key": "custom_mmx3qpfhinvh", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
         {"key": "custom_mmxc75t01g04", "label": "CodeYun/集群", "color": "#0067A5", "order": 40},
         {"key": "custom_mmxdcghtzcw7", "label": "CodeYun/综合", "color": "#00BFFF", "order": 50},
         {"key": "custom_mmxdyjjkxrsr", "label": "pyxllib", "color": "#2f9fa8", "order": 60},
+        {"key": "custom_mmxbzxjy85x5", "label": "后勤", "color": "#E6A23C", "order": 70},
     ]
     lookup: dict[str, dict] = {}
     for item in items:

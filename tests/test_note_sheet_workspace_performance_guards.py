@@ -5,6 +5,9 @@ import re
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_COMPONENT = REPO_ROOT / "frontend/src/standard/notes/components/NoteSheetWorkspace.vue"
 NOTE_SHEETS_API = REPO_ROOT / "backend/api/note_sheets.py"
+BACKEND_MODELS = REPO_ROOT / "backend/models.py"
+MIGRATION_MANAGER = REPO_ROOT / "backend/migrations/manager.py"
+SNAPSHOT_BACKFILL_SCRIPT = REPO_ROOT / "scripts/backfill_note_sheet_page_snapshots.py"
 NOTE_SHEETS_TS_API = REPO_ROOT / "frontend/src/api/noteSheets.ts"
 RESOURCE_VIEW_PAGE = REPO_ROOT / "frontend/src/standard/notes/resource-view/page.vue"
 FRONTEND_MAIN_TS = REPO_ROOT / "frontend/src/main.ts"
@@ -18,6 +21,18 @@ def _workspace_source() -> str:
 
 def _note_sheets_api_source() -> str:
     return NOTE_SHEETS_API.read_text(encoding="utf-8")
+
+
+def _backend_models_source() -> str:
+    return BACKEND_MODELS.read_text(encoding="utf-8")
+
+
+def _migration_manager_source() -> str:
+    return MIGRATION_MANAGER.read_text(encoding="utf-8")
+
+
+def _snapshot_backfill_script_source() -> str:
+    return SNAPSHOT_BACKFILL_SCRIPT.read_text(encoding="utf-8")
 
 
 def _note_sheets_ts_api_source() -> str:
@@ -116,6 +131,111 @@ def test_note_sheet_get_path_reuses_normalized_document_for_attendance_sheets():
     assert "page_document[\"row_ids\"] = [" in source
 
 
+def test_note_sheet_get_path_avoids_large_document_json_during_access_resolve():
+    source = _note_sheets_api_source()
+    get_start = source.index("def get_note_sheet(")
+    get_end = source.index("\n\n@router.post(\"/sheets/{sheet_id}/query\")", get_start)
+    get_body = source[get_start:get_end]
+    resolver_start = source.index("def _get_note_sheet_or_404(")
+    resolver_end = source.index("\n\ndef _get_optional_trusted_device", resolver_start)
+    resolver_body = source[resolver_start:resolver_end]
+
+    assert "NOTE_SHEET_DOCUMENT_JSON_CACHE_TTL_SECONDS = 300" in source
+    assert "_NOTE_SHEET_DOCUMENT_JSON_CACHE: OrderedDict" in source
+    assert "include_document_json: bool = True" in source
+    assert "include_document_json=False" in get_body
+    assert "document_json = _get_cached_sheet_document_json(session, document)" in get_body
+    assert "attributes.set_committed_value(document, \"document_json\", document_json)" in get_body
+    assert "load_only(" in source
+    assert "SheetDocument.document_json" not in resolver_body
+
+
+def test_note_sheet_get_path_uses_page_snapshot_before_large_document_json():
+    source = _note_sheets_api_source()
+    models_source = _backend_models_source()
+    migration_source = _migration_manager_source()
+    get_start = source.index("def get_note_sheet(")
+    get_end = source.index("\n\n@router.post(\"/sheets/{sheet_id}/query\")", get_start)
+    get_body = source[get_start:get_end]
+    snapshot_start = source.index("def _store_sheet_page_snapshot(")
+    snapshot_end = source.index("\n\ndef _is_superuser_or_user_id", snapshot_start)
+    snapshot_body = source[snapshot_start:snapshot_end]
+
+    assert "class SheetPageSnapshot(SQLModel, table=True):" in models_source
+    assert "UniqueConstraint(\n            \"sheet_id\"" in models_source
+    assert "def v79_add_sheet_page_snapshot_table(" in migration_source
+    assert "(79, \"Add sheet page snapshot table\", v79_add_sheet_page_snapshot_table)" in migration_source
+    assert "snapshot = _get_sheet_page_snapshot(" in get_body
+    assert "document_json = _get_cached_sheet_document_json(session, document)" in get_body
+    assert get_body.index("snapshot = _get_sheet_page_snapshot(") < get_body.index("document_json = _get_cached_sheet_document_json(session, document)")
+    assert "if snapshot is not None:" in get_body
+    assert "_serialize_sheet_detail_from_page_snapshot(" in get_body
+    assert "_store_sheet_page_snapshot(" in get_body
+    assert "build_payload" in get_body
+    assert "snapshot_store" in get_body
+    assert get_body.index("build_payload") < get_body.index("snapshot_store")
+    assert "if pagination is None:\n        return" in snapshot_body
+    assert "return _normalize_sheet_text(document.sheet_key) != \"attendance\"" in source
+
+
+def test_note_sheet_write_paths_prewarm_default_page_snapshot_without_touching_internal_repairs():
+    source = _note_sheets_api_source()
+    prewarm_start = source.index("def _prewarm_default_sheet_page_snapshot(")
+    prewarm_end = source.index("\n\ndef _is_superuser_or_user_id", prewarm_start)
+    prewarm_body = source[prewarm_start:prewarm_end]
+
+    assert "page=1" in prewarm_body
+    assert "page_size=None" in prewarm_body
+    assert "paginate=None" in prewarm_body
+    assert "include_workbook_context=False" in prewarm_body
+    assert "contextlib.suppress(Exception)" in prewarm_body
+
+    write_paths = [
+        ("def patch_note_sheet_table(", "\n\n@router.patch(\"/sheets/{sheet_id}/cells\""),
+        ("def patch_note_sheet_cells(", "\n\n@router.post(\"/sheets/{sheet_id}/patch\""),
+        ("def patch_note_sheet(", "\n\n@router.websocket(\"/ws/resources/sheet/{sheet_id}\""),
+        ("def update_sheet_defined_names_endpoint(", "\n\n@router.put(\"/sheets/{sheet_id}/access\""),
+        ("def update_note_sheet(", "\n\n@router.post(\"/sheets/{sheet_id}/import-excel-reset\""),
+        ("async def import_note_sheet_excel_reset(", "\n\n@router.post(\n    \"/sheets/{sheet_id}/clockin/link-detection-runs\""),
+    ]
+    for start_marker, end_marker in write_paths:
+        start = source.index(start_marker)
+        end = source.index(end_marker, start)
+        body = source[start:end]
+        assert "_prewarm_default_sheet_page_snapshot(" in body
+        assert "document_json=next_document" in body
+
+    for start_marker, end_marker in [
+        ("def _normalize_registration_sheet_header_persisted(", "\n\ndef _apply_registration_standard_user_id_column_styles"),
+        ("def _sync_attendance_questionnaire_sheet_document(", "\n\ndef _build_paged_document"),
+    ]:
+        start = source.index(start_marker)
+        end = source.index(end_marker, start)
+        body = source[start:end]
+        assert "_prewarm_default_sheet_page_snapshot(" not in body
+
+
+def test_note_sheet_snapshot_backfill_scans_only_safe_paginated_sheets():
+    source = _note_sheets_api_source()
+    script_source = _snapshot_backfill_script_source()
+    backfill_start = source.index("def backfill_default_sheet_page_snapshots(")
+    backfill_end = source.index("\n\ndef _is_superuser_or_user_id", backfill_start)
+    body = source[backfill_start:backfill_end]
+
+    assert "SheetDocument.sheet_key != \"attendance\"" in body
+    assert "_active_sheet_condition()" in body
+    assert "func.length(SheetDocument.document_json) >= int(min_document_json_bytes)" in body
+    assert "paginate_enabled, _page_size = _get_document_pagination_settings(document_json)" in body
+    assert "if not paginate_enabled:" in body
+    assert "_get_workbooks_for_sheet(session, document)" in body
+    assert "include_workbook_context=False" in body
+    assert "include_existing: bool = False" in body
+    assert "def main() -> None:" in script_source
+    assert "migrate_db()" in script_source
+    assert "backfill_default_sheet_page_snapshots(" in script_source
+    assert "--sheet-id" in script_source
+
+
 def test_workbook_detail_reuses_loaded_sheet_summaries_and_access():
     source = _note_sheets_api_source()
     start = source.index("def _serialize_workbook_detail(")
@@ -129,6 +249,26 @@ def test_workbook_detail_reuses_loaded_sheet_summaries_and_access():
     assert "workbook_access=access" in body
 
 
+def test_workbook_detail_exposes_server_timing_when_boot_perf_enabled():
+    source = _note_sheets_api_source()
+    endpoint_start = source.index("def get_workbook(")
+    endpoint_end = source.index("\n\n@router.post(\"/workbooks/{workbook_id}/restore\"", endpoint_start)
+    endpoint_body = source[endpoint_start:endpoint_end]
+    serializer_start = source.index("def _serialize_workbook_detail(")
+    serializer_end = source.index("\ndef _serialize_resource_access_grants", serializer_start)
+    serializer_body = source[serializer_start:serializer_end]
+
+    assert "response: Response" in endpoint_body
+    assert "x_codeyun_boot_perf: str | None = Header(default=None, alias=\"X-CodeYun-BootPerf\")" in endpoint_body
+    assert "timings: list[tuple[str, float]] | None = [] if x_codeyun_boot_perf else None" in endpoint_body
+    assert "response.headers[\"Server-Timing\"] = _format_note_sheet_server_timing(timings)" in endpoint_body
+    assert "timings: list[tuple[str, float]] | None = None" in serializer_body
+    assert "_record_note_sheet_timing(timings, checkpoint, \"workbook_links\")" in serializer_body
+    assert "_record_note_sheet_timing(timings, checkpoint, \"sheet_summaries\")" in serializer_body
+    assert "_record_note_sheet_timing(timings, checkpoint, \"sheet_workbook_refs\")" in serializer_body
+    assert "_record_note_sheet_timing(timings, checkpoint, \"sheet_access\")" in serializer_body
+
+
 def test_note_sheet_workspace_accepts_page_scoped_row_ids():
     source = _workspace_source()
 
@@ -136,6 +276,21 @@ def test_note_sheet_workspace_accepts_page_scoped_row_ids():
     assert "const rowIdsArePaged = sourceRowIds.length === normalizedRows.length" in source
     assert "const sourceRowIdIndex = rowIdsArePaged ? localIndex : getDocumentRowIndex(localIndex)" in source
     assert "normalizeSheetEntityId(sourceRowIds[sourceRowIdIndex])" in source
+
+
+def test_note_sheet_workspace_frame_gap_monitor_ignores_background_throttling():
+    source = _workspace_source()
+    monitor_start = source.index("function startSheetPerfFrameMonitor()")
+    monitor_end = source.index("\nfunction stopSheetPerfFrameMonitor", monitor_start)
+    monitor_body = source[monitor_start:monitor_end]
+
+    assert "function isSheetPerfFrameMonitorActive()" in source
+    assert "document.visibilityState === 'visible'" in source
+    assert "document.hasFocus()" in source
+    assert "if (!isSheetPerfFrameMonitorActive())" in monitor_body
+    assert "sheetPerfLastFrameTime = null" in monitor_body
+    assert "visibilityState:" in monitor_body
+    assert "focused:" in monitor_body
 
 
 def test_note_sheet_workspace_defers_non_initial_child_components():
@@ -794,3 +949,4 @@ def test_note_sheet_workspace_skips_duplicate_row_height_refresh_during_sheet_lo
 
     assert "startSheetPerfTrace('sheet.rowHeights'" in source
     assert "refreshComputedRowHeights(" not in body
+

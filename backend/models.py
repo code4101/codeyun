@@ -955,6 +955,42 @@ class SheetDocument(SQLModel, table=True):
     deleted_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
 
 
+class SheetPageSnapshot(SQLModel, table=True):
+    __tablename__ = "sheetpagesnapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "sheet_id",
+            "sheet_version",
+            "sheet_updated_at",
+            "workbook_id",
+            "page",
+            "page_size_key",
+            "paginate_key",
+            "include_workbook_context",
+            name="uq_sheetpagesnapshot_lookup",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sheet_id: str = Field(index=True)
+    sheet_numeric_id: Optional[int] = Field(default=None, index=True)
+    sheet_version: int = Field(index=True)
+    sheet_updated_at: float = Field(index=True)
+    workbook_id: int = Field(default=0, index=True)
+    page: int = Field(default=1, index=True)
+    page_size_key: int = Field(default=0, index=True)
+    paginate_key: str = Field(default="", index=True)
+    include_workbook_context: bool = Field(default=True, index=True)
+    document_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    pagination_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    workbook_items_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    parent_workbook_id: Optional[int] = Field(default=None, index=True)
+    defined_names_context_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    created_at: float = Field(default_factory=time.time, index=True)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
 class WorkbookDocument(SQLModel, table=True):
     __tablename__ = "workbookdocument"
     __table_args__ = {"extend_existing": True}

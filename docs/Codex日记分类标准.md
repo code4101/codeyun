@@ -50,13 +50,22 @@ CodeYun/综合覆盖 CodeYun 自身的系统级治理、跨模块根因修复、
 - `frontend/src/standard/**`、`frontend/src/components/**`、`frontend/src/utils/**`、`.vue`、Vue3、首屏、首帧、热路径、前端加载、组件渲染。
 - `cell-logs`、`Promise.allSettled`、`StarNotes.vue`、`refreshNodeInternals`、`notes/galaxy`。
 - UI 自主学习、学习 checkpoint、`candidates.json`、自动化提示词中文化、巡检状态词本地化、随机提示入口、随机阅读、Tip of the Day、每日一句、开源项目核验、AlphaGPT/半夏之神调研结论。
+- 浏览器、代理、网络、下载、候选回灌、页面状态同步等 CodeYun 内部功能修复。比如“修正系统代理地址”“修复 pinterest 候选回灌”这类 Codex 工作，不归“后勤”“模块”或“缺陷”，优先归 CodeYun/综合。
 
 不要因为以下词汇把它误判为“缺陷”：
 
 - 失败、问题、风险、缺失、修复、排查。
 
-这些词只是工程治理过程中的现象描述。只有当记录主体是一个具体 bug/缺陷条目本身，
-而不是 CodeYun 系统治理成果时，才归“缺陷”。
+这些词只是工程治理过程中的现象描述。Codex 日记自动分类里禁用“缺陷”作为一级分类；
+遇到具体修复类工作，按业务归属归到 CodeYun/综合、考勤、凡修等更具体类别。
+
+## 后勤
+
+后勤只覆盖生活层面的事务，例如日常安排、购物、证件、账号、居住、家庭设备和个人生活琐事。
+它不覆盖代码工作、系统配置、浏览器代理、下载链路、候选回灌、接口修复、页面状态同步或工程排障。
+
+如果标题或摘要里出现“代理、系统、Chrome、Google、Pixiv、pinterest、候选、数据库、页面、接口、脚本、配置”等工程语境，
+应先判断是否属于 CodeYun/综合、考勤或凡修，而不是因为“处理杂事/修复环境”就归后勤。
 
 已确认样本：
 

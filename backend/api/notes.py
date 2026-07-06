@@ -753,6 +753,19 @@ CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "半夏之神",
     "开源量化源码",
     "AlphaGPT",
+    "系统代理",
+    "代理地址",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "Chrome",
+    "Google",
+    "Pixiv",
+    "pinterest",
+    "候选回灌",
+    "MediaSyncSourceItem",
+    "下载缓存",
+    "页面候选池",
+    "数据库状态",
+    "状态同步",
 )
 CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
     "修复",
@@ -878,11 +891,18 @@ CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
     "稳定回归锚点",
 )
 CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
+    "考勤",
+    "考勤调度",
+    "考勤行为",
+    "日报",
+    "返款",
     "问卷",
     "问卷星",
     "wjx",
     "clockin",
     "kdocs",
+    "step3",
+    "step4",
 )
 CODEX_DIARY_ATTENDANCE_FORCE_CONTEXT_TERMS = (
     "652",
@@ -1363,6 +1383,8 @@ def _is_specific_codex_diary_category_key(value: Any) -> bool:
 def _is_codex_diary_hidden_ai_category_item(item: dict[str, Any] | None) -> bool:
     if not isinstance(item, dict):
         return False
+    if is_note_auto_classification_blocked_category(item.get("key"), item.get("label")):
+        return True
     identity = _normalize_project_palette_token(
         " ".join(_collect_project_palette_candidates(item.get("key"), item.get("label"), str(item.get("key") or "").removeprefix("custom_")))
     )

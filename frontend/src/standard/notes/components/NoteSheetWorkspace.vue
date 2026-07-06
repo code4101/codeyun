@@ -1755,6 +1755,16 @@ let sheetPerfFrameMonitorId: number | null = null
 let sheetPerfLastFrameTime: number | null = null
 let sheetPerfLastFrameGapLogTime = 0
 let sheetPerfRuntimeEventLogCount = 0
+
+function isSheetPerfFrameMonitorActive() {
+  return (
+    typeof document === 'undefined'
+    || (
+      document.visibilityState === 'visible'
+      && (typeof document.hasFocus !== 'function' || document.hasFocus())
+    )
+  )
+}
 let restoringStudentLookupSelection = false
 let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
@@ -2247,6 +2257,12 @@ function startSheetPerfFrameMonitor() {
       return
     }
 
+    if (!isSheetPerfFrameMonitorActive()) {
+      sheetPerfLastFrameTime = null
+      sheetPerfFrameMonitorId = window.requestAnimationFrame(tick)
+      return
+    }
+
     if (sheetPerfLastFrameTime != null) {
       const duration = roundSheetPerfMs(timestamp - sheetPerfLastFrameTime)
       if (duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS && shouldRecordSheetPerfRuntimeEvent(timestamp)) {
@@ -2256,6 +2272,10 @@ function startSheetPerfFrameMonitor() {
           perfEnd: roundSheetPerfMs(timestamp),
           detail: {
             thresholdMs: SHEET_PERF_FRAME_GAP_THRESHOLD_MS,
+            visibilityState: typeof document !== 'undefined' ? document.visibilityState : null,
+            focused: typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+              ? document.hasFocus()
+              : null,
             ...getSheetPerfSelectedCellContext(),
           },
         })

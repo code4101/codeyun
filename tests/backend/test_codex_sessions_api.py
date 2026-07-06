@@ -665,8 +665,6 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
                     "1. 综合",
                     "1.1 打通 Codex 日报页原型与按天汇总链路，完成页面入口、后端接口和调用路径。",
                     "1.2 梳理 attendance 菜单语义，确认命名应按真实页面功能收口。",
-                    "2. 缺陷",
-                    "2.1 为后续文案和结构修正沉淀判断依据。",
                 ]
             ),
             "created_at": "2026-04-23T12:00:00+00:00",
@@ -700,7 +698,7 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert completed_payload["summary_text"].startswith("1. 综合")
     assert completed_payload["result"]["prompt_version"] == "2026-04-23.hierarchical-note-types-v1"
     assert [item["title"] for item in completed_payload["result"]["threads"]] == ["Codex 日报页", "Attendance 菜单语义"]
-    assert [item["label"] for item in completed_payload["result"]["type_items"]] == ["综合", "缺陷"]
+    assert [item["label"] for item in completed_payload["result"]["type_items"]] == ["综合"]
 
     latest_response = client.get(
         f"/api/device-entries/{entry_id}/codex/daily-summary/latest",
@@ -750,8 +748,8 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert "项目推进（key=project）" not in prompt
     assert "模块（key=module）" not in prompt
     assert "任务（key=task）" not in prompt
-    assert "缺陷（key=bug）" in prompt
-    assert "一级分类不得使用这些名称：任务、重点、项目、模块" in captured[0]["system_prompt"]
+    assert "缺陷（key=bug）" not in prompt
+    assert "一级分类不得使用这些名称：任务、重点、项目、模块、缺陷" in captured[0]["system_prompt"]
     assert "2026年4月22日" in captured[0]["system_prompt"]
     assert captured[0]["provider_id"] == "deepseek"
     assert captured[0]["model"] == "deepseek-v4-pro"
@@ -765,7 +763,7 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert len(run_rows) == 2
     assert run_rows[0].summary_date == "2026-04-22"
     assert run_rows[0].summary_text.startswith("1. 综合")
-    assert [item["label"] for item in run_rows[0].result_json["type_items"]] == ["综合", "缺陷"]
+    assert [item["label"] for item in run_rows[0].result_json["type_items"]] == ["综合"]
 
 
 def test_multi_device_daily_summary_merges_local_and_remote_sources(

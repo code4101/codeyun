@@ -57,6 +57,7 @@ def test_background_task_runner_builtin_presets_are_disabled_until_user_enables(
     assert background_tasks._is_task_enabled(background_tasks.FANXIU_SLIMMING_TASK_KEY) is False
     assert background_tasks._is_task_enabled(background_tasks.FANXIU_TIANJIGE_QUIZ_TASK_KEY) is False
     assert background_tasks._is_task_enabled(background_tasks.RUANYF_WEEKLY_TASK_NAME) is False
+    assert background_tasks._is_task_enabled(background_tasks.NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY) is False
 
     session.add(
         AppSetting(
@@ -74,6 +75,19 @@ def test_background_task_runner_builtin_presets_are_disabled_until_user_enables(
 
     assert background_tasks._is_task_enabled(background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY) is True
     assert background_tasks._is_task_enabled("storage_analysis") is True
+
+
+def test_background_task_runner_note_sheet_snapshot_backfill_is_optional():
+    spec = background_tasks.get_background_task_spec(
+        background_tasks.NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
+    )
+
+    assert spec is not None
+    assert spec.title == "星云表格快照补齐"
+    assert spec.category == "表格"
+    assert spec.schedule_label == "未配置自动触发"
+    assert spec.default_visible is False
+    assert background_tasks._default_background_task_schedule_policy(spec.key) is None
 
 
 def test_background_task_runner_fanxiu_tianjige_default_schedule():

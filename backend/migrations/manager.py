@@ -5081,6 +5081,62 @@ def v78_add_device_agent_tables(session: Session):
     print("  Added Device Agent tables.")
 
 
+def v79_add_sheet_page_snapshot_table(session: Session):
+    """
+    Migration V79: Add note sheet page snapshots for large-sheet read paths.
+    """
+    print("Running System Upgrade V79: Add sheet page snapshot table...")
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS sheetpagesnapshot (
+            id INTEGER NOT NULL,
+            sheet_id VARCHAR NOT NULL,
+            sheet_numeric_id INTEGER,
+            sheet_version INTEGER NOT NULL,
+            sheet_updated_at FLOAT NOT NULL,
+            workbook_id INTEGER NOT NULL DEFAULT 0,
+            page INTEGER NOT NULL DEFAULT 1,
+            page_size_key INTEGER NOT NULL DEFAULT 0,
+            paginate_key VARCHAR NOT NULL DEFAULT '',
+            include_workbook_context BOOLEAN NOT NULL DEFAULT 1,
+            document_json JSON NOT NULL DEFAULT '{}',
+            pagination_json JSON,
+            workbook_items_json JSON NOT NULL DEFAULT '[]',
+            parent_workbook_id INTEGER,
+            defined_names_context_json JSON,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            PRIMARY KEY (id),
+            CONSTRAINT uq_sheetpagesnapshot_lookup UNIQUE (
+                sheet_id,
+                sheet_version,
+                sheet_updated_at,
+                workbook_id,
+                page,
+                page_size_key,
+                paginate_key,
+                include_workbook_context
+            )
+        )
+    """))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_sheet_id ON sheetpagesnapshot (sheet_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_sheet_numeric_id ON sheetpagesnapshot (sheet_numeric_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_sheet_version ON sheetpagesnapshot (sheet_version)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_sheet_updated_at ON sheetpagesnapshot (sheet_updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_workbook_id ON sheetpagesnapshot (workbook_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_page ON sheetpagesnapshot (page)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_page_size_key ON sheetpagesnapshot (page_size_key)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_paginate_key ON sheetpagesnapshot (paginate_key)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_include_workbook_context ON sheetpagesnapshot (include_workbook_context)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_parent_workbook_id ON sheetpagesnapshot (parent_workbook_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_created_at ON sheetpagesnapshot (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_sheetpagesnapshot_updated_at ON sheetpagesnapshot (updated_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added sheet page snapshot table.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5162,6 +5218,7 @@ MIGRATIONS = [
     (76, "Add GitHub project creation time", v76_add_github_project_created_at),
     (77, "Add Codex diary replace existing flag", v77_add_codex_diary_replace_existing),
     (78, "Add Device Agent tables", v78_add_device_agent_tables),
+    (79, "Add sheet page snapshot table", v79_add_sheet_page_snapshot_table),
 ]
 
 def get_current_version(session: Session) -> int:

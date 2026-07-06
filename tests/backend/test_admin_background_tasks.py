@@ -5,6 +5,7 @@ from backend.core.auth import get_current_active_superuser
 from backend.core.attendance.course_completion import COURSE_COMPLETION_TASK_KEY
 from backend.core.background_task_queue import background_task_queue
 from backend.core.background_task_runner import set_background_task_deleted
+from backend.core.runtime.background_task_runner import NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
 from backend.core.fanxiu_tianjige_crawler import FANXIU_TIANJIGE_QUIZ_TASK_KEY
 from backend.models import User
 
@@ -75,6 +76,23 @@ def test_admin_background_task_catalog_includes_optional_attendance_course_compl
     item = items_by_key[COURSE_COMPLETION_TASK_KEY]
     assert item["title"] == "考勤课程自动收尾"
     assert item["schedule_label"] == "每天 06:20"
+    assert item["added"] is False
+
+
+def test_admin_background_task_catalog_includes_optional_note_sheet_snapshot_backfill(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.get("/api/admin/background-tasks/catalog")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    items_by_key = {item["key"]: item for item in payload["items"]}
+    item = items_by_key[NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY]
+    assert item["title"] == "星云表格快照补齐"
+    assert item["category"] == "表格"
+    assert item["schedule_label"] == "未配置自动触发"
     assert item["added"] is False
 
 

@@ -59,6 +59,7 @@ MARKET_INTRADAY_PERSIST_RUN_TIME = "16:30"
 HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
 HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
+NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
 RUANYF_WEEKLY_START_TIME = "06:00"
 BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 7
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
@@ -74,6 +75,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     MARKET_INTRADAY_PERSIST_TASK_KEY,
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
+    NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
     FANXIU_TIANJIGE_QUIZ_TASK_KEY,
 }
@@ -540,6 +542,31 @@ def _enqueue_wechat_archive_incremental_sync() -> str | None:
         raise
 
 
+def _run_note_sheet_page_snapshot_backfill_job() -> dict[str, Any]:
+    from backend.api.note_sheets import backfill_default_sheet_page_snapshots
+    from backend.db import engine
+
+    with Session(engine) as session:
+        result = backfill_default_sheet_page_snapshots(session)
+    print(
+        "Note sheet page snapshot backfill completed: "
+        f"candidates={result.get('candidate_count')} "
+        f"processed={len(result.get('processed') or [])} "
+        f"created={result.get('created')} "
+        f"refreshed={result.get('refreshed')} "
+        f"skipped={len(result.get('skipped') or [])}"
+    )
+    return result
+
+
+def _enqueue_note_sheet_page_snapshot_backfill() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
+        _run_note_sheet_page_snapshot_backfill_job,
+    )
+    return task_id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     BackgroundTaskSpec(
         key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
@@ -690,6 +717,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后 10 分钟重试",
         action=_enqueue_wechat_archive_incremental_sync,
         manual_warning="会只读复制本机微信数据库、解密快照并导出图片等资源；不会修改官方微信原始数据，也不会操作微信窗口。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
+        title="星云表格快照补齐",
+        category="表格",
+        description="扫描历史普通分页表，为默认第一页生成轻量页面快照，避免首次打开大 JSON 表时再同步读取完整 document_json。",
+        schedule_label="未配置自动触发",
+        retry_label="失败后下次手动重试",
+        action=_enqueue_note_sheet_page_snapshot_backfill,
+        manual_warning="会读取历史普通分页表并写入 sheetpagesnapshot 缓存；跳过考勤表，不改原始表格数据。",
         default_visible=False,
     ),
     BackgroundTaskSpec(
