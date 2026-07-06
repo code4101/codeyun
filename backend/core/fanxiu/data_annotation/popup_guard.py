@@ -699,6 +699,9 @@ class PopupGuardMixin:
                 if task_type == "daily_assistant" or "日常_助手" in current_task:
                     self._log("detail", f"守护跳过 #47：日常_助手业务弹窗由业务流程处理，phase={phase}")
                     return False
+                if task_type == "daily_weekly_dungeon" or "日常_周本" in current_task:
+                    self._log("detail", f"守护跳过 #47：日常_周本业务弹窗由业务流程处理，phase={phase}")
+                    return False
 
             if view.id == 47 and self._handle_auto_close_popup_47_child(
                 runtime,

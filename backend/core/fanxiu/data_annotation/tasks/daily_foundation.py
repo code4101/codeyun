@@ -2891,14 +2891,7 @@ class DailyFoundationTaskMixin:
                 raise RuntimeError("日常_周本：#69 日常列表未找到「周本」入口")
             scene_id = 325
         if scene_id == 325:
-            yield from runtime.wait_click(325, "天宫")
-            yield from runtime.wait_action_settle(1.5)
-            scene_id, _score, frame = runtime.current_scene([326, 325, 69], update=True)
-            text = runtime.ocr_text(frame)
-            if scene_id is None and self._is_daily_weekly_dungeon_tiangong_page_text(text):
-                scene_id = 326
-            if scene_id != 326:
-                raise RuntimeError(f"日常_周本：点击天宫后未到达 #326，OCR={text[:120]}")
+            scene_id = yield from self._open_daily_weekly_dungeon_tiangong_view(runtime, payload)
         if scene_id == 326:
             scene_id = yield from self._open_daily_weekly_dungeon_challenge_view(runtime, payload)
         yield from runtime.wait_click(327, "挑战")
@@ -2910,6 +2903,45 @@ class DailyFoundationTaskMixin:
         self._log("success", "日常_周本：战斗结束，已回到 #34")
         return "success"
 
+    def _open_daily_weekly_dungeon_tiangong_view(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+    ):
+        max_attempts = max(1, int(payload.get("weekly_tiangong_max_attempts") or 3))
+        wait_timeout = float(payload.get("weekly_tiangong_wait_timeout") or 8.0)
+        settle_seconds = float(payload.get("weekly_tiangong_settle_seconds") or 1.5)
+        last_error: TimeoutError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                yield from runtime.wait_click_then_view(
+                    325,
+                    "天宫",
+                    326,
+                    settle_seconds=settle_seconds,
+                    timeout=wait_timeout,
+                    label="日常_周本：等待进入 #326 玉霄天宫页",
+                )
+                return 326
+            except TimeoutError as exc:
+                last_error = exc
+                scene_id, score, frame = runtime.current_scene([326, 325, 69], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id is None and self._is_daily_weekly_dungeon_tiangong_page_text(text):
+                    return 326
+                if scene_id == 326:
+                    return 326
+                if scene_id == 325 and attempt < max_attempts:
+                    self._log(
+                        "warning",
+                        f"日常_周本：点击 #325「天宫」后仍在 #325 {score:.0f}%，重试 {attempt + 1}/{max_attempts}",
+                    )
+                    continue
+                raise TimeoutError(f"日常_周本：点击 #325「天宫」后未到达 #326，当前 #{scene_id or 'unknown'} {score:.0f}%，OCR={text[:120]}") from exc
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError("日常_周本：未能进入 #326 玉霄天宫页")
+
     def _open_daily_weekly_dungeon_challenge_view(
         self,
         runtime: FanxiuRuntimeSession,
@@ -2918,9 +2950,14 @@ class DailyFoundationTaskMixin:
         max_attempts = max(1, int(payload.get("tiangong_challenge_max_attempts") or 3))
         wait_timeout = float(payload.get("tiangong_challenge_wait_timeout") or 10.0)
         settle_seconds = float(payload.get("tiangong_challenge_settle_seconds") or 1.5)
+        pre_click_wait = max(0.0, float(payload.get("tiangong_challenge_pre_click_wait") or 6.0))
         last_error: TimeoutError | None = None
         for attempt in range(1, max_attempts + 1):
             try:
+                yield from runtime.wait_view(326, timeout=wait_timeout, label="日常_周本：确认 #326 玉霄天宫页")
+                if pre_click_wait > 0:
+                    self._log("wait", f"日常_周本：等待 #326 浮动战报消失 {pre_click_wait:.1f}s")
+                    yield from runtime.wait_action_settle(pre_click_wait)
                 yield from runtime.wait_click_then_view(
                     326,
                     "挑战",

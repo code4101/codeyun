@@ -5137,6 +5137,59 @@ def v79_add_sheet_page_snapshot_table(session: Session):
     print("  Added sheet page snapshot table.")
 
 
+def v80_add_pokemon_tcg_card_records(session: Session):
+    """
+    Migration V80: Add imported Pokemon TCG card records with raw and translated payloads.
+    """
+    print("Running System Upgrade V80: Add Pokemon TCG card record table...")
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS pokemontcgcardrecord (
+            id INTEGER PRIMARY KEY,
+            dataset_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL DEFAULT 'pkmncards',
+            source_card_slug VARCHAR NOT NULL,
+            source_url TEXT NOT NULL DEFAULT '',
+            set_slug VARCHAR NOT NULL DEFAULT '',
+            set_name VARCHAR NOT NULL DEFAULT '',
+            official_set_code VARCHAR NOT NULL DEFAULT '',
+            official_number VARCHAR NOT NULL DEFAULT '',
+            official_id VARCHAR NOT NULL DEFAULT '',
+            official_name VARCHAR NOT NULL DEFAULT '',
+            pokemon_species VARCHAR NOT NULL DEFAULT '',
+            display_title TEXT NOT NULL DEFAULT '',
+            local_image_path TEXT NOT NULL DEFAULT '',
+            image_sha256 VARCHAR NOT NULL DEFAULT '',
+            raw_json JSON NOT NULL DEFAULT '{}',
+            zh_json JSON NOT NULL DEFAULT '{}',
+            translation_version VARCHAR NOT NULL DEFAULT '',
+            fetched_at VARCHAR NOT NULL DEFAULT '',
+            translated_at VARCHAR NOT NULL DEFAULT '',
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_pokemontcgcardrecord_dataset_slug UNIQUE (dataset_id, source_card_slug)
+        )
+    """))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_dataset_id ON pokemontcgcardrecord (dataset_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_source ON pokemontcgcardrecord (source)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_source_card_slug ON pokemontcgcardrecord (source_card_slug)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_set_slug ON pokemontcgcardrecord (set_slug)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_set_name ON pokemontcgcardrecord (set_name)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_official_set_code ON pokemontcgcardrecord (official_set_code)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_official_number ON pokemontcgcardrecord (official_number)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_official_id ON pokemontcgcardrecord (official_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_official_name ON pokemontcgcardrecord (official_name)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_pokemon_species ON pokemontcgcardrecord (pokemon_species)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_image_sha256 ON pokemontcgcardrecord (image_sha256)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_translation_version ON pokemontcgcardrecord (translation_version)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_fetched_at ON pokemontcgcardrecord (fetched_at)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemontcgcardrecord_translated_at ON pokemontcgcardrecord (translated_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Pokemon TCG card record table.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5219,6 +5272,7 @@ MIGRATIONS = [
     (77, "Add Codex diary replace existing flag", v77_add_codex_diary_replace_existing),
     (78, "Add Device Agent tables", v78_add_device_agent_tables),
     (79, "Add sheet page snapshot table", v79_add_sheet_page_snapshot_table),
+    (80, "Add Pokemon TCG card records", v80_add_pokemon_tcg_card_records),
 ]
 
 def get_current_version(session: Session) -> int:

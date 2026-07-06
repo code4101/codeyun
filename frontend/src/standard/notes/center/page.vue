@@ -37,8 +37,10 @@ import { useRoute, useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
 import { Delete } from '@element-plus/icons-vue';
 import { useNoteStore, type NoteProgramRule, type TabState } from '@/api/notes';
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf';
 
 const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
+markBootPerf('notes-center.module');
 const loadCalendarNotes = async () => {
   const perfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
   const startedAt = perfEnabled ? performance.now() : 0;
@@ -55,7 +57,7 @@ const loadCalendarNotes = async () => {
   return component;
 };
 const CalendarNotes = defineAsyncComponent(loadCalendarNotes);
-const ListNotes = defineAsyncComponent(() => import('./ListNotes.vue'));
+const ListNotes = defineAsyncComponent(() => markBootPerfAsync('notes-center.list.import', () => import('./ListNotes.vue')));
 
 const route = useRoute();
 const router = useRouter();

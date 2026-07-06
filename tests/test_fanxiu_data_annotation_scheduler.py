@@ -4604,6 +4604,17 @@ def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene
                 yield None
             return target_scene_id
 
+        def wait_view(self, scene_id, **kwargs):
+            actions.append(("wait_view", scene_id, kwargs.get("timeout")))
+            if False:
+                yield None
+            return scene_id
+
+        def wait_action_settle(self, seconds):
+            actions.append(("wait_action_settle", seconds))
+            if False:
+                yield None
+
         def current_scene(self, candidates, update=False):
             actions.append(("current_scene", tuple(candidates), update))
             return 326, 100.0, "frame326"
@@ -4616,10 +4627,50 @@ def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene
 
     assert result == 327
     assert actions == [
+        ("wait_view", 326, 10.0),
+        ("wait_action_settle", 6.0),
         ("wait_click_then_view", 326, "挑战", 327, 10.0),
         ("current_scene", (327, 326), True),
         ("ocr_text", "frame326"),
+        ("wait_view", 326, 10.0),
+        ("wait_action_settle", 6.0),
         ("wait_click_then_view", 326, "挑战", 327, 10.0),
+    ]
+
+
+def test_daily_weekly_dungeon_retries_when_tiangong_entry_keeps_source_scene():
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.attempts = 0
+
+        def wait_click_then_view(self, scene_id, shape_title, target_scene_id, **kwargs):
+            actions.append(("wait_click_then_view", scene_id, shape_title, target_scene_id, kwargs.get("timeout")))
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TimeoutError("still on #325")
+            if False:
+                yield None
+            return target_scene_id
+
+        def current_scene(self, candidates, update=False):
+            actions.append(("current_scene", tuple(candidates), update))
+            return 325, 80.0, "frame325"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            return "周本 天宫"
+
+    result = _drain_generator(runner._open_daily_weekly_dungeon_tiangong_view(FakeRuntime(), {}))
+
+    assert result == 326
+    assert actions == [
+        ("wait_click_then_view", 325, "天宫", 326, 8.0),
+        ("current_scene", (326, 325, 69), True),
+        ("ocr_text", "frame325"),
+        ("wait_click_then_view", 325, "天宫", 326, 8.0),
     ]
 
 
