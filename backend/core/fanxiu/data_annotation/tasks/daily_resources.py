@@ -1114,9 +1114,11 @@ class DailyResourceTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, _frame = runtime.current_scene([316, 247, 34], update=True)
         claimed: list[str] = []
+        claim_attempts = 0
         if scene_id == 316:
             if phase != "midnight":
                 raise RuntimeError(f"{task_label}：当前停在商品详情 #316，非 00:00-05:00 补领窗口不自动领取")
+            claim_attempts += 1
             claimed_item = yield from self._claim_current_xianshi_weekly_resource_detail(runtime, current_prayer_cycle())
             if claimed_item:
                 claimed.append(claimed_item)
@@ -1139,12 +1141,15 @@ class DailyResourceTaskMixin:
 
         if phase == "midnight":
             target = current_prayer_cycle()
-            for _ in range(max(0, 2 - len(claimed))):
+            max_attempts = 2
+            while claim_attempts < max_attempts:
+                claim_attempts += 1
                 claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, "第1个物品", target)
                 if not claimed_item:
                     break
                 claimed.append(claimed_item)
         else:
+            max_attempts = 8
             skipped_groups = 0
             skipped_group = next_prayer_cycle()
             for group in PRAYER_CYCLE_NAMES:
@@ -1153,10 +1158,15 @@ class DailyResourceTaskMixin:
                     continue
                 slot = "第3个物品" if skipped_groups else "第1个物品"
                 for _ in range(2):
+                    if claim_attempts >= max_attempts:
+                        break
+                    claim_attempts += 1
                     claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, slot, group)
                     if not claimed_item:
                         break
                     claimed.append(claimed_item)
+                if claim_attempts >= max_attempts:
+                    break
 
         yield from runtime.wait_click_then_view(247, "返回", 34, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
         suffix = f"，跳过 {next_prayer_cycle()} 资源" if phase == "after_reset" else ""

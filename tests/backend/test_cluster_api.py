@@ -5,6 +5,13 @@ from fastapi.testclient import TestClient
 # pytest fixture 会自动处理 client 和 test_device
 # 我们直接使用它们即可
 
+
+def test_openapi_schema_builds(client: TestClient):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    assert "/api/device-control/attendance/nianzhu/step1" in response.json()["paths"]
+
+
 def test_node_status_authorized(client: TestClient, test_device):
     """Test getting node status with valid token"""
     token = test_device["token"]

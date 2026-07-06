@@ -17,6 +17,7 @@ from backend.core.fanxiu.data_annotation import scheduler as scheduler_core
 from backend.core.fanxiu.data_annotation import state as data_annotation_state
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.data_annotation.tasks import daily_resources as fanxiu_daily_resources
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
 from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 
@@ -814,6 +815,23 @@ def test_data_annotation_scheduler_repair_preserves_enabled_for_temporarily_unsu
     assert planned["runnable"] is False
 
 
+def test_data_annotation_scheduler_repair_keeps_xianshi_weekly_resources_enabled():
+    task = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "xianshi-weekly-resources").copy()
+    task["enabled"] = False
+
+    tasks, changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        [task],
+        fanxiu._default_data_annotation_scheduler_tasks(),
+        {},
+        task_supported=lambda _task: True,
+        now=datetime(2026, 7, 6, 0, 0, 0),
+    )
+
+    repaired = next(item for item in tasks if item["id"] == "xianshi-weekly-resources")
+    assert repaired["enabled"] is True
+    assert changed is True
+
+
 def test_data_annotation_scheduler_read_removes_assistant_covered_legacy_tasks(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     fanxiu._write_data_annotation_scheduler_tasks([
@@ -1478,6 +1496,134 @@ def test_xianshi_weekly_resources_midnight_unknown_slot_returns_world(monkeypatc
 
     assert result == "success"
     assert ("wait_click", 316, "领取") not in actions
+    assert ("wait_click_then_view", 247, "返回", 34) in actions
+
+
+def test_xianshi_weekly_resources_midnight_counts_current_detail_as_one_attempt(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+    ocr_texts = iter(["万灵珍品宝匣二", "御兽灵兽宝匣"])
+    monkeypatch.setattr(fanxiu_daily_resources, "current_prayer_cycle", lambda: "灵兽")
+
+    class FakeRuntime:
+        def current_scene(self, candidates, update=False):
+            return 316, 100, object()
+
+        def wait_view(self, scene_id, **kwargs):
+            actions.append(("wait_view", scene_id))
+            if False:
+                yield None
+            return True
+
+        def wait_click_then_shape(self, *args, **kwargs):
+            actions.append(("wait_click_then_shape", args))
+            if False:
+                yield None
+            return True
+
+        def wait_click_then_view(self, scene_id, shape_title, target_scene_id, **kwargs):
+            actions.append(("wait_click_then_view", scene_id, shape_title, target_scene_id))
+            if scene_id == 316 and shape_title == "返回":
+                raise RuntimeError("missing shape")
+            if False:
+                yield None
+            return True
+
+        def ocr_text_in_shapes(self, scene_id, shape_titles, padding=0):
+            return next(ocr_texts)
+
+        def wait_click(self, scene_id, shape_title, *args, **kwargs):
+            actions.append(("wait_click", scene_id, shape_title))
+            if False:
+                yield None
+            return True
+
+        def wait_action_settle(self, seconds):
+            actions.append(("wait_action_settle", seconds))
+            if False:
+                yield None
+            return True
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            34: {"title": "世界"},
+            247: {"title": "秘藏阁"},
+        },
+    }
+
+    result = _drain_generator(runner._execute_xianshi_weekly_resources_task(ctx, fanxiu.threading.Event(), {"phase": "midnight"}))
+
+    assert result == "success"
+    assert actions.count(("wait_click_then_view", 247, "第1个物品", 316)) == 1
+    assert actions.count(("wait_click", 316, "领取")) == 1
+    assert ("wait_click_then_view", 247, "返回", 34) in actions
+
+
+def test_xianshi_weekly_resources_after_reset_caps_list_attempts_at_eight(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+    monkeypatch.setattr(fanxiu_daily_resources, "next_prayer_cycle", lambda: "炼丹")
+
+    class FakeRuntime:
+        def current_scene(self, candidates, update=False):
+            return 247, 100, object()
+
+        def wait_click_then_shape(self, *args, **kwargs):
+            actions.append(("wait_click_then_shape", args))
+            if False:
+                yield None
+            return True
+
+        def wait_click_then_view(self, scene_id, shape_title, target_scene_id, **kwargs):
+            actions.append(("wait_click_then_view", scene_id, shape_title, target_scene_id))
+            if False:
+                yield None
+            return True
+
+        def ocr_text_in_shapes(self, scene_id, shape_titles, padding=0):
+            return {
+                "洗灵": "洗灵宝匣",
+                "仙花": "花神宝匣",
+                "灵兽": "御兽宝匣",
+                "淬体": "玄魄宝匣",
+            }[self.expected_group]
+
+        def wait_click(self, scene_id, shape_title, *args, **kwargs):
+            actions.append(("wait_click", scene_id, shape_title))
+            if False:
+                yield None
+            return True
+
+        def wait_action_settle(self, seconds):
+            if False:
+                yield None
+            return True
+
+    runtime = FakeRuntime()
+    original_claim_slot = runner._claim_xianshi_weekly_resource_slot
+
+    def fake_claim_slot(runtime_arg, slot, expected_group):
+        runtime_arg.expected_group = expected_group
+        return original_claim_slot(runtime_arg, slot, expected_group)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(runner, "_claim_xianshi_weekly_resource_slot", fake_claim_slot)
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            34: {"title": "世界"},
+            247: {"title": "秘藏阁"},
+        },
+    }
+
+    result = _drain_generator(runner._execute_xianshi_weekly_resources_task(ctx, fanxiu.threading.Event(), {"phase": "after_reset"}))
+
+    list_clicks = [action for action in actions if action[:2] == ("wait_click_then_view", 247) and action[2] != "返回"]
+    assert result == "success"
+    assert len(list_clicks) == 8
+    assert all(action[2] in {"第1个物品", "第3个物品"} for action in list_clicks)
     assert ("wait_click_then_view", 247, "返回", 34) in actions
 
 
@@ -13438,6 +13584,57 @@ def test_data_annotation_scheduler_ignores_equal_time_stale_running_fact(tmp_pat
     assert repaired["last_result"] == "stopped"
     assert repaired["retry_after"] == "2026-06-01 10:10:00"
     assert repaired["next_time"] is None
+
+
+def test_data_annotation_scheduler_treats_mail_cleanup_done_running_fact_as_success(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    path = _scheduler_state_path(tmp_path)
+    fixed_now = datetime(2026, 6, 1, 10, 5, 0)
+    last_run = datetime(2026, 6, 1, 10, 0, 0)
+    fanxiu._write_data_annotation_json(path, [
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["00:05"],
+            "interruptible": True,
+            "last_run_at": "2026-06-01 10:00:00",
+            "last_result": "stopped",
+            "next_time": None,
+            "retry_after": "2026-06-01 10:10:00",
+            "cooldown_seconds": 600,
+            "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+        }
+    ])
+    fanxiu._write_data_annotation_json(tmp_path / "world_facts.json", {
+        "discoveries": {
+            "task": {
+                "mail-cleanup": {
+                    "id": "mail-cleanup",
+                    "task_type": "mail_cleanup",
+                    "last_result": "running",
+                    "last_run_at": "2026-06-01 10:00:00",
+                    "updated_at": last_run.timestamp() + 0.25,
+                    "last_message": "邮件_清理：完成，见到 74 封，领取 0 封，滚动 5 次",
+                }
+            }
+        }
+    })
+    monkeypatch.setattr(runtime_control.time, "time", lambda: fixed_now.timestamp())
+
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    repaired = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert repaired["last_result"] == "success"
+    assert repaired["retry_after"] is None
+    assert repaired["next_time"] == "2026-06-02 00:05:00"
 
 
 def test_data_annotation_scheduler_ignores_same_run_stale_running_fact_with_update_skew(tmp_path, monkeypatch):

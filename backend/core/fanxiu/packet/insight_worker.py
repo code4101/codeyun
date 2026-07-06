@@ -1121,6 +1121,77 @@ def sync_fanxiu_capture_paths(
     return payload
 
 
+def catch_up_fanxiu_packet_facts(
+    *,
+    reason: str = "manual",
+    data_dir: str | Path | None = None,
+    max_streams: int = DEFAULT_DECODE_MAX_STREAMS,
+    restart_capture: bool = True,
+) -> dict[str, Any]:
+    """Seal the current capture segment and sync decoded facts into storage.
+
+    This is the generic on-demand catch-up primitive for gameplay code. It
+    does not know which business page is open; it only makes the packet
+    pipeline process the latest sealed capture and run the common business
+    writers.
+    """
+    requested_at = _now_text()
+    capture_backstop: dict[str, Any]
+    try:
+        capture_backstop = _ensure_capture_runtime_from_packet_worker(data_dir=data_dir)
+    except Exception as exc:
+        capture_backstop = {"ok": False, "ensured": False, "error": str(exc)}
+
+    flush_result: dict[str, Any]
+    try:
+        from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
+
+        flush_result = fanxiu_capture_runtime_service.flush_recent_capture(
+            f"packet-catch-up:{reason}",
+            restart=restart_capture,
+        )
+    except Exception as exc:
+        flush_result = {"ok": False, "flushed": False, "error": str(exc)}
+
+    pcap_path = str(flush_result.get("pcap_path") or "").strip() if isinstance(flush_result, dict) else ""
+    if not pcap_path:
+        return {
+            "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+            "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True)),
+            "mode": "packet_facts_catch_up",
+            "updated_at": _now_text(),
+            "requested_at": requested_at,
+            "reason": reason,
+            "capture_runtime_backstop": capture_backstop,
+            "flush": flush_result,
+            "sync": {
+                "ok": True,
+                "skipped": True,
+                "reason": "no_flushed_capture",
+                "decoded_count": 0,
+                "new_decode_count": 0,
+                "business_backfill_count": 0,
+            },
+        }
+
+    sync_result = sync_fanxiu_capture_paths(
+        [pcap_path],
+        data_dir=data_dir,
+        max_streams=max(1, int(max_streams)),
+    )
+    return {
+        "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True) and sync_result.get("ok", True)),
+        "mode": "packet_facts_catch_up",
+        "updated_at": _now_text(),
+        "requested_at": requested_at,
+        "reason": reason,
+        "capture_runtime_backstop": capture_backstop,
+        "flush": flush_result,
+        "sync": sync_result,
+    }
+
+
 def sync_fanxiu_live_capture_backlog(
     *,
     data_dir: str | Path | None = None,
@@ -1529,6 +1600,22 @@ class FanxiuPacketInsightWorker:
         self._realtime_cycle_started_at: float | None = None
         self._maintenance_cycle_started_at: float | None = None
 
+    def _mark_realtime_heartbeat(self, **extra: Any) -> None:
+        with self._lock:
+            self._last_realtime_result = {
+                **self._last_realtime_result,
+                "heartbeat_at": _now_text(),
+                **extra,
+            }
+
+    def _mark_maintenance_heartbeat(self, **extra: Any) -> None:
+        with self._lock:
+            self._last_maintenance_result = {
+                **self._last_maintenance_result,
+                "heartbeat_at": _now_text(),
+                **extra,
+            }
+
     def start(self) -> None:
         with self._lock:
             self._stop_event.clear()
@@ -1573,11 +1660,9 @@ class FanxiuPacketInsightWorker:
             if self._realtime_cycle_started_at is not None:
                 realtime["active"] = True
                 realtime["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._realtime_cycle_started_at))
-                realtime["heartbeat_at"] = _now_text()
             if self._maintenance_cycle_started_at is not None:
                 maintenance["active"] = True
                 maintenance["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._maintenance_cycle_started_at))
-                maintenance["heartbeat_at"] = _now_text()
             return {
                 **realtime,
                 "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
@@ -1595,7 +1680,14 @@ class FanxiuPacketInsightWorker:
             }
 
     def scan_once(self) -> dict[str, Any]:
+        self._mark_realtime_heartbeat(ok=True, mode="realtime_scan", phase="capture_backstop")
         capture_backstop = _ensure_capture_runtime_from_packet_worker()
+        self._mark_realtime_heartbeat(
+            ok=bool(capture_backstop.get("ok", True)),
+            mode="realtime_scan",
+            phase="live_capture_backlog",
+            capture_runtime_backstop=capture_backstop,
+        )
         result = sync_fanxiu_live_capture_backlog(
             stable_seconds=self.stable_seconds,
             use_cursor=True,
@@ -1603,6 +1695,27 @@ class FanxiuPacketInsightWorker:
             limit=2,
         )
         result["capture_runtime_backstop"] = capture_backstop
+        self._mark_realtime_heartbeat(
+            **{
+                key: result.get(key)
+                for key in (
+                    "ok",
+                    "updated_at",
+                    "cursor_mtime",
+                    "cursor_pcap",
+                    "confirmed_cursor_mtime",
+                    "confirmed_cursor_pcap",
+                    "latest_scanned_mtime",
+                    "latest_scanned_pcap",
+                    "has_unconfirmed_gap",
+                    "known_error_count",
+                )
+                if key in result
+            },
+            mode="realtime_scan",
+            phase="mail_business_backlog",
+            capture_runtime_backstop=capture_backstop,
+        )
         result["mail_business_backlog_sync"] = sync_fanxiu_mail_business_backlog(
             latest_limit=16,
             historical_limit=0,
@@ -1622,10 +1735,17 @@ class FanxiuPacketInsightWorker:
         return result
 
     def maintenance_once(self) -> dict[str, Any]:
+        self._mark_maintenance_heartbeat(ok=True, mode="maintenance", phase="capture_backstop")
         try:
             capture_backstop = _ensure_capture_runtime_from_packet_worker()
         except Exception as exc:
             capture_backstop = {"ok": False, "ensured": False, "error": str(exc)}
+        self._mark_maintenance_heartbeat(
+            ok=bool(capture_backstop.get("ok", True)),
+            mode="maintenance",
+            phase="maintenance_backlog",
+            capture_runtime_backstop=capture_backstop,
+        )
         result = sync_fanxiu_capture_maintenance_backlog(
             stable_seconds=self.stable_seconds,
             include_historical_business_backlog=True,
@@ -1634,6 +1754,13 @@ class FanxiuPacketInsightWorker:
         result["capture_runtime_backstop"] = capture_backstop
         with self._lock:
             self._last_maintenance_result = result
+        return result
+
+    def catch_up_once(self, *, reason: str = "manual") -> dict[str, Any]:
+        self._mark_realtime_heartbeat(ok=True, mode="packet_facts_catch_up", phase="flush_capture")
+        result = catch_up_fanxiu_packet_facts(reason=reason)
+        with self._lock:
+            self._last_realtime_result = result
         return result
 
     def _run_loop(self) -> None:

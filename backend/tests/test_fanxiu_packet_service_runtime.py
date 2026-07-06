@@ -132,6 +132,54 @@ def test_packet_service_health_uses_active_heartbeat_for_maintenance(monkeypatch
     assert health["worker_maintenance_age_seconds"] == 10
 
 
+def test_packet_service_health_flags_active_substate_without_real_heartbeat(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture, _worker=None: {"age_seconds": 5, "path": "capture.pcap", "size": 128, "mtime_text": "2026-06-28 21:00:00"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_age_seconds",
+        lambda value: {
+            "2026-06-28 21:00:00": 30,
+            "2026-06-28 16:28:17": 4 * 3600,
+        }.get(value),
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True, "watchdog_last_check_at": "2026-06-28 21:00:00"},
+            "packet_worker": {
+                "ok": True,
+                "updated_at": "2026-06-28 21:00:00",
+                "realtime_running": True,
+                "maintenance_running": True,
+                "realtime_interval_seconds": 15,
+                "maintenance_interval_seconds": 1800,
+                "realtime": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "active": True,
+                },
+                "maintenance": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "active": True,
+                },
+            },
+        }
+    )
+
+    assert "realtime_result_stale" in health["issues"]
+    assert "maintenance_result_stale" in health["issues"]
+    assert health["worker_realtime_age_seconds"] == 4 * 3600
+
+
 def test_packet_service_health_flags_lagging_realtime_cursor_even_with_active_heartbeat(monkeypatch, tmp_path):
     cursor = tmp_path / "fanxiu_runtime_cursor.pcap"
     latest = tmp_path / "fanxiu_runtime_latest.pcap"
@@ -197,6 +245,73 @@ def test_packet_service_health_flags_lagging_realtime_cursor_even_with_active_he
     assert "realtime_result_stale" not in health["issues"]
     assert "realtime_cursor_lagging" in health["issues"]
     assert health["realtime_cursor_lag_seconds"] == 400
+
+
+def test_packet_service_health_allows_short_realtime_catchup_window(monkeypatch, tmp_path):
+    cursor = tmp_path / "fanxiu_runtime_cursor.pcap"
+    latest = tmp_path / "fanxiu_runtime_latest.pcap"
+    cursor.write_bytes(b"older")
+    latest.write_bytes(b"newer")
+    cursor_mtime = cursor.stat().st_mtime
+    latest_mtime = cursor_mtime + 210
+    os.utime(latest, (latest_mtime, latest_mtime))
+
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture, _worker=None: {
+            "age_seconds": 5,
+            "path": str(latest),
+            "size": 128,
+            "mtime": latest_mtime,
+            "mtime_text": "2026-06-28 21:00:00",
+        },
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_age_seconds",
+        lambda value: {
+            "2026-06-28 21:00:00": 30,
+            "2026-06-28 20:59:50": 10,
+        }.get(value, 0),
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {"game_running": True, "tcpdump_ready": True, "watchdog_last_check_at": "2026-06-28 21:00:00"},
+            "packet_worker": {
+                "ok": True,
+                "updated_at": "2026-06-28 21:00:00",
+                "realtime_running": True,
+                "maintenance_running": True,
+                "realtime_interval_seconds": 15,
+                "maintenance_interval_seconds": 1800,
+                "has_unconfirmed_gap": True,
+                "confirmed_cursor_pcap": str(cursor),
+                "realtime": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "confirmed_cursor_pcap": str(cursor),
+                    "active": True,
+                    "heartbeat_at": "2026-06-28 20:59:50",
+                },
+                "maintenance": {
+                    "updated_at": "2026-06-28 16:28:17",
+                    "active": True,
+                    "heartbeat_at": "2026-06-28 20:59:50",
+                },
+            },
+        }
+    )
+
+    assert "realtime_result_stale" not in health["issues"]
+    assert "realtime_cursor_lagging" not in health["issues"]
+    assert health["realtime_cursor_lag_seconds"] == 210
 
 
 def test_packet_service_health_suppresses_mail_stale_warning_without_recent_mail_protocol(monkeypatch):

@@ -239,6 +239,7 @@ export interface NoteCalendarSummaryBucketRequest {
 export interface NoteCalendarSummaryRequest {
   query: NoteProgramRequest;
   buckets: NoteCalendarSummaryBucketRequest[];
+  include_flat_nodes?: boolean;
 }
 
 export interface NoteCalendarSummaryBucketResponse {
@@ -252,6 +253,19 @@ export interface NoteCalendarSummaryResponse {
   nodes: NoteNode[];
   total_nodes: number;
 }
+
+const collectCalendarSummaryNodes = (data: NoteCalendarSummaryResponse): NoteNode[] => {
+  const deduped = new Map<string, NoteNode>();
+  for (const bucket of data.buckets || []) {
+    for (const note of bucket.nodes || []) {
+      deduped.set(String(note.id), note);
+    }
+  }
+  if (deduped.size > 0) {
+    return Array.from(deduped.values());
+  }
+  return data.nodes || [];
+};
 
 export interface NoteBatchUpdateRequest {
   ids: NoteRef[];
@@ -2066,8 +2080,9 @@ export const useNoteStore = defineStore('notes', () => {
       const response = await api.post('/notes/query-program/calendar-summary', request);
       const data = response.data as NoteCalendarSummaryResponse;
       if (session.requestVersion !== requestVersion) return null;
+      const appliedNodes = collectCalendarSummaryNodes(data);
       const applied = applyQueryResponseToTab(tabId, request.query, {
-        nodes: data.nodes,
+        nodes: appliedNodes,
         edges: [],
         total_nodes: data.total_nodes,
         total_edges: 0,

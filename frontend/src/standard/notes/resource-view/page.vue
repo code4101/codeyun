@@ -48,7 +48,6 @@ const RESOURCE_LINK_SUBMENU_WIDTH = 176
 const SHEET_ADVANCED_SUBMENU_WIDTH = 196
 const WORKBOOK_CONTEXT_MENU_WIDTH = 148
 const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
-const SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT = 960
 
 type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
@@ -358,6 +357,12 @@ function getCleanWorkbookRouteQuery(targetSheetId?: number | null): LocationQuer
   }
   if (routeWorkspaceView.value) {
     query.view = routeWorkspaceView.value
+  }
+  const sheetPerfQuery = Array.isArray(route.query.sheetPerf)
+    ? route.query.sheetPerf[0]
+    : route.query.sheetPerf
+  if (sheetPerfQuery != null && String(sheetPerfQuery).trim()) {
+    query.sheetPerf = String(sheetPerfQuery)
   }
   return query
 }
@@ -1614,7 +1619,6 @@ onBeforeUnmount(() => {
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         runtime-height-mode="fill"
-        :runtime-max-grid-height="SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
         :show-title-input="false"
         empty-text="请选择工作表"
@@ -1634,7 +1638,6 @@ onBeforeUnmount(() => {
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         runtime-height-mode="fill"
-        :runtime-max-grid-height="SHEET_RESOURCE_RUNTIME_MAX_GRID_HEIGHT"
         :show-title-input="false"
         :show-back-button="standaloneWorkbookBackTo !== ''"
         show-user-identity

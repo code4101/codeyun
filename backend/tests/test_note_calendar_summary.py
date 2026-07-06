@@ -135,3 +135,25 @@ def test_calendar_summary_applies_custom_field_exclude_rule():
         assert {node["title"] for node in result["nodes"]} == {"private", "public b"}
     finally:
         session.close()
+
+
+def test_calendar_summary_can_skip_flat_nodes_payload():
+    session, user = _session_with_notes()
+    try:
+        summary = _summary_request()
+        summary.include_flat_nodes = False
+
+        result = _try_execute_note_calendar_summary_sql_scan(
+            summary,
+            current_user=user,
+            user_id=user.id,
+            session=session,
+        )
+
+        assert result is not None
+        assert result["total_nodes"] == 3
+        assert result["nodes"] == []
+        assert result["buckets"][0]["total_nodes"] == 3
+        assert {node["title"] for node in result["buckets"][0]["nodes"]} == {"public a", "private", "public b"}
+    finally:
+        session.close()

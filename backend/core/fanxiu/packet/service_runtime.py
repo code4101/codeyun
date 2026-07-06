@@ -353,6 +353,15 @@ def _realtime_cursor_lag_seconds(worker: dict[str, Any], latest_capture: dict[st
     return max(0.0, float(latest_mtime) - float(cursor_mtime))
 
 
+def _realtime_cursor_lag_issue_threshold_seconds(worker: dict[str, Any]) -> float:
+    try:
+        interval_seconds = float(worker.get("realtime_interval_seconds") or 0.0)
+    except (TypeError, ValueError):
+        interval_seconds = 0.0
+    # Give the realtime loop a bounded catch-up window before surfacing lag as a hard issue.
+    return max(180.0, interval_seconds * 15.0 if interval_seconds > 0 else 0.0)
+
+
 def _mail_protocol_probe_from_worker(worker: dict[str, Any]) -> dict[str, Any]:
     def iter_probe_candidates() -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -430,7 +439,7 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         worker
         and worker.get("has_unconfirmed_gap")
         and isinstance(realtime_cursor_lag_seconds, (int, float))
-        and realtime_cursor_lag_seconds > 180
+        and realtime_cursor_lag_seconds > _realtime_cursor_lag_issue_threshold_seconds(worker)
     ):
         issues.append("realtime_cursor_lagging")
     if worker and worker.get("skipped") and worker.get("skip_reason"):
