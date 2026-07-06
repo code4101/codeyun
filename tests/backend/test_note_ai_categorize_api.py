@@ -46,8 +46,8 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
         id="note-ai-categorize-1",
         numeric_id=_numeric_note_id("note-ai-categorize-1"),
         user_id=auth_user.id,
-        title="修复登录接口报错",
-        content="<p>用户登录时会出现 500 报错，需要尽快定位并修复。</p>",
+        title="修复登录代理地址",
+        content="<p>系统代理地址需要改成本地回环地址。</p>",
         node_type="note",
         note_types=[{"key": "note", "weight": 100}],
         note_categories=[{"key": "general", "weight": 100}],
@@ -63,15 +63,15 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
         history=[],
     )
     reference_bug = NoteNode(
-        id="note-ai-categorize-ref-bug",
-        numeric_id=_numeric_note_id("note-ai-categorize-ref-bug"),
+        id="note-ai-categorize-ref-codeyun",
+        numeric_id=_numeric_note_id("note-ai-categorize-ref-codeyun"),
         user_id=auth_user.id,
-        title="修复注册接口报错",
+        title="修复系统代理地址",
         content="<p>另一条参考笔记。</p>",
-        node_type="bug",
-        note_types=[{"key": "bug", "weight": 100}],
-        note_categories=[{"key": "bug", "weight": 100}],
-        primary_category="bug",
+        node_type="custom_codeyun_general",
+        note_types=[{"key": "custom_codeyun_general", "weight": 100}],
+        note_categories=[{"key": "custom_codeyun_general", "weight": 100}],
+        primary_category="custom_codeyun_general",
         note_form="note",
         note_kind="note",
         note_scene="note",
@@ -102,6 +102,21 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
         start_at=3,
         history=[],
     )
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 10},
+                    {"key": "bug", "label": "缺陷", "color": "#F56C6C", "order": 20},
+                    {"key": "project", "label": "项目", "color": "#7B1FA2", "order": 30},
+                    {"key": "module", "label": "模块", "color": "#BA68C8", "order": 40},
+                    {"key": "task", "label": "任务", "color": "#409EFF", "order": 50},
+                ]
+            },
+        )
+    )
     session.add(note)
     session.add(reference_bug)
     session.add(reference_doc)
@@ -111,7 +126,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
         "backend.api.notes.chat_with_provider",
         return_value={
             "model": "deepseek-chat",
-            "content": '{"primary_category":"bug","note_form":"note","lifecycle_stage":"doing","reason":"这是一个明确待修复的问题","confidence":0.96}',
+            "content": '{"primary_category":"custom_codeyun_general","note_form":"note","lifecycle_stage":"doing","reason":"这是 CodeYun 系统配置修复","confidence":0.96}',
         },
     ) as mock_chat:
         response = client.post(
@@ -127,29 +142,30 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     assert payload["app"] == "note-taxonomy"
     assert payload["provider"] == "deepseek"
     assert payload["model"] == "deepseek-chat"
-    assert payload["summary"] == "已标记为 缺陷 / 笔记 / 待办"
-    assert payload["note"]["primary_category"] == "bug"
-    assert payload["note"]["note_categories"] == [{"key": "bug", "weight": 100}]
+    assert payload["summary"] == "已标记为 CodeYun/综合 / 笔记 / 待办"
+    assert payload["note"]["primary_category"] == "custom_codeyun_general"
+    assert payload["note"]["note_categories"] == [{"key": "custom_codeyun_general", "weight": 100}]
     assert payload["note"]["note_form"] == "note"
     assert payload["note"]["lifecycle_stage"] == "doing"
-    assert payload["note"]["node_type"] == "bug"
+    assert payload["note"]["node_type"] == "custom_codeyun_general"
     assert payload["note"]["node_status"] == "doing"
 
     session.refresh(note)
-    assert note.primary_category == "bug"
-    assert note.note_categories == [{"key": "bug", "weight": 100}]
+    assert note.primary_category == "custom_codeyun_general"
+    assert note.note_categories == [{"key": "custom_codeyun_general", "weight": 100}]
     assert note.lifecycle_stage == "doing"
-    assert note.node_type == "bug"
+    assert note.node_type == "custom_codeyun_general"
     assert note.node_status == "doing"
 
     kwargs = mock_chat.call_args.kwargs
     assert kwargs["provider_id"] == "deepseek"
     assert kwargs["model"] == "deepseek-chat"
     assert "仅根据当前节点标题" in kwargs["system_prompt"]
-    assert "修复登录接口报错" in kwargs["messages"][0]["content"]
-    assert "500 报错" not in kwargs["messages"][0]["content"]
-    assert "- 修复注册接口报错 | bug(缺陷) | note(笔记) | doing(待办)" in kwargs["messages"][0]["content"]
+    assert "修复登录代理地址" in kwargs["messages"][0]["content"]
+    assert "本地回环地址" not in kwargs["messages"][0]["content"]
+    assert "- 修复系统代理地址 | custom_codeyun_general(CodeYun/综合) | note(笔记) | doing(待办)" in kwargs["messages"][0]["content"]
     assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" not in kwargs["messages"][0]["content"]
+    assert "bug | 缺陷" not in kwargs["messages"][0]["content"]
     assert "project | 项目" not in kwargs["messages"][0]["content"]
     assert "module | 模块" not in kwargs["messages"][0]["content"]
     assert "task | 任务" not in kwargs["messages"][0]["content"]
@@ -161,6 +177,19 @@ def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, 
         auth_user.id,
         "修复登录接口报错",
         content="<p>当前正文不应参与分类。</p>",
+    )
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 10},
+                    {"key": "bug", "label": "缺陷", "color": "#F56C6C", "order": 20},
+                    {"key": "project", "label": "项目", "color": "#7B1FA2", "order": 30},
+                ]
+            },
+        )
     )
     session.add(note)
     for index in range(6):
@@ -188,7 +217,7 @@ def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, 
         "backend.api.notes.chat_with_provider",
         return_value={
             "model": "deepseek-chat",
-            "content": '{"primary_category":"bug","note_form":"note","lifecycle_stage":"doing"}',
+            "content": '{"primary_category":"custom_codeyun_general","note_form":"note","lifecycle_stage":"doing"}',
         },
     ) as mock_chat:
         response = client.post(
@@ -201,7 +230,9 @@ def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, 
 
     assert response.status_code == 200
     prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
-    assert prompt.count("| bug(缺陷) | note(笔记) | doing(待办)") == 4
+    assert "bug | 缺陷" not in prompt
+    assert "| bug(缺陷) | note(笔记) | doing(待办)" not in prompt
+    assert "custom_codeyun_general | CodeYun/综合" in prompt
     assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" not in prompt
     assert "当前正文不应参与分类" not in prompt
 
@@ -213,9 +244,10 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
             key=build_note_category_palette_setting_key(auth_user.id),
             value={
                 "items": [
-                    {"key": "general", "label": "综合", "order": 0},
-                    {"key": "focus", "label": "重点", "order": 10},
-                    {"key": "bug", "label": "缺陷", "order": 20},
+                        {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                        {"key": "focus", "label": "重点", "color": "#E6A23C", "order": 10},
+                        {"key": "bug", "label": "缺陷", "color": "#F56C6C", "order": 20},
+                        {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 30},
                 ]
             },
         )
@@ -239,7 +271,8 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
     prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
     assert "focus | 重点" not in prompt
     assert "general | 综合" in prompt
-    assert "bug | 缺陷" in prompt
+    assert "bug | 缺陷" not in prompt
+    assert "custom_codeyun_general | CodeYun/综合" in prompt
 
 
 def test_ai_categorize_note_rejects_unknown_category(client, session, auth_user):

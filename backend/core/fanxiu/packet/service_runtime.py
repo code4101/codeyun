@@ -353,11 +353,56 @@ def _realtime_cursor_lag_seconds(worker: dict[str, Any], latest_capture: dict[st
     return max(0.0, float(latest_mtime) - float(cursor_mtime))
 
 
+def _mail_protocol_probe_from_worker(worker: dict[str, Any]) -> dict[str, Any]:
+    def iter_probe_candidates() -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for container in (
+            worker,
+            worker.get("realtime") if isinstance(worker.get("realtime"), dict) else None,
+            worker.get("maintenance") if isinstance(worker.get("maintenance"), dict) else None,
+        ):
+            if not isinstance(container, dict):
+                continue
+            for key in (
+                "mail_business_backlog_sync",
+                "bounded_mail_packet_sync",
+                "historical_mail_packet_sync",
+            ):
+                payload = container.get(key)
+                if not isinstance(payload, dict):
+                    continue
+                probe = payload.get("mail_source_probe")
+                if isinstance(probe, dict):
+                    candidates.append(probe)
+        return candidates
+
+    merged_counts: dict[str, int] = {}
+    has_any_mail_source = False
+    has_mail_action = False
+    source_count = 0
+    for probe in iter_probe_candidates():
+        source_count = max(source_count, int(probe.get("source_count") or 0))
+        has_any_mail_source = has_any_mail_source or bool(probe.get("has_any_mail_source"))
+        has_mail_action = has_mail_action or bool(probe.get("has_mail_action"))
+        for name, count in (probe.get("protocol_counts") or {}).items():
+            try:
+                merged_counts[str(name)] = merged_counts.get(str(name), 0) + int(count or 0)
+            except (TypeError, ValueError):
+                continue
+    return {
+        "source_count": source_count,
+        "protocol_counts": merged_counts,
+        "has_any_mail_source": has_any_mail_source,
+        "has_mail_action": has_mail_action,
+    }
+
+
 def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]:
     capture = status.get("capture_runtime") if isinstance(status.get("capture_runtime"), dict) else {}
     worker = status.get("packet_worker") if isinstance(status.get("packet_worker"), dict) else {}
     latest_capture = _latest_live_capture_summary(capture, worker)
     mail = _mail_database_freshness()
+    mail_probe = _mail_protocol_probe_from_worker(worker) if worker else {}
     issues: list[str] = []
     warnings: list[str] = []
     if not status.get("running"):
@@ -392,13 +437,15 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         warnings.append(f"worker_skipped:{worker.get('skip_reason')}")
     mail_seen_age = mail.get("latest_seen_age_seconds") if isinstance(mail, dict) else None
     if isinstance(mail_seen_age, (int, float)) and mail_seen_age > 1800:
-        warnings.append("mail_database_stale")
+        if mail_probe.get("has_any_mail_source"):
+            warnings.append("mail_database_stale")
     return {
         "ok": not issues,
         "issues": issues,
         "warnings": warnings,
         "latest_live_capture": latest_capture,
         "mail_database": mail,
+        "mail_protocol_probe": mail_probe,
         "worker_updated_age_seconds": _age_seconds(worker.get("updated_at")) if worker else None,
         "worker_realtime_age_seconds": _worker_substate_age_seconds(worker, "realtime") if worker else None,
         "worker_maintenance_age_seconds": _worker_substate_age_seconds(worker, "maintenance") if worker else None,

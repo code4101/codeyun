@@ -68,6 +68,7 @@ from backend.models import (
     AppSetting,
     ResourceAccessGrant,
     SheetDocument,
+    SheetPageSnapshot,
     User,
     UserDevice,
     WorkbookDocument,
@@ -15074,6 +15075,281 @@ def _get_cached_sheet_document_json(session: Session, document: SheetDocument) -
     return dict(normalized_document)
 
 
+def _sheet_page_snapshot_page_size_key(page_size: int | None) -> int:
+    return int(page_size or 0)
+
+
+def _sheet_page_snapshot_paginate_key(paginate: bool | None) -> str:
+    if paginate is True:
+        return "true"
+    if paginate is False:
+        return "false"
+    return ""
+
+
+def _sheet_page_snapshot_workbook_id(workbook: WorkbookDocument | None) -> int:
+    if workbook is None:
+        return 0
+    return int(workbook.numeric_id or 0)
+
+
+def _is_sheet_page_snapshot_enabled(document: SheetDocument) -> bool:
+    return _normalize_sheet_text(document.sheet_key) != "attendance"
+
+
+def _get_sheet_page_snapshot(
+    session: Session,
+    document: SheetDocument,
+    *,
+    workbook: WorkbookDocument | None,
+    page: int,
+    page_size: int | None,
+    paginate: bool | None,
+    include_workbook_context: bool,
+) -> SheetPageSnapshot | None:
+    if not _is_sheet_page_snapshot_enabled(document):
+        return None
+    return session.exec(
+        select(SheetPageSnapshot).where(
+            SheetPageSnapshot.sheet_id == str(document.id),
+            SheetPageSnapshot.sheet_version == int(document.version or 1),
+            SheetPageSnapshot.sheet_updated_at == float(document.updated_at or 0.0),
+            SheetPageSnapshot.workbook_id == _sheet_page_snapshot_workbook_id(workbook),
+            SheetPageSnapshot.page == int(page or 1),
+            SheetPageSnapshot.page_size_key == _sheet_page_snapshot_page_size_key(page_size),
+            SheetPageSnapshot.paginate_key == _sheet_page_snapshot_paginate_key(paginate),
+            SheetPageSnapshot.include_workbook_context == bool(include_workbook_context),
+        )
+    ).first()
+
+
+def _serialize_sheet_detail_from_page_snapshot(
+    document: SheetDocument,
+    snapshot: SheetPageSnapshot,
+    *,
+    access: NoteSheetResourceAccess,
+) -> dict[str, Any]:
+    pagination = (
+        NoteSheetPaginationResponse.model_validate(snapshot.pagination_json)
+        if isinstance(snapshot.pagination_json, dict)
+        else None
+    )
+    workbook_items = [
+        WorkbookRefItem.model_validate(item)
+        for item in (snapshot.workbook_items_json or [])
+        if isinstance(item, dict)
+    ]
+    return _serialize_sheet_detail(
+        document,
+        workbook_items=workbook_items,
+        parent_workbook_id=snapshot.parent_workbook_id,
+        document_json=dict(snapshot.document_json or {}),
+        pagination=pagination,
+        access=access,
+        defined_names_context=(
+            dict(snapshot.defined_names_context_json)
+            if isinstance(snapshot.defined_names_context_json, dict)
+            else None
+        ),
+    )
+
+
+def _store_sheet_page_snapshot(
+    session: Session,
+    document: SheetDocument,
+    *,
+    workbook: WorkbookDocument | None,
+    page: int,
+    page_size: int | None,
+    paginate: bool | None,
+    include_workbook_context: bool,
+    payload: dict[str, Any],
+) -> None:
+    if not _is_sheet_page_snapshot_enabled(document):
+        return
+    pagination = payload.get("pagination")
+    if pagination is None:
+        return
+
+    now = time.time()
+    snapshot = _get_sheet_page_snapshot(
+        session,
+        document,
+        workbook=workbook,
+        page=page,
+        page_size=page_size,
+        paginate=paginate,
+        include_workbook_context=include_workbook_context,
+    )
+    if snapshot is None:
+        snapshot = SheetPageSnapshot(
+            sheet_id=str(document.id),
+            sheet_numeric_id=int(document.numeric_id) if document.numeric_id is not None else None,
+            sheet_version=int(document.version or 1),
+            sheet_updated_at=float(document.updated_at or 0.0),
+            workbook_id=_sheet_page_snapshot_workbook_id(workbook),
+            page=int(page or 1),
+            page_size_key=_sheet_page_snapshot_page_size_key(page_size),
+            paginate_key=_sheet_page_snapshot_paginate_key(paginate),
+            include_workbook_context=bool(include_workbook_context),
+            created_at=now,
+            updated_at=now,
+        )
+    snapshot.document_json = dict(payload.get("document_json") or {})
+    snapshot.pagination_json = (
+        pagination.model_dump()
+        if isinstance(pagination, NoteSheetPaginationResponse)
+        else dict(pagination)
+        if isinstance(pagination, dict)
+        else None
+    )
+    snapshot.workbook_items_json = [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in (payload.get("workbook_items") or [])
+        if hasattr(item, "model_dump") or isinstance(item, dict)
+    ]
+    snapshot.parent_workbook_id = payload.get("parent_workbook_id")
+    snapshot.defined_names_context_json = (
+        dict(payload.get("defined_names_context"))
+        if isinstance(payload.get("defined_names_context"), dict)
+        else None
+    )
+    snapshot.updated_at = now
+    session.add(snapshot)
+    session.commit()
+
+
+def _prewarm_default_sheet_page_snapshot(
+    session: Session,
+    document: SheetDocument,
+    *,
+    access: NoteSheetResourceAccess,
+    workbook: WorkbookDocument | None,
+    current_user: User | None,
+    document_json: dict[str, Any] | None = None,
+) -> None:
+    if not _is_sheet_page_snapshot_enabled(document):
+        return
+    if document_json is not None:
+        attributes.set_committed_value(document, "document_json", dict(document_json))
+    with contextlib.suppress(Exception):
+        payload = _build_note_sheet_detail_payload(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            page=1,
+            page_size=None,
+            paginate=None,
+            include_workbook_context=False,
+        )
+        _store_sheet_page_snapshot(
+            session,
+            document,
+            workbook=workbook,
+            page=1,
+            page_size=None,
+            paginate=None,
+            include_workbook_context=False,
+            payload=payload,
+        )
+
+
+def backfill_default_sheet_page_snapshots(
+    session: Session,
+    *,
+    sheet_ids: list[int] | None = None,
+    limit: int = 20,
+    min_document_json_bytes: int = 1_000_000,
+    include_existing: bool = False,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 20), 200))
+    query = (
+        select(SheetDocument)
+        .where(SheetDocument.scope == "notes")
+        .where(_active_sheet_condition())
+        .where(SheetDocument.sheet_key != "attendance")
+        .order_by(SheetDocument.updated_at.desc(), SheetDocument.numeric_id.desc())
+        .limit(safe_limit)
+    )
+    if sheet_ids:
+        query = query.where(SheetDocument.numeric_id.in_([int(item) for item in sheet_ids]))
+    elif min_document_json_bytes > 0:
+        query = query.where(func.length(SheetDocument.document_json) >= int(min_document_json_bytes))
+
+    documents = session.exec(query).all()
+    access = NoteSheetResourceAccess(role="manager", capabilities=NoteSheetAccessCapabilities(
+        can_read=True,
+        can_edit_metadata=True,
+        can_edit_data=True,
+        can_edit_config=True,
+        can_run_sheet_actions=True,
+        can_manage_access=True,
+    ))
+    processed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    created = 0
+    refreshed = 0
+
+    for document in documents:
+        if not _is_sheet_page_snapshot_enabled(document):
+            skipped.append({"sheet_id": document.numeric_id, "reason": "snapshot_disabled"})
+            continue
+        document_json = dict(document.document_json or {})
+        paginate_enabled, _page_size = _get_document_pagination_settings(document_json)
+        if not paginate_enabled:
+            skipped.append({"sheet_id": document.numeric_id, "reason": "pagination_disabled"})
+            continue
+
+        workbooks = _get_workbooks_for_sheet(session, document)
+        workbook_targets: list[WorkbookDocument | None] = workbooks or [None]
+        sheet_created = 0
+        sheet_refreshed = 0
+        for workbook in workbook_targets:
+            existing = _get_sheet_page_snapshot(
+                session,
+                document,
+                workbook=workbook,
+                page=1,
+                page_size=None,
+                paginate=None,
+                include_workbook_context=False,
+            )
+            if existing is not None and not include_existing:
+                continue
+            _prewarm_default_sheet_page_snapshot(
+                session,
+                document,
+                access=access,
+                workbook=workbook,
+                current_user=None,
+                document_json=document_json,
+            )
+            if existing is None:
+                sheet_created += 1
+            else:
+                sheet_refreshed += 1
+
+        created += sheet_created
+        refreshed += sheet_refreshed
+        processed.append({
+            "sheet_id": document.numeric_id,
+            "title": document.title,
+            "workbook_count": len(workbook_targets),
+            "created": sheet_created,
+            "refreshed": sheet_refreshed,
+        })
+
+    return {
+        "candidate_count": len(documents),
+        "processed": processed,
+        "skipped": skipped,
+        "created": created,
+        "refreshed": refreshed,
+    }
+
+
 def _is_superuser_or_user_id(current_user: User | None, *user_ids: int | None) -> bool:
     if current_user is None:
         return False
@@ -16872,14 +17148,18 @@ def _serialize_workbook_detail(
     *,
     current_user: User | None = None,
     access: NoteSheetResourceAccess | None = None,
+    timings: list[tuple[str, float]] | None = None,
 ) -> dict[str, Any]:
+    checkpoint = time.perf_counter()
     links = session.exec(
         select(WorkbookSheetLink)
         .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "workbook_links")
     sheet_ids = [link.sheet_id for link in links]
     sheet_map = _load_sheet_summaries_by_refs(session, sheet_ids)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "sheet_summaries")
     sheets = list({str(sheet.id): sheet for sheet in sheet_map.values()}.values())
     sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(
         session,
@@ -16887,6 +17167,7 @@ def _serialize_workbook_detail(
         current_user,
         sheet_map=sheet_map,
     )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "sheet_workbook_refs")
     parent_workbook_id = _require_workbook_numeric_id(workbook)
     ordered_sheets: list[dict[str, Any]] = []
     for link in links:
@@ -16908,10 +17189,13 @@ def _serialize_workbook_detail(
             parent_workbook_id=parent_workbook_id,
             access=sheet_access,
         ))
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "sheet_access")
+    defined_names = _get_workbook_defined_names(session, workbook)
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "defined_names")
     return {
         **_serialize_workbook_summary(workbook, sheet_count=len(ordered_sheets), access=access),
         "sheets": ordered_sheets,
-        "defined_names": _get_workbook_defined_names(session, workbook),
+        "defined_names": defined_names,
     }
 
 
@@ -17380,23 +17664,57 @@ def get_note_sheet(
         timings=timings,
     )
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve")
+    snapshot = _get_sheet_page_snapshot(
+        session,
+        document,
+        workbook=workbook,
+        page=page,
+        page_size=page_size,
+        paginate=paginate,
+        include_workbook_context=include_workbook_context,
+    )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "page_snapshot")
+    if snapshot is not None:
+        result = NoteSheetDetailResponse.model_validate(
+            _serialize_sheet_detail_from_page_snapshot(
+                document,
+                snapshot,
+                access=access,
+            ),
+        )
+        _record_note_sheet_timing(timings, checkpoint, "payload_total")
+        if timings is not None:
+            response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
+        return result
+
     document_json = _get_cached_sheet_document_json(session, document)
     attributes.set_committed_value(document, "document_json", document_json)
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "document_json")
-    result = NoteSheetDetailResponse.model_validate(
-        _build_note_sheet_detail_payload(
-            session,
-            document,
-            access=access,
-            workbook=workbook,
-            current_user=current_user,
-            page=page,
-            page_size=page_size,
-            paginate=paginate,
-            include_workbook_context=include_workbook_context,
-            timings=timings,
-        ),
+    payload = _build_note_sheet_detail_payload(
+        session,
+        document,
+        access=access,
+        workbook=workbook,
+        current_user=current_user,
+        page=page,
+        page_size=page_size,
+        paginate=paginate,
+        include_workbook_context=include_workbook_context,
+        timings=timings,
     )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "build_payload")
+    _store_sheet_page_snapshot(
+        session,
+        document,
+        workbook=workbook,
+        page=page,
+        page_size=page_size,
+        paginate=paginate,
+        include_workbook_context=include_workbook_context,
+        payload=payload,
+    )
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "snapshot_store")
+    result = NoteSheetDetailResponse.model_validate(payload)
     _record_note_sheet_timing(timings, checkpoint, "payload_total")
     if timings is not None:
         response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
@@ -17669,6 +17987,14 @@ def patch_note_sheet_table(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
@@ -17702,7 +18028,7 @@ def patch_note_sheet_cells(
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    document, access, _workbook = _get_note_sheet_or_404(
+    document, access, workbook = _get_note_sheet_or_404(
         session,
         current_user,
         sheet_id,
@@ -17766,6 +18092,14 @@ def patch_note_sheet_cells(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     if _is_attendance_questionnaire_data_sheet(document):
@@ -17786,7 +18120,7 @@ def patch_note_sheet(
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    document, access, _workbook = _get_note_sheet_or_404(
+    document, access, workbook = _get_note_sheet_or_404(
         session,
         current_user,
         sheet_id,
@@ -17827,6 +18161,14 @@ def patch_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     if _is_attendance_questionnaire_data_sheet(document):
@@ -17931,6 +18273,14 @@ def update_sheet_defined_names_endpoint(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     workbook_names = _get_workbook_defined_names(session, workbook)
@@ -17985,7 +18335,7 @@ def update_note_sheet(
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    document, access, _workbook = _get_note_sheet_or_404(
+    document, access, workbook = _get_note_sheet_or_404(
         session,
         current_user,
         sheet_id,
@@ -18048,6 +18398,14 @@ def update_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     if _is_attendance_questionnaire_data_sheet(document):
@@ -18092,7 +18450,7 @@ async def import_note_sheet_excel_reset(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    document, access, _workbook = _get_note_sheet_or_404(
+    document, access, workbook = _get_note_sheet_or_404(
         session,
         current_user,
         sheet_id,
@@ -18183,6 +18541,14 @@ async def import_note_sheet_excel_reset(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _prewarm_default_sheet_page_snapshot(
+            session,
+            document,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            document_json=next_document,
+        )
         _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
@@ -19403,13 +19769,28 @@ def create_workbook(
 @router.get("/workbooks/{workbook_id}", response_model=WorkbookDetailResponse)
 def get_workbook(
     workbook_id: int,
+    response: Response,
+    x_codeyun_boot_perf: str | None = Header(default=None, alias="X-CodeYun-BootPerf"),
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
+    timings: list[tuple[str, float]] | None = [] if x_codeyun_boot_perf else None
+    checkpoint = time.perf_counter()
     workbook, access = _get_workbook_or_404(session, current_user, workbook_id, required_role="viewer")
-    return WorkbookDetailResponse.model_validate(
-        _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),
+    checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve")
+    result = WorkbookDetailResponse.model_validate(
+        _serialize_workbook_detail(
+            session,
+            workbook,
+            current_user=current_user,
+            access=access,
+            timings=timings,
+        ),
     )
+    _record_note_sheet_timing(timings, checkpoint, "payload_total")
+    if timings is not None:
+        response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
+    return result
 
 
 @router.post("/workbooks/{workbook_id}/restore", response_model=WorkbookDetailResponse)
@@ -19904,3 +20285,4 @@ def delete_workbook(
     session.add(workbook)
     session.commit()
     return {"ok": True}
+

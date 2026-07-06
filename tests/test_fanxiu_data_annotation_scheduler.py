@@ -4587,6 +4587,42 @@ def _drain_generator(gen):
             return exc.value
 
 
+def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene():
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.attempts = 0
+
+        def wait_click_then_view(self, scene_id, shape_title, target_scene_id, **kwargs):
+            actions.append(("wait_click_then_view", scene_id, shape_title, target_scene_id, kwargs.get("timeout")))
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TimeoutError("still on #326")
+            if False:
+                yield None
+            return target_scene_id
+
+        def current_scene(self, candidates, update=False):
+            actions.append(("current_scene", tuple(candidates), update))
+            return 326, 100.0, "frame326"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            return "玉霄天宫 本周剩余奖励次数:3/3 挑战"
+
+    result = _drain_generator(runner._open_daily_weekly_dungeon_challenge_view(FakeRuntime(), {}))
+
+    assert result == 327
+    assert actions == [
+        ("wait_click_then_view", 326, "挑战", 327, 10.0),
+        ("current_scene", (327, 326), True),
+        ("ocr_text", "frame326"),
+        ("wait_click_then_view", 326, "挑战", 327, 10.0),
+    ]
+
+
 def test_unknown_evidence_classifies_partial_scene_identity_match(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image261 = {
@@ -5782,6 +5818,110 @@ def test_data_annotation_scheduler_repair_keeps_successful_daily_task_on_next_da
     signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
     assert signup["next_time"] == "2026-06-19 00:00:00"
 
+
+def test_daily_signup_treats_bottom_confirmed_all_signed_as_success():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        payload = {"signup_bottom_confirmations": 2}
+
+        def current_scene(self, view_ids=None, **_kwargs):
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame=None):
+            return "报名 活动时间 已报名"
+
+        def ocr_row_clicks_in_shape(self, _view_id, _shape, *, include=(), exclude=()):
+            if include == ("已报名",):
+                return [(720.0, 460.0, "已报名")]
+            if include == ("报名",) and exclude == ("已报名",):
+                return []
+            raise AssertionError((include, exclude))
+
+        def scroll_shape_content(self, view_id, shape):
+            assert (view_id, shape) == (23, "报名列")
+            if False:
+                yield None
+            return False
+
+        def click_shape_center(self, view_id, shape):
+            assert (view_id, shape) == (69, "退出")
+
+        def wait_action_settle(self, seconds):
+            assert seconds == 1.0
+            if False:
+                yield None
+            return "success"
+
+        def view_visible(self, view_id, **_kwargs):
+            return ("view_visible", view_id)
+
+        def ocr_matches(self, predicate, **_kwargs):
+            return ("ocr_matches", predicate)
+
+        def wait_any(self, conditions, **kwargs):
+            assert set(conditions) == {"scene", "text"}
+            if False:
+                yield None
+            return "scene"
+
+    result = _drain_generator(runner.日常报名流程(FakeRuntime()))
+
+    assert result == {
+        "result": "success",
+        "claimed": 0,
+        "signup_page_opened": True,
+        "evidence": "all_items_already_signed",
+    }
+
+
+def test_daily_signup_without_claim_or_signed_evidence_still_retries():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        payload = {"signup_bottom_confirmations": 2}
+
+        def current_scene(self, view_ids=None, **_kwargs):
+            return 69, 100.0, "frame"
+
+        def ocr_text(self, _frame=None):
+            return "报名 活动时间 待报名"
+
+        def ocr_row_clicks_in_shape(self, _view_id, _shape, *, include=(), exclude=()):
+            return []
+
+        def scroll_shape_content(self, view_id, shape):
+            assert (view_id, shape) == (23, "报名列")
+            if False:
+                yield None
+            return False
+
+        def click_shape_center(self, view_id, shape):
+            assert (view_id, shape) == (69, "退出")
+
+        def wait_action_settle(self, seconds):
+            assert seconds == 1.0
+            if False:
+                yield None
+            return "success"
+
+        def view_visible(self, view_id, **_kwargs):
+            return ("view_visible", view_id)
+
+        def ocr_matches(self, predicate, **_kwargs):
+            return ("ocr_matches", predicate)
+
+        def wait_any(self, conditions, **kwargs):
+            assert set(conditions) == {"scene", "text"}
+            if False:
+                yield None
+            return "scene"
+
+    result = _drain_generator(runner.日常报名流程(FakeRuntime()))
+
+    assert result["result"] == "skipped"
+    assert result["claimed"] == 0
+    assert "不能确认" in result["message"]
 
 def test_daily_signup_return_world_uses_fixed_exit_click_before_world_wait():
     runner = create_fanxiu_runtime_runner()

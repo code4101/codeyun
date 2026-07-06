@@ -2900,8 +2900,7 @@ class DailyFoundationTaskMixin:
             if scene_id != 326:
                 raise RuntimeError(f"日常_周本：点击天宫后未到达 #326，OCR={text[:120]}")
         if scene_id == 326:
-            runtime.click_shape_center(326, "挑战")
-            yield from runtime.wait_action_settle(1.0)
+            scene_id = yield from self._open_daily_weekly_dungeon_challenge_view(runtime, payload)
         yield from runtime.wait_click(327, "挑战")
         yield from runtime.wait_view(
             34,
@@ -2910,6 +2909,43 @@ class DailyFoundationTaskMixin:
         )
         self._log("success", "日常_周本：战斗结束，已回到 #34")
         return "success"
+
+    def _open_daily_weekly_dungeon_challenge_view(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+    ):
+        max_attempts = max(1, int(payload.get("tiangong_challenge_max_attempts") or 3))
+        wait_timeout = float(payload.get("tiangong_challenge_wait_timeout") or 10.0)
+        settle_seconds = float(payload.get("tiangong_challenge_settle_seconds") or 1.5)
+        last_error: TimeoutError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                yield from runtime.wait_click_then_view(
+                    326,
+                    "挑战",
+                    327,
+                    settle_seconds=settle_seconds,
+                    timeout=wait_timeout,
+                    label="日常_周本：等待进入 #327 挑战准备页",
+                )
+                return 327
+            except TimeoutError as exc:
+                last_error = exc
+                scene_id, score, frame = runtime.current_scene([327, 326], update=True)
+                text = runtime.ocr_text(frame)
+                if scene_id == 327:
+                    return 327
+                if scene_id == 326 and attempt < max_attempts:
+                    self._log(
+                        "warning",
+                        f"日常_周本：点击 #326「挑战」后仍在 #326 {score:.0f}%，重试 {attempt + 1}/{max_attempts}",
+                    )
+                    continue
+                raise TimeoutError(f"日常_周本：点击 #326「挑战」后未进入 #327，当前 #{scene_id or 'unknown'} {score:.0f}%，OCR={text[:120]}") from exc
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError("日常_周本：未能进入 #327 挑战准备页")
 
     def _is_daily_weekly_dungeon_tiangong_page_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(str(text or "")))

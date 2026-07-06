@@ -343,6 +343,43 @@ def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, mo
     assert state["decoded_count"] == 1
 
 
+def test_maintenance_backlog_does_not_overwrite_realtime_worker_state(tmp_path, monkeypatch):
+    live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
+    live_dir.mkdir(parents=True)
+    pcap = live_dir / "0001-old-gap.pcap"
+    pcap.write_bytes(b"old-gap-pcap" * 16)
+    now = time.time()
+    os.utime(pcap, (now - 120, now - 120))
+
+    state_dir = tmp_path / "fanxiu" / "packet-insights"
+    state_dir.mkdir(parents=True)
+    realtime_state_path = state_dir / "live_capture_worker_state.json"
+    realtime_payload = {
+        "schema_version": worker.PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "mode": "realtime",
+        "confirmed_cursor_pcap": "keep-realtime-cursor.pcap",
+        "confirmed_cursor_mtime": now - 30,
+        "has_unconfirmed_gap": False,
+        "known_error_count": 0,
+    }
+    realtime_state_path.write_text(json.dumps(realtime_payload), encoding="utf-8")
+
+    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda *_args, **_kwargs: {"decoded_count": 1})
+    monkeypatch.setattr(worker, "sync_fanxiu_decoded_record_backlog", lambda **_kwargs: {"ok": True, "scanned": 0})
+    monkeypatch.setattr(worker, "sync_fanxiu_activity_packets", lambda **_kwargs: {"ok": True, "record_count": 0})
+    monkeypatch.setattr(worker, "_sync_historical_business_backlog", lambda **_kwargs: ({"changed": True}, {"source_count": 0}))
+
+    worker.sync_fanxiu_capture_maintenance_backlog(data_dir=tmp_path, stable_seconds=1, limit=1)
+
+    realtime_state = json.loads(realtime_state_path.read_text(encoding="utf-8"))
+    maintenance_state = json.loads((state_dir / "maintenance_worker_state.json").read_text(encoding="utf-8"))
+
+    assert realtime_state["confirmed_cursor_pcap"] == "keep-realtime-cursor.pcap"
+    assert realtime_state["has_unconfirmed_gap"] is False
+    assert maintenance_state["mode"] == "maintenance"
+    assert maintenance_state["decoded_count"] == 1
+
+
 def test_packet_worker_status_separates_realtime_and_maintenance(monkeypatch):
     service = worker.FanxiuPacketInsightWorker(scan_interval_seconds=999, maintenance_interval_seconds=999)
     monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", lambda **_kwargs: {"ok": True, "mode": "realtime"})

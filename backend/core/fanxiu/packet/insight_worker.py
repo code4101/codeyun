@@ -1124,6 +1124,7 @@ def sync_fanxiu_capture_paths(
 def sync_fanxiu_live_capture_backlog(
     *,
     data_dir: str | Path | None = None,
+    state_path: str | Path | None = None,
     stable_seconds: float = DEFAULT_STABLE_SECONDS,
     retry_failed_after_seconds: float = DEFAULT_FAILED_RETRY_SECONDS,
     max_capture_age_seconds: float | None = DEFAULT_LIVE_CAPTURE_MAX_AGE_SECONDS,
@@ -1140,7 +1141,8 @@ def sync_fanxiu_live_capture_backlog(
     decoded_digests = _decoded_capture_digests(data_dir)
     decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir)
     decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
-    previous_state = _load_json(_worker_state_path(data_dir), {})
+    worker_state_path = Path(state_path) if state_path is not None else _worker_state_path(data_dir)
+    previous_state = _load_json(worker_state_path, {})
     previous_errors = _previous_errors_by_digest(previous_state)
     previous_cursor_mtime = float(
         previous_state.get("confirmed_cursor_mtime") or previous_state.get("cursor_mtime") or 0
@@ -1194,7 +1196,7 @@ def sync_fanxiu_live_capture_backlog(
             "errors": list(previous_errors.values())[-20:],
             "pcap_states": previous_state.get("pcap_states", []) if isinstance(previous_state, dict) else [],
         }
-        _write_json(_worker_state_path(data_dir), _compact_worker_state_payload(payload))
+        _write_json(worker_state_path, _compact_worker_state_payload(payload))
         return payload
 
     decode_limit = max(1, int(limit))
@@ -1419,7 +1421,7 @@ def sync_fanxiu_live_capture_backlog(
         "errors": list(merged_errors.values())[-20:],
         "pcap_states": _merge_pcap_states(previous_state, pcap_state_updates),
     }
-    _write_json(_worker_state_path(data_dir), _compact_worker_state_payload(payload))
+    _write_json(worker_state_path, _compact_worker_state_payload(payload))
     return payload
 
 
@@ -1444,6 +1446,7 @@ def sync_fanxiu_capture_maintenance_backlog(
     """
     result = sync_fanxiu_live_capture_backlog(
         data_dir=data_dir,
+        state_path=_maintenance_state_path(data_dir),
         stable_seconds=stable_seconds,
         retry_failed_after_seconds=retry_failed_after_seconds,
         max_capture_age_seconds=None,
