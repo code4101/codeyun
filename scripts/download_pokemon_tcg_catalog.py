@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -73,6 +74,30 @@ def text_of(node: Any) -> str:
     if node is None:
         return ""
     return " ".join(node.get_text(" ", strip=True).split())
+
+
+def multiline_text_of(node: Any) -> str:
+    if node is None:
+        return ""
+    paragraphs: list[str] = []
+    for paragraph in node.select("p") if hasattr(node, "select") else []:
+        chunks: list[str] = []
+        for child in paragraph.children:
+            if isinstance(child, Tag) and child.name == "br":
+                chunks.append("\n")
+                continue
+            if isinstance(child, Tag):
+                chunks.append(text_of(child))
+            else:
+                chunks.append(str(child))
+        raw_text = " ".join(chunks)
+        lines = [" ".join(line.split()) for line in raw_text.splitlines()]
+        text = "\n".join(line for line in lines if line)
+        if text:
+            paragraphs.append(text)
+    if paragraphs:
+        return "\n\n".join(paragraphs)
+    return text_of(node)
 
 
 def request_with_retries(session: requests.Session, url: str, *, timeout: float = 30.0) -> requests.Response:
@@ -178,7 +203,7 @@ def parse_card_page(session: requests.Session, link: SetCardLink) -> dict[str, A
         evolves_from = evolves.removeprefix("Evolves from ").strip()
     elif evolves.startswith("Evolves into "):
         evolves_into = evolves.removeprefix("Evolves into ").strip()
-    attacks_text = text_of(root.select_one(".text")) if hasattr(root, "select_one") else ""
+    attacks_text = multiline_text_of(root.select_one(".text")) if hasattr(root, "select_one") else ""
     weak_resist_retreat = split_weak_resist_retreat(
         text_of(root.select_one(".weak-resist-retreat")) if hasattr(root, "select_one") else ""
     )

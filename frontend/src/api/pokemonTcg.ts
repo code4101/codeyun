@@ -72,6 +72,7 @@ export interface PokemonTcgMeta {
   progress: Record<string, unknown>
   card_count: number
   set_counts: Record<string, number>
+  type_counts?: Record<string, { key: string; label: string; count: number }>
   storage?: string
   translation?: {
     available?: boolean
@@ -87,6 +88,7 @@ export async function fetchPokemonTcgMeta() {
 export async function fetchPokemonTcgCards(params: {
   q?: string
   set?: string
+  type?: string
   page?: number
   page_size?: number
 }) {

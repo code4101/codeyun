@@ -88,7 +88,7 @@ def build_prompt(cards: list[dict[str, Any]]) -> str:
         "3. 宝可梦名称使用简体中文官方常用译名；Dark X 译为“黑暗X”。\n"
         "4. TCG 术语保持稳定：Pokémon Power=宝可梦特殊能力，Defending Pokémon=防守宝可梦，"
         "Benched Pokémon=备战宝可梦，damage counter=伤害指示物，retreat cost=撤退费用。\n"
-        "5. 能量符号翻译为中文属性名：{C}=无色，{G}=草，{R}=火，{W}=水，{L}=雷，{P}=超能力，{F}=斗。\n"
+        "5. 能量符号翻译为中文属性名单字：{C}=无，{G}=草，{R}=火，{W}=水，{L}=雷，{P}=超，{F}=斗。\n"
         "6. 招式说明要完整翻译，不要残留英文规则句；数值、符号、伤害倍率保留。\n"
         "7. 图鉴文本翻译成通顺中文，不要编造原文没有的信息。\n"
         "8. 输出字段固定为：source_card_slug, display_title, set_name, official_name, pokemon_species, "
@@ -273,14 +273,23 @@ def main() -> int:
         if isinstance(existing, list):
             translations = {str(item.get("source_card_slug") or ""): item for item in existing if isinstance(item, dict)}
     pending = [card for card in cards if str(card.get("source_card_slug") or "") not in translations]
-    for index in range(0, len(pending), args.batch_size):
-        batch = pending[index:index + args.batch_size]
-        batch_translations = translate_batch(batch, timeout=args.timeout)
-        for item in batch_translations:
-            translations[str(item["source_card_slug"])] = item
+    try:
+        for index in range(0, len(pending), args.batch_size):
+            batch = pending[index:index + args.batch_size]
+            batch_translations = translate_batch(batch, timeout=args.timeout)
+            for item in batch_translations:
+                translations[str(item["source_card_slug"])] = item
+            ordered = merge_translations(cards, translations)
+            write_json(args.output, ordered)
+            if not args.no_db:
+                update_database(cards, {str(item["source_card_slug"]): item for item in batch_translations})
+            print(f"translated {min(index + len(batch), len(pending))}/{len(pending)} pending, total={len(ordered)}")
+    except Exception:
         ordered = merge_translations(cards, translations)
         write_json(args.output, ordered)
-        print(f"translated {min(index + len(batch), len(pending))}/{len(pending)} pending, total={len(ordered)}")
+        if ordered and not args.no_db:
+            update_database(cards, translations)
+        raise
     ordered = merge_translations(cards, translations)
     write_json(args.output, ordered)
     updated = 0 if args.no_db else update_database(cards, translations)

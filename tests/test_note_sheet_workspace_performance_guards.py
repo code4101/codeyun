@@ -65,6 +65,52 @@ def test_note_sheet_workspace_data_refresh_uses_load_data_instead_of_update_sett
     assert "updateSettings({\n      data: sheetHotGridRows.value" not in source
 
 
+def test_note_sheet_workspace_uses_filtered_query_on_first_filtered_page_load():
+    source = _workspace_source()
+    start = source.index("async function fetchNoteSheetForCurrentView(")
+    end = source.index("\nfunction getUsableInitialSheetDetail", start)
+    body = source[start:end]
+
+    assert "const activeFilters = buildActiveSheetQueryFilters()" in body
+    assert "if (activeFilters.active)" in body
+    assert "options?.paginate === true && activeFilters.active" not in body
+    assert "return queryNoteSheet(props.sheetId, {" in body
+    assert "page: options?.page ?? currentPage.value" in body
+    assert "page_size: options?.pageSize ?? pageSize.value" in body
+    assert "paginate: options?.paginate" in body
+    assert "column_filters: activeFilters.columnFilters" in body
+    assert "row_filter_programs: activeFilters.rowFilterPrograms" in body
+    assert body.index("if (activeFilters.active)") < body.index("return fetchNoteSheet(props.sheetId, options)")
+
+
+def test_note_sheet_workspace_marks_loaded_filter_key_before_post_load_filter_watcher():
+    source = _workspace_source()
+    start = source.index("async function restoreInitialDocument(")
+    end = source.index("\nasync function handlePageChange", start)
+    body = source[start:end]
+    schedule_start = source.index("function scheduleFilteredPaginationReload()")
+    schedule_end = source.index("\nfunction runScheduledSheetFilterReload", schedule_start)
+    schedule_body = source[schedule_start:schedule_end]
+    run_start = source.index("function runScheduledSheetFilterReload()")
+    run_end = source.index("\nasync function restoreInitialDocument", run_start)
+    run_body = source[run_start:run_end]
+
+    assert "const completedFilters = buildActiveSheetQueryFilters()" in body
+    assert "const completedFilterReloadKey = buildSheetFilterReloadKey(completedFilters)" in body
+    assert "completedSheetFilterReloadKey = completedFilterReloadKey" in body
+    assert "trace?.mark('filter-reload-key-completed')" in body
+    assert body.index("completedSheetFilterReloadKey = completedFilterReloadKey") < body.index("await nextTick()")
+    assert body.index("completedSheetFilterReloadKey = completedFilterReloadKey") < body.index("scheduleSheetRenderEnhancement(")
+    assert "if (!filters.active && pageRowIndexes.value === null)" in schedule_body
+    assert schedule_body.index("if (!filters.active && pageRowIndexes.value === null)") < schedule_body.index("const reloadKey = buildSheetFilterReloadKey(filters)")
+    assert "|| reloadKey === completedSheetFilterReloadKey" in schedule_body
+    assert "isCurrentSheetFilterPaginationReady(filters)" not in schedule_body
+    assert "if (reloadKey === completedSheetFilterReloadKey)" in run_body
+    assert run_body.index("if (reloadKey === completedSheetFilterReloadKey)") < run_body.index("activeSheetFilterReloadKey = reloadKey")
+    assert "if (!filters.active && pageRowIndexes.value === null)" in run_body
+    assert run_body.index("if (!filters.active && pageRowIndexes.value === null)") < run_body.index("activeSheetFilterReloadKey = reloadKey")
+
+
 def test_public_sheet_boot_does_not_eagerly_load_feature_access_context():
     source = _frontend_main_source()
 
@@ -325,18 +371,19 @@ def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     assert "const sheetHotInitialGridRows" not in source
     assert ':data="sheetHotGridRows"' in source
     assert ':data="sheetHotInitialGridRows"' not in source
+    assert "const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'standalone'}-${props.sheetId ?? 'inline'}`)" in source
     assert "function ensureHotInitialGridRowsLoaded(reason: string)" in source
     assert "async function waitForHotInitialGridRowsLoaded(reason: string)" in source
     assert "hotInitialDataLoadedContentIdentity" in source
     assert "hotInitialDataLoadedInstance" in source
+    assert "function hasLoadedCurrentHotInitialGridRows(" in source
+    assert "function getHiddenRowsSignature(" in source
+    assert "function markRuntimeHiddenRowsApplied(" in source
     assert "recordSheetPerfEvent('handsontable.initialLoadData'" in source
-    assert "const sheetMergeCellsRenderEnabled = ref(true)" in source
-    assert "if (!shouldUseEnhancedSheetRenderSettings.value || !sheetMergeCellsRenderEnabled.value)" in source
-    assert "sheetMergeCellsRenderEnabled.value = false" in source
-    assert "sheetMergeCellsRenderEnabled.value = true" in enhance_body
     assert "function isCurrentHotGridRowsAlreadyLoaded(" in source
     assert "const alreadyLoaded = isCurrentHotGridRowsAlreadyLoaded(hot)" in source
     assert "if (!alreadyLoaded) {\n    loadCurrentHotGridRows(hot)\n  }" in source
+    assert "markRuntimeHiddenRowsApplied(sheetFilterHiddenRows.value)" in source
     assert "alreadyLoaded," in source
     assert "function requestHotInitialGridRowsLoaded(reason: string)" in source
     assert "requestHotInitialGridRowsLoaded('hot-instance-ready')" in source
@@ -349,6 +396,47 @@ def test_note_sheet_workspace_binds_real_hot_data_to_preserve_initial_render():
     wait_end = source.index("\nfunction isSheetDocumentHidden", wait_start)
     wait_body = source[wait_start:wait_end]
     assert "requestAnimationFrame" not in wait_body
+    row_heights_start = source.index("async function refreshComputedRowHeights(")
+    row_heights_end = source.index("\nfunction hasSelection", row_heights_start)
+    row_heights_body = source[row_heights_start:row_heights_end]
+    assert row_heights_body.index("if (!options.force && !hasLoadedCurrentHotInitialGridRows(hot))") < row_heights_body.index("hot.updateSettings({")
+    access_start = source.index("watch(\n  effectiveAccessCapabilities,")
+    access_end = source.index("\nwatch(\n  () => props.accessCapabilities", access_start)
+    access_body = source[access_start:access_end]
+    assert access_body.index("if (!hasLoadedCurrentHotInitialGridRows(hot))") < access_body.index("hot.updateSettings({")
+    hidden_rows_start = source.index("watch(\n  sheetFilterHiddenRows,")
+    hidden_rows_end = source.index("\nonMounted(", hidden_rows_start)
+    hidden_rows_body = source[hidden_rows_start:hidden_rows_end]
+    assert hidden_rows_body.index("if (!hasLoadedCurrentHotInitialGridRows(hot))") < hidden_rows_body.index("hot.updateSettings({")
+    assert hidden_rows_body.index("const hiddenRowsSignature = getHiddenRowsSignature(hiddenRows)") < hidden_rows_body.index("hot.updateSettings({")
+    assert hidden_rows_body.index("hotRuntimeHiddenRowsSignature === hiddenRowsSignature") < hidden_rows_body.index("hot.updateSettings({")
+    assert hidden_rows_body.index("markRuntimeHiddenRowsApplied(hiddenRows)") > hidden_rows_body.index("hot.updateSettings({")
+
+
+def test_note_sheet_workspace_does_not_render_when_rich_text_editor_is_already_closed():
+    source = _workspace_source()
+    start = source.index("function cancelRichTextContentEditor()")
+    end = source.index("\nfunction focusRichTextContentEditor", start)
+    body = source[start:end]
+
+    assert "if (!state.visible && !richTextInlineToolbar.value.visible)" in body
+    assert body.index("if (!state.visible && !richTextInlineToolbar.value.visible)") < body.index("renderCurrentHotWithReason('rich-text-editor-close')")
+
+
+def test_note_sheet_workspace_reuses_normalized_merged_cells_for_lookup():
+    source = _workspace_source()
+    render_start = source.index("function getRenderableMergedCells()")
+    render_end = source.index("\nfunction getNormalizedSheetMergedCells", render_start)
+    render_body = source[render_start:render_end]
+    lookup_start = source.index("function findMergedCellAtDocumentCell(")
+    lookup_end = source.index("\nfunction findMergedCellAtGridCell", lookup_start)
+    lookup_body = source[lookup_start:lookup_end]
+
+    assert "const normalizedSheetMergedCells = computed(() => getNormalizedSheetMergedCells())" in source
+    assert "const normalized = normalizedSheetMergedCells.value" in render_body
+    assert "normalizeMergedCells(" not in render_body
+    assert "return normalizedSheetMergedCells.value.find((cell) => (" in lookup_body
+    assert "normalizeMergedCells(" not in lookup_body
 
 
 def test_note_sheet_workspace_skips_irrelevant_action_status_requests_on_initial_load():
@@ -421,7 +509,8 @@ def test_workbook_resource_view_forces_runtime_fill_height_for_virtual_rows():
     assert "const containerHeight = Math.floor(sheetFrame.clientHeight || frameRect.height)" in height_body
     assert "const windowHeight = Math.floor(window.innerHeight || document.documentElement.clientHeight || 0)" in height_body
     assert "windowHeight - frameRect.top - SHEET_VIEWPORT_BOTTOM_GAP" in height_body
-    assert "Math.min(containerHeight, viewportRemainingHeight)" in height_body
+    assert "? viewportRemainingHeight" in height_body
+    assert "Math.min(containerHeight, viewportRemainingHeight)" not in height_body
 
 
 def test_note_sheet_workspace_coalesces_viewport_height_updates():
@@ -462,7 +551,7 @@ def test_note_sheet_workspace_reuses_formula_display_state_during_document_load(
     assert "const cachedFormulaDisplayState = normalizedDocumentFormulaDisplayCache.get(document)" in body
     assert "const formulaDisplayCacheReusable = shouldReuseCachedFormulaDisplayState(" in body
     assert "const formulaDisplayForWidths = formulaDisplayCacheReusable" in body
-    assert "buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)" in body
+    assert "buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value, { perfSource:" in body
     assert "formulaDisplayState.value = formulaDisplayForWidths" in body
     assert "refreshFormulaDisplayState()" not in body
     assert "formulaDisplayCacheHit: formulaDisplayCacheReusable" in body
@@ -482,7 +571,7 @@ def test_note_sheet_workspace_does_not_reuse_empty_formula_cache_after_engine_pr
     assert "return !rowsHaveFormulaExpressions(formulaHeaderRows) && !rowsHaveFormulaExpressions(sourceRows)" in helper_body
     assert load_body.index("const formulaDisplayCacheReusable = shouldReuseCachedFormulaDisplayState(") < load_body.index("const formulaDisplayForWidths = formulaDisplayCacheReusable")
     assert "formulaDisplayCacheReusable\n    ? cachedFormulaDisplayState" in load_body
-    assert ": buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)" in load_body
+    assert ": buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value, { perfSource: 'loadSheetDocument' })" in load_body
 
 
 def test_note_sheet_workspace_sheet_perf_is_url_scoped_and_runtime_events_are_lightweight():
@@ -561,6 +650,40 @@ def test_note_sheet_workspace_records_manual_hot_render_reasons():
     assert "getHotInstance()?.render()" not in source_without_helper
     assert "hot?.render()" not in source_without_helper
     assert not re.search(r"(?<!\.)\bhot\.render\(\)", source_without_helper)
+
+
+def test_note_sheet_workspace_coalesces_workspace_view_and_height_render():
+    source = _workspace_source()
+    restore_start = source.index("function restoreSheetWorkspaceViewFromLocalStorage(")
+    restore_end = source.index("\nfunction setSheetWorkspaceView", restore_start)
+    restore_body = source[restore_start:restore_end]
+    switch_start = source.index("function setSheetWorkspaceView(")
+    switch_end = source.index("\nfunction handleSheetWorkspaceViewChange", switch_start)
+    switch_body = source[switch_start:switch_end]
+    height_start = source.index("async function updateSheetViewportHeightNow(")
+    height_end = source.index("\nfunction handleWindowResize", height_start)
+    height_body = source[height_start:height_end]
+
+    assert "updateSheetViewportHeight('workspaceViewRestore').then((rendered) => {" in restore_body
+    assert "const previousView = sheetWorkspaceView.value" in restore_body
+    assert "if (!rendered && previousView !== nextView)" in restore_body
+    assert "renderCurrentHotWithReason('workspace-view-restore')" in restore_body
+    assert "updateSheetViewportHeight('workspaceViewSwitch').then((rendered) => {" in switch_body
+    assert "if (!rendered)" in switch_body
+    assert "renderCurrentHotWithReason('workspace-view-switch')" in switch_body
+    assert "return changed" in height_body
+    assert "return false" in height_body
+
+
+def test_note_sheet_workspace_skips_inline_editor_style_sync_when_editor_closed():
+    source = _workspace_source()
+    start = source.index("function scheduleInlineEditorCellStyleSync()")
+    end = source.index("\nfunction areSheetCellsSame", start)
+    body = source[start:end]
+
+    assert "if (!getActiveOpenedEditor())" in body
+    assert body.index("if (!getActiveOpenedEditor())") < body.index("void nextTick(")
+    assert "styleInlineEditorAsCell(editor)" in body
 
 
 def test_note_sheet_workspace_skips_defined_names_render_when_formula_context_unchanged():
@@ -678,7 +801,31 @@ def test_note_sheet_workspace_preloads_formula_engine_before_initial_document_mo
     assert "Promise.race([" in preload_body
     assert "formula-engine-preload-" in restore_body
     assert "sheetDocumentSourceHasFormulaExpressions(remote.document_json)" in restore_body
+    assert "function sheetDocumentRowHasFormulaExpression(" in source
+    assert "rows.some((row) => sheetDocumentRowHasFormulaExpression(row, headers))" in source
+    assert "trace?.mark('formula-source-scan')" in restore_body
+    assert "startSheetPerfTrace('sheet.formulaDisplayBuild'" in source
+    assert "trace?.mark('engine-build')" in source
+    assert "trace?.mark('cell-models')" in source
+    assert "const FORMULA_DISPLAY_STATE_CACHE_LIMIT = 8" in source
+    assert "const formulaDisplayStateSignatureCache = new Map<string, FormulaDisplayState>()" in source
+    assert "function buildFormulaDisplayStateCacheSignature(" in source
+    assert "function getFormulaDisplayStateCacheValue(" in source
+    assert "function setFormulaDisplayStateCacheValue(" in source
+    assert "const cachedFormulaDisplayState = getFormulaDisplayStateCacheValue(cacheSignature)" in source
+    assert "trace?.mark(cachedFormulaDisplayState ? 'cache-hit' : 'cache-miss')" in source
+    assert "finishTrace('cache-hit'" in source
+    assert "setFormulaDisplayStateCacheValue(cacheSignature, nextState)" in source
+    assert "function getFormulaEngineColumnCount(" in source
+    assert "function formulaRequiresFullWidthEngine(" in source
+    assert "\\b(?:INDIRECT|OFFSET)\\s*\\(" in source
+    assert "getFormulaReferenceMaxColumnIndex(item.expression)" in source
+    assert "row.slice(0, engineColumnCount).map((cellValue)" in source
+    assert "engineColumns: engineColumnCount" in source
+    assert "perfSource: formulaOptions.perfSource ?? 'normalizeDocument'" in source
+    assert "perfSource: 'loadSheetDocument'" in source
     assert "waitForInitialFormulaEnginePreload(loadFormulaEngineClass())" in restore_body
+    assert restore_body.index("trace?.mark('formula-source-scan')") < restore_body.index("markBootPerf('note-sheet-workspace.normalize.start')")
     assert restore_body.index("waitForInitialFormulaEnginePreload(loadFormulaEngineClass())") < restore_body.index("markBootPerf('note-sheet-workspace.normalize.start')")
     assert restore_body.index("waitForInitialFormulaEnginePreload(loadFormulaEngineClass())") < restore_body.index("loadSheetDocument(activeDocument, activeSourceDocument)")
 
@@ -955,6 +1102,23 @@ def test_note_sheet_workspace_defers_remote_detail_cache_until_after_sheet_load(
     assert "scheduleRemoteSheetDetailCacheAfterSheetLoad(remote," in body
     assert "trace?.mark('cache-remote-detail-deferred')" in body
     assert "cacheRemoteSheetDetail(remote," not in body
+
+
+def test_note_sheet_workspace_starts_remote_fetch_before_cached_placeholder_render():
+    source = _workspace_source()
+    helper_start = source.index("function resolveFetchPaginationPreferenceFromCacheEntry(")
+    helper_end = source.index("\nfunction invalidateSheetDocumentCache", helper_start)
+    helper_body = source[helper_start:helper_end]
+    restore_start = source.index("async function restoreInitialDocument(")
+    restore_end = source.index("\nasync function handlePageChange(", restore_start)
+    restore_body = source[restore_start:restore_end]
+
+    assert "normalizeSheetViewSettings(entry.document.view_settings, entry.document.columns.length)" in helper_body
+    assert "const earlyRemotePromise: Promise<NoteSheetDetail | null> | null = earlyCachedFetchPreference" in restore_body
+    assert "fetchNoteSheet(requestSheetId, {" in restore_body
+    assert "trace?.mark('fetch-started-before-cache')" in restore_body
+    assert restore_body.index("const earlyRemotePromise: Promise<NoteSheetDetail | null> | null = earlyCachedFetchPreference") < restore_body.index("applySheetDocumentCacheEntry(cachedEntry)")
+    assert restore_body.index("applySheetDocumentCacheEntry(cachedEntry)") < restore_body.index("await (earlyRemotePromise ?? markBootPerfAsync(")
 
 
 def test_note_sheet_workspace_skips_duplicate_row_height_refresh_during_sheet_load():

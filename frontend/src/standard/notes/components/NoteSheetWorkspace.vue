@@ -670,6 +670,11 @@ type SheetPerfWindow = Window & {
 
 type SheetPerfLogContext = Partial<Omit<SheetPerfLogEntry, 'id' | 'type' | 'at' | 'sheetId' | 'sheetTitle' | 'phases' | 'totalMs' | 'nextFrameMs'>>
 
+type SheetPerfTrace = {
+  mark: (name: string) => void
+  finish: (detail?: SheetPerfLogContext) => void
+}
+
 type SheetPerfPatchedHandsontable = Handsontable & {
   __codeyunSheetPerfPatched?: boolean
   __codeyunSheetPerfPendingRenderReason?: string
@@ -1205,6 +1210,7 @@ type FormulaDisplayBuildOptions = {
   rowOffset?: number
   headerRows?: SheetRow[]
   headerRowCount?: number
+  perfSource?: string
 }
 
 type FormulaEngineInstance = {
@@ -1301,6 +1307,7 @@ type RestoreInitialDocumentOptions = {
   clearOnError?: boolean
   initialDetail?: NoteSheetDetail | null
   applyInitialWorkspaceView?: boolean
+  reason?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1644,12 +1651,12 @@ const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
 const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
-const sheetMergeCellsRenderEnabled = ref(true)
 const SHEET_PERF_LOG_LIMIT = 1000
 const SHEET_PERF_LOG_FLUSH_URL = '/api/note-sheets/perf-logs'
 const SHEET_PERF_LOG_FLUSH_DELAY_MS = 800
 const SHEET_PERF_LOG_FLUSH_BATCH_SIZE = 40
 const SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE = 160
+const FORMULA_DISPLAY_STATE_CACHE_LIMIT = 8
 const SHEET_PERF_FRAME_GAP_THRESHOLD_MS = 80
 const SHEET_PERF_FRAME_GAP_LOG_INTERVAL_MS = 5000
 const SHEET_PERF_FRAME_GAP_THROTTLE_MIN_MS = 950
@@ -3133,11 +3140,15 @@ function restoreSheetWorkspaceViewFromLocalStorage(options?: { applyInitialWorks
   const nextView = shouldShowStudentLookup.value
     ? requestedView ?? readPersistedSheetWorkspaceView() ?? getDefaultSheetWorkspaceView()
     : 'sheet'
+  const previousView = sheetWorkspaceView.value
   sheetWorkspaceView.value = nextView
   if (nextView === 'sheet') {
     void nextTick(() => {
-      void updateSheetViewportHeight()
-      renderCurrentHotWithReason('workspace-view-restore')
+      void updateSheetViewportHeight('workspaceViewRestore').then((rendered) => {
+        if (!rendered && previousView !== nextView) {
+          renderCurrentHotWithReason('workspace-view-restore')
+        }
+      })
     })
   }
 }
@@ -3152,8 +3163,10 @@ function setSheetWorkspaceView(view: SheetWorkspaceView) {
   sheetWorkspaceView.value = view
   persistSheetWorkspaceViewToLocalStorage(view)
   if (view === 'sheet') {
-    void updateSheetViewportHeight().then(() => {
-      renderCurrentHotWithReason('workspace-view-switch')
+    void updateSheetViewportHeight('workspaceViewSwitch').then((rendered) => {
+      if (!rendered) {
+        renderCurrentHotWithReason('workspace-view-switch')
+      }
     })
   }
 }
@@ -3475,6 +3488,7 @@ const hasFormulaExpressions = computed(() => {
 
 const formulaDisplayState = shallowRef<FormulaDisplayState>(createEmptyFormulaDisplayState())
 const normalizedDocumentFormulaDisplayCache = new WeakMap<SheetDocument, FormulaDisplayState>()
+const formulaDisplayStateSignatureCache = new Map<string, FormulaDisplayState>()
 const normalizedDocumentCellMetaCache = new WeakMap<SheetDocument, SheetCellMetaMap>()
 
 const activeColumnFilterEntries = computed(() => getActiveColumnFilterEntries())
@@ -3905,7 +3919,7 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   ])
 })
 
-const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'standalone'}`)
+const hotTableInstanceKey = computed(() => `sheet-${props.workbookId ?? 'standalone'}-${props.sheetId ?? 'inline'}`)
 
 const rowMarkerColumnWidth = computed(() => {
   if (rowMarkerColumnCount.value <= 0) {
@@ -4022,6 +4036,8 @@ function getSheetHeaderRowCountForSettings(settings: Required<SheetViewSettings>
   )
 }
 
+const normalizedSheetMergedCells = computed(() => getNormalizedSheetMergedCells())
+
 const sheetMergeCells = computed(() => {
   return getRenderableMergedCells()
 })
@@ -4035,7 +4051,7 @@ const sheetHotMergeCells = computed(() => (
 const shouldUseEnhancedSheetRenderSettings = computed(() => sheetRenderPhase.value !== 'core')
 
 const sheetHotRenderMergeCells = computed(() => {
-  if (!shouldUseEnhancedSheetRenderSettings.value || !sheetMergeCellsRenderEnabled.value) {
+  if (!shouldUseEnhancedSheetRenderSettings.value) {
     return false
   }
   return sheetHotMergeCells.value.length ? sheetHotMergeCells.value : false
@@ -4348,15 +4364,7 @@ function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[
 }
 
 function getRenderableMergedCells() {
-  const currentRows = sheetGridRows.value
-  const normalized = normalizeMergedCells(
-    [
-      ...getHeaderGroupMergeCells(normalizedHeaderGroups.value),
-      ...mergedCells.value,
-    ],
-    Math.max(sheetHeaderRowCount.value + totalRowCount.value, currentRows.length),
-    columnHeaders.value.length,
-  )
+  const normalized = normalizedSheetMergedCells.value
 
   const rendered: SheetMergedCell[] = []
   const seen = new Set<string>()
@@ -4395,7 +4403,7 @@ function getRenderableMergedCells() {
   return rendered
 }
 
-function findMergedCellAtDocumentCell(documentRow: number, columnIndex: number) {
+function getNormalizedSheetMergedCells() {
   return normalizeMergedCells(
     [
       ...getHeaderGroupMergeCells(normalizedHeaderGroups.value),
@@ -4403,7 +4411,11 @@ function findMergedCellAtDocumentCell(documentRow: number, columnIndex: number) 
     ],
     Math.max(sheetHeaderRowCount.value + totalRowCount.value, sheetGridRows.value.length),
     columnHeaders.value.length,
-  ).find((cell) => (
+  )
+}
+
+function findMergedCellAtDocumentCell(documentRow: number, columnIndex: number) {
+  return normalizedSheetMergedCells.value.find((cell) => (
     documentRow >= cell.row
     && documentRow < cell.row + cell.rowspan
     && columnIndex >= cell.col
@@ -4586,6 +4598,8 @@ let suppressNextFormulaDisplayStructureWatcher = false
 let loadedSheetContentIdentity = ''
 let hotInitialDataLoadedContentIdentity = ''
 let hotInitialDataLoadedInstance: Handsontable | null = null
+let hotRuntimeHiddenRowsContentIdentity = ''
+let hotRuntimeHiddenRowsSignature = ''
 let sheetResourceSocket: WebSocket | null = null
 let sheetResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let sheetResourceReconnectAttempt = 0
@@ -5493,6 +5507,29 @@ function isCurrentHotGridRowsAlreadyLoaded(hot: Handsontable | null | undefined)
 function resetHotInitialGridRowsLoaded() {
   hotInitialDataLoadedContentIdentity = ''
   hotInitialDataLoadedInstance = null
+  hotRuntimeHiddenRowsContentIdentity = ''
+  hotRuntimeHiddenRowsSignature = ''
+}
+
+function hasLoadedCurrentHotInitialGridRows(hot: Handsontable | null | undefined) {
+  return !!(
+    hot
+    && loadedSheetContentIdentity
+    && hotInitialDataLoadedInstance === hot
+    && hotInitialDataLoadedContentIdentity === loadedSheetContentIdentity
+  )
+}
+
+function getHiddenRowsSignature(hiddenRows: readonly number[]) {
+  return hiddenRows.join(',')
+}
+
+function markRuntimeHiddenRowsApplied(hiddenRows: readonly number[]) {
+  if (!loadedSheetContentIdentity) {
+    return
+  }
+  hotRuntimeHiddenRowsContentIdentity = loadedSheetContentIdentity
+  hotRuntimeHiddenRowsSignature = getHiddenRowsSignature(hiddenRows)
 }
 
 function ensureHotInitialGridRowsLoaded(reason: string) {
@@ -5500,10 +5537,7 @@ function ensureHotInitialGridRowsLoaded(reason: string) {
   if (!hot || !sheetContentReady.value || !loadedSheetContentIdentity) {
     return false
   }
-  if (
-    hotInitialDataLoadedInstance === hot
-    && hotInitialDataLoadedContentIdentity === loadedSheetContentIdentity
-  ) {
+  if (hasLoadedCurrentHotInitialGridRows(hot)) {
     return true
   }
   const alreadyLoaded = isCurrentHotGridRowsAlreadyLoaded(hot)
@@ -5512,6 +5546,7 @@ function ensureHotInitialGridRowsLoaded(reason: string) {
   }
   hotInitialDataLoadedInstance = hot
   hotInitialDataLoadedContentIdentity = loadedSheetContentIdentity
+  markRuntimeHiddenRowsApplied(sheetFilterHiddenRows.value)
   markBootPerf('note-sheet-workspace.hot.initialLoadData.done', {
     reason,
     identity: loadedSheetContentIdentity,
@@ -5594,30 +5629,25 @@ function beginSheetCoreRenderPhase() {
   clearInitialSheetActionStatusRefreshTimer()
   // Mounting once with enhanced settings is cheaper than mounting a core grid
   // and immediately forcing Handsontable through a second full updateSettings.
-  sheetMergeCellsRenderEnabled.value = false
   sheetRenderPhase.value = 'ready'
 }
 
 function finishSheetRenderEnhancement() {
   clearSheetRenderEnhancementFrame()
-  sheetMergeCellsRenderEnabled.value = true
   sheetRenderPhase.value = 'ready'
 }
 
 function scheduleSheetRenderEnhancement(isCurrent?: () => boolean) {
   clearSheetRenderEnhancementFrame()
   if (!sheetContentReady.value) {
-    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
   if (typeof window === 'undefined') {
-    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
   if (isSheetDocumentHidden()) {
-    sheetMergeCellsRenderEnabled.value = true
     sheetRenderPhase.value = 'ready'
     return
   }
@@ -5646,7 +5676,6 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
   })
   sheetRenderPhase.value = 'enhancing'
   try {
-    sheetMergeCellsRenderEnabled.value = true
     await nextTick()
     trace?.mark('vue-props-flush')
     if (isCurrent && !isCurrent()) {
@@ -6013,7 +6042,7 @@ async function handleRunAttendanceWjxAiPrecheckFromSelection(options: { autoRepa
       auto_repair: !!options.autoRepair,
       repair_with_remote_browser: true,
     })
-    await restoreInitialDocument({ preserveContent: true })
+    await restoreInitialDocument({ preserveContent: true, reason: 'attendance-wjx-ai-precheck' })
     const summary = normalizeCellValue(result.precheck?.summary).trim()
     const autoRepair = result.precheck?.auto_repair as Record<string, unknown> | undefined
     const repairSummary = normalizeCellValue(autoRepair?.summary).trim()
@@ -6444,7 +6473,7 @@ async function updateAttendanceCourseData() {
       include_frozen: false,
       workbook_id: props.workbookId,
     })
-    await restoreInitialDocument({ preserveContent: true })
+    await restoreInitialDocument({ preserveContent: true, reason: 'attendance-course-update-data' })
     ElMessage.success(result.step3.message || '考勤数据已更新')
   } catch (error) {
     console.warn('Failed to update attendance course data', error)
@@ -6859,7 +6888,7 @@ function connectSheetResourceSocket(options: { reconnect?: boolean } = {}) {
     if (!options.reconnect || saveInFlight || cellPatchInFlight || isSheetLocallyDirty()) {
       return
     }
-    void restoreInitialDocument({ preserveContent: false })
+    void restoreInitialDocument({ preserveContent: false, reason: 'resource-socket-reconnect-open' })
   }
   socket.onmessage = (event) => {
     if (sheetResourceSocket !== socket || props.sheetId !== socketSheetId) {
@@ -6889,7 +6918,7 @@ function connectSheetResourceSocket(options: { reconnect?: boolean } = {}) {
       ElMessage.warning('工作表已被其他人更新，已保留本地草稿')
       return
     }
-    void restoreInitialDocument({ preserveContent: false })
+    void restoreInitialDocument({ preserveContent: false, reason: 'resource-socket-message' })
   }
   socket.onerror = () => {
     socket.close()
@@ -10346,6 +10375,7 @@ function normalizeSheetDocument(
           ...formulaOptions,
           headerRows: normalizedFormulaHeaderRows,
           headerRowCount: dataStartRow,
+          perfSource: formulaOptions.perfSource ?? 'normalizeDocument',
         },
       )
     : createEmptyFormulaDisplayState(dataStartRow)
@@ -11989,12 +12019,89 @@ function shouldReuseCachedFormulaDisplayState(
   return !rowsHaveFormulaExpressions(formulaHeaderRows) && !rowsHaveFormulaExpressions(sourceRows)
 }
 
+function getFormulaDisplayStateCacheValue(signature: string) {
+  const cachedState = formulaDisplayStateSignatureCache.get(signature)
+  if (!cachedState) {
+    return null
+  }
+  formulaDisplayStateSignatureCache.delete(signature)
+  formulaDisplayStateSignatureCache.set(signature, cachedState)
+  return cachedState
+}
+
+function setFormulaDisplayStateCacheValue(signature: string, state: FormulaDisplayState) {
+  formulaDisplayStateSignatureCache.set(signature, state)
+  while (formulaDisplayStateSignatureCache.size > FORMULA_DISPLAY_STATE_CACHE_LIMIT) {
+    const firstKey = formulaDisplayStateSignatureCache.keys().next().value
+    if (firstKey == null) {
+      break
+    }
+    formulaDisplayStateSignatureCache.delete(firstKey)
+  }
+}
+
+function buildFormulaColumnConfigSignature(
+  headers: string[],
+  sourceConfigs: Record<string, SheetColumnConfig>,
+  formulaCells: Array<{ column: number }>,
+) {
+  const formulaColumns = Array.from(new Set(formulaCells.map((cell) => cell.column)))
+    .sort((left, right) => left - right)
+  return formulaColumns.map((column) => {
+    const header = headers[column] ?? ''
+    return [header, sourceConfigs[header] ?? null]
+  })
+}
+
+function buildFormulaDisplayStateCacheSignature(
+  headers: string[],
+  normalizedRows: SheetRow[],
+  sourceConfigs: Record<string, SheetColumnConfig>,
+  formulaCells: Array<{ row: number; column: number }>,
+  rowOffset: number,
+  headerRowCount: number,
+  namedExpressionContext: SheetFormulaNamedExpressionContext,
+) {
+  return JSON.stringify({
+    headers,
+    rows: normalizedRows,
+    formulaColumns: buildFormulaColumnConfigSignature(headers, sourceConfigs, formulaCells),
+    rowOffset,
+    headerRowCount,
+    namedExpressions: namedExpressionContext.namedExpressions,
+    aliases: namedExpressionContext.aliases,
+  })
+}
+
 function buildFormulaDisplayStateForRows(
   headers: string[],
   sourceRows: SheetRow[],
   sourceConfigs: Record<string, SheetColumnConfig> = columnConfigs.value,
   options: FormulaDisplayBuildOptions = {},
 ): FormulaDisplayState {
+  const trace = startSheetPerfTrace('sheet.formulaDisplayBuild', {
+    detail: {
+      source: options.perfSource ?? 'unknown',
+      rows: sourceRows.length,
+      columns: headers.length,
+    },
+  })
+  let traceFinished = false
+  const finishTrace = (exit: string, detail: Record<string, unknown> = {}) => {
+    if (traceFinished) {
+      return
+    }
+    traceFinished = true
+    trace?.finish({
+      detail: {
+        source: options.perfSource ?? 'unknown',
+        exit,
+        rows: sourceRows.length,
+        columns: headers.length,
+        ...detail,
+      },
+    })
+  }
   const normalizedDataRows = sourceRows.map((row) => normalizeRow(row, headers))
   const normalizedHeaderRows = (options.headerRows ?? getCurrentFormulaHeaderRows(headers))
     .map((row) => normalizeRow(row, headers))
@@ -12003,6 +12110,7 @@ function buildFormulaDisplayStateForRows(
     ...normalizedHeaderRows.slice(0, headerRowCount),
     ...normalizedDataRows,
   ]
+  trace?.mark('normalize-rows')
   const rowOffset = normalizeNonNegativeInt(options.rowOffset, getCurrentFormulaDisplayRowOffset())
   const formulaCells: Array<{ row: number; column: number }> = []
 
@@ -12013,8 +12121,14 @@ function buildFormulaDisplayStateForRows(
       }
     })
   })
+  trace?.mark('scan-formulas')
 
   if (!formulaCells.length) {
+    finishTrace('no-formulas', {
+      formulaCells: 0,
+      normalizedRows: normalizedRows.length,
+      headerRowCount,
+    })
     return {
       cells: [],
       errorKeys: new Set(),
@@ -12025,6 +12139,11 @@ function buildFormulaDisplayStateForRows(
   const FormulaEngine = formulaEngineClass.value
   if (!FormulaEngine) {
     void ensureFormulaEngineLoaded()
+    finishTrace('engine-not-ready', {
+      formulaCells: formulaCells.length,
+      normalizedRows: normalizedRows.length,
+      headerRowCount,
+    })
     return {
       cells: [],
       errorKeys: new Set(),
@@ -12033,7 +12152,35 @@ function buildFormulaDisplayStateForRows(
   }
 
   const namedExpressionContext = buildFormulaNamedExpressionContext()
-  const engineRows = normalizedRows.map((row) => row.map((cellValue) => {
+  trace?.mark('named-expressions')
+  const cacheSignature = buildFormulaDisplayStateCacheSignature(
+    headers,
+    normalizedRows,
+    sourceConfigs,
+    formulaCells,
+    rowOffset,
+    headerRowCount,
+    namedExpressionContext,
+  )
+  const cachedFormulaDisplayState = getFormulaDisplayStateCacheValue(cacheSignature)
+  trace?.mark(cachedFormulaDisplayState ? 'cache-hit' : 'cache-miss')
+  if (cachedFormulaDisplayState) {
+    finishTrace('cache-hit', {
+      formulaCells: formulaCells.length,
+      normalizedRows: normalizedRows.length,
+      headerRowCount,
+      cacheSize: formulaDisplayStateSignatureCache.size,
+    })
+    return cachedFormulaDisplayState
+  }
+  const engineColumnCount = getFormulaEngineColumnCount(
+    normalizedRows,
+    formulaCells,
+    headers.length,
+    namedExpressionContext.namedExpressions,
+  )
+  trace?.mark('engine-column-count')
+  const engineRows = normalizedRows.map((row) => row.slice(0, engineColumnCount).map((cellValue) => {
     if (!isFormulaExpression(cellValue)) {
       return normalizeFormulaEngineCellValue(cellValue)
     }
@@ -12042,11 +12189,14 @@ function buildFormulaDisplayStateForRows(
       namedExpressionContext.aliases,
     )
   }))
+  trace?.mark('engine-rows')
   const cells = normalizedRows.map((row) => row.map(() => null as FormulaCellModel | null))
   const errorKeys = new Set<string>()
+  trace?.mark('cells-skeleton')
   let engine: FormulaEngineInstance | null = null
   try {
     engine = FormulaEngine.buildFromArray(engineRows, { licenseKey: 'gpl-v3' }, namedExpressionContext.namedExpressions)
+    trace?.mark('engine-build')
     formulaCells.forEach(({ row, column }) => {
       const calculatedValue = engine?.getCellValue({ sheet: 0, row, col: column })
       cells[row][column] = createFormulaCellModel(
@@ -12058,6 +12208,7 @@ function buildFormulaDisplayStateForRows(
         errorKeys.add(createCellMetaKey(row, column))
       }
     })
+    trace?.mark('cell-models')
   } catch (error) {
     console.warn('Failed to evaluate sheet formulas', error)
     formulaCells.forEach(({ row, column }) => {
@@ -12069,11 +12220,31 @@ function buildFormulaDisplayStateForRows(
       }
       errorKeys.add(createCellMetaKey(row, column))
     })
+    trace?.mark('error-cell-models')
+    finishTrace('error', {
+      formulaCells: formulaCells.length,
+      errorKeys: errorKeys.size,
+      normalizedRows: normalizedRows.length,
+      engineColumns: engineColumnCount,
+      originalColumns: headers.length,
+      headerRowCount,
+    })
   } finally {
     engine?.destroy()
   }
 
-  return { cells, errorKeys, dataStartRow: headerRowCount }
+  const nextState = { cells, errorKeys, dataStartRow: headerRowCount }
+  setFormulaDisplayStateCacheValue(cacheSignature, nextState)
+  finishTrace('ok', {
+    formulaCells: formulaCells.length,
+    errorKeys: errorKeys.size,
+    normalizedRows: normalizedRows.length,
+    engineColumns: engineColumnCount,
+    originalColumns: headers.length,
+    headerRowCount,
+    cacheSize: formulaDisplayStateSignatureCache.size,
+  })
+  return nextState
 }
 
 function buildFormulaDefinedNameAliases(items: NoteSheetDefinedNameItem[]): SheetFormulaNameAlias[] {
@@ -12197,6 +12368,85 @@ function buildFormulaDisplayState(): FormulaDisplayState {
       headerRowCount: headerRows.length,
     },
   )
+}
+
+function getFormulaReferenceMaxColumnIndex(value: string) {
+  if (!isFormulaExpression(value)) {
+    return -1
+  }
+  let maxColumnIndex = -1
+  FORMULA_CELL_REFERENCE_RE.lastIndex = 0
+  value.replace(
+    FORMULA_CELL_REFERENCE_RE,
+    (
+      _match,
+      _prefix: string,
+      _columnAbsoluteMarker: string,
+      columnLabel: string,
+    ) => {
+      const columnIndex = getExcelColumnIndex(columnLabel)
+      if (columnIndex != null && columnIndex > maxColumnIndex) {
+        maxColumnIndex = columnIndex
+      }
+      return _match
+    },
+  )
+  FORMULA_CELL_REFERENCE_RE.lastIndex = 0
+  const formulaColumnReferenceRe = /(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(?::\$?([A-Za-z]{1,3}))(?![A-Za-z0-9_(])/g
+  value.replace(
+    formulaColumnReferenceRe,
+    (
+      _match,
+      _prefix: string,
+      _columnAbsoluteMarker: string,
+      startColumnLabel: string,
+      endColumnLabel: string,
+    ) => {
+      const startColumnIndex = getExcelColumnIndex(startColumnLabel)
+      const endColumnIndex = getExcelColumnIndex(endColumnLabel)
+      if (startColumnIndex != null && startColumnIndex > maxColumnIndex) {
+        maxColumnIndex = startColumnIndex
+      }
+      if (endColumnIndex != null && endColumnIndex > maxColumnIndex) {
+        maxColumnIndex = endColumnIndex
+      }
+      return _match
+    },
+  )
+  return maxColumnIndex
+}
+
+function formulaRequiresFullWidthEngine(value: string) {
+  return isFormulaExpression(value) && (
+    value.includes('!')
+    || /\b(?:INDIRECT|OFFSET)\s*\(/i.test(value)
+  )
+}
+
+function getFormulaEngineColumnCount(
+  normalizedRows: SheetRow[],
+  formulaCells: Array<{ row: number; column: number }>,
+  columnCount: number,
+  namedExpressions: SheetFormulaNamedExpression[],
+) {
+  let maxColumnIndex = -1
+  formulaCells.forEach(({ row, column }) => {
+    const cellValue = normalizedRows[row]?.[column] ?? ''
+    if (formulaRequiresFullWidthEngine(cellValue)) {
+      maxColumnIndex = columnCount - 1
+      return
+    }
+    maxColumnIndex = Math.max(maxColumnIndex, column)
+    maxColumnIndex = Math.max(maxColumnIndex, getFormulaReferenceMaxColumnIndex(cellValue))
+  })
+  namedExpressions.forEach((item) => {
+    if (formulaRequiresFullWidthEngine(item.expression)) {
+      maxColumnIndex = columnCount - 1
+      return
+    }
+    maxColumnIndex = Math.max(maxColumnIndex, getFormulaReferenceMaxColumnIndex(item.expression))
+  })
+  return Math.min(columnCount, Math.max(1, maxColumnIndex + 1))
 }
 
 function areFormulaDisplayCellsVisuallyEqual(left: FormulaCellModel | null | undefined, right: FormulaCellModel | null | undefined) {
@@ -14106,6 +14356,9 @@ async function refreshComputedRowHeights(options: { force?: boolean } = {}) {
   if (!hot) {
     return
   }
+  if (!options.force && !hasLoadedCurrentHotInitialGridRows(hot)) {
+    return
+  }
   if (!options.force && !shouldUseEnhancedSheetRenderSettings.value) {
     return
   }
@@ -14764,7 +15017,7 @@ function updateSheetViewportHeight(reason = 'unknown') {
 
 async function updateSheetViewportHeightNow(getReason: () => string) {
   if (isSheetDocumentHidden()) {
-    return
+    return false
   }
   const perfStart = sheetPerfLoggingEnabled.value ? getSheetPerfNow() : 0
   const previousHeight = sheetViewportHeight.value
@@ -14807,7 +15060,7 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
       sheetId: props.sheetId,
       isContentHeightMode: isContentHeightMode.value,
     })
-    return
+    return changed
   }
 
   const frameRect = sheetFrame.getBoundingClientRect()
@@ -14817,7 +15070,7 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
     ? Math.floor(windowHeight - frameRect.top - SHEET_VIEWPORT_BOTTOM_GAP)
     : 0
   const availableHeight = viewportRemainingHeight > 0
-    ? Math.min(containerHeight, viewportRemainingHeight)
+    ? viewportRemainingHeight
     : containerHeight
   if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
     finishPerfLog(previousHeight, false, false, {
@@ -14829,7 +15082,7 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
       frameClientHeight: sheetFrame.clientHeight,
       frameRectHeight: frameRect.height,
     })
-    return
+    return false
   }
 
   const changed = sheetViewportHeight.value !== availableHeight
@@ -14845,6 +15098,7 @@ async function updateSheetViewportHeightNow(getReason: () => string) {
     frameClientHeight: sheetFrame.clientHeight,
     frameRectHeight: frameRect.height,
   })
+  return changed
 }
 
 function handleWindowResize() {
@@ -17245,7 +17499,7 @@ async function applySheetSettings() {
     }
     currentPage.value = 1
     pageSize.value = nextSettings.pagination.page_size
-    await restoreInitialDocument()
+    await restoreInitialDocument({ reason: 'pagination-settings-change' })
     pushLocalUndoEntry(undoEntry)
     void updateSheetViewportHeight()
     return
@@ -17358,8 +17612,8 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   )
   const formulaDisplayForWidths = formulaDisplayCacheReusable
     ? cachedFormulaDisplayState
-    ?? buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
-    : buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
+    ?? buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value, { perfSource: 'loadSheetDocument-cache-miss' })
+    : buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value, { perfSource: 'loadSheetDocument' })
   columnWidths.value = document.column_widths?.length
     ? document.column_widths.slice(0, normalizedHeaders.length)
     : normalizedHeaders.map((_, index) => getAutoColumnWidth(
@@ -18683,6 +18937,15 @@ function getLatestSheetDocumentCacheEntry(sheetId: number, workbookId: number | 
   return latest
 }
 
+function resolveFetchPaginationPreferenceFromCacheEntry(entry: SheetDocumentCacheEntry) {
+  const settings = normalizeSheetViewSettings(entry.document.view_settings, entry.document.columns.length)
+  return {
+    paginate: settings.pagination.enabled,
+    page: entry.pagination?.page,
+    pageSize: settings.pagination.page_size,
+  }
+}
+
 function invalidateSheetDocumentCache(sheetId?: number | null, workbookId?: number | null) {
   if (sheetId == null) {
     sheetDocumentCache.clear()
@@ -18825,11 +19088,11 @@ async function fetchNoteSheetForCurrentView(
   }
 
   const activeFilters = buildActiveSheetQueryFilters()
-  if (options?.paginate === true && activeFilters.active) {
+  if (activeFilters.active) {
     return queryNoteSheet(props.sheetId, {
-      page: options.page,
-      page_size: options.pageSize,
-      paginate: true,
+      page: options?.page ?? currentPage.value,
+      page_size: options?.pageSize ?? pageSize.value,
+      paginate: options?.paginate,
       column_filters: activeFilters.columnFilters,
       row_filter_programs: activeFilters.rowFilterPrograms,
     }, {
@@ -18934,8 +19197,19 @@ function sheetDocumentHasFormulaExpressions(document: SheetDocument) {
   ].filter((rows): rows is SheetStoredRow[] => Array.isArray(rows))
 
   return rowGroups.some((rows) => (
-    rows.some((row) => normalizeRow(row, headers).some(isFormulaExpression))
+    rows.some((row) => sheetDocumentRowHasFormulaExpression(row, headers))
   ))
+}
+
+function sheetDocumentRowHasFormulaExpression(row: unknown, headers: string[]) {
+  if (Array.isArray(row)) {
+    return row.slice(0, headers.length).some((cell) => isFormulaExpression(normalizeCellValue(cell)))
+  }
+  if (row && typeof row === 'object') {
+    const source = row as Record<string, unknown>
+    return headers.some((header) => isFormulaExpression(normalizeCellValue(source[header])))
+  }
+  return false
 }
 
 function sheetDocumentSourceHasFormulaExpressions(source: unknown) {
@@ -18950,7 +19224,7 @@ function sheetDocumentSourceHasFormulaExpressions(source: unknown) {
   ].filter((rows): rows is unknown[] => Array.isArray(rows))
 
   return rowGroups.some((rows) => (
-    rows.some((row) => normalizeRow(row, headers).some(isFormulaExpression))
+    rows.some((row) => sheetDocumentRowHasFormulaExpression(row, headers))
   ))
 }
 
@@ -18960,12 +19234,15 @@ function scheduleFilteredPaginationReload() {
   }
 
   const filters = buildActiveSheetQueryFilters()
+  if (!filters.active && pageRowIndexes.value === null) {
+    return
+  }
   const reloadKey = buildSheetFilterReloadKey(filters)
   if (
     reloadKey === pendingSheetFilterReloadKey
     || reloadKey === activeSheetFilterReloadKey
     || reloadKey === failedSheetFilterReloadKey
-    || (reloadKey === completedSheetFilterReloadKey && isCurrentSheetFilterPaginationReady(filters))
+    || reloadKey === completedSheetFilterReloadKey
   ) {
     return
   }
@@ -18987,9 +19264,29 @@ function runScheduledSheetFilterReload() {
 
   const reloadKey = pendingSheetFilterReloadKey
   pendingSheetFilterReloadKey = ''
+  const filters = buildActiveSheetQueryFilters()
+  recordSheetPerfEvent('sheet.filterReload', {
+    detail: {
+      stage: 'run',
+      reloadKey,
+      completed: reloadKey === completedSheetFilterReloadKey,
+      active: filters.active,
+      columnFilterKeys: Object.keys(filters.columnFilters),
+      rowFilterProgramCount: filters.rowFilterPrograms.length,
+      sheetContentReady: sheetContentReady.value,
+      workspaceLoading: workspaceLoading.value,
+      pageRowIndexesReady: pageRowIndexes.value !== null,
+    },
+  })
+  if (reloadKey === completedSheetFilterReloadKey) {
+    return
+  }
+  if (!filters.active && pageRowIndexes.value === null) {
+    return
+  }
   activeSheetFilterReloadKey = reloadKey
   currentPage.value = 1
-  void restoreInitialDocument({ preserveContent: true }).then(() => {
+  void restoreInitialDocument({ preserveContent: true, reason: 'filtered-pagination-reload' }).then(() => {
     completedSheetFilterReloadKey = reloadKey
     if (failedSheetFilterReloadKey === reloadKey) {
       failedSheetFilterReloadKey = ''
@@ -19017,6 +19314,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   const requestWorkbookId = props.workbookId ?? null
   const includeWorkbookContext = requestWorkbookId == null
   const requestContentIdentity = getSheetContentIdentity(requestSheetId, requestWorkbookId)
+  const restoreReason = options?.reason ?? 'direct'
   const alreadyRenderingRequestedSheet = loadedSheetContentIdentity === requestContentIdentity
   let localDraft = readDraftPayload()
   const initialCacheQueryKey = buildSheetDocumentCacheQueryKey({
@@ -19041,6 +19339,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   const shouldClearOnError = options?.clearOnError === true
   const initialDetail = getUsableInitialSheetDetail(options?.initialDetail ?? props.initialDetail)
   const traceDetail = {
+    reason: restoreReason,
     requestSheetId,
     requestWorkbookId,
     preserveContent: shouldPreserveContent,
@@ -19052,6 +19351,26 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   })
   markBootPerf('note-sheet-workspace.restore.start', traceDetail)
   workspaceLoading.value = true
+  const preCacheActiveFilters = buildActiveSheetQueryFilters()
+  const shouldUseInitialDetail = !!initialDetail && sheetVersion.value <= 0 && !localDraft && !preCacheActiveFilters.active
+  const earlyCachedFetchPreference = cachedEntry && !preCacheActiveFilters.active && !shouldUseInitialDetail
+    ? resolveFetchPaginationPreferenceFromCacheEntry(cachedEntry)
+    : null
+  const earlyRemotePromise: Promise<NoteSheetDetail | null> | null = earlyCachedFetchPreference
+    ? markBootPerfAsync(
+        'note-sheet-workspace.fetchSheet',
+        () => fetchNoteSheet(requestSheetId, {
+          page: earlyCachedFetchPreference.paginate ? (earlyCachedFetchPreference.page ?? currentPage.value) : undefined,
+          pageSize: earlyCachedFetchPreference.paginate ? earlyCachedFetchPreference.pageSize : undefined,
+          paginate: earlyCachedFetchPreference.paginate,
+          workbookId: requestWorkbookId,
+          includeWorkbookContext,
+        }),
+      )
+    : null
+  if (earlyRemotePromise) {
+    trace?.mark('fetch-started-before-cache')
+  }
   if (!shouldPreserveContent) {
     if (cachedEntry) {
       applySheetDocumentCacheEntry(cachedEntry)
@@ -19066,12 +19385,11 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   suppressPersistence = true
   try {
     trace?.mark('draft')
-    const activeFilters = buildActiveSheetQueryFilters()
-    const shouldUseInitialDetail = !!initialDetail && sheetVersion.value <= 0 && !localDraft && !activeFilters.active
+    const activeFilters = earlyRemotePromise ? preCacheActiveFilters : buildActiveSheetQueryFilters()
     const paginationPreference = shouldUseInitialDetail ? null : resolveFetchPaginationPreference(localDraft)
     let remote: NoteSheetDetail | null = shouldUseInitialDetail
       ? initialDetail
-      : await markBootPerfAsync(
+      : await (earlyRemotePromise ?? markBootPerfAsync(
           'note-sheet-workspace.fetchSheet',
           () => fetchNoteSheetForCurrentView(paginationPreference
             ? {
@@ -19085,7 +19403,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
               workbookId: requestWorkbookId,
               includeWorkbookContext,
             }),
-        )
+        ))
     trace?.mark(shouldUseInitialDetail ? 'initial-detail' : 'fetch')
     markBootPerf(shouldUseInitialDetail ? 'note-sheet-workspace.initialDetail.ready' : 'note-sheet-workspace.fetchSheet.ready', {
       hasRemote: !!remote,
@@ -19110,7 +19428,9 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       clearDraftStorage()
     }
 
-    if (sheetDocumentSourceHasFormulaExpressions(remote.document_json) && !formulaEngineClass.value) {
+    const sourceHasFormulaExpressions = sheetDocumentSourceHasFormulaExpressions(remote.document_json)
+    trace?.mark('formula-source-scan')
+    if (sourceHasFormulaExpressions && !formulaEngineClass.value) {
       markBootPerf('note-sheet-workspace.formulaEngine.preload.start')
       const formulaEnginePreloadResult = await waitForInitialFormulaEnginePreload(loadFormulaEngineClass())
       trace?.mark(`formula-engine-preload-${formulaEnginePreloadResult}`)
@@ -19291,6 +19611,15 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       sourceDocument: remote.document_json,
     }, () => isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId))
     trace?.mark('cache-remote-detail-deferred')
+    const completedFilters = buildActiveSheetQueryFilters()
+    if (completedFilters.active) {
+      const completedFilterReloadKey = buildSheetFilterReloadKey(completedFilters)
+      completedSheetFilterReloadKey = completedFilterReloadKey
+      if (failedSheetFilterReloadKey === completedFilterReloadKey) {
+        failedSheetFilterReloadKey = ''
+      }
+      trace?.mark('filter-reload-key-completed')
+    }
     sheetLoadErrorText.value = ''
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -19399,7 +19728,7 @@ async function handlePageChange(nextPage: number) {
 
   await flushRemoteSave()
   currentPage.value = normalizedPage
-  await restoreInitialDocument()
+  await restoreInitialDocument({ reason: 'page-change' })
   void updateSheetViewportHeight()
 }
 
@@ -21499,6 +21828,9 @@ function styleInlineEditorAsCell(editor: SheetActiveEditor) {
 }
 
 function scheduleInlineEditorCellStyleSync() {
+  if (!getActiveOpenedEditor()) {
+    return
+  }
   void nextTick(() => {
     const editor = getActiveOpenedEditor()
     if (!editor) {
@@ -21746,6 +22078,9 @@ function closeRichTextContentEditor(options: { save?: boolean } = {}) {
 
 function cancelRichTextContentEditor() {
   const state = richTextContentEditor.value
+  if (!state.visible && !richTextInlineToolbar.value.visible) {
+    return
+  }
   richTextContentEditor.value = {
     ...state,
     visible: false,
@@ -27678,6 +28013,9 @@ watch(
     }
     const hot = getHotInstance()
     if (hot) {
+      if (!hasLoadedCurrentHotInitialGridRows(hot)) {
+        return
+      }
       hot.updateSettings({
         cells: sheetHotRenderCellMetaResolver.value,
         readOnly: sheetHotRenderReadOnly.value,
@@ -27749,7 +28087,8 @@ watch(
     pageRowIndexes.value = null
     pendingDeletedPageRowIndexes.value = []
     void restoreInitialDocument({
-      preserveContent: false,
+        preserveContent: false,
+        reason: 'sheet-id-change',
       clearOnError: true,
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
@@ -27789,6 +28128,7 @@ watch(
     sheetLoadSettled.value = false
     void restoreInitialDocument({
       preserveContent: sheetContentReady.value,
+      reason: 'workbook-id-change',
       clearOnError: true,
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
@@ -27954,12 +28294,23 @@ watch(
     if (!hot) {
       return
     }
+    if (!hasLoadedCurrentHotInitialGridRows(hot)) {
+      return
+    }
+    const hiddenRowsSignature = getHiddenRowsSignature(hiddenRows)
+    if (
+      hotRuntimeHiddenRowsContentIdentity === loadedSheetContentIdentity
+      && hotRuntimeHiddenRowsSignature === hiddenRowsSignature
+    ) {
+      return
+    }
     hot.updateSettings({
       hiddenRows: {
         rows: [...hiddenRows],
         indicators: false,
       },
     })
+    markRuntimeHiddenRowsApplied(hiddenRows)
     renderHotWithReason(hot, 'hidden-rows-filter')
     void refreshComputedRowHeights()
     void updateSheetViewportHeight()
@@ -27989,6 +28340,7 @@ onMounted(() => {
     void restoreInitialDocument({
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
+      reason: 'mounted',
     }).finally(() => {
       markBootPerf('note-sheet-workspace.mounted.restore.finally')
       connectSheetResourceSocket()

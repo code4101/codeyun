@@ -2804,13 +2804,7 @@ class DailyFoundationTaskMixin:
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
-            self._log("action", "日常_奇袭魔界：点击 #320 顶部可进攻据点")
-            yield from runtime.click_shape_center_then_view(
-                320,
-                "检索区域/修罗",
-                321,
-                label="日常_奇袭魔界：点击 #320 顶部据点后等待 #321",
-            )
+            yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
             scene_id = 321
         if scene_id == 321:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)
@@ -2830,6 +2824,50 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_click(320, "返回")
             yield from runtime.wait_click(319, "返回")
         return "success"
+
+    def _click_daily_mojie_raid_top_attack_target(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+    ):
+        frame = runtime.cur_frame(update=True)
+        candidates = self._daily_mojie_raid_attack_count_candidates(runtime, frame, payload)
+        if not candidates:
+            text = runtime.ocr_text(frame)
+            raise RuntimeError(f"日常_奇袭魔界：#320 未识别到可进攻据点计数，OCR={text[:160]}")
+        x, y, text = candidates[0]
+        self._log("action", f"日常_奇袭魔界：点击 #320 顶部可进攻据点「{text}」")
+        runtime.click_frame_point(320, x, y)
+        yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
+        return (yield from runtime.wait_view(
+            321,
+            timeout=float(payload.get("mojie_raid_target_wait_timeout") or self._daily_default_wait_condition_timeout),
+            label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321",
+        ))
+
+    def _daily_mojie_raid_attack_count_candidates(
+        self,
+        runtime: FanxiuRuntimeSession,
+        frame: str,
+        payload: dict[str, Any],
+    ) -> list[tuple[float, float, str]]:
+        view = runtime.view(320)
+        width, height = runtime.runner._frame_size(view.raw)
+        min_y = height * float(payload.get("mojie_raid_target_min_y_ratio") or 0.08)
+        max_y = height * float(payload.get("mojie_raid_target_max_y_ratio") or 0.78)
+        candidates: list[tuple[float, float, str]] = []
+        for line in runtime.ocr_lines(frame):
+            text = str(line.get("text") or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
+            match = re.search(r"([0-9]+)\s*/\s*30", text)
+            if not match or int(match.group(1)) <= 0:
+                continue
+            x = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
+            count_y = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            if not (0 <= x <= width and min_y <= count_y <= max_y):
+                continue
+            click_y = max(min_y, count_y - height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.15))
+            candidates.append((x, click_y, text))
+        return sorted(candidates, key=lambda item: (item[1], item[0]))
 
     def _daily_mojie_raid_remaining_ocr_fallback(self, text: str) -> int | None:
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
