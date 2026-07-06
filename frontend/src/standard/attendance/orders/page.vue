@@ -7,6 +7,7 @@ import type { CellProperties, ColumnSettings } from 'handsontable/settings'
 import { useRoute, useRouter } from 'vue-router'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { useUserStore } from '@/store/userStore'
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate'
 
 import {
@@ -20,6 +21,8 @@ import {
   type AttendanceOrderRow,
   type AttendanceOrderRefundHistoryItem,
 } from '@/api/attendance'
+
+markBootPerf('attendance-orders.module')
 
 type InputOrderRow = {
   订单号: string
@@ -118,28 +121,35 @@ let refundHistoryDeferredTimer: number | null = null
 let secondaryDraftRestoreFrame: number | null = null
 let secondaryDraftRestoreTimer: number | null = null
 let secondaryDraftsReady = false
+let bootPerfInputRenderMarked = false
+let bootPerfHistoryRenderMarked = false
+let bootPerfSecondaryDraftRestoreMarked = false
 
 const loadHotTableAssets = async () => {
   if (!hotTableAssetsLoader) {
-    hotTableAssetsLoader = Promise.all([
-      import('handsontable/styles/handsontable.css'),
-      import('handsontable/styles/ht-theme-main.css'),
-    ]).then(() => undefined)
+    hotTableAssetsLoader = markBootPerfAsync('attendance-orders.hot.assets', async () => {
+      await Promise.all([
+        import('handsontable/styles/handsontable.css'),
+        import('handsontable/styles/ht-theme-main.css'),
+      ])
+    })
   }
   return hotTableAssetsLoader
 }
 
 const loadHotTableComponent = async () => {
   if (!hotTableComponentLoader) {
-    hotTableComponentLoader = (async () => {
+    hotTableComponentLoader = markBootPerfAsync('attendance-orders.hot.import', async () => {
       const [, { registerAttendanceOrderHandsontableModules }, handsontableVue3] = await Promise.all([
         loadHotTableAssets(),
         import('@/utils/handsontableOrderSetup'),
         import('@handsontable/vue3'),
       ])
+      markBootPerf('attendance-orders.hot.modules-loaded')
       registerAttendanceOrderHandsontableModules()
+      markBootPerf('attendance-orders.hot.modules-registered')
       return handsontableVue3.HotTable
-    })()
+    })
   }
   return hotTableComponentLoader
 }
@@ -956,6 +966,12 @@ function handleInputAfterChange(_changes: unknown, source?: string) {
 
 function handleInputAfterRender() {
   refreshInputTableHeight()
+  if (!bootPerfInputRenderMarked) {
+    bootPerfInputRenderMarked = true
+    markBootPerf('attendance-orders.input-table.rendered', {
+      rows: inputRows.value.length,
+    })
+  }
 }
 
 function handleInputAfterCreateRow() {
@@ -986,14 +1002,20 @@ function handleRefundAfterChange(_changes: unknown, source?: string) {
 }
 
 async function loadPageData() {
+  markBootPerf('attendance-orders.loadPageData.start')
   loading.value = true
   try {
-    const configData = await fetchAttendanceConfig()
+    const configData = await markBootPerfAsync('attendance-orders.fetch-config', () => fetchAttendanceConfig())
     config.value = configData
+    markBootPerf('attendance-orders.config.ready', {
+      deviceEntryId: configData.current_execution_device?.entry_id || null,
+      orderLookupMode: configData.service?.order_lookup_mode || null,
+    })
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '加载订单页失败')
   } finally {
     loading.value = false
+    markBootPerf('attendance-orders.loadPageData.finally')
   }
   if (activeSubview.value === 'refund') {
     scheduleRefundHistoryLoad()
@@ -1057,11 +1079,24 @@ function scheduleSecondaryDraftRestore() {
   if (!secondaryDraftsReady) return
   clearSecondaryDraftRestoreFrame()
   clearSecondaryDraftRestoreTimer()
+  markBootPerf('attendance-orders.secondary-drafts.scheduled', {
+    delayMs: SECONDARY_DRAFT_RESTORE_DELAY_MS,
+  })
   secondaryDraftRestoreFrame = window.requestAnimationFrame(() => {
     secondaryDraftRestoreFrame = null
     secondaryDraftRestoreTimer = window.setTimeout(() => {
       secondaryDraftRestoreTimer = null
+      markBootPerf('attendance-orders.secondary-drafts.start')
       restoreSecondaryDrafts()
+      if (!bootPerfSecondaryDraftRestoreMarked) {
+        bootPerfSecondaryDraftRestoreMarked = true
+        markBootPerf('attendance-orders.secondary-drafts.done', {
+          queryRows: queryRows.value.length,
+          refundRows: refundRows.value.length,
+          detailRows: detailRows.value.length,
+          detailSearched: detailSearched.value,
+        })
+      }
     }, SECONDARY_DRAFT_RESTORE_DELAY_MS)
   })
 }
@@ -1071,6 +1106,9 @@ function scheduleRefundHistoryLoad(delayMs = 0) {
     return
   }
   refundHistoryPending.value = true
+  markBootPerf('attendance-orders.refund-history.scheduled', {
+    delayMs,
+  })
   refundHistoryDeferredTimer = window.setTimeout(() => {
     refundHistoryDeferredTimer = null
     if (activeSubview.value === 'refund') {
@@ -1085,15 +1123,21 @@ async function loadRefundHistory(page = refundHistoryPage.value, pageSize = refu
   refundHistoryPending.value = false
   refundHistoryLoading.value = true
   try {
-    const result = await fetchAttendanceOrderRefundHistory({
+    const result = await markBootPerfAsync('attendance-orders.refund-history.fetch', () => fetchAttendanceOrderRefundHistory({
       page,
       page_size: pageSize,
-    })
+    }))
     refundHistoryItems.value = result.items || []
     refundHistoryTotal.value = result.total || 0
     refundHistoryPage.value = result.page || page
     refundHistoryPageSize.value = result.page_size || pageSize
     refundHistoryLoaded.value = true
+    markBootPerf('attendance-orders.refund-history.data-ready', {
+      page: refundHistoryPage.value,
+      pageSize: refundHistoryPageSize.value,
+      total: refundHistoryTotal.value,
+      items: refundHistoryItems.value.length,
+    })
   } catch (error: any) {
     refundHistoryLoaded.value = false
     ElMessage.error(error.response?.data?.detail || '加载退款历史失败')
@@ -1367,6 +1411,18 @@ watch([detailOrderId, detailSearched, detailSummary, detailRows], () => {
   persistDetailDraftValue()
 }, { deep: true })
 
+watch(refundHistoryItems, () => {
+  if (bootPerfHistoryRenderMarked || !refundHistoryLoaded.value) return
+  void nextTick(() => {
+    if (bootPerfHistoryRenderMarked || !refundHistoryLoaded.value) return
+    bootPerfHistoryRenderMarked = true
+    markBootPerf('attendance-orders.refund-history.rendered', {
+      items: refundHistoryItems.value.length,
+      mobile: useMobileRefundHistory.value,
+    })
+  })
+})
+
 watch(
   inputDraftStorageKey,
   (storageKey) => {
@@ -1432,6 +1488,10 @@ watch(activeSubview, (view) => {
 watch([orderContentWidth, isCompactViewport], refreshOrderTableLayouts)
 
 onMounted(() => {
+  markBootPerf('attendance-orders.mounted', {
+    activeSubview: activeSubview.value,
+    hasUser: Boolean(userStore.user),
+  })
   setupOrderViewportObserver()
   if (userStore.isAuthenticated && !userStore.user && !userStore.loading) {
     void userStore.fetchUserProfile()
@@ -1629,36 +1689,47 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="refundHistoryLoaded || refundHistoryLoading" class="history-table-shell">
-          <el-table
+          <table
             v-if="!useMobileRefundHistory"
-            :data="refundHistoryItems"
-            row-key="id"
-            table-layout="fixed"
-            empty-text="暂无退款历史"
-            class="history-table desktop-history-table"
+            class="history-native-table desktop-history-table"
+            aria-label="退款历史"
           >
-            <el-table-column label="操作时间" min-width="150">
-              <template #default="{ row }">
-                <div :style="getForegroundStyle(row.foreground_colors?.created_day)">
+            <thead>
+              <tr>
+                <th scope="col">操作时间</th>
+                <th scope="col">操作人</th>
+                <th scope="col">学员名称</th>
+                <th scope="col">微信支付订单号</th>
+                <th scope="col">商户订单号</th>
+                <th scope="col">订单金额</th>
+                <th scope="col">已返款</th>
+                <th scope="col">剩余金额</th>
+                <th scope="col">退款额度</th>
+                <th scope="col">退款原因</th>
+                <th scope="col">处理结果</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!refundHistoryItems.length">
+                <td class="history-empty-cell" colspan="11">暂无退款历史</td>
+              </tr>
+              <tr v-for="row in refundHistoryItems" v-else :key="row.id">
+                <td :style="getForegroundStyle(row.foreground_colors?.created_day)">
                   {{ formatRefundHistoryCreatedAt(row.created_at) }}
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作人" min-width="120">
-              <template #default="{ row }">
-                <div :style="getForegroundStyle(row.foreground_colors?.operator)">{{ row.operator_name || '-' }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="student_name" label="学员名称" min-width="120" />
-            <el-table-column prop="wechat_order_id" label="微信支付订单号" min-width="180" />
-            <el-table-column prop="merchant_order_id" label="商户订单号" min-width="180" />
-            <el-table-column prop="order_amount" label="订单金额" min-width="96" />
-            <el-table-column prop="refunded_amount" label="已返款" min-width="96" />
-            <el-table-column prop="remaining_amount" label="剩余金额" min-width="96" />
-            <el-table-column prop="refund_amount" label="退款额度" min-width="96" />
-            <el-table-column prop="refund_reason" label="退款原因" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="result_text" label="处理结果" min-width="180" show-overflow-tooltip />
-          </el-table>
+                </td>
+                <td :style="getForegroundStyle(row.foreground_colors?.operator)">{{ row.operator_name || '-' }}</td>
+                <td>{{ row.student_name || '-' }}</td>
+                <td class="history-code-cell">{{ row.wechat_order_id || '-' }}</td>
+                <td class="history-code-cell">{{ row.merchant_order_id || '-' }}</td>
+                <td>{{ row.order_amount || '-' }}</td>
+                <td>{{ row.refunded_amount || '-' }}</td>
+                <td>{{ row.remaining_amount || '-' }}</td>
+                <td>{{ row.refund_amount || '-' }}</td>
+                <td class="history-wrap-cell" :title="row.refund_reason || '-'">{{ row.refund_reason || '-' }}</td>
+                <td class="history-wrap-cell" :title="row.result_text || '-'">{{ row.result_text || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
 
           <div v-else class="mobile-history-list" aria-live="polite">
             <article v-for="row in refundHistoryItems" :key="row.id" class="mobile-history-item">
@@ -2060,11 +2131,53 @@ onBeforeUnmount(() => {
   margin-top: 14px;
 }
 
-.history-table-shell :deep(.el-table) {
-  --el-table-border-color: rgba(133, 100, 59, 0.14);
-  --el-table-header-bg-color: rgba(250, 245, 236, 0.92);
-  --el-table-row-hover-bg-color: rgba(243, 232, 208, 0.28);
-  border-radius: 18px;
+.history-native-table {
+  width: 100%;
+  min-width: 1280px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.history-native-table th,
+.history-native-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(133, 100, 59, 0.12);
+  color: #3f321f;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  vertical-align: top;
+}
+
+.history-native-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #72562f;
+  font-weight: 600;
+  background: rgba(250, 245, 236, 0.96);
+}
+
+.history-native-table tbody tr:hover {
+  background: rgba(243, 232, 208, 0.2);
+}
+
+.history-native-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.history-code-cell {
+  word-break: break-all;
+}
+
+.history-wrap-cell {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.history-empty-cell {
+  color: #9b8a72;
+  text-align: center;
 }
 
 @media (max-width: 960px) {

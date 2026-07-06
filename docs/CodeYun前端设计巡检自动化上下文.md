@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "582d2becc74bd1b7fa1a104a58e6fbac4128cbf2"
-last_audited_at: "2026-07-06T10:40:04.0041828+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-582d2be/report.md"
-last_frontend_commit_summary: "审完 1dd2c8ae..582d2be：收回 pokemon-tcg 在 820px 下把当前详情挤到卡墙下方的过早单列布局，并确认主入口未被 sheet/file-viewer 重依赖拖脏。"
-audited_commit_count: 80
+last_audited_commit: "b3c8aa4b0933a1414223006e1153bea15923ade3"
+last_audited_at: "2026-07-06T12:34:12.0643393+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-b3c8aa4b/report.md"
+last_frontend_commit_summary: "审完 582d2be..b3c8aa4：确认 pokemon 中文详情、notes 列表首屏缓存与 sheet 工作区预加载均未新增 UI 回退。"
+audited_commit_count: 81
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,22 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-06（第十四轮）
+
+- 完整范围：`582d2becc74bd1b7fa1a104a58e6fbac4128cbf2..b3c8aa4b0933a1414223006e1153bea15923ade3`
+- 覆盖提交：`b3c8aa4b0933a1414223006e1153bea15923ade3`
+- 前端入口提交：`b3c8aa4b0933a1414223006e1153bea15923ade3`
+- 入口如何牵引到旧问题：提交同时触达 `pokemon-tcg/catalog`、`notes/center?tab=list` 与 `NoteSheetWorkspace`。这三处共享的不是新功能堆叠，而是同一条“首屏先给用户稳定判断对象”的链路：卡牌页要先看到当前卡详情，列表页要先拿到分类投影，工作表要先稳定落出表格与公式栏。因此本轮重点不是加控件，而是确认中文投影、色板缓存和公式预加载没有把旧页面重新推回解释过重、首屏抖动或层级变形。
+- 本轮减法：本轮没有追加源码修复。提交自身新增的是中文事实投影和性能护栏，不是新的界面实体；真实三视口复验确认它没有把页面包装成更多摘要条、说明卡或重复状态。`pokemon-tcg` 仍维持“筛选 -> 卡墙 -> 当前详情”，`notes/list` 仍维持“后端筛选 / 前端筛选 / 列表 / 详情”，`workbook` 仍维持“tab / 公式栏 / 表格”的基础模型。
+- 信息量保持：`pokemon-tcg` 现在可直接读到中文标题、属性和招式文本，但没有额外扩写常驻说明；`notes/list` 首屏更快拿到分类配置，但没有新增筛选层；`workbook` 预加载公式引擎与合并单元格渲染门槛只是收敛启动节奏，不改变表格能力。
+- 概念图/线框图：报告中的 Mermaid 已把链路收回到 `增量提交 -> pokemon 中文投影 / notes 首屏缓存 / sheet 预加载护栏 -> 用户先完成当前页主判断 -> 检查是否引入重复事实或首屏回退`，证明本轮是围绕基础模型稳定性验收，而不是额外增设 UI 概念。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-b3c8aa4b/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `pokemon-tcg/catalog`、`notes/center?tab=list`、`workbook/14?sheet=58855` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图；`pokemon-tcg` 三视口下 `detailTop` 均保持约 `194px`，未回到上轮修过的详情跌出首屏问题。静态校验：`uv run pytest tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；三页真实控制台均未采到页面级 `warn/error`。
+- 入口依赖污染检查：本轮未触发。提交未改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式或公开入口依赖边界，因此不额外做主入口污染专项；仅补跑构建确认无构建级回退。
+- 根因分层：`pokemon-tcg` 属于前端状态投影增强，`notes/list` 属于前端状态投影/性能护栏，`workbook` 属于表现层与运行时性能护栏；三者都没有暴露需要自动止血的新模型问题。
+- 剩余风险：`notes/center?tab=list` 在 `820px` 下仍依赖表格横向滚动，右侧列首屏可见性偏弱；这是该页既有高密度表格结构，本轮提交没有放大它，因此只记录不扩修。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口取证与静态验证；没有发现需要追加自动修复的新 UI 回退，因此把 `last_audited_commit` 推进到 `b3c8aa4b0933a1414223006e1153bea15923ade3`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-06（第十三轮）
 

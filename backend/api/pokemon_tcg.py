@@ -16,6 +16,16 @@ from backend.models import PokemonTcgCardRecord
 DATASET_ID = "childhood_base_jungle_fossil_rocket"
 router = APIRouter()
 
+TYPE_LABELS = {
+    "{ G }": "草",
+    "{ R }": "火",
+    "{ W }": "水",
+    "{ L }": "雷",
+    "{ P }": "超",
+    "{ F }": "斗",
+    "{ C }": "无",
+}
+
 
 def _dataset_root() -> Path:
     return get_settings().data_dir / "pokemon_tcg" / DATASET_ID
@@ -70,6 +80,24 @@ def _card_matches(card: dict[str, Any], query: str) -> bool:
     return query.lower() in haystack
 
 
+def _card_type_key(card: dict[str, Any]) -> str:
+    return str(card.get("color") or "")
+
+
+def _type_counts(cards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    counts: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        key = _card_type_key(card) or "none"
+        if key not in counts:
+            counts[key] = {
+                "key": key,
+                "label": TYPE_LABELS.get(key, "无属性"),
+                "count": 0,
+            }
+        counts[key]["count"] += 1
+    return counts
+
+
 @router.get("/meta")
 def get_pokemon_tcg_meta(session: Session = Depends(get_session)) -> dict[str, Any]:
     root = _dataset_root()
@@ -88,6 +116,7 @@ def get_pokemon_tcg_meta(session: Session = Depends(get_session)) -> dict[str, A
         "progress": progress,
         "card_count": len(cards),
         "set_counts": set_counts,
+        "type_counts": _type_counts(cards),
         "storage": "database" if db_cards else "snapshot",
         "translation": {
             "available": bool(db_cards),
@@ -100,6 +129,7 @@ def get_pokemon_tcg_meta(session: Session = Depends(get_session)) -> dict[str, A
 def list_pokemon_tcg_cards(
     q: str = "",
     set_slug: str = Query("", alias="set"),
+    type_key: str = Query("", alias="type"),
     page: int = Query(1, ge=1),
     page_size: int = Query(60, ge=1, le=240),
     session: Session = Depends(get_session),
@@ -109,6 +139,7 @@ def list_pokemon_tcg_cards(
         card
         for card in cards
         if (not set_slug or card.get("set_slug") == set_slug)
+        and (not type_key or (type_key == "none" and not _card_type_key(card)) or _card_type_key(card) == type_key)
         and _card_matches(card, q.strip())
     ]
     filtered.sort(

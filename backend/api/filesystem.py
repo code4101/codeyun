@@ -4320,19 +4320,18 @@ def _build_database_media_page(
         DeviceFile.absolute_path.startswith(scope_prefix),
         or_(DeviceFile.media_kind.in_(sorted(allowed_kinds)), DeviceFile.media_kind.is_(None)),
     ]
-    total_count = int(session.exec(select(func.count()).select_from(DeviceFile).where(*base_filters)).one() or 0)
+    aggregate_row = session.exec(
+        select(
+            func.count(),
+            func.coalesce(func.sum(DeviceFile.file_size), 0),
+            func.coalesce(func.sum(DeviceFile.duration_ms), 0),
+        ).where(*base_filters)
+    ).one()
+    total_count = int(aggregate_row[0] or 0)
     if total_count <= 0:
         return None
-    total_bytes = int(
-        session.exec(
-            select(func.coalesce(func.sum(DeviceFile.file_size), 0)).where(*base_filters)
-        ).one() or 0
-    )
-    total_duration_ms = int(
-        session.exec(
-            select(func.coalesce(func.sum(DeviceFile.duration_ms), 0)).where(*base_filters)
-        ).one() or 0
-    )
+    total_bytes = int(aggregate_row[1] or 0)
+    total_duration_ms = int(aggregate_row[2] or 0)
     overfetch_limit = min(MAX_MEDIA_SCAN_LIMIT, normalized_offset + max(normalized_limit * 4, normalized_limit))
     rows = session.exec(
         select(DeviceFile)

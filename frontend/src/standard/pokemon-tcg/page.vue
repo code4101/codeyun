@@ -9,13 +9,26 @@ import {
   type PokemonTcgCard,
   type PokemonTcgMeta,
 } from '@/api/pokemonTcg'
+import { useResizablePane } from '@/utils/useResizablePane'
 
 const SET_OPTIONS = [
-  { label: '全部', value: '' },
+  { label: '全部卡包', value: '' },
   { label: 'Base Set', value: 'base-set' },
   { label: 'Jungle', value: 'jungle' },
   { label: 'Fossil', value: 'fossil' },
   { label: 'Team Rocket', value: 'team-rocket' },
+]
+
+const TYPE_OPTIONS = [
+  { label: '全部属性', value: '' },
+  { label: '草', value: '{ G }' },
+  { label: '火', value: '{ R }' },
+  { label: '水', value: '{ W }' },
+  { label: '雷', value: '{ L }' },
+  { label: '超', value: '{ P }' },
+  { label: '斗', value: '{ F }' },
+  { label: '无', value: '{ C }' },
+  { label: '无属性', value: 'none' },
 ]
 
 const loading = ref(false)
@@ -24,9 +37,31 @@ const cards = ref<PokemonTcgCard[]>([])
 const selected = ref<PokemonTcgCard | null>(null)
 const q = ref('')
 const setSlug = ref('')
+const typeKey = ref('')
 const page = ref(1)
 const pageSize = ref(60)
 const total = ref(0)
+
+const {
+  paneHeight: cardPaneHeight,
+  isResizing,
+  startResizing,
+} = useResizablePane({
+  initialHeight: 520,
+  getAdaptiveHeight: () => {
+    const availableHeight = Math.max(520, window.innerHeight - 230)
+    return Math.floor(availableHeight * 0.58)
+  },
+  getResizeBounds: () => {
+    const availableHeight = Math.max(520, window.innerHeight - 230)
+    return {
+      min: 260,
+      max: Math.max(320, availableHeight - 220),
+    }
+  },
+  storageKey: 'pokemon-tcg:catalog-card-pane-height',
+})
+const cardPaneStyle = computed(() => ({ height: `${cardPaneHeight.value}px` }))
 
 const progressText = computed(() => {
   const progress = meta.value?.progress || {}
@@ -41,12 +76,19 @@ const progressText = computed(() => {
 const cardTitle = (card: PokemonTcgCard) => card.zh?.display_title || card.display_title
 const cardName = (card: PokemonTcgCard) => card.zh?.official_name || card.official_name
 const cardSetName = (card: PokemonTcgCard) => card.zh?.set_name || card.set_name
+const cardTypeText = (card: PokemonTcgCard) => card.zh?.color || card.color || '无属性'
 const cardBasicText = (card: PokemonTcgCard) => {
   const name = card.zh?.official_name || card.official_name
   const hp = card.zh?.hp_text || `${card.hp} HP`
-  const color = card.zh?.color || card.color
+  const color = cardTypeText(card)
   return [name, hp, color].filter(Boolean).join(' · ')
 }
+
+const typeOptions = computed(() => TYPE_OPTIONS.map((option) => {
+  if (!option.value) return option
+  const count = meta.value?.type_counts?.[option.value]?.count
+  return count == null ? option : { ...option, label: `${option.label} ${count}` }
+}))
 
 const loadMeta = async () => {
   meta.value = await fetchPokemonTcgMeta()
@@ -58,6 +100,7 @@ const loadCards = async () => {
     const response = await fetchPokemonTcgCards({
       q: q.value.trim(),
       set: setSlug.value,
+      type: typeKey.value,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -75,7 +118,7 @@ const reload = async () => {
   await Promise.all([loadMeta(), loadCards()])
 }
 
-watch([q, setSlug, pageSize], () => {
+watch([q, setSlug, typeKey, pageSize], () => {
   page.value = 1
   void loadCards()
 })
@@ -107,7 +150,7 @@ onMounted(() => {
         :prefix-icon="Search"
         placeholder="搜索名称、编号、招式"
       />
-      <el-select v-model="setSlug" class="set-select">
+      <el-select v-model="setSlug" class="set-select" placeholder="卡包">
         <el-option
           v-for="option in SET_OPTIONS"
           :key="option.value"
@@ -115,52 +158,75 @@ onMounted(() => {
           :value="option.value"
         />
       </el-select>
+      <el-select v-model="typeKey" class="type-select" placeholder="属性">
+        <el-option
+          v-for="option in typeOptions"
+          :key="option.value"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
     </section>
 
-    <section class="browser">
-      <div class="card-list" v-loading="loading">
-        <button
-          v-for="card in cards"
-          :key="card.source_card_slug"
-          class="card-tile"
-          :class="{ active: selected?.source_card_slug === card.source_card_slug }"
-          type="button"
-          @click="selected = card"
-        >
-          <img :src="pokemonTcgImageUrl(card)" :alt="cardTitle(card)" loading="lazy">
-          <span>{{ cardName(card) }}</span>
-          <em>{{ card.official_id || `${card.set_name} #${card.official_number}` }}</em>
-        </button>
+    <section class="browser" :class="{ resizing: isResizing }">
+      <div class="card-pane" :style="cardPaneStyle">
+        <div class="card-list" v-loading="loading">
+          <button
+            v-for="card in cards"
+            :key="card.source_card_slug"
+            class="card-tile"
+            :class="{ active: selected?.source_card_slug === card.source_card_slug }"
+            type="button"
+            @click="selected = card"
+          >
+            <img :src="pokemonTcgImageUrl(card)" :alt="cardTitle(card)" loading="lazy">
+            <span>{{ cardName(card) }}</span>
+            <em>{{ card.official_id || `${card.set_name} #${card.official_number}` }}</em>
+          </button>
+        </div>
+      </div>
+
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        class="pagination"
+        layout="prev, pager, next, sizes, total"
+        :page-sizes="[30, 60, 120]"
+        :total="total"
+      />
+
+      <div
+        class="catalog-resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        title="拖动调整卡墙和详情的比例"
+        @mousedown="startResizing"
+      >
+        <span></span>
       </div>
 
       <aside class="detail" v-if="selected">
-        <img class="detail-image" :src="pokemonTcgImageUrl(selected)" :alt="cardTitle(selected)">
-        <div class="detail-body">
-          <h2>{{ cardTitle(selected) }}</h2>
-          <dl>
-            <dt>卡包</dt><dd>{{ cardSetName(selected) }} #{{ selected.official_number }}/{{ selected.official_total }}</dd>
-            <dt>基本</dt><dd>{{ cardBasicText(selected) }}</dd>
-            <dt>阶段</dt><dd>{{ selected.zh?.stage || selected.stage || '—' }}</dd>
-            <dt>招式</dt><dd>{{ selected.zh?.attacks_text || selected.attacks_text || '—' }}</dd>
-            <dt>弱点 / 抵抗 / 撤退</dt>
-            <dd>{{ selected.zh?.weakness_text || selected.weakness_text || '—' }} / {{ selected.zh?.resistance_text || selected.resistance_text || '—' }} / {{ selected.zh?.retreat_cost ?? selected.retreat_cost ?? '—' }}</dd>
-            <dt>稀有度 / 日期</dt><dd>{{ selected.zh?.rarity || selected.rarity || '—' }} · {{ selected.zh?.release_date_text || selected.release_date_text || '—' }}</dd>
-            <dt>插画</dt><dd>{{ selected.zh?.illustrator_text || selected.illustrator_text || '—' }}</dd>
-            <dt>图鉴文本</dt><dd>{{ selected.zh?.flavor_text || selected.flavor_text || '—' }}</dd>
-          </dl>
-          <a :href="selected.source_url" target="_blank" rel="noreferrer">PkmnCards</a>
+        <div class="detail-content">
+          <img class="detail-image" :src="pokemonTcgImageUrl(selected)" :alt="cardTitle(selected)">
+          <div class="detail-body">
+            <h2>{{ cardTitle(selected) }}</h2>
+            <dl>
+              <dt>卡包</dt><dd>{{ cardSetName(selected) }} #{{ selected.official_number }}/{{ selected.official_total }}</dd>
+              <dt>基本</dt><dd>{{ cardBasicText(selected) }}</dd>
+              <dt>属性</dt><dd>{{ cardTypeText(selected) }}</dd>
+              <dt>阶段</dt><dd>{{ selected.zh?.stage || selected.stage || '—' }}</dd>
+              <dt>招式</dt><dd>{{ selected.zh?.attacks_text || selected.attacks_text || '—' }}</dd>
+              <dt>弱点 / 抵抗 / 撤退</dt>
+              <dd>{{ selected.zh?.weakness_text || selected.weakness_text || '—' }} / {{ selected.zh?.resistance_text || selected.resistance_text || '—' }} / {{ selected.zh?.retreat_cost ?? selected.retreat_cost ?? '—' }}</dd>
+              <dt>稀有度 / 日期</dt><dd>{{ selected.zh?.rarity || selected.rarity || '—' }} · {{ selected.zh?.release_date_text || selected.release_date_text || '—' }}</dd>
+              <dt>插画</dt><dd>{{ selected.zh?.illustrator_text || selected.illustrator_text || '—' }}</dd>
+              <dt>图鉴文本</dt><dd>{{ selected.zh?.flavor_text || selected.flavor_text || '—' }}</dd>
+            </dl>
+            <a :href="selected.source_url" target="_blank" rel="noreferrer">PkmnCards</a>
+          </div>
         </div>
       </aside>
     </section>
-
-    <el-pagination
-      v-model:current-page="page"
-      v-model:page-size="pageSize"
-      class="pagination"
-      layout="prev, pager, next, sizes, total"
-      :page-sizes="[30, 60, 120]"
-      :total="total"
-    />
   </main>
 </template>
 
@@ -212,13 +278,18 @@ onMounted(() => {
   width: 180px;
 }
 
+.type-select {
+  width: 150px;
+}
+
 .browser {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 16px;
   max-width: 1360px;
   margin: 0 auto;
-  align-items: start;
+}
+
+.card-pane {
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .card-list {
@@ -269,18 +340,22 @@ onMounted(() => {
 }
 
 .detail {
-  position: sticky;
-  top: 16px;
   border: 1px solid #d8d0c1;
   border-radius: 8px;
   background: #fffdf8;
   overflow: hidden;
 }
 
+.detail-content {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  align-items: start;
+}
+
 .detail-image {
   display: block;
   width: 100%;
-  max-height: 520px;
+  max-height: 460px;
   object-fit: contain;
   background: #e9e2d6;
 }
@@ -307,20 +382,40 @@ onMounted(() => {
   margin: 3px 0 0;
   color: #34393d;
   line-height: 1.45;
+  white-space: pre-line;
 }
 
 .pagination {
-  max-width: 1360px;
-  margin: 16px auto 0;
+  margin: 12px 0 0;
+}
+
+.catalog-resizer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  cursor: row-resize;
+}
+
+.catalog-resizer span {
+  width: 48px;
+  height: 3px;
+  border-radius: 999px;
+  background: #d8d0c1;
+}
+
+.catalog-resizer:hover span,
+.browser.resizing .catalog-resizer span {
+  background: #17636c;
 }
 
 @media (max-width: 1180px) {
-  .browser {
-    grid-template-columns: minmax(0, 1fr) 300px;
-  }
-
   .card-list {
     grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  }
+
+  .detail-content {
+    grid-template-columns: 280px minmax(0, 1fr);
   }
 
   .detail-image {
@@ -334,23 +429,18 @@ onMounted(() => {
     flex-wrap: wrap;
   }
 
-  .browser {
-    grid-template-columns: minmax(0, 1fr) 280px;
-    gap: 12px;
-  }
-
   .detail-body {
     padding: 12px;
+  }
+
+  .detail-content {
+    grid-template-columns: 240px minmax(0, 1fr);
   }
 }
 
 @media (max-width: 760px) {
-  .browser {
+  .detail-content {
     grid-template-columns: 1fr;
-  }
-
-  .detail {
-    position: static;
   }
 
   .card-list {
