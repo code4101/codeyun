@@ -123,11 +123,11 @@ Runtime 状态包含：
 - 日志、错误、开始/更新时间
 - 行为树总开关、守护开关状态
 
-行为树是 Runtime 的常驻内核服务，不应由 CodeYun 页面或 Scheduler 生命周期拥有。页面进入当前 `entry_id`、本地脚本提交任务、后端调度到期时都可以确保服务 loop 存在；关闭工程作业组或暂停自动调度只阻止 CodeYun 常驻 Scheduler 自主提交到期作业，不停止内核服务，也不阻止手动作业或 AI 保底调度继续串行提交任务。
+行为树是 Runtime 的常驻内核服务，不应由 CodeYun 页面或 Scheduler 生命周期拥有。页面进入当前 `entry_id`、本地脚本提交任务、后端调度到期时都可以确保服务 loop 存在；关闭工程作业组或暂停自动调度只阻止 CodeYun 常驻 Scheduler 自主提交到期作业，不停止内核服务，也不阻止用户/AI 通过 `task cell` 继续串行提交任务。
 
 守护不是独立线程。守护开关只是常驻行为树里的前置检查节点配置：开启后每轮空闲 tick 或业务任务 tick 都会先检查守护，关闭后该节点直接跳过。没有任务时，常驻服务可以做低频空闲复原；这仍属于同一个行为树 loop，不是另起一个守护服务。
 
-空闲复原是行为树内建自维护：当没有运行任务、没有手动作业、没有到期自动作业时，resident loop 最多每 5 分钟运行一次完整但有上限的 recovery。该 recovery 复用 `device_health` 和 `close_popups` 两个守护项，先处理设备健康，再多轮关闭已标注弹窗，直到守护跳过或达到上限；它不启动业务作业，也不新增独立设备心跳。
+空闲复原是行为树内建自维护：当没有运行任务、没有待消费 task cell、没有到期自动作业时，resident loop 最多每 5 分钟运行一次完整但有上限的 recovery。该 recovery 复用 `device_health` 和 `close_popups` 两个守护项，先处理设备健康，再多轮关闭已标注弹窗，直到守护跳过或达到上限；它不启动业务作业，也不新增独立设备心跳。
 
 守护 tick 的职责边界：
 
@@ -218,11 +218,11 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 - `run-due` 只启动已支持的到期任务；旧任务占位即使被手动启用，也不会作为可执行任务启动。
 - `run-now` 对未纳入框架验收的任务直接返回 400，避免误触发未确认链路。
 
-这个设计的目的不是继续固定死行为树，而是保留旧版成熟任务目录，同时允许人工随时通过 Scheduler 发送单个任务，例如临时收到礼包码后手动执行 `gift_code_redeem`。
+这个设计的目的不是继续固定死行为树，而是保留旧版成熟任务目录，同时允许人工随时通过 Scheduler 或 task cell 发送单个任务，例如临时收到礼包码后执行 `gift_code_redeem`。
 
 ## 运维入口优先级
 
-如果问题本质是“凡修行为树服务是否在跑、要不要重启、当前 owner/队列/隔离/doctor 怎么样”，默认不要先从 `/data-annotation/runtime/task/*` 或 Scheduler 业务入口下手，而是按下面顺序：
+如果问题本质是“凡修行为树服务是否在跑、要不要重启、当前 owner/队列/隔离/doctor 怎么样”，默认不要先从任务提交或 Scheduler 业务入口下手，而是按下面顺序：
 
 1. 先读 [`行为树运行单元运维约定`](./行为树运行单元运维约定.md)
 2. 再用统一 runtime item action：
@@ -230,18 +230,18 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
    - `inspect`：读取 runtime/owner/manual_job/isolation/doctor 摘要
    - `restart`：`shutdown_service -> ensure service`
    - `wake`：只唤醒 resident loop 重新轮询
-3. 只有在明确处理中断当前业务任务、提交手动作业、单步识别或调度具体 Scheduler task 时，才进入 `/data-annotation/runtime/task/*`、`/data-annotation/scheduler/task/*`
+3. 只有在明确处理中断当前业务任务、提交 task cell、执行 cell tick 或调度具体 Scheduler task 时，才进入 Runtime/Scheduler 业务接口。
 
 边界：
 
 - `/data-annotation/runtime/task/stop` 不是停机接口，只是“停止当前业务任务”。
-- `/data-annotation/runtime/task/tick` 不是行为树重启或调度诊断入口，只是兼容的“提交单步识别/手动作业”入口。
+- 旧 task tick 路由已移除；单步推进使用 `/data-annotation/runtime/cell/tick`。
 - `scheduler/task/run-now` 不是行为树运维入口，它的职责是提交某个具体任务实例。
 
 调度规则：
 
-- 常驻行为树每轮按 `守护 -> 手动作业 -> 自动作业` 的顺序检查。
-- 手动作业来自用户调试/API 临时提交，例如 `/data-annotation/runtime/task/start` 或单步识别；它们进入 `manual_job` 队列，不代表启动行为树服务。
+- 常驻行为树每轮按 `守护 -> task cell -> 自动作业` 的顺序检查。
+- 临时执行来自用户、工程 Scheduler 或 AI Scheduler 提交的 kernel cell。正式任务使用 `/data-annotation/runtime/cells/task`，AI/开发探针使用 `/data-annotation/runtime/cells/code`；它们进入 kernel 受控队列，不代表启动行为树服务。
 - 自动作业只拉取非 `schedule_kind=manual` 的到期任务，避免用户手动任务被空转 loop 反复执行。
 - 工程自动作业受 `job_group_enabled` 约束；AI 保底调度在确认串行安全后可以接管这些已到期任务，但仍要把执行记录落回对应 Scheduler task。
 - Runtime 空闲时，常驻服务可以启动下一个任务。
@@ -278,9 +278,9 @@ for code in codes:
 
 这里的 #49、#78、#81、#82 和按钮位置都来自资产树标注。
 
-### 开发调试手动作业
+### 开发调试代码 cell
 
-`debug_eval` 是通用临时代码执行底座，不是邮件、日常或某个具体业务的专用 API。
+`runtime/cells/code` 是通用临时代码执行入口；底层复用 `debug_eval` 执行能力，但调用方不应再把 `task_type=debug_eval` 当成首选 API。它不是邮件、日常或某个具体业务的专用接口。
 
 它用于让 agent/开发者在真实 Runtime 上下文中临时运行一段 Python：
 
@@ -288,24 +288,21 @@ for code in codes:
 - 需要点击、拖拽等真实动作时必须显式传 `mode=act`。
 - 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_scene()`、`ctx.go_scene()`、`ctx.wait_view()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
 - `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
-- `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在 `debug_eval` 中改成固定坐标硬点。
+- `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在代码 cell 中改成固定坐标硬点。
 - `ctx.wait_scene(*scenes)` 是动作模式能力，用于等待目标场景出现；`ctx.wait_view(*views)` 仅作为历史兼容名保留。
 - `ctx.go_scene(scene)` 是动作模式能力，用于通过通用场景移动进入目标场景；`ctx.goto_view(...)` 不作为新调试代码示例继续扩散。
-- `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开手动作业入口验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
+- `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开 code cell / task cell 验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
 - 支持两种写法：直接执行短代码，或定义 `def task(ctx): ...`，系统会自动调用；`task` 返回生成器时继续沿用现有 yield/tick 机制。
-- 调用入口仍使用现有 Runtime 手动作业提交接口，例如 `task_type=debug_eval`、`payload.code=...`；不要新建第二套调度或后台线程。
+- 调用入口使用 `POST /data-annotation/runtime/cells/code` 或 core `runtime_framework.submit_code_cell(...)`；不要新建第二套调度或后台线程，也不要私有直调 runner。
 
 只读探针示例：
 
 ```json
 {
   "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
-  "task_type": "debug_eval",
-  "payload": {
-    "mode": "readonly",
-    "timeout_seconds": 60,
-    "code": "info = ctx.scene(); ctx.log({'scene': info}); result = info"
-  }
+  "mode": "readonly",
+  "timeout_seconds": 60,
+  "code": "info = ctx.scene(); ctx.log({'scene': info}); result = info"
 }
 ```
 
@@ -324,11 +321,9 @@ def task(ctx):
 
 ```json
 {
-  "task_type": "debug_eval",
-  "payload": {
-    "mode": "act",
-    "code": "ctx.tap_shape(121, '返回')"
-  }
+  "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
+  "mode": "act",
+  "code": "ctx.tap_shape(121, '返回')"
 }
 ```
 
@@ -345,7 +340,7 @@ def task(ctx):
 - 图片对比
 - 抠图/检测
 - 单步 Runtime tick
-- 启停 Runtime task
+- 提交 task/code cell 与停止当前业务任务
 - 启停守护
 - 查看 Runtime/Scheduler 写入的 `WorldFacts`
 - 查看 Scheduler 后端生成的只读 `plan`
@@ -417,16 +412,21 @@ def task(ctx):
 - `go_scene` 迁移期仍支持嵌套子场景的 `离开/返回/关闭` 空目标隐式返回父场景标题对应的同名图片；例如“世界”分组下的 `#85 某区域内部` 可规划回 `#34 世界`。这属于旧标注兼容，不代表资产分组天然决定 sub-scene 识别关系。
 - `go_scene` 等待阶段会把“离开场景”确认弹窗视为中间态，识别到 `确认/确定` 后自动点击并继续等待原目标；该确认弹窗不能被学习成原按钮的最终 `sceneJumpTarget`。
 - 场景身份默认阈值按 80 执行；`#85[离开]` 这类小图标在世界画面中 69% 的弱相似度不能算命中。真实世界场景当前补了 `#34[大地图当前入口]` OCR 身份锚点，用于兼容实际画面与旧 #34 截图不同的状态。
-- 2026-06-04 真实验收：从当前 MuMu/ADB 画面执行 `/data-annotation/runtime/task/start`，`task_type=go_scene`、`target_scene_id=34`，最终 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_final_20260604_012723/`。后续修复守护 tick 语义后再次真实验收，仍为 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_after_guard_fix_20260604_015404/`。
-- 2026-06-04 常驻行为树改造后真实验收：`GET /data-annotation/runtime/status?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2` 可拉起常驻服务并恢复守护配置，状态为 `service_running=true`、`running=false`、`guard_enabled=true`、`guard_running=true`；随后通过 `/data-annotation/runtime/task/start` 提交 `go_scene #34`，入口返回“手动作业已提交”，最终 `success/done/current_scene=34`，截图保存在 `.codex_tmp/fanxiu_resident_runtime_20260604/`。再次重载后状态仍能恢复为 `service_running=true` 且空转识别 `#34 world 100%`。
-- 2026-06-04 手动作业入口收敛后真实验收：`/data-annotation/runtime/task/start` 不再直接启动业务线程，而是写入 `manual_job` 队列并唤醒常驻服务；常驻 loop 串行消费 `manual-1780522415517-4061817e` 后执行生成器式 `go_scene #34`，最终 `success/done/current_scene=34`，耗时约 6.7 秒，真实截图保存在 `.codex_tmp/fanxiu_manual_direct_generator_20260604/`。
-- 2026-06-04 场景身份 role 语义修复后真实验收：在真实日程页执行 `/data-annotation/runtime/task/start`，`task_type=go_scene`、`target_scene_id=34`，Runtime 识别 `#66 -> #34`，点击 `返回`，跳转耗时 `2.3s`，最终 `success/done/current_scene=34`；证据截图保存在 `.codex_tmp/fanxiu_scene_role_fix_66_to_34_final_20260604/`。这次不是“已在目标场景”的短路命中。
-- 2026-06-04 去掉手动作业 drain 线程和 `run-now` 直跑旧 pending job 后真实验收：通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，resident loop 消费 `manual-1780525981456-8e88286b`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_resident_no_drain_manual_tick_20260604/`。
-- 2026-06-04 手动作业并入 resident service 线程后真实验收：通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，resident loop 直接执行 `manual-1780526898389-9e4c1ab5`，不再创建 `fanxiu-data-annotation-manual-job` 业务线程，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_manual_inline_resident_tick_20260604/`。
-- 2026-06-04 Scheduler 到期任务并入 resident service 线程：`start_scheduler_tasks` 不再创建 `fanxiu-data-annotation-scheduler` 业务线程，resident loop 空闲时直接串行执行到期任务；单元回归已覆盖 Runtime 不再拥有 `_thread` 字段。真实验收临时追加 `codex-temp-go-world` 到期任务，执行 `/data-annotation/scheduler/run-due` 后最终 `scheduler_run_due/success/current_scene=34`，证据保存在 `.codex_tmp/fanxiu_scheduler_inline_run_due_20260604/`，验收后已恢复原 Scheduler 配置。
-- 2026-06-04 direct generic/gift-code 过渡入口已移除：直接 Runtime 任务统一走 `start_runtime_task -> _run_inline_runtime_task`，不再保留 `start_generic_runtime_task` 和旧 `start()`；Runtime 后台线程只保留 resident service。
-- 2026-06-04 移除 `_thread` 字段后真实验收：通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，resident service 消费 `manual-1780528737905-a0f24121`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_no_runtime_thread_manual_tick_20260604/`。
-- 2026-06-04 移除旧直启入口和无调用 `_run` 后真实验收：通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，resident service 消费 `manual-1780529858028-ce12bf62`，最终 `success/done/current_scene=34`，耗时约 31.1 秒，`manual_jobs.json=[]`，真实截图 `07_final_screencap.png` 保存在 `.codex_tmp/fanxiu_resident_after_entry_cleanup_20260604/`。
-- 2026-06-04 `task/stop` 语义收窄后真实验收：先调用 `/data-annotation/runtime/task/stop`，返回 `idle/当前没有正在运行的任务/service_running=true`，证明 stop 不关闭 resident service；随后通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，最终 `success/done/current_scene=34`，耗时约 8.4 秒，`manual_jobs.json=[]`，真实截图 `06_final_screencap.png` 保存在 `.codex_tmp/fanxiu_stop_current_task_semantics_20260604/`。
+
+### 历史验收记录
+
+以下记录保留当时真实验收事实，不代表现行推荐入口。现行任务入口是 `/data-annotation/runtime/cells/task`，临时代码入口是 `/data-annotation/runtime/cells/code`。
+
+- 2026-06-04 真实验收：从当前 MuMu/ADB 画面通过当时的旧任务提交入口执行 `go_scene #34`，最终 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_final_20260604_012723/`。后续修复守护 tick 语义后再次真实验收，仍为 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_after_guard_fix_20260604_015404/`。
+- 2026-06-04 常驻行为树改造后真实验收：状态接口可拉起常驻服务并恢复守护配置，状态为 `service_running=true`、`running=false`、`guard_enabled=true`、`guard_running=true`；随后通过当时的旧任务提交入口提交 `go_scene #34`，入口返回“手动作业已提交”，最终 `success/done/current_scene=34`，截图保存在 `.codex_tmp/fanxiu_resident_runtime_20260604/`。再次重载后状态仍能恢复为 `service_running=true` 且空转识别 `#34 world 100%`。
+- 2026-06-04 任务提交入口收敛后真实验收：当时的旧任务提交入口不再直接启动业务线程，而是写入内部队列并唤醒常驻服务；常驻 loop 串行消费 `manual-1780522415517-4061817e` 后执行生成器式 `go_scene #34`，最终 `success/done/current_scene=34`，耗时约 6.7 秒，真实截图保存在 `.codex_tmp/fanxiu_manual_direct_generator_20260604/`。
+- 2026-06-04 场景身份 role 语义修复后真实验收：在真实日程页通过当时的旧任务提交入口执行 `go_scene #34`，Runtime 识别 `#66 -> #34`，点击 `返回`，跳转耗时 `2.3s`，最终 `success/done/current_scene=34`；证据截图保存在 `.codex_tmp/fanxiu_scene_role_fix_66_to_34_final_20260604/`。这次不是“已在目标场景”的短路命中。
+- 2026-06-04 去掉手动作业 drain 线程和 `run-now` 直跑旧 pending job 后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident loop 消费 `manual-1780525981456-8e88286b`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_resident_no_drain_manual_tick_20260604/`。
+- 2026-06-04 手动作业并入 resident service 线程后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident loop 直接执行 `manual-1780526898389-9e4c1ab5`，不再创建 `fanxiu-data-annotation-manual-job` 业务线程，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_manual_inline_resident_tick_20260604/`。
+- 2026-06-04 Scheduler 到期任务并入 resident service 线程：`start_scheduler_tasks` 不再创建 `fanxiu-data-annotation-scheduler` 业务线程，resident loop 空闲时直接串行执行到期任务；单元回归已覆盖 Runtime 不再拥有 `_thread` 字段。真实验收临时追加 `codex-temp-go-world` 到期任务，执行 Scheduler run-due 后最终 `scheduler_run_due/success/current_scene=34`，证据保存在 `.codex_tmp/fanxiu_scheduler_inline_run_due_20260604/`，验收后已恢复原 Scheduler 配置。
+- 2026-06-04 direct generic/gift-code 过渡入口已移除：直接 Runtime 任务统一并入 resident service，不再保留 `start_generic_runtime_task` 和旧 `start()`；Runtime 后台线程只保留 resident service。
+- 2026-06-04 移除 `_thread` 字段后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident service 消费 `manual-1780528737905-a0f24121`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_no_runtime_thread_manual_tick_20260604/`。
+- 2026-06-04 移除旧直启入口和无调用 `_run` 后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident service 消费 `manual-1780529858028-ce12bf62`，最终 `success/done/current_scene=34`，耗时约 31.1 秒，`manual_jobs.json=[]`，真实截图 `07_final_screencap.png` 保存在 `.codex_tmp/fanxiu_resident_after_entry_cleanup_20260604/`。
+- 2026-06-04 stop 语义收窄后真实验收：先调用停止当前业务任务接口，返回 `idle/当前没有正在运行的任务/service_running=true`，证明 stop 不关闭 resident service；随后通过当时的旧 tick 入口提交 `manual_tick`，最终 `success/done/current_scene=34`，耗时约 8.4 秒，`manual_jobs.json=[]`，真实截图 `06_final_screencap.png` 保存在 `.codex_tmp/fanxiu_stop_current_task_semantics_20260604/`。
 - 2026-06-04 相关回归：`uv run pytest backend\tests\test_fanxiu_data_annotation_runtime_guard.py tests\test_fanxiu_data_annotation_scheduler.py -q` 为 `71 passed`；`npm run typecheck --prefix frontend` 通过。
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import time
+
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 
 READABLE_VIEW_SUFFIX = "_readable"
 TIME_TEXT_SUFFIX = "_local_text"
 LEGACY_VIEW_EXCLUDE_TABLES = {"userdevice", "dbversion"}
+READABLE_VIEW_LOCK_RETRY_DELAYS_SECONDS = (0.2, 0.5, 1.0)
 
 
 def _quote_ident(name: str) -> str:
@@ -18,10 +22,11 @@ def _is_time_like_column(column_name: str, column_type: str | None) -> bool:
     return column_name.endswith("_at") and any(marker in normalized_type for marker in numeric_markers)
 
 
-def refresh_sqlite_readable_views(engine) -> None:
-    if engine.url.get_backend_name() != "sqlite":
-        return
+def _is_transient_sqlite_lock_error(exc: OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()
 
+
+def _refresh_sqlite_readable_views_once(engine) -> None:
     with engine.begin() as conn:
         table_rows = conn.execute(
             text(
@@ -69,3 +74,23 @@ def refresh_sqlite_readable_views(engine) -> None:
                 f"FROM {_quote_ident(table_name)} AS base"
             )
             conn.exec_driver_sql(view_sql)
+
+
+def refresh_sqlite_readable_views(engine) -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
+    for attempt, delay in enumerate((*READABLE_VIEW_LOCK_RETRY_DELAYS_SECONDS, None), start=1):
+        try:
+            _refresh_sqlite_readable_views_once(engine)
+            return
+        except OperationalError as exc:
+            if not _is_transient_sqlite_lock_error(exc):
+                raise
+            if delay is None:
+                print(
+                    "Skipping sqlite readable view refresh after transient lock retries: "
+                    f"{exc}"
+                )
+                return
+            time.sleep(delay)

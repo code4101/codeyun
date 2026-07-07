@@ -123,3 +123,38 @@ def test_sql_scan_include_all_uses_fast_path_with_visible_edges():
         assert [edge["id"] for edge in result["edges"]] == ["e12"]
     finally:
         session.close()
+
+
+def test_sql_scan_with_title_filter_stays_on_fast_path():
+    session, user = _session_with_graph()
+    try:
+        request = NoteProgramRequest(executor=NoteProgramExecutor(kind="scan"))
+        request.program.select.default = False
+        request.program.select.rules = [
+            NoteProgramRule(
+                action="include",
+                matcher=NoteProgramMatcher(kind="field", field="start_at", op="gte", value=15),
+            ),
+            NoteProgramRule(
+                action="filter",
+                matcher=NoteProgramMatcher(kind="title_contains", value="b"),
+            ),
+        ]
+        request.result.include_edges = False
+        request.result.order_by = "start_at"
+        request.result.order_desc = False
+        request.result.limit = 10
+
+        result = _try_execute_note_program_sql_scan(
+            request,
+            current_user=user,
+            user_id=user.id,
+            session=session,
+        )
+
+        assert result is not None
+        assert result["total_nodes"] == 1
+        assert [node["id"] for node in result["nodes"]] == [102]
+        assert result["edges"] == []
+    finally:
+        session.close()

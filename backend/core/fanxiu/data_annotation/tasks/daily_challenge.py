@@ -125,7 +125,14 @@ class DailyChallengeTaskMixin:
             progress_can_mark_done=False,
         )
         if daily_status == "not_found":
-            raise RuntimeError(f"{task_label}：#69 日常列表未找到入口，不能继续")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-dungeon",
+                task_type="daily_dungeon",
+                label=task_label,
+                entry_label="每日副本",
+            )
+            return "skipped"
 
         return (yield from self._click_daily_dungeon_recommend_and_buy(ctx, stop_event, payload, image222, image223, image224, image225, task_label=task_label))
 
@@ -744,7 +751,14 @@ class DailyChallengeTaskMixin:
             )
             return "success"
         if daily_status == "not_found":
-            raise RuntimeError("日常_双修：#69 日常列表未找到「完成双人修炼1次」，不能继续")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-shuangxiu",
+                task_type="daily_shuangxiu",
+                label="日常_双修",
+                entry_label="完成双人修炼1次",
+            )
+            return "skipped"
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
         wait_result = yield from runtime.wait_any(
             {
@@ -1385,7 +1399,13 @@ class DailyChallengeTaskMixin:
         if daily_status == "done":
             raise RuntimeError(f"{task_label}：日常列表完成态不能作为成功依据，必须进入详情确认剩余奖励次数")
         if daily_status == "not_found":
-            raise RuntimeError(f"{task_label}：#69 日常列表未找到入口，不能按完成处理")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id=task_id,
+                task_type=task_type,
+                label=task_label,
+            )
+            return "skipped"
 
         result = yield from self._run_daily_free_challenge_from_scene(
             ctx,

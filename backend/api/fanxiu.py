@@ -393,12 +393,13 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationRuntimeCellLog,
     FanxiuDataAnnotationRuntimeCellLogResponse,
     FanxiuDataAnnotationRuntimeCellTickRequest,
+    FanxiuDataAnnotationRuntimeCodeCellRequest,
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
     FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
     FanxiuDataAnnotationRuntimeKernelRestartRequest,
     FanxiuDataAnnotationRuntimeStatus,
-    FanxiuDataAnnotationRuntimeTaskRequest,
+    FanxiuDataAnnotationRuntimeTaskCellRequest,
     FanxiuDataAnnotationRuntimeStopRequest,
     FanxiuDataAnnotationRuntimeGuardGroupRequest,
     FanxiuDataAnnotationRuntimeGuardRequest,
@@ -4370,7 +4371,7 @@ def _queue_data_annotation_manual_job_status(
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.queue_manual_job_status(
+    return _runtime_control.queue_runtime_task_cell_status(
         entry=entry,
         entry_id=entry_id,
         task_type=task_type,
@@ -4393,22 +4394,13 @@ def _submit_data_annotation_manual_job(
     label: str = "",
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
-    try:
-        return _runtime_control.submit_manual_job(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload=payload,
-            label=label,
-            interruptible=interruptible,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _submit_data_annotation_task_cell(
+        entry,
+        entry_id,
+        task_type,
+        payload,
+        source="compat_manual_job",
+    )
 
 
 def _pop_next_data_annotation_manual_job() -> dict[str, Any] | None:
@@ -4519,15 +4511,27 @@ def _prepare_data_annotation_runtime_for_scheduler_task(task: dict[str, Any], ta
     )
 
 
-def _start_data_annotation_runtime_task(entry: UserDevice, req: FanxiuDataAnnotationRuntimeTaskRequest) -> dict[str, Any]:
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+def _submit_data_annotation_task_cell(
+    entry: UserDevice,
+    entry_id: str,
+    task_type: str,
+    payload: dict[str, Any] | None,
+    *,
+    timeout_seconds: float | None = None,
+    source: str = "",
+) -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
+    cell_payload = dict(payload or {})
+    if timeout_seconds is not None:
+        cell_payload.setdefault("timeout_seconds", float(timeout_seconds))
+        cell_payload.setdefault("max_runtime_seconds", float(timeout_seconds))
+    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
     try:
-        return _runtime_control.start_runtime_task(
+        status = _runtime_framework.submit_task_cell(
             entry=entry,
             entry_id=entry_id,
-            task_type=req.task_type,
-            payload=req.payload,
+            task_type=task_type,
+            payload=cell_payload,
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
             manual_job_path=_data_annotation_manual_job_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
@@ -4537,6 +4541,64 @@ def _start_data_annotation_runtime_task(entry: UserDevice, req: FanxiuDataAnnota
         _raise_fanxiu_runtime_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_source = {
+        "cmd": "submit_task_cell",
+        "entry_id": entry_id,
+        "task_type": task_type,
+        "payload": cell_payload,
+    }
+    if source:
+        log_source["source"] = source
+    return _record_runtime_cell_log(
+        status,
+        title=f"任务 cell：{task_type}",
+        source=log_source,
+        before_keys=before_keys,
+    )
+
+
+def _submit_data_annotation_code_cell(
+    entry: UserDevice,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+    *,
+    source: str = "",
+) -> dict[str, Any]:
+    _sync_data_annotation_runtime_runner_to_core()
+    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
+    try:
+        status = _runtime_framework.submit_code_cell(
+            entry=entry,
+            entry_id=entry_id,
+            code=req.code,
+            mode=req.mode,
+            timeout_seconds=req.timeout_seconds,
+            max_output_chars=req.max_output_chars,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except FanxiuRuntimeError as exc:
+        _raise_fanxiu_runtime_http_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_source = {
+        "cmd": "submit_code_cell",
+        "entry_id": entry_id,
+        "code": req.code,
+        "mode": req.mode,
+        "timeout_seconds": req.timeout_seconds,
+        "max_output_chars": req.max_output_chars,
+    }
+    if source:
+        log_source["source"] = source
+    return _record_runtime_cell_log(
+        status,
+        title=f"代码 cell：{req.mode}",
+        source=log_source,
+        before_keys=before_keys,
+    )
 
 
 def _serialize_fanxiu_pseudocode_card(card: FanxiuPseudoCodeCard) -> dict[str, Any]:
@@ -5972,28 +6034,75 @@ def restart_fanxiu_data_annotation_runtime_service_kernel(
     return _restart_fanxiu_data_annotation_runtime_kernel(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/task/start", response_model=FanxiuDataAnnotationRuntimeStatus)
-def start_fanxiu_data_annotation_runtime_task(
-    req: FanxiuDataAnnotationRuntimeTaskRequest,
+@status_router.post("/data-annotation/runtime/cells/task", response_model=FanxiuDataAnnotationRuntimeStatus)
+def submit_fanxiu_data_annotation_runtime_task_cell(
+    req: FanxiuDataAnnotationRuntimeTaskCellRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_start_data_annotation_runtime_task(entry, req))
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+        _submit_data_annotation_task_cell(
+            entry,
+            entry_id,
+            req.task_type,
+            req.payload,
+            timeout_seconds=req.timeout_seconds,
+        )
+    )
 
 
 @status_router.post(
-    "/data-annotation/runtime/service/task/start",
+    "/data-annotation/runtime/service/cells/task",
     response_model=FanxiuDataAnnotationRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def start_fanxiu_data_annotation_runtime_service_task(
-    req: FanxiuDataAnnotationRuntimeTaskRequest,
+def submit_fanxiu_data_annotation_runtime_service_task_cell(
+    req: FanxiuDataAnnotationRuntimeTaskCellRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_start_data_annotation_runtime_task(entry, req))
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+        _submit_data_annotation_task_cell(
+            entry,
+            entry_id,
+            req.task_type,
+            req.payload,
+            timeout_seconds=req.timeout_seconds,
+            source="service",
+        )
+    )
+
+
+@status_router.post("/data-annotation/runtime/cells/code", response_model=FanxiuDataAnnotationRuntimeStatus)
+def submit_fanxiu_data_annotation_runtime_code_cell(
+    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
+
+
+@status_router.post(
+    "/data-annotation/runtime/service/cells/code",
+    response_model=FanxiuDataAnnotationRuntimeStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+)
+def submit_fanxiu_data_annotation_runtime_service_code_cell(
+    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+    session: Session = Depends(get_session),
+):
+    entry = _get_service_user_device_or_404(session, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+        _submit_data_annotation_code_cell(entry, entry_id, req, source="service")
+    )
 
 
 @status_router.post("/data-annotation/runtime/task/stop", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -6160,7 +6269,7 @@ def _tick_fanxiu_data_annotation_runtime_cell(
         entry=entry,
         entry_id=entry_id,
         guard=req.guard,
-        manual_job=req.manual_job,
+        task_cell=req.task_cell,
         scheduled_job=req.scheduled_job,
         run_mode=req.run_mode,
         max_ticks=req.max_ticks,
@@ -6175,7 +6284,7 @@ def _tick_fanxiu_data_annotation_runtime_cell(
         "entry_id": entry_id,
         "policy": {
             "guard": req.guard,
-            "manual_job": req.manual_job,
+            "task_cell": req.task_cell,
             "scheduled_job": req.scheduled_job,
             "run_mode": req.run_mode,
             "max_ticks": req.max_ticks,
@@ -6217,75 +6326,6 @@ def tick_fanxiu_data_annotation_runtime_service_cell(
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
     return _tick_fanxiu_data_annotation_runtime_cell(entry, entry_id, req, source="service")
-
-
-def _tick_fanxiu_data_annotation_runtime_task(
-    entry: Any,
-    entry_id: str,
-    req: FanxiuDataAnnotationRuntimeTaskRequest,
-    *,
-    source: str = "",
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
-    try:
-        status = _runtime_framework.tick(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=req.task_type,
-            payload=req.payload,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    log_source = {
-        "cmd": "submit_task_tick",
-        "entry_id": entry_id,
-        "task_type": req.task_type,
-        "payload": req.payload,
-    }
-    if source:
-        log_source["source"] = source
-    status = _record_runtime_cell_log(
-        status,
-        title=f"{'服务任务' if source == 'service' else '作业实例'} tick：{req.task_type}",
-        source=log_source,
-        before_keys=before_keys,
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
-
-
-@status_router.post("/data-annotation/runtime/task/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-def tick_fanxiu_data_annotation_runtime_task(
-    req: FanxiuDataAnnotationRuntimeTaskRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    """Compatibility endpoint: submit a manual tick/task into the resident loop.
-
-    This is a business execution entry, not a service restart/diagnosis entry.
-    """
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_task(entry, entry_id, req)
-
-
-@status_router.post(
-    "/data-annotation/runtime/service/task/tick",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
-)
-def tick_fanxiu_data_annotation_runtime_service_task(
-    req: FanxiuDataAnnotationRuntimeTaskRequest,
-    session: Session = Depends(get_session),
-):
-    entry = _get_service_user_device_or_404(session, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_task(entry, entry_id, req, source="service")
 
 
 @status_router.get("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
@@ -6389,7 +6429,7 @@ def _runtime_cell_source(payload: dict[str, Any]) -> str:
         return (
             f"{prefix}行为树.tick(\n"
             f"    守护={_runtime_cell_bool(policy.get('guard', True))},\n"
-            f"    作业队列={_runtime_cell_bool(policy.get('manual_job', True))},\n"
+            f"    任务cell={_runtime_cell_bool(policy.get('task_cell', True))},\n"
             f"    到期作业={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
             f"    运行模式={_runtime_cell_py_literal(mode_name)},\n"
             f"    最大次数={int(policy.get('max_ticks') or 1)},\n"
@@ -6402,6 +6442,15 @@ def _runtime_cell_source(payload: dict[str, Any]) -> str:
         return (
             f"{prefix}task = 行为树.create_task({_runtime_cell_py_literal(task_type)}, {_runtime_cell_py_literal(task_payload)})\n"
             "行为树.step(task, 守护=True)"
+        )
+    if cmd == "submit_task_cell":
+        task_type = str(payload.get("task_type") or "")
+        task_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        return (
+            f"{prefix}行为树.submit_task_cell(\n"
+            f"    {_runtime_cell_py_literal(task_type)},\n"
+            f"    payload={_runtime_cell_py_literal(task_payload)},\n"
+            ")"
         )
     if cmd == "runtime_log_cell":
         return _runtime_cell_log_source(str(payload.get("title") or "运行日志 cell"), [])

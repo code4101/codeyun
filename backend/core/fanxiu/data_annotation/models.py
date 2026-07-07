@@ -110,16 +110,25 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     queued_job: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuDataAnnotationRuntimeTaskRequest(BaseModel):
+class FanxiuDataAnnotationRuntimeCodeCellRequest(BaseModel):
+    entry_id: str
+    code: str = Field(min_length=1)
+    mode: Literal["readonly", "act"] = "readonly"
+    timeout_seconds: float = Field(120.0, ge=1.0, le=21600.0)
+    max_output_chars: int = Field(4000, ge=200, le=20000)
+
+
+class FanxiuDataAnnotationRuntimeTaskCellRequest(BaseModel):
     entry_id: str
     task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=21600.0)
 
 
 class FanxiuDataAnnotationRuntimeCellTickRequest(BaseModel):
     entry_id: str
     guard: bool = True
-    manual_job: bool = True
+    task_cell: bool = True
     scheduled_job: bool = True
     run_mode: Literal["tick_once", "until_idle", "current_job"] = "tick_once"
     max_ticks: int = Field(10, ge=1, le=100)

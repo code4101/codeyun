@@ -3766,7 +3766,7 @@ class DataAnnotationRuntimeRunner(
         self._service_wake_event.set()
         return self.status()
 
-    def start_runtime_task(
+    def _run_registered_task_inline(
         self,
         *,
         entry: Any,
@@ -6204,7 +6204,14 @@ class DataAnnotationRuntimeRunner(
         if status == "open":
             yield from self._wait_scene_id(ctx, stop_event, 183, timeout=18.0, label="日常_灵祖：等待灵祖活动列表 #183")
         if status == "not_found":
-            raise RuntimeError("日常_灵祖：日常列表未找到「灵祖」任务")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-lingzu",
+                task_type="daily_lingzu",
+                label="日常_灵祖",
+                entry_label="灵祖",
+            )
+            return "skipped"
         return status
 
     def _open_daily_lingzu_detail(

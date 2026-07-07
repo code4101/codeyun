@@ -808,7 +808,7 @@ def ensure_runtime_service(
         resolved_entry_id,
         asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
     )
-    status["behavior_tree_enabled"] = True
+    status["behavior_tree_enabled"] = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 
@@ -844,29 +844,6 @@ def restart_runtime_kernel(
     normalize_data_annotation_runtime_display(status)
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
-
-
-def start_runtime_task(
-    *,
-    entry: Any,
-    entry_id: str,
-    task_type: str,
-    payload: dict[str, Any] | None = None,
-    asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
-) -> dict[str, Any]:
-    return submit_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=payload,
-        asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
-    )
 
 
 def stop_current_task(
@@ -938,7 +915,7 @@ def submit_tick_task(
     resolved_task_type = str(task_type or "detect_scene").strip() or "detect_scene"
     if resolved_task_type == "manual_tick":
         resolved_task_type = "detect_scene"
-    return submit_manual_job(
+    return submit_runtime_task_cell(
         entry=entry,
         entry_id=entry_id,
         task_type=resolved_task_type,
@@ -1029,7 +1006,7 @@ def clear_runtime_logs(
     return []
 
 
-def queue_manual_job_status(
+def queue_runtime_task_cell_status(
     *,
     entry: Any,
     entry_id: str,
@@ -1059,7 +1036,7 @@ def queue_manual_job_status(
     status.update({
         "entry_id": entry_id,
         "phase": "manual_job_queued",
-        "message": f"作业实例已排队：{job.get('label') or job.get('task_type')}",
+        "message": f"task cell 已排队：{job.get('label') or job.get('task_type')}",
         "queued_job": {
             "id": job.get("id"),
             "task_type": job.get("task_type"),
@@ -1083,7 +1060,7 @@ def queue_manual_job_status(
     return status
 
 
-def submit_manual_job(
+def submit_runtime_task_cell(
     *,
     entry: Any,
     entry_id: str,
@@ -1104,7 +1081,7 @@ def submit_manual_job(
     definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
     if definition is None:
         raise ValueError(f"暂不支持的任务类型：{task_type}")
-    return queue_manual_job_status(
+    return queue_runtime_task_cell_status(
         entry=entry,
         entry_id=entry_id,
         task_type=task_type,
@@ -1118,7 +1095,6 @@ def submit_manual_job(
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
-
 
 def start_next_manual_job_if_idle(
     entry: Any,
@@ -1387,7 +1363,7 @@ def run_now_scheduler_task(
     state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     state_task["last_result"] = "queued"
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-    return submit_manual_job(
+    return submit_runtime_task_cell(
         entry=entry,
         entry_id=entry_id,
         task_type=str(run_task.get("task_type") or ""),
@@ -1493,7 +1469,7 @@ def run_due_scheduler_tasks(
             due_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             due_task["last_result"] = "queued"
             write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-            status = submit_manual_job(
+            status = submit_runtime_task_cell(
                 entry=entry,
                 entry_id=entry_id,
                 task_type=str(due_task.get("task_type") or ""),
@@ -1512,7 +1488,7 @@ def run_due_scheduler_tasks(
             status.update({
                 "entry_id": entry_id,
                 "phase": "scheduler_due_queued",
-                "message": f"到期任务已在作业队列等待：{due_task.get('label') or due_task.get('id')}",
+                "message": f"到期任务已在 task cell 队列等待：{due_task.get('label') or due_task.get('id')}",
                 "queued_job": {
                     "id": queued_job.get("id"),
                     "task_type": queued_job.get("task_type"),

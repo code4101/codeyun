@@ -1194,7 +1194,7 @@ def _fanxiu_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
         "descriptions": {
             "trigger": "确保 resident service 存在并恢复必要附属服务，不是旧 external-service 起脚本。",
             "stop": "只停止当前业务任务，不关闭 resident service。",
-            "inspect": "读取 runtime、owner、手动作业、隔离锁和 doctor 摘要。",
+            "inspect": "读取 runtime、owner、task cell 队列、隔离锁和 doctor 摘要。",
             "restart": "写入 shutdown_service，等待 owner 释放后重新 ensure resident service。",
             "wake": "写入 wake_service，唤醒 resident loop 立即重新轮询。",
         },
@@ -1460,13 +1460,13 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
             "动作语义：trigger=ensure resident service；stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
             f"Owner：active={bool(owner.get('active'))} pid={owner.get('pid') or '-'} step={owner.get('step') or '-'}",
             f"普通作业隔离：active={bool(isolation.get('active'))} reason={isolation.get('reason') or '-'}",
-            f"手动作业队列：{len(manual_jobs)}",
+            f"task cell 队列：{len(manual_jobs)}",
             f"Doctor：{doctor_watch.get('snapshot', {}).get('maintenance', {}).get('severity') or '-'} · {doctor_watch.get('message') or '无巡检摘要'}",
         ]
         for job in manual_jobs[:10]:
             if isinstance(job, dict):
                 lines.append(
-                    "手动作业："
+                    "task cell："
                     f"{job.get('status') or '-'} · "
                     f"{job.get('task_type') or '-'} · "
                     f"{job.get('label') or job.get('id') or '-'}"
@@ -1715,6 +1715,24 @@ def _collect_builtin_services() -> dict[str, Any]:
     }
 
 
+def _compact_runtime_item_for_status_list(item: dict[str, Any]) -> dict[str, Any]:
+    compacted = dict(item)
+    compacted.pop("policy", None)
+
+    if compacted.get("source") != "builtin":
+        return compacted
+
+    compacted["raw"] = {}
+    status = compacted.get("status")
+    if isinstance(status, dict):
+        compacted_status = dict(status)
+        compacted_status.pop("latest_run", None)
+        compacted_status.pop("retry_policy", None)
+        compacted_status.pop("trigger_warning", None)
+        compacted["status"] = compacted_status
+    return compacted
+
+
 def build_runtime_status(session: Session, device_id: str | None = None) -> dict[str, Any]:
     target_device_id = device_id or get_device_id()
     local_device_id = get_device_id()
@@ -1747,7 +1765,10 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
         if not (target_device_id == local_device_id and is_legacy_codeyun_command_task(task))
     ]
 
-    items = command_items + builtin_services["items"] + builtin["items"]
+    items = [
+        _compact_runtime_item_for_status_list(item)
+        for item in command_items + builtin_services["items"] + builtin["items"]
+    ]
     runtime_queue = _enrich_runtime_queue(builtin["queue"], items) if target_device_id == local_device_id else None
     group_by_id: dict[str, dict[str, Any]] = {}
     for item in items:

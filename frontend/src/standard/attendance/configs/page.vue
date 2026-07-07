@@ -23,6 +23,9 @@ import type {
   AttendanceCourseDataStepRunnerConfig,
 } from '@/api/attendance'
 import { taskStore, type Device } from '@/store/taskStore'
+import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
+
+markBootPerf('attendance-configs.module')
 
 const loading = ref(false)
 const savingCurrent = ref(false)
@@ -236,20 +239,56 @@ function openEditAccountDialog(account: AttendanceAccount) {
 
 async function loadPageData() {
   loading.value = true
+  markBootPerf('attendance-configs.load.start', {
+    cachedDeviceCount: taskStore.devices.length,
+  })
   try {
-    const [config, courseDataFlowConfig, accountItems] = await Promise.all([
+    const shouldAwaitDeviceRefresh = taskStore.devices.length === 0
+    const coreDataPromise = markBootPerfAsync('attendance-configs.fetch-core', () => Promise.all([
       fetchAttendanceConfig(),
       fetchAttendanceCourseDataFlowConfig(),
       fetchAttendanceAccounts(),
-      taskStore.fetchDevices(),
-    ])
+    ]))
+    const deviceRefreshPromise = markBootPerfAsync('attendance-configs.fetch-devices', () => taskStore.fetchDevices())
+    const [config, courseDataFlowConfig, accountItems] = await markBootPerfAsync('attendance-configs.fetch-all', async () => {
+      const coreData = await coreDataPromise
+      if (shouldAwaitDeviceRefresh) {
+        await deviceRefreshPromise
+      }
+      return coreData
+    })
+    markBootPerf('attendance-configs.fetch-all.ready', {
+      accountCount: accountItems.length,
+      deviceCount: taskStore.devices.length,
+      deviceFetchError: taskStore.lastDeviceFetchError || '',
+      awaitedDeviceRefresh: shouldAwaitDeviceRefresh,
+    })
     accounts.value = accountItems
     applyConfig(config)
     applyCourseDataFlowConfig(courseDataFlowConfig)
+    if (!shouldAwaitDeviceRefresh) {
+      void deviceRefreshPromise.then(() => {
+        markBootPerf('attendance-configs.devices-background-applied', {
+          deviceCount: taskStore.devices.length,
+          deviceFetchError: taskStore.lastDeviceFetchError || '',
+        })
+      })
+    }
+    markBootPerf('attendance-configs.state-ready', {
+      accountCount: accountItems.length,
+      deviceCount: taskStore.devices.length,
+      stepRunnerCount: stepRunners.value.length,
+      stepOverrideCount: stepOverrideCount.value,
+      awaitedDeviceRefresh: shouldAwaitDeviceRefresh,
+    })
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '加载考勤配置失败')
   } finally {
     loading.value = false
+    markBootPerf('attendance-configs.load.finally', {
+      deviceCount: taskStore.devices.length,
+      loading: loading.value,
+    })
   }
 }
 
@@ -344,6 +383,9 @@ async function removeAccount(account: AttendanceAccount) {
 }
 
 onMounted(() => {
+  markBootPerf('attendance-configs.mounted', {
+    cachedDeviceCount: taskStore.devices.length,
+  })
   void loadPageData()
 })
 </script>

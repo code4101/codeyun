@@ -82,6 +82,39 @@ def test_data_annotation_json_write_retries_windows_permission_error(tmp_path, m
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_ensure_runtime_service_preserves_behavior_tree_setting(tmp_path, monkeypatch):
+    settings_path = _scheduler_settings_path(tmp_path)
+    runtime_control.write_scheduler_settings(
+        {"job_group_enabled": False, "behavior_tree_enabled": False},
+        scheduler_settings_path=settings_path,
+    )
+
+    def fake_ensure_service(entry, entry_id, **kwargs):
+        return {
+            "ok": True,
+            "service_running": True,
+            "status": "idle",
+            "entry_id": entry_id,
+            "behavior_tree_enabled": True,
+        }
+
+    persisted = {}
+
+    monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", fake_ensure_service)
+    monkeypatch.setattr(runtime_control, "persist_runtime_status", lambda status, **_kwargs: persisted.update(status))
+
+    status = runtime_control.ensure_runtime_service(
+        entry=object(),
+        entry_id="entry",
+        scheduler_settings_path=settings_path,
+        asset_tree_path=tmp_path / "asset-tree.json",
+    )
+
+    assert status["service_running"] is True
+    assert status["behavior_tree_enabled"] is False
+    assert persisted["behavior_tree_enabled"] is False
+
+
 def test_daily_audit_visible_rows_maps_incomplete_runtime_tasks():
     runner = create_fanxiu_runtime_runner()
     image69 = {
@@ -861,13 +894,15 @@ def test_data_annotation_scheduler_read_removes_assistant_covered_legacy_tasks(t
 
 
 def test_data_annotation_runtime_scheduler_routes_replace_stepper_routes():
-    paths = {route.path for route in fanxiu.status_router.routes}
+    routes = {route.path: route for route in fanxiu.status_router.routes}
+    paths = set(routes)
 
     required_paths = {
         "/data-annotation/runtime/status",
-        "/data-annotation/runtime/task/start",
+        "/data-annotation/runtime/cells/task",
+        "/data-annotation/runtime/cells/code",
+        "/data-annotation/runtime/cell/tick",
         "/data-annotation/runtime/task/stop",
-        "/data-annotation/runtime/task/tick",
         "/data-annotation/runtime/logs",
         "/data-annotation/scheduler/tasks",
         "/data-annotation/scheduler/settings",
@@ -876,6 +911,8 @@ def test_data_annotation_runtime_scheduler_routes_replace_stepper_routes():
     }
 
     assert required_paths <= paths
+    assert "/data-annotation/runtime/task/start" not in paths
+    assert "/data-annotation/runtime/task/tick" not in paths
     assert not any(path.startswith("/game-window3/") for path in paths)
     assert "/data-annotation/stepper/logs" not in paths
     assert not any("gift-code-task" in path for path in paths)
@@ -2638,7 +2675,7 @@ def test_manual_job_can_queue_when_auto_scheduler_disabled(tmp_path, monkeypatch
         lambda: {"status": "idle", "phase": "idle", "service_running": True, "running": False, "logs": []},
     )
 
-    status = runtime_control.queue_manual_job_status(
+    status = runtime_control.queue_runtime_task_cell_status(
         entry=object(),
         entry_id="entry",
         task_type="manual_tick",
@@ -2846,7 +2883,7 @@ def test_run_due_scheduler_tasks_skips_when_job_group_disabled(tmp_path, monkeyp
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
     monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", lambda *args, **kwargs: {"ok": True})
-    monkeypatch.setattr(runtime_control, "submit_manual_job", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not submit jobs")))
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not submit jobs")))
     fanxiu._write_data_annotation_scheduler_tasks([
         {
             "id": "due-gift",
@@ -3293,7 +3330,7 @@ def test_data_annotation_run_now_does_not_directly_drain_pending_manual_job(tmp_
         }
     ])
     runner = fanxiu._DATA_ANNOTATION_RUNTIME_RUNNER
-    first_job = fanxiu._enqueue_data_annotation_manual_job("detect_scene", {}, label="旧手动作业")
+    first_job = fanxiu._enqueue_data_annotation_manual_job("detect_scene", {}, label="旧 task cell")
 
     def fake_ensure_service(**kwargs):
         with runner._lock:
@@ -5009,6 +5046,7 @@ def test_wait_view_timeout_reports_unknown_evidence(monkeypatch):
 def test_daily_youli_does_not_mark_done_from_daily_progress(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     calls: list[bool] = []
+    retries: list[dict[str, object]] = []
 
     class FakeRuntime:
         def current_scene(self, *args, **kwargs):
@@ -5025,17 +5063,23 @@ def test_daily_youli_does_not_mark_done_from_daily_progress(monkeypatch):
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_open_daily_entry_from_daily", fake_open_entry)
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_entry_not_found_retry",
+        lambda payload, **kwargs: retries.append({"payload": payload, **kwargs}) or "2026-06-11 11:30:00",
+    )
 
-    with pytest.raises(RuntimeError, match="日常列表未找到入口"):
-        _drain_generator(
-            runner._execute_daily_youli_task(
-                {"asset_tree_path": Path("asset.json"), "images": {}},
-                fanxiu.threading.Event(),
-                {},
-            )
+    result = _drain_generator(
+        runner._execute_daily_youli_task(
+            {"asset_tree_path": Path("asset.json"), "images": {}},
+            fanxiu.threading.Event(),
+            {},
         )
+    )
 
+    assert result == "skipped"
     assert calls == [False]
+    assert retries and retries[0]["task_type"] == "daily_youli"
 
 
 def test_daily_boss_detail_cd_records_retry_and_returns_skipped(monkeypatch):
@@ -5577,7 +5621,7 @@ def test_daily_mojie_raid_top_attack_target_clicks_configured_shape():
     assert actions[0] == ("wait_click", 320, "修罗", {"timeout": 12.0})
     assert actions[1] == ("wait_action_settle", 1.5)
     assert actions[2][0] == "wait_view"
-    assert actions[2][1] == (321,)
+    assert actions[2][1] == (321, 331)
 
 
 def test_daily_mojie_raid_top_attack_target_allows_shape_override():
@@ -5614,6 +5658,32 @@ def test_daily_mojie_raid_top_attack_target_allows_shape_override():
 
     assert result == 321
     assert actions[0] == ("wait_click", 320, "检索区域/修罗", {"timeout": 3.0})
+
+
+def test_daily_mojie_raid_top_attack_target_accepts_direct_331():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        default_wait_click_timeout = 12.0
+
+        def wait_click(self, scene_id, shape, **kwargs):
+            if False:
+                yield None
+            return "clicked"
+
+        def wait_action_settle(self, seconds):
+            if False:
+                yield None
+            return "settled"
+
+        def wait_view(self, *scene_ids, **kwargs):
+            if False:
+                yield None
+            return 331
+
+    result = _drain_generator(runner._click_daily_mojie_raid_top_attack_target(FakeRuntime(), {}))
+
+    assert result == 331
 
 
 def test_daily_mojie_raid_remaining_zero_marks_week_complete(tmp_path, monkeypatch):
@@ -7260,6 +7330,7 @@ def test_daily_boss_daily_list_uses_bidirectional_runtime_scan(monkeypatch):
 
     assert result == "success"
     assert calls[0]["title_pattern"] == r"击\s*败\s*首\s*领"
+    assert calls[0]["progress_can_mark_done"] is False
     assert calls[0]["max_scrolls"] == 10
     assert calls[0]["reverse_scrolls"] == 10
     assert waits
@@ -10495,7 +10566,7 @@ def test_data_annotation_runtime_status_preserves_persisted_logs_from_active_own
             "phase": "done",
             "running": False,
             "service_running": True,
-            "message": "手动作业完成：单步识别",
+            "message": "作业完成：单步识别",
             "current_task_id": "",
             "logs": [
                 {
@@ -10503,7 +10574,7 @@ def test_data_annotation_runtime_status_preserves_persisted_logs_from_active_own
                     "kind": "success",
                     "scope": "manual_job",
                     "item_id": "manual_job",
-                    "message": "[manual-1] 手动作业完成：单步识别",
+                    "message": "[manual-1] 作业完成：单步识别",
                 }
             ],
         },
@@ -10533,7 +10604,7 @@ def test_data_annotation_runtime_status_preserves_persisted_logs_from_active_own
     status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status()
 
     assert status["service_running"] is True
-    assert status["logs"][-1]["message"] == "[manual-1] 手动作业完成：单步识别"
+    assert status["logs"][-1]["message"] == "[manual-1] 作业完成：单步识别"
 
 
 def test_data_annotation_runtime_status_clears_missing_owner_overlay(tmp_path, monkeypatch):
@@ -10988,7 +11059,7 @@ def test_data_annotation_service_cell_tick_endpoint_uses_service_entry_and_share
         fanxiu.FanxiuDataAnnotationRuntimeCellTickRequest(
             entry_id="request-cell-entry",
             guard=False,
-            manual_job=True,
+            task_cell=True,
             scheduled_job=False,
             run_mode="until_idle",
             max_ticks=13,
@@ -11001,7 +11072,7 @@ def test_data_annotation_service_cell_tick_endpoint_uses_service_entry_and_share
     assert calls["entry"] is service_entry
     assert calls["entry_id"] == "resolved-cell-entry"
     assert calls["guard"] is False
-    assert calls["manual_job"] is True
+    assert calls["task_cell"] is True
     assert calls["scheduled_job"] is False
     assert calls["run_mode"] == "until_idle"
     assert calls["max_ticks"] == 13
@@ -11014,107 +11085,121 @@ def test_data_annotation_service_cell_tick_endpoint_uses_service_entry_and_share
     assert recorded["source"]["cmd"] == "cell.tick"
     assert recorded["source"]["entry_id"] == "resolved-cell-entry"
     assert recorded["source"]["source"] == "service"
+    assert recorded["source"]["policy"]["task_cell"] is True
     assert recorded["source"]["policy"]["max_ticks"] == 13
     assert recorded["before_keys"] == set()
 
 
-def test_data_annotation_service_task_tick_endpoint_uses_service_entry_and_shared_paths(tmp_path, monkeypatch):
+def test_data_annotation_service_task_cell_endpoint_uses_service_entry_and_shared_helper(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-task-entry"})()
-    calls = {}
-    recorded = {}
-
-    monkeypatch.setattr(fanxiu, "_get_service_user_device_or_404", lambda session, entry_id: service_entry)
-    monkeypatch.setattr(fanxiu, "_runtime_log_items_for_cell", lambda: [])
-
-    def fake_tick(**kwargs):
-        calls.update(kwargs)
-        return {
-            "ok": True,
-            "running": False,
-            "status": "idle",
-            "entry_id": kwargs["entry_id"],
-            "message": "service task tick",
-            "logs": [],
-        }
-
-    def fake_record_runtime_cell_log(status, *, title, source, before_keys):
-        recorded["title"] = title
-        recorded["source"] = source
-        recorded["before_keys"] = before_keys
-        return status
-
-    monkeypatch.setattr(fanxiu._runtime_framework, "tick", fake_tick)
-    monkeypatch.setattr(fanxiu, "_record_runtime_cell_log", fake_record_runtime_cell_log)
-
-    response = fanxiu.tick_fanxiu_data_annotation_runtime_service_task(
-        fanxiu.FanxiuDataAnnotationRuntimeTaskRequest(
-            entry_id="request-task-entry",
-            task_type="gift_code_redeem",
-            payload={"codes": ["煮梅消夏"]},
-        ),
-        session=object(),
-    )
-
-    assert response.entry_id == "resolved-task-entry"
-    assert calls["entry"] is service_entry
-    assert calls["entry_id"] == "resolved-task-entry"
-    assert calls["task_type"] == "gift_code_redeem"
-    assert calls["payload"] == {"codes": ["煮梅消夏"]}
-    assert calls["asset_tree_path"] == tmp_path / "resolved-task-entry.json"
-    assert calls["manual_job_path"] == tmp_path / "manual_jobs.json"
-    assert calls["runtime_state_path"] == tmp_path / "runtime_state.json"
-    assert calls["world_facts_path"] == tmp_path / "world_facts.json"
-    assert recorded["title"] == "服务任务 tick：gift_code_redeem"
-    assert recorded["source"] == {
-        "cmd": "submit_task_tick",
-        "entry_id": "resolved-task-entry",
-        "source": "service",
-        "task_type": "gift_code_redeem",
-        "payload": {"codes": ["煮梅消夏"]},
-    }
-    assert recorded["before_keys"] == set()
-
-
-def test_data_annotation_service_start_task_endpoint_uses_service_entry_and_shared_helper(tmp_path, monkeypatch):
-    _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-start-entry"})()
+    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-cell-task-entry"})()
     calls = {}
 
     monkeypatch.setattr(fanxiu, "_get_service_user_device_or_404", lambda session, entry_id: service_entry)
 
-    def fake_start_data_annotation_runtime_task(entry, req):
+    def fake_submit_task_cell(entry, entry_id, task_type, payload, *, timeout_seconds=None, source=""):
         calls["entry"] = entry
-        calls["entry_id"] = req.entry_id
-        calls["task_type"] = req.task_type
-        calls["payload"] = req.payload
+        calls["entry_id"] = entry_id
+        calls["task_type"] = task_type
+        calls["payload"] = payload
+        calls["timeout_seconds"] = timeout_seconds
+        calls["source"] = source
         return {
             "ok": True,
             "running": True,
             "status": "running",
-            "entry_id": getattr(entry, "entry_id"),
-            "message": "service task started",
+            "entry_id": entry_id,
+            "message": "task cell submitted",
             "logs": [],
         }
 
-    monkeypatch.setattr(fanxiu, "_start_data_annotation_runtime_task", fake_start_data_annotation_runtime_task)
+    monkeypatch.setattr(fanxiu, "_submit_data_annotation_task_cell", fake_submit_task_cell)
 
-    response = fanxiu.start_fanxiu_data_annotation_runtime_service_task(
-        fanxiu.FanxiuDataAnnotationRuntimeTaskRequest(
-            entry_id="request-start-entry",
+    response = fanxiu.submit_fanxiu_data_annotation_runtime_service_task_cell(
+        fanxiu.FanxiuDataAnnotationRuntimeTaskCellRequest(
+            entry_id="request-cell-task-entry",
             task_type="daily_gongfeng",
             payload={"force": True},
+            timeout_seconds=88,
         ),
         session=object(),
     )
 
     assert response.running is True
-    assert response.entry_id == "resolved-start-entry"
+    assert response.entry_id == "resolved-cell-task-entry"
     assert calls == {
         "entry": service_entry,
-        "entry_id": "request-start-entry",
+        "entry_id": "resolved-cell-task-entry",
         "task_type": "daily_gongfeng",
         "payload": {"force": True},
+        "timeout_seconds": 88,
+        "source": "service",
+    }
+
+
+def test_data_annotation_runtime_task_cell_source_displays_direct_cell_api():
+    source = fanxiu._runtime_cell_source(
+        {
+            "cmd": "submit_task_cell",
+            "entry_id": "entry-1",
+            "task_type": "daily_gongfeng",
+            "payload": {"force": True},
+        }
+    )
+
+    assert "行为树.submit_task_cell" in source
+    assert "daily_gongfeng" in source
+    assert "create_task" not in source
+    assert "行为树.step" not in source
+
+
+def test_data_annotation_service_code_cell_endpoint_uses_service_entry_and_shared_helper(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    service_entry = type("ServiceEntry", (), {"entry_id": "resolved-code-cell-entry"})()
+    calls = {}
+
+    monkeypatch.setattr(fanxiu, "_get_service_user_device_or_404", lambda session, entry_id: service_entry)
+
+    def fake_submit_code_cell(entry, entry_id, req, *, source=""):
+        calls["entry"] = entry
+        calls["entry_id"] = entry_id
+        calls["code"] = req.code
+        calls["mode"] = req.mode
+        calls["timeout_seconds"] = req.timeout_seconds
+        calls["max_output_chars"] = req.max_output_chars
+        calls["source"] = source
+        return {
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "entry_id": entry_id,
+            "message": "code cell submitted",
+            "logs": [],
+        }
+
+    monkeypatch.setattr(fanxiu, "_submit_data_annotation_code_cell", fake_submit_code_cell)
+
+    response = fanxiu.submit_fanxiu_data_annotation_runtime_service_code_cell(
+        fanxiu.FanxiuDataAnnotationRuntimeCodeCellRequest(
+            entry_id="request-code-cell-entry",
+            code="result = ctx.scene()",
+            mode="readonly",
+            timeout_seconds=66,
+            max_output_chars=888,
+        ),
+        session=object(),
+    )
+
+    assert response.running is True
+    assert response.entry_id == "resolved-code-cell-entry"
+    assert calls == {
+        "entry": service_entry,
+        "entry_id": "resolved-code-cell-entry",
+        "code": "result = ctx.scene()",
+        "mode": "readonly",
+        "timeout_seconds": 66,
+        "max_output_chars": 888,
+        "source": "service",
     }
 
 
@@ -11439,7 +11524,7 @@ def test_data_annotation_service_manual_job_uses_current_service_asset_tree(tmp_
     assert calls["asset_tree_path"] != fallback_asset_tree_path
 
 
-def test_data_annotation_direct_runtime_task_runs_inline_and_persists_status(tmp_path, monkeypatch):
+def test_data_annotation_inline_registered_task_persists_status(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runner = create_fanxiu_runtime_runner()
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
@@ -11450,7 +11535,7 @@ def test_data_annotation_direct_runtime_task_runs_inline_and_persists_status(tmp
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda *_args, **_kwargs: "success")
     monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
 
-    status = runner.start_runtime_task(
+    status = runner._run_registered_task_inline(
         entry=object(),
         entry_id="entry",
         task_type="hide_floating_window",
@@ -12761,7 +12846,7 @@ def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(mon
     assert calls == [("frame", (66, 34), False)]
 
 
-def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatch):
+def test_data_annotation_inline_registered_task_accepts_first_batch_task_types(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     accepted = []
 
@@ -12776,7 +12861,7 @@ def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatc
         "hide_floating_window",
             "mail_cleanup",
     ]:
-        status = runner.start_runtime_task(
+        status = runner._run_registered_task_inline(
             entry=object(),
             entry_id="entry",
             task_type=task_type,
@@ -12791,7 +12876,7 @@ def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatc
         "mail_cleanup",
     ]
 
-    status = runner.start_runtime_task(
+    status = runner._run_registered_task_inline(
         entry=object(),
         entry_id="entry",
         task_type="go_scene",
@@ -12801,11 +12886,11 @@ def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatc
     assert status["task_type"] == "go_scene"
 
 
-def test_data_annotation_runtime_start_rejects_unverified_task_types(monkeypatch):
+def test_data_annotation_inline_registered_task_rejects_unverified_task_types(monkeypatch):
     runner = create_fanxiu_runtime_runner()
 
     with pytest.raises(FanxiuRuntimeError) as daily_exc:
-        runner.start_runtime_task(
+        runner._run_registered_task_inline(
             entry=object(),
             entry_id="entry",
             task_type="daily_locate",
@@ -12815,26 +12900,25 @@ def test_data_annotation_runtime_start_rejects_unverified_task_types(monkeypatch
     assert daily_exc.value.status_code == 400
 
 
-def test_data_annotation_runtime_start_translates_core_runtime_error(monkeypatch, tmp_path):
+def test_data_annotation_task_cell_translates_core_runtime_error(monkeypatch, tmp_path):
     entry = type("Entry", (), {"entry_id": "entry"})()
 
-    def fake_start_runtime_task(**_kwargs):
+    def fake_submit_task_cell(**_kwargs):
         raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
 
-    monkeypatch.setattr(fanxiu._runtime_control, "start_runtime_task", fake_start_runtime_task)
+    monkeypatch.setattr(fanxiu._runtime_framework, "submit_task_cell", fake_submit_task_cell)
     monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(fanxiu, "_runtime_log_items_for_cell", lambda: [])
 
     with pytest.raises(fanxiu.HTTPException) as exc_info:
-        fanxiu._start_data_annotation_runtime_task(
+        fanxiu._submit_data_annotation_task_cell(
             entry,
-            fanxiu.FanxiuDataAnnotationRuntimeTaskRequest(
-                entry_id="entry",
-                task_type="go_scene",
-                payload={"target_scene_id": 121},
-            ),
+            "entry",
+            "go_scene",
+            {"target_scene_id": 121},
         )
 
     assert exc_info.value.status_code == 409

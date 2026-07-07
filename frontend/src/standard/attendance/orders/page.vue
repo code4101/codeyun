@@ -70,6 +70,8 @@ const QUERY_READONLY_COLUMNS = new Set(['学员名称', '微信支付订单号',
 const REFUND_READONLY_COLUMNS = new Set(REFUND_TABLE_COLUMNS)
 const ORDER_DRAFT_STORAGE_KEY_PREFIX = 'attendance.orders.v2'
 const DETAIL_DRAFT_STORAGE_KEY_PREFIX = 'attendance.order-detail.v1'
+const ATTENDANCE_ORDERS_CONFIG_CACHE_KEY = 'codeyun.attendance-orders.config.v1'
+const ATTENDANCE_ORDERS_CONFIG_CACHE_TTL_MS = 10 * 60 * 1000
 const HOT_TABLE_HEADER_HEIGHT = 42
 const HOT_TABLE_ROW_HEIGHT = 28
 const HOT_TABLE_MAX_VISIBLE_ROWS = 12
@@ -77,6 +79,11 @@ const INPUT_TABLE_MIN_VISIBLE_ROWS = 6
 const QUERY_TABLE_MIN_VISIBLE_ROWS = 4
 const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const SECONDARY_DRAFT_RESTORE_DELAY_MS = 300
+
+type AttendanceOrdersConfigCachePayload = {
+  savedAt: number
+  config: AttendanceConfigResponse
+}
 
 const loading = ref(false)
 const querying = ref(false)
@@ -1001,21 +1008,106 @@ function handleRefundAfterChange(_changes: unknown, source?: string) {
   syncRefundRowsFromGrid()
 }
 
+function readAttendanceOrdersConfigCache() {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(ATTENDANCE_ORDERS_CONFIG_CACHE_KEY)
+    if (!raw) return null
+    const payload = JSON.parse(raw) as Partial<AttendanceOrdersConfigCachePayload>
+    if (
+      !payload
+      || typeof payload.savedAt !== 'number'
+      || !payload.config
+      || Date.now() - payload.savedAt > ATTENDANCE_ORDERS_CONFIG_CACHE_TTL_MS
+    ) {
+      window.localStorage.removeItem(ATTENDANCE_ORDERS_CONFIG_CACHE_KEY)
+      return null
+    }
+    return payload.config as AttendanceConfigResponse
+  } catch (error) {
+    console.warn('Failed to restore attendance orders config cache', error)
+    return null
+  }
+}
+
+function persistAttendanceOrdersConfigCache(configData: AttendanceConfigResponse) {
+  if (typeof window === 'undefined') return
+  try {
+    const payload: AttendanceOrdersConfigCachePayload = {
+      savedAt: Date.now(),
+      config: configData,
+    }
+    window.localStorage.setItem(ATTENDANCE_ORDERS_CONFIG_CACHE_KEY, JSON.stringify(payload))
+  } catch (error) {
+    console.warn('Failed to persist attendance orders config cache', error)
+  }
+}
+
+function applyAttendanceConfig(configData: AttendanceConfigResponse, options: {
+  persist?: boolean
+  readyMarkName?: string | null
+  source: 'background' | 'cache' | 'network'
+} = { source: 'network' }) {
+  config.value = configData
+  if (options.persist !== false) {
+    persistAttendanceOrdersConfigCache(configData)
+  }
+  if (options.readyMarkName) {
+    markBootPerf(options.readyMarkName, {
+      deviceEntryId: configData.current_execution_device?.entry_id || null,
+      orderLookupMode: configData.service?.order_lookup_mode || null,
+      source: options.source,
+    })
+  }
+}
+
+async function refreshAttendanceConfig(options: {
+  background?: boolean
+  silent?: boolean
+} = {}) {
+  const fetchMarkName = options.background
+    ? 'attendance-orders.fetch-config.background'
+    : 'attendance-orders.fetch-config'
+  const readyMarkName = options.background
+    ? 'attendance-orders.config.background.ready'
+    : 'attendance-orders.config.ready'
+  try {
+    const configData = await markBootPerfAsync(fetchMarkName, () => fetchAttendanceConfig())
+    applyAttendanceConfig(configData, {
+      readyMarkName,
+      source: options.background ? 'background' : 'network',
+    })
+    return true
+  } catch (error: any) {
+    if (options.silent) {
+      console.warn('Failed to refresh attendance orders config in background', error)
+    } else {
+      ElMessage.error(error.response?.data?.detail || '加载订单页失败')
+    }
+    return false
+  }
+}
+
 async function loadPageData() {
   markBootPerf('attendance-orders.loadPageData.start')
   loading.value = true
+  const cachedConfig = readAttendanceOrdersConfigCache()
   try {
-    const configData = await markBootPerfAsync('attendance-orders.fetch-config', () => fetchAttendanceConfig())
-    config.value = configData
-    markBootPerf('attendance-orders.config.ready', {
-      deviceEntryId: configData.current_execution_device?.entry_id || null,
-      orderLookupMode: configData.service?.order_lookup_mode || null,
-    })
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '加载订单页失败')
+    if (cachedConfig) {
+      applyAttendanceConfig(cachedConfig, {
+        persist: false,
+        readyMarkName: 'attendance-orders.config.ready',
+        source: 'cache',
+      })
+      void refreshAttendanceConfig({ background: true, silent: true })
+    } else {
+      await refreshAttendanceConfig()
+    }
   } finally {
     loading.value = false
-    markBootPerf('attendance-orders.loadPageData.finally')
+    markBootPerf('attendance-orders.loadPageData.finally', {
+      configSource: cachedConfig ? 'cache' : 'network',
+    })
   }
   if (activeSubview.value === 'refund') {
     scheduleRefundHistoryLoad()

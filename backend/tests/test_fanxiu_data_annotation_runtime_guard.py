@@ -7834,7 +7834,7 @@ def test_wait_manual_job_treats_skip_log_as_terminal(monkeypatch):
             "logs": [
                 {
                     "kind": "skip",
-                    "message": "[manual-123] 手动作业完成：AI保底接管到期任务：日常_仙市",
+                    "message": "[manual-123] 作业完成：AI保底接管到期任务：日常_仙市",
                 }
             ],
         },
@@ -10846,8 +10846,10 @@ class _FakeSignupRuntime:
             yield BehaviorTreeStatus.RUNNING
         return target_view
 
-    def ocr_row_clicks_in_shape(self, view_id: int, shape: str, **_kwargs):
+    def ocr_row_clicks_in_shape(self, view_id: int, shape: str, **kwargs):
         self.actions.append(("ocr_rows", view_id, shape))
+        if kwargs.get("include") == ("已报名",):
+            return []
         if self.row_batches:
             return self.row_batches.pop(0)
         return []
@@ -10887,17 +10889,21 @@ def test_daily_signup_flow_reads_like_business_steps():
         ("wait_click_then_view", 75, "活动报名", 23),
         ("wait_view", 23),
         ("ocr_rows", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
         ("point", 23, 720.0, 415.0),
         ("wait_view", 24),
         ("wait_click", 24, "领取"),
         ("wait_any", ("报名页", "日常页", "世界", "绿瓶", "报名文本", "世界文本"), "报名页"),
+        ("ocr_rows", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
         ("point", 23, 720.0, 637.5),
         ("wait_view", 24),
         ("wait_click", 24, "领取"),
         ("wait_any", ("报名页", "日常页", "世界", "绿瓶", "报名文本", "世界文本"), "报名页"),
         ("ocr_rows", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
         ("wait_click", 23, "返回"),
@@ -10933,7 +10939,9 @@ def test_daily_signup_flow_returns_world_when_already_done():
         ("wait_click_then_view", 75, "活动报名", 23),
         ("wait_view", 23),
         ("ocr_rows", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
+        ("ocr_rows", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
         ("wait_click", 23, "返回"),
@@ -11491,7 +11499,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     assert definition is not None
     assert definition.label == "日常_奇袭魔界"
     assert calls == [
-        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34, 20), True),
         ("ocr_text",),
         ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
         ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}),
@@ -11499,7 +11507,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("wait_click_then_view", 319, "参与进攻", (320,), {}),
         ("wait_click", 320, "修罗", {"timeout": 12.0}),
         ("wait_action_settle", 1.5),
-        ("wait_view", (321,), {"timeout": 12.0, "label": "日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321"}),
+        ("wait_view", (321, 331), {"timeout": 12.0, "label": "日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321/#331"}),
         ("wait_click_then_view", 321, "创建队伍", (322,), {}),
         ("wait_click_then_view", 322, "下拉选项", (323,), {}),
         ("wait_click_then_view", 323, "开启", (322,), {}),
@@ -12282,7 +12290,7 @@ def test_daily_signup_does_not_log_ready_when_scene_confirm_fails(tmp_path, monk
     assert all("已到达日常 #69" not in log["message"] for log in runner.status()["logs"])
 
 
-def test_runtime_service_task_start_requires_fanxiu_runtime_scope(monkeypatch):
+def test_runtime_service_task_cell_requires_fanxiu_runtime_scope(monkeypatch):
     session = _build_service_session()
     entry = UserDevice(entry_id="entry-1", user_id=1, device_id="local-device", name="MuMu", mode="local", token="token")
     session.add(entry)
@@ -12295,27 +12303,27 @@ def test_runtime_service_task_start_requires_fanxiu_runtime_scope(monkeypatch):
     )
     calls: list[tuple[str, str]] = []
 
-    def fake_start_runtime_task(entry_arg, req):
-        calls.append((entry_arg.entry_id, req.task_type))
+    def fake_submit_task_cell(entry_arg, entry_id, task_type, payload, *, timeout_seconds=None, source=""):
+        calls.append((entry_arg.entry_id, entry_id, task_type, payload, source))
         return {
             "ok": True,
             "status": "done",
             "entry_id": entry_arg.entry_id,
-            "task_type": req.task_type,
+            "task_type": task_type,
             "message": "done",
         }
 
-    monkeypatch.setattr(fanxiu_api, "_start_data_annotation_runtime_task", fake_start_runtime_task)
+    monkeypatch.setattr(fanxiu_api, "_submit_data_annotation_task_cell", fake_submit_task_cell)
     client = _build_service_client(session)
     payload = {"entry_id": "entry-1", "task_type": "daily_signup", "payload": {}}
 
     forbidden = client.post(
-        "/api/fanxiu/data-annotation/runtime/service/task/start",
+        "/api/fanxiu/data-annotation/runtime/service/cells/task",
         headers={"Authorization": f"Bearer {ocr_token['plaintext_value']}"},
         json=payload,
     )
     ok = client.post(
-        "/api/fanxiu/data-annotation/runtime/service/task/start",
+        "/api/fanxiu/data-annotation/runtime/service/cells/task",
         headers={"Authorization": f"Bearer {runtime_token['plaintext_value']}"},
         json=payload,
     )
@@ -12323,7 +12331,7 @@ def test_runtime_service_task_start_requires_fanxiu_runtime_scope(monkeypatch):
     assert forbidden.status_code == 403
     assert ok.status_code == 200
     assert ok.json()["task_type"] == "daily_signup"
-    assert calls == [("entry-1", "daily_signup")]
+    assert calls == [("entry-1", "entry-1", "daily_signup", {}, "service")]
 
 
 def test_scheduler_success_fact_clears_stale_retry_after(tmp_path, monkeypatch):
@@ -12992,7 +13000,7 @@ def test_daily_boss_returns_to_world_after_list_completion(tmp_path, monkeypatch
     assert returned == [True]
 
 
-def test_daily_boss_daily_list_completed_records_next_reset_and_clears_retry(tmp_path, monkeypatch):
+def test_daily_boss_daily_list_completed_does_not_mark_scheduler_success(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
@@ -13022,6 +13030,44 @@ def test_daily_boss_daily_list_completed_records_next_reset_and_clears_retry(tmp
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
 
+    with pytest.raises(RuntimeError, match="日常列表进度不能作为首领奖励完成证据"):
+        runner._run_direct_runtime_action(
+            lambda: runner._open_daily_boss_list_from_daily(
+                ctx,
+                FakeStopEvent(),
+                {"__scheduler_task_id": "daily-boss"},
+            ),
+            stop_event=FakeStopEvent(),
+            tick_seconds=0.01,
+        )
+
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact.get("discovered_next_time") is None
+    assert fact.get("next_time") is None
+    assert fact["discovered_retry_after"] == "2026-06-11 10:30:00"
+    assert fact["retry_after"] == "2026-06-11 10:30:00"
+    assert fact["last_result"] == "skipped"
+
+
+def test_daily_boss_daily_list_not_found_records_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def open_daily_entry(self, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "not_found"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
     result = runner._run_direct_runtime_action(
         lambda: runner._open_daily_boss_list_from_daily(
             ctx,
@@ -13032,13 +13078,12 @@ def test_daily_boss_daily_list_completed_records_next_reset_and_clears_retry(tmp
         tick_seconds=0.01,
     )
 
-    assert result == "done"
+    assert result == "skipped"
     fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
-    assert fact["discovered_next_time"] == "2026-06-12 05:00:00"
-    assert fact["next_time"] == "2026-06-12 05:00:00"
-    assert fact.get("discovered_retry_after") is None
-    assert fact.get("retry_after") is None
-    assert fact["last_result"] == "success"
+    assert fact.get("discovered_next_time") is None
+    assert fact["discovered_retry_after"] == "2026-06-11 11:30:00"
+    assert fact["retry_after"] == "2026-06-11 11:30:00"
+    assert fact["last_result"] == "skipped"
 
 
 def test_daily_boss_done_rechecks_rewards_after_half_hour_even_when_list_cd_is_read(tmp_path, monkeypatch):
@@ -13753,7 +13798,7 @@ def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
     with runner._lock:
         runner._log_locked(
             "info",
-            runner._manual_job_log_message("manual-1", "手动作业已启动：单步识别"),
+            runner._manual_job_log_message("manual-1", "作业已启动：单步识别"),
             scope="manual_job",
             item_id="manual_job",
         )
@@ -13808,6 +13853,7 @@ def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tm
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
+    monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
 
     def fake_persist_status():
         events.append((
@@ -13830,8 +13876,8 @@ def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tm
 
     remove_index = next(index for index, event in enumerate(events) if event[0] == "remove")
     persisted_before_remove = [messages for event, messages in events[:remove_index] if event == "persist"]
-    assert any(any("[manual-1] 手动作业已启动：单步识别" in message for message in messages) for messages in persisted_before_remove)
-    assert any(any("[manual-1] 手动作业完成：单步识别" in message for message in messages) for messages in persisted_before_remove)
+    assert any(any("[manual-1] 作业已启动：单步识别" in message for message in messages) for messages in persisted_before_remove)
+    assert any(any("[manual-1] 作业完成：单步识别" in message for message in messages) for messages in persisted_before_remove)
 
 
 def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
@@ -13840,6 +13886,7 @@ def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
+    monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
     monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
 
@@ -13852,11 +13899,11 @@ def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
 
     assert status["cell_logs"]
     cell = status["cell_logs"][0]
-    assert cell["title"] == "手动作业：日常_报名"
+    assert cell["title"] == "作业：日常_报名"
     assert "行为树.create_task('daily_signup', {})" in cell["source"]
     assert "行为树.step(task, 守护=True)" in cell["source"]
-    assert cell["entries"][0]["message"].startswith("[manual-1] 手动作业已启动")
-    assert cell["entries"][-1]["message"].startswith("[manual-1] 手动作业完成")
+    assert cell["entries"][0]["message"].startswith("[manual-1] 作业已启动")
+    assert cell["entries"][-1]["message"].startswith("[manual-1] 作业完成")
 
 
 def test_resident_manual_job_uses_current_runner_instance(tmp_path, monkeypatch):
@@ -14681,12 +14728,12 @@ def test_runtime_cell_tick_request_rejects_ambiguous_run_mode():
     request = FanxiuDataAnnotationRuntimeCellTickRequest(
         entry_id="mf-entry",
         guard=False,
-        manual_job=True,
+        task_cell=True,
         scheduled_job=False,
         run_mode="tick_once",
     )
     assert request.guard is False
-    assert request.manual_job is True
+    assert request.task_cell is True
     assert request.scheduled_job is False
 
 

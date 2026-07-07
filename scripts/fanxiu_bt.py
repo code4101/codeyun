@@ -27,13 +27,11 @@ if str(ROOT) not in sys.path:
 from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     FANXIU_EMBEDDED_SERVICE_ENV,
-    FanxiuLocalEnqueueRequest,
     FanxiuLocalServiceRequest,
     acquire_fanxiu_job_group_isolation,
     cancel_fanxiu_local_manual_job,
     clear_fanxiu_local_manual_jobs,
     clear_stale_fanxiu_job_group_isolation,
-    enqueue_fanxiu_local_manual_job,
     clear_fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_manual_job_catalog,
     fanxiu_data_annotation_manual_jobs,
@@ -49,7 +47,8 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     run_fanxiu_local_service,
     start_fanxiu_local_service,
     stop_fanxiu_local_service,
-    submit_fanxiu_task,
+    submit_fanxiu_code_cell,
+    submit_fanxiu_task_cell,
     wait_fanxiu_local_manual_job,
 )
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
@@ -170,7 +169,7 @@ def _print_owner(owner: dict[str, Any]) -> None:
 
 def _print_manual_jobs(jobs: list[dict[str, Any]]) -> None:
     if not jobs:
-        print("作业队列为空")
+        print("task cell 队列为空")
         return
     for job in jobs:
         print(json.dumps(
@@ -434,7 +433,7 @@ def _runtime_error_task_label(message: str) -> str:
     if not match:
         return ""
     label = match.group(1).strip()
-    if not label.startswith(("日常_", "邮件_", "AI保底", "作业", "手动作业")):
+    if not label.startswith(("日常_", "邮件_", "AI保底", "作业", "task cell")):
         return ""
     return label
 
@@ -1329,9 +1328,9 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
 def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--run-mode",
-        choices=["auto", "direct", "enqueue"],
+        choices=["auto", "direct"],
         default=argparse.SUPPRESS,
-        help="执行方式：auto/enqueue 只提交到 resident kernel；direct 提交并等待完成",
+        help="执行方式：auto 只提交到 resident kernel；direct 提交并等待完成",
     )
     parser.add_argument("--wait", action="store_true", default=argparse.SUPPRESS, help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=argparse.SUPPRESS)
@@ -1349,9 +1348,9 @@ def main() -> int:
     parser.add_argument("--wait-timeout-seconds", type=float, default=300.0)
     parser.add_argument(
         "--run-mode",
-        choices=["auto", "direct", "enqueue"],
+        choices=["auto", "direct"],
         default="auto",
-        help="go-scene/mail-check/task 的执行方式：auto/enqueue 只提交；direct 提交并等待完成",
+        help="go-scene/mail-check/task 的执行方式：auto 只提交；direct 提交并等待完成",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1371,6 +1370,15 @@ def main() -> int:
     task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     _add_task_run_options(task)
 
+    code_cell = subparsers.add_parser("code-cell", help="提交一段 Python code cell 到 Runtime kernel")
+    code_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
+    code_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
+    code_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    code_cell.add_argument("--max-output-chars", type=int, default=4000)
+    code_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0)
+    code_cell.add_argument("--wait", action="store_true", help="等待 code cell 完成")
+    code_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+
     tasks = subparsers.add_parser("tasks", help="查看本地已注册作业类型")
     tasks.add_argument("--json", action="store_true", help="输出 JSON")
 
@@ -1381,24 +1389,14 @@ def main() -> int:
     stop = subparsers.add_parser("stop", help="请求 resident service 停止当前任务")
     stop.add_argument("--reason", default="local_cli")
 
-    enqueue = subparsers.add_parser("enqueue", help="写入本地作业队列，由 resident service 串行执行")
-    enqueue.add_argument("task_type")
-    enqueue.add_argument("--label", default="")
-    enqueue.add_argument("--target-scene-id", default="")
-    enqueue.add_argument("--interruptible", action="store_true")
-    enqueue.add_argument("--non-interruptible", action="store_true")
-    enqueue.add_argument("--isolation-ttl-seconds", type=float, default=300.0)
-    enqueue.add_argument("--wait", action="store_true", help="等待 queued job 完成")
-    enqueue.add_argument("--wait-timeout-seconds", type=float, default=300.0)
-
-    queue = subparsers.add_parser("queue", help="查看本地作业队列")
+    queue = subparsers.add_parser("queue", help="查看本地 task cell 队列")
     queue.add_argument("--json", action="store_true", help="输出 JSON")
 
-    cancel = subparsers.add_parser("cancel", help="取消本地作业队列中的任务")
+    cancel = subparsers.add_parser("cancel", help="取消本地 task cell 队列中的任务")
     cancel.add_argument("job_id")
     cancel.add_argument("--force", action="store_true", help="允许删除 running 记录；停止执行仍应优先用 stop")
 
-    clear_queue = subparsers.add_parser("clear-queue", help="清空本地作业队列")
+    clear_queue = subparsers.add_parser("clear-queue", help="清空本地 task cell 队列")
     clear_queue.add_argument("--force", action="store_true", help="同时删除 running 记录")
 
     status_parser = subparsers.add_parser("status", help="查看本地 Runtime 状态")
@@ -1410,7 +1408,7 @@ def main() -> int:
     logs_parser.add_argument("--item-id", default="")
     logs_parser.add_argument("--json", action="store_true", help="输出 JSON")
 
-    doctor = subparsers.add_parser("doctor", help="只读巡检 owner/runtime/队列/Scheduler/关键日志")
+    doctor = subparsers.add_parser("doctor", help="只读巡检 owner/runtime/task cell 队列/Scheduler/关键日志")
     doctor.add_argument("--log-limit", type=int, default=80)
     doctor.add_argument("--screenshot", action="store_true", help="额外保存一张真实 ADB 当前帧")
     doctor.add_argument("--json", action="store_true", help="输出完整 JSON")
@@ -1612,37 +1610,25 @@ def main() -> int:
         result = clear_fanxiu_local_manual_jobs(force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
-    if args.command == "enqueue":
-        payload: dict[str, Any] = {}
-        if args.payload:
-            try:
-                payload.update(json.loads(args.payload))
-            except json.JSONDecodeError as exc:
-                raise SystemExit(f"--payload 不是合法 JSON：{exc}") from exc
-        if args.target_scene_id:
-            payload["target_scene_id"] = parse_data_annotation_scene_id(args.target_scene_id)
-        if args.timeout_seconds:
-            payload["timeout_seconds"] = float(args.timeout_seconds)
-        interruptible = None
-        if bool(args.interruptible) and bool(args.non_interruptible):
-            raise SystemExit("--interruptible 和 --non-interruptible 不能同时使用")
-        if bool(args.interruptible):
-            interruptible = True
-        if bool(args.non_interruptible):
-            interruptible = False
-        status = enqueue_fanxiu_local_manual_job(FanxiuLocalEnqueueRequest(
+    if args.command == "code-cell":
+        code = str(args.code or "")
+        if args.file:
+            code = Path(args.file).read_text(encoding="utf-8")
+        if not code.strip():
+            raise SystemExit("code-cell 需要提供代码或 --file")
+        status = submit_fanxiu_code_cell(
+            code,
             entry_id=str(args.entry_id),
-            task_type=str(args.task_type),
-            payload=payload,
-            label=str(args.label or ""),
-            interruptible=interruptible,
+            mode=str(args.mode or "readonly"),
+            timeout_seconds=float(args.timeout_seconds or 120.0),
+            max_output_chars=int(args.max_output_chars or 4000),
             isolate_jobs=not bool(args.no_isolate_jobs),
             isolation_ttl_seconds=float(args.isolation_ttl_seconds or 300.0),
-        ))
+            wait=bool(args.wait),
+            wait_timeout_seconds=float(args.wait_timeout_seconds or 300.0),
+        )
         _print_status(status)
-        if bool(args.wait):
-            return _wait_and_print_queued_job(status, float(args.wait_timeout_seconds or 300.0))
-        return 0 if str(status.get("status") or "") not in {"error"} else 1
+        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     if args.command == "clear-logs":
         clear_fanxiu_data_annotation_runtime_logs()
         print("Runtime 日志已清空")
@@ -1661,11 +1647,10 @@ def main() -> int:
     _apply_wait_timeout_as_runtime_budget(args, payload)
     run_mode = str(args.run_mode or "auto")
     wait = bool(args.wait) or run_mode == "direct"
-    status = submit_fanxiu_task(
+    status = submit_fanxiu_task_cell(
         task_type,
         payload,
         entry_id=str(args.entry_id),
-        run_mode=run_mode,
         isolate_jobs=not bool(args.no_isolate_jobs),
         wait=wait,
         wait_timeout_seconds=float(args.wait_timeout_seconds or 300.0),
