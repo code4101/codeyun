@@ -47,10 +47,9 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     run_fanxiu_local_service,
     start_fanxiu_local_service,
     stop_fanxiu_local_service,
-    submit_fanxiu_code_cell,
-    submit_fanxiu_task_cell,
     wait_fanxiu_task_cell,
 )
+from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
 from backend.core.fanxiu.data_annotation.runtime_control import (
@@ -100,7 +99,7 @@ def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             }
         )
         return "mail_cleanup", payload
-    if args.command == "task":
+    if args.command in {"task", "run"}:
         if str(args.task_type) == "go_scene" and getattr(args, "target_scene_id", ""):
             payload["target_scene_id"] = parse_data_annotation_scene_id(args.target_scene_id)
         return str(args.task_type), payload
@@ -435,7 +434,7 @@ def _runtime_error_task_label(message: str) -> str:
     if not match:
         return ""
     label = match.group(1).strip()
-    if not label.startswith(("日常_", "邮件_", "AI保底", "作业", "task cell")):
+    if not label.startswith(("日常_", "邮件_", "作业", "task cell", "AI显式提交")):
         return ""
     return label
 
@@ -626,7 +625,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
             else:
                 action_required.append(str(item.get("message") or f"处理阻断项：{title}"))
     elif scheduler.get("next_action") == "job_group_disabled" and due_tasks:
-        action_required.append("当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务")
+        action_required.append("当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell")
     elif scheduler.get("next_action") == "run_due" and due_tasks:
         action_required.append("当前有到期任务且未发现阻断，等待 resident service 执行或检查服务调度日志")
     elif critical_failed_tasks:
@@ -658,7 +657,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         summary = str(runtime.get("error") or runtime.get("message") or "Runtime 错误")
     elif due_tasks and scheduler.get("next_action") == "job_group_disabled":
         severity = "attention"
-        summary = f"{len(due_tasks)} 个任务已到期；工程作业组关闭，AI 保底应接管"
+        summary = f"{len(due_tasks)} 个任务已到期；AI 调度器占用运行权，工程不自动执行"
     elif due_tasks and scheduler.get("next_action") == "run_due":
         severity = "attention"
         summary = f"{len(due_tasks)} 个任务已到期，等待自动执行"
@@ -827,7 +826,10 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     isolation = report.get("isolation") if isinstance(report.get("isolation"), dict) else {}
     next_action = str(scheduler.get("next_action") or "")
-    if next_action != "job_group_disabled":
+    if next_action in {"job_group_disabled", "run_due"}:
+        report["auto_run_due_blocked_reason"] = next_action
+        return False
+    if next_action != "manual_ai_cell":
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
         return False
@@ -886,7 +888,6 @@ def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float =
     status = run_due_scheduler_tasks(
         entry=resolve_fanxiu_entry(entry_id),
         entry_id=entry_id,
-        ignore_job_group_disabled=True,
         asset_tree_path=data_annotation_asset_tree_path(entry_id),
     )
     wait_result: dict[str, Any] = {}
@@ -1336,11 +1337,11 @@ def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
         "--run-mode",
         choices=["auto", "direct"],
         default=argparse.SUPPRESS,
-        help="执行方式：auto 只提交到 resident kernel；direct 提交并等待完成",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--wait", action="store_true", default=argparse.SUPPRESS, help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=argparse.SUPPRESS)
-    parser.add_argument("--tick-seconds", type=float, default=0.2, help="direct 模式下生成器每轮让出后的推进间隔")
+    parser.add_argument("--tick-seconds", type=float, default=0.2, help=argparse.SUPPRESS)
 
 
 def main() -> int:
@@ -1356,7 +1357,7 @@ def main() -> int:
         "--run-mode",
         choices=["auto", "direct"],
         default="auto",
-        help="go-scene/mail-check/task 的执行方式：auto 只提交；direct 提交并等待完成",
+        help=argparse.SUPPRESS,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1376,14 +1377,27 @@ def main() -> int:
     task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     _add_task_run_options(task)
 
+    run_task = subparsers.add_parser("run", help="提交并等待一个 task cell 完成")
+    run_task.add_argument("task_type")
+    run_task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
+    run_task.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+
     code_cell = subparsers.add_parser("code-cell", help="提交一段 Python code cell 到 Runtime kernel")
     code_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     code_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
     code_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
     code_cell.add_argument("--max-output-chars", type=int, default=4000)
-    code_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0)
+    code_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
     code_cell.add_argument("--wait", action="store_true", help="等待 code cell 完成")
     code_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+
+    py_cell = subparsers.add_parser("py", help="提交并等待一段 Python code cell 完成")
+    py_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
+    py_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
+    py_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    py_cell.add_argument("--max-output-chars", type=int, default=4000)
+    py_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
+    py_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
     tasks = subparsers.add_parser("tasks", help="查看本地已注册作业类型")
     tasks.add_argument("--json", action="store_true", help="输出 JSON")
@@ -1443,7 +1457,8 @@ def main() -> int:
     ensure_watch_doctor.add_argument("--screenshot", action="store_true", help="后台巡检保存真实 ADB 当前帧")
     ensure_watch_doctor.add_argument("--screenshot-every", type=int, default=10)
     ensure_watch_doctor.add_argument("--stale-after-seconds", type=float, default=180.0, help="心跳超过该时长视为后台巡检失效")
-    ensure_watch_doctor.add_argument("--no-auto-run-due", action="store_true", help="后台巡检只观察，不在无阻断时自动触发 run-due")
+    ensure_watch_doctor.add_argument("--auto-run-due", action="store_true", help="允许后台巡检自动触发 run-due；默认只观察")
+    ensure_watch_doctor.add_argument("--no-auto-run-due", action="store_true", help=argparse.SUPPRESS)
 
     reset_scheduler_runs = subparsers.add_parser("reset-scheduler-runs", help="重置 Scheduler 作业运行结论，让作业重新按到期规则验收")
     reset_scheduler_runs.add_argument("--task-id", action="append", default=[], help="只重置指定 task id；可重复传入")
@@ -1543,7 +1558,7 @@ def main() -> int:
             include_screenshot=bool(args.screenshot),
             screenshot_every=max(1, int(args.screenshot_every or 1)),
             stale_after_seconds=max(1.0, float(args.stale_after_seconds or 180.0)),
-            auto_run_due=not bool(args.no_auto_run_due),
+            auto_run_due=bool(args.auto_run_due) and not bool(args.no_auto_run_due),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
@@ -1616,23 +1631,25 @@ def main() -> int:
         result = clear_fanxiu_task_cells(force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
-    if args.command == "code-cell":
+    if args.command in {"code-cell", "py"}:
         code = str(args.code or "")
         if args.file:
             code = Path(args.file).read_text(encoding="utf-8")
         if not code.strip():
-            raise SystemExit("code-cell 需要提供代码或 --file")
-        status = submit_fanxiu_code_cell(
-            code,
+            raise SystemExit(f"{args.command} 需要提供代码或 --file")
+        cell = FanxiuKernel(
             entry_id=str(args.entry_id),
+            isolate_jobs=not bool(args.no_isolate_jobs),
+        ).code(
+            code,
             mode=str(args.mode or "readonly"),
             timeout_seconds=float(args.timeout_seconds or 120.0),
             max_output_chars=int(args.max_output_chars or 4000),
-            isolate_jobs=not bool(args.no_isolate_jobs),
-            isolation_ttl_seconds=float(args.isolation_ttl_seconds or 300.0),
-            wait=bool(args.wait),
-            wait_timeout_seconds=float(args.wait_timeout_seconds or 300.0),
         )
+        if args.command == "py":
+            status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
+        else:
+            status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0)) if bool(args.wait) else cell.submit()
         _print_status(status)
         return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     if args.command == "clear-logs":
@@ -1651,16 +1668,18 @@ def main() -> int:
         return 0 if str(status.get("status") or "") not in {"error"} else 1
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
-    run_mode = str(args.run_mode or "auto")
-    wait = bool(args.wait) or run_mode == "direct"
-    status = submit_fanxiu_task_cell(
-        task_type,
-        payload,
+    kernel = FanxiuKernel(
         entry_id=str(args.entry_id),
         isolate_jobs=not bool(args.no_isolate_jobs),
-        wait=wait,
-        wait_timeout_seconds=float(args.wait_timeout_seconds or 300.0),
     )
+    if args.command == "run":
+        status = kernel.task(task_type, payload).run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
+        _print_status(status)
+        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
+    run_mode = str(args.run_mode or "auto")
+    wait = bool(args.wait) or run_mode == "direct"
+    cell = kernel.task(task_type, payload)
+    status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0)) if wait else cell.submit()
     if wait and run_mode != "direct":
         print(json.dumps(status, ensure_ascii=False, indent=2, default=str))
         runtime_status = status.get("runtime_status") if isinstance(status.get("runtime_status"), dict) else {}

@@ -2947,17 +2947,27 @@ class DailyFoundationTaskMixin:
         runtime: FanxiuRuntimeSession,
         payload: dict[str, Any],
     ):
-        target_shape = str(payload.get("mojie_raid_target_shape") or "修罗").strip() or "修罗"
+        target_shape = str(payload.get("mojie_raid_target_shape") or "").strip()
         match_timeout = float(
             payload.get("mojie_raid_target_match_timeout")
             or getattr(runtime, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)
         )
-        self._log("action", f"日常_奇袭魔界：点击 #320「{target_shape}」")
-        yield from runtime.wait_click(
-            320,
-            target_shape,
-            timeout=match_timeout,
-        )
+        if target_shape:
+            self._log("action", f"日常_奇袭魔界：点击 #320「{target_shape}」")
+            yield from runtime.wait_click(
+                320,
+                target_shape,
+                timeout=match_timeout,
+            )
+        else:
+            yield from runtime.wait_view(320, timeout=match_timeout, label="日常_奇袭魔界：等待 #320 据点列表")
+            frame = runtime.cur_frame(update=True)
+            candidates = self._daily_mojie_raid_attack_count_candidates(runtime, frame, payload)
+            if not candidates:
+                raise RuntimeError("日常_奇袭魔界：#320 未识别到可进攻队伍数")
+            click_x, click_y, text = candidates[0]
+            self._log("action", f"日常_奇袭魔界：点击队伍数「{text}」上方据点")
+            runtime.click_frame_point(320, click_x, click_y)
         yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
         return (yield from runtime.wait_view(
             321,
@@ -2979,16 +2989,42 @@ class DailyFoundationTaskMixin:
         candidates: list[tuple[float, float, str]] = []
         for line in runtime.ocr_lines(frame):
             text = str(line.get("text") or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
-            match = re.search(r"([0-9]+)\s*/\s*30", text)
-            if not match or int(match.group(1)) <= 0:
-                continue
-            x = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
-            count_y = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
-            if not (0 <= x <= width and min_y <= count_y <= max_y):
-                continue
-            click_y = max(min_y, count_y - height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.15))
-            candidates.append((x, click_y, text))
+            for match in re.finditer(r"([0-9]+)\s*/\s*30", text):
+                if int(match.group(1)) <= 0:
+                    continue
+                count_box = self._daily_mojie_raid_attack_count_box(runtime, line, text, match)
+                x = float(count_box.get("x") or 0) + float(count_box.get("w") or 0) / 2
+                count_y = float(count_box.get("y") or 0) + float(count_box.get("h") or 0) / 2
+                if not (0 <= x <= width and min_y <= count_y <= max_y):
+                    continue
+                click_y = max(min_y, count_y - height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.14))
+                candidates.append((x, click_y, match.group(0)))
         return sorted(candidates, key=lambda item: (item[1], item[0]))
+
+    def _daily_mojie_raid_attack_count_box(
+        self,
+        runtime: FanxiuRuntimeSession,
+        line: dict[str, Any],
+        text: str,
+        match: re.Match[str],
+    ) -> dict[str, float]:
+        token = match.group(0)
+        box = runtime.runner._ocr_match_resolved_box(line, token, "contains")
+        if box is not None and all(key in box for key in ("x", "y", "w", "h")):
+            return box
+        line_x = float(line.get("x") or 0)
+        line_y = float(line.get("y") or 0)
+        line_w = float(line.get("w") or 0)
+        line_h = float(line.get("h") or 0)
+        text_len = max(1, len(text))
+        start_ratio = max(0.0, min(1.0, match.start() / text_len))
+        end_ratio = max(start_ratio, min(1.0, match.end() / text_len))
+        return {
+            "x": line_x + line_w * start_ratio,
+            "y": line_y,
+            "w": max(1.0, line_w * (end_ratio - start_ratio)),
+            "h": max(1.0, line_h),
+        }
 
     def _daily_mojie_raid_remaining_ocr_fallback(self, text: str) -> int | None:
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)

@@ -268,6 +268,32 @@ def _restart_stuck_external_service_for_pending_jobs(owner: dict[str, Any]) -> d
     ]
     if not jobs:
         return {"restarted": False, "reason": "no_pending_jobs"}
+    now_ts = time.time()
+    recent_timestamps: list[float] = []
+    for value in (owner.get("updated_at"), owner.get("heartbeat_at")):
+        try:
+            timestamp = float(value or 0)
+        except (TypeError, ValueError):
+            timestamp = 0.0
+        if timestamp > 0:
+            recent_timestamps.append(timestamp)
+    for job in jobs:
+        for value in (job.get("updated_at"), job.get("created_at")):
+            try:
+                timestamp = float(value or 0)
+            except (TypeError, ValueError):
+                timestamp = 0.0
+            if timestamp > 0:
+                recent_timestamps.append(timestamp)
+    newest_activity_at = max(recent_timestamps) if recent_timestamps else 0.0
+    if newest_activity_at > 0 and now_ts - newest_activity_at < 30.0:
+        return {
+            "restarted": False,
+            "reason": "task_start_grace",
+            "pid": owner_pid,
+            "job_count": len(jobs),
+            "age_seconds": max(0.0, now_ts - newest_activity_at),
+        }
     persisted = fanxiu_data_annotation_runtime_status()
     persisted_running = bool((persisted or {}).get("running"))
     persisted_status = str((persisted or {}).get("status") or "")

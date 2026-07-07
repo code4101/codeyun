@@ -217,7 +217,7 @@ def ensure_doctor_watch_background(
     include_screenshot: bool = True,
     screenshot_every: int = 10,
     stale_after_seconds: float = 180.0,
-    auto_run_due: bool = True,
+    auto_run_due: bool = False,
 ) -> dict[str, Any]:
     heartbeat = read_doctor_watch_heartbeat(stale_after_seconds=stale_after_seconds)
     capability_consistent = (not auto_run_due) or bool(heartbeat.get("auto_run_due_enabled"))
@@ -1182,7 +1182,7 @@ def build_scheduler_plan(
     plan["job_group_enabled"] = bool(settings.get("job_group_enabled", True))
     if not plan["job_group_enabled"]:
         plan["next_action"] = "job_group_disabled"
-        plan["message"] = "工程作业组已关闭，工程自主入口不提交到期作业；等待 AI 保底接管"
+        plan["message"] = "AI 调度器占用运行权，工程不自动提交到期作业"
     if plan.get("next_action") == "run_due" and bool(plan.get("job_group_enabled", True)):
         blockers = scheduler_blocking_overlays(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
         if blockers:
@@ -1383,7 +1383,6 @@ def run_due_scheduler_tasks(
     *,
     entry: Any,
     entry_id: str,
-    ignore_job_group_disabled: bool = False,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
@@ -1395,7 +1394,7 @@ def run_due_scheduler_tasks(
     ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
     job_group_enabled = bool(settings.get("job_group_enabled", True))
-    if not behavior_enabled or (not job_group_enabled and not bool(ignore_job_group_disabled)):
+    if not behavior_enabled or not job_group_enabled:
         status = runtime_status(
             scheduler_settings_path=scheduler_settings_path,
             runtime_state_path=runtime_state_path,
@@ -1404,7 +1403,7 @@ def run_due_scheduler_tasks(
         disabled_reason = (
             "自动调度已关闭，到期作业暂不自动执行"
             if not behavior_enabled
-            else "作业组已关闭，工程自主入口不提交到期作业；等待 AI 保底接管"
+            else "AI 调度器占用运行权，工程不自动提交到期作业"
         )
         status.update({
             "message": disabled_reason,
@@ -1462,66 +1461,6 @@ def run_due_scheduler_tasks(
             time_text=datetime.now().strftime("%H:%M:%S"),
             update_timestamp=False,
         )
-        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
-        return status
-    if not job_group_enabled and bool(ignore_job_group_disabled):
-        due_task = due_tasks[0]
-        queued_cell_record = pending_scheduler_task_cell(str(due_task.get("id") or ""), task_cell_path=task_cell_path)
-        if queued_cell_record is None:
-            due_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            due_task["last_result"] = "queued"
-            write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-            status = submit_runtime_task_cell(
-                entry=entry,
-                entry_id=entry_id,
-                task_type=str(due_task.get("task_type") or ""),
-                payload=task_payload_with_meta(due_task),
-                label=f"AI保底接管到期任务：{due_task.get('label') or due_task.get('id') or due_task.get('task_type')}",
-                group="job",
-                interruptible=bool(due_task.get("interruptible", True)),
-                created_at=scheduler_task_queue_timestamp(due_task),
-                asset_tree_path=asset_tree_path,
-                task_cell_path=task_cell_path,
-                runtime_state_path=runtime_state_path,
-                world_facts_path=world_facts_path,
-            )
-        else:
-            status = fanxiu_runtime_runner_status()
-            queued_cell = {
-                "id": queued_cell_record.get("id"),
-                "task_type": queued_cell_record.get("task_type"),
-                "label": queued_cell_record.get("label"),
-                "group": queued_cell_record.get("group"),
-                "status": queued_cell_record.get("status"),
-                "created_at": queued_cell_record.get("created_at"),
-            }
-            status.update({
-                "entry_id": entry_id,
-                "phase": "scheduler_due_queued",
-                "message": f"到期任务已在 task cell 队列等待：{due_task.get('label') or due_task.get('id')}",
-                "queued_cell": queued_cell,
-                "queued_job": queued_cell,
-                "updated_at": time.time(),
-            })
-            persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
-            if str(due_task.get("last_result") or "") != "queued":
-                due_task["last_result"] = "queued"
-                write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-        if bool(status.get("running")):
-            status.update({
-                "message": f"到期任务已排队，等待当前作业完成：{due_task.get('label') or due_task.get('id')}",
-                "updated_at": time.time(),
-            })
-            persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
-        status.update({
-            "phase": "scheduler_due_queued",
-            "message": status.get("message")
-            if bool(status.get("running"))
-            else f"AI保底已接管作业组关闭下的到期任务：{due_task.get('label') or due_task.get('id')}",
-            "job_group_enabled": False,
-            "job_group_override": True,
-            "updated_at": time.time(),
-        })
         persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         return status
     blocked_status = prepare_runtime_for_scheduler_task(

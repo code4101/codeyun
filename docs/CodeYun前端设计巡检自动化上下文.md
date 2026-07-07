@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "b1eef41fd9b948a83bb5248b4fd0f69bbeaec33f"
-last_audited_at: "2026-07-07T18:41:58.3655578+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-b1eef41f/report.md"
-last_frontend_commit_summary: "审完 58019c3..b1eef41：以 task cell/后台设备加载/局部异步 import 为入口，删除 attendance/configs 重复摘要条并完成三视口复验。"
-audited_commit_count: 85
+last_audited_commit: "144da8b95f22734ff7238f7b8c77377e7e6a0b47"
+last_audited_at: "2026-07-07T22:45:38.3096525+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-144da8b-closeout/report.md"
+last_frontend_commit_summary: "已关闭 b1eef41..144da8b：notes/list 静默刷新误弹 toast 修复成立；clean worktree + Chrome/API 复核确认 fanxiu runtime 的 pending 原因来自本地脏工作树污染。"
+audited_commit_count: 86
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,27 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-07（第十八轮，已关闭）
+
+- 完整范围：`b1eef41fd9b948a83bb5248b4fd0f69bbeaec33f..144da8b95f22734ff7238f7b8c77377e7e6a0b47`
+- 覆盖提交：`144da8b95f22734ff7238f7b8c77377e7e6a0b47`
+- 前端入口提交：`144da8b95f22734ff7238f7b8c77377e7e6a0b47`
+- 入口如何牵引到旧问题：这次提交把 `attendance/configs` 的一级摘要继续删掉，把 `notes/list` 加入 query cache 静默回填，同时重构 `fanxiu/data-annotation/runtime` 的 task cell / scheduler / behavior tree 控制流。三条入口看似分散，但都在把主界面收回到“状态事实 + 下一步动作”，减少重复摘要和过程噪音。
+- 本轮减法：`attendance/configs` 延续提交本身的减法，三视口确认重复摘要条已经消失；`notes/list` 则暴露出新回退，缓存命中后的后台静默刷新仍沿用主动执行失败的 toast 语义。已在 [`frontend/src/api/notes.ts`](D:/home/chenkunze/slns/codeyun/frontend/src/api/notes.ts) 和 [`frontend/src/standard/notes/center/ListNotes.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/notes/center/ListNotes.vue) 把 silent refresh 的失败提示收回到内部刷新层，不再把“后台刷新失败”误升格成一级页面错误。
+- 信息量保持：`attendance/configs` 仍保留 step1-step6、默认设备、订单对象、订单模式和账号事实；`notes/list` 仍保留完整列表、筛选、分页和详情编辑，只是删除了静默刷新失败对一级页面的误导提示。
+- 概念图/线框图：报告中的 Mermaid 把链路收回到 `144da8b -> attendance 摘要条减法 / notes cache hydration / fanxiu runtime 重构 -> silent refresh 失败被错误投影到主界面 -> suppressErrorToast 收回到内部语义`，证明本轮修复是在同一减法方向上继续收口，而不是新增解释控件。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-144da8b/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `attendance/configs`、`notes/center?tab=list`、`fanxiu/data-annotation/runtime` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 取证。`attendance/configs` 的 `summaryStripCount = 0` 且三视口 `bodyScrollWidth == bodyClientWidth`；`notes/list` 修复后二次复拍 `rowCount = 50`、`listSummary = 共 246 条 当前显示 50 条`、`toastTexts = []`。静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开入口。
+- 根因分层：`attendance/configs` 仍是表现层冗余减法；`notes/list` 的新回退属于前端状态投影问题，缓存命中后的后台刷新沿用了“主动执行失败”的一级提示；`fanxiu/runtime` 当前只能判定为验证环境受同链路未提交 Runtime 改动污染，还不能把 500 直接归因到本次提交。
+- 剩余风险：`fanxiu/runtime` 三视口虽然都已离开 shell loading，但控制台持续记录 `/fanxiu/data-annotation/runtime/status`、`/scheduler`、`/doctor-watch`、`/cell-logs` 的 500 warning；同时当前工作树在 `backend/core/fanxiu/runtime/__init__.py`、`backend/core/fanxiu/runtime/behavior_tree.py`、`backend/core/fanxiu/runtime/kernel.py`、`scripts/fanxiu_bt.py` 等同链路文件上存在未提交改动，当前本地服务无法形成纯 commit 验证闭环。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、三视口真实取证、`notes/list` 低风险减法修复和前端验证；但由于 `fanxiu/runtime` 同链路存在本地未提交 Runtime 改动污染，暂不推进 `last_audited_commit`，并把 `b1eef41..144da8b` 记录到 `pending_or_skipped_ranges`，待工作树稳定后优先关闭。
+
+- 补关闭：本轮在干净工作树 `D:/home/chenkunze/slns/codeyun-ui-audit-144da8b` 重新启动 `144da8b` 对应服务，并复用 Chrome 已登录 `localhost:5173` 标签页刷新 `fanxiu/data-annotation/runtime`。刷新后页面稳定离开 shell loading，能够渲染 `凡修行为树 / 守护 / 作业` 等主内容；上一轮控制台里的大量 `500` 主要是刷新前旧失败样本，不再作为当前页面阻塞证据。
+- 补关闭 API 探针：`GET /api/auth/me = 200`、`GET /api/devices/ = 200`、`GET /api/fanxiu/data-annotation/scheduler/tasks = 200`、`GET /api/fanxiu/data-annotation/runtime/doctor-watch/latest = 200`；旧标签页里的 `entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2` 对应 `GET /runtime/status` 返回 `404 Device entry not found`，说明它在干净快照里已失效，不能再拿来证明 `144da8b` 本身导致 runtime 页面失效。
+- 补关闭证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-144da8b-closeout/report.md`、`fanxiu-runtime-chrome-stable.png`、`viewport-probe.json`。本轮 in-app Browser 持续出现动态 import / HMR websocket 不稳定，因此 clean proof 主要依赖 Chrome 稳定页与 API 探针；多视口布局判断继续沿用上一轮已拿到的页面截图。
+- 最终处理结果：`b1eef41..144da8b` 的 pending 已关闭，可以把 `last_audited_commit` 推进到 `144da8b95f22734ff7238f7b8c77377e7e6a0b47`，并清空 `pending_or_skipped_ranges`。
 
 ### 2026-07-07（第十七轮）
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
+from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_framework as runtime_framework
@@ -291,6 +292,97 @@ def test_local_run_uses_task_cell_entrypoint(monkeypatch):
     ]
 
 
+def test_pending_job_recovery_keeps_recent_task_running_owner(monkeypatch):
+    shutdowns: list[dict] = []
+
+    monkeypatch.setattr(bt, "_fanxiu_process_matches_service_owner", lambda pid: pid == 1234)
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_task_cells",
+        lambda: [{"id": "job-1", "status": "running", "updated_at": 95.0, "created_at": 94.0}],
+    )
+    monkeypatch.setattr(bt.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        bt,
+        "request_fanxiu_behavior_tree_service_shutdown",
+        lambda **kwargs: shutdowns.append(kwargs),
+    )
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: (_ for _ in ()).throw(AssertionError("recent task should not inspect stale persisted status")),
+    )
+
+    result = bt._restart_stuck_external_service_for_pending_jobs(
+        {"active": True, "stale": False, "pid": 1234, "step": "task_running", "updated_at": 96.0}
+    )
+
+    assert result["restarted"] is False
+    assert result["reason"] == "task_start_grace"
+    assert shutdowns == []
+
+
+def test_fanxiu_kernel_task_cell_facade_hides_runtime_plumbing(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_submit(task_type, payload, **kwargs):
+        calls.append({"task_type": task_type, "payload": payload, **kwargs})
+        return {"status": "queued", "queued_cell": {"id": "cell-1"}}
+
+    monkeypatch.setattr(bt, "submit_fanxiu_task_cell", fake_submit)
+
+    k = FanxiuKernel(entry_id="entry-1", isolate_jobs=True)
+    submitted = k.task("daily_mojie_raid", pause_after_daily_entry=True).submit()
+    completed = k.task("daily_mojie_raid", {"pause_after_daily_entry": True}).run(timeout_seconds=12)
+
+    assert submitted["queued_cell"]["id"] == "cell-1"
+    assert completed["status"] == "queued"
+    assert calls == [
+        {
+            "task_type": "daily_mojie_raid",
+            "payload": {"pause_after_daily_entry": True},
+            "entry_id": "entry-1",
+            "isolate_jobs": True,
+            "wait": False,
+            "wait_timeout_seconds": 300.0,
+        },
+        {
+            "task_type": "daily_mojie_raid",
+            "payload": {"pause_after_daily_entry": True},
+            "entry_id": "entry-1",
+            "isolate_jobs": True,
+            "wait": True,
+            "wait_timeout_seconds": 12.0,
+        },
+    ]
+
+
+def test_fanxiu_kernel_code_cell_facade(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_submit(code, **kwargs):
+        calls.append({"code": code, **kwargs})
+        return {"status": "success", "output": "ok"}
+
+    monkeypatch.setattr(bt, "submit_fanxiu_code_cell", fake_submit)
+
+    status = FanxiuKernel(entry_id="entry-1").code("result = ctx.scene()", timeout_seconds=5).run()
+
+    assert status["status"] == "success"
+    assert calls == [
+        {
+            "code": "result = ctx.scene()",
+            "entry_id": "entry-1",
+            "mode": "readonly",
+            "timeout_seconds": 5.0,
+            "max_output_chars": 4000,
+            "isolate_jobs": True,
+            "wait": True,
+            "wait_timeout_seconds": 35.0,
+        }
+    ]
+
+
 def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
     latest_path = tmp_path / "fanxiu-watch" / "latest.json"
     heartbeat_path = tmp_path / "fanxiu-watch" / "heartbeat.json"
@@ -461,7 +553,7 @@ def test_doctor_watch_latest_payload_for_frontend_omits_large_auto_run_due(monke
     assert payload["snapshot"]["auto_run_due"] is None
 
 
-def test_runtime_control_ensure_doctor_watch_skips_recent_capable_heartbeat(monkeypatch, tmp_path):
+def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monkeypatch, tmp_path):
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
@@ -474,7 +566,7 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_capable_heartbeat(monk
                 "updated_at": 100.0,
                 "stable_latest_path": str(stable_path),
                 "latest_path": str(stable_path),
-                "auto_run_due_enabled": True,
+                "auto_run_due_enabled": False,
             },
             ensure_ascii=False,
         ),
@@ -488,11 +580,11 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_capable_heartbeat(monk
     assert result["started"] is False
     assert result["reason"] == "heartbeat_recent"
     assert result["heartbeat"]["active"] is True
-    assert result["heartbeat"]["auto_run_due_enabled"] is True
+    assert result["heartbeat"]["auto_run_due_enabled"] is False
     assert result["latest"]["snapshot"]["severity"] == "blocked"
 
 
-def test_runtime_control_ensure_doctor_watch_restarts_recent_heartbeat_without_auto_run_due(monkeypatch, tmp_path):
+def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatch, tmp_path):
     class FakeProcess:
         pid = 789
 
@@ -522,7 +614,7 @@ def test_runtime_control_ensure_doctor_watch_restarts_recent_heartbeat_without_a
     )
     stable_path.write_text(json.dumps({"severity": "blocked", "summary": "旧 watcher"}, ensure_ascii=False), encoding="utf-8")
 
-    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0)
+    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=True)
 
     assert result["started"] is True
     assert result["pid"] == 789
@@ -606,7 +698,7 @@ def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeyp
     assert "--duration-seconds" in command
     assert "60.0" in command
     assert "--screenshot" not in command
-    assert "--auto-run-due" in command
+    assert "--auto-run-due" not in command
     assert result["output_path"].endswith(".ndjson")
 
 
@@ -1569,8 +1661,9 @@ def test_fanxiu_bt_script_uses_core_entrypoint_only():
     assert "--run-mode" in source
     assert "--wait" in source
     assert "_add_task_run_options" in source
-    assert "submit_fanxiu_task_cell" in source
-    assert "submit_fanxiu_code_cell" in source
+    assert "FanxiuKernel" in source
+    assert "run" in source
+    assert "py" in source
     assert "def _resident_owner_active_for_other_process" not in source
     assert "owner" in source
     assert "clear-logs" in source
@@ -1581,16 +1674,98 @@ def test_fanxiu_bt_script_uses_core_entrypoint_only():
     assert "backend.api.fanxiu" not in source
 
 
+def _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls, *, task_status=None, code_status=None):
+    class FakeTaskCell:
+        def __init__(self, entry_id, isolate_jobs, task_type, payload):
+            self.entry_id = entry_id
+            self.isolate_jobs = isolate_jobs
+            self.task_type = task_type
+            self.payload = dict(payload or {})
+
+        def submit(self):
+            calls.append((
+                self.task_type,
+                dict(self.payload),
+                {
+                    "entry_id": self.entry_id,
+                    "isolate_jobs": self.isolate_jobs,
+                    "wait": False,
+                    "wait_timeout_seconds": 300.0,
+                },
+            ))
+            return task_status or {"status": "queued", "phase": "task_cell_queued"}
+
+        def run(self, *, timeout_seconds=None):
+            calls.append((
+                self.task_type,
+                dict(self.payload),
+                {
+                    "entry_id": self.entry_id,
+                    "isolate_jobs": self.isolate_jobs,
+                    "wait": True,
+                    "wait_timeout_seconds": float(timeout_seconds or 300.0),
+                },
+            ))
+            return task_status or {"status": "success", "message": "ok"}
+
+    class FakeCodeCell:
+        def __init__(self, entry_id, isolate_jobs, code, mode, timeout_seconds, max_output_chars):
+            self.entry_id = entry_id
+            self.isolate_jobs = isolate_jobs
+            self.code = code
+            self.mode = mode
+            self.timeout_seconds = timeout_seconds
+            self.max_output_chars = max_output_chars
+
+        def submit(self):
+            calls.append((
+                self.code,
+                {
+                    "entry_id": self.entry_id,
+                    "mode": self.mode,
+                    "timeout_seconds": self.timeout_seconds,
+                    "max_output_chars": self.max_output_chars,
+                    "isolate_jobs": self.isolate_jobs,
+                    "wait": False,
+                    "wait_timeout_seconds": 300.0,
+                },
+            ))
+            return code_status or {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-code"}}
+
+        def run(self, *, timeout_seconds=None):
+            calls.append((
+                self.code,
+                {
+                    "entry_id": self.entry_id,
+                    "mode": self.mode,
+                    "timeout_seconds": self.timeout_seconds,
+                    "max_output_chars": self.max_output_chars,
+                    "isolate_jobs": self.isolate_jobs,
+                    "wait": True,
+                    "wait_timeout_seconds": float(timeout_seconds or 300.0),
+                },
+            ))
+            return code_status or {"status": "success", "message": "ok"}
+
+    class FakeKernel:
+        def __init__(self, *, entry_id, isolate_jobs=True):
+            self.entry_id = entry_id
+            self.isolate_jobs = isolate_jobs
+
+        def task(self, task_type, payload=None):
+            return FakeTaskCell(self.entry_id, self.isolate_jobs, task_type, payload)
+
+        def code(self, code, *, mode="readonly", timeout_seconds=120.0, max_output_chars=4000):
+            return FakeCodeCell(self.entry_id, self.isolate_jobs, code, mode, timeout_seconds, max_output_chars)
+
+    monkeypatch.setattr(fanxiu_bt, "FanxiuKernel", FakeKernel)
+
+
 def test_fanxiu_bt_task_uses_submit_entrypoint(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-
-    def fake_submit(task_type, payload=None, **kwargs):
-        calls.append((task_type, dict(payload or {}), kwargs))
-        return {"status": "queued", "phase": "task_cell_queued"}
-
-    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task_cell", fake_submit)
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1605,12 +1780,7 @@ def test_fanxiu_bt_go_scene_accepts_hash_scene_id(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-
-    def fake_submit(task_type, payload=None, **kwargs):
-        calls.append((task_type, dict(payload or {}), kwargs))
-        return {"status": "success", "message": "ok"}
-
-    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task_cell", fake_submit)
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1628,12 +1798,7 @@ def test_fanxiu_bt_auto_queued_task_waits_when_requested(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-
-    def fake_submit(task_type, payload=None, **kwargs):
-        calls.append((task_type, dict(payload or {}), kwargs))
-        return {"done": True, "runtime_status": {"status": "success"}}
-
-    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task_cell", fake_submit)
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls, task_status={"done": True, "runtime_status": {"status": "success"}})
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1661,12 +1826,7 @@ def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-
-    def fake_submit(task_type, payload=None, **kwargs):
-        calls.append((task_type, dict(payload or {}), kwargs))
-        return {"done": True, "runtime_status": {"status": "success", "message": "ok"}}
-
-    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task_cell", fake_submit)
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls, task_status={"done": True, "runtime_status": {"status": "success", "message": "ok"}})
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1690,16 +1850,34 @@ def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
     assert calls[0][2]["wait_timeout_seconds"] == 900.0
 
 
+def test_fanxiu_bt_run_command_waits_by_default(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    calls = []
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "--entry-id",
+            "entry",
+            "run",
+            "daily_mojie_raid",
+            "--wait-timeout-seconds",
+            "66",
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert calls == [("daily_mojie_raid", {}, {"entry_id": "entry", "isolate_jobs": True, "wait": True, "wait_timeout_seconds": 66.0})]
+
+
 def test_fanxiu_bt_code_cell_uses_code_cell_entrypoint(monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
     calls = []
-
-    def fake_submit(code, **kwargs):
-        calls.append((code, kwargs))
-        return {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-code"}}
-
-    monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_code_cell", fake_submit)
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -1728,9 +1906,44 @@ def test_fanxiu_bt_code_cell_uses_code_cell_entrypoint(monkeypatch):
                 "timeout_seconds": 12.0,
                 "max_output_chars": 999,
                 "isolate_jobs": True,
-                "isolation_ttl_seconds": 300.0,
                 "wait": False,
                 "wait_timeout_seconds": 300.0,
+            },
+        )
+    ]
+
+
+def test_fanxiu_bt_py_command_waits_by_default(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    calls = []
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "--entry-id",
+            "entry",
+            "py",
+            "result = ctx.scene()",
+            "--wait-timeout-seconds",
+            "77",
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert calls == [
+        (
+            "result = ctx.scene()",
+            {
+                "entry_id": "entry",
+                "mode": "readonly",
+                "timeout_seconds": 120.0,
+                "max_output_chars": 4000,
+                "isolate_jobs": True,
+                "wait": True,
+                "wait_timeout_seconds": 77.0,
             },
         )
     ]
@@ -1823,7 +2036,7 @@ def test_fanxiu_bt_idle_runtime_annotation_error_does_not_block_other_due_tasks(
     assert maintenance["automation_safe"] is True
     assert maintenance["needs_human_annotation"] is False
     assert maintenance["blocked_due_count"] == 0
-    assert "AI 保底调度应接管" in maintenance["action_required"][0]
+    assert "等待 AI 显式提交 cell" in maintenance["action_required"][0]
 
 
 def test_fanxiu_bt_doctor_summary_reports_blocked_action_and_exit_code(monkeypatch, capsys):
@@ -2134,7 +2347,7 @@ def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_engineering_scheduler
     assert event["auto_run_due"].get("triggered") is not True
 
 
-def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_job_group_disabled(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-job-group-disabled.ndjson"
@@ -2159,7 +2372,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatc
                 "stale_due_count": 1,
                 "stale_due_success_count": 0,
                 "blocked_due_count": 0,
-                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "action_required": ["当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell"],
                 "retry_condition": "无需特殊条件",
             },
         },
@@ -2194,8 +2407,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatc
         lambda **kwargs: run_due_calls.append(kwargs) or {
             "status": "idle",
             "phase": "scheduler_due_queued",
-            "message": "AI保底已接管作业组关闭下的到期任务：日常_报名",
-            "job_group_override": True,
+            "message": "AI 显式提交到期任务：日常_报名",
         },
     )
     monkeypatch.setattr(
@@ -2212,18 +2424,15 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatc
         ],
     )
 
-    assert fanxiu_bt.main() == 0
+    assert fanxiu_bt.main() == 1
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert len(run_due_calls) == 1
-    assert run_due_calls[0]["entry_id"] == "entry"
-    assert run_due_calls[0]["ignore_job_group_disabled"] is True
-    assert event["severity"] == "ok"
-    assert event["auto_run_due"]["triggered"] is True
-    assert event["auto_run_due"]["message"].startswith("AI保底已接管作业组关闭下的到期任务")
+    assert run_due_calls == []
+    assert event["severity"] == "attention"
+    assert event["auto_run_due"] == {}
 
 
-def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_batch_when_job_group_disabled(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-job-group-disabled-batch.ndjson"
@@ -2251,7 +2460,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(
                 "stale_due_count": 2,
                 "stale_due_success_count": 0,
                 "blocked_due_count": 0,
-                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "action_required": ["当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell"],
                 "retry_condition": "无需特殊条件",
             },
         },
@@ -2274,7 +2483,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(
                 "stale_due_count": 1,
                 "stale_due_success_count": 0,
                 "blocked_due_count": 0,
-                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "action_required": ["当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell"],
                 "retry_condition": "无需特殊条件",
             },
         },
@@ -2306,8 +2515,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(
         return {
             "status": "idle",
             "phase": "scheduler_due_queued",
-            "message": f"AI保底已接管作业组关闭下的到期任务：{label}",
-            "job_group_override": True,
+            "message": f"AI 显式提交到期任务：{label}",
         }
 
     monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: reports.pop(0))
@@ -2329,19 +2537,13 @@ def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(
         ],
     )
 
-    assert fanxiu_bt.main() == 0
+    assert fanxiu_bt.main() == 1
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert len(run_due_calls) == 2
-    assert all(call["entry_id"] == "entry" for call in run_due_calls)
-    assert all(call["ignore_job_group_disabled"] is True for call in run_due_calls)
-    assert event["severity"] == "ok"
-    assert event["due_task_count"] == 0
-    assert event["auto_run_due"]["triggered"] is True
-    assert event["auto_run_due"]["run_count"] == 2
-    assert len(event["auto_run_due"]["runs"]) == 2
-    assert event["auto_run_due"]["runs"][0]["message"].endswith("日常_报名")
-    assert event["auto_run_due"]["runs"][1]["message"].endswith("日常_供奉")
+    assert run_due_calls == []
+    assert event["severity"] == "attention"
+    assert event["due_task_count"] == 2
+    assert event["auto_run_due"] == {}
 
 
 def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, tmp_path):
@@ -2409,7 +2611,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
         lambda **kwargs: {
             "status": "idle",
             "phase": "scheduler_due_queued",
-            "message": "AI保底已接管作业组关闭下的到期任务：日常_助手",
+            "message": "AI 显式提交到期任务：日常_助手",
             "queued_cell": {"id": "manual-1", "task_type": "daily_assistant"},
         },
     )
@@ -2435,19 +2637,11 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
         ],
     )
 
-    assert fanxiu_bt.main() == 0
+    assert fanxiu_bt.main() == 1
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert len(wait_calls) == 1
-    assert wait_calls[0][1] == "entry"
-    assert wait_calls[0][2] == 12
-    assert event["auto_run_due"]["queued_cell"]["id"] == "manual-1"
-    assert event["auto_run_due"]["wait_result"] == {
-        "waited": True,
-        "job_id": "manual-1",
-        "done": True,
-        "result": "error",
-    }
+    assert wait_calls == []
+    assert event["auto_run_due"] == {}
 
 
 def test_fanxiu_bt_watch_wait_keeps_service_alive_when_job_not_done(monkeypatch, tmp_path):
@@ -2720,7 +2914,7 @@ def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_blocked(monkeypatch, 
     assert event["auto_run_due"] == {}
 
 
-def test_fanxiu_bt_watch_doctor_promotes_auto_run_blocker(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_does_not_promote_auto_run_blocker_when_job_group_disabled(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-auto-run-blocker.ndjson"
@@ -2817,11 +3011,11 @@ def test_fanxiu_bt_watch_doctor_promotes_auto_run_blocker(monkeypatch, tmp_path)
     assert fanxiu_bt.main() == 1
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert event["severity"] == "blocked"
-    assert event["needs_human_annotation"] is True
-    assert event["blocked_by"] == [blocker]
-    assert event["annotation_targets"][0]["title"] == "购买破界符"
-    assert event["auto_run_due"]["blocking_overlays"] == [blocker]
+    assert event["severity"] == "attention"
+    assert event["needs_human_annotation"] is False
+    assert event["blocked_by"] == []
+    assert event["annotation_targets"] == []
+    assert event["auto_run_due"] == {}
 
 
 def test_fanxiu_bt_watch_doctor_forces_screenshot_when_blocked(monkeypatch, tmp_path):
@@ -2980,7 +3174,7 @@ def test_fanxiu_bt_ensure_watch_doctor_skips_when_heartbeat_recent(monkeypatch, 
     assert result["heartbeat"]["auto_run_due_enabled"] is True
 
 
-def test_fanxiu_bt_ensure_watch_doctor_starts_when_recent_heartbeat_lacks_auto_run_due(monkeypatch, tmp_path, capsys):
+def test_fanxiu_bt_ensure_watch_doctor_skips_when_recent_heartbeat_lacks_auto_run_due(monkeypatch, tmp_path, capsys):
     import scripts.fanxiu_bt as fanxiu_bt
 
     class FakeProcess:
@@ -3014,12 +3208,10 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_recent_heartbeat_lacks_auto_r
     assert fanxiu_bt.main() == 0
     result = json.loads(capsys.readouterr().out)
 
-    assert result["started"] is True
-    assert result["pid"] == 654
-    assert result["previous_heartbeat"].get("auto_run_due_enabled") in {None, False}
-    watch_commands = [call["command"] for call in popen_calls if "watch-doctor" in call["command"]]
-    assert watch_commands
-    assert "--auto-run-due" in watch_commands[-1]
+    assert result["started"] is False
+    assert result["reason"] == "heartbeat_recent"
+    assert result["heartbeat"].get("auto_run_due_enabled") in {None, False}
+    assert popen_calls == []
 
 
 def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, tmp_path, capsys):
@@ -3084,7 +3276,7 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, 
     assert "--duration-seconds" in command
     assert "60.0" in command
     assert "--screenshot" in command
-    assert "--auto-run-due" in command
+    assert "--auto-run-due" not in command
     assert result["output_path"].endswith(".ndjson")
 
 

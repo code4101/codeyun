@@ -2005,7 +2005,11 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const queryNoteProgramForTab = async (tabId: string, request: NoteProgramRequest) => {
+  const queryNoteProgramForTab = async (
+    tabId: string,
+    request: NoteProgramRequest,
+    options: { suppressErrorToast?: boolean } = {}
+  ) => {
     const session = ensureTabSession(tabId);
     if (!session) return null;
 
@@ -2058,7 +2062,9 @@ export const useNoteStore = defineStore('notes', () => {
     } catch (error) {
       if (session.requestVersion !== requestVersion) return null;
       console.error('Failed to run note program:', error);
-      ElMessage.error('执行筛选程序失败');
+      if (!options.suppressErrorToast) {
+        ElMessage.error('执行筛选程序失败');
+      }
       return null;
     } finally {
       if (session.requestVersion === requestVersion) {
