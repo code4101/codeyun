@@ -424,7 +424,9 @@ const runDataProgram = async (
     const normalizedProgram = normalizeNoteProgramChannel(program);
     const request = buildListQueryRequest(normalizedProgram);
     const startedAt = listPerfEnabled ? getPerfNow() : 0;
-    const result = await noteStore.queryNoteProgramForTab(props.tabId, request);
+    const result = await noteStore.queryNoteProgramForTab(props.tabId, request, {
+      suppressErrorToast: Boolean(options.silent),
+    });
     if (result?.data) {
       writeListQueryCache(request, result.data);
     }

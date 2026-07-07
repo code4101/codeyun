@@ -462,7 +462,7 @@ def test_scheduler_running_task_cell_orphaned_after_runtime_stop_keeps_due_time(
             {
                 "id": "manual-stale",
                 "task_type": "daily_shuangxiu",
-                "label": "AI保底接管到期任务：日常_双修",
+                "label": "AI显式提交到期任务：日常_双修",
                 "group": "manual_job",
                 "status": "running",
                 "payload": {"__scheduler_task_id": "legacy-daily-shuangxiu"},
@@ -7834,7 +7834,7 @@ def test_wait_task_cell_treats_skip_log_as_terminal(monkeypatch):
             "logs": [
                 {
                     "kind": "skip",
-                    "message": "[manual-123] 作业完成：AI保底接管到期任务：日常_仙市",
+                    "message": "[manual-123] 作业完成：AI显式提交到期任务：日常_仙市",
                 }
             ],
         },

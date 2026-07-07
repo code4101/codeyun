@@ -108,7 +108,7 @@ const schedulerOwnerTitle = computed(() => {
   if (humanIsolationActive.value) return '人工使用；AI 和工程只能等待';
   if (nonHumanIsolationActive.value) return `已有隔离锁：${isolationReason.value || 'unknown'}`;
   if (schedulerJobGroupEnabled.value) return '工程使用；工程自动执行到期作业，AI 只旁观';
-  return 'AI使用；工程不自动执行，到期作业由 AI 主动接管';
+  return 'AI使用；工程不自动执行，到期作业等待 AI 显式提交 cell';
 });
 const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
   const items = runtimeStatus.value?.guard_items || {};

@@ -2910,20 +2910,14 @@ def test_run_due_scheduler_tasks_skips_when_job_group_disabled(tmp_path, monkeyp
     )
 
     assert status["phase"] == "scheduler_job_group_disabled"
-    assert "作业组已关闭" in status["message"]
+    assert "工程不自动提交到期作业" in status["message"]
 
 
-def test_run_due_scheduler_tasks_ai_fallback_queues_when_job_group_disabled(tmp_path, monkeypatch):
+def test_run_due_scheduler_tasks_has_no_ai_fallback_override_when_job_group_disabled(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
     monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", lambda *args, **kwargs: {"ok": True})
-    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [])
-    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_wake", lambda: None)
-    monkeypatch.setattr(
-        runtime_control,
-        "fanxiu_runtime_runner_status",
-        lambda: {"running": False, "status": "idle", "phase": "idle", "logs": []},
-    )
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not submit jobs")))
     task = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-assistant").copy()
     task.update({
         "enabled": True,
@@ -2935,7 +2929,6 @@ def test_run_due_scheduler_tasks_ai_fallback_queues_when_job_group_disabled(tmp_
     status = runtime_control.run_due_scheduler_tasks(
         entry=object(),
         entry_id="entry",
-        ignore_job_group_disabled=True,
         scheduler_state_path=_scheduler_state_path(tmp_path),
         scheduler_settings_path=_scheduler_settings_path(tmp_path),
         runtime_state_path=tmp_path / "runtime_state.json",
@@ -2950,23 +2943,18 @@ def test_run_due_scheduler_tasks_ai_fallback_queues_when_job_group_disabled(tmp_
         task_cell_path=tmp_path / "manual_jobs.json",
     )
 
-    assert status["phase"] == "scheduler_due_queued"
-    assert status["job_group_override"] is True
-    assert "AI保底已接管作业组关闭下的到期任务" in status["message"]
-    assert jobs[0]["task_type"] == "daily_assistant"
-    assert jobs[0]["group"] == "job"
-    assert jobs[0]["payload"]["__scheduler_task_id"] == "legacy-daily-assistant"
-    assert jobs[0]["label"] == "AI保底接管到期任务：日常_助手"
-    assert next(item for item in tasks if item["id"] == "legacy-daily-assistant")["last_result"] == "queued"
+    assert status["phase"] == "scheduler_job_group_disabled"
+    assert "工程不自动提交到期作业" in status["message"]
+    assert jobs == []
+    assert next(item for item in tasks if item["id"] == "legacy-daily-assistant")["last_result"] == ""
 
 
-def test_run_due_scheduler_tasks_ai_fallback_queues_due_task_while_runtime_busy(tmp_path, monkeypatch):
+def test_run_due_scheduler_tasks_disabled_job_group_does_not_queue_due_task_while_runtime_busy(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
     monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", lambda *args, **kwargs: {"ok": True})
-    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [])
-    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_wake", lambda: None)
     monkeypatch.setattr(runtime_control, "data_annotation_task_due", lambda task: task.get("id") == "xianfu-visit-partner")
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not submit jobs")))
     monkeypatch.setattr(
         runtime_control,
         "fanxiu_runtime_runner_status",
@@ -2993,7 +2981,6 @@ def test_run_due_scheduler_tasks_ai_fallback_queues_due_task_while_runtime_busy(
     status = runtime_control.run_due_scheduler_tasks(
         entry=object(),
         entry_id="entry",
-        ignore_job_group_disabled=True,
         scheduler_state_path=_scheduler_state_path(tmp_path),
         scheduler_settings_path=_scheduler_settings_path(tmp_path),
         runtime_state_path=tmp_path / "runtime_state.json",
@@ -3009,15 +2996,10 @@ def test_run_due_scheduler_tasks_ai_fallback_queues_due_task_while_runtime_busy(
     )
     queued = next(item for item in tasks if item["id"] == "xianfu-visit-partner")
 
-    assert status["phase"] == "scheduler_due_queued"
-    assert "等待当前作业完成" in status["message"]
-    assert len(jobs) == 1
-    assert jobs[0]["task_type"] == "xianfu_visit_partner"
-    assert jobs[0]["group"] == "job"
-    assert jobs[0]["payload"]["__scheduler_task_id"] == "xianfu-visit-partner"
-    assert jobs[0]["status"] == "pending"
-    assert jobs[0]["created_at"] == datetime(2026, 6, 21, 15, 0, 0).timestamp()
-    assert queued["last_result"] == "queued"
+    assert status["phase"] == "scheduler_job_group_disabled"
+    assert "工程不自动提交到期作业" in status["message"]
+    assert jobs == []
+    assert queued["last_result"] == ""
     assert queued["retry_after"] is None
 
 
@@ -5590,9 +5572,10 @@ def test_daily_mojie_raid_remaining_ocr_fallback_accepts_b_as_eight():
     assert runner._daily_mojie_raid_remaining_ocr_fallback("其他次数：B") is None
 
 
-def test_daily_mojie_raid_top_attack_target_clicks_configured_shape():
+def test_daily_mojie_raid_top_attack_target_clicks_default_ocr_count_anchor():
     runner = create_fanxiu_runtime_runner()
     actions: list[tuple[object, ...]] = []
+    runner._daily_mojie_raid_attack_count_candidates = lambda _runtime, _frame, _payload: [(456.0, 260.0, "11/30")]  # type: ignore[method-assign]
 
     class FakeRuntime:
         default_wait_click_timeout = 12.0
@@ -5602,6 +5585,13 @@ def test_daily_mojie_raid_top_attack_target_clicks_configured_shape():
             if False:
                 yield None
             return "clicked"
+
+        def cur_frame(self, update=False):
+            actions.append(("cur_frame", update))
+            return "frame"
+
+        def click_frame_point(self, scene_id, x, y):
+            actions.append(("click_frame_point", scene_id, x, y))
 
         def wait_action_settle(self, seconds):
             actions.append(("wait_action_settle", seconds))
@@ -5615,13 +5605,21 @@ def test_daily_mojie_raid_top_attack_target_clicks_configured_shape():
                 yield None
             return 321
 
-    result = _drain_generator(runner._click_daily_mojie_raid_top_attack_target(FakeRuntime(), {}))
+    result = _drain_generator(
+        runner._click_daily_mojie_raid_top_attack_target(
+            FakeRuntime(),
+            {},
+        )
+    )
 
     assert result == 321
-    assert actions[0] == ("wait_click", 320, "修罗", {"timeout": 12.0})
-    assert actions[1] == ("wait_action_settle", 1.5)
-    assert actions[2][0] == "wait_view"
-    assert actions[2][1] == (321, 331)
+    assert actions[0][0] == "wait_view"
+    assert actions[0][1] == (320,)
+    assert actions[1] == ("cur_frame", True)
+    assert actions[2] == ("click_frame_point", 320, 456.0, 260.0)
+    assert actions[3] == ("wait_action_settle", 1.5)
+    assert actions[4][0] == "wait_view"
+    assert actions[4][1] == (321, 331)
 
 
 def test_daily_mojie_raid_top_attack_target_allows_shape_override():
@@ -5681,9 +5679,65 @@ def test_daily_mojie_raid_top_attack_target_accepts_direct_331():
                 yield None
             return 331
 
-    result = _drain_generator(runner._click_daily_mojie_raid_top_attack_target(FakeRuntime(), {}))
+    result = _drain_generator(
+        runner._click_daily_mojie_raid_top_attack_target(
+            FakeRuntime(),
+            {"mojie_raid_target_shape": "检索区域/修罗"},
+        )
+    )
 
     assert result == 331
+
+
+def test_daily_mojie_raid_attack_count_candidates_clicks_above_top_count():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRunner:
+        def _frame_size(self, _raw):
+            return 864, 1536
+
+        def _ocr_match_resolved_box(self, line, _token, _mode):
+            return {"x": line["x"], "y": line["y"], "w": line["w"], "h": line["h"]}
+
+    class FakeRuntime:
+        runner = FakeRunner()
+
+        def view(self, _scene_id):
+            return type("View", (), {"raw": {}})()
+
+        def ocr_lines(self, _frame):
+            return [{"text": "11/30", "x": 348.0, "y": 396.0, "w": 72.0, "h": 29.0}]
+
+    candidates = runner._daily_mojie_raid_attack_count_candidates(FakeRuntime(), "frame", {})
+
+    assert candidates == [(384.0, pytest.approx(195.46), "11/30")]
+
+
+def test_daily_mojie_raid_attack_count_candidates_splits_joined_ocr_line():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRunner:
+        def _frame_size(self, _raw):
+            return 864, 1536
+
+        def _ocr_match_resolved_box(self, _line, _token, _mode):
+            return None
+
+    class FakeRuntime:
+        runner = FakeRunner()
+
+        def view(self, _scene_id):
+            return type("View", (), {"raw": {}})()
+
+        def ocr_lines(self, _frame):
+            return [{"text": "3/30困御龙魔息困3/30", "x": 122.0, "y": 551.0, "w": 639.0, "h": 129.0}]
+
+    candidates = runner._daily_mojie_raid_attack_count_candidates(FakeRuntime(), "frame", {})
+
+    assert len(candidates) == 2
+    assert candidates[0][0] < 260
+    assert candidates[1][0] > 620
+    assert candidates[0][0] != candidates[1][0]
 
 
 def test_daily_mojie_raid_remaining_zero_marks_week_complete(tmp_path, monkeypatch):

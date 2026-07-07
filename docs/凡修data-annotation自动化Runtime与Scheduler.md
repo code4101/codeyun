@@ -142,32 +142,32 @@ Runtime 状态包含：
 
 Scheduler 不直接点击游戏，只负责维护作业配置、到期判断和只读计划。真正执行由常驻行为树在空闲 tick 中读取 Scheduler 结果后串行提交给 Runtime 业务节点。
 
-### 工程 Scheduler 与 AI 保底调度
+### 工程 Scheduler 与 AI 调度
 
-凡修每日任务当前有两个触发主体，语义必须分开：
+凡修每日任务同一时间只能有一个调度权威，语义必须分开：
 
-- 工程 Scheduler：CodeYun 后端常驻 loop 根据 Scheduler 计划自主提交到期作业。`job_group_enabled=false` 只关闭这一条工程自主入口，用来避免后端在用户或 AI 正在操作时自行启动作业，造成行为树并发冲突。
-- AI 保底调度：Codex/AI 定时巡检 `doctor` 结果，发现已有启用且到期的作业时，作为人工代理按顺序提交一个作业。AI 保底不应把 `job_group_enabled=false` 理解为“不运行”；它应理解为“工程入口已让出调度权，由 AI 串行接管”。
+- 工程 Scheduler：CodeYun 后端常驻 loop 根据 Scheduler 计划自主提交到期作业。`job_group_enabled=true` 时，工程是唯一自动调度权威。
+- AI 调度：Codex/AI 动态生成并提交 `code cell` 或显式 `task cell`，由同一个常驻 kernel 串行执行。AI 模式下工程 Scheduler 必须让出自动执行权。
 
 因此，作业组关闭时：
 
 - `scheduler.plan.next_action=job_group_disabled` 仍可以保留，用来说明工程 Scheduler 不会自主拉起任务。
-- AI 保底若看到 `due_tasks` 非空、`maintenance.automation_safe=true`、没有 `needs_human_annotation`、没有 `blocked_by`、没有 Runtime/owner/task_cells 正在运行，应继续按 `due_tasks` 顺序执行第一个作业。
-- AI 保底执行时不能修改 `job_group_enabled`、不能改写启用状态、不能手工推进 `next_time`。它只能通过 Runtime/行为树公开入口提交具体 `task_type`，让任务成功/失败后按正常 Scheduler 状态回写 `last_run_at`、`last_result`、`next_time` 或 `retry_after`。
-- AI 保底和工程 Scheduler 一样必须遵守行为树串行约束：一次只运行一个任务；若已有 owner、Runtime 任务、task_cells 或隔离锁正在占用，应等待/跳过本轮并报告串行互斥，不得并行启动。
+- `due_tasks` 非空只能作为 AI 决策输入和界面提示，不能由巡检进程自动绕过 `job_group_enabled=false` 提交。
+- AI 若要执行某个到期作业，必须显式提交 cell；执行记录仍要落回对应 Scheduler task。
+- AI 和工程 Scheduler 一样必须遵守行为树串行约束：一次只运行一个任务；若已有 owner、Runtime 任务、task_cells 或隔离锁正在占用，应等待/跳过本轮并报告串行互斥，不得并行启动。
 - 标注缺失、阻断浮层、Runtime 错误、ADB/MuMu 基础设施异常仍是真阻断。AI 可以修基础设施，但不能靠猜坐标、降阈值、自动补资产树来强行执行。
 
-AI 心跳的首选入口是：
+巡检心跳的首选入口是只观察：
 
 ```bash
-uv run python scripts/fanxiu_bt.py watch-doctor --max-iterations 1 --auto-run-due
+uv run python scripts/fanxiu_bt.py watch-doctor --max-iterations 1
 ```
 
-该入口内部会先 doctor，确认安全后以 `ignore_job_group_disabled=true` 接管到期作业；每提交一个作业后重新 doctor，继续处理下一个安全到期作业，直到 `due_tasks` 清空或出现真实阻塞。心跳提示词不应再把 `job_group_disabled` 写成跳过条件，也不应绕过该入口手工篡改 Scheduler 数据。
+该入口只生成 doctor 证据和调度建议，不自动提交到期作业。AI 调试或接管时应通过 Runtime cell 入口提交明确的一段代码或一个具体 task cell。
 
-### AI 保底成功判据
+### AI 调度成功判据
 
-AI 保底调度不能只用 Scheduler 的 `last_result=success` 或 Runtime 任务结束作为用户汇报的唯一成功证据。凡修日常任务必须区分三层结果：
+AI 调度不能只用 Scheduler 的 `last_result=success` 或 Runtime 任务结束作为用户汇报的唯一成功证据。凡修日常任务必须区分三层结果：
 
 - 调度成功：AI/工程入口按时提交了某个 Scheduler task。
 - 行为闭环成功：Runtime 找到对应页面、点击了标注动作，并处理了已知弹窗或结果页。
