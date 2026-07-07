@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "62b30e1480bfaa72d2259012bea6192c304a5285"
-last_audited_at: "2026-07-06T16:35:07.2435005+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-06-frontend-design-62b30e1/report.md"
-last_frontend_commit_summary: "审完 b3c8aa4..62b30e1：确认 pokemon 上下 inspector、orders 原生历史表与 workbook 性能护栏均未新增 UI 回退。"
-audited_commit_count: 82
+last_audited_commit: "58019c37a4945e8278fbdc72d8b8959bd7fc4f30"
+last_audited_at: "2026-07-07T00:36:05.7412691+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-58019c37/report.md"
+last_frontend_commit_summary: "审完 62b30e1..58019c3：确认 pokemon 标准分页、calendar bucket 汇总、workbook 延迟挂载与 fanxiu helper 异步下沉均未新增持久性 UI 回退。"
+audited_commit_count: 84
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,23 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-07（第十六轮）
+
+- 完整范围：`62b30e1480bfaa72d2259012bea6192c304a5285..58019c37a4945e8278fbdc72d8b8959bd7fc4f30`
+- 覆盖提交：`68929496188314ea19a2ecc9bbb43d94057fd16e`、`58019c37a4945e8278fbdc72d8b8959bd7fc4f30`
+- 前端入口提交：`68929496188314ea19a2ecc9bbb43d94057fd16e`
+- 非前端提交判定：`58019c37a4945e8278fbdc72d8b8959bd7fc4f30` 仅触达后端/测试/文档，没有前端页面、菜单、权限、路由或前端可感知 API 投影变更。
+- 入口如何牵引到旧问题：这次提交同时触达 `pokemon-tcg/catalog`、`notes/center?tab=calendar`、`workbook/14?sheet=58855` 与共享 `fanxiu.ts`。四者共享的不是同一个业务实体，而是同一类“把同一份事实继续收回到更少前端概念”的减法动作：图鉴收回到项目统一分页模型，年/卷/纪视图收回到 bucket 代表节点本身，工作表收回到单一 fill-height 表格工作区，凡修 note 语义 helper 收回到异步局部链路，不再停留在共享同步 API 入口。
+- 本轮减法：`pokemon-tcg` 保留搜索、卡包、属性、卡墙、分页与详情，但把底部分页收回到项目统一的 `StandardPagination`；`CalendarNotes` 保留月/年/卷/纪与前后端筛选闭环，但不再把 bucket 中已表达的节点再平铺成一份 `flat nodes` 进入共享 store；`resource-view` / `NoteSheetWorkspace` 去掉额外 `runtime-max-grid-height=960` 上限，并把首屏高度计算前置到 HotTable 真正挂载前；`fanxiu.ts` 把 note 规范化与 payload helper 下沉到 `fanxiuNoteHelpers` 异步 chunk。
+- 信息量保持：图鉴仍保留完整卡牌事实和来源跳转；日历仍保留四种时间尺度、前后端筛选程序与月份代表节点；工作表仍保留 tab、公式栏和完整表格事实；凡修 note 能力不变，只是共享主入口少带一份 note 语义依赖。
+- 概念图/线框图：报告里的 Mermaid 把链路收回到 `6892949 -> StandardPagination / bucket 代表节点 / fill-height workbook / async fanxiu note helper -> 维持原闭环但删除重复概念`，证明本轮重点是共享模型减法，而不是新增页面功能。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-58019c37/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `pokemon-tcg/catalog`、`notes/center?tab=calendar`、`workbook/14?sheet=58855&sheetPerf=1` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 取证；`pokemon-tcg` 与 `notes-calendar` 三视口下都没有新增横向溢出、分页错位或筛选栏回退；`workbook` 三视口 settled 截图均已正常落出表格内容，并采到 `sheet-perf:event` 说明 `sheetPerf=1` 已真实透传进 `NoteSheetWorkspace`。静态校验：`uv run pytest backend/tests/test_note_calendar_summary.py tests/test_note_sheet_workspace_performance_guards.py -q`、`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；三页页面控制台未采到 `warn/error`。
+- 入口依赖污染检查：本轮未被规则强制触发，因为提交未改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式或公开入口；但由于触达共享 API 与性能护栏，仍补做构建检查，确认 `frontend/dist/index.html` 与 `main-CZJDOWlb.js` 都未预加载或顶层引入 `fanxiuNoteHelpers`，且 helper 已单独产出为 `fanxiuNoteHelpers-C0RHaxq8.js`，由 `fanxiu-CMIBBRnB.js` 动态拉起。
+- 根因分层：`pokemon-tcg` 属于前端表现层与交互统一，`CalendarNotes` 属于前端状态投影收敛，`resource-view` / `NoteSheetWorkspace` 属于前端运行时性能与挂载顺序优化，`fanxiu.ts` helper 拆分属于前端工程架构依赖边界收敛；本轮没有暴露需要转交后端模型审计的新问题。
+- 剩余风险：`workbook/14?sheet=58855&sheetPerf=1` 在 `1600x1000` 首次进入时，外围 chrome 会先出现，HotTable 大约在 0.7 秒内完成延迟挂载；settled 截图和 perf 日志证明它没有持续白屏或卡死，但“短暂空白工作区”仍是这次性能护栏改动后需要继续观察的体感风险。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口取证、轻量入口依赖检查与静态验证；没有发现需要追加自动修复的新持久性 UI 回退，因此把 `last_audited_commit` 推进到 `58019c37a4945e8278fbdc72d8b8959bd7fc4f30`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-06（第十五轮）
 

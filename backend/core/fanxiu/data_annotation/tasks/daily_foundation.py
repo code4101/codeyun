@@ -189,6 +189,9 @@ class DailyFoundationTaskMixin:
                 if list_status == "done":
                     yield from self._return_daily_boss_to_world(ctx, stop_event)
                     return "success"
+                if list_status == "skipped":
+                    yield from self._return_daily_boss_to_world(ctx, stop_event)
+                    return "skipped"
                 scene_id = 178
             detail_status = yield from self._open_watched_daily_boss_detail(ctx, stop_event, payload)
             if detail_status == "done":
@@ -211,16 +214,21 @@ class DailyFoundationTaskMixin:
         status = yield from runtime.open_daily_entry(
             label="日常_首领",
             title_pattern=r"击\s*败\s*首\s*领",
-            progress_can_mark_done=True,
+            progress_can_mark_done=False,
             max_scrolls=10,
             reverse_scrolls=10,
         )
         if status == "done":
-            next_time = self._record_daily_boss_done_for_today(payload or {})
-            self._log("success", f"日常_首领：日常列表显示「击败首领」已完成，下次 {next_time}")
-            return "done"
+            raise RuntimeError("日常_首领：日常列表进度不能作为首领奖励完成证据")
         if status == "not_found":
-            raise RuntimeError("日常_首领：#69 日常列表未找到「击败首领」")
+            self._record_daily_entry_not_found_retry(
+                payload or {},
+                task_id="daily-boss",
+                task_type="daily_boss",
+                label="日常_首领",
+                entry_label="击败首领",
+            )
+            return "skipped"
         yield from self._wait_daily_boss_list(ctx, stop_event, timeout=20.0, label="日常_首领：等待首领列表 #178")
         return "success"
 
@@ -1455,7 +1463,14 @@ class DailyFoundationTaskMixin:
             ),
         )
         if daily_status == "not_found":
-            raise RuntimeError("日常_剑灵：日常列表未找到「淬剑试炼」任务")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-jianling",
+                task_type="daily_jianling",
+                label="日常_剑灵",
+                entry_label="淬剑试炼",
+            )
+            return "skipped"
         if daily_status == "done":
             self._record_daily_jianling_done(payload, message="日常列表显示已完成")
             yield from self._safe_daily_done_cleanup(
@@ -1485,7 +1500,14 @@ class DailyFoundationTaskMixin:
             ),
         )
         if status == "not_found":
-            raise RuntimeError("日常_剑灵：日常列表未找到「淬剑试炼」任务")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-jianling",
+                task_type="daily_jianling",
+                label="日常_剑灵",
+                entry_label="淬剑试炼",
+            )
+            return "skipped"
         if status != "open":
             return status
         yield from runtime.wait_view(190, label="日常_剑灵：等待淬剑试炼 #190")
@@ -1950,7 +1972,23 @@ class DailyFoundationTaskMixin:
             else:
                 world_like = False
         else:
-            world_like = self._daily_assistant_text_is_world_like(text)
+            world_like = scene_id == 34 or self._daily_assistant_text_is_world_like(text)
+        green_bottle_like = scene_id == 20 or (not world_like and self._daily_lingta_text_is_green_bottle_like(text))
+        if green_bottle_like:
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"{label}：当前停在绿瓶 #20，先返回世界",
+                    phase="daily_recover_from_green_bottle",
+                    current_scene=20 if scene_id == 20 else None,
+                )
+                self._log_locked("action", f"{label}：命中 #20/绿瓶主界面，点击 #20「回到世界」")
+            yield from self._leave_green_bottle_to_world(ctx, stop_event, label=label)
+            scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
+            text = runtime.ocr_text(frame)
+            if scene_id == 69 and self._daily_text_is_daily_list(text):
+                return 69
+            world_like = scene_id == 34 or self._daily_assistant_text_is_world_like(text)
         yihuo_like = (
             hasattr(self, "_daily_yihuo_text_is_xinghai_list")
             and (
@@ -1968,7 +2006,7 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("action", f"{label}：OCR 命中异火页，先用已标注返回链回世界")
             yield from self._daily_yihuo_return_best_effort(runtime)  # type: ignore[attr-defined]
-            scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+            scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
             text = runtime.ocr_text(frame)
             if scene_id == 69 and self._daily_text_is_daily_list(text):
                 return 69
@@ -1991,7 +2029,7 @@ class DailyFoundationTaskMixin:
             try:
                 yield from runtime.wait_click(228, "返回")
                 yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+                scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
                 text = runtime.ocr_text(frame)
                 if scene_id == 69 and self._daily_text_is_daily_list(text):
                     return 69
@@ -2388,7 +2426,14 @@ class DailyFoundationTaskMixin:
             ),
         )
         if daily_status == "not_found":
-            raise RuntimeError("日常_灵塔：日常列表未找到「混沌灵塔」任务")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-lingta",
+                task_type="daily_lingta",
+                label="日常_灵塔",
+                entry_label="混沌灵塔",
+            )
+            return "skipped"
         if daily_status == "done":
             self._record_daily_lingta_done(payload, message="日常列表显示已完成")
             yield from self._safe_daily_done_cleanup(
@@ -2420,7 +2465,14 @@ class DailyFoundationTaskMixin:
             ),
         )
         if status == "not_found":
-            raise RuntimeError("日常_灵塔：日常列表未找到「混沌灵塔」任务")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-lingta",
+                task_type="daily_lingta",
+                label="日常_灵塔",
+                entry_label="混沌灵塔",
+            )
+            return "skipped"
         if status != "open":
             return status
         scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
@@ -2749,7 +2801,14 @@ class DailyFoundationTaskMixin:
                 reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
             )
             if status == "not_found":
-                raise RuntimeError("日常_仙缘：#69 日常列表未找到「斗法」入口")
+                self._record_daily_entry_not_found_retry(
+                    payload,
+                    task_id="legacy-daily-xianyuan",
+                    task_type="daily_xianyuan_duel",
+                    label="日常_仙缘",
+                    entry_label="斗法",
+                )
+                return "skipped"
         if not bool(payload.get("skip_purchase")):
             yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
         max_runs = int(payload.get("max_runs") or 7)
@@ -2775,7 +2834,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         raid_scenes = {319, 320, 321, 322, 323, 324, 331}
-        scene_id, _score, frame = runtime.current_scene([330, *sorted(raid_scenes), 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([330, *sorted(raid_scenes), 69, 34, 20], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 330:
             self._log("action", "日常_奇袭魔界：起点检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")
@@ -2802,7 +2861,14 @@ class DailyFoundationTaskMixin:
                 reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
             )
             if status == "not_found":
-                raise RuntimeError("日常_奇袭魔界：#69 日常列表未找到「魔界」入口")
+                self._record_daily_entry_not_found_retry(
+                    payload,
+                    task_id="legacy-daily-mojie-raid",
+                    task_type="daily_mojie_raid",
+                    label="日常_奇袭魔界",
+                    entry_label="魔界",
+                )
+                return "skipped"
             if status == "done":
                 raise RuntimeError("日常_奇袭魔界：入口行完成态不能作为奇袭魔界完成判据")
             if stop_after_daily_entry:
@@ -2856,8 +2922,7 @@ class DailyFoundationTaskMixin:
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
-            yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
-            scene_id = 321
+            scene_id = yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
         if scene_id == 321:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)
             scene_id = 322
@@ -2896,8 +2961,9 @@ class DailyFoundationTaskMixin:
         yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
         return (yield from runtime.wait_view(
             321,
+            331,
             timeout=float(payload.get("mojie_raid_target_wait_timeout") or self._daily_default_wait_condition_timeout),
-            label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321",
+            label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321/#331",
         ))
 
     def _daily_mojie_raid_attack_count_candidates(
@@ -2981,7 +3047,14 @@ class DailyFoundationTaskMixin:
                 reverse_scrolls=int(payload.get("reverse_scrolls") or 8),
             )
             if status == "not_found":
-                raise RuntimeError("日常_周本：#69 日常列表未找到「周本」入口")
+                self._record_daily_entry_not_found_retry(
+                    payload,
+                    task_id="daily-weekly-dungeon",
+                    task_type="daily_weekly_dungeon",
+                    label="日常_周本",
+                    entry_label="周本",
+                )
+                return "skipped"
             scene_id = 325
         if scene_id == 325:
             scene_id = yield from self._open_daily_weekly_dungeon_tiangong_view(runtime, payload)
@@ -3594,6 +3667,27 @@ class DailyFoundationTaskMixin:
         self._log("success", f"{label}：{message}，下次 {next_time}")
         return next_time
 
+    def _record_daily_entry_not_found_retry(
+        self,
+        payload: dict[str, Any],
+        *,
+        task_id: str,
+        task_type: str,
+        label: str,
+        entry_label: str = "入口",
+        seconds: int = 1800,
+    ) -> str:
+        next_time = (_runtime_runner._now() + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        self._record_scheduler_task_discovered_retry_after(
+            str(payload.get("__scheduler_task_id") or task_id),
+            next_time,
+            task_type=task_type,
+            label=label,
+            last_result="skipped",
+        )
+        self._log("skip", f"{label}：#69 日常列表暂时未找到「{entry_label}」，{next_time} 重试")
+        return next_time
+
     def _wait_unsupported_daily_entry_after_click(
         self,
         ctx: dict[str, Any],
@@ -3692,7 +3786,13 @@ class DailyFoundationTaskMixin:
             )
             return "success"
         if daily_status == "not_found":
-            raise RuntimeError(f"{task_label}：#69 日常列表未找到入口，不能按完成处理")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id=task_id,
+                task_type=task_type,
+                label=task_label,
+            )
+            return "skipped"
 
         scene_id, score, after_text = yield from self._wait_unsupported_daily_entry_after_click(ctx, stop_event, payload, task_label=task_label)
         raise RuntimeError(
@@ -3739,7 +3839,14 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=False,
         )
         if status == "not_found":
-            raise RuntimeError("日常_论道：#69 日常列表未找到「论道」入口")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-lundao",
+                task_type="daily_lundao",
+                label="日常_论道",
+                entry_label="论道",
+            )
+            return "skipped"
         scene_id, score, _frame = runtime.current_scene([296], update=True)
         if scene_id == 296:
             scene_id, score = yield from self._open_daily_lundao_available_seat(runtime, stop_event)
@@ -4273,7 +4380,14 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=False,
         )
         if daily_status == "not_found":
-            raise RuntimeError("日常_洞天福地：#69 日常列表未找到「收取两万九曜玄墨」入口")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-dongtian",
+                task_type="daily_dongtian",
+                label=task_label,
+                entry_label="收取两万九曜玄墨",
+            )
+            return "skipped"
         yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
         yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
         self._record_daily_dongtian_done(payload, message="已从日常进入洞天福地并领取收益")
@@ -4345,6 +4459,8 @@ class DailyFoundationTaskMixin:
             text,
             task_label=task_label,
         )
+        if _scene_after is None:
+            return "skipped"
         return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
 
     def _execute_daily_lingmai_clear_task(
@@ -4394,7 +4510,7 @@ class DailyFoundationTaskMixin:
         )
         if scene_after == 285:
             return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
-        return "success"
+        return "skipped"
 
     def _execute_daily_dongtian_clear_task(
         self,
@@ -4460,7 +4576,14 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=False,
         )
         if daily_status == "not_found":
-            raise RuntimeError("洞天_行动力：#69 日常列表未找到「收取两万九曜玄墨」入口，无法进入洞天")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-dongtian-clear",
+                task_type="daily_dongtian_clear",
+                label=task_label,
+                entry_label="收取两万九曜玄墨",
+            )
+            return "skipped"
         yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
         raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
 
@@ -4542,7 +4665,14 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=False,
         )
         if daily_status == "not_found":
-            raise RuntimeError(f"{task_label}：#69 日常列表未找到「参与灵脉争夺1小时」入口")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-lingmai",
+                task_type="daily_lingmai",
+                label=task_label,
+                entry_label="参与灵脉争夺1小时",
+            )
+            return None, 0.0, frame
         yield from self._wait_daily_lingmai_zaohua_after_entry(runtime, payload, task_label=task_label)
         scene_after, score_after, frame_after = runtime.current_scene([285], update=True)
         text_after = runtime.ocr_text(frame_after)
@@ -5082,7 +5212,14 @@ class DailyFoundationTaskMixin:
                 if status == "done":
                     raise RuntimeError("日常_拜谒：日常列表进度不能作为拜谒完成证据")
                 if status == "not_found":
-                    raise RuntimeError("日常_拜谒：#69 日常列表未找到「拜谒」入口")
+                    self._record_daily_entry_not_found_retry(
+                        payload,
+                        task_id="legacy-daily-baiye",
+                        task_type="daily_baiye",
+                        label="日常_拜谒",
+                        entry_label="拜谒",
+                    )
+                    return "skipped"
                 yield from runtime.wait_any(
                     {
                         "scene": runtime.view_visible(264),
@@ -5616,7 +5753,14 @@ class DailyFoundationTaskMixin:
         if daily_status == "done":
             raise RuntimeError(f"{task_label}：日常列表进度不能作为游历完成证据")
         if daily_status == "not_found":
-            raise RuntimeError(f"{task_label}：#69 日常列表未找到入口")
+            self._record_daily_entry_not_found_retry(
+                payload,
+                task_id="legacy-daily-youli",
+                task_type="daily_youli",
+                label=task_label,
+                entry_label="修仙传游历",
+            )
+            return "skipped"
 
         yield from self._wait_daily_youli_home(ctx, stop_event, timeout=18.0, label="日常_游历：等待修仙传游历 #228")
         yield from self._open_daily_youli_purchase(ctx, stop_event, payload, image228, image229, image233, task_label=task_label)

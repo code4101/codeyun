@@ -1392,7 +1392,7 @@ import {
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
   stopFanxiuDataAnnotationRuntimeCurrentTask,
-  tickFanxiuDataAnnotationRuntimeTask,
+  tickFanxiuDataAnnotationRuntimeCell,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
@@ -11832,7 +11832,14 @@ const runRuntimeSingleTick = async () => {
   await ensureRuntimeSchedulerTasks();
   runtimeStepping.value = true;
   try {
-    const status = await tickFanxiuDataAnnotationRuntimeTask(selectedEntryId.value);
+    const status = await tickFanxiuDataAnnotationRuntimeCell(selectedEntryId.value, {
+      guard: true,
+      task_cell: true,
+      scheduled_job: false,
+      run_mode: 'tick_once',
+      max_ticks: 1,
+      timeout_seconds: 30,
+    });
     applyRuntimeTaskStatus(status);
   } catch (error) {
     setRuntimeRunStatus(getErrorMessage(error), 'error');
@@ -13487,14 +13494,14 @@ const showRuntimeHelp = () => {
       title: '2. Scheduler',
       lines: [
         '执行到期会交给后端 Scheduler 选择 enabled 且到期的任务。',
-        '手动运行单任务和执行到期任务共用同一套 Runtime 入口。',
+        '手动运行单任务和执行到期任务都会提交 task cell 到同一个 Runtime kernel。',
       ],
     },
     {
       title: '3. 守护',
       lines: [
         '守护开关只控制对应高优先级节点是否参与 tick。',
-        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响作业队列入队。',
+        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响 task cell 入队。',
       ],
     },
     {

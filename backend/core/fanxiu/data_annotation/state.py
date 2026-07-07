@@ -33,7 +33,7 @@ _RUNTIME_PHASE_LABELS = {
     "idle_tick": "空闲",
     "idle_guard": "空闲巡检中",
     "idle_guard_done": "空闲巡检完成",
-    "manual_job_poll": "检查作业队列",
+    "manual_job_poll": "检查 task cell 队列",
     "scheduler_poll": "检查定时作业",
     "scheduler_isolated": "执行定时作业",
     "waiting_context": "等待运行环境",

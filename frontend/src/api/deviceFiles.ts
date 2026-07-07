@@ -132,6 +132,7 @@ const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
 const DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT = 2_000;
 const DEVICE_MEDIA_LIST_FAST_PATH_LIMIT = 100;
 const DEVICE_DIRECTORY_LIST_TIMEOUT_MS = 10_000;
+const DEVICE_DIRECTORY_LIST_FILESYSTEM_TIMEOUT_MS = 2_500;
 const DEVICE_DIRECTORY_LIST_FALLBACK_TIMEOUT_MS = 30_000;
 const DEVICE_DIRECTORY_LIST_FALLBACK_SORT_PROGRAM: DeviceDirectorySortProgram = {
   rules: [{ field: 'name', direction: 'asc', nulls: 'last' }],
@@ -165,6 +166,9 @@ const canUseFastMediaList = (payload: DeviceMediaListRequest) =>
 const isTimeoutError = (error: any) =>
   error?.code === 'ECONNABORTED'
   || String(error?.message || '').toLowerCase().includes('timeout');
+
+const shouldPreferIndexedDirectoryFallback = (payload: DeviceDirectoryListRequest) =>
+  payload.recursive_stats_source === 'filesystem';
 
 export interface DeviceThumbnailOptions {
   max_edge?: number;
@@ -550,14 +554,37 @@ export const fetchDeviceDirectoryItems = async (
     items: data.items ?? [],
   });
 
+  const shouldUseIndexedFallback = shouldPreferIndexedDirectoryFallback(payload);
+  const initialTimeoutMs = shouldUseIndexedFallback
+    ? DEVICE_DIRECTORY_LIST_FILESYSTEM_TIMEOUT_MS
+    : DEVICE_DIRECTORY_LIST_TIMEOUT_MS;
+
   try {
     const response = await api.post(getDeviceEntryPath(entryId, '/files/list_dir'), payload, {
-      timeout: DEVICE_DIRECTORY_LIST_TIMEOUT_MS,
+      timeout: initialTimeoutMs,
     });
     return normalizeDirectoryListing(response.data);
   } catch (error) {
     if (!isTimeoutError(error)) {
       throw error;
+    }
+
+    if (shouldUseIndexedFallback) {
+      try {
+        const indexedFallbackResponse = await api.post(
+          getDeviceEntryPath(entryId, '/files/list_dir'),
+          {
+            ...payload,
+            recursive_stats_source: 'indexed',
+          },
+          { timeout: DEVICE_DIRECTORY_LIST_TIMEOUT_MS }
+        );
+        return normalizeDirectoryListing(indexedFallbackResponse.data);
+      } catch (indexedError) {
+        if (!isTimeoutError(indexedError)) {
+          throw indexedError;
+        }
+      }
     }
 
     const fallbackResponse = await api.post(

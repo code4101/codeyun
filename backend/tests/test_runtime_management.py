@@ -178,3 +178,129 @@ def test_collect_builtin_jobs_uses_short_cache(monkeypatch):
     assert calls == ["status", "status"]
     assert second["items"][0]["title"] == "Job A"
     assert third["items"][0]["title"] == "Job A"
+
+
+def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine, tables=[Task.__table__])
+    local_device_id = "device-local"
+
+    with Session(engine) as session:
+        session.add(
+            Task(
+                id="service-1",
+                name="Service 1",
+                command="python service.py",
+                device_id=local_device_id,
+                runtime_kind="service",
+                order=0,
+            )
+        )
+        session.commit()
+
+        class FakeDevice:
+            def get_task_status(self, task_id: str) -> TaskStatus:
+                return TaskStatus(id=task_id, running=False)
+
+            def to_dict(self):
+                return {"id": local_device_id, "name": "Local Device", "type": "FakeDevice"}
+
+        monkeypatch.setattr(management, "engine", engine)
+        monkeypatch.setattr(management, "get_device_id", lambda: local_device_id)
+        monkeypatch.setattr(management.task_manager, "scan_running_tasks", lambda restore_timeouts=False: None)
+        monkeypatch.setattr(management.device_manager, "get_device", lambda device_id: FakeDevice() if device_id == local_device_id else None)
+        monkeypatch.setattr(
+            management,
+            "_collect_builtin_jobs",
+            lambda _session: {
+                "items": [
+                    {
+                        "id": "builtin:job-a",
+                        "key": "job-a",
+                        "kind": "job",
+                        "source": "builtin",
+                        "group_id": "job:默认",
+                        "group_title": "默认",
+                        "title": "Job A",
+                        "description": "",
+                        "command": "",
+                        "cwd": "",
+                        "schedule": "",
+                        "schedule_policy": None,
+                        "schedule_label": "",
+                        "next_run_at": "2026-07-08T00:00:00",
+                        "timeout": None,
+                        "order": 0,
+                        "enabled": True,
+                        "active": False,
+                        "status": {
+                            "running": False,
+                            "enabled": True,
+                            "runner_running": False,
+                            "next_run_at": "2026-07-08T00:00:00",
+                            "latest_run": {"huge": "payload"},
+                            "retry_policy": "retry",
+                            "trigger_warning": "warning",
+                        },
+                        "actions": ["trigger"],
+                        "raw": {"latest_run": {"huge": "payload"}},
+                        "policy": {"duplicated": True},
+                    }
+                ],
+                "queue": None,
+                "runner_running": False,
+                "next_wake_at": None,
+                "runner_error": None,
+            },
+        )
+        monkeypatch.setattr(
+            management,
+            "_collect_builtin_services",
+            lambda: {
+                "items": [
+                    {
+                        "id": "builtin:service-a",
+                        "key": "service-a",
+                        "kind": "service",
+                        "source": "builtin",
+                        "group_id": "service:default",
+                        "group_title": "默认服务",
+                        "title": "Service A",
+                        "description": "",
+                        "command": "",
+                        "cwd": "",
+                        "schedule": "",
+                        "schedule_policy": None,
+                        "schedule_label": "",
+                        "next_run_at": None,
+                        "timeout": None,
+                        "order": 0,
+                        "enabled": True,
+                        "active": True,
+                        "status": {"running": True},
+                        "actions": ["stop"],
+                        "raw": {"details": "keep out of list"},
+                        "policy": {"duplicated": True},
+                    }
+                ]
+            },
+        )
+
+        payload = management.build_runtime_status(session, local_device_id)
+
+    command_item = next(item for item in payload["items"] if item["source"] == "command")
+    builtin_job = next(item for item in payload["items"] if item["key"] == "job-a")
+    builtin_service = next(item for item in payload["items"] if item["key"] == "service-a")
+
+    assert command_item["raw"]["name"] == "Service 1"
+    assert "policy" not in command_item
+    assert builtin_job["raw"] == {}
+    assert builtin_job["status"] == {
+        "running": False,
+        "enabled": True,
+        "runner_running": False,
+        "next_run_at": "2026-07-08T00:00:00",
+    }
+    assert "policy" not in builtin_job
+    assert builtin_service["raw"] == {}
+    assert "policy" not in builtin_service

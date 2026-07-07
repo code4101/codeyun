@@ -157,12 +157,77 @@ def tick(
     )
 
 
+def submit_task_cell(
+    *,
+    entry: Any,
+    entry_id: str,
+    task_type: str,
+    payload: dict[str, Any] | None = None,
+    asset_tree_path: Path | None = None,
+    manual_job_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Submit a registered task as the kernel's single execution unit.
+
+    This is the preferred API boundary for engineering scheduler work. The
+    current implementation still uses the resident queue internally, but callers
+    should reason in terms of cells, not manual job records.
+    """
+    return runtime_control.submit_runtime_task_cell(
+        entry=entry,
+        entry_id=entry_id,
+        task_type=task_type,
+        payload=payload,
+        asset_tree_path=asset_tree_path,
+        manual_job_path=manual_job_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+
+def submit_code_cell(
+    *,
+    entry: Any,
+    entry_id: str,
+    code: str,
+    mode: str = "readonly",
+    timeout_seconds: float = 120.0,
+    max_output_chars: int = 4000,
+    asset_tree_path: Path | None = None,
+    manual_job_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Submit dynamic AI/debug code as a kernel cell.
+
+    The public concept is a code cell. ``debug_eval`` remains the internal task
+    adapter until the resident kernel grows a native code-cell executor.
+    """
+    return submit_task_cell(
+        entry=entry,
+        entry_id=entry_id,
+        task_type="debug_eval",
+        payload={
+            "code": str(code or ""),
+            "mode": str(mode or "readonly"),
+            "timeout_seconds": float(timeout_seconds or 120.0),
+            "max_output_chars": int(max_output_chars or 4000),
+            "call_task": True,
+        },
+        asset_tree_path=asset_tree_path,
+        manual_job_path=manual_job_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+
 def execute_tick(
     *,
     entry: Any,
     entry_id: str,
     guard: bool = True,
-    manual_job: bool = True,
+    task_cell: bool = True,
     scheduled_job: bool = True,
     run_mode: str = "tick_once",
     max_ticks: int = 10,
@@ -176,7 +241,7 @@ def execute_tick(
         entry=entry,
         entry_id=entry_id,
         guard=guard,
-        manual_job=manual_job,
+        manual_job=task_cell,
         scheduled_job=scheduled_job,
         run_mode=run_mode,
         max_ticks=max_ticks,

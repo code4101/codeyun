@@ -1106,7 +1106,7 @@ def test_builtin_fanxiu_behavior_tree_logs_include_owner_queue_and_doctor(sessio
     assert payload["kind"] == "service"
     assert any("Owner：active=True pid=4321 step=scheduler_poll" in line for line in payload["logs"])
     assert any("普通作业隔离：active=True reason=local_enqueue" in line for line in payload["logs"])
-    assert any("手动作业队列：1" in line for line in payload["logs"])
+    assert any("task cell 队列：1" in line for line in payload["logs"])
     assert any("Doctor：attention" in line for line in payload["logs"])
     assert payload["action_labels"]["trigger"] == "确保行为树"
     assert "resident service" in payload["action_descriptions"]["trigger"]

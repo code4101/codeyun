@@ -6,15 +6,10 @@ import { User } from '@element-plus/icons-vue'
 import type Handsontable from 'handsontable/base'
 
 import StandardPagination from '@/components/StandardPagination.vue'
-import {
-  checkAttendanceSheetRefundedAmounts,
-  fetchAttendanceFeedbackHistory,
-  runAttendanceCourseUpdateData,
-  runAttendanceWjxDataAiPrecheck,
-  submitAttendanceFeedback,
-  type AttendanceSheetRefundedCheckResponse,
-  type AttendanceCourseUpdateDataCourseType,
-  type AttendanceWjxDataItem,
+import type {
+  AttendanceSheetRefundedCheckResponse,
+  AttendanceCourseUpdateDataCourseType,
+  AttendanceWjxDataItem,
 } from '@/api/attendance'
 import {
   fetchNoteSheet,
@@ -97,6 +92,13 @@ const HotTable = defineAsyncComponent(() => markBootPerfAsync('note-sheet-worksp
 const AttendanceFeedbackHistoryList = defineAsyncComponent(() => import('@/components/attendance/AttendanceFeedbackHistoryList.vue'))
 const NoteSheetAccessDialog = defineAsyncComponent(() => import('./NoteSheetAccessDialog.vue'))
 const StandardColorPickerPopover = defineAsyncComponent(() => import('@/features/color-tools/components/StandardColorPickerPopover.vue'))
+
+let attendanceApiPromise: Promise<typeof import('@/api/attendance')> | null = null
+
+async function loadAttendanceApi() {
+  attendanceApiPromise ??= import('@/api/attendance')
+  return attendanceApiPromise
+}
 
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
@@ -6005,6 +6007,7 @@ async function checkSelectedAttendanceRefundedAmounts() {
   }
   attendanceRefundedCheckRunning.value = true
   try {
+    const { checkAttendanceSheetRefundedAmounts } = await loadAttendanceApi()
     const result = await checkAttendanceSheetRefundedAmounts(props.sheetId, {
       workbook_id: props.workbookId ?? null,
     })
@@ -6115,6 +6118,7 @@ async function handleRunAttendanceWjxAiPrecheckFromSelection(options: { autoRepa
 
   attendanceWjxAiPrecheckRunning.value = true
   try {
+    const { runAttendanceWjxDataAiPrecheck } = await loadAttendanceApi()
     commitPendingSheetGridEdit()
     await flushRemoteSave()
     const result = await runAttendanceWjxDataAiPrecheck(selectedCell.seq, {
@@ -6545,6 +6549,7 @@ async function updateAttendanceCourseData() {
 
   sheetCellActionRunning.value = SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA
   try {
+    const { runAttendanceCourseUpdateData } = await loadAttendanceApi()
     commitPendingSheetGridEdit()
     await flushRemoteSave()
     const result = await runAttendanceCourseUpdateData({
@@ -26657,6 +26662,7 @@ async function loadStudentLookupFeedbackHistory() {
   studentLookupFeedbackHistoryRequestId = requestId
   studentLookupFeedbackHistoryLoading.value = true
   try {
+    const { fetchAttendanceFeedbackHistory } = await loadAttendanceApi()
     const result = await fetchAttendanceFeedbackHistory({
       course_name: courseName,
       student_name: studentName,
@@ -26710,6 +26716,7 @@ async function submitStudentLookupFeedback() {
 
   studentLookupFeedbackSubmitting.value = true
   try {
+    const { submitAttendanceFeedback } = await loadAttendanceApi()
     const saved = await submitAttendanceFeedback({
       course_name: courseName,
       student_id_text: studentId,

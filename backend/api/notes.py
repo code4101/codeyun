@@ -5325,6 +5325,9 @@ def _normalize_note_program_public_ids(request: NoteProgramRequest, current_user
 
 
 def _program_matcher_to_filter_rule(matcher) -> Optional[NoteFilterRule]:
+    if matcher.kind == "title_contains":
+        return NoteFilterRule(field="title", op="contains", value=str(matcher.value or ""))
+
     if matcher.kind != "field" or not matcher.field:
         return None
 
@@ -5374,17 +5377,16 @@ def _try_execute_note_program_sql_scan(
     first_rule = select_rules[0]
     first_filter = _program_matcher_to_filter_rule(first_rule.matcher)
     first_is_include_all = first_rule.action == "include" and first_rule.matcher.kind == "all"
-    first_is_supported_range = (
+    first_is_supported_time_filter = (
         first_rule.action == "include"
         and first_filter is not None
         and first_filter.field in {"start_at", "updated_at"}
-        and first_filter.op == "between"
     )
-    if not first_is_include_all and not first_is_supported_range:
+    if not first_is_include_all and not first_is_supported_time_filter:
         return None
 
     tail_rules = select_rules[1:]
-    if any(rule.action != "exclude" for rule in tail_rules):
+    if any(rule.action not in {"exclude", "filter"} for rule in tail_rules):
         return None
 
     query = select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
@@ -5393,12 +5395,21 @@ def _try_execute_note_program_sql_scan(
         if not handled:
             return None
 
+    filter_rules: list[NoteFilterRule] = []
     exclude_rules: list[NoteFilterRule] = []
     for rule in tail_rules:
         filter_rule = _program_matcher_to_filter_rule(rule.matcher)
         if filter_rule is None:
             return None
-        exclude_rules.append(filter_rule)
+        if rule.action == "filter":
+            filter_rules.append(filter_rule)
+        else:
+            exclude_rules.append(filter_rule)
+
+    for filter_rule in filter_rules:
+        query, handled = _apply_sql_rule(query, filter_rule)
+        if not handled:
+            return None
 
     if not exclude_rules:
         total_nodes = session.exec(select(func.count()).select_from(query.order_by(None).subquery())).one()

@@ -345,7 +345,7 @@ def main() -> int:
     parser.add_argument("--install", action="store_true", help="OCR 全部复核后安装 #175 到资产树")
     parser.add_argument("--run-runtime-after-install", action="store_true", help="安装 #175 后立即运行 xianfu_visit_partner 完成弹窗处理和 next_time 写入")
     parser.add_argument("--prepare-via-runtime", action="store_true", help="等待前先通过公开 Runtime 跑一次 xianfu_visit_partner，把画面准备到 #174")
-    parser.add_argument("--runtime-run-mode", choices=["auto", "direct", "enqueue"], default="auto")
+    parser.add_argument("--runtime-run-mode", choices=["auto", "direct"], default="auto")
     parser.add_argument("--runtime-no-wait", action="store_true", help="运行准备/收尾 Runtime 任务时不等待 queued job 完成")
     parser.add_argument("--runtime-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--max-reprepare-count", type=int, default=20, help="等待免费期间不在 #174 时，最多重新通过 Runtime 准备的次数；0 表示不限")
