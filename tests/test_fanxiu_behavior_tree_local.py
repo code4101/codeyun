@@ -16,8 +16,8 @@ from backend.core.fanxiu.data_annotation import runtime_framework as runtime_fra
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.data_annotation import storage as storage_core
 from backend.core.fanxiu.data_annotation.jobs import (
-    get_fanxiu_data_annotation_manual_job_definition,
-    list_fanxiu_data_annotation_manual_job_definitions,
+    get_fanxiu_data_annotation_task_cell_definition,
+    list_fanxiu_data_annotation_task_cell_definitions,
     normalize_data_annotation_debug_eval_payload,
     normalize_data_annotation_go_scene_payload,
     parse_data_annotation_scene_id,
@@ -85,7 +85,7 @@ def test_core_runtime_paths_live_under_data_annotation_runtime(monkeypatch, tmp_
     assert bt.fanxiu_data_annotation_runtime_state_path() == runtime_dir / "runtime_state.json"
     assert bt.fanxiu_data_annotation_world_facts_path() == runtime_dir / "world_facts.json"
     assert bt.fanxiu_data_annotation_scheduler_state_path() == runtime_dir / "scheduler_tasks.json"
-    assert bt.fanxiu_data_annotation_manual_job_state_path() == runtime_dir / "manual_jobs.json"
+    assert bt.fanxiu_data_annotation_task_cell_state_path() == runtime_dir / "manual_jobs.json"
     assert bt.fanxiu_data_annotation_mail_scan_state_path() == runtime_dir / "mail_scan_state.json"
     assert bt.fanxiu_job_group_isolation_path() == runtime_dir / "job_group_isolation.json"
     assert bt.fanxiu_behavior_tree_service_owner_path() == runtime_dir / "behavior_tree_service_owner.json"
@@ -856,7 +856,7 @@ def test_runtime_status_preserves_versioned_close_popups_guard_off():
     assert status["guard_items"]["close_popups"]["enabled"] is False
 
 
-def test_core_manual_job_payload_normalizers_are_api_free():
+def test_core_task_cell_payload_normalizers_are_api_free():
     assert normalize_data_annotation_go_scene_payload({"target": "121"})["target_scene_id"] == 121
     assert normalize_data_annotation_go_scene_payload({"target": "#121"})["target_scene_id"] == 121
     assert normalize_data_annotation_go_scene_payload({"target_scene_id": " #121 "})["target_scene_id"] == 121
@@ -882,19 +882,19 @@ def test_core_debug_eval_payload_requires_code():
 
 
 def test_core_debug_eval_job_registers_without_api(monkeypatch):
-    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_MANUAL_JOB_REGISTRY", {})
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_TASK_CELL_REGISTRY", {})
 
     register_fanxiu_data_annotation_debug_eval_job()
     register_fanxiu_data_annotation_debug_eval_job()
 
-    definition = get_fanxiu_data_annotation_manual_job_definition("debug_eval")
+    definition = get_fanxiu_data_annotation_task_cell_definition("debug_eval")
     assert definition is not None
     assert definition.label == "调试代码"
     assert definition.normalize_payload is normalize_data_annotation_debug_eval_payload
 
 
 def test_core_default_runtime_jobs_register_without_api(monkeypatch):
-    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_MANUAL_JOB_REGISTRY", {})
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_TASK_CELL_REGISTRY", {})
 
     register_fanxiu_data_annotation_default_runtime_jobs()
     register_fanxiu_data_annotation_default_runtime_jobs()
@@ -910,21 +910,21 @@ def test_core_default_runtime_jobs_register_without_api(monkeypatch):
         "daily_audit",
         "mail_cleanup",
     ):
-        assert get_fanxiu_data_annotation_manual_job_definition(task_type) is not None
-    assert get_fanxiu_data_annotation_manual_job_definition("mail_claim_check_v2") is None
-    go_scene = get_fanxiu_data_annotation_manual_job_definition("go_scene")
+        assert get_fanxiu_data_annotation_task_cell_definition(task_type) is not None
+    assert get_fanxiu_data_annotation_task_cell_definition("mail_claim_check_v2") is None
+    go_scene = get_fanxiu_data_annotation_task_cell_definition("go_scene")
     assert go_scene is not None
     assert go_scene.normalize_payload is normalize_data_annotation_go_scene_payload
-    definitions = list_fanxiu_data_annotation_manual_job_definitions()
+    definitions = list_fanxiu_data_annotation_task_cell_definitions()
     assert [definition.task_type for definition in definitions] == sorted(
         definition.task_type for definition in definitions
     )
 
 
-def test_core_manual_job_catalog_initializes_default_jobs(monkeypatch):
-    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_MANUAL_JOB_REGISTRY", {})
+def test_core_task_cell_catalog_initializes_default_jobs(monkeypatch):
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_TASK_CELL_REGISTRY", {})
 
-    catalog = bt.fanxiu_data_annotation_manual_job_catalog()
+    catalog = bt.fanxiu_data_annotation_task_cell_catalog()
 
     by_type = {item["task_type"]: item for item in catalog}
     assert by_type["go_scene"]["label"]
@@ -936,9 +936,9 @@ def test_core_manual_job_catalog_initializes_default_jobs(monkeypatch):
 
 
 def test_core_mail_cleanup_job_uses_latest_runtime_impl(monkeypatch):
-    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_MANUAL_JOB_REGISTRY", {})
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.jobs._DATA_ANNOTATION_TASK_CELL_REGISTRY", {})
     register_fanxiu_data_annotation_default_runtime_jobs()
-    definition = get_fanxiu_data_annotation_manual_job_definition("mail_cleanup")
+    definition = get_fanxiu_data_annotation_task_cell_definition("mail_cleanup")
     calls = []
 
     class FakeRunner:
@@ -1024,12 +1024,12 @@ def test_core_submit_fanxiu_task_cell_submits_through_runtime_framework(monkeypa
 
     def fake_submit_task_cell(**kwargs):
         calls.append(kwargs)
-        return {"status": "queued", "phase": "manual_job_queued", "queued_job": {"id": "manual-1"}}
+        return {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-1"}}
 
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: None)
     monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: entry)
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(bt, "acquire_fanxiu_job_group_isolation", lambda **kwargs: "iso-token")
@@ -1047,13 +1047,13 @@ def test_core_submit_fanxiu_task_cell_submits_through_runtime_framework(monkeypa
 
     queued = bt.submit_fanxiu_task_cell("go_scene", {"target_scene_id": 121}, entry_id="entry")
 
-    assert queued["phase"] == "manual_job_queued"
+    assert queued["phase"] == "task_cell_queued"
     assert calls[-1]["entry"] is entry
     assert calls[-1]["entry_id"] == "resolved-entry"
     assert calls[-1]["task_type"] == "go_scene"
     assert calls[-1]["payload"] == {"target_scene_id": 121, "__job_group_isolation_token": "iso-token"}
     assert calls[-1]["asset_tree_path"] == tmp_path / "resolved-entry.json"
-    assert calls[-1]["manual_job_path"] == tmp_path / "manual_jobs.json"
+    assert calls[-1]["task_cell_path"] == tmp_path / "manual_jobs.json"
 
     direct = bt.submit_fanxiu_task_cell("detect_scene", entry_id="entry", wait=True)
 
@@ -1067,12 +1067,12 @@ def test_core_submit_fanxiu_code_cell_uses_debug_eval_adapter(monkeypatch, tmp_p
 
     def fake_submit_task_cell(**kwargs):
         calls.append(kwargs)
-        return {"status": "queued", "phase": "manual_job_queued", "queued_job": {"id": "manual-code"}}
+        return {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-code"}}
 
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: None)
     monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: entry)
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(bt, "acquire_fanxiu_job_group_isolation", lambda **kwargs: "iso-code")
@@ -1086,6 +1086,7 @@ def test_core_submit_fanxiu_code_cell_uses_debug_eval_adapter(monkeypatch, tmp_p
         max_output_chars=999,
     )
 
+    assert status["queued_cell"]["id"] == "manual-code"
     assert status["queued_job"]["id"] == "manual-code"
     assert calls[-1]["task_type"] == "debug_eval"
     assert calls[-1]["payload"] == {
@@ -1109,12 +1110,25 @@ def test_core_run_mode_validation_keeps_direct_on_kernel_path():
         raise AssertionError("inline run mode should be rejected")
 
 
-def test_core_wait_fanxiu_queued_status_reports_missing_job_id():
-    result = bt.wait_fanxiu_queued_status({"status": "idle", "queued_job": {}})
+def test_core_wait_fanxiu_queued_status_reports_missing_cell_id():
+    result = bt.wait_fanxiu_queued_status({"status": "idle", "queued_cell": {}})
 
     assert result["done"] is False
-    assert result["result"] == "missing_queued_job_id"
+    assert result["result"] == "missing_queued_cell_id"
     assert result["submitted_status"]["status"] == "idle"
+
+
+def test_core_wait_fanxiu_queued_status_accepts_legacy_queued_job(monkeypatch):
+    monkeypatch.setattr(
+        bt,
+        "wait_fanxiu_task_cell",
+        lambda job_id, timeout_seconds, poll_seconds: {"done": True, "result": "success", "job_id": job_id},
+    )
+
+    result = bt.wait_fanxiu_queued_status({"status": "queued", "queued_job": {"id": "legacy-1"}})
+
+    assert result["done"] is True
+    assert result["job_id"] == "legacy-1"
 
 
 def test_core_runner_facade_operations_use_registered_runner(tmp_path, monkeypatch):
@@ -1136,9 +1150,9 @@ def test_core_runner_facade_operations_use_registered_runner(tmp_path, monkeypat
             calls.append(("label", task_type, payload))
             return f"label:{task_type}"
 
-        def start_manual_runtime_task(self, **kwargs):
-            calls.append(("manual", kwargs))
-            return {"status": "manual"}
+        def start_task_cell(self, **kwargs):
+            calls.append(("task_cell", kwargs))
+            return {"status": "task_cell"}
 
         def set_guard(self, **kwargs):
             calls.append(("guard", kwargs))
@@ -1163,14 +1177,14 @@ def test_core_runner_facade_operations_use_registered_runner(tmp_path, monkeypat
     assert bt.fanxiu_runtime_runner_running() is True
     bt.fanxiu_runtime_runner_wake()
     assert bt.fanxiu_runtime_task_label("go_scene", {"target_scene_id": 121}) == "label:go_scene"
-    assert bt.start_fanxiu_manual_runtime_task(entry=entry, entry_id="entry", task={"task_type": "go_scene"}) == {"status": "manual"}
+    assert bt.start_fanxiu_task_cell(entry=entry, entry_id="entry", task={"task_type": "go_scene"}) == {"status": "task_cell"}
     assert bt.set_fanxiu_runtime_guard(entry=entry, entry_id="entry", enabled=True, interval_seconds=3) == {"status": "guard"}
     bt.replace_fanxiu_runtime_logs([])
 
     assert ("wake",) in calls
     assert any(call[0] == "wake-request" for call in calls)
     assert ("register",) in calls
-    assert any(call[0] == "manual" and call[1]["asset_tree_path"] == tmp_path / "entry.json" for call in calls)
+    assert any(call[0] == "task_cell" and call[1]["asset_tree_path"] == tmp_path / "entry.json" for call in calls)
     assert any(call[0] == "guard" and call[1]["guard_id"] == "close_popups" for call in calls)
     assert ("logs", []) in calls
 
@@ -1263,7 +1277,7 @@ def test_core_task_cell_entrypoint_uses_runtime_framework(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: entry)
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: calls.append(("register",)))
@@ -1277,9 +1291,9 @@ def test_core_task_cell_entrypoint_uses_runtime_framework(tmp_path, monkeypatch)
         calls.append(("submit_task_cell", kwargs))
         return {
             "status": "idle",
-            "phase": "manual_job_queued",
+            "phase": "task_cell_queued",
             "message": "queued",
-            "queued_job": {"id": "manual-1", "task_type": kwargs["task_type"]},
+            "queued_cell": {"id": "manual-1", "task_type": kwargs["task_type"]},
         }
 
     monkeypatch.setattr(runtime_framework, "submit_task_cell", fake_submit_task_cell)
@@ -1291,8 +1305,8 @@ def test_core_task_cell_entrypoint_uses_runtime_framework(tmp_path, monkeypatch)
         isolation_ttl_seconds=60,
     )
 
-    assert status["phase"] == "manual_job_queued"
-    assert status["queued_job"]["id"] == "manual-1"
+    assert status["phase"] == "task_cell_queued"
+    assert status["queued_cell"]["id"] == "manual-1"
     assert ("register",) in calls
     submit_call = next(call for call in calls if call[0] == "submit_task_cell")
     assert submit_call[1]["task_type"] == "go_scene"
@@ -1300,15 +1314,15 @@ def test_core_task_cell_entrypoint_uses_runtime_framework(tmp_path, monkeypatch)
         "target_scene_id": 121,
         "__job_group_isolation_token": "isolate-token",
     }
-    assert submit_call[1]["manual_job_path"] == tmp_path / "manual_jobs.json"
+    assert submit_call[1]["task_cell_path"] == tmp_path / "manual_jobs.json"
     isolate_call = next(call for call in calls if call[0] == "isolate")
     assert isolate_call[1]["reason"] == "task_cell:go_scene"
     assert isolate_call[1]["ttl_seconds"] == 60
 
 
-def test_local_manual_job_cancel_and_clear_preserve_running_by_default(tmp_path, monkeypatch):
+def test_local_task_cell_cancel_and_clear_preserve_running_by_default(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cell_state_path", lambda: path)
 
     path.write_text(
         json.dumps(
@@ -1321,22 +1335,22 @@ def test_local_manual_job_cancel_and_clear_preserve_running_by_default(tmp_path,
         encoding="utf-8",
     )
 
-    cancelled = bt.cancel_fanxiu_local_manual_job("pending-1")
+    cancelled = bt.cancel_fanxiu_task_cell("pending-1")
     assert cancelled["cancelled"] is True
-    assert [job["id"] for job in bt.fanxiu_data_annotation_manual_jobs()] == ["running-1"]
+    assert [job["id"] for job in bt.fanxiu_data_annotation_task_cells()] == ["running-1"]
 
-    running_cancel = bt.cancel_fanxiu_local_manual_job("running-1")
+    running_cancel = bt.cancel_fanxiu_task_cell("running-1")
     assert running_cancel == {"cancelled": False, "reason": "running", "job_id": "running-1", "remaining": 1}
 
-    clear_result = bt.clear_fanxiu_local_manual_jobs()
+    clear_result = bt.clear_fanxiu_task_cells()
     assert clear_result == {"removed": 0, "remaining": 1}
 
-    forced = bt.clear_fanxiu_local_manual_jobs(force=True)
+    forced = bt.clear_fanxiu_task_cells(force=True)
     assert forced == {"removed": 1, "remaining": 0}
-    assert bt.fanxiu_data_annotation_manual_jobs() == []
+    assert bt.fanxiu_data_annotation_task_cells() == []
 
 
-def test_local_manual_job_wait_observes_queue_removal(monkeypatch):
+def test_local_task_cell_wait_observes_queue_removal(monkeypatch):
     calls = {"jobs": 0}
 
     def fake_jobs():
@@ -1345,7 +1359,7 @@ def test_local_manual_job_wait_observes_queue_removal(monkeypatch):
             return [{"id": "manual-1", "status": "pending", "task_type": "go_scene"}]
         return []
 
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_jobs", fake_jobs)
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cells", fake_jobs)
     monkeypatch.setattr(
         bt,
         "fanxiu_data_annotation_runtime_status",
@@ -1358,14 +1372,14 @@ def test_local_manual_job_wait_observes_queue_removal(monkeypatch):
     )
     monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
 
-    result = bt.wait_fanxiu_local_manual_job("manual-1", timeout_seconds=5, poll_seconds=0.1)
+    result = bt.wait_fanxiu_task_cell("manual-1", timeout_seconds=5, poll_seconds=0.1)
 
     assert result["done"] is True
     assert result["result"] == "completed"
     assert calls["jobs"] == 2
 
 
-def test_local_manual_job_wait_requires_completion_evidence(monkeypatch):
+def test_local_task_cell_wait_requires_completion_evidence(monkeypatch):
     calls = {"jobs": 0}
     clock = {"now": 100.0}
 
@@ -1375,7 +1389,7 @@ def test_local_manual_job_wait_requires_completion_evidence(monkeypatch):
             return [{"id": "manual-1", "status": "pending", "task_type": "go_scene"}]
         return []
 
-    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_jobs", fake_jobs)
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cells", fake_jobs)
     monkeypatch.setattr(
         bt,
         "fanxiu_data_annotation_runtime_status",
@@ -1384,19 +1398,19 @@ def test_local_manual_job_wait_requires_completion_evidence(monkeypatch):
     monkeypatch.setattr(bt.time, "time", lambda: clock["now"])
     monkeypatch.setattr(bt.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
 
-    result = bt.wait_fanxiu_local_manual_job("manual-1", timeout_seconds=0.2, poll_seconds=0.1)
+    result = bt.wait_fanxiu_task_cell("manual-1", timeout_seconds=0.2, poll_seconds=0.1)
 
     assert result["done"] is False
     assert result["result"] == "missing_completion_evidence"
     assert calls["jobs"] >= 2
 
 
-def test_local_manual_job_wait_times_out(monkeypatch):
+def test_local_task_cell_wait_times_out(monkeypatch):
     clock = {"now": 100.0}
 
     monkeypatch.setattr(
         bt,
-        "fanxiu_data_annotation_manual_jobs",
+        "fanxiu_data_annotation_task_cells",
         lambda: [{"id": "manual-1", "status": "running", "task_type": "go_scene"}],
     )
     monkeypatch.setattr(
@@ -1407,7 +1421,7 @@ def test_local_manual_job_wait_times_out(monkeypatch):
     monkeypatch.setattr(bt.time, "time", lambda: clock["now"])
     monkeypatch.setattr(bt.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
 
-    result = bt.wait_fanxiu_local_manual_job("manual-1", timeout_seconds=0.2, poll_seconds=0.1)
+    result = bt.wait_fanxiu_task_cell("manual-1", timeout_seconds=0.2, poll_seconds=0.1)
 
     assert result["done"] is False
     assert result["result"] == "timeout"
@@ -1535,14 +1549,14 @@ def test_fanxiu_bt_script_uses_core_entrypoint_only():
     assert "acquire_fanxiu_job_group_isolation" in source
     assert "release_fanxiu_job_group_isolation" in source
     assert "read_fanxiu_behavior_tree_service_owner" in source
-    assert "enqueue_fanxiu_local_manual_job" not in source
-    assert "fanxiu_data_annotation_manual_jobs" in source
-    assert "cancel_fanxiu_local_manual_job" in source
-    assert "clear_fanxiu_local_manual_jobs" in source
+    assert "enqueue_fanxiu_local_task_cell" not in source
+    assert "fanxiu_data_annotation_task_cells" in source
+    assert "cancel_fanxiu_task_cell" in source
+    assert "clear_fanxiu_task_cells" in source
     assert "request_fanxiu_behavior_tree_stop" in source
     assert "run_fanxiu_local_service" in source
-    assert "fanxiu_data_annotation_manual_job_catalog" in source
-    assert "wait_fanxiu_local_manual_job" in source
+    assert "fanxiu_data_annotation_task_cell_catalog" in source
+    assert "wait_fanxiu_task_cell" in source
     assert "service" in source
     assert "stop" in source
     assert "code-cell" in source
@@ -1574,7 +1588,7 @@ def test_fanxiu_bt_task_uses_submit_entrypoint(monkeypatch):
 
     def fake_submit(task_type, payload=None, **kwargs):
         calls.append((task_type, dict(payload or {}), kwargs))
-        return {"status": "queued", "phase": "manual_job_queued"}
+        return {"status": "queued", "phase": "task_cell_queued"}
 
     monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_task_cell", fake_submit)
     monkeypatch.setattr(
@@ -1683,7 +1697,7 @@ def test_fanxiu_bt_code_cell_uses_code_cell_entrypoint(monkeypatch):
 
     def fake_submit(code, **kwargs):
         calls.append((code, kwargs))
-        return {"status": "queued", "phase": "manual_job_queued", "queued_job": {"id": "manual-code"}}
+        return {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-code"}}
 
     monkeypatch.setattr(fanxiu_bt, "submit_fanxiu_code_cell", fake_submit)
     monkeypatch.setattr(
@@ -1731,7 +1745,7 @@ def test_fanxiu_bt_doctor_json_reports_runtime_scheduler_and_logs(monkeypatch, c
         "fanxiu_data_annotation_runtime_status",
         lambda: {"service_running": True, "running": False, "status": "idle", "phase": "scheduler_poll", "current_scene": 34},
     )
-    monkeypatch.setattr(fanxiu_bt, "fanxiu_data_annotation_manual_jobs", lambda: [])
+    monkeypatch.setattr(fanxiu_bt, "fanxiu_data_annotation_task_cells", lambda: [])
     monkeypatch.setattr(fanxiu_bt, "read_fanxiu_job_group_isolation", lambda: {"active": False})
     monkeypatch.setattr(
         fanxiu_bt,
@@ -2340,7 +2354,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
             "checked_at": "2026-06-20 05:00:00",
             "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "", "current_scene": 34},
-            "manual_jobs": [],
+            "task_cells": [],
             "isolation": {"active": False},
             "scheduler": {
                 "next_action": "job_group_disabled",
@@ -2365,7 +2379,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
             "checked_at": "2026-06-20 05:00:05",
             "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
-            "manual_jobs": [],
+            "task_cells": [],
             "isolation": {"active": False},
             "scheduler": {"next_action": "idle", "job_group_enabled": False, "due_tasks": []},
             "maintenance": {
@@ -2396,7 +2410,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
             "status": "idle",
             "phase": "scheduler_due_queued",
             "message": "AI保底已接管作业组关闭下的到期任务：日常_助手",
-            "queued_job": {"id": "manual-1", "task_type": "daily_assistant"},
+            "queued_cell": {"id": "manual-1", "task_type": "daily_assistant"},
         },
     )
 
@@ -2404,7 +2418,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
         wait_calls.append((status, entry_id, timeout_seconds))
         return {"waited": True, "job_id": "manual-1", "done": True, "result": "error"}
 
-    monkeypatch.setattr(fanxiu_bt, "_watch_wait_for_queued_job", fake_wait)
+    monkeypatch.setattr(fanxiu_bt, "_watch_wait_for_queued_cell", fake_wait)
     monkeypatch.setattr(
         fanxiu_bt.sys,
         "argv",
@@ -2427,7 +2441,7 @@ def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, t
     assert len(wait_calls) == 1
     assert wait_calls[0][1] == "entry"
     assert wait_calls[0][2] == 12
-    assert event["auto_run_due"]["queued_job"]["id"] == "manual-1"
+    assert event["auto_run_due"]["queued_cell"]["id"] == "manual-1"
     assert event["auto_run_due"]["wait_result"] == {
         "waited": True,
         "job_id": "manual-1",
@@ -2448,7 +2462,7 @@ def test_fanxiu_bt_watch_wait_keeps_service_alive_when_job_not_done(monkeypatch,
     )
     monkeypatch.setattr(
         fanxiu_bt,
-        "wait_fanxiu_local_manual_job",
+        "wait_fanxiu_task_cell",
         lambda job_id, timeout_seconds, poll_seconds: {"done": False, "result": "timeout", "runtime_status": {}},
     )
     monkeypatch.setattr(
@@ -2457,8 +2471,8 @@ def test_fanxiu_bt_watch_wait_keeps_service_alive_when_job_not_done(monkeypatch,
         lambda **kwargs: stop_calls.append(kwargs),
     )
 
-    result = fanxiu_bt._watch_wait_for_queued_job(
-        {"queued_job": {"id": "manual-1"}},
+    result = fanxiu_bt._watch_wait_for_queued_cell(
+        {"queued_cell": {"id": "manual-1"}},
         entry_id="entry",
         timeout_seconds=1,
     )
@@ -2469,7 +2483,7 @@ def test_fanxiu_bt_watch_wait_keeps_service_alive_when_job_not_done(monkeypatch,
     assert stop_calls == []
 
 
-def test_fanxiu_bt_watch_doctor_does_not_auto_run_when_manual_job_pending(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_does_not_auto_run_when_task_cell_pending(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-manual-job-pending.ndjson"
@@ -2478,7 +2492,7 @@ def test_fanxiu_bt_watch_doctor_does_not_auto_run_when_manual_job_pending(monkey
         "checked_at": "2026-06-20 12:00:20",
         "owner": {"active": False, "entry_id": "entry"},
         "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
-        "manual_jobs": [{"id": "manual-1", "task_type": "daily_assistant", "status": "pending"}],
+        "task_cells": [{"id": "manual-1", "task_type": "daily_assistant", "status": "pending"}],
         "isolation": {"active": False},
         "scheduler": {
             "next_action": "job_group_disabled",
@@ -2716,7 +2730,7 @@ def test_fanxiu_bt_watch_doctor_promotes_auto_run_blocker(monkeypatch, tmp_path)
             "checked_at": "2026-06-20 14:00:00",
             "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "", "current_scene": None},
-            "manual_jobs": [],
+            "task_cells": [],
             "isolation": {"active": False},
             "scheduler": {
                 "next_action": "job_group_disabled",
@@ -2741,7 +2755,7 @@ def test_fanxiu_bt_watch_doctor_promotes_auto_run_blocker(monkeypatch, tmp_path)
             "checked_at": "2026-06-20 14:00:02",
             "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "scheduler_blocked", "current_scene": None},
-            "manual_jobs": [],
+            "task_cells": [],
             "isolation": {"active": False},
             "scheduler": {
                 "next_action": "job_group_disabled",
@@ -3600,11 +3614,11 @@ def test_core_runtime_control_does_not_import_fanxiu_api_directly():
     assert "_runtime_framework.interrupt_current_cell(" in api_source
     assert "_runtime_control.read_scheduler_tasks(" in api_source
     assert "_runtime_control.update_scheduler_tasks(" in api_source
-    assert "_runtime_control.submit_manual_job(" not in api_source
+    assert "_runtime_control.submit_task_cell(" not in api_source
     assert "def start_runtime_task(" not in source
     assert "def start_runtime_task(" not in runtime_runner_source
-    assert "def submit_manual_job(" not in source
-    assert "def queue_manual_job_status(" not in source
+    assert "def submit_task_cell(" not in source
+    assert "def queue_task_cell_status(" not in source
     assert "submit_runtime_task_cell(" in source
     assert "queue_runtime_task_cell_status(" in source
     assert "_runtime_framework.set_guard_item_enabled(" in api_source
@@ -3633,7 +3647,7 @@ def test_fanxiu_api_does_not_own_runtime_job_handlers():
     assert "if name == \"_DataAnnotationRuntimeRunner\"" in source
     assert "class _DataAnnotationRuntimeDebugContext" not in source
     assert "def _run_data_annotation_debug_eval" not in source
-    assert "def _run_data_annotation_go_scene_manual_job" not in source
+    assert "def _run_data_annotation_go_scene_task_cell" not in source
     assert "register_fanxiu_data_annotation_debug_eval_job()" not in source
     assert "register_fanxiu_data_annotation_default_runtime_jobs()" not in source
     assert "register_fanxiu_runtime_runner_class(_DataAnnotationRuntimeRunner)" not in source
@@ -3658,20 +3672,20 @@ def test_fanxiu_api_import_does_not_load_runtime_runner_module():
 def test_fanxiu_api_import_does_not_register_runtime_jobs():
     code = "\n".join(
         [
-            "from backend.core.fanxiu.data_annotation.jobs import _DATA_ANNOTATION_MANUAL_JOB_REGISTRY",
-            "_DATA_ANNOTATION_MANUAL_JOB_REGISTRY.clear()",
+            "from backend.core.fanxiu.data_annotation.jobs import _DATA_ANNOTATION_TASK_CELL_REGISTRY",
+            "_DATA_ANNOTATION_TASK_CELL_REGISTRY.clear()",
             "import backend.api.fanxiu",
-            "assert _DATA_ANNOTATION_MANUAL_JOB_REGISTRY == {}",
+            "assert _DATA_ANNOTATION_TASK_CELL_REGISTRY == {}",
         ]
     )
     subprocess.run([sys.executable, "-c", code], cwd=Path.cwd(), check=True)
 
 
 def test_core_runner_inline_registered_task_initializes_runtime_jobs(monkeypatch):
-    from backend.core.fanxiu.data_annotation.jobs import _DATA_ANNOTATION_MANUAL_JOB_REGISTRY
+    from backend.core.fanxiu.data_annotation.jobs import _DATA_ANNOTATION_TASK_CELL_REGISTRY
 
-    original_registry = dict(_DATA_ANNOTATION_MANUAL_JOB_REGISTRY)
-    _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.clear()
+    original_registry = dict(_DATA_ANNOTATION_TASK_CELL_REGISTRY)
+    _DATA_ANNOTATION_TASK_CELL_REGISTRY.clear()
     runner = bt.create_fanxiu_runtime_runner()
     monkeypatch.setattr(
         runner,
@@ -3686,10 +3700,10 @@ def test_core_runner_inline_registered_task_initializes_runtime_jobs(monkeypatch
             payload={"target_scene_id": 121},
             asset_tree_path=Path("dummy.json"),
         )
-        initialized_task_types = set(_DATA_ANNOTATION_MANUAL_JOB_REGISTRY)
+        initialized_task_types = set(_DATA_ANNOTATION_TASK_CELL_REGISTRY)
     finally:
-        _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.clear()
-        _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.update(original_registry)
+        _DATA_ANNOTATION_TASK_CELL_REGISTRY.clear()
+        _DATA_ANNOTATION_TASK_CELL_REGISTRY.update(original_registry)
 
     assert status["task_type"] == "go_scene"
     assert "go_scene" in initialized_task_types
@@ -3766,4 +3780,5 @@ def test_local_behavior_tree_entrypoint_uses_registered_runner(tmp_path, monkeyp
 
     assert status == {"status": "success", "message": "registered"}
     assert calls[0]["entry"] is entry
+
 

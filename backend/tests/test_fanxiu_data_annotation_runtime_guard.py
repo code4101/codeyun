@@ -24,14 +24,14 @@ from backend.api.fanxiu import (
     BehaviorTreeStatus,
     _DataAnnotationRuntimeContainer,
     _default_data_annotation_scheduler_tasks,
-    _enqueue_data_annotation_manual_job,
+    _enqueue_data_annotation_task_cell,
     _data_annotation_task_supported,
     _normalize_data_annotation_runtime_guard_items,
-    _pop_next_data_annotation_manual_job,
+    _pop_next_data_annotation_task_cell,
     _record_data_annotation_scheduler_task_fact,
     _read_data_annotation_world_facts,
-    _requeue_running_data_annotation_manual_jobs,
-    _remove_data_annotation_manual_job,
+    _requeue_running_data_annotation_task_cells,
+    _remove_data_annotation_task_cell,
     _write_data_annotation_world_facts,
 )
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
@@ -112,7 +112,7 @@ def _isolate_fanxiu_runtime_state_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
-    monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_task_cell_state_path", lambda: runtime_file("manual_jobs.json"))
     monkeypatch.setattr(fanxiu_api, "_data_annotation_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
     monkeypatch.setattr(fanxiu_api, "_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
     monkeypatch.setattr(fanxiu_api, "_data_annotation_asset_tree_path", asset_tree_path)
@@ -121,7 +121,7 @@ def _isolate_fanxiu_runtime_state_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
-    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_task_cell_state_path", lambda: runtime_file("manual_jobs.json"))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_asset_tree_path", asset_tree_path)
@@ -131,14 +131,14 @@ def _isolate_fanxiu_runtime_state_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
     monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
     monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
-    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_task_cell_state_path", lambda: runtime_file("manual_jobs.json"))
 
     monkeypatch.setattr(fanxiu_behavior_tree_core, "_RUNTIME_RUNNER", None)
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
-    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_task_cell_state_path", lambda: runtime_file("manual_jobs.json"))
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
     monkeypatch.setattr(fanxiu_behavior_tree_core, "data_annotation_asset_tree_path", asset_tree_path)
     monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
@@ -440,9 +440,9 @@ def test_runtime_click_inherited_shape_uses_parent_shape_source(monkeypatch):
     assert clicked == [(69, "daily-exit")]
 
 
-def test_scheduler_running_manual_job_orphaned_after_runtime_stop_keeps_due_time(tmp_path, monkeypatch):
+def test_scheduler_running_task_cell_orphaned_after_runtime_stop_keeps_due_time(tmp_path, monkeypatch):
     now_ts = datetime(2026, 6, 21, 7, 2, 0).timestamp()
-    manual_job_path = tmp_path / "manual_jobs.json"
+    task_cell_path = tmp_path / "manual_jobs.json"
     tasks = [
         {
             "id": "legacy-daily-shuangxiu",
@@ -457,7 +457,7 @@ def test_scheduler_running_manual_job_orphaned_after_runtime_stop_keeps_due_time
             "cooldown_seconds": 600,
         }
     ]
-    runtime_control_core.write_manual_jobs(
+    runtime_control_core.write_task_cells(
         [
             {
                 "id": "manual-stale",
@@ -470,7 +470,7 @@ def test_scheduler_running_manual_job_orphaned_after_runtime_stop_keeps_due_time
                 "updated_at": now_ts - 120,
             }
         ],
-        manual_job_path,
+        task_cell_path,
     )
     monkeypatch.setattr(
         runtime_control_core,
@@ -480,13 +480,13 @@ def test_scheduler_running_manual_job_orphaned_after_runtime_stop_keeps_due_time
 
     changed = runtime_control_core.repair_orphaned_scheduler_runs(
         tasks,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         now_ts=now_ts,
         running=False,
     )
 
     assert changed is True
-    assert runtime_control_core.read_manual_jobs(manual_job_path) == []
+    assert runtime_control_core.read_task_cells(task_cell_path) == []
     assert tasks[0]["last_result"] == "queued"
     assert tasks[0]["next_time"] == "2026-06-21 05:00:00"
     assert tasks[0]["retry_after"] is None
@@ -976,7 +976,7 @@ def test_runtime_cell_logs_prefers_persisted_cell_and_falls_back_to_runtime_logs
     assert payload["cells"][0]["id"] == "cell-new"
     assert payload["cells"][1]["id"].startswith("cell-")
     assert payload["cells"][0]["title"] == "调度器提交 tick：tick_once"
-    assert "行为树.tick(" in payload["cells"][0]["source"]
+    assert "runtime_framework.execute_tick(" in payload["cells"][0]["source"]
     assert "entry_id" not in payload["cells"][0]["source"]
     assert payload["cells"][0]["entries"][0]["message"] == "提交 cell"
     assert payload["cells"][1]["title"] == "守护 cell"
@@ -3705,11 +3705,11 @@ def test_runtime_behavior_tree_reuses_guard_frame_for_job_when_guard_skips(tmp_p
     assert captured == ["data:image/png;base64,frame0"]
 
 
-def test_runtime_guard_service_skips_manual_jobs(monkeypatch, tmp_path):
+def test_runtime_guard_service_skips_task_cells(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     with runner._lock:
         runner._guard_enabled = True
-        runner._status["phase"] = "manual_job"
+        runner._status["phase"] = "task_cell"
     calls: list[str] = []
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: calls.append("screencap") or "frame")
@@ -3771,7 +3771,7 @@ def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(
     with runner._lock:
         runner._guard_enabled = True
         runner._status["running"] = True
-        runner._status["phase"] = "manual_job"
+        runner._status["phase"] = "task_cell"
 
     def capture_frame(_ctx):
         frame = f"data:image/png;base64,frame{len(captured)}"
@@ -4250,12 +4250,12 @@ def test_runtime_container_groups_are_prioritized_and_non_preemptive(tmp_path):
     ]
 
 
-def test_manual_jobs_are_persisted_as_manual_group(tmp_path, monkeypatch):
+def test_task_cells_are_persisted_as_internal_group(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr("backend.api.fanxiu._data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr("backend.api.fanxiu._data_annotation_task_cell_state_path", lambda: path)
 
-    job = _enqueue_data_annotation_manual_job("detect_scene", {"x": 1}, label="单步识别")
-    popped = _pop_next_data_annotation_manual_job()
+    job = _enqueue_data_annotation_task_cell("detect_scene", {"x": 1}, label="单步识别")
+    popped = _pop_next_data_annotation_task_cell()
 
     assert job["group"] == "manual_job"
     assert "priority" not in job
@@ -4267,16 +4267,16 @@ def test_manual_jobs_are_persisted_as_manual_group(tmp_path, monkeypatch):
     assert persisted[0]["id"] == job["id"]
     assert persisted[0]["status"] == "running"
 
-    _remove_data_annotation_manual_job(job["id"])
+    _remove_data_annotation_task_cell(job["id"])
 
-    assert _pop_next_data_annotation_manual_job() is None
+    assert _pop_next_data_annotation_task_cell() is None
 
 
-def test_debug_eval_manual_job_is_registered_as_manual_group(tmp_path, monkeypatch):
+def test_debug_eval_task_cell_is_registered_as_internal_group(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr("backend.api.fanxiu._data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr("backend.api.fanxiu._data_annotation_task_cell_state_path", lambda: path)
 
-    job = _enqueue_data_annotation_manual_job("debug_eval", {"code": "result = 'ok'"})
+    job = _enqueue_data_annotation_task_cell("debug_eval", {"code": "result = 'ok'"})
 
     assert job["group"] == "manual_job"
     assert job["task_type"] == "debug_eval"
@@ -4286,7 +4286,7 @@ def test_debug_eval_manual_job_is_registered_as_manual_group(tmp_path, monkeypat
 
 
 def test_debug_eval_handler_runs_simple_context_code():
-    definition = fanxiu_api._data_annotation_manual_job_definition("debug_eval")
+    definition = fanxiu_api._data_annotation_task_cell_definition("debug_eval")
     runner = create_fanxiu_runtime_runner()
 
     result = definition.handler(
@@ -4301,7 +4301,7 @@ def test_debug_eval_handler_runs_simple_context_code():
 
 
 def test_debug_eval_readonly_blocks_actions():
-    definition = fanxiu_api._data_annotation_manual_job_definition("debug_eval")
+    definition = fanxiu_api._data_annotation_task_cell_definition("debug_eval")
     runner = create_fanxiu_runtime_runner()
 
     try:
@@ -4651,9 +4651,9 @@ def test_runtime_scene_terms_are_documented():
     assert "历史兼容" in text
 
 
-def test_manual_job_pop_ignores_stale_running_until_requeued(tmp_path, monkeypatch):
+def test_task_cell_pop_ignores_stale_running_until_requeued(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr("backend.api.fanxiu._data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr("backend.api.fanxiu._data_annotation_task_cell_state_path", lambda: path)
     path.write_text(json.dumps([
         {
             "id": "running-job",
@@ -4675,7 +4675,7 @@ def test_manual_job_pop_ignores_stale_running_until_requeued(tmp_path, monkeypat
         },
     ], ensure_ascii=False), encoding="utf-8")
 
-    popped = _pop_next_data_annotation_manual_job()
+    popped = _pop_next_data_annotation_task_cell()
     assert popped is not None
     assert popped["id"] == "pending-job"
 
@@ -4683,9 +4683,9 @@ def test_manual_job_pop_ignores_stale_running_until_requeued(tmp_path, monkeypat
     assert [job["status"] for job in jobs] == ["running", "running"]
 
 
-def test_manual_job_requeue_running_resets_stale_jobs_to_fifo_queue(tmp_path, monkeypatch):
+def test_task_cell_requeue_running_resets_stale_cells_to_fifo_queue(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr("backend.api.fanxiu._data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr("backend.api.fanxiu._data_annotation_task_cell_state_path", lambda: path)
     path.write_text(json.dumps([
         {
             "id": "running-old",
@@ -4707,8 +4707,8 @@ def test_manual_job_requeue_running_resets_stale_jobs_to_fifo_queue(tmp_path, mo
         },
     ], ensure_ascii=False), encoding="utf-8")
 
-    assert _requeue_running_data_annotation_manual_jobs() == 1
-    popped = _pop_next_data_annotation_manual_job()
+    assert _requeue_running_data_annotation_task_cells() == 1
+    popped = _pop_next_data_annotation_task_cell()
 
     assert popped is not None
     assert popped["id"] == "running-old"
@@ -4717,9 +4717,9 @@ def test_manual_job_requeue_running_resets_stale_jobs_to_fifo_queue(tmp_path, mo
     assert jobs[1]["status"] == "pending"
 
 
-def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch):
+def test_task_cell_queue_orders_by_group_then_created_at(tmp_path, monkeypatch):
     path = tmp_path / "manual_jobs.json"
-    monkeypatch.setattr("backend.api.fanxiu._data_annotation_manual_job_state_path", lambda: path)
+    monkeypatch.setattr("backend.api.fanxiu._data_annotation_task_cell_state_path", lambda: path)
     path.write_text(json.dumps([
         {
             "id": "manual-newer-high-priority",
@@ -4743,7 +4743,7 @@ def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch)
         },
     ], ensure_ascii=False), encoding="utf-8")
 
-    popped = _pop_next_data_annotation_manual_job()
+    popped = _pop_next_data_annotation_task_cell()
 
     assert popped is not None
     assert popped["id"] == "manual-older-low-priority"
@@ -5319,7 +5319,7 @@ def test_daily_lingmai_is_registered_without_default_scheduler_task():
 
     register_fanxiu_data_annotation_default_runtime_jobs()
     tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
-    definition = fanxiu_api._data_annotation_manual_job_definition("daily_lingmai")
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_lingmai")
 
     assert "legacy-daily-lingmai" not in tasks
     assert definition is not None
@@ -5519,7 +5519,7 @@ def test_daily_lundao_is_registered_without_default_scheduler_task():
 
     register_fanxiu_data_annotation_default_runtime_jobs()
     tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
-    definition = fanxiu_api._data_annotation_manual_job_definition("daily_lundao")
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_lundao")
 
     assert "legacy-daily-lundao" not in tasks
     assert definition is not None
@@ -7799,10 +7799,10 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
 
 def test_mail_cleanup_observe_only_job_routes_to_legacy_scan():
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
-    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_manual_job_definition
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
 
     register_fanxiu_data_annotation_default_runtime_jobs()
-    definition = get_fanxiu_data_annotation_manual_job_definition("mail_cleanup")
+    definition = get_fanxiu_data_annotation_task_cell_definition("mail_cleanup")
     assert definition is not None
     calls: list[str] = []
 
@@ -7821,10 +7821,10 @@ def test_mail_cleanup_observe_only_job_routes_to_legacy_scan():
     assert calls == ["legacy"]
 
 
-def test_wait_manual_job_treats_skip_log_as_terminal(monkeypatch):
+def test_wait_task_cell_treats_skip_log_as_terminal(monkeypatch):
     from backend.core.fanxiu.runtime import behavior_tree as behavior_tree_core
 
-    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_manual_jobs", lambda: [])
+    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_task_cells", lambda: [])
     monkeypatch.setattr(
         behavior_tree_core,
         "fanxiu_data_annotation_runtime_status",
@@ -7840,7 +7840,7 @@ def test_wait_manual_job_treats_skip_log_as_terminal(monkeypatch):
         },
     )
 
-    result = behavior_tree_core.wait_fanxiu_local_manual_job(
+    result = behavior_tree_core.wait_fanxiu_task_cell(
         "manual-123",
         timeout_seconds=1,
         poll_seconds=0.1,
@@ -7850,10 +7850,10 @@ def test_wait_manual_job_treats_skip_log_as_terminal(monkeypatch):
     assert result["result"] == "completed"
 
 
-def test_wait_manual_job_done_when_removed_and_runtime_idle_without_terminal_log(monkeypatch):
+def test_wait_task_cell_requires_terminal_log_when_removed_and_runtime_idle(monkeypatch):
     from backend.core.fanxiu.runtime import behavior_tree as behavior_tree_core
 
-    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_manual_jobs", lambda: [])
+    monkeypatch.setattr(behavior_tree_core, "fanxiu_data_annotation_task_cells", lambda: [])
     monkeypatch.setattr(
         behavior_tree_core,
         "fanxiu_data_annotation_runtime_status",
@@ -7866,14 +7866,14 @@ def test_wait_manual_job_done_when_removed_and_runtime_idle_without_terminal_log
         },
     )
 
-    result = behavior_tree_core.wait_fanxiu_local_manual_job(
+    result = behavior_tree_core.wait_fanxiu_task_cell(
         "manual-removed",
         timeout_seconds=1,
         poll_seconds=0.1,
     )
 
-    assert result["done"] is True
-    assert result["result"] == "removed_after_idle"
+    assert result["done"] is False
+    assert result["result"] == "missing_completion_evidence"
 
 
 def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_path, monkeypatch):
@@ -10564,7 +10564,7 @@ def test_mail_list_lock_icon_does_not_mark_row_locked(monkeypatch):
     assert "list_lock_score" not in row
 
 
-def test_running_mail_manual_job_requeues_after_backend_reload():
+def test_running_mail_task_cell_requeues_after_backend_reload():
     jobs = [
         {
             "id": "manual-mail",
@@ -10590,7 +10590,7 @@ def test_running_mail_manual_job_requeues_after_backend_reload():
         },
     ]
 
-    updated, changed_count = fanxiu_api.requeue_running_data_annotation_manual_jobs(jobs, now=200.0)
+    updated, changed_count = fanxiu_api.requeue_running_data_annotation_task_cells(jobs, now=200.0)
 
     assert changed_count == 2
     assert len(updated) == 1
@@ -11493,7 +11493,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     result = _drain_generator(
         runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
     )
-    definition = fanxiu_api._data_annotation_manual_job_definition("daily_mojie_raid")
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_mojie_raid")
 
     assert result == "success"
     assert definition is not None
@@ -11791,7 +11791,7 @@ def test_daily_weekly_dungeon_opens_daily_entry_by_zhouben(tmp_path, monkeypatch
     result = _drain_generator(
         runner._execute_daily_weekly_dungeon_task(ctx, threading.Event(), {})
     )
-    definition = fanxiu_api._data_annotation_manual_job_definition("daily_weekly_dungeon")
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_weekly_dungeon")
 
     assert result == "success"
     assert definition is not None
@@ -13264,7 +13264,7 @@ def test_manual_daily_boss_success_does_not_mark_scheduler_success(tmp_path, mon
     runtime_runner_core._write_data_annotation_scheduler_tasks([task])
     runner = create_fanxiu_runtime_runner()
 
-    runner._mark_matching_scheduler_tasks_for_manual_success("daily_boss", {})
+    runner._mark_matching_scheduler_tasks_for_task_cell_success("daily_boss", {})
 
     saved = next(item for item in runtime_runner_core._read_data_annotation_scheduler_tasks() if item["id"] == "daily-boss")
     assert saved["last_result"] == "stopped"
@@ -13792,13 +13792,13 @@ def test_runtime_logs_include_current_scope_and_item_id():
     assert logs[1]["item_id"] == "close_popups"
 
 
-def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
+def test_task_cell_logs_use_group_item_id_and_keep_instance_id_in_message():
     runner = create_fanxiu_runtime_runner()
 
     with runner._lock:
         runner._log_locked(
             "info",
-            runner._manual_job_log_message("manual-1", "作业已启动：单步识别"),
+            runner._task_cell_log_message("manual-1", "作业已启动：单步识别"),
             scope="manual_job",
             item_id="manual_job",
         )
@@ -13809,15 +13809,16 @@ def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
     assert log["message"].startswith("[manual-1] ")
 
 
-def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
+def test_task_cell_runs_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     executed: list[str] = []
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, task_type, _payload, _stop_event: executed.append(task_type) or "success")
+    monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_task_cell", lambda _task_id: None)
     with runner._lock:
         runner._guard_enabled = True
         runner._guard_entry_id = "entry"
@@ -13825,7 +13826,7 @@ def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(
         runner._guard_items["wanling_invite"] = {"enabled": True, "entry_id": "entry", "updated_at": 123.0}
         runner._sync_guard_status_locked()
 
-    status = runner.start_manual_runtime_task(
+    status = runner.start_task_cell(
         entry=object(),
         entry_id="entry",
         task={"id": "manual-1", "task_type": "detect_scene", "label": "单步识别", "payload": {}},
@@ -13846,7 +13847,7 @@ def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(
     assert status["guard_items"]["wanling_invite"]["enabled"] is True
 
 
-def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tmp_path, monkeypatch):
+def test_task_cell_persists_terminal_log_before_removing_queue_item(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
@@ -13865,9 +13866,9 @@ def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tm
         events.append(("remove", [task_id]))
 
     monkeypatch.setattr(runner, "_persist_status", fake_persist_status)
-    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", fake_remove_job)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_task_cell", fake_remove_job)
 
-    runner.start_manual_runtime_task(
+    runner.start_task_cell(
         entry=object(),
         entry_id="entry",
         task={"id": "manual-1", "task_type": "detect_scene", "label": "单步识别", "payload": {}},
@@ -13880,7 +13881,7 @@ def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tm
     assert any(any("[manual-1] 作业完成：单步识别" in message for message in messages) for messages in persisted_before_remove)
 
 
-def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
+def test_task_cell_records_task_cell_source(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
@@ -13888,9 +13889,9 @@ def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
     monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_task_cell", lambda _task_id: None)
 
-    status = runner.start_manual_runtime_task(
+    status = runner.start_task_cell(
         entry=object(),
         entry_id="entry",
         task={"id": "manual-1", "task_type": "daily_signup", "label": "日常_报名", "payload": {}},
@@ -13906,7 +13907,7 @@ def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
     assert cell["entries"][-1]["message"].startswith("[manual-1] 作业完成")
 
 
-def test_resident_manual_job_uses_current_runner_instance(tmp_path, monkeypatch):
+def test_resident_task_cell_uses_current_runner_instance(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     jobs = [{
         "id": "manual-1",
@@ -13918,26 +13919,26 @@ def test_resident_manual_job_uses_current_runner_instance(tmp_path, monkeypatch)
     }]
     called: list[str] = []
 
-    monkeypatch.setattr(runtime_runner_core, "_read_data_annotation_manual_jobs", lambda: list(jobs))
+    monkeypatch.setattr(runtime_runner_core, "_read_data_annotation_task_cells", lambda: list(jobs))
 
     def fake_write(updated):
         jobs[:] = list(updated)
 
-    def fake_start_manual_runtime_task(**kwargs):
+    def fake_start_task_cell(**kwargs):
         called.append(str(kwargs["task"]["id"]))
         return {"status": "success"}
 
-    monkeypatch.setattr(runtime_runner_core, "_write_data_annotation_manual_jobs", fake_write)
-    monkeypatch.setattr(runner, "start_manual_runtime_task", fake_start_manual_runtime_task)
+    monkeypatch.setattr(runtime_runner_core, "_write_data_annotation_task_cells", fake_write)
+    monkeypatch.setattr(runner, "start_task_cell", fake_start_task_cell)
 
-    status = runner._start_next_manual_job_if_idle(object(), "entry")
+    status = runner._start_next_task_cell_if_idle(object(), "entry")
 
     assert status == {"status": "success"}
     assert called == ["manual-1"]
     assert jobs[0]["status"] == "running"
 
 
-def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp_path, monkeypatch):
+def test_task_cell_success_clears_matching_scheduler_retry_without_scheduler_id(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
@@ -13984,10 +13985,11 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, task_type, _payload, _stop_event: executed.append(task_type) or "success")
+    monkeypatch.setattr(runner, "_run_runtime_behavior_tree", lambda *args, **kwargs: kwargs["action"]())
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_task_cell", lambda _task_id: None)
 
-    runner._run_manual_runtime_task(
+    runner._run_task_cell(
         entry=object(),
         entry_id="entry",
         task={"id": "manual-1", "task_type": "daily_signup", "label": "日常_报名", "payload": {"guard": False}},
@@ -14008,7 +14010,7 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
     assert fact["discovered_next_time"] != "2026-06-06 05:00:00"
 
 
-def test_manual_runtime_task_passes_payload_guard_override_to_behavior_tree(tmp_path, monkeypatch):
+def test_task_cell_passes_payload_guard_override_to_behavior_tree(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     captured: dict[str, object] = {}
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
@@ -14016,7 +14018,7 @@ def test_manual_runtime_task_passes_payload_guard_override_to_behavior_tree(tmp_
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_task_cell", lambda _task_id: None)
 
     def fake_run_runtime_behavior_tree(**kwargs):
         captured["guard_override"] = kwargs.get("guard_override")
@@ -14024,7 +14026,7 @@ def test_manual_runtime_task_passes_payload_guard_override_to_behavior_tree(tmp_
 
     monkeypatch.setattr(runner, "_run_runtime_behavior_tree", fake_run_runtime_behavior_tree)
 
-    runner._run_manual_runtime_task(
+    runner._run_task_cell(
         entry=object(),
         entry_id="entry",
         task={"id": "manual-guard", "task_type": "daily_signup", "label": "日常_报名", "payload": {"guard": "false"}},
@@ -14074,11 +14076,11 @@ def test_scheduler_success_advances_weekly_next_time(tmp_path, monkeypatch):
 
 def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     runner = create_fanxiu_runtime_runner()
@@ -14100,16 +14102,16 @@ def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path, mo
     assert runner._service_runtime_state_path == tmp_path / "runtime_state.json"
 
 
-def test_ensure_service_restarts_stale_loop_when_manual_job_is_pending(tmp_path, monkeypatch):
+def test_ensure_service_restarts_stale_loop_when_task_cell_is_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
-    _enqueue_data_annotation_manual_job("detect_scene", {}, label="单步识别")
+    _enqueue_data_annotation_task_cell("detect_scene", {}, label="单步识别")
     runner = create_fanxiu_runtime_runner()
     old_stop_event = threading.Event()
     starts: list[dict] = []
@@ -14296,11 +14298,11 @@ def test_scheduler_task_due_soon_detects_near_enabled_supported_task(tmp_path, m
 
 def test_ensure_service_uses_device_entry_id_over_raw_alias(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
-    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     starts: list[dict] = []
@@ -14627,24 +14629,24 @@ def test_runtime_cell_tick_respects_group_flags(monkeypatch):
     monkeypatch.setattr(runner, "_service_paths_still_current", lambda: True)
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
     monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
-    monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or None)
+    monkeypatch.setattr(runner, "_start_next_task_cell_if_idle", lambda *_args: events.append("task_cell") or None)
     monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
     monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
     monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard") or False)
 
-    status = runner.run_service_tick_once(guard=True, manual_job=False, scheduled_job=True)
+    status = runner.run_service_tick_once(guard=True, task_cell=False, scheduled_job=True)
 
     assert events == ["device_health", "idle_guard", "scheduled_job"]
     assert status["cell_tick"] == {
         "ran": True,
         "action": "guard_checked",
         "guard": True,
-        "manual_job": False,
+        "task_cell": False,
         "scheduled_job": True,
     }
 
 
-def test_runtime_cell_tick_pauses_lower_groups_when_guard_handles_popup_without_pending_manual_job(monkeypatch):
+def test_runtime_cell_tick_pauses_lower_groups_when_guard_handles_popup_without_pending_task_cell(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -14661,24 +14663,24 @@ def test_runtime_cell_tick_pauses_lower_groups_when_guard_handles_popup_without_
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
     monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
     monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard") or True)
-    monkeypatch.setattr(runner, "_pending_manual_job_count", lambda: 0)
-    monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or None)
+    monkeypatch.setattr(runner, "_pending_task_cell_count", lambda: 0)
+    monkeypatch.setattr(runner, "_start_next_task_cell_if_idle", lambda *_args: events.append("task_cell") or None)
     monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
     monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
 
-    status = runner.run_service_tick_once(guard=True, manual_job=True, scheduled_job=True)
+    status = runner.run_service_tick_once(guard=True, task_cell=True, scheduled_job=True)
 
     assert events == ["device_health", "idle_guard"]
     assert status["cell_tick"] == {
         "ran": True,
         "action": "guard_checked",
         "guard": True,
-        "manual_job": True,
+        "task_cell": True,
         "scheduled_job": True,
     }
 
 
-def test_runtime_cell_tick_starts_pending_manual_job_after_guard_handles_popup(monkeypatch):
+def test_runtime_cell_tick_starts_pending_task_cell_after_guard_handles_popup(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
@@ -14695,19 +14697,19 @@ def test_runtime_cell_tick_starts_pending_manual_job_after_guard_handles_popup(m
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
     monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
     monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard") or True)
-    monkeypatch.setattr(runner, "_pending_manual_job_count", lambda: 1)
-    monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or {"id": "manual-1"})
+    monkeypatch.setattr(runner, "_pending_task_cell_count", lambda: 1)
+    monkeypatch.setattr(runner, "_start_next_task_cell_if_idle", lambda *_args: events.append("task_cell") or {"id": "manual-1"})
     monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
     monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
 
-    status = runner.run_service_tick_once(guard=True, manual_job=True, scheduled_job=True)
+    status = runner.run_service_tick_once(guard=True, task_cell=True, scheduled_job=True)
 
-    assert events == ["device_health", "idle_guard", "manual_job"]
+    assert events == ["device_health", "idle_guard", "task_cell"]
     assert status["cell_tick"] == {
         "ran": True,
-        "action": "manual_job_started",
+        "action": "task_cell_started",
         "guard": True,
-        "manual_job": True,
+        "task_cell": True,
         "scheduled_job": True,
     }
 
@@ -14739,13 +14741,13 @@ def test_runtime_cell_tick_request_rejects_ambiguous_run_mode():
 
 def test_runtime_cell_run_until_idle_stops_after_no_progress(monkeypatch):
     runner = create_fanxiu_runtime_runner()
-    actions = iter(["manual_job_started", "scheduler_started", "guard_checked"])
+    actions = iter(["task_cell_started", "scheduler_started", "guard_checked"])
     calls: list[dict[str, bool]] = []
 
-    def fake_tick_once(*, guard: bool, manual_job: bool, scheduled_job: bool):
+    def fake_tick_once(*, guard: bool, task_cell: bool, scheduled_job: bool):
         calls.append({
             "guard": guard,
-            "manual_job": manual_job,
+            "task_cell": task_cell,
             "scheduled_job": scheduled_job,
         })
         return {
@@ -14761,7 +14763,7 @@ def test_runtime_cell_run_until_idle_stops_after_no_progress(monkeypatch):
 
     status = runner.run_service_ticks(
         guard=True,
-        manual_job=True,
+        task_cell=True,
         scheduled_job=False,
         run_mode="until_idle",
         max_ticks=10,
@@ -14769,9 +14771,9 @@ def test_runtime_cell_run_until_idle_stops_after_no_progress(monkeypatch):
     )
 
     assert calls == [
-        {"guard": True, "manual_job": True, "scheduled_job": False},
-        {"guard": True, "manual_job": True, "scheduled_job": False},
-        {"guard": True, "manual_job": True, "scheduled_job": False},
+        {"guard": True, "task_cell": True, "scheduled_job": False},
+        {"guard": True, "task_cell": True, "scheduled_job": False},
+        {"guard": True, "task_cell": True, "scheduled_job": False},
     ]
     assert status["cell_tick"]["action"] == "guard_checked"
     assert status["cell_tick"]["run_mode"] == "until_idle"
@@ -14782,13 +14784,13 @@ def test_runtime_cell_current_job_waits_after_start(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     events: list[str] = []
 
-    def fake_tick_once(*, guard: bool, manual_job: bool, scheduled_job: bool):
+    def fake_tick_once(*, guard: bool, task_cell: bool, scheduled_job: bool):
         events.append("tick")
         return {
             "running": True,
             "cell_tick": {
                 "ran": True,
-                "action": "manual_job_started",
+                "action": "task_cell_started",
             },
         }
 
@@ -14799,7 +14801,7 @@ def test_runtime_cell_current_job_waits_after_start(monkeypatch):
 
     status = runner.run_service_ticks(
         guard=False,
-        manual_job=True,
+        task_cell=True,
         scheduled_job=False,
         run_mode="current_job",
         max_ticks=10,
@@ -14807,7 +14809,7 @@ def test_runtime_cell_current_job_waits_after_start(monkeypatch):
     )
 
     assert events == ["tick", "wait"]
-    assert status["cell_tick"]["action"] == "manual_job_started"
+    assert status["cell_tick"]["action"] == "task_cell_started"
     assert status["cell_tick"]["reason"] == "current_job_done"
     assert status["cell_tick"]["run_mode"] == "current_job"
     assert status["cell_tick"]["ticks"] == 1
@@ -14868,7 +14870,7 @@ def test_execute_runtime_tick_returns_layer_status(monkeypatch):
                     "ran": True,
                     "action": "idle",
                     "guard": kwargs["guard"],
-                    "manual_job": kwargs["manual_job"],
+                    "task_cell": kwargs["task_cell"],
                     "scheduled_job": kwargs["scheduled_job"],
                 },
                 "logs": [],
@@ -14882,7 +14884,7 @@ def test_execute_runtime_tick_returns_layer_status(monkeypatch):
         entry=object(),
         entry_id="mf-entry",
         guard=False,
-        manual_job=False,
+        task_cell=False,
         scheduled_job=False,
         run_mode="tick_once",
         max_ticks=1,
@@ -14894,4 +14896,5 @@ def test_execute_runtime_tick_returns_layer_status(monkeypatch):
     assert status["kernel_status"]["label"] == "后台接管"
     assert status["kernel_status"]["running"] is True
     assert status["scheduler_status"]["label"] == "运行中"
+
 

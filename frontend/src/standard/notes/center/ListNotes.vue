@@ -222,6 +222,8 @@ markBootPerf('notes-list.module');
 const NoteProgramBar = defineAsyncComponent(() => import('@/components/NoteProgramBar.vue'));
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/BatchNoteEditDialog.vue'));
+const NOTES_LIST_QUERY_CACHE_KEY = 'codeyun:notes:list-query-cache:v1';
+const NOTES_LIST_QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const props = defineProps<{
   tabId: string;
   active?: boolean;
@@ -286,6 +288,76 @@ const dataProgramSummary = computed(() => {
   return `已配置 ${rules} 条规则；点击“编辑规则”可调整加载范围。`;
 });
 
+type ListQueryCachePayload = {
+  savedAt: number;
+  request: NoteProgramRequest;
+  data: NoteProgramResponse;
+};
+
+const buildListQueryRequest = (program = getAppliedDataProgram()) => buildScanNoteProgramRequest(program, {
+  limit: 1000,
+  include_custom_fields: listViewNeedsCustomFields.value,
+  include_edges: false
+});
+
+const getListQueryCacheStorageKey = () => `${NOTES_LIST_QUERY_CACHE_KEY}:${props.tabId}`;
+
+const readListQueryCache = (request: NoteProgramRequest): ListQueryCachePayload | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(getListQueryCacheStorageKey());
+    if (!raw) {
+      return null;
+    }
+    const payload = JSON.parse(raw) as Partial<ListQueryCachePayload>;
+    if (
+      typeof payload.savedAt !== 'number'
+      || !payload.request
+      || !payload.data
+      || Date.now() - payload.savedAt > NOTES_LIST_QUERY_CACHE_TTL_MS
+      || JSON.stringify(payload.request) !== JSON.stringify(request)
+    ) {
+      return null;
+    }
+    return payload as ListQueryCachePayload;
+  } catch {
+    return null;
+  }
+};
+
+const writeListQueryCache = (request: NoteProgramRequest, data: NoteProgramResponse) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const payload: ListQueryCachePayload = {
+      savedAt: Date.now(),
+      request,
+      data,
+    };
+    window.sessionStorage.setItem(getListQueryCacheStorageKey(), JSON.stringify(payload));
+  } catch {
+    // Ignore sessionStorage failures and keep the live query as the source of truth.
+  }
+};
+
+const hydrateListQueryCache = (request: NoteProgramRequest) => {
+  const cached = readListQueryCache(request);
+  if (!cached) {
+    return false;
+  }
+  noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.data);
+  if (listPerfEnabled) {
+    markBootPerf('notes-list.cacheHydrated', {
+      noteCount: cached.data.nodes.length,
+      ageMs: Date.now() - cached.savedAt,
+    });
+  }
+  return true;
+};
+
 // Computed
 const filteredNotes = computed(() => {
   const startedAt = listPerfEnabled ? getPerfNow() : 0;
@@ -340,19 +412,26 @@ const filteredNotesVersion = computed(() => JSON.stringify([
 ]));
 
 // Actions
-const runDataProgram = async (program = getAppliedDataProgram(), persist: boolean = false) => {
-  loading.value = true;
+const runDataProgram = async (
+  program = getAppliedDataProgram(),
+  persist: boolean = false,
+  options: { silent?: boolean } = {}
+) => {
+  if (!options.silent) {
+    loading.value = true;
+  }
   try {
     const normalizedProgram = normalizeNoteProgramChannel(program);
+    const request = buildListQueryRequest(normalizedProgram);
     const startedAt = listPerfEnabled ? getPerfNow() : 0;
-    await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
-      limit: 1000,
-      include_custom_fields: listViewNeedsCustomFields.value,
-      include_edges: false
-    }));
+    const result = await noteStore.queryNoteProgramForTab(props.tabId, request);
+    if (result?.data) {
+      writeListQueryCache(request, result.data);
+    }
     if (listPerfEnabled) {
       markBootPerf('notes-list.runDataProgram.ready', {
         persist,
+        silent: Boolean(options.silent),
         duration: Math.round((getPerfNow() - startedAt) * 10) / 10,
         noteCount: noteStore.getTabNotes(props.tabId).length,
       });
@@ -363,7 +442,9 @@ const runDataProgram = async (program = getAppliedDataProgram(), persist: boolea
       });
     }
   } finally {
-    loading.value = false;
+    if (!options.silent) {
+      loading.value = false;
+    }
   }
 };
 
@@ -611,9 +692,12 @@ const currentListQueryIncludesCustomFields = () => {
 
 onMounted(() => {
   const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
+  const queryRequest = buildListQueryRequest();
+  const hydratedFromCache = !hasCachedNotes && hydrateListQueryCache(queryRequest);
   if (listPerfEnabled) {
     markBootPerf('notes-list.mounted', {
       hasCachedNotes,
+      hydratedFromCache,
       needsCustomFields: listViewNeedsCustomFields.value,
     });
   }
@@ -628,7 +712,9 @@ onMounted(() => {
     }
   });
   if (!hasCachedNotes || (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields())) {
-    void refreshData();
+    void runDataProgram(getAppliedDataProgram(), false, {
+      silent: hydratedFromCache,
+    });
   }
 });
 

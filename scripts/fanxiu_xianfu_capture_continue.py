@@ -18,7 +18,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path,
-    fanxiu_data_annotation_manual_jobs,
+    fanxiu_data_annotation_task_cells,
 )
 from backend.core.fanxiu.data_annotation.runtime_runner import (
     _parse_xianfu_visit_cd_seconds,
@@ -123,21 +123,21 @@ def _preflight_report(
         screenshot_dir=screenshot_dir,
         audit_ocr=False,
     )
-    jobs = fanxiu_data_annotation_manual_jobs()
+    task_cells = fanxiu_data_annotation_task_cells()
     optional_175 = next((row for row in audit.get("rows") or [] if row.get("number") == 175), {})
     return {
-        "ok": bool(audit.get("ok")) and not jobs,
+        "ok": bool(audit.get("ok")) and not task_cells,
         "asset_audit_ok": bool(audit.get("ok")),
         "image_175_present": bool(optional_175.get("present")),
-        "manual_job_count": len(jobs),
-        "manual_jobs": [
+        "task_cell_count": len(task_cells),
+        "task_cells": [
             {
                 "id": item.get("id"),
                 "status": item.get("status"),
                 "task_type": item.get("task_type"),
                 "label": item.get("label"),
             }
-            for item in jobs
+            for item in task_cells
             if isinstance(item, dict)
         ],
         "wait_plan": _scheduler_wait_plan(extra_seconds=wait_extra_seconds),

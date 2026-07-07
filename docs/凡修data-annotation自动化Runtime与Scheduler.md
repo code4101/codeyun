@@ -152,9 +152,9 @@ Scheduler 不直接点击游戏，只负责维护作业配置、到期判断和�
 因此，作业组关闭时：
 
 - `scheduler.plan.next_action=job_group_disabled` 仍可以保留，用来说明工程 Scheduler 不会自主拉起任务。
-- AI 保底若看到 `due_tasks` 非空、`maintenance.automation_safe=true`、没有 `needs_human_annotation`、没有 `blocked_by`、没有 Runtime/owner/manual_jobs 正在运行，应继续按 `due_tasks` 顺序执行第一个作业。
+- AI 保底若看到 `due_tasks` 非空、`maintenance.automation_safe=true`、没有 `needs_human_annotation`、没有 `blocked_by`、没有 Runtime/owner/task_cells 正在运行，应继续按 `due_tasks` 顺序执行第一个作业。
 - AI 保底执行时不能修改 `job_group_enabled`、不能改写启用状态、不能手工推进 `next_time`。它只能通过 Runtime/行为树公开入口提交具体 `task_type`，让任务成功/失败后按正常 Scheduler 状态回写 `last_run_at`、`last_result`、`next_time` 或 `retry_after`。
-- AI 保底和工程 Scheduler 一样必须遵守行为树串行约束：一次只运行一个任务；若已有 owner、Runtime 任务、manual_jobs 或隔离锁正在占用，应等待/跳过本轮并报告串行互斥，不得并行启动。
+- AI 保底和工程 Scheduler 一样必须遵守行为树串行约束：一次只运行一个任务；若已有 owner、Runtime 任务、task_cells 或隔离锁正在占用，应等待/跳过本轮并报告串行互斥，不得并行启动。
 - 标注缺失、阻断浮层、Runtime 错误、ADB/MuMu 基础设施异常仍是真阻断。AI 可以修基础设施，但不能靠猜坐标、降阈值、自动补资产树来强行执行。
 
 AI 心跳的首选入口是：
@@ -227,7 +227,7 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 1. 先读 [`行为树运行单元运维约定`](./行为树运行单元运维约定.md)
 2. 再用统一 runtime item action：
    - `trigger`：`ensure resident service`
-   - `inspect`：读取 runtime/owner/manual_job/isolation/doctor 摘要
+   - `inspect`：读取 runtime/owner/task_cells/isolation/doctor 摘要
    - `restart`：`shutdown_service -> ensure service`
    - `wake`：只唤醒 resident loop 重新轮询
 3. 只有在明确处理中断当前业务任务、提交 task cell、执行 cell tick 或调度具体 Scheduler task 时，才进入 Runtime/Scheduler 业务接口。
@@ -415,18 +415,6 @@ def task(ctx):
 
 ### 历史验收记录
 
-以下记录保留当时真实验收事实，不代表现行推荐入口。现行任务入口是 `/data-annotation/runtime/cells/task`，临时代码入口是 `/data-annotation/runtime/cells/code`。
+2026-06-04 的常驻 Runtime 改造已验证过：任务提交不再直接启动业务线程，而是写入 task cell 队列并唤醒 resident service；Scheduler 到期任务也在 resident service 空闲时串行执行。现行推荐入口固定为 `/data-annotation/runtime/cells/task` 和 `/data-annotation/runtime/cells/code`，历史旧 tick/直启路径只作为迁移背景，不再作为维护入口记录。
 
-- 2026-06-04 真实验收：从当前 MuMu/ADB 画面通过当时的旧任务提交入口执行 `go_scene #34`，最终 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_final_20260604_012723/`。后续修复守护 tick 语义后再次真实验收，仍为 `success/done/current_scene=34`，耗时约 6 秒；证据截图保存在 `.codex_tmp/fanxiu_go_scene_34_after_guard_fix_20260604_015404/`。
-- 2026-06-04 常驻行为树改造后真实验收：状态接口可拉起常驻服务并恢复守护配置，状态为 `service_running=true`、`running=false`、`guard_enabled=true`、`guard_running=true`；随后通过当时的旧任务提交入口提交 `go_scene #34`，入口返回“手动作业已提交”，最终 `success/done/current_scene=34`，截图保存在 `.codex_tmp/fanxiu_resident_runtime_20260604/`。再次重载后状态仍能恢复为 `service_running=true` 且空转识别 `#34 world 100%`。
-- 2026-06-04 任务提交入口收敛后真实验收：当时的旧任务提交入口不再直接启动业务线程，而是写入内部队列并唤醒常驻服务；常驻 loop 串行消费 `manual-1780522415517-4061817e` 后执行生成器式 `go_scene #34`，最终 `success/done/current_scene=34`，耗时约 6.7 秒，真实截图保存在 `.codex_tmp/fanxiu_manual_direct_generator_20260604/`。
-- 2026-06-04 场景身份 role 语义修复后真实验收：在真实日程页通过当时的旧任务提交入口执行 `go_scene #34`，Runtime 识别 `#66 -> #34`，点击 `返回`，跳转耗时 `2.3s`，最终 `success/done/current_scene=34`；证据截图保存在 `.codex_tmp/fanxiu_scene_role_fix_66_to_34_final_20260604/`。这次不是“已在目标场景”的短路命中。
-- 2026-06-04 去掉手动作业 drain 线程和 `run-now` 直跑旧 pending job 后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident loop 消费 `manual-1780525981456-8e88286b`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_resident_no_drain_manual_tick_20260604/`。
-- 2026-06-04 手动作业并入 resident service 线程后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident loop 直接执行 `manual-1780526898389-9e4c1ab5`，不再创建 `fanxiu-data-annotation-manual-job` 业务线程，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_manual_inline_resident_tick_20260604/`。
-- 2026-06-04 Scheduler 到期任务并入 resident service 线程：`start_scheduler_tasks` 不再创建 `fanxiu-data-annotation-scheduler` 业务线程，resident loop 空闲时直接串行执行到期任务；单元回归已覆盖 Runtime 不再拥有 `_thread` 字段。真实验收临时追加 `codex-temp-go-world` 到期任务，执行 Scheduler run-due 后最终 `scheduler_run_due/success/current_scene=34`，证据保存在 `.codex_tmp/fanxiu_scheduler_inline_run_due_20260604/`，验收后已恢复原 Scheduler 配置。
-- 2026-06-04 direct generic/gift-code 过渡入口已移除：直接 Runtime 任务统一并入 resident service，不再保留 `start_generic_runtime_task` 和旧 `start()`；Runtime 后台线程只保留 resident service。
-- 2026-06-04 移除 `_thread` 字段后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident service 消费 `manual-1780528737905-a0f24121`，最终 `success/done/current_scene=34`，`manual_jobs.json=[]`，证据保存在 `.codex_tmp/fanxiu_no_runtime_thread_manual_tick_20260604/`。
-- 2026-06-04 移除旧直启入口和无调用 `_run` 后真实验收：通过当时的旧 tick 入口提交 `manual_tick`，resident service 消费 `manual-1780529858028-ce12bf62`，最终 `success/done/current_scene=34`，耗时约 31.1 秒，`manual_jobs.json=[]`，真实截图 `07_final_screencap.png` 保存在 `.codex_tmp/fanxiu_resident_after_entry_cleanup_20260604/`。
-- 2026-06-04 stop 语义收窄后真实验收：先调用停止当前业务任务接口，返回 `idle/当前没有正在运行的任务/service_running=true`，证明 stop 不关闭 resident service；随后通过当时的旧 tick 入口提交 `manual_tick`，最终 `success/done/current_scene=34`，耗时约 8.4 秒，`manual_jobs.json=[]`，真实截图 `06_final_screencap.png` 保存在 `.codex_tmp/fanxiu_stop_current_task_semantics_20260604/`。
-- 2026-06-04 相关回归：`uv run pytest backend\tests\test_fanxiu_data_annotation_runtime_guard.py tests\test_fanxiu_data_annotation_scheduler.py -q` 为 `71 passed`；`npm run typecheck --prefix frontend` 通过。
 

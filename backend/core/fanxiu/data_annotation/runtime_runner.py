@@ -25,7 +25,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     ensure_fanxiu_runtime_jobs_registered,
     fanxiu_data_annotation_mail_scan_state_path as _core_data_annotation_mail_scan_state_path,
-    fanxiu_data_annotation_manual_job_state_path as _core_data_annotation_manual_job_state_path,
+    fanxiu_data_annotation_task_cell_state_path as _core_data_annotation_task_cell_state_path,
     fanxiu_data_annotation_runtime_state_path as _core_data_annotation_runtime_state_path,
     fanxiu_data_annotation_scheduler_settings_path as _core_data_annotation_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_data_annotation_scheduler_state_path,
@@ -39,15 +39,15 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_runtime_task_label,
     _fanxiu_process_matches_service_owner,
     release_fanxiu_job_group_isolation,
-    start_fanxiu_manual_runtime_task,
+    start_fanxiu_task_cell,
 )
 from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu.data_annotation.jobs import (
-    data_annotation_manual_jobs_state,
-    get_fanxiu_data_annotation_manual_job_definition as _data_annotation_manual_job_definition,
-    pop_next_data_annotation_manual_job,
-    read_data_annotation_manual_jobs,
-    requeue_running_data_annotation_manual_jobs,
+    data_annotation_task_cells_state,
+    get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
+    pop_next_data_annotation_task_cell,
+    read_data_annotation_task_cells,
+    requeue_running_data_annotation_task_cells,
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
@@ -2376,8 +2376,8 @@ def _data_annotation_scheduler_settings_path() -> Path:
     return _core_data_annotation_scheduler_settings_path()
 
 
-def _data_annotation_manual_job_state_path() -> Path:
-    return _core_data_annotation_manual_job_state_path()
+def _data_annotation_task_cell_state_path() -> Path:
+    return _core_data_annotation_task_cell_state_path()
 
 
 def _data_annotation_mail_scan_state_path() -> Path:
@@ -2448,47 +2448,47 @@ def _read_data_annotation_scheduler_settings() -> dict[str, Any]:
     )
 
 
-def _read_data_annotation_manual_jobs() -> list[dict[str, Any]]:
-    raw = _read_data_annotation_json(_data_annotation_manual_job_state_path(), [])
-    return read_data_annotation_manual_jobs(raw)
+def _read_data_annotation_task_cells() -> list[dict[str, Any]]:
+    raw = _read_data_annotation_json(_data_annotation_task_cell_state_path(), [])
+    return read_data_annotation_task_cells(raw)
 
 
-def _write_data_annotation_manual_jobs(jobs: list[dict[str, Any]]) -> None:
-    _write_data_annotation_json(_data_annotation_manual_job_state_path(), data_annotation_manual_jobs_state(jobs))
+def _write_data_annotation_task_cells(jobs: list[dict[str, Any]]) -> None:
+    _write_data_annotation_json(_data_annotation_task_cell_state_path(), data_annotation_task_cells_state(jobs))
 
 
-def _requeue_running_data_annotation_manual_jobs() -> int:
-    jobs = _read_data_annotation_manual_jobs()
-    updated, changed_count = requeue_running_data_annotation_manual_jobs(jobs)
+def _requeue_running_data_annotation_task_cells() -> int:
+    jobs = _read_data_annotation_task_cells()
+    updated, changed_count = requeue_running_data_annotation_task_cells(jobs)
     if changed_count:
-        _write_data_annotation_manual_jobs(updated)
+        _write_data_annotation_task_cells(updated)
     return changed_count
 
 
-def _remove_data_annotation_manual_job(job_id: str) -> None:
+def _remove_data_annotation_task_cell(job_id: str) -> None:
     job_id = str(job_id or "")
     if not job_id:
         return
-    jobs = [job for job in _read_data_annotation_manual_jobs() if str(job.get("id") or "") != job_id]
-    _write_data_annotation_manual_jobs(jobs)
+    jobs = [job for job in _read_data_annotation_task_cells() if str(job.get("id") or "") != job_id]
+    _write_data_annotation_task_cells(jobs)
 
 
-def _pop_next_data_annotation_manual_job() -> dict[str, Any] | None:
-    jobs = _read_data_annotation_manual_jobs()
-    selected, claimed_jobs = pop_next_data_annotation_manual_job(jobs)
+def _pop_next_data_annotation_task_cell() -> dict[str, Any] | None:
+    jobs = _read_data_annotation_task_cells()
+    selected, claimed_jobs = pop_next_data_annotation_task_cell(jobs)
     if selected is None:
         return None
-    _write_data_annotation_manual_jobs(claimed_jobs)
+    _write_data_annotation_task_cells(claimed_jobs)
     return selected
 
 
-def _start_next_data_annotation_manual_job_if_idle(entry: Any, entry_id: str) -> dict[str, Any] | None:
+def _start_next_data_annotation_task_cell_if_idle(entry: Any, entry_id: str) -> dict[str, Any] | None:
     if fanxiu_runtime_runner_running():
         return None
-    task = _pop_next_data_annotation_manual_job()
+    task = _pop_next_data_annotation_task_cell()
     if task is None:
         return None
-    return start_fanxiu_manual_runtime_task(
+    return start_fanxiu_task_cell(
         entry=entry,
         entry_id=entry_id,
         task=task,
@@ -2505,7 +2505,7 @@ def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
     task_type = str(task.get("task_type") or "")
     if task_type == "mail_claim_check":
         task_type = "mail_cleanup"
-    definition = _data_annotation_manual_job_definition(task_type)
+    definition = _data_annotation_task_cell_definition(task_type)
     return bool(definition and definition.scheduler_supported)
 
 
@@ -2646,7 +2646,7 @@ class DataAnnotationRuntimeRunner(
         self._service_entry_id = ""
         self._service_asset_tree_path: Path | None = None
         self._service_runtime_state_path: Path | None = None
-        self._service_manual_job_state_path: Path | None = None
+        self._service_task_cell_state_path: Path | None = None
         self._service_scheduler_state_path: Path | None = None
         self._service_world_facts_path: Path | None = None
         self._service_generation = 0
@@ -2845,10 +2845,10 @@ class DataAnnotationRuntimeRunner(
     def _sync_service_status_locked(self) -> None:
         self._status["service_running"] = bool(self._service_thread is not None and self._service_thread.is_alive())
 
-    def _pending_manual_job_count(self) -> int:
+    def _pending_task_cell_count(self) -> int:
         return sum(
             1
-            for job in _read_data_annotation_manual_jobs()
+            for job in _read_data_annotation_task_cells()
             if str(job.get("status") or "") in {"pending", "queued", "running"}
         )
 
@@ -2858,7 +2858,7 @@ class DataAnnotationRuntimeRunner(
         if self._status.get("running"):
             return False
         try:
-            pending_count = self._pending_manual_job_count()
+            pending_count = self._pending_task_cell_count()
         except Exception:
             pending_count = 0
         guard_should_tick = bool(self._guard_enabled or self._guard_group_enabled)
@@ -2869,7 +2869,7 @@ class DataAnnotationRuntimeRunner(
             return True
         return time.time() - heartbeat_at > max(10.0, self._guard_interval_seconds * 3)
 
-    def _start_next_manual_job_if_idle(
+    def _start_next_task_cell_if_idle(
         self,
         entry: Any,
         entry_id: str,
@@ -2878,11 +2878,11 @@ class DataAnnotationRuntimeRunner(
         with self._lock:
             if self._status.get("running"):
                 return None
-        task = _pop_next_data_annotation_manual_job()
+        task = _pop_next_data_annotation_task_cell()
         if task is None:
             return None
         resolved_asset_tree_path = asset_tree_path if isinstance(asset_tree_path, Path) else _data_annotation_asset_tree_path(entry_id)
-        return self.start_manual_runtime_task(
+        return self.start_task_cell(
             entry=entry,
             entry_id=entry_id,
             task=task,
@@ -3035,7 +3035,7 @@ class DataAnnotationRuntimeRunner(
             self._service_entry_id = entry_id
             self._service_asset_tree_path = asset_tree_path
             self._service_runtime_state_path = _data_annotation_runtime_state_path()
-            self._service_manual_job_state_path = _data_annotation_manual_job_state_path()
+            self._service_task_cell_state_path = _data_annotation_task_cell_state_path()
             self._service_scheduler_state_path = _data_annotation_scheduler_state_path()
             self._service_world_facts_path = _data_annotation_world_facts_path()
             if self._guard_enabled:
@@ -3061,7 +3061,7 @@ class DataAnnotationRuntimeRunner(
                 self._sync_service_status_locked()
                 self._set_status_locked("idle", owner_message, phase="service_owned_by_other")
                 return json.loads(json.dumps(self._status, ensure_ascii=False))
-            requeued_count = _requeue_running_data_annotation_manual_jobs()
+            requeued_count = _requeue_running_data_annotation_task_cells()
             self._service_heartbeat_at = time.time()
             self._service_step = "starting"
             thread = threading.Thread(
@@ -3156,12 +3156,12 @@ class DataAnnotationRuntimeRunner(
     def _service_paths_still_current(self) -> bool:
         with self._lock:
             runtime_state_path = self._service_runtime_state_path
-            manual_job_state_path = self._service_manual_job_state_path
+            task_cell_state_path = self._service_task_cell_state_path
             scheduler_state_path = self._service_scheduler_state_path
             world_facts_path = self._service_world_facts_path
         return (
             runtime_state_path == _data_annotation_runtime_state_path()
-            and manual_job_state_path == _data_annotation_manual_job_state_path()
+            and task_cell_state_path == _data_annotation_task_cell_state_path()
             and scheduler_state_path == _data_annotation_scheduler_state_path()
             and world_facts_path == _data_annotation_world_facts_path()
         )
@@ -3257,9 +3257,9 @@ class DataAnnotationRuntimeRunner(
             entry, entry_id, asset_tree_path = context
             try:
                 if not self.status().get("running"):
-                    self._mark_service_heartbeat("manual_job_poll")
-                    if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
-                        self._mark_service_heartbeat("manual_job_started")
+                    self._mark_service_heartbeat("task_cell_poll")
+                    if self._start_next_task_cell_if_idle(entry, entry_id, asset_tree_path) is not None:
+                        self._mark_service_heartbeat("task_cell_started")
                         self._service_wake_event.wait(0.1)
                         self._service_wake_event.clear()
                         continue
@@ -3309,7 +3309,7 @@ class DataAnnotationRuntimeRunner(
         self,
         *,
         guard: bool = True,
-        manual_job: bool = True,
+        task_cell: bool = True,
         scheduled_job: bool = True,
     ) -> dict[str, Any]:
         context = self._service_context()
@@ -3320,7 +3320,7 @@ class DataAnnotationRuntimeRunner(
                 "ran": False,
                 "reason": "waiting_context",
                 "guard": bool(guard),
-                "manual_job": bool(manual_job),
+                "task_cell": bool(task_cell),
                 "scheduled_job": bool(scheduled_job),
             }
             self._persist_status()
@@ -3340,11 +3340,11 @@ class DataAnnotationRuntimeRunner(
                     guard_checked = True
                     if guard_handled:
                         action = "guard_checked"
-                manual_job_pending_after_guard = guard_handled and self._pending_manual_job_count() > 0
-                if (not guard_handled or manual_job_pending_after_guard) and manual_job:
-                    self._mark_service_heartbeat("manual_job_poll")
-                    if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
-                        action = "manual_job_started"
+                task_cell_pending_after_guard = guard_handled and self._pending_task_cell_count() > 0
+                if (not guard_handled or task_cell_pending_after_guard) and task_cell:
+                    self._mark_service_heartbeat("task_cell_poll")
+                    if self._start_next_task_cell_if_idle(entry, entry_id, asset_tree_path) is not None:
+                        action = "task_cell_started"
                 if not guard_handled and action == "idle" and scheduled_job:
                     if self._job_group_isolated():
                         self._mark_service_heartbeat("scheduler_isolated")
@@ -3366,7 +3366,7 @@ class DataAnnotationRuntimeRunner(
             "ran": True,
             "action": action,
             "guard": bool(guard),
-            "manual_job": bool(manual_job),
+            "task_cell": bool(task_cell),
             "scheduled_job": bool(scheduled_job),
         }
         self._persist_status()
@@ -3376,7 +3376,7 @@ class DataAnnotationRuntimeRunner(
         self,
         *,
         guard: bool = True,
-        manual_job: bool = True,
+        task_cell: bool = True,
         scheduled_job: bool = True,
         run_mode: str = "tick_once",
         max_ticks: int = 10,
@@ -3398,7 +3398,7 @@ class DataAnnotationRuntimeRunner(
                 "run_mode": mode,
                 "ticks": 0,
                 "guard": bool(guard),
-                "manual_job": bool(manual_job),
+                "task_cell": bool(task_cell),
                 "scheduled_job": bool(scheduled_job),
             }
             self._persist_status()
@@ -3410,7 +3410,7 @@ class DataAnnotationRuntimeRunner(
                 break
             status = self.run_service_tick_once(
                 guard=guard,
-                manual_job=manual_job,
+                task_cell=task_cell,
                 scheduled_job=scheduled_job,
             )
             statuses.append(status)
@@ -3429,7 +3429,7 @@ class DataAnnotationRuntimeRunner(
                         "action": action,
                         "reason": "current_job_done" if completed else "timeout",
                         "guard": bool(guard),
-                        "manual_job": bool(manual_job),
+                        "task_cell": bool(task_cell),
                         "scheduled_job": bool(scheduled_job),
                     }
                     statuses[-1] = status
@@ -3445,7 +3445,7 @@ class DataAnnotationRuntimeRunner(
             "ticks": len(statuses),
             "timeout": time.time() >= deadline and bool(statuses),
             "guard": bool(guard),
-            "manual_job": bool(manual_job),
+            "task_cell": bool(task_cell),
             "scheduled_job": bool(scheduled_job),
         }
         self._persist_status()
@@ -3778,7 +3778,7 @@ class DataAnnotationRuntimeRunner(
         task_type = self._canonical_runtime_task_type(task_type)
         payload = dict(payload or {})
         ensure_fanxiu_runtime_jobs_registered()
-        definition = _data_annotation_manual_job_definition(task_type)
+        definition = _data_annotation_task_cell_definition(task_type)
         if definition is None:
             raise FanxiuRuntimeError(f"暂不支持的任务类型：{task_type}", status_code=400)
         if definition.normalize_payload is not None:
@@ -3805,7 +3805,7 @@ class DataAnnotationRuntimeRunner(
         task_type = self._canonical_runtime_task_type(task_type)
         payload = dict(payload or {})
         ensure_fanxiu_runtime_jobs_registered()
-        definition = _data_annotation_manual_job_definition(task_type)
+        definition = _data_annotation_task_cell_definition(task_type)
         if definition is None:
             raise RuntimeError(f"暂不支持的任务类型：{task_type}")
         if definition.normalize_payload is not None:
@@ -3871,7 +3871,7 @@ class DataAnnotationRuntimeRunner(
         )
         return self.status()
 
-    def start_manual_runtime_task(
+    def start_task_cell(
         self,
         *,
         entry: Any,
@@ -3896,7 +3896,7 @@ class DataAnnotationRuntimeRunner(
                 "entry_id": entry_id,
                 "task_type": task_type,
                 "current_task": label,
-                "phase": "manual_job",
+                "phase": "task_cell",
                 "message": f"作业已启动：{label}",
                 "total": 1,
                 "current_task_id": task_id,
@@ -3906,12 +3906,12 @@ class DataAnnotationRuntimeRunner(
             }
             self._log_locked(
                 "info",
-                self._manual_job_log_message(task_id, self._status["message"]),
+                self._task_cell_log_message(task_id, self._status["message"]),
                 scope="manual_job",
                 item_id="manual_job",
             )
         self._persist_status()
-        self._run_manual_runtime_task(
+        self._run_task_cell(
             entry=entry,
             entry_id=entry_id,
             task=dict(task),
@@ -4201,7 +4201,7 @@ class DataAnnotationRuntimeRunner(
         )
         return "success"
 
-    def _manual_job_log_message(self, task_id: str, message: str) -> str:
+    def _task_cell_log_message(self, task_id: str, message: str) -> str:
         task_id = str(task_id or "").strip()
         return f"[{task_id}] {message}" if task_id else message
 
@@ -4220,7 +4220,7 @@ class DataAnnotationRuntimeRunner(
 
     def _runtime_task_label(self, task_type: str, payload: dict[str, Any] | None = None) -> str:
         task_type = self._canonical_runtime_task_type(task_type)
-        definition = _data_annotation_manual_job_definition(task_type)
+        definition = _data_annotation_task_cell_definition(task_type)
         label = definition.label if definition is not None else task_type
         if task_type == "go_scene":
             target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
@@ -4415,7 +4415,7 @@ class DataAnnotationRuntimeRunner(
             return BehaviorTreeStatus.SKIP
         if not allow_during_task:
             with self._lock:
-                if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"manual_job", "local_run"}:
+                if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"task_cell", "local_run"}:
                     return BehaviorTreeStatus.SKIP
         tick_started_at = time.monotonic()
         previous_log_context = self._set_log_context("guard", "close_popups")
@@ -4547,7 +4547,7 @@ class DataAnnotationRuntimeRunner(
                 tasks = _read_data_annotation_scheduler_tasks()
                 self._mark_scheduler_task(tasks, task_id, task_result)
             elif task_result == "success":
-                self._mark_matching_scheduler_tasks_for_manual_success(task_type, payload)
+                self._mark_matching_scheduler_tasks_for_task_cell_success(task_type, payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
@@ -4588,7 +4588,7 @@ class DataAnnotationRuntimeRunner(
                 self._restore_log_context(previous_log_context)
             self._persist_status()
 
-    def _run_manual_runtime_task(
+    def _run_task_cell(
         self,
         *,
         entry: Any,
@@ -4628,7 +4628,7 @@ class DataAnnotationRuntimeRunner(
                 tasks = _read_data_annotation_scheduler_tasks()
                 self._mark_scheduler_task(tasks, scheduler_task_id, task_result)
             elif task_result == "success":
-                self._mark_matching_scheduler_tasks_for_manual_success(task_type, payload)
+                self._mark_matching_scheduler_tasks_for_task_cell_success(task_type, payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
@@ -4639,7 +4639,7 @@ class DataAnnotationRuntimeRunner(
                     "updated_at": time.time(),
                     "current_index": 1,
                 })
-                self._log_locked("success" if task_result == "success" else "skip", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
+                self._log_locked("success" if task_result == "success" else "skip", self._task_cell_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
                     title=f"作业：{task.get('label') or self._runtime_task_label(task_type, payload)}",
                     source=self._runtime_task_cell_source(task_type, payload),
@@ -4648,7 +4648,7 @@ class DataAnnotationRuntimeRunner(
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({"status": "stopped", "phase": "stopped", "message": "作业已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", self._manual_job_log_message(task_id, "作业已停止"), scope="manual_job", item_id="manual_job")
+                self._log_locked("stop", self._task_cell_log_message(task_id, "作业已停止"), scope="manual_job", item_id="manual_job")
                 payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
                 self._append_runtime_cell_log_locked(
                     title=f"作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
@@ -4664,7 +4664,7 @@ class DataAnnotationRuntimeRunner(
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", self._manual_job_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
+                self._log_locked("error", self._task_cell_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
                     title=f"作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
                     source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
@@ -4677,7 +4677,7 @@ class DataAnnotationRuntimeRunner(
             if previous_log_context is not None:
                 self._restore_log_context(previous_log_context)
             self._persist_status()
-            _remove_data_annotation_manual_job(task_id)
+            _remove_data_annotation_task_cell(task_id)
             self._persist_status()
 
     def _run_scheduler_tasks(
@@ -5214,7 +5214,7 @@ class DataAnnotationRuntimeRunner(
             task_facts[task_id]["last_run_at"] = _now().strftime("%Y-%m-%d %H:%M:%S")
         _write_data_annotation_world_facts(facts)
 
-    def _mark_matching_scheduler_tasks_for_manual_success(self, task_type: str, payload: dict[str, Any]) -> None:
+    def _mark_matching_scheduler_tasks_for_task_cell_success(self, task_type: str, payload: dict[str, Any]) -> None:
         if str(payload.get("__scheduler_task_id") or ""):
             return
         normalized_task_type = self._canonical_runtime_task_type(task_type)
@@ -5247,7 +5247,7 @@ class DataAnnotationRuntimeRunner(
             self._log("skip", f"旧版任务「{legacy_name}」尚未迁移，已跳过")
             return "unsupported"
         ensure_fanxiu_runtime_jobs_registered()
-        definition = _data_annotation_manual_job_definition(task_type)
+        definition = _data_annotation_task_cell_definition(task_type)
         if definition is None:
             raise RuntimeError(f"暂不支持的任务类型：{task_type}")
         normalized_payload = dict(payload or {})
@@ -10796,6 +10796,7 @@ class DataAnnotationRuntimeRunner(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
+
 
 
 

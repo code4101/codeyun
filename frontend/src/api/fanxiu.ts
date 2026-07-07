@@ -588,6 +588,8 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   error: string;
   logs: Array<{ time: string; kind: string; message: string }>;
   cell_logs?: FanxiuDataAnnotationRuntimeCellLog[];
+  queued_cell?: Record<string, unknown>;
+  queued_job?: Record<string, unknown>;
 }
 
 export interface FanxiuDataAnnotationSchedulerTaskItem {

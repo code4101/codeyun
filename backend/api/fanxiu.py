@@ -375,15 +375,15 @@ from backend.core.fanxiu.mail.packet_sync import (
     trace_fanxiu_mail_packet_gap,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
-    DataAnnotationManualJobDefinition as _DataAnnotationManualJobDefinition,
-    _DATA_ANNOTATION_MANUAL_JOB_REGISTRY,
-    create_data_annotation_manual_job,
-    data_annotation_manual_jobs_state,
-    get_fanxiu_data_annotation_manual_job_definition as _data_annotation_manual_job_definition,
-    pop_next_data_annotation_manual_job,
-    read_data_annotation_manual_jobs,
-    requeue_running_data_annotation_manual_jobs,
-    register_fanxiu_data_annotation_manual_job,
+    DataAnnotationTaskCellDefinition as _DataAnnotationTaskCellDefinition,
+    _DATA_ANNOTATION_TASK_CELL_REGISTRY,
+    create_data_annotation_task_cell,
+    data_annotation_task_cells_state,
+    get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
+    pop_next_data_annotation_task_cell,
+    read_data_annotation_task_cells,
+    requeue_running_data_annotation_task_cells,
+    register_fanxiu_data_annotation_task_cell,
 )
 from backend.core.fanxiu.data_annotation import runtime_control as _runtime_control
 from backend.core.fanxiu.data_annotation import runtime_framework as _runtime_framework
@@ -460,7 +460,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
     fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
-    fanxiu_data_annotation_manual_job_state_path as _core_manual_job_state_path,
+    fanxiu_data_annotation_task_cell_state_path as _core_task_cell_state_path,
     fanxiu_data_annotation_runtime_dir as _core_data_annotation_runtime_dir,
     fanxiu_data_annotation_runtime_logs as _core_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status as _core_data_annotation_runtime_status,
@@ -4197,8 +4197,8 @@ def _data_annotation_scheduler_settings_path() -> Path:
     return _core_scheduler_settings_path()
 
 
-def _data_annotation_manual_job_state_path() -> Path:
-    return _core_manual_job_state_path()
+def _data_annotation_task_cell_state_path() -> Path:
+    return _core_task_cell_state_path()
 
 
 def _data_annotation_job_group_isolation_path() -> Path:
@@ -4250,7 +4250,7 @@ def _repair_orphaned_data_annotation_scheduler_runs(tasks: list[dict[str, Any]])
     _sync_data_annotation_runtime_runner_to_core()
     return _runtime_control.repair_orphaned_scheduler_runs(
         tasks,
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
     )
 
 
@@ -4320,7 +4320,7 @@ def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
     return _runtime_control.read_scheduler_tasks(
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
         now=datetime.now(),
     )
 
@@ -4329,39 +4329,39 @@ def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
     _runtime_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
 
 
-def _read_data_annotation_manual_jobs() -> list[dict[str, Any]]:
-    return _runtime_control.read_manual_jobs(_data_annotation_manual_job_state_path())
+def _read_data_annotation_task_cells() -> list[dict[str, Any]]:
+    return _runtime_control.read_task_cells(_data_annotation_task_cell_state_path())
 
 
-def _write_data_annotation_manual_jobs(jobs: list[dict[str, Any]]) -> None:
-    _runtime_control.write_manual_jobs(jobs, _data_annotation_manual_job_state_path())
+def _write_data_annotation_task_cells(task_cells: list[dict[str, Any]]) -> None:
+    _runtime_control.write_task_cells(task_cells, _data_annotation_task_cell_state_path())
 
 
-def _requeue_running_data_annotation_manual_jobs() -> int:
-    return _runtime_control.requeue_running_manual_jobs(_data_annotation_manual_job_state_path())
+def _requeue_running_data_annotation_task_cells() -> int:
+    return _runtime_control.requeue_running_task_cells(_data_annotation_task_cell_state_path())
 
 
-def _remove_data_annotation_manual_job(job_id: str) -> None:
-    _runtime_control.remove_manual_job(job_id, _data_annotation_manual_job_state_path())
+def _remove_data_annotation_task_cell(cell_id: str) -> None:
+    _runtime_control.remove_task_cell(cell_id, _data_annotation_task_cell_state_path())
 
 
-def _enqueue_data_annotation_manual_job(
+def _enqueue_data_annotation_task_cell(
     task_type: str,
     payload: dict[str, Any] | None = None,
     *,
     label: str = "",
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
-    return _runtime_control.enqueue_manual_job(
+    return _runtime_control.enqueue_task_cell(
         task_type,
         payload,
         label=label,
         interruptible=interruptible,
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
     )
 
 
-def _queue_data_annotation_manual_job_status(
+def _queue_data_annotation_task_cell_status(
     *,
     entry: UserDevice,
     entry_id: str,
@@ -4379,40 +4379,22 @@ def _queue_data_annotation_manual_job_status(
         label=label,
         interruptible=interruptible,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
-def _submit_data_annotation_manual_job(
-    *,
-    entry: UserDevice,
-    entry_id: str,
-    task_type: str,
-    payload: dict[str, Any] | None = None,
-    label: str = "",
-    interruptible: bool | None = None,
-) -> dict[str, Any]:
-    return _submit_data_annotation_task_cell(
-        entry,
-        entry_id,
-        task_type,
-        payload,
-        source="compat_manual_job",
-    )
+def _pop_next_data_annotation_task_cell() -> dict[str, Any] | None:
+    return _runtime_control.pop_next_task_cell(_data_annotation_task_cell_state_path())
 
 
-def _pop_next_data_annotation_manual_job() -> dict[str, Any] | None:
-    return _runtime_control.pop_next_manual_job(_data_annotation_manual_job_state_path())
-
-
-def _start_next_data_annotation_manual_job_if_idle(entry: UserDevice, entry_id: str) -> dict[str, Any] | None:
+def _start_next_data_annotation_task_cell_if_idle(entry: UserDevice, entry_id: str) -> dict[str, Any] | None:
     _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.start_next_manual_job_if_idle(
+    return _runtime_control.start_next_task_cell_if_idle(
         entry=entry,
         entry_id=entry_id,
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
 
@@ -4460,7 +4442,7 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
     )
 
 
@@ -4533,7 +4515,7 @@ def _submit_data_annotation_task_cell(
             task_type=task_type,
             payload=cell_payload,
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
+            task_cell_path=_data_annotation_task_cell_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
@@ -4575,7 +4557,7 @@ def _submit_data_annotation_code_cell(
             timeout_seconds=req.timeout_seconds,
             max_output_chars=req.max_output_chars,
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
+            task_cell_path=_data_annotation_task_cell_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
@@ -6427,13 +6409,13 @@ def _runtime_cell_source(payload: dict[str, Any]) -> str:
             "current_job": "本作业",
         }.get(str(policy.get("run_mode") or ""), str(policy.get("run_mode") or "tick_once"))
         return (
-            f"{prefix}行为树.tick(\n"
-            f"    守护={_runtime_cell_bool(policy.get('guard', True))},\n"
-            f"    任务cell={_runtime_cell_bool(policy.get('task_cell', True))},\n"
-            f"    到期作业={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
-            f"    运行模式={_runtime_cell_py_literal(mode_name)},\n"
-            f"    最大次数={int(policy.get('max_ticks') or 1)},\n"
-            f"    超时秒={float(policy.get('timeout_seconds') or 10.0):g},\n"
+            f"{prefix}runtime_framework.execute_tick(\n"
+            f"    guard={_runtime_cell_bool(policy.get('guard', True))},\n"
+            f"    task_cell={_runtime_cell_bool(policy.get('task_cell', True))},\n"
+            f"    scheduled_job={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
+            f"    run_mode={_runtime_cell_py_literal(mode_name)},\n"
+            f"    max_ticks={int(policy.get('max_ticks') or 1)},\n"
+            f"    timeout_seconds={float(policy.get('timeout_seconds') or 10.0):g},\n"
             f")"
         )
     if cmd == "submit_task_tick":
@@ -6547,7 +6529,7 @@ def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
 
 def _runtime_cell_log_boundary(entry: FanxiuDataAnnotationRuntimeLogEntry) -> bool:
     message = entry.message
-    return ("启动" in message and "任务" in message) or "作业已启动" in message or "手动作业已启动" in message or "Scheduler：启动" in message
+    return ("启动" in message and "任务" in message) or "作业已启动" in message or "task cell 已启动" in message or "Scheduler：启动" in message
 
 
 @status_router.get("/data-annotation/runtime/cell-logs", response_model=FanxiuDataAnnotationRuntimeCellLogResponse)
@@ -6731,7 +6713,7 @@ def put_fanxiu_data_annotation_scheduler_tasks(
         [item.model_dump() for item in tasks],
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
         now=datetime.now(),
     )
     _sync_data_annotation_runtime_runner_to_core()
@@ -6818,7 +6800,7 @@ def _run_now_fanxiu_data_annotation_scheduler_task(
             scheduler_state_path=_data_annotation_scheduler_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
-            manual_job_path=_data_annotation_manual_job_state_path(),
+            task_cell_path=_data_annotation_task_cell_state_path(),
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         )
     except LookupError as exc:
@@ -6840,7 +6822,7 @@ def _run_due_fanxiu_data_annotation_scheduler_tasks(
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
+        task_cell_path=_data_annotation_task_cell_state_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)

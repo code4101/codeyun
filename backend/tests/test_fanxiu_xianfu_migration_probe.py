@@ -423,7 +423,7 @@ def test_preflight_report_combines_audit_queue_and_wait_plan(monkeypatch, tmp_pa
         },
     )
     monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_manual_jobs",
+        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_task_cells",
         lambda: [],
     )
     monkeypatch.setattr(
@@ -440,7 +440,7 @@ def test_preflight_report_combines_audit_queue_and_wait_plan(monkeypatch, tmp_pa
     assert report["ok"] is True
     assert report["asset_audit_ok"] is True
     assert report["image_175_present"] is False
-    assert report["manual_job_count"] == 0
+    assert report["task_cell_count"] == 0
     assert report["wait_plan"]["next_time"] == "2026-06-10 23:00:00"
     assert report["asset_audit_output"] == "audit.json"
 
@@ -451,7 +451,7 @@ def test_preflight_report_not_ok_when_manual_queue_not_empty(monkeypatch, tmp_pa
         lambda **_kwargs: {"ok": True, "rows": [], "output_json": "audit.json"},
     )
     monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_manual_jobs",
+        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_task_cells",
         lambda: [{"id": "manual-1", "status": "pending", "task_type": "go_scene", "label": "go"}],
     )
     monkeypatch.setattr("scripts.fanxiu_xianfu_capture_continue.read_scheduler_tasks", lambda: [])
@@ -462,8 +462,8 @@ def test_preflight_report_not_ok_when_manual_queue_not_empty(monkeypatch, tmp_pa
     )
 
     assert report["ok"] is False
-    assert report["manual_job_count"] == 1
-    assert report["manual_jobs"][0]["id"] == "manual-1"
+    assert report["task_cell_count"] == 1
+    assert report["task_cells"][0]["id"] == "manual-1"
 
 
 def test_run_runtime_after_install_direct_always_waits(monkeypatch):
@@ -489,3 +489,4 @@ def test_run_runtime_after_install_direct_always_waits(monkeypatch):
     assert "--wait-timeout-seconds" in command
     assert command[command.index("--wait-timeout-seconds") + 1] == "123.0"
     assert command[-2:] == ["task", "xianfu_visit_partner"]
+
