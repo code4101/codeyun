@@ -11,14 +11,14 @@ from typing import Any, Sequence
 from pyxllib.prog import BehaviorTreeStatus
 
 from backend.core.fanxiu.data_annotation.jobs import (
-    get_fanxiu_data_annotation_manual_job_definition,
+    get_fanxiu_data_annotation_task_cell_definition,
     normalize_data_annotation_debug_eval_payload,
-    register_fanxiu_data_annotation_manual_job,
+    register_fanxiu_data_annotation_task_cell,
 )
 
 
 class DataAnnotationRuntimeDebugContext:
-    """Stable facade injected as ``ctx`` for ``debug_eval`` manual jobs."""
+    """Stable facade injected as ``ctx`` for ``debug_eval`` code cells."""
 
     def __init__(
         self,
@@ -322,16 +322,16 @@ def run_data_annotation_debug_eval(
 
 
 def register_fanxiu_data_annotation_debug_eval_job() -> None:
-    if get_fanxiu_data_annotation_manual_job_definition("debug_eval") is not None:
+    if get_fanxiu_data_annotation_task_cell_definition("debug_eval") is not None:
         return
 
-    @register_fanxiu_data_annotation_manual_job(
+    @register_fanxiu_data_annotation_task_cell(
         "debug_eval",
         "调试代码",
         scheduler_supported=False,
         normalize_payload=normalize_data_annotation_debug_eval_payload,
     )
-    def _run_data_annotation_debug_eval_manual_job(
+    def _run_data_annotation_debug_eval_task_cell(
         runner: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],

@@ -33,7 +33,7 @@ _RUNTIME_PHASE_LABELS = {
     "idle_tick": "空闲",
     "idle_guard": "空闲巡检中",
     "idle_guard_done": "空闲巡检完成",
-    "manual_job_poll": "检查 task cell 队列",
+    "task_cell_poll": "检查 task cell 队列",
     "scheduler_poll": "检查定时作业",
     "scheduler_isolated": "执行定时作业",
     "waiting_context": "等待运行环境",
@@ -560,7 +560,7 @@ def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
     }
 
 
-def normalize_data_annotation_manual_job(item: Any) -> dict[str, Any] | None:
+def normalize_data_annotation_task_cell(item: Any) -> dict[str, Any] | None:
     return normalize_job_record(item, default_group="manual_job")
 
 

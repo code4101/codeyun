@@ -861,7 +861,7 @@ def test_fanxiu_behavior_tree_serializes_inspect_action():
         "state_label": "运行中",
         "current_scene": 121,
         "current_task": "go_scene",
-        "phase": "manual_job",
+        "phase": "task_cell",
         "guard_enabled": True,
         "service_running": True,
         "task_running": True,
@@ -1085,7 +1085,7 @@ def test_builtin_fanxiu_behavior_tree_logs_include_owner_queue_and_doctor(sessio
     )
     monkeypatch.setattr(
         runtime_core,
-        "fanxiu_data_annotation_manual_jobs",
+        "fanxiu_data_annotation_task_cells",
         lambda: [{"id": "job-1", "status": "queued", "task_type": "go_scene", "label": "回世界"}],
     )
     monkeypatch.setattr(
@@ -1207,3 +1207,4 @@ def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monk
     )
 
     assert fanxiu_service._get_primary_lan_address() == "192.168.31.15"
+

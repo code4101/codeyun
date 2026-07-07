@@ -135,7 +135,7 @@ shape 的行为由标注字段决定：
    - 内部串联场景等待、shape 解析、条件等待、点击。
    - 保持 generator 语义，能在行为树中 `yield from`。
 
-4. 增加 debug_eval API
+4. 增加 code cell 调试入口
    - `ctx.wait_click("#247", "[秘藏阁]")`。
    - 用于手动验证标注和 Runtime 行为。
 
@@ -155,7 +155,7 @@ shape 的行为由标注字段决定：
 
 最小验收：
 
-- `ctx.wait_click("#247", "[秘藏阁]")` 能在 debug_eval act 模式表达并执行。
+- `ctx.wait_click("#247", "[秘藏阁]")` 能通过 code cell 的 act 模式表达并执行。
 - `ctx.wait_click("#247", "[下方菜单/秘藏阁]")` 能精确命中嵌套 shape。
 - shape 无 OCR/图像条件时仍能点击。
 - frame 无场景标识时不会因无法等待场景而失败。

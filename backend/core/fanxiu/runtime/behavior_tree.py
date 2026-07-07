@@ -40,7 +40,7 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_runtime_status,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
-    list_fanxiu_data_annotation_manual_job_definitions,
+    list_fanxiu_data_annotation_task_cell_definitions,
     parse_data_annotation_scene_id,
 )
 from backend.core.fanxiu.data_annotation.debug_eval import register_fanxiu_data_annotation_debug_eval_job
@@ -148,7 +148,7 @@ def fanxiu_data_annotation_scheduler_settings_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "scheduler_settings.json"
 
 
-def fanxiu_data_annotation_manual_job_state_path() -> Path:
+def fanxiu_data_annotation_task_cell_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "manual_jobs.json"
 
 
@@ -263,7 +263,7 @@ def _restart_stuck_external_service_for_pending_jobs(owner: dict[str, Any]) -> d
         return {"restarted": False, "reason": "owner_not_in_task_running", "step": owner.get("step") or ""}
     jobs = [
         item
-        for item in fanxiu_data_annotation_manual_jobs()
+        for item in fanxiu_data_annotation_task_cells()
         if str(item.get("status") or "") in {"pending", "queued", "running"}
     ]
     if not jobs:
@@ -656,7 +656,7 @@ def ensure_fanxiu_default_runtime_jobs_registered() -> None:
     ensure_fanxiu_runtime_jobs_registered()
 
 
-def fanxiu_data_annotation_manual_job_catalog() -> list[dict[str, Any]]:
+def fanxiu_data_annotation_task_cell_catalog() -> list[dict[str, Any]]:
     ensure_fanxiu_runtime_jobs_registered()
     return [
         {
@@ -666,7 +666,7 @@ def fanxiu_data_annotation_manual_job_catalog() -> list[dict[str, Any]]:
             "scheduler_supported": bool(definition.scheduler_supported),
             "has_payload_normalizer": definition.normalize_payload is not None,
         }
-        for definition in list_fanxiu_data_annotation_manual_job_definitions()
+        for definition in list_fanxiu_data_annotation_task_cell_definitions()
     ]
 
 
@@ -697,7 +697,7 @@ def fanxiu_runtime_task_label(task_type: str, payload: dict[str, Any] | None = N
     return get_fanxiu_runtime_runner()._runtime_task_label(task_type, payload)
 
 
-def start_fanxiu_manual_runtime_task(
+def start_fanxiu_task_cell(
     *,
     entry: Any,
     entry_id: str,
@@ -706,7 +706,7 @@ def start_fanxiu_manual_runtime_task(
 ) -> dict[str, Any]:
     ensure_fanxiu_runtime_jobs_registered()
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or DEFAULT_FANXIU_ENTRY_ID)
-    return get_fanxiu_runtime_runner().start_manual_runtime_task(
+    return get_fanxiu_runtime_runner().start_task_cell(
         entry=entry,
         entry_id=resolved_entry_id,
         task=task,
@@ -793,7 +793,7 @@ def fanxiu_data_annotation_runtime_status(
         if bool(status.get("running")) and owner_step in {
             "idle_guard",
             "idle_guard_done",
-            "manual_job_poll",
+            "task_cell_poll",
             "scheduler_poll",
             "scheduler_isolated",
             "waiting_context",
@@ -935,43 +935,43 @@ def clear_fanxiu_data_annotation_runtime_logs(
     return status
 
 
-def fanxiu_data_annotation_manual_jobs() -> list[dict[str, Any]]:
+def fanxiu_data_annotation_task_cells() -> list[dict[str, Any]]:
     from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 
-    return runtime_control.read_manual_jobs(fanxiu_data_annotation_manual_job_state_path())
+    return runtime_control.read_task_cells(fanxiu_data_annotation_task_cell_state_path())
 
 
-def cancel_fanxiu_local_manual_job(job_id: str, *, force: bool = False) -> dict[str, Any]:
+def cancel_fanxiu_task_cell(job_id: str, *, force: bool = False) -> dict[str, Any]:
     from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 
     resolved_job_id = str(job_id or "").strip()
     if not resolved_job_id:
         raise ValueError("job_id is required")
-    path = fanxiu_data_annotation_manual_job_state_path()
-    jobs = runtime_control.read_manual_jobs(path)
+    path = fanxiu_data_annotation_task_cell_state_path()
+    jobs = runtime_control.read_task_cells(path)
     target = next((job for job in jobs if str(job.get("id") or "") == resolved_job_id), None)
     if target is None:
         return {"cancelled": False, "reason": "not_found", "job_id": resolved_job_id, "remaining": len(jobs)}
     if str(target.get("status") or "") == "running" and not force:
         return {"cancelled": False, "reason": "running", "job_id": resolved_job_id, "remaining": len(jobs)}
-    runtime_control.remove_manual_job(resolved_job_id, path)
+    runtime_control.remove_task_cell(resolved_job_id, path)
     return {"cancelled": True, "job_id": resolved_job_id, "remaining": len(jobs) - 1}
 
 
-def clear_fanxiu_local_manual_jobs(*, force: bool = False) -> dict[str, Any]:
+def clear_fanxiu_task_cells(*, force: bool = False) -> dict[str, Any]:
     from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 
-    path = fanxiu_data_annotation_manual_job_state_path()
-    jobs = runtime_control.read_manual_jobs(path)
+    path = fanxiu_data_annotation_task_cell_state_path()
+    jobs = runtime_control.read_task_cells(path)
     kept, removed = clear_job_queue(
         jobs,
         keep_job=lambda job: str(job.get("status") or "") == "running" and not force,
     )
-    runtime_control.write_manual_jobs(kept, path)
+    runtime_control.write_task_cells(kept, path)
     return {"removed": removed, "remaining": len(kept)}
 
 
-def wait_fanxiu_local_manual_job(
+def wait_fanxiu_task_cell(
     job_id: str,
     *,
     timeout_seconds: float = 300.0,
@@ -984,7 +984,7 @@ def wait_fanxiu_local_manual_job(
     interval = max(0.1, float(poll_seconds or 0.5))
     last_status: dict[str, Any] = {}
     while True:
-        jobs = fanxiu_data_annotation_manual_jobs()
+        jobs = fanxiu_data_annotation_task_cells()
         matching_job = next((job for job in jobs if str(job.get("id") or "") == resolved_job_id), None)
         status = fanxiu_data_annotation_runtime_status()
         last_status = status
@@ -1037,17 +1037,19 @@ def wait_fanxiu_queued_status(
     timeout_seconds: float = 300.0,
     poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
-    queued_job = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_job.get("id") or "")
+    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
+    if not queued_cell:
+        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
+    job_id = str(queued_cell.get("id") or "")
     if not job_id:
         return {
             "done": False,
-            "result": "missing_queued_job_id",
+            "result": "missing_queued_cell_id",
             "job_id": "",
             "submitted_status": status,
             "runtime_status": status,
         }
-    result = wait_fanxiu_local_manual_job(job_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+    result = wait_fanxiu_task_cell(job_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
     return {**result, "submitted_status": status}
 
 
@@ -1157,10 +1159,11 @@ def submit_fanxiu_task_cell(
         task_type=str(task_type or ""),
         payload=payload_dict,
         asset_tree_path=data_annotation_asset_tree_path(resolved_entry_id),
-        manual_job_path=fanxiu_data_annotation_manual_job_state_path(),
+        task_cell_path=fanxiu_data_annotation_task_cell_state_path(),
         runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
         world_facts_path=fanxiu_data_annotation_world_facts_path(),
     )
+    status = _normalize_queued_cell_status(status)
     if not wait:
         return status
     wait_result = wait_fanxiu_queued_status(
@@ -1210,10 +1213,11 @@ def submit_fanxiu_code_cell(
         task_type="debug_eval",
         payload=payload,
         asset_tree_path=data_annotation_asset_tree_path(resolved_entry_id),
-        manual_job_path=fanxiu_data_annotation_manual_job_state_path(),
+        task_cell_path=fanxiu_data_annotation_task_cell_state_path(),
         runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
         world_facts_path=fanxiu_data_annotation_world_facts_path(),
     )
+    status = _normalize_queued_cell_status(status)
     if not wait:
         return status
     wait_result = wait_fanxiu_queued_status(
@@ -1260,13 +1264,26 @@ def _fanxiu_task_wait_timeout_seconds(payload: dict[str, Any], *, fallback: floa
     return float(fallback)
 
 
+def _normalize_queued_cell_status(status: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(status or {})
+    queued_cell = normalized.get("queued_cell") if isinstance(normalized.get("queued_cell"), dict) else {}
+    if not queued_cell:
+        queued_cell = normalized.get("queued_job") if isinstance(normalized.get("queued_job"), dict) else {}
+    if queued_cell:
+        normalized["queued_cell"] = queued_cell
+        normalized["queued_job"] = queued_cell
+    return normalized
+
+
 def _fanxiu_completed_runtime_status(
     submitted_status: dict[str, Any],
     wait_result: dict[str, Any],
 ) -> dict[str, Any]:
     runtime_status = wait_result.get("runtime_status") if isinstance(wait_result.get("runtime_status"), dict) else {}
     status = dict(runtime_status or submitted_status)
-    status["queued_job"] = submitted_status.get("queued_job") or status.get("queued_job") or {}
+    submitted_status = _normalize_queued_cell_status(submitted_status)
+    status["queued_cell"] = submitted_status.get("queued_cell") or status.get("queued_cell") or {}
+    status["queued_job"] = status["queued_cell"]
     status["wait_result"] = {
         key: value
         for key, value in wait_result.items()
@@ -1276,7 +1293,7 @@ def _fanxiu_completed_runtime_status(
         status["status"] = "error"
         status["phase"] = "task_cell_wait_failed"
         status["error"] = str(wait_result.get("result") or "task_cell_wait_failed")
-        status["message"] = f"queued job 未完成：{status['error']}"
+        status["message"] = f"queued cell 未完成：{status['error']}"
     return status
 
 

@@ -6,11 +6,11 @@ from typing import Any, Callable
 
 from pyxllib.prog import create_job_record, job_queue_state, pop_next_job, read_job_queue, requeue_running_jobs
 
-from backend.core.fanxiu.data_annotation.state import normalize_data_annotation_manual_job
+from backend.core.fanxiu.data_annotation.state import normalize_data_annotation_task_cell
 
 
 @dataclass(frozen=True)
-class DataAnnotationManualJobDefinition:
+class DataAnnotationTaskCellDefinition:
     task_type: str
     label: str
     handler: Callable[[Any, dict[str, Any], dict[str, Any], threading.Event], Any]
@@ -19,7 +19,7 @@ class DataAnnotationManualJobDefinition:
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
-_DATA_ANNOTATION_MANUAL_JOB_REGISTRY: dict[str, DataAnnotationManualJobDefinition] = {}
+_DATA_ANNOTATION_TASK_CELL_REGISTRY: dict[str, DataAnnotationTaskCellDefinition] = {}
 _DATA_ANNOTATION_JOB_GROUP_ORDER = {"guard": 10, "manual_job": 50, "job": 100}
 _DEPRECATED_DATA_ANNOTATION_JOB_TYPES = {
     "daily_yihuo",
@@ -30,7 +30,7 @@ def is_deprecated_data_annotation_job_type(task_type: str) -> bool:
     return str(task_type or "").strip() in _DEPRECATED_DATA_ANNOTATION_JOB_TYPES
 
 
-def register_fanxiu_data_annotation_manual_job(
+def register_fanxiu_data_annotation_task_cell(
     task_type: str,
     label: str,
     *,
@@ -38,15 +38,15 @@ def register_fanxiu_data_annotation_manual_job(
     interruptible: bool = True,
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ):
-    """Register a backend-defined data-annotation job consumed by the resident behavior tree."""
+    """Register a backend-defined task cell consumed by the resident behavior tree."""
     task_type = str(task_type or "").strip()
     if not task_type:
-        raise ValueError("manual job task_type is required")
+        raise ValueError("task cell task_type is required")
 
     def decorator(handler: Callable[[Any, dict[str, Any], dict[str, Any], threading.Event], Any]):
         if is_deprecated_data_annotation_job_type(task_type):
             return handler
-        _DATA_ANNOTATION_MANUAL_JOB_REGISTRY[task_type] = DataAnnotationManualJobDefinition(
+        _DATA_ANNOTATION_TASK_CELL_REGISTRY[task_type] = DataAnnotationTaskCellDefinition(
             task_type=task_type,
             label=str(label or task_type),
             handler=handler,
@@ -59,17 +59,17 @@ def register_fanxiu_data_annotation_manual_job(
     return decorator
 
 
-def get_fanxiu_data_annotation_manual_job_definition(task_type: str) -> DataAnnotationManualJobDefinition | None:
+def get_fanxiu_data_annotation_task_cell_definition(task_type: str) -> DataAnnotationTaskCellDefinition | None:
     normalized = str(task_type or "").strip()
     if is_deprecated_data_annotation_job_type(normalized):
         return None
-    return _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.get(normalized)
+    return _DATA_ANNOTATION_TASK_CELL_REGISTRY.get(normalized)
 
 
-def list_fanxiu_data_annotation_manual_job_definitions() -> list[DataAnnotationManualJobDefinition]:
+def list_fanxiu_data_annotation_task_cell_definitions() -> list[DataAnnotationTaskCellDefinition]:
     return [
-        _DATA_ANNOTATION_MANUAL_JOB_REGISTRY[key]
-        for key in sorted(_DATA_ANNOTATION_MANUAL_JOB_REGISTRY)
+        _DATA_ANNOTATION_TASK_CELL_REGISTRY[key]
+        for key in sorted(_DATA_ANNOTATION_TASK_CELL_REGISTRY)
         if not is_deprecated_data_annotation_job_type(key)
     ]
 
@@ -115,36 +115,36 @@ def normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dic
     }
 
 
-def read_data_annotation_manual_jobs(raw: Any) -> list[dict[str, Any]]:
-    return read_job_queue(raw, normalizer=normalize_data_annotation_manual_job)
+def read_data_annotation_task_cells(raw: Any) -> list[dict[str, Any]]:
+    return read_job_queue(raw, normalizer=normalize_data_annotation_task_cell)
 
 
-def data_annotation_manual_jobs_state(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return job_queue_state(jobs)
+def data_annotation_task_cells_state(task_cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return job_queue_state(task_cells)
 
 
-def requeue_running_data_annotation_manual_jobs(
-    jobs: list[dict[str, Any]],
+def requeue_running_data_annotation_task_cells(
+    task_cells: list[dict[str, Any]],
     *,
     now: float | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     def should_requeue(job: dict[str, Any]) -> bool:
-        # Current non-mail manual jobs can perform non-idempotent actions, so
-        # do not replay them after a reload. Legacy running records may lack a
+        # Current non-mail task cells can perform non-idempotent actions, so do
+        # not replay them after a reload. Legacy running records may lack a
         # group marker; keep requeueing those so older local state can recover.
         return str(job.get("task_type") or "") in {"mail_cleanup", "mail_claim_check", "detect_scene", "manual_tick"}
 
-    return requeue_running_jobs(jobs, keep_running_job=should_requeue, now=now)
+    return requeue_running_jobs(task_cells, keep_running_job=should_requeue, now=now)
 
 
-def create_data_annotation_manual_job(
+def create_data_annotation_task_cell(
     task_type: str,
     payload: dict[str, Any] | None = None,
     *,
     label: str = "",
     group: str = "manual_job",
     interruptible: bool | None = None,
-    definition: DataAnnotationManualJobDefinition | None = None,
+    definition: DataAnnotationTaskCellDefinition | None = None,
     task_label: Callable[[str, dict[str, Any]], str] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
@@ -169,6 +169,6 @@ def create_data_annotation_manual_job(
     )
 
 
-def pop_next_data_annotation_manual_job(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    return pop_next_job(jobs, group_order=_DATA_ANNOTATION_JOB_GROUP_ORDER)
+def pop_next_data_annotation_task_cell(task_cells: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    return pop_next_job(task_cells, group_order=_DATA_ANNOTATION_JOB_GROUP_ORDER)
 

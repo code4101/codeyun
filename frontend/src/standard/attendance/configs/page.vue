@@ -125,24 +125,6 @@ function getDeviceLabel(device: Device) {
   return `${device.name} · ${device.mode === 'local' ? '本地设备' : '远程设备'}`
 }
 
-const selectedExecutionDeviceLabel = computed(() => {
-  if (!currentExecutionDeviceId.value) return '未设置'
-  const device = deviceOptions.value.find(item => item.id === currentExecutionDeviceId.value)
-  return device ? getDeviceLabel(device) : (currentExecutionDeviceLabel.value || '未设置')
-})
-
-const selectedCourseBrowserDeviceLabel = computed(() => {
-  if (!courseBrowserDeviceId.value) return '继承采集与订单默认执行设备'
-  const device = deviceOptions.value.find(item => item.id === courseBrowserDeviceId.value)
-  return device ? getDeviceLabel(device) : (courseBrowserDeviceLabel.value || '未设置')
-})
-
-const selectedCourseDataDeviceLabel = computed(() => {
-  if (!courseDataDeviceId.value) return '当前 CodeYun 实例'
-  const device = deviceOptions.value.find(item => item.id === courseDataDeviceId.value)
-  return device ? getDeviceLabel(device) : (courseDataDeviceLabel.value || '未设置')
-})
-
 const stepRunnerRows = computed(() => stepRunners.value.length ? stepRunners.value : fallbackStepRunners)
 
 const stepOverrideCount = computed(() => (
@@ -487,12 +469,6 @@ onMounted(() => {
 
         </el-form>
 
-        <div class="summary-strip">
-          <span>课程数据浏览器：{{ selectedCourseBrowserDeviceLabel }}</span>
-          <span>课程数据主机：{{ selectedCourseDataDeviceLabel }}</span>
-          <span>步骤覆盖：{{ stepOverrideCount ? `${stepOverrideCount} 个` : '使用默认规则' }}</span>
-        </div>
-
         <div class="action-row">
           <el-button type="primary" :icon="Check" :loading="savingCourseDataFlow" @click="saveCourseDataFlowConfig">
             保存课程数据配置
@@ -570,13 +546,6 @@ onMounted(() => {
             </div>
           </el-form-item>
         </el-form>
-
-        <div class="summary-strip">
-          <span>默认执行设备：{{ selectedExecutionDeviceLabel }}</span>
-          <span>扫码提醒：{{ parseLines(scanReminderText).join('、') || '未配置' }}</span>
-          <span>查单模式：{{ orderLookupModeOptions.find(item => item.value === currentOrderLookupMode)?.label || '强制网页查最新数据' }}</span>
-          <span>操作密码：{{ clearOrderOperationPassword ? '本次保存后清空' : (orderOperationPasswordConfigured ? '已配置' : '未配置') }}</span>
-        </div>
 
         <div class="action-row">
           <el-button type="primary" :icon="Check" :loading="savingCurrent" @click="saveCurrentSelections">
@@ -718,18 +687,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.summary-strip {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 16px 0 0;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: #f8fafc;
-  color: #334155;
-  border: 1px solid #e2e8f0;
 }
 
 .field-meta-row {

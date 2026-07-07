@@ -22,7 +22,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     data_annotation_asset_tree_path,
     ensure_fanxiu_behavior_tree_service,
     ensure_fanxiu_runtime_jobs_registered,
-    fanxiu_data_annotation_manual_job_state_path,
+    fanxiu_data_annotation_task_cell_state_path,
     fanxiu_data_annotation_runtime_state_path,
     fanxiu_data_annotation_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path,
@@ -37,17 +37,17 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     replace_fanxiu_runtime_logs,
     set_fanxiu_runtime_guard,
     set_fanxiu_runtime_guard_group_enabled,
-    start_fanxiu_manual_runtime_task,
+    start_fanxiu_task_cell,
     stop_fanxiu_behavior_tree_current_task,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
-    create_data_annotation_manual_job,
-    data_annotation_manual_jobs_state,
-    get_fanxiu_data_annotation_manual_job_definition,
+    create_data_annotation_task_cell,
+    data_annotation_task_cells_state,
+    get_fanxiu_data_annotation_task_cell_definition,
     is_deprecated_data_annotation_job_type,
-    pop_next_data_annotation_manual_job,
-    read_data_annotation_manual_jobs,
-    requeue_running_data_annotation_manual_jobs,
+    pop_next_data_annotation_task_cell,
+    read_data_annotation_task_cells,
+    requeue_running_data_annotation_task_cells,
 )
 from backend.core.fanxiu.data_annotation.scheduler import (
     build_data_annotation_scheduler_plan,
@@ -335,44 +335,44 @@ def normalize_runtime_guard_items(status: dict[str, Any]) -> None:
     normalize_data_annotation_runtime_guard_items(status, fanxiu_runtime_guard_definitions())
 
 
-def read_manual_jobs(path: Path | None = None) -> list[dict[str, Any]]:
-    raw = read_data_annotation_json(path or fanxiu_data_annotation_manual_job_state_path(), [])
-    return read_data_annotation_manual_jobs(raw)
+def read_task_cells(path: Path | None = None) -> list[dict[str, Any]]:
+    raw = read_data_annotation_json(path or fanxiu_data_annotation_task_cell_state_path(), [])
+    return read_data_annotation_task_cells(raw)
 
 
-def write_manual_jobs(jobs: list[dict[str, Any]], path: Path | None = None) -> None:
-    write_data_annotation_json(path or fanxiu_data_annotation_manual_job_state_path(), data_annotation_manual_jobs_state(jobs))
+def write_task_cells(task_cells: list[dict[str, Any]], path: Path | None = None) -> None:
+    write_data_annotation_json(path or fanxiu_data_annotation_task_cell_state_path(), data_annotation_task_cells_state(task_cells))
 
 
-def requeue_running_manual_jobs(path: Path | None = None) -> int:
-    jobs = read_manual_jobs(path)
-    updated, changed_count = requeue_running_data_annotation_manual_jobs(jobs)
+def requeue_running_task_cells(path: Path | None = None) -> int:
+    task_cells = read_task_cells(path)
+    updated, changed_count = requeue_running_data_annotation_task_cells(task_cells)
     if changed_count:
-        write_manual_jobs(updated, path)
+        write_task_cells(updated, path)
     return changed_count
 
 
-def remove_manual_job(job_id: str, path: Path | None = None) -> None:
-    job_id = str(job_id or "")
-    if not job_id:
+def remove_task_cell(cell_id: str, path: Path | None = None) -> None:
+    cell_id = str(cell_id or "")
+    if not cell_id:
         return
-    write_manual_jobs(remove_job_by_id(read_manual_jobs(path), job_id), path)
+    write_task_cells(remove_job_by_id(read_task_cells(path), cell_id), path)
 
 
-def enqueue_manual_job(
+def enqueue_task_cell(
     task_type: str,
     payload: dict[str, Any] | None = None,
     *,
     label: str = "",
     group: str = "manual_job",
     interruptible: bool | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     created_at: float | None = None,
 ) -> dict[str, Any]:
     task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
     ensure_fanxiu_runtime_jobs_registered()
-    definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
-    job = create_data_annotation_manual_job(
+    definition = get_fanxiu_data_annotation_task_cell_definition(task_type)
+    job = create_data_annotation_task_cell(
         task_type,
         payload,
         label=label,
@@ -382,40 +382,40 @@ def enqueue_manual_job(
         task_label=fanxiu_runtime_task_label,
         now=created_at if created_at is not None else time.time(),
     )
-    jobs = read_manual_jobs(manual_job_path)
+    jobs = read_task_cells(task_cell_path)
     jobs.append(job)
-    write_manual_jobs(jobs, manual_job_path)
+    write_task_cells(jobs, task_cell_path)
     return job
 
 
-def pending_scheduler_manual_job(task_id: str, *, manual_job_path: Path | None = None) -> dict[str, Any] | None:
+def pending_scheduler_task_cell(task_id: str, *, task_cell_path: Path | None = None) -> dict[str, Any] | None:
     task_id = str(task_id or "").strip()
     if not task_id:
         return None
-    for job in read_manual_jobs(manual_job_path):
+    for job in read_task_cells(task_cell_path):
         payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
         if str(payload.get("__scheduler_task_id") or "").strip() == task_id:
             return job
     return None
 
 
-def pop_next_manual_job(path: Path | None = None) -> dict[str, Any] | None:
-    jobs = read_manual_jobs(path)
-    selected, claimed_jobs = pop_next_data_annotation_manual_job(jobs)
+def pop_next_task_cell(path: Path | None = None) -> dict[str, Any] | None:
+    task_cells = read_task_cells(path)
+    selected, claimed_jobs = pop_next_data_annotation_task_cell(task_cells)
     if selected is None:
         return None
-    write_manual_jobs(claimed_jobs, path)
+    write_task_cells(claimed_jobs, path)
     return selected
 
 
 def repair_orphaned_scheduler_runs(
     tasks: list[dict[str, Any]],
     *,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     now_ts: float | None = None,
     running: bool | None = None,
 ) -> bool:
-    jobs = read_manual_jobs(manual_job_path)
+    jobs = read_task_cells(task_cell_path)
     current_ts = time.time() if now_ts is None else now_ts
     runner_running = fanxiu_runtime_runner_running() if running is None else running
     if runner_running:
@@ -445,7 +445,7 @@ def repair_orphaned_scheduler_runs(
             continue
         removed_stale_scheduler_job = True
     if removed_stale_scheduler_job:
-        write_manual_jobs(kept_jobs, manual_job_path)
+        write_task_cells(kept_jobs, task_cell_path)
         return True
     pending_scheduler_ids = job_payload_values(kept_jobs, "__scheduler_task_id")
     changed = repair_orphaned_scheduled_runs(
@@ -472,7 +472,7 @@ def repair_orphaned_scheduler_runs(
 
 def task_supported(task: dict[str, Any]) -> bool:
     ensure_fanxiu_runtime_jobs_registered()
-    definition = get_fanxiu_data_annotation_manual_job_definition(_canonical_runtime_task_type(str(task.get("task_type") or "")))
+    definition = get_fanxiu_data_annotation_task_cell_definition(_canonical_runtime_task_type(str(task.get("task_type") or "")))
     return bool(definition and definition.scheduler_supported)
 
 
@@ -480,7 +480,7 @@ def read_scheduler_tasks(
     *,
     scheduler_state_path: Path | None = None,
     world_facts_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     path = scheduler_state_path or fanxiu_data_annotation_scheduler_state_path()
@@ -492,7 +492,7 @@ def read_scheduler_tasks(
         task_supported=task_supported,
         now=now or datetime.now(),
     )
-    if repair_orphaned_scheduler_runs(tasks, manual_job_path=manual_job_path):
+    if repair_orphaned_scheduler_runs(tasks, task_cell_path=task_cell_path):
         changed = True
     if changed:
         write_scheduler_tasks(tasks, scheduler_state_path=path, preserve_runtime_state=False)
@@ -711,14 +711,14 @@ def update_scheduler_tasks(
     *,
     scheduler_state_path: Path | None = None,
     world_facts_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     tasks = merge_data_annotation_scheduler_task_updates(
         read_scheduler_tasks(
             scheduler_state_path=scheduler_state_path,
             world_facts_path=world_facts_path,
-            manual_job_path=manual_job_path,
+            task_cell_path=task_cell_path,
             now=now,
         ),
         updates,
@@ -728,7 +728,7 @@ def update_scheduler_tasks(
     return read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         now=now,
     )
 
@@ -752,7 +752,7 @@ def runtime_status(
         if bool(status.get("running")) and owner_step in {
             "idle_guard",
             "idle_guard_done",
-            "manual_job_poll",
+            "task_cell_poll",
             "scheduler_poll",
             "scheduler_isolated",
             "waiting_context",
@@ -908,7 +908,7 @@ def submit_tick_task(
     task_type: str | None = None,
     payload: dict[str, Any] | None = None,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -922,7 +922,7 @@ def submit_tick_task(
         payload=payload,
         label="单步识别" if resolved_task_type == "detect_scene" else "",
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
@@ -933,7 +933,7 @@ def execute_runtime_tick(
     entry: Any,
     entry_id: str,
     guard: bool = True,
-    manual_job: bool = True,
+    task_cell: bool = True,
     scheduled_job: bool = True,
     run_mode: str = "tick_once",
     max_ticks: int = 10,
@@ -956,7 +956,7 @@ def execute_runtime_tick(
             "ran": False,
             "reason": "kernel_disabled",
             "guard": bool(guard),
-            "manual_job": bool(manual_job),
+            "task_cell": bool(task_cell),
             "scheduled_job": bool(scheduled_job),
             "run_mode": str(run_mode or "tick_once"),
             "ticks": 0,
@@ -968,7 +968,7 @@ def execute_runtime_tick(
         )
     status = get_fanxiu_runtime_runner().run_service_ticks(
         guard=guard,
-        manual_job=manual_job,
+        task_cell=bool(task_cell),
         scheduled_job=scheduled_job,
         run_mode=run_mode,
         max_ticks=max_ticks,
@@ -1017,34 +1017,36 @@ def queue_runtime_task_cell_status(
     interruptible: bool | None = None,
     created_at: float | None = None,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
-    job = enqueue_manual_job(
+    job = enqueue_task_cell(
         task_type,
         payload,
         label=label,
         group=group,
         interruptible=interruptible,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         created_at=created_at,
     )
     fanxiu_runtime_runner_wake()
     status = fanxiu_runtime_runner_status()
+    queued_cell = {
+        "id": job.get("id"),
+        "task_type": job.get("task_type"),
+        "label": job.get("label"),
+        "group": job.get("group"),
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+    }
     status.update({
         "entry_id": entry_id,
-        "phase": "manual_job_queued",
+        "phase": "task_cell_queued",
         "message": f"task cell 已排队：{job.get('label') or job.get('task_type')}",
-        "queued_job": {
-            "id": job.get("id"),
-            "task_type": job.get("task_type"),
-            "label": job.get("label"),
-            "group": job.get("group"),
-            "status": job.get("status"),
-            "created_at": job.get("created_at"),
-        },
+        "queued_cell": queued_cell,
+        "queued_job": queued_cell,
         "updated_at": time.time(),
     })
     append_status_log(
@@ -1071,14 +1073,14 @@ def submit_runtime_task_cell(
     interruptible: bool | None = None,
     created_at: float | None = None,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
     if is_deprecated_data_annotation_job_type(task_type):
         raise ValueError(f"作业已删除，不再支持：{task_type}")
-    definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
+    definition = get_fanxiu_data_annotation_task_cell_definition(task_type)
     if definition is None:
         raise ValueError(f"暂不支持的任务类型：{task_type}")
     return queue_runtime_task_cell_status(
@@ -1091,24 +1093,24 @@ def submit_runtime_task_cell(
         interruptible=interruptible if interruptible is not None else definition.interruptible,
         created_at=created_at,
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
 
-def start_next_manual_job_if_idle(
+def start_next_task_cell_if_idle(
     entry: Any,
     entry_id: str,
     *,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any] | None:
     if fanxiu_runtime_runner_running():
         return None
-    task = pop_next_manual_job(manual_job_path)
+    task = pop_next_task_cell(task_cell_path)
     if task is None:
         return None
-    return start_fanxiu_manual_runtime_task(
+    return start_fanxiu_task_cell(
         entry=entry,
         entry_id=entry_id,
         task=task,
@@ -1161,14 +1163,14 @@ def build_scheduler_plan(
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
     world_facts_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
 ) -> dict[str, Any]:
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
     plan = build_data_annotation_scheduler_plan(
         read_scheduler_tasks(
             scheduler_state_path=scheduler_state_path,
             world_facts_path=world_facts_path,
-            manual_job_path=manual_job_path,
+            task_cell_path=task_cell_path,
         ),
         fanxiu_runtime_runner_status(),
         read_world_facts(world_facts_path),
@@ -1335,13 +1337,13 @@ def run_now_scheduler_task(
     scheduler_state_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
     tasks = read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
     )
     state_task = next((item for item in tasks if item.get("id") == task_id), None)
     run_task = data_annotation_scheduler_run_now_task(tasks, task_id, payload_override)
@@ -1371,7 +1373,7 @@ def run_now_scheduler_task(
         label=f"作业实例：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
         interruptible=bool(run_task.get("interruptible", True)),
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
@@ -1386,7 +1388,7 @@ def run_due_scheduler_tasks(
     scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
@@ -1414,7 +1416,7 @@ def run_due_scheduler_tasks(
     tasks = read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
     )
     due_tasks = select_due_scheduled_tasks(
         tasks,
@@ -1464,8 +1466,8 @@ def run_due_scheduler_tasks(
         return status
     if not job_group_enabled and bool(ignore_job_group_disabled):
         due_task = due_tasks[0]
-        queued_job = pending_scheduler_manual_job(str(due_task.get("id") or ""), manual_job_path=manual_job_path)
-        if queued_job is None:
+        queued_cell_record = pending_scheduler_task_cell(str(due_task.get("id") or ""), task_cell_path=task_cell_path)
+        if queued_cell_record is None:
             due_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             due_task["last_result"] = "queued"
             write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
@@ -1479,24 +1481,26 @@ def run_due_scheduler_tasks(
                 interruptible=bool(due_task.get("interruptible", True)),
                 created_at=scheduler_task_queue_timestamp(due_task),
                 asset_tree_path=asset_tree_path,
-                manual_job_path=manual_job_path,
+                task_cell_path=task_cell_path,
                 runtime_state_path=runtime_state_path,
                 world_facts_path=world_facts_path,
             )
         else:
             status = fanxiu_runtime_runner_status()
+            queued_cell = {
+                "id": queued_cell_record.get("id"),
+                "task_type": queued_cell_record.get("task_type"),
+                "label": queued_cell_record.get("label"),
+                "group": queued_cell_record.get("group"),
+                "status": queued_cell_record.get("status"),
+                "created_at": queued_cell_record.get("created_at"),
+            }
             status.update({
                 "entry_id": entry_id,
                 "phase": "scheduler_due_queued",
                 "message": f"到期任务已在 task cell 队列等待：{due_task.get('label') or due_task.get('id')}",
-                "queued_job": {
-                    "id": queued_job.get("id"),
-                    "task_type": queued_job.get("task_type"),
-                    "label": queued_job.get("label"),
-                    "group": queued_job.get("group"),
-                    "status": queued_job.get("status"),
-                    "created_at": queued_job.get("created_at"),
-                },
+                "queued_cell": queued_cell,
+                "queued_job": queued_cell,
                 "updated_at": time.time(),
             })
             persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
@@ -1539,4 +1543,5 @@ def run_due_scheduler_tasks(
     })
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
+
 

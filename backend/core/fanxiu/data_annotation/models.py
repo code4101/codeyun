@@ -107,6 +107,7 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     error: str = ""
     logs: list[dict[str, Any]] = Field(default_factory=list)
     cell_logs: list[dict[str, Any]] = Field(default_factory=list)
+    queued_cell: dict[str, Any] = Field(default_factory=dict)
     queued_job: dict[str, Any] = Field(default_factory=dict)
 
 

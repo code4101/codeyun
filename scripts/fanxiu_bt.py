@@ -29,12 +29,12 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     FANXIU_EMBEDDED_SERVICE_ENV,
     FanxiuLocalServiceRequest,
     acquire_fanxiu_job_group_isolation,
-    cancel_fanxiu_local_manual_job,
-    clear_fanxiu_local_manual_jobs,
+    cancel_fanxiu_task_cell,
+    clear_fanxiu_task_cells,
     clear_stale_fanxiu_job_group_isolation,
     clear_fanxiu_data_annotation_runtime_logs,
-    fanxiu_data_annotation_manual_job_catalog,
-    fanxiu_data_annotation_manual_jobs,
+    fanxiu_data_annotation_task_cells,
+    fanxiu_data_annotation_task_cell_catalog,
     fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status,
     fanxiu_data_annotation_dir,
@@ -49,7 +49,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     stop_fanxiu_local_service,
     submit_fanxiu_code_cell,
     submit_fanxiu_task_cell,
-    wait_fanxiu_local_manual_job,
+    wait_fanxiu_task_cell,
 )
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
@@ -140,7 +140,7 @@ def _print_status(status: dict[str, Any]) -> None:
             "current_scene": status.get("current_scene"),
             "message": status.get("message"),
             "error": status.get("error"),
-            "queued_job": status.get("queued_job") or {},
+            "queued_cell": status.get("queued_cell") or status.get("queued_job") or {},
         },
         ensure_ascii=False,
         indent=2,
@@ -167,7 +167,7 @@ def _print_owner(owner: dict[str, Any]) -> None:
     ))
 
 
-def _print_manual_jobs(jobs: list[dict[str, Any]]) -> None:
+def _print_task_cells(jobs: list[dict[str, Any]]) -> None:
     if not jobs:
         print("task cell 队列为空")
         return
@@ -186,13 +186,15 @@ def _print_manual_jobs(jobs: list[dict[str, Any]]) -> None:
         ))
 
 
-def _wait_and_print_queued_job(status: dict[str, Any], timeout_seconds: float) -> int:
-    queued_job = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_job.get("id") or "")
+def _wait_and_print_queued_cell(status: dict[str, Any], timeout_seconds: float) -> int:
+    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
+    if not queued_cell:
+        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
+    job_id = str(queued_cell.get("id") or "")
     if not job_id:
-        print("没有 queued_job.id，无法等待")
+        print("没有 queued_cell.id，无法等待")
         return 1
-    result = wait_fanxiu_local_manual_job(job_id, timeout_seconds=float(timeout_seconds or 300.0))
+    result = wait_fanxiu_task_cell(job_id, timeout_seconds=float(timeout_seconds or 300.0))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     runtime_status = result.get("runtime_status") if isinstance(result.get("runtime_status"), dict) else {}
     if not bool(result.get("done")):
@@ -829,7 +831,7 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
         return False
-    if [item for item in (report.get("manual_jobs") or []) if isinstance(item, dict)]:
+    if [item for item in (report.get("task_cells") or []) if isinstance(item, dict)]:
         return False
     if bool(isolation.get("active")):
         return False
@@ -842,11 +844,13 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     return True
 
 
-def _watch_wait_for_queued_job(status: dict[str, Any], *, entry_id: str, timeout_seconds: float) -> dict[str, Any]:
-    queued_job = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_job.get("id") or "")
+def _watch_wait_for_queued_cell(status: dict[str, Any], *, entry_id: str, timeout_seconds: float) -> dict[str, Any]:
+    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
+    if not queued_cell:
+        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
+    job_id = str(queued_cell.get("id") or "")
     if not job_id:
-        return {"waited": False, "error": "missing_queued_job_id"}
+        return {"waited": False, "error": "missing_queued_cell_id"}
     previous_embedded = os.environ.get(FANXIU_EMBEDDED_SERVICE_ENV)
     result: dict[str, Any] | None = None
     try:
@@ -854,7 +858,7 @@ def _watch_wait_for_queued_job(status: dict[str, Any], *, entry_id: str, timeout
         service_status = start_fanxiu_local_service(
             FanxiuLocalServiceRequest(entry_id=entry_id, tick_seconds=0.5)
         )
-        result = wait_fanxiu_local_manual_job(
+        result = wait_fanxiu_task_cell(
             job_id,
             timeout_seconds=max(1.0, float(timeout_seconds or 900.0)),
             poll_seconds=0.5,
@@ -886,9 +890,11 @@ def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float =
         asset_tree_path=data_annotation_asset_tree_path(entry_id),
     )
     wait_result: dict[str, Any] = {}
-    queued_job = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    if str(status.get("phase") or "") == "scheduler_due_queued" and queued_job.get("id"):
-        wait_result = _watch_wait_for_queued_job(
+    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
+    if not queued_cell:
+        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
+    if str(status.get("phase") or "") == "scheduler_due_queued" and queued_cell.get("id"):
+        wait_result = _watch_wait_for_queued_cell(
             status,
             entry_id=entry_id,
             timeout_seconds=wait_timeout_seconds,
@@ -901,7 +907,7 @@ def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float =
         "message": status.get("message"),
         "current_task_id": status.get("current_task_id"),
         "blocking_overlays": status.get("blocking_overlays") or [],
-        "queued_job": queued_job or None,
+        "queued_cell": queued_cell or None,
         "wait_result": wait_result,
     }
 
@@ -1282,7 +1288,7 @@ def _run_doctor_watch(
 def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[str, Any]:
     owner = read_fanxiu_behavior_tree_service_owner()
     runtime_status = fanxiu_data_annotation_runtime_status()
-    jobs = fanxiu_data_annotation_manual_jobs()
+    jobs = fanxiu_data_annotation_task_cells()
     isolation = read_fanxiu_job_group_isolation()
     entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     scheduler_plan = build_scheduler_plan(
@@ -1299,7 +1305,7 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
         "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "owner": owner,
         "runtime": _runtime_status_summary(runtime_status),
-        "manual_jobs": jobs,
+        "task_cells": jobs,
         "isolation": isolation,
         "scheduler": {
             "next_action": scheduler_plan.get("next_action"),
@@ -1500,7 +1506,7 @@ def main() -> int:
                         "step": (report.get("owner") or {}).get("step"),
                     },
                     "runtime": report.get("runtime"),
-                    "queue_size": len(report.get("manual_jobs") or []),
+                    "task_cell_queue_size": len(report.get("task_cells") or []),
                     "isolation_active": bool((report.get("isolation") or {}).get("active")),
                     "scheduler": report.get("scheduler"),
                     "screenshot": report.get("screenshot") or report.get("screenshot_error") or "",
@@ -1585,14 +1591,14 @@ def main() -> int:
         print(json.dumps(read_fanxiu_job_group_isolation(), ensure_ascii=False, indent=2, default=str))
         return 0
     if args.command == "queue":
-        jobs = fanxiu_data_annotation_manual_jobs()
+        jobs = fanxiu_data_annotation_task_cells()
         if args.json:
             print(json.dumps(jobs, ensure_ascii=False, indent=2, default=str))
         else:
-            _print_manual_jobs(jobs)
+            _print_task_cells(jobs)
         return 0
     if args.command == "tasks":
-        items = fanxiu_data_annotation_manual_job_catalog()
+        items = fanxiu_data_annotation_task_cell_catalog()
         if args.json:
             print(json.dumps(items, ensure_ascii=False, indent=2, default=str))
         else:
@@ -1603,11 +1609,11 @@ def main() -> int:
         print(json.dumps(request, ensure_ascii=False, indent=2, default=str))
         return 0
     if args.command == "cancel":
-        result = cancel_fanxiu_local_manual_job(str(args.job_id), force=bool(args.force))
+        result = cancel_fanxiu_task_cell(str(args.job_id), force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0 if bool(result.get("cancelled")) else 1
     if args.command == "clear-queue":
-        result = clear_fanxiu_local_manual_jobs(force=bool(args.force))
+        result = clear_fanxiu_task_cells(force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
     if args.command == "code-cell":
@@ -1641,7 +1647,7 @@ def main() -> int:
         ))
         _print_status(status)
         if bool(args.wait):
-            return _wait_and_print_queued_job(status, float(args.wait_timeout_seconds or 300.0))
+            return _wait_and_print_queued_cell(status, float(args.wait_timeout_seconds or 300.0))
         return 0 if str(status.get("status") or "") not in {"error"} else 1
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
@@ -1667,4 +1673,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

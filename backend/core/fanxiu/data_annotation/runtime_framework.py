@@ -137,11 +137,11 @@ def tick(
     task_type: str | None = None,
     payload: dict[str, Any] | None = None,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Submit a manual tick/task into the resident loop.
+    """Submit a task cell into the resident loop.
 
     This compatibility entry is for business execution, not service diagnosis.
     """
@@ -151,7 +151,7 @@ def tick(
         task_type=task_type,
         payload=payload,
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
@@ -164,7 +164,7 @@ def submit_task_cell(
     task_type: str,
     payload: dict[str, Any] | None = None,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -172,7 +172,7 @@ def submit_task_cell(
 
     This is the preferred API boundary for engineering scheduler work. The
     current implementation still uses the resident queue internally, but callers
-    should reason in terms of cells, not manual job records.
+    should reason in terms of cells, not queue records.
     """
     return runtime_control.submit_runtime_task_cell(
         entry=entry,
@@ -180,7 +180,7 @@ def submit_task_cell(
         task_type=task_type,
         payload=payload,
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
@@ -195,7 +195,7 @@ def submit_code_cell(
     timeout_seconds: float = 120.0,
     max_output_chars: int = 4000,
     asset_tree_path: Path | None = None,
-    manual_job_path: Path | None = None,
+    task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -216,7 +216,7 @@ def submit_code_cell(
             "call_task": True,
         },
         asset_tree_path=asset_tree_path,
-        manual_job_path=manual_job_path,
+        task_cell_path=task_cell_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
@@ -241,7 +241,7 @@ def execute_tick(
         entry=entry,
         entry_id=entry_id,
         guard=guard,
-        manual_job=task_cell,
+        task_cell=task_cell,
         scheduled_job=scheduled_job,
         run_mode=run_mode,
         max_ticks=max_ticks,

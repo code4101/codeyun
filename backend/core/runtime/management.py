@@ -72,7 +72,7 @@ from backend.core.fanxiu.packet.service_runtime import (
     stop_fanxiu_packet_service,
 )
 from backend.core.fanxiu.runtime.behavior_tree import (
-    fanxiu_data_annotation_manual_jobs,
+    fanxiu_data_annotation_task_cells,
     ensure_fanxiu_behavior_tree_service,
     fanxiu_data_annotation_runtime_dir,
     fanxiu_data_annotation_runtime_status,
@@ -1064,7 +1064,7 @@ def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[st
     return {"status": "stopped", "service": _get_data_annotation_behavior_tree_status()}
 
 
-def _serialize_fanxiu_manual_job_item(job: dict[str, Any]) -> dict[str, Any]:
+def _serialize_fanxiu_task_cell_item(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(job.get("id") or ""),
         "status": str(job.get("status") or ""),
@@ -1106,13 +1106,13 @@ def _summarize_doctor_watch_latest(payload: dict[str, Any]) -> dict[str, Any]:
 
 def inspect_fanxiu_behavior_tree_service() -> dict[str, Any]:
     status = _get_data_annotation_behavior_tree_status()
-    manual_jobs = fanxiu_data_annotation_manual_jobs()
+    task_cells = fanxiu_data_annotation_task_cells()
     return {
         "status": "ok",
         "service": status,
         "owner": read_fanxiu_behavior_tree_service_owner(),
-        "manual_job_count": len(manual_jobs),
-        "manual_jobs": [_serialize_fanxiu_manual_job_item(job) for job in manual_jobs[:20] if isinstance(job, dict)],
+        "task_cell_count": len(task_cells),
+        "task_cells": [_serialize_fanxiu_task_cell_item(job) for job in task_cells[:20] if isinstance(job, dict)],
         "isolation": read_fanxiu_job_group_isolation(),
         "doctor_watch": _summarize_doctor_watch_latest(read_doctor_watch_latest()),
     }
@@ -1449,7 +1449,7 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
         owner = read_fanxiu_behavior_tree_service_owner()
         isolation = read_fanxiu_job_group_isolation()
-        manual_jobs = fanxiu_data_annotation_manual_jobs()
+        task_cells = fanxiu_data_annotation_task_cells()
         doctor_watch = _summarize_doctor_watch_latest(read_doctor_watch_latest())
         lines = [
             f"名称：{item.get('title') or item.get('key')}",
@@ -1460,10 +1460,10 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
             "动作语义：trigger=ensure resident service；stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
             f"Owner：active={bool(owner.get('active'))} pid={owner.get('pid') or '-'} step={owner.get('step') or '-'}",
             f"普通作业隔离：active={bool(isolation.get('active'))} reason={isolation.get('reason') or '-'}",
-            f"task cell 队列：{len(manual_jobs)}",
+            f"task cell 队列：{len(task_cells)}",
             f"Doctor：{doctor_watch.get('snapshot', {}).get('maintenance', {}).get('severity') or '-'} · {doctor_watch.get('message') or '无巡检摘要'}",
         ]
-        for job in manual_jobs[:10]:
+        for job in task_cells[:10]:
             if isinstance(job, dict):
                 lines.append(
                     "task cell："
