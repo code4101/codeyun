@@ -50,6 +50,7 @@ from backend.core.attendance.order import (
     execute_order_action,
     query_order_refund_details,
 )
+from backend.api.device import _entry_read
 from backend.core.attendance.ai_precheck import build_attendance_wjx_ai_precheck
 from backend.core.ai.chat import OllamaClientError, chat_with_provider
 from backend.core.access.auth import get_current_user_from_token
@@ -433,6 +434,13 @@ class AttendanceFeedbackFormMeta(BaseModel):
     course_options: list[AttendanceFeedbackCourseOption] = Field(default_factory=list)
     course_names_updated_at: Optional[float] = None
     data_sheet_url: str = ""
+
+
+class AttendanceConfigsBootstrapResponse(BaseModel):
+    config: dict[str, Any]
+    course_data_flow_config: dict[str, Any]
+    accounts: list[dict[str, Any]] = Field(default_factory=list)
+    devices: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AttendanceSheetDocumentResponse(BaseModel):
@@ -3729,6 +3737,21 @@ def _resolve_course_data_flow_config_payload(session: Session) -> dict[str, Any]
     }
 
 
+def _build_attendance_configs_bootstrap_payload(session: Session, current_user: User) -> AttendanceConfigsBootstrapResponse:
+    device_statement = (
+        select(UserDevice)
+        .where(UserDevice.user_id == current_user.id)
+        .order_by(UserDevice.order_index, UserDevice.created_at)
+    )
+    user_devices = session.exec(device_statement).all()
+    return AttendanceConfigsBootstrapResponse(
+        config=_resolve_config_payload(session),
+        course_data_flow_config=_resolve_course_data_flow_config_payload(session),
+        accounts=[serialize_attendance_account(item, include_password=True) for item in list_attendance_accounts(session)],
+        devices=[_entry_read(entry).model_dump() for entry in user_devices],
+    )
+
+
 def _ensure_owned_device_for_selection(entry: UserDevice, current_user: User) -> None:
     if entry.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="只能从你自己的设备资产中选择执行设备")
@@ -4050,6 +4073,16 @@ def get_attendance_course_data_flow_config_route(
 ):
     ensure_can_use_attendance_service(current_user, session)
     return _resolve_course_data_flow_config_payload(session)
+
+
+@router.get("/config/bootstrap", response_model=AttendanceConfigsBootstrapResponse)
+def get_attendance_configs_bootstrap_route(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
+):
+    ensure_can_manage_attendance_service(current_user)
+    return _build_attendance_configs_bootstrap_payload(session, current_user)
 
 
 @public_router.get("/wjx-feedback-form", response_model=AttendanceFeedbackFormMeta)

@@ -4586,6 +4586,7 @@ class DataAnnotationRuntimeRunner(
         finally:
             if previous_log_context is not None:
                 self._restore_log_context(previous_log_context)
+            self._mark_service_heartbeat("scheduler_poll")
             self._persist_status()
 
     def _run_task_cell(
@@ -4676,6 +4677,7 @@ class DataAnnotationRuntimeRunner(
                 self._release_job_group_isolation(isolation_token)
             if previous_log_context is not None:
                 self._restore_log_context(previous_log_context)
+            self._mark_service_heartbeat("scheduler_poll")
             self._persist_status()
             _remove_data_annotation_task_cell(task_id)
             self._persist_status()
@@ -4784,6 +4786,7 @@ class DataAnnotationRuntimeRunner(
             if current_task_id:
                 self._mark_scheduler_task(all_tasks, current_task_id, "error")
         finally:
+            self._mark_service_heartbeat("scheduler_poll")
             self._persist_status()
 
     def _find_asset_image_by_title(self, ctx: dict[str, Any], title: str) -> dict[str, Any] | None:
@@ -5001,6 +5004,7 @@ class DataAnnotationRuntimeRunner(
                 item["next_time"] = None
                 item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             elif result in {"error", "stopped"}:
+                item["last_run_at"] = now_text
                 cooldown_seconds = int(item.get("cooldown_seconds") or 600)
                 item["next_time"] = None
                 item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
@@ -7358,6 +7362,12 @@ class DataAnnotationRuntimeRunner(
         )
         return 100 if any(keyword in title for keyword in high_risk_keywords) else 0
 
+    def _scene_navigation_shape_exit_score(self, shape: dict[str, Any]) -> int:
+        title = _sanitize_ocr_text(shape.get("title"))
+        if title in {"离开", "返回", "关闭", "退出", "关闭下方菜单", "回到世界"}:
+            return 1
+        return 0
+
     def _scene_route_navigation_risk(self, route: list[dict[str, Any]]) -> int:
         risk = 0
         for edge in route:
@@ -7432,9 +7442,11 @@ class DataAnnotationRuntimeRunner(
         direct_target_count = target_counts.get(int(target_scene_id), 0)
         route = [] if direct else (self._find_scene_route(tree, best_landing_id, int(target_scene_id)) or [])
         navigation_risk = current_edge_risk + self._scene_route_navigation_risk(route)
+        exit_score = self._scene_navigation_shape_exit_score(shape) if not direct else 0
         score = (
             1 if direct else 0,
             int(direct_target_count),
+            int(exit_score),
             int(best_count),
             -int(wrong_target_count),
             -int(total_path_len),
@@ -7446,6 +7458,8 @@ class DataAnnotationRuntimeRunner(
         reason = "直达目标" if direct else f"落到 #{best_landing_id} 后还需 {downstream_len} 步"
         if best_count:
             reason += f"，历史命中 {best_count} 次"
+        if exit_score:
+            reason += "，低风险退出"
         if ambiguity > 1:
             reason += f"，声明落点 {ambiguity} 个"
         if dynamic_penalty:
@@ -7576,7 +7590,7 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(images, dict) or not candidate_scene_ids:
             return None, 0.0
 
-        ranked: list[tuple[int, int, float, int]] = []
+        ranked: list[tuple[int, float, int, int]] = []
         for candidate_scene_id in candidate_scene_ids:
             try:
                 scene_id = int(candidate_scene_id)
@@ -7591,12 +7605,12 @@ class DataAnnotationRuntimeRunner(
             clarity, route_len = self._scene_route_ranking(tree, scene_id, int(target_scene_id))
             if clarity <= -100:
                 continue
-            ranked.append((clarity, -route_len, score, scene_id))
+            ranked.append((clarity, score, -route_len, scene_id))
         if not ranked:
             scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
             return scene_id, score
         ranked.sort(reverse=True)
-        clarity, neg_route_len, score, scene_id = ranked[0]
+        clarity, score, neg_route_len, scene_id = ranked[0]
         route_len = -neg_route_len
         self._log(
             "detail",

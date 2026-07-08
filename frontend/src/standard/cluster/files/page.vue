@@ -1198,8 +1198,9 @@ const mediaVisualHashHint = computed(() => {
   };
 });
 const showMediaToolbar = computed(() => displayMediaItems.value.length > 0);
+const isBrowsingDeviceRoot = computed(() => isDeviceRootPath(normalizedPathInput.value));
 const showDirectorySortTools = computed(() =>
-  directoryEntries.value.length > 1 || showDirectorySortEditor.value
+  !isBrowsingDeviceRoot.value && (directoryEntries.value.length > 1 || showDirectorySortEditor.value)
 );
 const shouldUseGalleryWorkspace = computed(() =>
   displayMediaItems.value.length > 0 || showDirectorySortTools.value

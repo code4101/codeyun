@@ -444,8 +444,11 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             and not fact_has_success_next_time
         ):
             filtered_task_facts.pop(task_id, None)
+    task_facts_changed = filtered_task_facts != task_facts
+    if task_facts_changed and isinstance(discoveries, dict):
+        discoveries["task"] = filtered_task_facts
     if not filtered_task_facts:
-        return audit_completed_changed
+        return bool(audit_completed_changed or task_facts_changed)
     sync_time = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     synced = sync_scheduled_tasks_from_facts(
         tasks,
@@ -460,7 +463,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         fact_updated_at_key="world_fact_updated_at",
         synced_at_text=sync_time,
     )
-    return bool(synced or audit_completed_changed)
+    return bool(synced or audit_completed_changed or task_facts_changed)
 
 
 def merge_data_annotation_scheduler_task_updates(

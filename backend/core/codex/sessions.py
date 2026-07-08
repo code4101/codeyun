@@ -10,7 +10,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from datetime import date as calendar_date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, delete, select
@@ -1182,7 +1182,7 @@ def _ensure_codex_text_cache(
     root_dir: str | None = None,
     session: Session | None = None,
     *,
-    refresh_rollouts: bool = True,
+    refresh_rollouts: bool | Literal["dirty"] = True,
 ) -> dict[str, Any]:
     root_path, default_root_dir = _resolve_codex_root_dir(root_dir)
     root_key = _path_match_key(str(root_path)) or str(root_path)
@@ -1292,9 +1292,13 @@ def _ensure_codex_text_cache(
             rollout_refreshed = False
             now = time.time()
             if refresh_rollouts:
-                thread_rows = session.exec(
-                    select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
-                ).all()
+                refresh_dirty_only = refresh_rollouts == "dirty"
+                thread_rows = []
+                if not refresh_dirty_only or dirty_thread_ids:
+                    thread_statement = select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
+                    if refresh_dirty_only:
+                        thread_statement = thread_statement.where(CodexTextCacheThread.thread_id.in_(dirty_thread_ids))
+                    thread_rows = session.exec(thread_statement).all()
                 for thread_row in thread_rows:
                     rollout_path_text = thread_row.rollout_path
                     rollout_size = None
@@ -1488,7 +1492,8 @@ def build_codex_workload(
     include_segments: bool = True,
     historical_day_summary_before: float | None = None,
 ) -> dict[str, Any]:
-    context = _ensure_codex_text_cache(root_dir, session=session)
+    rollout_refresh_mode: bool | Literal["dirty"] = "dirty" if compact and not include_segments else True
+    context = _ensure_codex_text_cache(root_dir, session=session, refresh_rollouts=rollout_refresh_mode)
     if compact and not include_segments:
         return _build_compact_codex_workload(
             context,

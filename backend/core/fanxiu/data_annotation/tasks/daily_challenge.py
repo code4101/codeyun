@@ -1585,10 +1585,12 @@ class DailyChallengeTaskMixin:
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
         *,
         timeout: float,
         label: str,
     ) -> tuple[int, float]:
+        payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         start = time.monotonic()
@@ -1597,11 +1599,18 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = runtime.current_scene([204, 69, 34], update=True)
+            scene_id, score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
                 return 204, float(score or 100.0)
+            if scene_id == 237:
+                yield from self._daily_assistant_close_youli_result(runtime, payload)
+                continue
+            if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
+                self._daily_assistant_close_one_key_result(ctx, runtime, frame, label=label)
+                yield from runtime.wait_action_settle(float(payload.get("assistant_result_reclick_settle_seconds") or 1.0))
+                continue
             if time.monotonic() - start >= timeout:
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 raise TimeoutError(f"{label} 超时，未检测到 #204，最后 {scene_text} {last_score:.0f}% OCR={last_text[:160]}")
@@ -1632,9 +1641,55 @@ class DailyChallengeTaskMixin:
             or (
                 "退出" in compact
                 and "今日已完成" in compact
-                and any(marker in compact for marker in ("宗门任务", "宗门祈福", "宗门俸禄", "宗门请安"))
+                and any(marker in compact for marker in ("宗门任务", "宗门祈福", "宗门俸禄", "宗门请安", "宗门资源"))
             )
         )
+
+    def _daily_assistant_click_visible_exit(self, runtime: Any, frame: Any, *, scene_hint: int = 275) -> bool:
+        try:
+            lines = runtime.ocr_lines(frame)
+        except TypeError:
+            lines = runtime.ocr_lines()
+        except Exception:
+            lines = []
+        candidates: list[tuple[float, float, float]] = []
+        for line in lines or []:
+            if not isinstance(line, dict):
+                continue
+            text = _sanitize_ocr_text(str(line.get("text") or ""))
+            if "退出" not in text:
+                continue
+            try:
+                x = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
+                y = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            except (TypeError, ValueError):
+                continue
+            candidates.append((y, x, y))
+        if not candidates:
+            return False
+        _sort_y, x, y = max(candidates, key=lambda item: item[0])
+        runtime.click_frame_point(scene_hint, x, y)
+        return True
+
+    def _daily_assistant_close_one_key_result(self, ctx: dict[str, Any], runtime: Any, frame: Any, *, label: str) -> None:
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"{label}：关闭小助手一键执行结果汇总",
+                phase="daily_assistant_close_one_key_result",
+                current_scene=275,
+            )
+        if self._daily_assistant_click_visible_exit(runtime, frame, scene_hint=275):
+            with self._lock:
+                self._log_locked("action", f"{label}：OCR 点击结果页「退出」")
+            return
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image275 = images.get(275)
+        if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
+            raise RuntimeError(f"{label}：结果汇总仍在前台，但缺少 #275「退出」标注，且 OCR 未定位到「退出」")
+        with self._lock:
+            self._log_locked("action", f"{label}：点击 #275「退出」")
+        runtime.click_shape_center(image275, "退出")
 
     def _daily_assistant_text_is_one_key_progress(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
@@ -1671,11 +1726,18 @@ class DailyChallengeTaskMixin:
         yield from runtime.wait_action_settle(float(payload.get("assistant_list_state_initial_settle_seconds") or 1.0))
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = runtime.current_scene([204, 69, 34], update=True)
+            scene_id, score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
                 return 204, float(score or 100.0)
+            if scene_id == 237:
+                yield from self._daily_assistant_close_youli_result(runtime, payload)
+                continue
+            if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
+                self._daily_assistant_close_one_key_result(ctx, runtime, frame, label=label)
+                yield from runtime.wait_action_settle(float(payload.get("assistant_result_reclick_settle_seconds") or 1.0))
+                continue
             if scene_id == 69:
                 opened = yield from self._open_daily_assistant_from_daily(ctx, stop_event, payload)
                 if opened != "open":
@@ -1683,6 +1745,7 @@ class DailyChallengeTaskMixin:
                 return (yield from self._wait_daily_assistant_list_state(
                     ctx,
                     stop_event,
+                    payload,
                     timeout=timeout,
                     label=label,
                 ))
@@ -1703,6 +1766,7 @@ class DailyChallengeTaskMixin:
                     return (yield from self._wait_daily_assistant_list_state(
                         ctx,
                         stop_event,
+                        payload,
                         timeout=timeout,
                         label=label,
                     ))
@@ -1837,20 +1901,11 @@ class DailyChallengeTaskMixin:
                 self._log("success", "日常_助手：已关闭游历结果页并返回世界")
                 return "success"
             if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
-                if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
-                    raise RuntimeError("日常_助手：一键执行结果汇总已出现，但缺少 #275「退出」标注")
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        "日常_助手：关闭一键执行结果汇总",
-                        phase="daily_assistant_one_key_close_result",
-                        current_scene=275,
-                    )
-                    self._log_locked("action", "日常_助手：点击 #275「退出」")
-                runtime.click_shape_center(image275, "退出")
+                self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
                 yield from self._wait_daily_assistant_list_state(
                     ctx,
                     stop_event,
+                    payload,
                     timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                     label="日常_助手：等待结果汇总返回小助手总览",
                 )
@@ -1956,22 +2011,11 @@ class DailyChallengeTaskMixin:
         scene_id, _score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
-            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
-            image275 = images.get(275)
-            if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
-                raise RuntimeError("日常_助手：一键执行结果汇总仍在前台，但缺少 #275「退出」标注")
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    "日常_助手：收尾时关闭一键执行结果汇总",
-                    phase="daily_assistant_return_close_result",
-                    current_scene=275,
-                )
-                self._log_locked("action", "日常_助手：点击 #275「退出」")
-            runtime.click_shape_center(image275, "退出")
+            self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
             yield from self._wait_daily_assistant_list_state(
                 ctx,
                 stop_event,
+                payload,
                 timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                 label="日常_助手：等待结果汇总返回小助手总览",
             )
@@ -1983,22 +2027,11 @@ class DailyChallengeTaskMixin:
                 scene_id, _score, frame = runtime.current_scene([275, 237, 204, 69, 34], update=True)
                 text = runtime.ocr_text(frame)
                 if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
-                    images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
-                    image275 = images.get(275)
-                    if not isinstance(image275, dict) or self._find_shape(image275, "退出") is None:
-                        raise RuntimeError("日常_助手：一键执行结果汇总仍在前台，但缺少 #275「退出」标注")
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            "日常_助手：收尾时关闭一键执行结果汇总",
-                            phase="daily_assistant_return_close_result",
-                            current_scene=275,
-                        )
-                        self._log_locked("action", "日常_助手：点击 #275「退出」")
-                    runtime.click_shape_center(image275, "退出")
+                    self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
                     yield from self._wait_daily_assistant_list_state(
                         ctx,
                         stop_event,
+                        payload,
                         timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                         label="日常_助手：等待结果汇总返回小助手总览",
                     )

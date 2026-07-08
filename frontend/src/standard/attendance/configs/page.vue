@@ -6,9 +6,7 @@ import { Check, Delete, Edit, Plus, RefreshRight } from '@element-plus/icons-vue
 import {
   createAttendanceAccount,
   deleteAttendanceAccount,
-  fetchAttendanceAccounts,
-  fetchAttendanceConfig,
-  fetchAttendanceCourseDataFlowConfig,
+  fetchAttendanceConfigsBootstrap,
   updateAttendanceAccount,
   updateAttendanceConfig,
   updateAttendanceCourseDataFlowConfig,
@@ -225,43 +223,23 @@ async function loadPageData() {
     cachedDeviceCount: taskStore.devices.length,
   })
   try {
-    const shouldAwaitDeviceRefresh = taskStore.devices.length === 0
-    const coreDataPromise = markBootPerfAsync('attendance-configs.fetch-core', () => Promise.all([
-      fetchAttendanceConfig(),
-      fetchAttendanceCourseDataFlowConfig(),
-      fetchAttendanceAccounts(),
-    ]))
-    const deviceRefreshPromise = markBootPerfAsync('attendance-configs.fetch-devices', () => taskStore.fetchDevices())
-    const [config, courseDataFlowConfig, accountItems] = await markBootPerfAsync('attendance-configs.fetch-all', async () => {
-      const coreData = await coreDataPromise
-      if (shouldAwaitDeviceRefresh) {
-        await deviceRefreshPromise
-      }
-      return coreData
-    })
+    const bootstrap = await markBootPerfAsync('attendance-configs.fetch-bootstrap', () => fetchAttendanceConfigsBootstrap())
+    taskStore.setDevicesFromApi(bootstrap.devices)
     markBootPerf('attendance-configs.fetch-all.ready', {
-      accountCount: accountItems.length,
+      accountCount: bootstrap.accounts.length,
       deviceCount: taskStore.devices.length,
       deviceFetchError: taskStore.lastDeviceFetchError || '',
-      awaitedDeviceRefresh: shouldAwaitDeviceRefresh,
+      awaitedDeviceRefresh: false,
     })
-    accounts.value = accountItems
-    applyConfig(config)
-    applyCourseDataFlowConfig(courseDataFlowConfig)
-    if (!shouldAwaitDeviceRefresh) {
-      void deviceRefreshPromise.then(() => {
-        markBootPerf('attendance-configs.devices-background-applied', {
-          deviceCount: taskStore.devices.length,
-          deviceFetchError: taskStore.lastDeviceFetchError || '',
-        })
-      })
-    }
+    accounts.value = bootstrap.accounts
+    applyConfig(bootstrap.config)
+    applyCourseDataFlowConfig(bootstrap.course_data_flow_config)
     markBootPerf('attendance-configs.state-ready', {
-      accountCount: accountItems.length,
+      accountCount: bootstrap.accounts.length,
       deviceCount: taskStore.devices.length,
       stepRunnerCount: stepRunners.value.length,
       stepOverrideCount: stepOverrideCount.value,
-      awaitedDeviceRefresh: shouldAwaitDeviceRefresh,
+      awaitedDeviceRefresh: false,
     })
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '加载考勤配置失败')

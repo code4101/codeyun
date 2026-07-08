@@ -20,6 +20,40 @@ export type {
   AttendanceOrderLookupMode,
 }
 
+export interface AttendanceConfigBootstrapDevice {
+  id: string
+  user_id: number
+  device_id: string
+  mode: 'local' | 'remote'
+  alias: string
+  name: string
+  server_url?: string | null
+  is_active: boolean
+  created_at: number
+  updated_at: number
+  device?: {
+    id: string
+    name: string
+    type: string
+    server_url?: string | null
+    order_index: number
+    created_at: number
+    updated_at: number
+  }
+}
+
+export interface AttendanceConfigsBootstrapResponse {
+  config: AttendanceConfigResponse
+  course_data_flow_config: AttendanceCourseDataFlowConfigResponse
+  accounts: AttendanceAccount[]
+  devices: AttendanceConfigBootstrapDevice[]
+}
+
+export async function fetchAttendanceConfigsBootstrap() {
+  const response = await api.get<AttendanceConfigsBootstrapResponse>('/attendance/config/bootstrap')
+  return response.data
+}
+
 export async function fetchAttendanceConfig() {
   const response = await api.get<AttendanceConfigResponse>('/attendance/config')
   return response.data

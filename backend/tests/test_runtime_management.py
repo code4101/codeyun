@@ -92,7 +92,7 @@ def test_scan_running_tasks_skips_recent_repeat_and_rescans_after_ttl(monkeypatc
             return TaskStatus(id=task_id, running=False)
 
     fake_device = FakeDevice()
-    monotonic_values = iter([100.0, 100.5, 101.2])
+    monotonic_values = iter([100.0, 100.5, 101.2, 111.5])
     manager = task_manager_module.TaskManager()
 
     try:
@@ -104,12 +104,14 @@ def test_scan_running_tasks_skips_recent_repeat_and_rescans_after_ttl(monkeypatc
         manager.scan_running_tasks()
         manager.scan_running_tasks()
         manager.scan_running_tasks()
+        manager.scan_running_tasks()
     finally:
         manager.scheduler.shutdown(wait=False)
 
     assert fake_device.scan_calls == [
         (False, ["service-1"]),
         (True, ["service-1"]),
+        (False, ["service-1"]),
         (False, ["service-1"]),
         (True, ["service-1"]),
     ]

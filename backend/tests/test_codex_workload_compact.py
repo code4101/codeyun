@@ -25,7 +25,7 @@ def test_build_codex_workload_compact_summarizes_history_and_keeps_recent_turns(
     monkeypatch.setattr(
         codex_sessions,
         "_ensure_codex_text_cache",
-        lambda root_dir=None, session=None: {"root_key": "root", "root_dir": "/tmp/codex"},
+        lambda root_dir=None, session=None, refresh_rollouts=True: {"root_key": "root", "root_dir": "/tmp/codex"},
     )
 
     with Session(engine) as session:
@@ -98,3 +98,40 @@ def test_build_codex_workload_compact_summarizes_history_and_keeps_recent_turns(
     assert payload["day_seconds"] == {"2023-11-15": 30.0}
     assert payload["time_range_start"] == TEST_DAY_START + 100.0
     assert payload["time_range_end"] == TEST_DAY_START + 160.0
+
+
+def test_build_codex_workload_compact_uses_dirty_rollout_refresh(monkeypatch):
+    captured: list[object] = []
+
+    def fake_ensure(root_dir=None, session=None, refresh_rollouts=True):
+        captured.append(refresh_rollouts)
+        return {"root_key": "root", "root_dir": "/tmp/codex"}
+
+    monkeypatch.setattr(codex_sessions, "_ensure_codex_text_cache", fake_ensure)
+    monkeypatch.setattr(
+        codex_sessions,
+        "_build_compact_codex_workload",
+        lambda context, session, **kwargs: {
+            "root_dir": context["root_dir"],
+            "total_threads": 0,
+            "total_turns": 0,
+            "returned_turns": 0,
+            "summarized_turns": 0,
+            "skipped_threads": 0,
+            "max_concurrency": 0,
+            "time_range_start": None,
+            "time_range_end": None,
+            "day_seconds": {},
+            "turns": [],
+            "segments": [],
+        },
+    )
+
+    payload = codex_sessions.build_codex_workload(
+        None,
+        compact=True,
+        include_segments=False,
+    )
+
+    assert payload["root_dir"] == "/tmp/codex"
+    assert captured == ["dirty"]
