@@ -44,6 +44,7 @@ _status_broadcaster_task: Optional[asyncio.Task] = None
 DEFAULT_STALE_SCHEDULED_TASK_SECONDS = 12 * 60 * 60
 COMMAND_JOB_POLL_INTERVAL_SECONDS = 1.0
 RUNNING_TASK_SCAN_CACHE_TTL_SECONDS = 1.0
+RUNNING_TASK_DEEP_SCAN_CACHE_TTL_SECONDS = 10.0
 
 
 def _get_scheduled_task_misfire_grace_seconds() -> int:
@@ -149,6 +150,7 @@ class TaskManager:
         self.scheduler.start()
         self._runtime_state_initialized = False
         self._last_running_task_scan_at = 0.0
+        self._last_running_task_deep_scan_at = 0.0
         self._running_task_scan_lock = threading.Lock()
 
     def initialize_runtime_state(self, *, restore_timeouts: bool = False):
@@ -165,10 +167,15 @@ class TaskManager:
     def _invalidate_running_task_scan_cache(self) -> None:
         with self._running_task_scan_lock:
             self._last_running_task_scan_at = 0.0
+            self._last_running_task_deep_scan_at = 0.0
 
     def _mark_running_task_scan_at(self, scanned_at: float) -> None:
         with self._running_task_scan_lock:
             self._last_running_task_scan_at = scanned_at
+
+    def _mark_running_task_deep_scan_at(self, scanned_at: float) -> None:
+        with self._running_task_scan_lock:
+            self._last_running_task_deep_scan_at = scanned_at
 
     def _should_skip_running_task_scan(self, *, now: float, restore_timeouts: bool) -> bool:
         if restore_timeouts:
@@ -177,6 +184,15 @@ class TaskManager:
             return (
                 self._last_running_task_scan_at > 0
                 and now - self._last_running_task_scan_at <= RUNNING_TASK_SCAN_CACHE_TTL_SECONDS
+            )
+
+    def _should_run_running_task_deep_scan(self, *, now: float, restore_timeouts: bool) -> bool:
+        if restore_timeouts:
+            return True
+        with self._running_task_scan_lock:
+            return (
+                self._last_running_task_deep_scan_at <= 0
+                or now - self._last_running_task_deep_scan_at > RUNNING_TASK_DEEP_SCAN_CACHE_TTL_SECONDS
             )
 
     def load_schedules(self):
@@ -516,6 +532,10 @@ class TaskManager:
         scanned_at = time.monotonic()
         if self._should_skip_running_task_scan(now=scanned_at, restore_timeouts=restore_timeouts):
             return
+        should_run_deep_scan = self._should_run_running_task_deep_scan(
+            now=scanned_at,
+            restore_timeouts=restore_timeouts,
+        )
 
         # Scan local tasks
         local_id = self._get_local_device_id()
@@ -540,8 +560,9 @@ class TaskManager:
                 if infer_command_runtime_kind(task) == "service"
                 and not device.get_task_status(task.id).running
             ]
-            if service_tasks:
+            if service_tasks and should_run_deep_scan:
                 device.scan_running_tasks(service_tasks, deep_scan=True)
+                self._mark_running_task_deep_scan_at(scanned_at)
 
             if restore_timeouts:
                 self._reap_stale_scheduled_tasks(device, local_tasks, reason="startup scan")

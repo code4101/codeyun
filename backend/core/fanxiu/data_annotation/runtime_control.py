@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -485,13 +486,17 @@ def read_scheduler_tasks(
 ) -> list[dict[str, Any]]:
     path = scheduler_state_path or fanxiu_data_annotation_scheduler_state_path()
     raw = read_data_annotation_json(path, None)
+    facts = read_world_facts(world_facts_path)
+    original_facts = deepcopy(facts)
     tasks, changed = repair_data_annotation_scheduler_tasks(
         raw,
         default_data_annotation_scheduler_tasks(),
-        read_world_facts(world_facts_path),
+        facts,
         task_supported=task_supported,
         now=now or datetime.now(),
     )
+    if facts != original_facts:
+        write_world_facts(facts, world_facts_path)
     if repair_orphaned_scheduler_runs(tasks, task_cell_path=task_cell_path):
         changed = True
     if changed:
@@ -1021,7 +1026,6 @@ def queue_runtime_task_cell_status(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     job = enqueue_task_cell(
         task_type,
         payload,
@@ -1031,6 +1035,7 @@ def queue_runtime_task_cell_status(
         task_cell_path=task_cell_path,
         created_at=created_at,
     )
+    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     fanxiu_runtime_runner_wake()
     status = fanxiu_runtime_runner_status()
     queued_cell = {

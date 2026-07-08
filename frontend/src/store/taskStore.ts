@@ -49,6 +49,19 @@ type DeviceCachePayload = {
 
 const cloneDevices = (devices: Device[]): Device[] => devices.map(device => ({ ...device }));
 
+const mapUserDeviceEntry = (item: any): Device => {
+    const devInfo = item.device || {};
+    return {
+        id: item.id,
+        device_id: item.device_id,
+        name: item.name || item.alias || devInfo.name || "Unknown",
+        server_url: item.server_url ?? devInfo.server_url,
+        mode: item.mode || (devInfo.type === 'LocalDevice' ? 'local' : 'remote'),
+        type: devInfo.type || 'RemoteDevice',
+        owner_id: item.user_id
+    };
+};
+
 const restoreCachedDevices = (): Device[] => {
   if (typeof window === 'undefined') return [];
   try {
@@ -89,25 +102,18 @@ export const taskStore = reactive({
     devices: restoreCachedDevices() as Device[],
     lastDeviceFetch: 0,
     lastDeviceFetchError: '',
+
+    setDevicesFromApi(items: any[], fetchedAt = Date.now()) {
+        this.devices = items.map((item: any) => mapUserDeviceEntry(item));
+        persistDevices(this.devices);
+        this.lastDeviceFetch = fetchedAt;
+        this.lastDeviceFetchError = '';
+    },
     
     async fetchDevices() {
         try {
             const response = await api.get('/devices/');
-            this.devices = response.data.map((item: any) => {
-                const devInfo = item.device || {};
-                return {
-                    id: item.id,
-                    device_id: item.device_id,
-                    name: item.name || item.alias || devInfo.name || "Unknown",
-                    server_url: item.server_url ?? devInfo.server_url,
-                    mode: item.mode || (devInfo.type === 'LocalDevice' ? 'local' : 'remote'),
-                    type: devInfo.type || 'RemoteDevice',
-                    owner_id: item.user_id
-                };
-            });
-            persistDevices(this.devices);
-            this.lastDeviceFetch = Date.now();
-            this.lastDeviceFetchError = '';
+            this.setDevicesFromApi(response.data);
         } catch (error) {
             console.error('Failed to fetch devices:', error);
             const detail = (error as any)?.response?.data?.detail;

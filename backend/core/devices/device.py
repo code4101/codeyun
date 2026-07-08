@@ -40,6 +40,7 @@ WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_TH32CS_SNAPPROCESS = 0x00000002
 WINDOWS_MAX_PATH = 260
+WINDOWS_SKIP_PSUTIL_STATUS_CHECK = sys.platform == "win32"
 
 
 class WindowsProcessEntry32(ctypes.Structure):
@@ -55,6 +56,17 @@ class WindowsProcessEntry32(ctypes.Structure):
         ("dwFlags", wintypes.DWORD),
         ("szExeFile", wintypes.WCHAR * WINDOWS_MAX_PATH),
     ]
+
+
+def _is_live_process(proc: psutil.Process) -> bool:
+    try:
+        if not proc.is_running():
+            return False
+        if WINDOWS_SKIP_PSUTIL_STATUS_CHECK:
+            return True
+        return proc.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
@@ -855,7 +867,7 @@ class LocalDevice(BaseDevice):
             try:
                 if hasattr(process, "poll"):
                     return process.poll() is None
-                return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+                return _is_live_process(process)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 return False
 
@@ -967,7 +979,7 @@ class LocalDevice(BaseDevice):
             # 1. Clean up existing tracked processes
             for tid, proc in list(self.processes.items()):
                 try:
-                    if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                    if not _is_live_process(proc):
                         # Process finished
                         try:
                             create_time = proc.create_time()
@@ -1002,7 +1014,7 @@ class LocalDevice(BaseDevice):
                     pid = self.saved_pids[t_id]
                     try:
                         proc = psutil.Process(pid)
-                        if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                        if _is_live_process(proc):
                              # Verify command if available
                              cmd = getattr(task, 'command', None)
                              if cmd:
@@ -1261,7 +1273,7 @@ class LocalDevice(BaseDevice):
         # Check internal cache first
         if task_id in self.processes:
             proc = self.processes[task_id]
-            if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+            if _is_live_process(proc):
                  return {"status": "already_running", "pid": proc.pid}
             else:
                 self._stop_log_follower_locked(task_id)
@@ -1404,7 +1416,7 @@ class LocalDevice(BaseDevice):
             
             if task_id in self.processes:
                 proc = self.processes[task_id]
-                if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                if _is_live_process(proc):
                     running = True
                     pid = proc.pid
                     try:

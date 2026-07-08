@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "144da8b95f22734ff7238f7b8c77377e7e6a0b47"
-last_audited_at: "2026-07-07T22:45:38.3096525+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-07-frontend-design-144da8b-closeout/report.md"
-last_frontend_commit_summary: "已关闭 b1eef41..144da8b：notes/list 静默刷新误弹 toast 修复成立；clean worktree + Chrome/API 复核确认 fanxiu runtime 的 pending 原因来自本地脏工作树污染。"
-audited_commit_count: 86
+last_audited_commit: "718269828e4c0dc7fca1cdd84403703e69f0f1b5"
+last_audited_at: "2026-07-08T00:35:31.6511538+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-08-frontend-design-7182698/report.md"
+last_frontend_commit_summary: "已关闭 144da8b..7182698：fanxiu runtime 的 owner 语义收口与 notes/list silent refresh toast 抑制在真实页面成立；三视口复验未见新增 UI 回退。"
+audited_commit_count: 87
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-08（第十九轮）
+
+- 完整范围：`144da8b95f22734ff7238f7b8c77377e7e6a0b47..718269828e4c0dc7fca1cdd84403703e69f0f1b5`
+- 覆盖提交：`718269828e4c0dc7fca1cdd84403703e69f0f1b5`
+- 前端入口提交：`718269828e4c0dc7fca1cdd84403703e69f0f1b5`
+- 入口如何牵引到旧问题：这次提交同时落在 `fanxiu/data-annotation/runtime` 的调度 owner 语义和 `notes/list` 的 query-program 静默刷新链路上。两处入口都在继续把一级页面收回到“状态事实 + 下一步动作”，避免把后台刷新或调度规则解释误升格成主界面噪音，因此需要按同一减法方向复核真实页面，而不是只看文案 diff。
+- 本轮减法：`fanxiu/runtime` 保持 owner 只用 `人工 / AI / 工程` 三个基础权威表达，不再把“工程不自动跑”误投影成 AI 已接管执行；`notes/list` 则把 silent refresh 失败继续收回到内部刷新层，真实页面不再出现额外一级 toast。
+- 信息量保持：`fanxiu/runtime` 仍保留内核、守护、作业、运行状态与 cell 日志；`notes/list` 仍保留完整工作集、前后端筛选、分页和详情编辑，只减少后台刷新失败对一级页面的噪音投影。
+- 概念图/线框图：报告中的 Mermaid 把链路收回到 `7182698 -> fanxiu runtime owner 语义收口 / notes list silent refresh toast 抑制 -> 一级页面只保留状态事实与主动失败`，证明本轮没有新增常驻控件或额外状态条。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-08-frontend-design-7182698/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，对 `notes/center?tab=list` 与 `fanxiu/data-annotation/runtime` 完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 取证。`notes/list` 三视口 `bodyScrollWidth == bodyClientWidth`、`rowCount = 50`、`toastTexts = []`；`fanxiu/runtime` settled 后无 loading mask、无 console `warn/error`，三视口都能直接看到“内核 -> 守护 -> 作业”主闭环。静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开入口。
+- 根因分层：两处入口都属于前端状态投影收口；本轮真实页面未继续暴露新的表现层或业务建模问题。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口取证与前端静态验证；没有发现需要继续自动修复的新 UI 回退，因此把 `last_audited_commit` 推进到 `718269828e4c0dc7fca1cdd84403703e69f0f1b5`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-07（第十八轮，已关闭）
 

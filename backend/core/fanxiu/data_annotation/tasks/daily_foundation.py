@@ -38,7 +38,11 @@ from backend.core.fanxiu.data_annotation.runtime_runner import (
     _read_data_annotation_world_facts,
     _write_data_annotation_world_facts,
 )
-from backend.core.fanxiu.data_annotation.state import parse_data_annotation_daily_clock, parse_data_annotation_task_time
+from backend.core.fanxiu.data_annotation.state import (
+    next_data_annotation_scheduler_time,
+    parse_data_annotation_daily_clock,
+    parse_data_annotation_task_time,
+)
 
 
 _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -1209,7 +1213,10 @@ class DailyFoundationTaskMixin:
             while True:
                 self._raise_if_stopped(stop_event)
                 yield from runtime.wait_action_settle(1.0)
-                text = runtime.ocr_text(update=True)
+                try:
+                    text = runtime.ocr_text(update=True)
+                except TypeError:
+                    text = runtime.ocr_text(runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None)
                 if "点击查看" not in text and "灵环" not in text and "宝魄" not in text:
                     scene_id, _score, _frame = runtime.current_scene([34, 183, 184, 187, 188])
                     break
@@ -2315,8 +2322,45 @@ class DailyFoundationTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([289, 86, 58, 20, 34], update=True)
+        scene_id, score, frame = runtime.current_scene([275, 237, 204, 69, 289, 86, 58, 20, 34], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
+            self._daily_assistant_close_one_key_result(ctx, runtime, frame, label=label)
+            yield from runtime.wait_action_settle(1.0)
+            scene_id, score, frame = runtime.current_scene([237, 204, 69, 289, 86, 58, 20, 34], update=True)
+            text = runtime.ocr_text(frame)
+        if scene_id == 237:
+            yield from self._daily_assistant_close_youli_result(runtime, {})
+            yield from runtime.wait_action_settle(1.0)
+            scene_id, score, frame = runtime.current_scene([204, 69, 289, 86, 58, 20, 34], update=True)
+            text = runtime.ocr_text(frame)
+        if scene_id == 204 or self._daily_assistant_text_is_list(text):
+            with self._lock:
+                self._set_status_locked("running", f"{label}：小助手总览仍在前台，先返回日常页", phase="cleanup_exit_daily_assistant", current_scene=204)
+                self._log_locked("action", f"{label}：点击 #204「返回」")
+            yield from runtime.wait_click(204, "返回")
+            landed = yield from runtime.wait_view(
+                69,
+                34,
+                275,
+                237,
+                timeout=15.0,
+                label=f"{label}：等待退出小助手总览",
+            )
+            scene_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+            score = 100.0
+            frame = runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None
+            text = runtime.ocr_text(frame)
+        if scene_id == 69:
+            with self._lock:
+                self._set_status_locked("running", f"{label}：从日常页返回世界", phase="cleanup_exit_daily_page", current_scene=69)
+                self._log_locked("action", f"{label}：点击 #69「退出」")
+            yield from runtime.wait_click(69, "退出")
+            landed = yield from runtime.wait_view(34, timeout=25.0, label=f"{label}：等待日常页返回世界")
+            scene_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
+            score = 100.0
+            frame = runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None
+            text = runtime.ocr_text(frame)
         if scene_id in {289, 86} or self._leave_scene_confirm_text(text):
             confirm_id = int(scene_id) if scene_id in {289, 86} else 86
             with self._lock:
@@ -2947,7 +2991,7 @@ class DailyFoundationTaskMixin:
         runtime: FanxiuRuntimeSession,
         payload: dict[str, Any],
     ):
-        target_shape = str(payload.get("mojie_raid_target_shape") or "").strip()
+        target_shape = str(payload.get("mojie_raid_target_shape") or "检索区域/修罗").strip()
         match_timeout = float(
             payload.get("mojie_raid_target_match_timeout")
             or getattr(runtime, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)
@@ -2969,12 +3013,13 @@ class DailyFoundationTaskMixin:
             self._log("action", f"日常_奇袭魔界：点击队伍数「{text}」上方据点")
             runtime.click_frame_point(320, click_x, click_y)
         yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
-        return (yield from runtime.wait_view(
+        waited = yield from runtime.wait_view(
             321,
             331,
             timeout=float(payload.get("mojie_raid_target_wait_timeout") or self._daily_default_wait_condition_timeout),
             label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321/#331",
-        ))
+        )
+        return int(getattr(waited, "id", waited) or 0)
 
     def _daily_mojie_raid_attack_count_candidates(
         self,
@@ -3096,6 +3141,8 @@ class DailyFoundationTaskMixin:
             scene_id = yield from self._open_daily_weekly_dungeon_tiangong_view(runtime, payload)
         if scene_id == 326:
             scene_id = yield from self._open_daily_weekly_dungeon_challenge_view(runtime, payload)
+        if scene_id == -1:
+            return "success"
         yield from runtime.wait_click(327, "挑战")
         yield from runtime.wait_view(
             34,
@@ -3104,6 +3151,31 @@ class DailyFoundationTaskMixin:
         )
         self._log("success", "日常_周本：战斗结束，已回到 #34")
         return "success"
+
+    def _daily_weekly_dungeon_next_time_text(self, payload: dict[str, Any]) -> str:
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or "daily-weekly-dungeon")
+        task_type = "daily_weekly_dungeon"
+        for task in _read_data_annotation_scheduler_tasks():
+            if str(task.get("id") or "") == scheduler_task_id or str(task.get("task_type") or "") == task_type:
+                next_time = next_data_annotation_scheduler_time(task, _now())
+                if next_time:
+                    return next_time
+        now = _now()
+        days_until_next_monday = (7 - now.weekday()) % 7 or 7
+        next_monday = now + timedelta(days=days_until_next_monday)
+        return next_monday.replace(hour=5, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _record_daily_weekly_dungeon_done(self, payload: dict[str, Any], *, message: str) -> str:
+        next_time = self._daily_weekly_dungeon_next_time_text(payload)
+        self._record_scheduler_task_discovered_next_time(
+            str(payload.get("__scheduler_task_id") or "daily-weekly-dungeon"),
+            next_time,
+            task_type="daily_weekly_dungeon",
+            label="日常_周本",
+            last_result="success",
+        )
+        self._log("success", f"日常_周本：{message}，下次 {next_time}")
+        return next_time
 
     def _open_daily_weekly_dungeon_tiangong_view(
         self,
@@ -3160,6 +3232,16 @@ class DailyFoundationTaskMixin:
                 if pre_click_wait > 0:
                     self._log("wait", f"日常_周本：等待 #326 浮动战报消失 {pre_click_wait:.1f}s")
                     yield from runtime.wait_action_settle(pre_click_wait)
+                try:
+                    text = runtime.ocr_text(update=True)
+                except TypeError:
+                    text = runtime.ocr_text(runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None)
+                remaining = self._daily_weekly_dungeon_remaining_count(text)
+                if remaining is not None:
+                    self._log("detail", f"日常_周本：#326 本周剩余奖励次数 {remaining}，OCR={text[:80]}")
+                    if remaining <= 0:
+                        self._record_daily_weekly_dungeon_done(payload, message="#326 显示本周剩余奖励次数为 0")
+                        return -1
                 yield from runtime.wait_click_then_view(
                     326,
                     "挑战",
@@ -3189,6 +3271,21 @@ class DailyFoundationTaskMixin:
     def _is_daily_weekly_dungeon_tiangong_page_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(str(text or "")))
         return "玉霄天宫" in compact and "本周剩余奖励次数" in compact and "挑战" in compact
+
+    def _daily_weekly_dungeon_remaining_count(self, text: str) -> int | None:
+        normalized = _sanitize_ocr_text(str(text or "")).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        normalized = normalized.replace("O", "0").replace("o", "0")
+        compact = re.sub(r"\s+", "", normalized)
+        if "本周剩余奖励次数" not in compact:
+            return None
+        match = re.search(r"本周剩余奖励次数[:：]?([0-9])(?:/([0-9]))?", compact)
+        if not match:
+            match = re.search(r"剩余奖励次数[:：]?([0-9])(?:/([0-9]))?", compact)
+        if not match:
+            match = re.search(r"次数[:：]?([0-9])(?:/([0-9]))?", compact)
+        if not match:
+            return None
+        return int(match.group(1))
 
     def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
         yield from runtime.wait_click_then_view(308, "购买", 311)

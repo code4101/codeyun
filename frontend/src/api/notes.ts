@@ -3,9 +3,6 @@ import axios from 'axios';
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ElMessage } from 'element-plus';
-import { useAiAppStore } from '@/store/aiAppStore';
-import { useAiProviderStore } from '@/store/aiProviderStore';
-import { useUserStore } from '@/store/userStore';
 import { NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { isBootPerfEnabled, markBootPerf } from '@/utils/bootPerf';
 import { createEffectiveNoteTypes, type NoteTypeAssignment } from '@/utils/nodeConfig';
@@ -2462,6 +2459,15 @@ export const useNoteStore = defineStore('notes', () => {
   };
 
   const aiCategorizeNote = async (id: NoteRef) => {
+    const [
+      { useUserStore },
+      { useAiProviderStore },
+      { useAiAppStore },
+    ] = await Promise.all([
+      import('@/store/userStore'),
+      import('@/store/aiProviderStore'),
+      import('@/store/aiAppStore'),
+    ]);
     const userStore = useUserStore();
     const aiProviderStore = useAiProviderStore();
     const aiAppStore = useAiAppStore();

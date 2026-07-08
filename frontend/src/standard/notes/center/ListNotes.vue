@@ -223,6 +223,7 @@ const NoteProgramBar = defineAsyncComponent(() => import('@/components/NoteProgr
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/BatchNoteEditDialog.vue'));
 const NOTES_LIST_QUERY_CACHE_KEY = 'codeyun:notes:list-query-cache:v1';
+const NOTES_LIST_SHARED_QUERY_CACHE_KEY = 'codeyun:notes:list-query-cache-shared:v1';
 const NOTES_LIST_QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const props = defineProps<{
   tabId: string;
@@ -294,6 +295,18 @@ type ListQueryCachePayload = {
   data: NoteProgramResponse;
 };
 
+const hashListCacheToken = (value: string | null) => {
+  if (!value) {
+    return 'anonymous';
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `token:${(hash >>> 0).toString(36)}:${value.length}`;
+};
+
 const buildListQueryRequest = (program = getAppliedDataProgram()) => buildScanNoteProgramRequest(program, {
   limit: 1000,
   include_custom_fields: listViewNeedsCustomFields.value,
@@ -301,16 +314,18 @@ const buildListQueryRequest = (program = getAppliedDataProgram()) => buildScanNo
 });
 
 const getListQueryCacheStorageKey = () => `${NOTES_LIST_QUERY_CACHE_KEY}:${props.tabId}`;
-
-const readListQueryCache = (request: NoteProgramRequest): ListQueryCachePayload | null => {
+const getSharedListQueryCacheStorageKey = () => {
   if (typeof window === 'undefined') {
+    return `${NOTES_LIST_SHARED_QUERY_CACHE_KEY}:anonymous:${props.tabId}`;
+  }
+  return `${NOTES_LIST_SHARED_QUERY_CACHE_KEY}:${hashListCacheToken(window.localStorage.getItem('token'))}:${props.tabId}`;
+};
+
+const parseListQueryCachePayload = (raw: string | null, request: NoteProgramRequest): ListQueryCachePayload | null => {
+  if (!raw) {
     return null;
   }
   try {
-    const raw = window.sessionStorage.getItem(getListQueryCacheStorageKey());
-    if (!raw) {
-      return null;
-    }
     const payload = JSON.parse(raw) as Partial<ListQueryCachePayload>;
     if (
       typeof payload.savedAt !== 'number'
@@ -327,6 +342,31 @@ const readListQueryCache = (request: NoteProgramRequest): ListQueryCachePayload 
   }
 };
 
+const readListQueryCache = (request: NoteProgramRequest): ListQueryCachePayload | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const sessionPayload = parseListQueryCachePayload(
+    window.sessionStorage.getItem(getListQueryCacheStorageKey()),
+    request,
+  );
+  if (sessionPayload) {
+    return sessionPayload;
+  }
+  const sharedPayload = parseListQueryCachePayload(
+    window.localStorage.getItem(getSharedListQueryCacheStorageKey()),
+    request,
+  );
+  if (sharedPayload) {
+    try {
+      window.sessionStorage.setItem(getListQueryCacheStorageKey(), JSON.stringify(sharedPayload));
+    } catch {
+      // Ignore sessionStorage write failures and keep using the shared cache payload.
+    }
+  }
+  return sharedPayload;
+};
+
 const writeListQueryCache = (request: NoteProgramRequest, data: NoteProgramResponse) => {
   if (typeof window === 'undefined') {
     return;
@@ -337,9 +377,11 @@ const writeListQueryCache = (request: NoteProgramRequest, data: NoteProgramRespo
       request,
       data,
     };
-    window.sessionStorage.setItem(getListQueryCacheStorageKey(), JSON.stringify(payload));
+    const serialized = JSON.stringify(payload);
+    window.sessionStorage.setItem(getListQueryCacheStorageKey(), serialized);
+    window.localStorage.setItem(getSharedListQueryCacheStorageKey(), serialized);
   } catch {
-    // Ignore sessionStorage failures and keep the live query as the source of truth.
+    // Storage may be unavailable or full; the live query result remains the source of truth.
   }
 };
 
