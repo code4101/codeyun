@@ -191,21 +191,42 @@ def get_codeyun_watchdog_status(
     *,
     full_scan: bool = False,
     include_startup: bool = True,
+    include_process_details: bool = True,
 ) -> dict[str, Any]:
-    processes = list_codeyun_watchdog_processes(full_scan=full_scan)
-    running = bool(processes)
     interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60")
     settings = get_settings()
     active_pid = _read_lock_pid()
-    launcher_pids = _ancestor_pids(active_pid)
-    active_processes = [
-        item
-        for item in processes
-        if item.get("pid") is not None
-        and item.get("pid") == active_pid
-        and item.get("pid") not in launcher_pids
-    ]
-    effective_pids = [item["pid"] for item in active_processes if item.get("pid") is not None]
+    launcher_pids: set[int] = set()
+    stale_pids: list[int] = []
+
+    if include_process_details:
+        processes = list_codeyun_watchdog_processes(full_scan=full_scan)
+        launcher_pids = _ancestor_pids(active_pid)
+        active_processes = [
+            item
+            for item in processes
+            if item.get("pid") is not None
+            and item.get("pid") == active_pid
+            and item.get("pid") not in launcher_pids
+        ]
+        effective_pids = [item["pid"] for item in active_processes if item.get("pid") is not None]
+        stale_pids = [
+            item["pid"]
+            for item in processes
+            if item.get("pid") is not None
+            and item.get("pid") != active_pid
+            and item.get("pid") not in launcher_pids
+        ]
+    else:
+        active_process = _watchdog_process_from_pid(active_pid)
+        if active_process is not None:
+            processes = [asdict(active_process)]
+            effective_pids = [active_process.pid]
+        else:
+            processes = list_codeyun_watchdog_processes(full_scan=False)
+            effective_pids = [item["pid"] for item in processes if item.get("pid") is not None]
+
+    running = bool(processes)
     return {
         "key": CODEYUN_WATCHDOG_SERVICE_KEY,
         "title": CODEYUN_WATCHDOG_TITLE,
@@ -229,13 +250,7 @@ def get_codeyun_watchdog_status(
             for item in processes
             if item.get("pid") is not None and item.get("pid") in launcher_pids
         ],
-        "stale_pids": [
-            item["pid"]
-            for item in processes
-            if item.get("pid") is not None
-            and item.get("pid") != active_pid
-            and item.get("pid") not in launcher_pids
-        ],
+        "stale_pids": stale_pids,
         "last_error": "" if WATCHDOG_SCRIPT.is_file() else f"脚本不存在：{WATCHDOG_SCRIPT}",
         "startup": get_codeyun_watchdog_startup_status() if include_startup else {},
         "external": True,

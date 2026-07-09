@@ -393,7 +393,6 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             checkpoint["world_fact_updated_at"] = fact.get("updated_at")
             task["checkpoint"] = checkpoint
             audit_completed_changed = True
-            filtered_task_facts.pop(task_id, None)
             continue
         if (
             fact_result == "success"
@@ -402,7 +401,6 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             and last_run_at is not None
             and fact_last_run_at < last_run_at
         ):
-            filtered_task_facts.pop(task_id, None)
             continue
         if (
             fact_result in {"queued", "running"}
@@ -411,7 +409,6 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             and last_run_at is not None
             and fact_last_run_at <= last_run_at
         ):
-            filtered_task_facts.pop(task_id, None)
             continue
         fact_retry_after = data_annotation_fact_time_text(fact, "discovered_retry_after", "retry_after")
         if (
@@ -429,7 +426,6 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             checkpoint["world_fact_updated_at"] = fact.get("updated_at")
             task["checkpoint"] = checkpoint
             audit_completed_changed = True
-            filtered_task_facts.pop(task_id, None)
             continue
         fact_has_success_next_time = (
             fact_result == "success"
@@ -443,7 +439,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             and fact_updated_at <= last_run_at + 1.0
             and not fact_has_success_next_time
         ):
-            filtered_task_facts.pop(task_id, None)
+            continue
     task_facts_changed = filtered_task_facts != task_facts
     if task_facts_changed and isinstance(discoveries, dict):
         discoveries["task"] = filtered_task_facts
@@ -918,7 +914,7 @@ def repair_data_annotation_scheduler_tasks(
             changed = True
         if (
             task.get("enabled")
-            and str(task.get("schedule_kind") or "") == "daily"
+            and str(task.get("schedule_kind") or "") in {"daily", "weekly"}
             and str(task.get("last_result") or "") not in _UNSCHEDULED_MANUAL_RESULTS
             and not task.get("next_time")
             and not task.get("retry_after")

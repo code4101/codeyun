@@ -734,8 +734,9 @@ const THUMBNAIL_WARM_CONCURRENCY = 3;
 const MASONRY_THUMBNAIL_WARM_CONCURRENCY = 6;
 const MAX_PREWARM_VISIBLE_MEDIA = 18;
 const MASONRY_INITIAL_ROW_COUNT = 4;
-const MASONRY_LOAD_MORE_ROW_COUNT = 4;
-const MASONRY_LOAD_MORE_THRESHOLD = 320;
+const MASONRY_LOAD_MORE_ROW_COUNT = 2;
+const MASONRY_LOAD_MORE_THRESHOLD = 64;
+const MAX_MASONRY_AUTOFILL_BATCHES = 2;
 const queuedThumbnailIds = new Set<string>();
 const thumbnailWarmQueue: string[] = [];
 const masonryRenderedColumnIds = ref<string[][]>([]);
@@ -744,6 +745,7 @@ const masonryAspectRatioHint = ref(1);
 const masonryTargetCount = ref(0);
 const masonryLoadedSourceCount = ref(0);
 const isMasonryBatchLoading = ref(false);
+const masonryAutoFillBatchCount = ref(0);
 let masonryBatchSession = 0;
 let masonryBatchPromise: Promise<void> | null = null;
 let activeThumbnailWarmCount = 0;
@@ -938,6 +940,7 @@ const resetMasonryState = () => {
   masonryTargetCount.value = Math.min(visibleImages.value.length, getMasonryBatchSize(MASONRY_INITIAL_ROW_COUNT));
   masonryLoadedSourceCount.value = 0;
   isMasonryBatchLoading.value = false;
+  masonryAutoFillBatchCount.value = 0;
   masonryBatchPromise = null;
 };
 
@@ -950,6 +953,7 @@ const reconcileMasonryAfterRemoval = () => {
   const renderedCount = masonryRenderedColumnIds.value.reduce((sum, columnIds) => sum + columnIds.length, 0);
   masonryTargetCount.value = Math.min(Math.max(renderedCount, masonryTargetCount.value), visibleImages.value.length);
   masonryLoadedSourceCount.value = Math.min(Math.max(renderedCount, masonryLoadedSourceCount.value), masonryTargetCount.value);
+  masonryAutoFillBatchCount.value = 0;
 };
 
 const appendRenderedMasonryBatch = (
@@ -1137,6 +1141,24 @@ const maybeLoadMoreMasonry = () => {
 
   const galleryElement = galleryScrollRef.value;
   if (!galleryElement) {
+    return;
+  }
+
+  const hasScrollableOverflow = galleryElement.scrollHeight > galleryElement.clientHeight + 1;
+  if (!hasScrollableOverflow) {
+    if (masonryAutoFillBatchCount.value >= MAX_MASONRY_AUTOFILL_BATCHES) {
+      return;
+    }
+    const nextCount = Math.min(
+      visibleImages.value.length,
+      masonryTargetCount.value + getMasonryBatchSize(MASONRY_LOAD_MORE_ROW_COUNT)
+    );
+    if (nextCount === masonryTargetCount.value) {
+      return;
+    }
+    masonryAutoFillBatchCount.value += 1;
+    masonryTargetCount.value = nextCount;
+    ensureMasonryBatches();
     return;
   }
 

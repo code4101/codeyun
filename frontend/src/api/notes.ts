@@ -1775,7 +1775,10 @@ export const useNoteStore = defineStore('notes', () => {
     tabId: string,
     noteIds: string[],
     edgeIds: string[],
-    lastQuery: NoteQueryRequest | NoteProgramRequest | null = null
+    lastQuery: NoteQueryRequest | NoteProgramRequest | null = null,
+    options: {
+      loadedAt?: number;
+    } = {}
   ) => {
     const session = ensureTabSession(tabId);
     if (!session) return;
@@ -1788,7 +1791,7 @@ export const useNoteStore = defineStore('notes', () => {
     session.noteIds = nextNoteIds;
     session.edgeIds = nextEdgeIds;
     session.lastQuery = lastQuery;
-    session.lastLoadedAt = Date.now();
+    session.lastLoadedAt = options.loadedAt ?? Date.now();
     if (noteIdsChanged || edgeIdsChanged) session.dataVersion += 1;
     if (noteIdsChanged) session.noteDataVersion += 1;
     if (edgeIdsChanged) session.edgeDataVersion += 1;
@@ -1803,7 +1806,10 @@ export const useNoteStore = defineStore('notes', () => {
   const applyQueryResponseToTab = (
     tabId: string,
     request: NoteQueryRequest | NoteProgramRequest,
-    data: NoteQueryResponse | NoteProgramResponse
+    data: NoteQueryResponse | NoteProgramResponse,
+    options: {
+      loadedAt?: number;
+    } = {}
   ) => {
     const fetchedNotes = data.nodes.map((note: any) => normalizeNote(note));
     const noteIds = mergeNoteSummaries(fetchedNotes);
@@ -1811,7 +1817,7 @@ export const useNoteStore = defineStore('notes', () => {
     const fetchedEdges = data.edges.map((edge: any) => normalizeEdge(edge));
     const edgeIds = mergeEdges(fetchedEdges);
 
-    setTabData(tabId, noteIds, edgeIds, request);
+    setTabData(tabId, noteIds, edgeIds, request, options);
     return {
       noteIds,
       edgeIds

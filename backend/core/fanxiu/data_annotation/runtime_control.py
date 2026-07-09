@@ -527,7 +527,7 @@ def reset_scheduler_task_runs(
     task_ids: list[str] | None = None,
     include_disabled: bool = False,
     include_manual: bool = False,
-    clear_next_time: bool = True,
+    clear_next_time: bool = False,
     scheduler_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:

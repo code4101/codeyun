@@ -1668,6 +1668,8 @@ class DailyFoundationTaskMixin:
 
     def _world_reward_tip_text_matches(self, text: str) -> bool:
         compact = _sanitize_ocr_text(text).replace(" ", "")
+        if any(token in compact for token in ("供奉总览", "接受供奉", "今日接受供奉次数")):
+            return False
         if "点击查看" not in compact and "点击使用" not in compact:
             return False
         return any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励", "灵玉", "天尊", "仙玉", "随机匣", "兽渊"))
@@ -2991,7 +2993,7 @@ class DailyFoundationTaskMixin:
         runtime: FanxiuRuntimeSession,
         payload: dict[str, Any],
     ):
-        target_shape = str(payload.get("mojie_raid_target_shape") or "检索区域/修罗").strip()
+        target_shape = str(payload.get("mojie_raid_target_shape") or "").strip()
         match_timeout = float(
             payload.get("mojie_raid_target_match_timeout")
             or getattr(runtime, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)

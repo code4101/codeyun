@@ -5690,9 +5690,18 @@ class DataAnnotationRuntimeRunner(
         try:
             return (yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label))
         except Exception as exc:
+            if not self._daily_xianshi_claim_shape_missing_error(exc):
+                raise
             self._log("success", f"{task_label}：#250 未匹配「领取」，视为今日已无可领免费项：{exc}")
             yield from self._return_daily_xianshi_box_detail_to_coin_list(ctx, stop_event, payload, image250, task_label=task_label)
             return "not_free"
+
+    def _daily_xianshi_claim_shape_missing_error(self, exc: Exception) -> bool:
+        message = str(exc)
+        compact = re.sub(r"\s+", "", message)
+        if "250" not in compact or "领取" not in compact:
+            return False
+        return any(token in compact for token in ("未匹配", "超时", "timeout", "Timeout", "0%"))
 
     def _daily_xianshi_text_indicates_no_free_coin_box(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -5716,10 +5725,6 @@ class DataAnnotationRuntimeRunner(
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         runtime.click_shape_center(250, "返回")
         yield from runtime.wait_action_settle(float(payload.get("coin_box_return_settle_seconds") or 1.0))
-        yield from runtime.wait_view(
-            249,
-            label=f"{task_label}：等待返回仙币宝匣列表 #249",
-        )
         return "success"
 
     def _claim_daily_xianshi_coin_box(
@@ -5750,11 +5755,13 @@ class DataAnnotationRuntimeRunner(
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from runtime.wait_click(249, "返回")
-        yield from runtime.wait_view(
+        with self._lock:
+            self._log_locked("action", f"{task_label}：收尾前往 #34")
+        yield from runtime.goto_view(
             34,
-            label=f"{task_label}：等待世界 #34",
+            layer0_wait_seconds=float(payload.get("return_world_layer0_wait_seconds") or 2.0),
         )
+        yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
 
 
 
@@ -9669,7 +9676,13 @@ class DataAnnotationRuntimeRunner(
     ) -> bool:
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if not any(token in compact for token in ("至尊甄选", "适度娱乐", "理性消费", "限购次数")):
+        is_store_offer = any(token in compact for token in ("至尊甄选", "适度娱乐", "理性消费", "限购次数"))
+        is_signup_activity_offer = (
+            ("活动规则" in compact or "活动时间" in compact)
+            and "前往" in compact
+            and any(token in compact for token in ("云梦试剑", "道法争锋", "宗门灵泉", "宗门镇邪", "炼体法相"))
+        )
+        if not (is_store_offer or is_signup_activity_offer):
             return False
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         chosen_image: dict[str, Any] | None = None
@@ -9723,15 +9736,7 @@ class DataAnnotationRuntimeRunner(
             return True
         if self._recover_unknown_hidden_world_popup(ctx, frame_data_url):
             return True
-        if int(target_scene_id) != 34:
-            return False
-        return self._recover_unknown_green_bottle_return_popup(
-            ctx,
-            frame_data_url,
-            source_scene_id=20,
-            target_scene_id=34,
-            expected_ids=[34],
-        )
+        return False
 
     def _unknown_route_recovery_shape_allowed(self, shape: dict[str, Any]) -> bool:
         title = str(shape.get("title") or shape.get("id") or "").strip()

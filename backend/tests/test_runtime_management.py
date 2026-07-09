@@ -358,3 +358,42 @@ def test_serialize_fanxiu_capture_runtime_service_item_skips_health_for_runtime_
     assert include_health_calls == [False]
     assert item["title"] == "凡修抓包"
     assert item["status"]["current_pcap_path"] == "capture.pcap"
+
+
+def test_serialize_codeyun_watchdog_service_item_uses_lightweight_process_status(monkeypatch):
+    calls: list[dict[str, bool]] = []
+
+    def fake_status(*, full_scan=False, include_startup=True, include_process_details=True):
+        calls.append({
+            "full_scan": full_scan,
+            "include_startup": include_startup,
+            "include_process_details": include_process_details,
+        })
+        return {
+            "key": "codeyun-watchdog",
+            "title": "CodeYun 本机守护",
+            "running": True,
+            "state": "running",
+            "state_label": "运行中",
+            "interval_seconds": 60,
+            "backend_url": "http://127.0.0.1:8000/api/health",
+            "frontend_url": "http://127.0.0.1:5173/",
+            "script_path": "scripts/codeyun_watchdog.py",
+            "cwd": "",
+            "log_path": "",
+            "process_count": 1,
+            "pids": [123],
+            "startup": {"enabled": True},
+        }
+
+    monkeypatch.setattr(management, "get_codeyun_watchdog_status", fake_status)
+
+    item = management._serialize_codeyun_watchdog_service_item()
+
+    assert calls == [{
+        "full_scan": False,
+        "include_startup": True,
+        "include_process_details": False,
+    }]
+    assert item["title"] == "CodeYun 本机守护"
+    assert item["status"]["pids"] == [123]

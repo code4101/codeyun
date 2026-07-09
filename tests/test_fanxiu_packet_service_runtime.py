@@ -3,6 +3,43 @@ from types import SimpleNamespace
 from backend.core.fanxiu.packet import service_runtime
 
 
+def test_packet_service_state_read_prefers_newer_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+    state_path = service_runtime.get_fanxiu_packet_service_state_path()
+    snapshot_dir = service_runtime.get_fanxiu_packet_service_state_snapshot_dir()
+
+    service_runtime._write_json(state_path, {"updated_at": "2026-07-10 04:00:00", "packet_worker": {"ok": False}})
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = snapshot_dir / "packet_service_state.20260710_040500.test.json"
+    snapshot_path.write_text('{"updated_at": "2026-07-10 04:05:00", "packet_worker": {"ok": true}}', encoding="utf-8")
+
+    payload = service_runtime._read_packet_service_state_json(state_path)
+
+    assert payload["updated_at"] == "2026-07-10 04:05:00"
+    assert payload["packet_worker"]["ok"] is True
+
+
+def test_packet_service_state_write_keeps_snapshot_when_primary_locked(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+    state_path = service_runtime.get_fanxiu_packet_service_state_path()
+    original_write_json = service_runtime._write_json
+
+    def fake_write_json(path, payload):
+        if path == state_path:
+            raise PermissionError("locked")
+        return original_write_json(path, payload)
+
+    monkeypatch.setattr(service_runtime, "_write_json", fake_write_json)
+
+    service_runtime._write_packet_service_state_json(state_path, {"updated_at": "2026-07-10 04:10:00", "ok": True})
+    snapshot_dir = service_runtime.get_fanxiu_packet_service_state_snapshot_dir()
+    snapshots = list(snapshot_dir.glob("*.json"))
+
+    assert not state_path.exists()
+    assert len(snapshots) == 1
+    assert service_runtime._read_packet_service_state_json(state_path)["updated_at"] == "2026-07-10 04:10:00"
+
+
 def test_packet_service_command_processes_catch_up(tmp_path, monkeypatch):
     monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
 

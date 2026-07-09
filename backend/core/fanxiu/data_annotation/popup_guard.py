@@ -352,6 +352,84 @@ class PopupGuardMixin:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return bool(("是否离开" in compact or "离开当前场景" in compact) and ("确认" in compact or "确定" in compact))
 
+    def _popup_guard_world_guide_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if not compact:
+            return False
+        return (
+            "时装可升级" in compact
+            or ("衣装阁" in compact and "升级" in compact)
+            or ("速去升级" in compact and ("衣装" in compact or "时装" in compact))
+        )
+
+    def _popup_guard_world_guide_click_point(
+        self,
+        lines: list[dict[str, Any]],
+        *,
+        width: int,
+        height: int,
+    ) -> tuple[float, float]:
+        boxes: list[tuple[float, float, float, float]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text or not any(token in text for token in ("衣装", "时装", "升级", "速去")):
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            if w <= 0 or h <= 0:
+                continue
+            if y < height * 0.60 or x > width * 0.70:
+                continue
+            boxes.append((x, y, x + w, y + h))
+        if boxes:
+            x1 = min(item[0] for item in boxes)
+            y1 = min(item[1] for item in boxes)
+            x2 = max(item[2] for item in boxes)
+            y2 = max(item[3] for item in boxes)
+            return (x1 + x2) / 2, (y1 + y2) / 2
+        return width * 0.30, height * 0.825
+
+    def _handle_auto_close_popup_47_world_guide_bubble(
+        self,
+        runtime: Any,
+        event: dict[str, Any],
+    ) -> bool:
+        try:
+            frame = runtime.cur_frame(update=False)
+            lines = runtime.ocr_lines(frame)
+            text = runtime.ocr_text(frame) if hasattr(runtime, "ocr_text") else " ".join(str(line.get("text") or "") for line in lines)
+        except Exception:
+            return False
+        if not self._popup_guard_world_guide_text(text):
+            return False
+
+        width, height = self._disconnect_popup_frame_size(frame)
+        x, y = self._popup_guard_world_guide_click_point(lines, width=width, height=height)
+        click_image = {
+            "type": "image",
+            "title": "世界引导气泡",
+            "filename": "runtime_world_guide_bubble.png",
+            "width": width,
+            "height": height,
+            "shapes": [],
+        }
+        runtime.click_frame_point(click_image, x, y)
+        guide_event = {
+            **event,
+            "action": "click:世界引导气泡",
+            "ocr": _sanitize_ocr_text(text)[:120],
+            "click": [round(x, 1), round(y, 1)],
+        }
+        self._record_popup_guard_click(
+            47,
+            f"守护处理：#47 世界引导气泡点击 ({x:.0f},{y:.0f})",
+            guide_event,
+            "世界引导气泡",
+        )
+        return True
+
     def _handle_auto_close_popup_47_leave_confirm_ocr(
         self,
         runtime: Any,
@@ -711,6 +789,8 @@ class PopupGuardMixin:
             ):
                 return True
             if view.id == 47 and self._handle_auto_close_popup_47_leave_confirm_ocr(runtime, view, event):
+                return True
+            if view.id == 47 and self._handle_auto_close_popup_47_world_guide_bubble(runtime, event):
                 return True
 
             try:

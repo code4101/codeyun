@@ -1045,21 +1045,17 @@ class DailyResourceTaskMixin:
 
         task_label = "仙市_秘藏阁"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([34], update=True)
-        text = runtime.ocr_text(frame)
-        if not self._daily_xianshi_text_is_coin_list(text) and not self._daily_xianshi_text_is_box_detail(text):
-            if scene_id != 34:
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"{task_label}：确认/恢复到世界 #34 后进入仙市",
-                        phase="daily_xianshi_go_world",
-                        current_scene=scene_id,
-                    )
-                    self._log_locked("action", f"{task_label}：确认/恢复到 #34 后点击仙市")
-                yield from runtime.goto_view(34)
-                yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
-            yield from self._open_daily_xianshi_coin_list(ctx, stop_event, payload, image34, image247, image248, task_label=task_label)
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"{task_label}：从事务锚点 #34 开始",
+                phase="daily_xianshi_go_world",
+                current_scene=None,
+            )
+            self._log_locked("action", f"{task_label}：先回到 #34，再执行完整事务")
+        yield from runtime.goto_view(34)
+        yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+        yield from self._open_daily_xianshi_coin_list(ctx, stop_event, payload, image34, image247, image248, task_label=task_label)
 
         frame = runtime.cur_frame(update=True)
         text = runtime.ocr_text(frame)

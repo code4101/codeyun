@@ -238,6 +238,21 @@ class DataAnnotationRuntimeDebugContext:
         )
         self._runner._click_shape(self._ctx, source_image, shape, frame_data_url=frame)
 
+    def click_shape_center(self, scene: int | str, title: str, *, contains: bool = False) -> None:
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        shape: str | dict[str, Any] | None = title
+        if contains:
+            shape = self.shape(scene, title, contains=True)
+            if not shape:
+                raise RuntimeError(f"找不到标注：scene={scene} shape~={title}")
+        runtime.click_shape_center(scene, shape)
+
+    def wait_action_settle(self, seconds: float = 1.0):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.wait_action_settle(seconds))
+
     def wait_click(self, frame: int | str | None, shape: str, **options: Any):
         self._require_act()
         runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)

@@ -538,7 +538,7 @@ def _serialize_ocr_service_item(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or get_codeyun_watchdog_status())
+    payload = dict(status or get_codeyun_watchdog_status(include_process_details=False))
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "stopped"))
     interval = payload.get("interval_seconds") or 60
