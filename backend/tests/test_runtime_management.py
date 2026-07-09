@@ -306,3 +306,55 @@ def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
     assert "policy" not in builtin_job
     assert builtin_service["raw"] == {}
     assert "policy" not in builtin_service
+
+
+def test_serialize_fanxiu_capture_runtime_service_item_skips_health_for_runtime_list(monkeypatch):
+    include_health_calls: list[bool] = []
+
+    def fake_status(*, include_health=True):
+        include_health_calls.append(include_health)
+        return {
+            "key": "fanxiu-packet-service",
+            "title": "凡修抓包",
+            "running": True,
+            "state": "running",
+            "state_label": "运行中",
+            "module": "backend.services.fanxiu_packet_daemon",
+            "cwd": "",
+            "log_path": "",
+            "state_path": "",
+            "process_count": 1,
+            "processes": [{"pid": 1234}],
+            "pids": [1234],
+            "updated_at": "2026-07-09 07:00:00",
+            "capture_runtime": {
+                "game_running": True,
+                "adb_connected": True,
+                "root_ready": True,
+                "tcpdump_ready": True,
+                "active_reasons": [],
+                "current_pcap_path": "capture.pcap",
+                "current_pcap_size": 1024,
+                "started_at": "2026-07-09 06:59:00",
+                "last_error": "",
+                "last_recover_at": "",
+                "watchdog_running": True,
+                "watchdog_interval_seconds": 15,
+                "watchdog_last_check_at": "2026-07-09 07:00:00",
+                "watchdog_last_action": "",
+                "watchdog_last_error": "",
+            },
+            "packet_worker": {
+                "realtime_running": True,
+                "maintenance_running": False,
+                "updated_at": "2026-07-09 07:00:00",
+            },
+        }
+
+    monkeypatch.setattr(management, "get_fanxiu_packet_service_status", fake_status)
+
+    item = management._serialize_fanxiu_capture_runtime_service_item()
+
+    assert include_health_calls == [False]
+    assert item["title"] == "凡修抓包"
+    assert item["status"]["current_pcap_path"] == "capture.pcap"

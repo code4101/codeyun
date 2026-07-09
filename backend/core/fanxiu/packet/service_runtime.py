@@ -609,7 +609,7 @@ def write_fanxiu_packet_service_state(extra: dict[str, Any] | None = None) -> di
     return payload
 
 
-def get_fanxiu_packet_service_status() -> dict[str, Any]:
+def get_fanxiu_packet_service_status(*, include_health: bool = True) -> dict[str, Any]:
     processes = list_fanxiu_packet_service_processes()
     running = bool(processes)
     state_payload = _read_json(get_fanxiu_packet_service_state_path(), {})
@@ -637,7 +637,8 @@ def get_fanxiu_packet_service_status() -> dict[str, Any]:
         "external": True,
         "controllable": True,
     }
-    status["health"] = build_fanxiu_packet_service_health(status)
+    if include_health:
+        status["health"] = build_fanxiu_packet_service_health(status)
     return status
 
 

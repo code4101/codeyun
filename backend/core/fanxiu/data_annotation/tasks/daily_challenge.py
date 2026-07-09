@@ -1589,6 +1589,7 @@ class DailyChallengeTaskMixin:
         *,
         timeout: float,
         label: str,
+        allow_daily_or_world: bool = False,
     ) -> tuple[int, float]:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
@@ -1604,6 +1605,8 @@ class DailyChallengeTaskMixin:
             last_scene_id, last_score, last_text = scene_id, score, text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
                 return 204, float(score or 100.0)
+            if allow_daily_or_world and scene_id in {69, 34}:
+                return int(scene_id), float(score or 100.0)
             if scene_id == 237:
                 yield from self._daily_assistant_close_youli_result(runtime, payload)
                 continue
@@ -1902,14 +1905,15 @@ class DailyChallengeTaskMixin:
                 return "success"
             if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
                 self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
-                yield from self._wait_daily_assistant_list_state(
+                landed_scene_id, _landed_score = yield from self._wait_daily_assistant_list_state(
                     ctx,
                     stop_event,
                     payload,
                     timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                     label="日常_助手：等待结果汇总返回小助手总览",
+                    allow_daily_or_world=True,
                 )
-                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
+                yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=landed_scene_id)
                 self._log("success", "日常_助手：新版小助手一键执行结果已关闭")
                 return "success"
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
@@ -2012,14 +2016,15 @@ class DailyChallengeTaskMixin:
         text = runtime.ocr_text(frame)
         if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
             self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
-            yield from self._wait_daily_assistant_list_state(
+            landed_scene_id, _landed_score = yield from self._wait_daily_assistant_list_state(
                 ctx,
                 stop_event,
                 payload,
                 timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                 label="日常_助手：等待结果汇总返回小助手总览",
+                allow_daily_or_world=True,
             )
-            current_scene = 204
+            current_scene = int(landed_scene_id)
         elif scene_id in {237, 204, 69, 34}:
             current_scene = int(scene_id)
         if current_scene == 204:
@@ -2028,14 +2033,15 @@ class DailyChallengeTaskMixin:
                 text = runtime.ocr_text(frame)
                 if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
                     self._daily_assistant_close_one_key_result(ctx, runtime, frame, label="日常_助手")
-                    yield from self._wait_daily_assistant_list_state(
+                    landed_scene_id, _landed_score = yield from self._wait_daily_assistant_list_state(
                         ctx,
                         stop_event,
                         payload,
                         timeout=float(payload.get("assistant_one_key_result_close_timeout") or 15.0),
                         label="日常_助手：等待结果汇总返回小助手总览",
+                        allow_daily_or_world=True,
                     )
-                    current_scene = 204
+                    current_scene = int(landed_scene_id)
                     continue
                 if scene_id == 237:
                     yield from self._daily_assistant_close_youli_result(runtime, payload)

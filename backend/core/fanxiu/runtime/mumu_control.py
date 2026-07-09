@@ -90,6 +90,7 @@ MUMU_ADB_ALLOW_PROXY_DEVICES_ENV = "FANXIU_MUMU_ADB_ALLOW_PROXY_DEVICES"
 MUMU_ADB_PORT_PROBE_TIMEOUT_ENV = "FANXIU_MUMU_ADB_PORT_PROBE_TIMEOUT"
 MUMU_DEVICE_HEALTH_CHECK_INTERVAL_ENV = "FANXIU_MUMU_DEVICE_HEALTH_CHECK_INTERVAL"
 MUMU_DEVICE_AUTO_RECOVERY_ENV = "FANXIU_MUMU_DEVICE_AUTO_RECOVERY"
+MUMU_DEVICE_STARTUP_GRACE_SECONDS_ENV = "FANXIU_MUMU_DEVICE_STARTUP_GRACE_SECONDS"
 FANXIU_ANDROID_PACKAGE = "com.frxxcrjpwssc3.ggws"
 _MUMU_ADB_FAILURE_CACHE_TTL = 3.0
 _MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
@@ -547,6 +548,13 @@ def _mumu_device_auto_recovery_enabled() -> bool:
     return _is_truthy_env(value)
 
 
+def _mumu_device_startup_grace_seconds(default: float = 300.0) -> float:
+    try:
+        return max(30.0, min(900.0, float(os.environ.get(MUMU_DEVICE_STARTUP_GRACE_SECONDS_ENV) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _mumu_manager_path() -> Path | None:
     try:
         adb_path = fanxiu_android_proxy_service.adb_path()
@@ -889,10 +897,53 @@ def _mumu_device_health_status_from_info(info: dict[str, Any]) -> str:
     if not bool(info.get("is_process_started")):
         return "stopped"
     if not bool(info.get("is_android_started")):
-        return "broken"
+        return "starting"
     if str(info.get("player_state") or "") == "start_finished":
         return "healthy"
     return "suspect"
+
+
+def _mumu_device_last_recovery_at() -> float:
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        last_recovery_at = float(_mumu_device_health_state.get("last_recovery_at") or 0.0)
+    persisted = _read_mumu_device_recovery_state()
+    try:
+        last_recovery_at = max(last_recovery_at, float(persisted.get("last_recovery_at") or 0.0))
+    except (TypeError, ValueError):
+        pass
+    return last_recovery_at
+
+
+def _mumu_device_in_startup_grace(now: float | None = None) -> tuple[bool, float]:
+    last_recovery_at = _mumu_device_last_recovery_at()
+    if last_recovery_at <= 0:
+        return False, 0.0
+    elapsed = float(now or time.time()) - last_recovery_at
+    remaining = _mumu_device_startup_grace_seconds() - elapsed
+    return remaining > 0, max(0.0, remaining)
+
+
+def mumu_device_startup_grace_state(now: float | None = None) -> dict[str, Any]:
+    last_recovery_at = _mumu_device_last_recovery_at()
+    in_grace, remaining = _mumu_device_in_startup_grace(now)
+    return {
+        "active": bool(in_grace),
+        "last_recovery_at": last_recovery_at,
+        "remaining_seconds": round(remaining, 3),
+        "deadline_seconds": _mumu_device_startup_grace_seconds(),
+    }
+
+
+def mark_mumu_device_startup_ready(*, reason: str = "startup_scene_ready") -> None:
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        _mumu_device_health_state["startup_ready_at"] = time.time()
+        _mumu_device_health_state["startup_ready_reason"] = str(reason or "startup_scene_ready")
+        _mumu_device_health_state["last_recovery_at"] = 0.0
+    try:
+        _write_mumu_device_recovery_state({"last_recovery_at": 0.0, "last_recovery_reason": str(reason or "startup_scene_ready")})
+    except Exception:
+        pass
+    _append_mumu_device_health_event("startup_ready", {"reason": reason})
 
 
 def _clone_mumu_device_health_state() -> dict[str, Any]:
@@ -977,13 +1028,7 @@ def _mumu_device_recovery_cooling_down(now: float, *, status: str = "unknown", c
         if cooldown_seconds is not None
         else _mumu_device_recovery_cooldown_seconds(str(status or "unknown"))
     )
-    with _MUMU_DEVICE_HEALTH_LOCK:
-        last_recovery_at = float(_mumu_device_health_state.get("last_recovery_at") or 0.0)
-    persisted = _read_mumu_device_recovery_state()
-    try:
-        last_recovery_at = max(last_recovery_at, float(persisted.get("last_recovery_at") or 0.0))
-    except (TypeError, ValueError):
-        pass
+    last_recovery_at = _mumu_device_last_recovery_at()
     return last_recovery_at > 0 and now - last_recovery_at < resolved_cooldown
 
 
@@ -1121,19 +1166,35 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
 def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = True) -> dict[str, Any]:
     message = str(error or "")
     now_mono = time.monotonic()
+    in_grace, grace_remaining = _mumu_device_in_startup_grace()
     with _MUMU_DEVICE_HEALTH_LOCK:
         _mumu_device_health_state["failure_count"] = int(_mumu_device_health_state.get("failure_count") or 0) + 1
         _mumu_device_health_state["last_error"] = message
-        _mumu_device_health_state["status"] = "suspect"
+        _mumu_device_health_state["status"] = "starting" if in_grace else "suspect"
+        if in_grace:
+            _mumu_device_health_state["startup_grace_remaining_seconds"] = round(grace_remaining, 3)
         _mumu_device_health_state["checked_at"] = time.time()
         failure_count = int(_mumu_device_health_state.get("failure_count") or 0)
         checked_mono = float(_mumu_device_health_state.get("checked_monotonic") or 0.0)
     _append_mumu_device_health_event(
         "adb_failure",
-        {"vmindex": vmindex, "failure_count": failure_count, "recover": bool(recover), "error": message},
+        {
+            "vmindex": vmindex,
+            "failure_count": failure_count,
+            "recover": bool(recover),
+            "error": message,
+            "startup_grace": bool(in_grace),
+            "startup_grace_remaining_seconds": round(grace_remaining, 3),
+        },
         include_resources=failure_count >= 3 or _is_mumu_adb_unavailable_error(message),
         include_native=failure_count >= 3 or _is_mumu_adb_unavailable_error(message),
     )
+    if in_grace and (_is_mumu_adb_unavailable_error(message) or _is_mumu_frame_unusable_error(message)):
+        state = _clone_mumu_device_health_state()
+        state["recovered"] = False
+        state["recovery_deferred"] = "startup_grace"
+        state["startup_grace_remaining_seconds"] = round(grace_remaining, 3)
+        return state
     if failure_count < 3 and now_mono - checked_mono < _mumu_device_health_check_interval():
         return _clone_mumu_device_health_state()
     state = mumu_device_health_check(vmindex=vmindex, force=True)
@@ -1148,7 +1209,13 @@ def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = T
 
 def ensure_mumu_device_healthy(*, vmindex: str = "1", recover: bool = True, force: bool = False, reason: str = "heartbeat") -> dict[str, Any]:
     state = mumu_device_health_check(vmindex=vmindex, force=force)
-    if recover and state.get("status") in {"broken", "stopped"}:
+    in_grace, grace_remaining = _mumu_device_in_startup_grace()
+    if in_grace and state.get("status") in {"starting", "broken", "stopped", "suspect"}:
+        state["recovered"] = False
+        state["recovery_deferred"] = "startup_grace"
+        state["startup_grace_remaining_seconds"] = round(grace_remaining, 3)
+        return state
+    if recover and state.get("status") in {"broken", "stopped", "starting"}:
         return recover_mumu_device(vmindex=vmindex, reason=reason)
     return state
 

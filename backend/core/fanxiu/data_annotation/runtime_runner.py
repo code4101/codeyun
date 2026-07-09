@@ -112,9 +112,13 @@ from backend.core.fanxiu.mail.runtime_store import (
     update_packet_mail_action,
 )
 from backend.core.fanxiu.runtime.mumu_control import (
+    capture_mumu_window_frame,
     ensure_mumu_device_healthy,
+    mark_mumu_device_startup_ready,
+    mumu_device_startup_grace_state,
     record_mumu_adb_failure,
     screencap_mumu_adb_png,
+    _encode_png_frame,
 )
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
@@ -3257,6 +3261,11 @@ class DataAnnotationRuntimeRunner(
             entry, entry_id, asset_tree_path = context
             try:
                 if not self.status().get("running"):
+                    if self._run_mumu_startup_gate_tick(entry_id, asset_tree_path):
+                        self._mark_service_heartbeat("mumu_startup_gate")
+                        self._service_wake_event.wait(max(0.5, min(2.0, float(tick_seconds or 1.0))))
+                        self._service_wake_event.clear()
+                        continue
                     self._mark_service_heartbeat("task_cell_poll")
                     if self._start_next_task_cell_if_idle(entry, entry_id, asset_tree_path) is not None:
                         self._mark_service_heartbeat("task_cell_started")
@@ -3328,6 +3337,18 @@ class DataAnnotationRuntimeRunner(
         entry, entry_id, asset_tree_path = context
         action = "idle"
         try:
+            if self._run_mumu_startup_gate_tick(entry_id, asset_tree_path):
+                action = "mumu_startup_gate"
+                status = self.status()
+                status["cell_tick"] = {
+                    "ran": True,
+                    "action": action,
+                    "guard": bool(guard),
+                    "task_cell": bool(task_cell),
+                    "scheduled_job": bool(scheduled_job),
+                }
+                self._persist_status()
+                return status
             if guard:
                 self._run_device_health_guard_tick(entry_id)
             if not self.status().get("running"):
@@ -3506,6 +3527,69 @@ class DataAnnotationRuntimeRunner(
             asset_tree_path=asset_tree_path,
             run_label="执行到期任务",
         )
+        return True
+
+    def _run_mumu_startup_gate_tick(self, entry_id: str, asset_tree_path: Path) -> bool:
+        grace = mumu_device_startup_grace_state()
+        if not bool(grace.get("active")):
+            return False
+        remaining = float(grace.get("remaining_seconds") or 0.0)
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry_id": entry_id,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            frame = self._data_url(_encode_png_frame(capture_mumu_window_frame()))
+            scene_id, score = self._identify_scene_number(ctx, frame, preferred_scene_ids=[14])
+            if scene_id == 14 and self._scene_matches_id(14, float(score or 0.0)):
+                mark_mumu_device_startup_ready(reason="scene_14_ready")
+                with self._lock:
+                    self._status.update({
+                        "status": "idle",
+                        "phase": "mumu_startup_ready",
+                        "current_scene": 14,
+                        "message": "MuMu 启动保护期结束：已识别 #14「游戏公告」",
+                        "error": "",
+                        "updated_at": time.time(),
+                    })
+                    self._log_locked("info", "MuMu 启动保护期结束：已识别 #14「游戏公告」", scope="guard", item_id="device_health")
+                self._persist_status()
+                return True
+            with self._lock:
+                self._status.update({
+                    "status": "idle",
+                    "phase": "mumu_startup_wait_scene_14",
+                    "current_scene": scene_id,
+                    "message": f"MuMu 启动保护期：等待 #14「游戏公告」，剩余 {remaining:.0f}s",
+                    "error": "",
+                    "updated_at": time.time(),
+                    "device_health": {
+                        "status": "starting",
+                        "startup_gate": "wait_scene_14",
+                        "startup_grace_remaining_seconds": round(remaining, 3),
+                        "current_scene": scene_id,
+                        "score": round(float(score or 0.0), 3),
+                    },
+                })
+        except Exception as exc:
+            with self._lock:
+                self._status.update({
+                    "status": "idle",
+                    "phase": "mumu_startup_wait_scene_14",
+                    "message": f"MuMu 启动保护期：等待 #14「游戏公告」，剩余 {remaining:.0f}s",
+                    "error": "",
+                    "updated_at": time.time(),
+                    "device_health": {
+                        "status": "starting",
+                        "startup_gate": "wait_scene_14",
+                        "startup_grace_remaining_seconds": round(remaining, 3),
+                        "last_error": str(exc),
+                    },
+                })
+        self._persist_status()
         return True
 
     def _scheduler_task_due_soon(self, *, within_seconds: float = 180.0) -> bool:

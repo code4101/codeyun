@@ -35,6 +35,23 @@ def test_packet_service_status_reads_state_file(monkeypatch, tmp_path):
     assert status["packet_worker"]["realtime_running"] is True
 
 
+def test_packet_service_status_can_skip_health(monkeypatch, tmp_path):
+    state_path = tmp_path / "packet_service_state.json"
+    state_path.write_text('{"updated_at": "2026-06-27 19:32:00"}', encoding="utf-8")
+    monkeypatch.setenv("FX_PACKET_SERVICE_STATE", str(state_path))
+    monkeypatch.setenv("FX_PACKET_SERVICE_LOG", str(tmp_path / "packet_service.log"))
+    monkeypatch.setattr(service_runtime, "list_fanxiu_packet_service_processes", lambda: [{"pid": 1234}])
+    monkeypatch.setattr(
+        service_runtime,
+        "build_fanxiu_packet_service_health",
+        lambda _status: (_ for _ in ()).throw(AssertionError("health should be skipped")),
+    )
+
+    status = service_runtime.get_fanxiu_packet_service_status(include_health=False)
+
+    assert "health" not in status
+
+
 def test_packet_worker_status_is_service_state_projection(monkeypatch, tmp_path):
     state_path = tmp_path / "packet_service_state.json"
     state_path.write_text(

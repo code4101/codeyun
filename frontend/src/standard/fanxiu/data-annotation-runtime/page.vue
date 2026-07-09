@@ -59,7 +59,8 @@ let polling = false;
 let doctorEnsurePromise: Promise<void> | null = null;
 let lastDoctorEnsureAt = 0;
 const CELL_LOG_LIMIT = 24;
-const CELL_LOG_ENTRY_LIMIT = 1200;
+// Keep the runtime page on a summary-sized log slice; full history lives on the logs page.
+const CELL_LOG_ENTRY_LIMIT = 200;
 const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
 const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
 const HUMAN_ISOLATION_TTL_SECONDS = 21600;
