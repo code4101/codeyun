@@ -1136,15 +1136,18 @@ function clearRefundHistoryDeferredTimer() {
   refundHistoryPending.value = false
 }
 
-function restoreSecondaryDrafts() {
-  const queryKey = queryDraftStorageKey.value
-  if (queryKey) {
-    restoreQueryDraftRows(queryKey)
-  }
+function restoreSecondaryDrafts(view: OrderSubview) {
+  if (view === 'refund') {
+    const queryKey = queryDraftStorageKey.value
+    if (queryKey) {
+      restoreQueryDraftRows(queryKey)
+    }
 
-  const refundKey = refundDraftStorageKey.value
-  if (refundKey) {
-    restoreRefundDraftRows(refundKey)
+    const refundKey = refundDraftStorageKey.value
+    if (refundKey) {
+      restoreRefundDraftRows(refundKey)
+    }
+    return
   }
 
   const detailKey = detailDraftStorageKey.value
@@ -1167,29 +1170,37 @@ function clearSecondaryDraftRestoreTimer() {
   }
 }
 
-function scheduleSecondaryDraftRestore() {
+function scheduleSecondaryDraftRestore(view: OrderSubview = activeSubview.value) {
   if (!secondaryDraftsReady) return
   clearSecondaryDraftRestoreFrame()
   clearSecondaryDraftRestoreTimer()
+  const delayMs = view === 'refund' ? 0 : SECONDARY_DRAFT_RESTORE_DELAY_MS
   markBootPerf('attendance-orders.secondary-drafts.scheduled', {
-    delayMs: SECONDARY_DRAFT_RESTORE_DELAY_MS,
+    delayMs,
+    view,
   })
   secondaryDraftRestoreFrame = window.requestAnimationFrame(() => {
     secondaryDraftRestoreFrame = null
-    secondaryDraftRestoreTimer = window.setTimeout(() => {
+    const runRestore = () => {
       secondaryDraftRestoreTimer = null
       markBootPerf('attendance-orders.secondary-drafts.start')
-      restoreSecondaryDrafts()
+      restoreSecondaryDrafts(view)
       if (!bootPerfSecondaryDraftRestoreMarked) {
         bootPerfSecondaryDraftRestoreMarked = true
         markBootPerf('attendance-orders.secondary-drafts.done', {
+          view,
           queryRows: queryRows.value.length,
           refundRows: refundRows.value.length,
           detailRows: detailRows.value.length,
           detailSearched: detailSearched.value,
         })
       }
-    }, SECONDARY_DRAFT_RESTORE_DELAY_MS)
+    }
+    if (delayMs <= 0) {
+      runRestore()
+      return
+    }
+    secondaryDraftRestoreTimer = window.setTimeout(runRestore, delayMs)
   })
 }
 
@@ -1527,7 +1538,7 @@ watch(
 watch(
   queryDraftStorageKey,
   (storageKey) => {
-    if (!storageKey || !secondaryDraftsReady) return
+    if (!storageKey || !secondaryDraftsReady || activeSubview.value !== 'refund') return
     restoreQueryDraftRows(storageKey)
   }
 )
@@ -1535,7 +1546,7 @@ watch(
 watch(
   refundDraftStorageKey,
   (storageKey) => {
-    if (!storageKey || !secondaryDraftsReady) return
+    if (!storageKey || !secondaryDraftsReady || activeSubview.value !== 'refund') return
     restoreRefundDraftRows(storageKey)
   }
 )
@@ -1543,7 +1554,7 @@ watch(
 watch(
   detailDraftStorageKey,
   (storageKey) => {
-    if (!storageKey || !secondaryDraftsReady) return
+    if (!storageKey || !secondaryDraftsReady || activeSubview.value !== 'detail') return
     restoreDetailDraftValue(storageKey)
   }
 )
@@ -1574,6 +1585,9 @@ watch(activeSubview, (view) => {
     scheduleRefundHistoryLoad()
   } else {
     clearRefundHistoryDeferredTimer()
+  }
+  if (secondaryDraftsReady) {
+    scheduleSecondaryDraftRestore(view)
   }
 })
 

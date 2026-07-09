@@ -475,7 +475,9 @@ const hydrateStarGraphQueryCache = (request: NoteProgramRequest) => {
   if (!cached) {
     return false;
   }
-  noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.data);
+  noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.data, {
+    loadedAt: cached.savedAt,
+  });
   if (starPerfEnabled) {
     markBootPerf('notes-star.cacheHydrated', {
       noteCount: cached.data.nodes.length,
@@ -1365,7 +1367,7 @@ onMounted(async () => {
         if (shouldDeferRelayout) {
           scheduleDeferredInitialRelayout();
         }
-        if (hydratedFromQueryCache || !isCachedGlobalGraphFresh()) {
+        if (!isCachedGlobalGraphFresh()) {
           void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
         }
         return;

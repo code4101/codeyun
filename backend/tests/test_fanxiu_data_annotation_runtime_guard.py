@@ -1811,6 +1811,30 @@ def test_unknown_promo_offer_page_recovery_uses_existing_return_shape(monkeypatc
     assert clicked == [(249, 81.0, 1528.8)]
 
 
+def test_unknown_signup_activity_offer_page_recovery_uses_existing_return_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image23 = _image("报名", "0023.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.03, "y": 0.925, "w": 0.11, "h": 0.06},
+    ])
+    ctx = {"images": {23: image23}}
+    clicked: list[tuple[int | None, float, float]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{"text": "云梦试剑 活动规则 前往 云梦山举行试剑大典"}],
+    )
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_click_frame_point",
+        lambda _ctx, image, x, y: clicked.append((runner._image_number(image), round(x, 1), round(y, 1))),
+    )
+
+    assert runner._recover_unknown_start_to_world(ctx, "frame", target_scene_id=69) is True
+    assert clicked == [(23, 76.5, 1528.0)]
+
+
 def test_compare_frame_crops_resizes_current_crop_without_mask():
     reference = np.full((45, 48, 3), 120, dtype=np.uint8)
     current = np.full((36, 38, 3), 120, dtype=np.uint8)
@@ -6698,6 +6722,15 @@ def test_daily_gongfeng_count_fraction_zero_keeps_zero_first_number():
     assert runner._daily_gongfeng_numbers("次数：0/1+")[:1] == [0]
     assert runner._daily_gongfeng_numbers("次数：2/1+")[:1] == [2]
     assert runner._daily_gongfeng_remaining("今日接受供奉次数：0") == 0
+
+
+def test_world_reward_tip_detection_ignores_daily_gongfeng_page():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._world_reward_tip_text_matches("百脉宝魄 点击查看") is True
+    assert runner._world_reward_tip_text_matches(
+        "供奉总览 供奉奖励 接受供奉 今日接受供奉次数：5/1 点击查看"
+    ) is False
 
 
 def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch):

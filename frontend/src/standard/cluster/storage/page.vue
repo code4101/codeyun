@@ -265,12 +265,15 @@
       </template>
 
       <StorageDuplicatePane
-        v-else-if="shouldShowDuplicates"
+        v-else-if="shouldShowDuplicates && canAnalyzeDuplicates"
         :key="duplicatePaneKey"
         :can-browse="canBrowse"
         :entry-id="selectedEntryId"
         :request="duplicateRequest"
       />
+      <section v-else-if="shouldShowDuplicates" class="storage-empty duplicate-prerequisite">
+        请先进入具体磁盘或目录，再分析重复文件。
+      </section>
     </template>
 
     <teleport to="body">
@@ -372,6 +375,7 @@ import {
   type WeChatStorageRoot,
 } from '@/api/wechatArchive';
 import { taskStore, type Device } from '@/store/taskStore';
+import { markBootPerf } from '@/utils/bootPerf';
 import { monitorPolledTask } from '@/utils/longTask';
 
 const StorageDuplicatePane = defineAsyncComponent(() => import('./StorageDuplicatePane.vue'));
@@ -696,6 +700,29 @@ const duplicateRequest = computed<DeviceFileSelector | null>(() => {
   return currentRequest.value ?? buildInputRequest();
 });
 const duplicatePaneKey = computed(() => `${selectedEntryId.value}::${getRequestStateKey(duplicateRequest.value)}`);
+const canAnalyzeDuplicates = computed(() => Boolean(duplicateRequest.value && duplicateRequest.value.absolute_path !== DEVICE_ROOT_SENTINEL));
+const deferredTreeRestoreState = ref<StorageWorkspaceState | null>(null);
+const deferredTreeRestoreVersion = ref(0);
+
+function clearDeferredTreeRestore() {
+  deferredTreeRestoreState.value = null;
+  deferredTreeRestoreVersion.value = 0;
+}
+
+async function restoreDeferredTreeStateIfNeeded() {
+  if (activeView.value !== 'tree') {
+    return;
+  }
+  if (!deferredTreeRestoreState.value || deferredTreeRestoreVersion.value !== rootLoadVersion) {
+    clearDeferredTreeRestore();
+    return;
+  }
+  const state = deferredTreeRestoreState.value;
+  const loadVersion = deferredTreeRestoreVersion.value;
+  clearDeferredTreeRestore();
+  markBootPerf('storage.restoreExpanded.replay', { expandedCount: state.expandedKeys.length });
+  await continueRestoreExpandedState(loadVersion, state);
+}
 
 function normalizeMaybeNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -1358,8 +1385,23 @@ async function loadRoot(
     rootNodes.value = createNodes(listing, 0, options.workspaceState);
     syncPathInputFromRequest(request);
     if (options.restoreExpanded) {
-      void continueRestoreExpandedState(loadVersion, options.workspaceState);
+      if (activeView.value === 'tree' || request.absolute_path !== DEVICE_ROOT_SENTINEL) {
+        clearDeferredTreeRestore();
+        void continueRestoreExpandedState(loadVersion, options.workspaceState);
+      } else if (options.workspaceState?.expandedKeys.length) {
+        deferredTreeRestoreState.value = options.workspaceState;
+        deferredTreeRestoreVersion.value = loadVersion;
+        markBootPerf('storage.restoreExpanded.deferred', {
+          activeView: activeView.value,
+          expandedCount: options.workspaceState.expandedKeys.length,
+        });
+        await resetTableScroll();
+      } else {
+        clearDeferredTreeRestore();
+        await resetTableScroll();
+      }
     } else {
+      clearDeferredTreeRestore();
       await resetTableScroll();
     }
     persistWorkspaceState();
@@ -1476,6 +1518,9 @@ function setActiveView(view: StorageView) {
   activeView.value = view;
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(activeViewStorageKey.value, view);
+  }
+  if (view === 'tree') {
+    void restoreDeferredTreeStateIfNeeded();
   }
 }
 

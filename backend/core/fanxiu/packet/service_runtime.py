@@ -56,6 +56,11 @@ def get_fanxiu_packet_service_state_path() -> Path:
     return (get_settings().data_dir / "fanxiu" / "packet-insights" / "packet_service_state.json").resolve(strict=False)
 
 
+def get_fanxiu_packet_service_state_snapshot_dir() -> Path:
+    path = get_fanxiu_packet_service_state_path()
+    return path.parent / f"{path.stem}.snapshots"
+
+
 def get_fanxiu_packet_service_command_dir() -> Path:
     return (get_settings().data_dir / "fanxiu" / "packet-insights" / "commands").resolve(strict=False)
 
@@ -174,6 +179,74 @@ def _write_json(path: Path, payload: Any) -> None:
         if last_error is not None:
             raise last_error
         raise
+
+
+def _state_snapshot_path(path: Path) -> Path:
+    snapshot_dir = get_fanxiu_packet_service_state_snapshot_dir()
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    return snapshot_dir / f"{path.stem}.{stamp}.{os.getpid()}.{uuid.uuid4().hex}.json"
+
+
+def _prune_state_snapshots(*, keep: int = 20) -> None:
+    snapshot_dir = get_fanxiu_packet_service_state_snapshot_dir()
+    try:
+        items = [path for path in snapshot_dir.glob("*.json") if path.is_file()]
+    except OSError:
+        return
+    if len(items) <= keep:
+        return
+    items.sort(
+        key=lambda item: (
+            item.stat().st_mtime if item.exists() else 0.0,
+            item.name,
+        ),
+        reverse=True,
+    )
+    for stale_path in items[keep:]:
+        try:
+            stale_path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _write_packet_service_state_json(path: Path, payload: Any) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    snapshot_path = _state_snapshot_path(path)
+    snapshot_path.write_text(text, encoding="utf-8")
+    _prune_state_snapshots()
+    try:
+        _write_json(path, payload)
+    except OSError:
+        # Keep the snapshot as the freshest readable state when the primary file is locked.
+        return
+
+
+def _read_packet_service_state_json(path: Path) -> dict[str, Any]:
+    candidates: list[Path] = []
+    if path.is_file():
+        candidates.append(path)
+    snapshot_dir = get_fanxiu_packet_service_state_snapshot_dir()
+    try:
+        snapshot_paths = [item for item in snapshot_dir.glob("*.json") if item.is_file()]
+    except OSError:
+        snapshot_paths = []
+    snapshot_paths.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0.0, reverse=True)
+    candidates.extend(snapshot_paths[:5])
+    newest_payload: dict[str, Any] = {}
+    newest_mtime = -1.0
+    for candidate in candidates:
+        payload = _read_json(candidate, {})
+        if not isinstance(payload, dict) or not payload:
+            continue
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > newest_mtime:
+            newest_payload = payload
+            newest_mtime = mtime
+    return newest_payload
 
 
 def submit_fanxiu_packet_service_command(
@@ -605,14 +678,14 @@ def write_fanxiu_packet_service_state(extra: dict[str, Any] | None = None) -> di
     }
     if extra:
         payload.update(extra)
-    _write_json(get_fanxiu_packet_service_state_path(), payload)
+    _write_packet_service_state_json(get_fanxiu_packet_service_state_path(), payload)
     return payload
 
 
 def get_fanxiu_packet_service_status(*, include_health: bool = True) -> dict[str, Any]:
     processes = list_fanxiu_packet_service_processes()
     running = bool(processes)
-    state_payload = _read_json(get_fanxiu_packet_service_state_path(), {})
+    state_payload = _read_packet_service_state_json(get_fanxiu_packet_service_state_path())
     if not isinstance(state_payload, dict):
         state_payload = {}
     state = "running" if running else "stopped"

@@ -342,11 +342,12 @@ async function removeAccount(account: AttendanceAccount) {
   }
 }
 
+void loadPageData()
+
 onMounted(() => {
   markBootPerf('attendance-configs.mounted', {
     cachedDeviceCount: taskStore.devices.length,
   })
-  void loadPageData()
 })
 </script>
 

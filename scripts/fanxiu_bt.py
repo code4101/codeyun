@@ -1464,7 +1464,8 @@ def main() -> int:
     reset_scheduler_runs.add_argument("--task-id", action="append", default=[], help="只重置指定 task id；可重复传入")
     reset_scheduler_runs.add_argument("--include-disabled", action="store_true", help="同时重置未启用作业的运行结论；不会启用它们")
     reset_scheduler_runs.add_argument("--include-manual", action="store_true", help="同时重置 manual schedule_kind 作业")
-    reset_scheduler_runs.add_argument("--keep-next-time", action="store_true", help="保留 next_time，只清运行结果字段")
+    reset_scheduler_runs.add_argument("--keep-next-time", action="store_true", help=argparse.SUPPRESS)
+    reset_scheduler_runs.add_argument("--clear-next-time", action="store_true", help="同时清空 next_time，让作业重新按到期规则验收")
     reset_scheduler_runs.add_argument("--force", action="store_true", help="确认执行重置")
     reset_scheduler_runs.add_argument("--json", action="store_true", help="输出 JSON")
 
@@ -1570,7 +1571,7 @@ def main() -> int:
             task_ids=[str(item) for item in (args.task_id or [])],
             include_disabled=bool(args.include_disabled),
             include_manual=bool(args.include_manual),
-            clear_next_time=not bool(args.keep_next_time),
+            clear_next_time=bool(args.clear_next_time) and not bool(args.keep_next_time),
         )
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

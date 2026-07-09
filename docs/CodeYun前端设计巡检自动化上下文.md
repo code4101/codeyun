@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "918c1b7602e1d3223167588c0fe4d0830f256114"
-last_audited_at: "2026-07-09T04:40:01.7693689+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-918c1b7/report.md"
-last_frontend_commit_summary: "已关闭 7182698..918c1b7：attendance/configs 顶栏冗余刷新已删除；notes/list 与 cluster/files 三视口复验未见新的一级噪音或壳层回退。"
-audited_commit_count: 88
+last_audited_commit: "7a6fa47261f0154c92fa56b6195fbc2757544ba7"
+last_audited_at: "2026-07-09T12:40:42.8462467+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-7a6fa47/report.md"
+last_frontend_commit_summary: "已关闭 918c1b7..7a6fa47：fanxiu runtime 摘要日志继续留在一级页、完整历史可从日志页取回；notes/star 缓存后置未长出一级噪音，attendance/configs 与 notes/list 同链路复验通过。"
+audited_commit_count: 89
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-09（第二十一轮）
+
+- 完整范围：`918c1b7602e1d3223167588c0fe4d0830f256114..7a6fa47261f0154c92fa56b6195fbc2757544ba7`
+- 覆盖提交：`7a6fa47261f0154c92fa56b6195fbc2757544ba7`
+- 前端入口提交：`7a6fa47261f0154c92fa56b6195fbc2757544ba7`
+- 入口如何牵引到旧问题：这次提交同时落在 `attendance/configs`、`fanxiu/data-annotation/runtime` 和 `notes/star`，共享同一条减法方向：一级页面只保留当前判断事实，把浏览器级刷新、全量日志历史和冷启动查询回放分别收回到浏览器默认能力、日志页和后台缓存。因此本轮沿同一业务链路复核了 `attendance/orders`、`notes/list` 与 `fanxiu/data-annotation/runtime/logs`，而不是只看 commit 本身的代码片段。
+- 本轮减法：没有继续改源码。真实页面复核确认 `attendance/configs` 顶栏仍不存在与 F5 等价的常驻 `刷新`；`fanxiu/runtime` 一级页保持 `内核/守护/作业/巡检/Cell 日志摘要` 结构，完整历史可在实际路由 `/fanxiu/data-annotation/runtime/logs` 查看；`notes/star` 的 query cache 后置没有新增提示条、状态条或说明块，同链路旧页 `notes/list` 仍保持筛选摘要 + 列表事实。
+- 信息量保持：`attendance/configs` 仍保留 step1-step6 覆盖、默认设备、订单模式、提醒对象和问卷账号；`fanxiu/runtime` 仍保留守护、作业、巡检状态和 cell 日志，只把全量历史后置到日志页；`notes/star` 仍保留后端筛选、前端筛选、年度摘要和节点入口。
+- 概念图/线框图：报告中的 Mermaid 把三条链路统一收回到 `一级页只放当前判断事实 -> 二级页/后台链路承接完整历史与加速机制`；ASCII 线框图则明确 `fanxiu/runtime` 的首屏只保留摘要日志，完整历史退到日志页，`notes/star` 的缓存只留在 session/localStorage。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-7a6fa47/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，完成 `attendance/configs`、`attendance/orders`、`fanxiu/data-annotation/runtime`、`fanxiu/data-annotation/runtime/logs`、`notes/center?tab=star`、`notes/center?tab=list` 的宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 截图。一级页面 18 份截图均满足 `bodyScrollWidth == bodyClientWidth`、`toastTexts = []`；`attendance/configs` 三视口 `refreshButtons = []`；`notes/star` 三视口保持 `1303 条节点 · 折叠 1195 条`；`notes/list` 三视口保持 `共 261 条 / 当前显示 50 条`；`fanxiu/runtime` 补拍窄屏稳定图后确认守护与作业表正常展开。静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开匿名入口。
+- 根因分层：`attendance/configs` 属于表现层入口减法继续成立；`fanxiu/runtime` 与 `notes/star` 都属于前端状态/性能投影减法成立，没有暴露新的后端数据投影或业务建模问题。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口截图、同链路旧页复核和前端静态验证；没有剩余未审范围，因此把 `last_audited_commit` 推进到 `7a6fa47261f0154c92fa56b6195fbc2757544ba7`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-09（第二十轮）
 

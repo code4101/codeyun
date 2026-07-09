@@ -40,6 +40,44 @@ def test_codeyun_watchdog_status_uses_quick_scan_by_default(monkeypatch):
     assert status["running"] is False
 
 
+def test_codeyun_watchdog_status_can_skip_related_process_details(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(codeyun_watchdog, "_read_lock_pid", lambda: 123)
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "_watchdog_process_from_pid",
+        lambda pid: calls.append(f"watchdog:{pid}") or codeyun_watchdog.CodeYunWatchdogProcess(
+            pid=123,
+            parent_pid=99,
+            name="pythonw.exe",
+            cmdline="pythonw scripts/codeyun_watchdog.py --loop",
+            started_at=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "list_codeyun_watchdog_processes",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not scan related processes")),
+    )
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "_ancestor_pids",
+        lambda _pid: (_ for _ in ()).throw(AssertionError("should not read ancestor pids")),
+    )
+
+    status = codeyun_watchdog.get_codeyun_watchdog_status(
+        include_startup=False,
+        include_process_details=False,
+    )
+
+    assert calls == ["watchdog:123"]
+    assert status["running"] is True
+    assert status["pids"] == [123]
+    assert status["launcher_pids"] == []
+    assert status["stale_pids"] == []
+
+
 def test_codeyun_watchdog_lock_pid_uses_current_temp_lock_only(monkeypatch, tmp_path):
     lock_path = tmp_path / "codeyun-watchdog.pid"
     lock_path.write_text("123", encoding="utf-8")

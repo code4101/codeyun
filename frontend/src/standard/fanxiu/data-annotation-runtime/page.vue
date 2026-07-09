@@ -61,6 +61,8 @@ let lastDoctorEnsureAt = 0;
 const CELL_LOG_LIMIT = 24;
 // Keep the runtime page on a summary-sized log slice; full history lives on the logs page.
 const CELL_LOG_ENTRY_LIMIT = 200;
+const CELL_LOG_POLL_LIMIT = 1;
+const CELL_LOG_POLL_ENTRY_LIMIT = 80;
 const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
 const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
 const HUMAN_ISOLATION_TTL_SECONDS = 21600;
@@ -418,6 +420,33 @@ const warnRefreshFailure = (scope: string, error: unknown) => {
   console.warn(`${scope} failed`, error);
 };
 
+const applyCellLogsPayload = (
+  nextCells: FanxiuDataAnnotationRuntimeCellLog[],
+  options: { latestOnly?: boolean } = {},
+) => {
+  const previousCellId = currentCellLog.value?.id || '';
+  if (options.latestOnly) {
+    const latest = nextCells[0];
+    if (!latest) return;
+    const existing = cellLogs.value;
+    const latestChanged = existing[0]?.id !== latest.id;
+    const merged = latestChanged
+      ? [latest, ...existing.filter((cell) => cell.id !== latest.id)].slice(0, CELL_LOG_LIMIT)
+      : existing.map((cell, index) => (index === 0 ? latest : cell));
+    cellLogs.value = merged;
+    const retainedIndex = previousCellId ? merged.findIndex((cell) => cell.id === previousCellId) : -1;
+    activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
+  } else {
+    cellLogs.value = nextCells;
+    const retainedIndex = previousCellId ? nextCells.findIndex((cell) => cell.id === previousCellId) : -1;
+    activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
+  }
+  const nextLogs = currentCellLog.value?.entries || [];
+  if (!sameLogEntries(logs.value, nextLogs)) {
+    logs.value = nextLogs;
+  }
+};
+
 const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
   const nextIsolation = status.isolation || {};
@@ -437,19 +466,14 @@ const refreshStatus = async () => {
   applyStatus(status);
 };
 
-const refreshLogs = async () => {
+const refreshLogs = async (options: { latestOnly?: boolean } = {}) => {
   logsLoading.value = true;
   try {
-    const response = await getFanxiuDataAnnotationRuntimeCellLogs(CELL_LOG_LIMIT, CELL_LOG_ENTRY_LIMIT);
-    const nextCells = response.cells || [];
-    const previousCellId = currentCellLog.value?.id || '';
-    cellLogs.value = nextCells;
-    const retainedIndex = previousCellId ? nextCells.findIndex((cell) => cell.id === previousCellId) : -1;
-    activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
-    const nextLogs = currentCellLog.value?.entries || [];
-    if (!sameLogEntries(logs.value, nextLogs)) {
-      logs.value = nextLogs;
-    }
+    const response = await getFanxiuDataAnnotationRuntimeCellLogs(
+      options.latestOnly ? CELL_LOG_POLL_LIMIT : CELL_LOG_LIMIT,
+      options.latestOnly ? CELL_LOG_POLL_ENTRY_LIMIT : CELL_LOG_ENTRY_LIMIT,
+    );
+    applyCellLogsPayload(response.cells || [], options);
   } finally {
     logsLoading.value = false;
   }
@@ -641,7 +665,7 @@ const startPolling = () => {
           warnRefreshFailure('poll refresh status', error);
         }
         if (syncSlowState) {
-          const slowRefreshes = [refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+          const slowRefreshes = [refreshLogs({ latestOnly: true }), refreshScheduler(), refreshDoctorWatchLatest()];
           const scopes = ['poll refresh logs', 'poll refresh scheduler', 'poll refresh doctor watch'];
           const results = await Promise.allSettled(slowRefreshes);
           results.forEach((result, index) => {

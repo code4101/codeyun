@@ -665,6 +665,7 @@ const CODEX_WORKLOAD_HOUR_SECONDS = 3600;
 const CODEX_WORKLOAD_STATS_CACHE_KEY = 'codeyun:notes:calendar:codex-workload-days:v2';
 const CODEX_WORKLOAD_STATS_CACHE_VERSION = 2;
 const CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID = '__local_codex__';
+const CODEX_WORKLOAD_INITIAL_REFRESH_DELAY_MS = 3_000;
 
 const calendarPerfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
 const calendarPerfStart = calendarPerfEnabled ? performance.now() : 0;
@@ -832,6 +833,7 @@ const codexWorkloadError = ref('');
 const CODEX_DIARY_IMPORT_POLL_INTERVAL_MS = 1500;
 const CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS = 16 * 60 * 1000;
 let latestCodexWorkloadRequestId = 0;
+let scheduledCodexWorkloadRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const dayContextMenu = ref({
   visible: false,
   x: 0,
@@ -1283,6 +1285,20 @@ const maybeRefreshCodexWorkloadStats = (cache?: CodexWorkloadStatsCache) => {
   // Rapid calendar re-entry does not need to immediately re-fetch multi-megabyte workload payloads.
   if (hasFreshCodexWorkloadStatsCache(nextCache)) return;
   void refreshCodexWorkloadStats();
+};
+
+const scheduleCodexWorkloadRefresh = (cache?: CodexWorkloadStatsCache) => {
+  if (scheduledCodexWorkloadRefreshTimer !== null) {
+    clearTimeout(scheduledCodexWorkloadRefreshTimer);
+  }
+  scheduledCodexWorkloadRefreshTimer = setTimeout(() => {
+    scheduledCodexWorkloadRefreshTimer = null;
+    if (!isActive.value) {
+      inactiveCalendarRefreshPending = true;
+      return;
+    }
+    maybeRefreshCodexWorkloadStats(cache);
+  }, CODEX_WORKLOAD_INITIAL_REFRESH_DELAY_MS);
 };
 
 let scheduledCalendarRefreshToken = 0;
@@ -3166,7 +3182,7 @@ onMounted(() => {
     const codexWorkloadCache = loadCodexWorkloadStatsCache();
     applyCachedCodexWorkloadSnapshot(codexWorkloadCache);
     if (isActive.value) {
-      maybeRefreshCodexWorkloadStats(codexWorkloadCache);
+      scheduleCodexWorkloadRefresh(codexWorkloadCache);
     } else {
       inactiveCalendarRefreshPending = true;
     }
@@ -3184,6 +3200,10 @@ onBeforeUnmount(() => {
   if (scheduledCalendarRefreshTimer !== null) {
     clearTimeout(scheduledCalendarRefreshTimer);
     scheduledCalendarRefreshTimer = null;
+  }
+  if (scheduledCodexWorkloadRefreshTimer !== null) {
+    clearTimeout(scheduledCodexWorkloadRefreshTimer);
+    scheduledCodexWorkloadRefreshTimer = null;
   }
   window.removeEventListener('click', closeContextMenus);
   window.removeEventListener('scroll', closeContextMenus, true);
@@ -3239,8 +3259,12 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
     return;
   }
   if (isAuthenticated) {
-    maybeRefreshCodexWorkloadStats();
+    scheduleCodexWorkloadRefresh();
   } else {
+    if (scheduledCodexWorkloadRefreshTimer !== null) {
+      clearTimeout(scheduledCodexWorkloadRefreshTimer);
+      scheduledCodexWorkloadRefreshTimer = null;
+    }
     codexWorkloadTurns.value = [];
     applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
     codexWorkloadError.value = '';
@@ -3248,7 +3272,13 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
 });
 
 watch(isActive, (active) => {
-  if (!active) return;
+  if (!active) {
+    if (scheduledCodexWorkloadRefreshTimer !== null) {
+      clearTimeout(scheduledCodexWorkloadRefreshTimer);
+      scheduledCodexWorkloadRefreshTimer = null;
+    }
+    return;
+  }
   if (inactiveCalendarRefreshPending) {
     inactiveCalendarRefreshPending = false;
     void refreshData({ silent: true });
@@ -3256,7 +3286,7 @@ watch(isActive, (active) => {
     void refreshData({ silent: true });
   }
   if (showCodexWorkload.value && !codexWorkloadLoaded.value) {
-    maybeRefreshCodexWorkloadStats();
+    scheduleCodexWorkloadRefresh();
   }
 });
 
