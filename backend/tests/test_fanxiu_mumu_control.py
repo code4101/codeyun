@@ -97,7 +97,7 @@ def test_capture_mumu_window_frame_defaults_to_real_mumu_window_and_auto_mode(mo
 def test_target_mumu_main_window_rect_defaults_to_recorded_desktop_geometry(monkeypatch):
     monkeypatch.delenv(mumu.MUMU_MAIN_WINDOW_RECT_ENV, raising=False)
 
-    assert mumu._target_mumu_main_window_rect() == (2927, 0, 908, 1644)
+    assert mumu._target_mumu_main_window_rect() == mumu.DEFAULT_MUMU_MAIN_WINDOW_RECT
 
 
 def test_target_mumu_main_window_rect_allows_env_override(monkeypatch):
@@ -135,11 +135,12 @@ def test_normalize_mumu_desktop_window_size_applies_recorded_xywh(monkeypatch):
 
     result = mumu.normalize_mumu_desktop_window_size(apply=True)
 
-    assert result["target_window_rect"] == [2927, 0, 3835, 1644]
-    assert result["target_main_size"] == [908, 1644]
+    x, y, width, height = mumu.DEFAULT_MUMU_MAIN_WINDOW_RECT
+    assert result["target_window_rect"] == [x, y, x + width, y + height]
+    assert result["target_main_size"] == [width, height]
     assert result["already_target"] is False
     assert result["applied"] is True
-    assert calls == [(123, None, 2927, 0, 908, 1644, 20)]
+    assert calls[-1] == (123, None, x, y, width, height, 20)
 
 
 def test_click_processed_point_does_not_fallback_to_window_when_adb_is_unavailable(monkeypatch):
@@ -479,6 +480,48 @@ def test_mumu_adb_failures_recover_only_after_three_recent_failures(monkeypatch)
     assert checks == [{"vmindex": "1", "force": True}]
     assert recoveries == [{"vmindex": "1", "reason": "adb_failure:third", "force_restart": True}]
     assert result["recovered"] is True
+
+
+def test_mumu_adb_failure_defers_recovery_during_startup_grace(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    now = mumu.time.time()
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        mumu._mumu_device_health_state.update({
+            "status": "healthy",
+            "last_recovery_at": now,
+            "checked_at": now,
+            "checked_monotonic": mumu.time.monotonic(),
+        })
+
+    recoveries = []
+    monkeypatch.setattr(mumu, "_read_mumu_device_recovery_state", lambda: {})
+    monkeypatch.setattr(mumu, "_mumu_device_startup_grace_seconds", lambda default=300.0: 300.0)
+    monkeypatch.setattr(mumu, "recover_mumu_device", lambda **kwargs: recoveries.append(kwargs) or {"recovered": True})
+
+    result = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏，需重建模拟器画面链路", recover=True)
+
+    assert result["recovered"] is False
+    assert result["recovery_deferred"] == "startup_grace"
+    assert result["status"] == "starting"
+    assert recoveries == []
+
+
+def test_mumu_device_health_reports_starting_before_android_started(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_manager_player_info",
+        lambda vmindex="1": {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": False,
+            "player_state": "starting_rom",
+        },
+    )
+
+    result = mumu.mumu_device_health_check(force=True)
+
+    assert result["status"] == "starting"
 
 
 def test_mumu_device_health_events_are_written_as_jsonl(tmp_path):

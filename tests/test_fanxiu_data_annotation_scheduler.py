@@ -14446,6 +14446,78 @@ def test_daily_assistant_ensure_list_clicks_ocr_exit_when_scene_unknown(tmp_path
     assert ("click_frame_point", 275, 365.0, 1442.0) in actions
 
 
+def test_daily_assistant_return_accepts_daily_page_after_result_close(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    asset_tree = tmp_path / "asset_tree.json"
+    asset_tree.write_text("[]", encoding="utf-8")
+    ctx = {"asset_tree_path": asset_tree, "images": {}}
+    actions: list[tuple] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.closed = False
+
+        def current_scene(self, view_ids=None, **kwargs):
+            actions.append(("current_scene", tuple(view_ids or ()), kwargs, self.closed))
+            if self.closed:
+                return 69, 98.0, "daily"
+            return None, 89.0, "result"
+
+        def ocr_text(self, frame):
+            actions.append(("ocr_text", frame))
+            if frame == "result":
+                return "宗门任务收益今日已完成 宗门祈福收益今日已完成 宗门资源 退出"
+            return "日常 活动报名 小助手 奖励找回 日常周常"
+
+        def ocr_lines(self, frame):
+            actions.append(("ocr_lines", frame))
+            return [{"text": "退出", "x": 320, "y": 1420, "w": 90, "h": 44}]
+
+        def click_frame_point(self, scene_id, x, y):
+            actions.append(("click_frame_point", scene_id, x, y))
+            self.closed = True
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+            return "success"
+
+        def wait_click(self, view_id, shape):
+            actions.append(("wait_click", view_id, shape))
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            actions.append(("wait_view", view_ids, kwargs))
+            if False:
+                yield None
+            return view_ids[0]
+
+    fake_runtime = FakeRuntime()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    try:
+        _drain_generator(
+            runner._return_after_daily_assistant_one_key(
+                ctx,
+                fanxiu.threading.Event(),
+            {
+                "assistant_one_key_result_close_timeout": 1.0,
+                "assistant_result_reclick_settle_seconds": 0.001,
+            },
+            fake_runtime,
+            current_scene=204,
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert ("click_frame_point", 275, 365.0, 1442.0) in actions
+    assert ("wait_click", 69, "退出") in actions
+
+
 def test_daily_assistant_ensure_list_closes_youli_result(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     asset_tree = tmp_path / "asset_tree.json"

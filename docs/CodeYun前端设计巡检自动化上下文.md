@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "718269828e4c0dc7fca1cdd84403703e69f0f1b5"
-last_audited_at: "2026-07-08T00:35:31.6511538+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-08-frontend-design-7182698/report.md"
-last_frontend_commit_summary: "已关闭 144da8b..7182698：fanxiu runtime 的 owner 语义收口与 notes/list silent refresh toast 抑制在真实页面成立；三视口复验未见新增 UI 回退。"
-audited_commit_count: 87
+last_audited_commit: "918c1b7602e1d3223167588c0fe4d0830f256114"
+last_audited_at: "2026-07-09T04:40:01.7693689+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-918c1b7/report.md"
+last_frontend_commit_summary: "已关闭 7182698..918c1b7：attendance/configs 顶栏冗余刷新已删除；notes/list 与 cluster/files 三视口复验未见新的一级噪音或壳层回退。"
+audited_commit_count: 88
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-09（第二十轮）
+
+- 完整范围：`718269828e4c0dc7fca1cdd84403703e69f0f1b5..918c1b7602e1d3223167588c0fe4d0830f256114`
+- 覆盖提交：`918c1b7602e1d3223167588c0fe4d0830f256114`
+- 前端入口提交：`918c1b7602e1d3223167588c0fe4d0830f256114`
+- 入口如何牵引到旧问题：这次提交同时落在 `attendance/configs` 的 bootstrap 收口、`notes/list` 的缓存/静默刷新链路和 `cluster/files` 的根目录壳层控制上。三条入口共享同一条减法方向：一级页面先呈现状态事实和下一步动作，不把后台刷新、缓存策略或尚未进入具体目录前的工作台先抬成常驻结构。因此本轮继续沿同一链路复核 `attendance/orders`、`notes/list` 和 `cluster/files` 的真实页，而不是只看 API diff。
+- 本轮减法：`attendance/configs` 在真实页面上仍残留一个与 F5 等价、没有局部重算语义的常驻 `刷新` 按钮；已在 [`frontend/src/standard/attendance/configs/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/attendance/configs/page.vue) 删除该入口并去掉未再使用的 `RefreshRight` 导入。`cluster/files` 则验证“设备根目录不提前展开排序/媒体工作台，进入具体目录后再展开”的收口已经成立；`notes/list` 真实页继续保持列表事实稳定，没有把缓存/静默刷新细节投影成一级提示。
+- 信息量保持：`attendance/configs` 仍保留 step1-step6 运行位置、默认执行设备、订单模式、提醒对象和问卷账号；`notes/list` 仍保留完整筛选、分页和详情编辑；`cluster/files` 仍保留目录排序与媒体工作台，只是在对象尚未成立时不再提前挂出。
+- 概念图/线框图：报告中的 Mermaid 把三条链路统一收回到 `先确认配置/候选/目录对象 -> 再展开保存、编辑或工作台`；ASCII 线框图则直接对比了 `cluster/files` 的根目录轻壳与进入目录后的工作台展开，以及 `attendance/configs` 去掉冗余刷新后的首屏结构。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-918c1b7/report.md`
+- 验证：复用本地 `5173/8000` 开发环境。`attendance/configs` 修复后完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 复拍，`evidence-attendance-postfix.json` 记录 `refreshButtonTexts = []`、`panelCount = 3`、三视口 `bodyScrollWidth == bodyClientWidth`、`toastTexts = []`；`notes/list` 三视口 `rowCount = 50`、`listSummary = 共 261 条 当前显示 50 条`、`toastTexts = []`；`cluster/files` 在 `codepc_mi15` 根目录样本下记录 `pathValue = 设备根目录`、`sortSummaryCardCount = 0`、`mediaToolbarVisible = false`，在 `codepc_mf` 具体目录样本下记录 `pathValue = D:\home\chenkunze\data`、`sortSummaryCardCount = 2`、`mediaToolbarVisible = true`，两种态三视口都满足 `bodyScrollWidth == bodyClientWidth`；同链路旧页 `attendance/orders` 三视口也未见新增噪音。静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开匿名入口；构建通过后也未观察到新的入口级错误。
+- 根因分层：`attendance/configs` 的问题属于表现层入口冗余；`notes/list` 本轮真实页未继续暴露新的表现层或业务建模问题，入口改动主要属于前端状态投影与缓存链路收口；`cluster/files` 这轮验证结果属于前端信息层级收敛成立。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口取证、低风险修复和前端静态验证；没有剩余未审范围，因此把 `last_audited_commit` 推进到 `918c1b7602e1d3223167588c0fe4d0830f256114`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-08（第十九轮）
 

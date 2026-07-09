@@ -96,6 +96,9 @@ import {
   useNoteStore,
   type NoteEdge,
   type NoteNode,
+  type NoteProgramChannel,
+  type NoteProgramRequest,
+  type NoteProgramResponse,
   applyNoteProgramChannelLocally,
   buildScanNoteProgramRequest,
   cloneNoteProgramChannel,
@@ -117,6 +120,7 @@ import { useResizablePane } from '@/utils/useResizablePane';
 import { getNodeDisplayStyle } from '@/utils/nodeConfig';
 import { getNoteWeightScaleFactor } from '@/utils/noteWeight';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
+import { isBootPerfEnabled, markBootPerf } from '@/utils/bootPerf';
 
 const nodeTypes: NodeTypesObject = {
   custom: markRaw(CustomNode) as NodeTypesObject[string],
@@ -130,6 +134,9 @@ import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
 
 const AsyncNoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
+const NOTES_STAR_GRAPH_QUERY_CACHE_KEY = 'codeyun:notes:star-graph-query-cache:v1';
+const NOTES_STAR_GRAPH_SHARED_QUERY_CACHE_KEY = 'codeyun:notes:star-graph-query-cache-shared:v1';
+const NOTES_STAR_GRAPH_QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const props = defineProps<{
     tabId: string;
@@ -152,6 +159,9 @@ const sourceEdges = computed(() => {
 
 const sourceNotesVersion = computed(() => `${session.value?.noteDataVersion ?? 0}:${noteStore.noteRevision}`);
 const sourceEdgesVersion = computed(() => `${session.value?.edgeDataVersion ?? 0}:${noteStore.edgeRevision}`);
+const starPerfEnabled = isBootPerfEnabled();
+const getPerfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+let lastGraphReadyPerfVersion = '';
 
 const calculateGraphBounds = () => {
     const vh = window.innerHeight;
@@ -241,6 +251,24 @@ const DETAILED_EDGE_ROUTING_EDGE_LIMIT = 1000;
 const GLOBAL_GRAPH_CACHE_TTL_MS = 60_000;
 const VERTICAL_HANDLE_THRESHOLD = 60;
 const HORIZONTAL_HANDLE_THRESHOLD = 60;
+
+type StarGraphQueryCachePayload = {
+  savedAt: number;
+  request: NoteProgramRequest;
+  data: NoteProgramResponse;
+};
+
+const hashStarGraphCacheToken = (value: string | null) => {
+  if (!value) {
+    return 'anonymous';
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `token:${(hash >>> 0).toString(36)}:${value.length}`;
+};
 
 const resolveRelativeEdgeHandles = (
   sourceNode?: { position?: { x?: number; y?: number } } | null,
@@ -369,6 +397,94 @@ const buildGlobalGraphRequest = (program = getAppliedDataProgram()) => (
     include_edges: true
   })
 );
+
+const getStarGraphQueryCacheStorageKey = () => `${NOTES_STAR_GRAPH_QUERY_CACHE_KEY}:${props.tabId}`;
+const getSharedStarGraphQueryCacheStorageKey = () => {
+  if (typeof window === 'undefined') {
+    return `${NOTES_STAR_GRAPH_SHARED_QUERY_CACHE_KEY}:anonymous:${props.tabId}`;
+  }
+  return `${NOTES_STAR_GRAPH_SHARED_QUERY_CACHE_KEY}:${hashStarGraphCacheToken(window.localStorage.getItem('token'))}:${props.tabId}`;
+};
+
+const parseStarGraphQueryCachePayload = (raw: string | null, request: NoteProgramRequest): StarGraphQueryCachePayload | null => {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(raw) as Partial<StarGraphQueryCachePayload>;
+    if (
+      typeof payload.savedAt !== 'number'
+      || !payload.request
+      || !payload.data
+      || Date.now() - payload.savedAt > NOTES_STAR_GRAPH_QUERY_CACHE_TTL_MS
+      || JSON.stringify(payload.request) !== JSON.stringify(request)
+    ) {
+      return null;
+    }
+    return payload as StarGraphQueryCachePayload;
+  } catch {
+    return null;
+  }
+};
+
+const readStarGraphQueryCache = (request: NoteProgramRequest): StarGraphQueryCachePayload | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const sessionPayload = parseStarGraphQueryCachePayload(
+    window.sessionStorage.getItem(getStarGraphQueryCacheStorageKey()),
+    request,
+  );
+  if (sessionPayload) {
+    return sessionPayload;
+  }
+  const sharedPayload = parseStarGraphQueryCachePayload(
+    window.localStorage.getItem(getSharedStarGraphQueryCacheStorageKey()),
+    request,
+  );
+  if (sharedPayload) {
+    try {
+      window.sessionStorage.setItem(getStarGraphQueryCacheStorageKey(), JSON.stringify(sharedPayload));
+    } catch {
+      // Ignore sessionStorage write failures and keep using the shared cache payload.
+    }
+  }
+  return sharedPayload;
+};
+
+const writeStarGraphQueryCache = (request: NoteProgramRequest, data: NoteProgramResponse) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const payload: StarGraphQueryCachePayload = {
+      savedAt: Date.now(),
+      request,
+      data,
+    };
+    const serialized = JSON.stringify(payload);
+    window.sessionStorage.setItem(getStarGraphQueryCacheStorageKey(), serialized);
+    window.localStorage.setItem(getSharedStarGraphQueryCacheStorageKey(), serialized);
+  } catch {
+    // Storage may be unavailable or full; the live query result remains the source of truth.
+  }
+};
+
+const hydrateStarGraphQueryCache = (request: NoteProgramRequest) => {
+  const cached = readStarGraphQueryCache(request);
+  if (!cached) {
+    return false;
+  }
+  noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.data);
+  if (starPerfEnabled) {
+    markBootPerf('notes-star.cacheHydrated', {
+      noteCount: cached.data.nodes.length,
+      edgeCount: cached.data.edges.length,
+      ageMs: Date.now() - cached.savedAt,
+    });
+  }
+  return true;
+};
 
 const currentGlobalGraphIncludesCustomFields = () => {
   const lastQuery = session.value?.lastQuery as { result?: { include_custom_fields?: boolean } } | null | undefined;
@@ -1035,6 +1151,7 @@ const applyGraphFilters = async (force: boolean = false, relayout: boolean = fal
     graphRelayoutQueued = graphRelayoutQueued || relayout;
     return;
   }
+  const startedAt = starPerfEnabled ? getPerfNow() : 0;
   isGraphUpdating.value = true;
   suppressNodePositionWatch = true;
   try {
@@ -1094,6 +1211,19 @@ const applyGraphFilters = async (force: boolean = false, relayout: boolean = fal
     cacheEdgeHandles(nextEdges);
     cacheEdgeRoutes(nextEdges);
     cacheLocalEdgeRoutes(nextEdges);
+
+    if (starPerfEnabled) {
+      const perfVersion = `${session.value?.noteDataVersion ?? 0}:${session.value?.edgeDataVersion ?? 0}:${nextNodes.length}:${nextEdges.length}:${relayout ? 1 : 0}`;
+      if (perfVersion !== lastGraphReadyPerfVersion) {
+        lastGraphReadyPerfVersion = perfVersion;
+        markBootPerf('notes-star.graph.ready', {
+          relayout,
+          nodeCount: nextNodes.length,
+          edgeCount: nextEdges.length,
+          duration: Math.round((getPerfNow() - startedAt) * 10) / 10,
+        });
+      }
+    }
 
     if (currentNoteId.value && !visibleNodeIds.has(currentNoteId.value)) {
       currentNoteId.value = '';
@@ -1217,13 +1347,25 @@ watch(viewProgram, async (value) => {
 }, { deep: true });
 
 onMounted(async () => {
+    const hydratedFromQueryCache = (
+      isGlobalGraph.value
+      && noteStore.getTabNotes(props.tabId).length === 0
+      && hydrateStarGraphQueryCache(buildGlobalGraphRequest())
+    );
+    if (starPerfEnabled) {
+      markBootPerf('notes-star.mounted', {
+        hasCachedNotes: noteStore.getTabNotes(props.tabId).length > 0,
+        hydratedFromQueryCache,
+        isGlobalGraph: isGlobalGraph.value,
+      });
+    }
     if (canUseCachedGlobalGraph()) {
         const shouldDeferRelayout = shouldDeferAutoRelayout(hasCachedNodePositions());
         await applyGraphFilters(true, false);
         if (shouldDeferRelayout) {
           scheduleDeferredInitialRelayout();
         }
-        if (!isCachedGlobalGraphFresh()) {
+        if (hydratedFromQueryCache || !isCachedGlobalGraphFresh()) {
           void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
         }
         return;
@@ -1275,10 +1417,17 @@ const refreshGraph = async (
       const normalizedProgram = normalizeNoteProgramChannel(program);
       const request = buildGlobalGraphRequest(normalizedProgram);
       if (options.background && canUseCachedGlobalGraph(normalizedProgram)) {
-        void noteStore.queryNoteProgramForTab(props.tabId, request);
+        void noteStore.queryNoteProgramForTab(props.tabId, request).then(result => {
+          if (result?.data) {
+            writeStarGraphQueryCache(request, result.data);
+          }
+        });
         deferredStoreRefresh = true;
       } else {
-        await noteStore.queryNoteProgramForTab(props.tabId, request);
+        const result = await noteStore.queryNoteProgramForTab(props.tabId, request);
+        if (result?.data) {
+          writeStarGraphQueryCache(request, result.data);
+        }
       }
       if (persist) {
         noteStore.updateTabViewState(props.tabId, {

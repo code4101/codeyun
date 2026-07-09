@@ -1296,7 +1296,7 @@ def _fanxiu_capture_runtime_description(status: dict[str, Any]) -> str:
 
 
 def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or get_fanxiu_packet_service_status())
+    payload = dict(status or get_fanxiu_packet_service_status(include_health=False))
     capture = payload.get("capture_runtime") if isinstance(payload.get("capture_runtime"), dict) else {}
     worker = payload.get("packet_worker") if isinstance(payload.get("packet_worker"), dict) else {}
     running = bool(payload.get("running"))

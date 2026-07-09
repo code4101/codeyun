@@ -209,6 +209,9 @@ def test_match_frame_retention_prunes_old_numbered_images(monkeypatch, tmp_path)
 def test_black_frame_failure_triggers_recovery(monkeypatch):
     recovered: list[dict[str, object]] = []
 
+    rotate.reset_mumu_device_health_state()
+    monkeypatch.setattr(rotate, "_read_mumu_device_recovery_state", lambda: {})
+    monkeypatch.setattr(rotate, "_mumu_device_last_recovery_at", lambda: 0.0)
     monkeypatch.setattr(rotate, "mumu_device_health_check", lambda **_kwargs: {"status": "healthy"})
 
     def fake_recover_mumu_device(**kwargs):

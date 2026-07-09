@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Delete, Edit, Plus, RefreshRight } from '@element-plus/icons-vue'
+import { Check, Delete, Edit, Plus } from '@element-plus/icons-vue'
 
 import {
   createAttendanceAccount,
@@ -358,9 +358,6 @@ onMounted(() => {
           <h1>考勤配置</h1>
         <p>这里分别维护课程数据运行位置、采集与订单默认值，以及问卷采集账号。</p>
       </div>
-      <el-button type="primary" :icon="RefreshRight" :loading="loading" @click="loadPageData">
-        刷新
-      </el-button>
     </section>
 
     <div class="attendance-grid">
