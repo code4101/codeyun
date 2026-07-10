@@ -16,6 +16,8 @@ import { mixWeightedColors, toHex } from '@/utils/colorMath'
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
 import GradeMeter from '../components/GradeMeter.vue'
+import HerbShapePreview from '../components/HerbShapePreview.vue'
+import '../catalog-inspector.css'
 
 const route = useRoute()
 const router = useRouter()
@@ -185,7 +187,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 </script>
 
 <template>
-  <main class="herb-page" :class="{ resizing: isResizing }">
+  <main class="herb-page zaohua-catalog-page" :class="{ resizing: isResizing }">
     <header class="page-head">
       <div>
         <h1>造化仙缘 · 药材</h1>
@@ -239,7 +241,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 
     <section class="list-pane" :style="listPaneStyle" v-loading="loading">
       <div class="table-scroll">
-        <table class="herb-table">
+        <table class="herb-table zaohua-catalog-table">
           <thead>
             <tr>
               <th class="number-column" :aria-sort="sortBy === 'number' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
@@ -364,6 +366,16 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           </div>
           <span v-else>当前丹方示例中未使用</span>
         </dd>
+        <dt>占格形状</dt>
+        <dd class="shape-field">
+          <HerbShapePreview
+            :shape="selected.shape"
+            :image-url="selected.shape?.image_url"
+            :label="selected.name"
+            :color="elementColor(selected.element_key)"
+          />
+          <span v-if="selected.shape?.name" class="shape-name">{{ selected.shape.name }}</span>
+        </dd>
       </dl>
 
       <details class="source-evidence">
@@ -435,6 +447,8 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .detail-fields > dt, .detail-fields > dd { margin: 0; padding: 9px 0; border-bottom: 1px solid #eceeec; }
 .detail-fields > dt { padding-right: 28px; color: #4b524f; font-size: 14px; font-weight: 600; }
 .recipe-links { display: flex; flex-wrap: wrap; gap: 6px 20px; }
+.shape-field { display: flex; gap: 14px; align-items: center; }
+.shape-name { color: #687076; }
 .recipe-links a { color: #356a91; text-decoration: none; }
 .recipe-links a:hover { text-decoration: underline; }
 .source-evidence { margin-top: 16px; padding-top: 11px; border-top: 1px solid #eceeec; color: #68706c; }

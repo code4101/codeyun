@@ -25,6 +25,8 @@ BUILD_ID = "24123658"
 CONFIG_BUNDLE = "bundle_466deec76ecdf5fc.unity3d"
 XML_BUNDLE = "bundle_0f635d0e0f3874ff.unity3d"
 LOCAL_BUNDLE = "bundle_190aeea761628805.unity3d"
+SHAPE_IMAGE_BUNDLE = "bundle_0848a10a701df539.unity3d"
+PASTURE_IMAGE_BUNDLE = "bundle_28dfef1a876993d4.unity3d"
 ELEMENT_LABELS = {
     "gold": "金",
     "wood": "木",
@@ -37,6 +39,7 @@ ELEMENT_LABELS = {
     "thunder": "雷",
 }
 HERB_TYPE_ID = 342
+FURNACE_TYPE_ID = 906
 ITEM_ATTRIBUTE_DEFINITIONS = {
     1: {"key": "gold", "name": "金", "order": 1},
     2: {"key": "water", "name": "水", "order": 2},
@@ -198,6 +201,60 @@ def _export_item_icons(others: Path, media_root: Path, icon_paths: set[str]) -> 
     return exports
 
 
+def _export_shape_images(others: Path, media_root: Path, draw_ids: set[int]) -> dict[int, dict[str, Any]]:
+    bundle_path = others / SHAPE_IMAGE_BUNDLE
+    if not bundle_path.is_file():
+        return {}
+    wanted = {
+        f"assets/resources/dantian/gridimage/draw_{draw_id}.png": draw_id
+        for draw_id in draw_ids
+        if draw_id > 0
+    }
+    environment = UnityPy.load(str(bundle_path))
+    exports: dict[int, dict[str, Any]] = {}
+    for asset_path, obj in environment.container.items():
+        normalized = str(asset_path).replace("\\", "/").lower()
+        draw_id = wanted.get(normalized)
+        if draw_id is None or obj.type.name not in {"Sprite", "Texture2D"}:
+            continue
+        output_path = media_root / "shapes" / f"Draw_{draw_id}.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        obj.read().image.save(output_path)
+        exports[draw_id] = {
+            "media_path": output_path.relative_to(media_root).as_posix(),
+            "sha256": _sha256(output_path),
+            "source_bundle": bundle_path.name,
+            "source_asset": asset_path,
+        }
+    return exports
+
+
+def _export_pasture_images(others: Path, media_root: Path) -> dict[str, dict[str, Any]]:
+    bundle_path = others / PASTURE_IMAGE_BUNDLE
+    if not bundle_path.is_file():
+        return {}
+    environment = UnityPy.load(str(bundle_path))
+    exports: dict[str, dict[str, Any]] = {}
+    for asset_path, obj in environment.container.items():
+        normalized = str(asset_path).replace("\\", "/").lower()
+        prefix = "assets/resources/map/pasturemap/"
+        if not normalized.startswith(prefix) or not normalized.endswith(".png"):
+            continue
+        if obj.type.name not in {"Sprite", "Texture2D"}:
+            continue
+        key = normalized[len("assets/resources/"):-4]
+        output_path = media_root / "pasture" / Path(*PurePosixPath(key).parts).with_suffix(".png")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        obj.read().image.save(output_path)
+        exports[key] = {
+            "media_path": output_path.relative_to(media_root).as_posix(),
+            "sha256": _sha256(output_path),
+            "source_bundle": bundle_path.name,
+            "source_asset": normalized,
+        }
+    return exports
+
+
 def _item_view(item: dict[str, Any] | None, local: dict[str, str], grades: dict[int, dict[str, Any]], grade_local: dict[str, str]) -> dict[str, Any]:
     item = item or {}
     item_id = int(item.get("id") or 0)
@@ -250,10 +307,11 @@ def build(root: Path) -> dict[str, Any]:
     others = game_root / "Zaohua_Data" / "StreamingAssets" / "Others"
     parsed_dir = root / "parsed_configs" / "alchemy"
     herb_parsed_dir = root / "parsed_configs" / "herbs"
+    pasture_parsed_dir = root / "parsed_configs" / "pasture"
     raw_export_dir = root / "reverse_exports" / "text_assets" / "alchemy"
     report_dir = root / "reverse_exports" / "reports"
     media_dir = root / "media"
-    for directory in (parsed_dir, herb_parsed_dir, raw_export_dir, report_dir):
+    for directory in (parsed_dir, herb_parsed_dir, pasture_parsed_dir, raw_export_dir, report_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     config_assets = _text_assets(others / CONFIG_BUNDLE)
@@ -266,11 +324,14 @@ def build(root: Path) -> dict[str, Any]:
         "TbDrugRecipeStateCfg.xml": xml_assets["TbDrugRecipeStateCfg"],
         "TbGradeCfg.xml": xml_assets["TbGradeCfg"],
         "TbTypeCfg.xml": xml_assets["TbTypeCfg"],
+        "TbDrawCfg.xml": xml_assets["TbDrawCfg"],
         "TbDrugRecipeCfgLocal.xml": local_assets["TbDrugRecipeCfgLocal"],
         "TbDrugRecipeStateCfgLocal.xml": local_assets["TbDrugRecipeStateCfgLocal"],
         "TbItemCfgLocal.xml": local_assets["TbItemCfgLocal"],
         "TbGradeCfgLocal.xml": local_assets["TbGradeCfgLocal"],
         "TbTypeCfgLocal.xml": local_assets["TbTypeCfgLocal"],
+        "TbPastureBuildCfg.xml": xml_assets["TbPastureBuildCfg"],
+        "TbPastureBuildCfgLocal.xml": local_assets["TbPastureBuildCfgLocal"],
     }
     for filename, content in selected_assets.items():
         (raw_export_dir / filename).write_text(content, encoding="utf-8")
@@ -281,14 +342,18 @@ def build(root: Path) -> dict[str, Any]:
     state_rows = _xml_rows(xml_assets["TbDrugRecipeStateCfg"])
     grade_rows = _xml_rows(xml_assets["TbGradeCfg"])
     type_rows = _xml_rows(xml_assets["TbTypeCfg"])
+    draw_rows = _xml_rows(xml_assets["TbDrawCfg"])
     recipe_local = _local_map(_xml_rows(local_assets["TbDrugRecipeCfgLocal"]))
     state_local = _local_map(_xml_rows(local_assets["TbDrugRecipeStateCfgLocal"]))
     item_local = _local_map(_xml_rows(local_assets["TbItemCfgLocal"]))
     grade_local = _local_map(_xml_rows(local_assets["TbGradeCfgLocal"]))
     type_local = _local_map(_xml_rows(local_assets["TbTypeCfgLocal"]))
+    pasture_rows = _xml_rows(xml_assets["TbPastureBuildCfg"])
+    pasture_local = _local_map(_xml_rows(local_assets["TbPastureBuildCfgLocal"]))
 
     items = {int(row.get("id") or 0): row for row in item_rows}
     crafting_items = {int(row.get("id") or 0): row for row in crafting_item_rows}
+    draw_configs = {int(row.get("id") or 0): row for row in draw_rows}
     states = {int(row.get("id") or 0): row for row in state_rows}
     grades = {int(row.get("id") or 0): row for row in grade_rows}
     recipes: list[dict[str, Any]] = []
@@ -374,6 +439,24 @@ def build(root: Path) -> dict[str, Any]:
         recipes_using = herb_recipe_refs.get(herb["item_id"], [])
         crafting_item = crafting_items.get(herb["item_id"], {})
         crafting_attributes = _crafting_attributes(crafting_item.get("attrDic"))
+        draw_id = int(crafting_item.get("drawId") or 0)
+        draw_config = draw_configs.get(draw_id, {})
+        raw_shape_cells = [
+            [int(part) for part in coordinate.split(",", 1)]
+            for coordinate in str(draw_config.get("coordinate") or "").split("&")
+            if "," in coordinate
+        ]
+        min_x = min((cell[0] for cell in raw_shape_cells), default=0)
+        min_y = min((cell[1] for cell in raw_shape_cells), default=0)
+        shape_cells = [[cell[0] - min_x, cell[1] - min_y] for cell in raw_shape_cells]
+        shape = {
+            "draw_id": draw_id,
+            "name": str(draw_config.get("name") or ""),
+            "path": str(draw_config.get("path") or ""),
+            "width": max((cell[0] for cell in shape_cells), default=-1) + 1,
+            "height": max((cell[1] for cell in shape_cells), default=-1) + 1,
+            "cells": shape_cells,
+        } if draw_id and shape_cells else None
         herb.update({
             "display_order": raw_index,
             "type_name": type_local.get(str(next((item.get("name") for item in type_rows if int(item.get("id") or 0) == HERB_TYPE_ID), "")), "灵草"),
@@ -395,6 +478,7 @@ def build(root: Path) -> dict[str, Any]:
                 "local_asset": "Assets/Resources/LocalXml/TbItemCfgLocal.xml",
                 "assembly_type": "TbItemCfg",
                 "crafting_assembly_type": "TbCraftingItemCfg",
+                "shape": shape,
                 "type_id": str(HERB_TYPE_ID),
             },
             "raw": row,
@@ -418,15 +502,64 @@ def build(root: Path) -> dict[str, Any]:
     for display_order, herb in enumerate(herb_rows, start=1):
         herb["display_order"] = display_order
 
+    furnace_rows: list[dict[str, Any]] = []
+    for raw_index, row in enumerate(item_rows):
+        if int(row.get("typeId") or 0) != FURNACE_TYPE_ID:
+            continue
+        furnace = _item_view(row, item_local, grades, grade_local)
+        crafting_item = crafting_items.get(int(row.get("id") or 0), {})
+        yang_grid_size = dict(crafting_item.get("yangGridSize") or {})
+        yin_grid_size = dict(crafting_item.get("yinGridSize") or {})
+        element_id = int(row.get("attribute") or 0)
+        element = ITEM_ATTRIBUTE_DEFINITIONS.get(element_id, {"key": "none", "name": "无", "order": 99})
+        furnace.update({
+            "display_order": raw_index,
+            "element_id": element_id,
+            "element_key": element["key"],
+            "element_name": element["name"],
+            "element_order": element["order"],
+            "drug_quality": int(row.get("drugQuality") or 0),
+            "add_drug_tolerance": int(row.get("addDrugTolerance") or 0),
+            "yang_grid_size": {"width": int(yang_grid_size.get("x") or 0), "height": int(yang_grid_size.get("y") or 0)},
+            "yin_grid_size": {"width": int(yin_grid_size.get("x") or 0), "height": int(yin_grid_size.get("y") or 0)},
+            "crafting_effect": dict(crafting_item.get("creaftingEffect") or {}),
+            "source_evidence": {
+                "config_bundle": CONFIG_BUNDLE,
+                "config_asset": "Assets/Resources/Json/TbItemCfg.json",
+                "local_bundle": LOCAL_BUNDLE,
+                "local_asset": "Assets/Resources/LocalXml/TbItemCfgLocal.xml",
+                "type_id": FURNACE_TYPE_ID,
+                "crafting_asset": "Assets/Resources/Json/CraftingItem.json",
+            },
+        })
+        furnace["search_text"] = " ".join([
+            furnace["name"], furnace["description"], furnace["effect_description"],
+            furnace["grade_name"], furnace["element_name"],
+        ]).lower()
+        furnace_rows.append(furnace)
+    furnace_rows.sort(key=lambda item: (int(item.get("grade_id") or 10_000), int(item.get("item_id") or 0)))
+    for display_order, furnace in enumerate(furnace_rows, start=1):
+        furnace["display_order"] = display_order
+
     catalog_items = [
         *[item for recipe in recipes for item in [recipe["output"], *recipe["example_items"]]],
         *herb_rows,
+        *furnace_rows,
     ]
     icon_exports = _export_item_icons(
         others,
         media_dir,
         {str(item.get("icon_path") or "") for item in catalog_items},
     )
+    shape_exports = _export_shape_images(
+        others,
+        media_dir,
+        {
+            int((herb.get("source_evidence", {}).get("shape") or {}).get("draw_id") or 0)
+            for herb in herb_rows
+        },
+    )
+    pasture_image_exports = _export_pasture_images(others, media_dir)
     for item in catalog_items:
         icon_export = icon_exports.get(_normalized_icon_key(item.get("icon_path")))
         if icon_export:
@@ -437,8 +570,20 @@ def build(root: Path) -> dict[str, Any]:
             json.dumps(recipe, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
     for herb in herb_rows:
+        shape = herb.get("source_evidence", {}).get("shape")
+        if isinstance(shape, dict):
+            shape_export = shape_exports.get(int(shape.get("draw_id") or 0))
+            if shape_export:
+                shape["media_path"] = shape_export["media_path"]
+                shape["media_sha256"] = shape_export["sha256"]
+                shape["source_bundle"] = shape_export["source_bundle"]
+                shape["source_asset"] = shape_export["source_asset"]
         herb["content_hash"] = hashlib.sha256(
             json.dumps(herb, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    for furnace in furnace_rows:
+        furnace["content_hash"] = hashlib.sha256(
+            json.dumps(furnace, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
     assembly_path = game_root / "Zaohua_Data" / "Managed" / "Assembly-CSharp.dll"
@@ -483,6 +628,7 @@ def build(root: Path) -> dict[str, Any]:
             "state_rule_count": len(state_rows),
             "item_count": len(item_rows),
             "herb_count": len(herb_rows),
+            "furnace_count": len(furnace_rows),
             "recipe_herb_count": len(herb_recipe_refs),
             "output_item_count": len({row["output"]["item_id"] for row in recipes}),
             "localized_output_effect_count": sum(
@@ -512,6 +658,7 @@ def build(root: Path) -> dict[str, Any]:
             "alchemy_type_count": assembly["alchemy_type_count"],
         },
         "recipes": sorted(recipes, key=lambda item: item["recipe_id"]),
+        "furnaces": furnace_rows,
     }
     catalog_path = parsed_dir / "alchemy_catalog.json"
     catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -535,6 +682,44 @@ def build(root: Path) -> dict[str, Any]:
     herb_catalog_path.write_text(
         json.dumps(herb_catalog, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+    pasture_buildings = []
+    for row in pasture_rows:
+        path_key = str(row.get("path") or "").strip().lower()
+        image_export = pasture_image_exports.get(path_key)
+        effect_parts = [part.strip() for part in str(row.get("pastureEffect") or "").split(",") if part.strip()]
+        pasture_buildings.append({
+            "build_id": int(row.get("id") or 0),
+            "name": pasture_local.get(str(row.get("name") or ""), str(row.get("name") or "")),
+            "description": pasture_local.get(str(row.get("effDes") or ""), str(row.get("effDes") or "")),
+            "type": int(row.get("type") or 0),
+            "size": str(row.get("size") or "1x1"),
+            "effect_range_type": int(row.get("effectRangeType") or 0),
+            "effect": effect_parts[0] if effect_parts else "",
+            "effect_params": effect_parts[1:],
+            "path": str(row.get("path") or ""),
+            "image_media_path": image_export["media_path"] if image_export else "",
+            "source_evidence": {
+                "config": "TbPastureBuildCfg.xml",
+                "localization": "TbPastureBuildCfgLocal.xml",
+                "source_bundle": image_export["source_bundle"] if image_export else "",
+                "source_asset": image_export["source_asset"] if image_export else "",
+            },
+        })
+    pasture_catalog = {
+        "schema_version": 1,
+        "source": catalog["source"],
+        "stats": {"building_count": len(pasture_buildings), "image_count": len(pasture_image_exports)},
+        "buildings": pasture_buildings,
+        "model": {
+            "plot_name": "灵田",
+            "default_plot_count": 9,
+            "adjacency": "orthogonal",
+            "code_evidence": ["PastureImpl", "TbPastureBuildCfg", "PastureEffectType"],
+        },
+    }
+    (pasture_parsed_dir / "pasture_catalog.json").write_text(
+        json.dumps(pasture_catalog, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (report_dir / "assembly_framework.json").write_text(
         json.dumps(assembly, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -566,6 +751,16 @@ def build(root: Path) -> dict[str, Any]:
         f"- 完整药材图鉴：{len(herb_rows)}",
         f"- 含炼丹属性向量的药材：{sum(bool(item.get('crafting_attributes')) for item in herb_rows)}",
         f"- 炼丹图标：{len(icon_exports)}",
+        "",
+        "## 灵田与种植数据链",
+        "",
+        "`TbPastureBuildCfg → TbPastureBuildCfgLocal → PastureImpl / PastureEffectType`。格子对象为 `PasturePlot`，范围 11 表示四周相邻格。",
+        "",
+        f"- 建筑配置：{len(pasture_buildings)}",
+        f"- 牧场原生图片：{len(pasture_image_exports)}",
+        "- 灵泉：四周相邻灵草生长速度 +1 倍（`updateGrowSpeed,10,100`）。",
+        "- 灵枢台：四周相邻灵物产量 +1（`updateGrowCount,0,1`）。",
+        "- 其它效果枚举：变异、自动收取、按等级设置生长时间。",
         "",
         "## 丹药作用字段",
         "",

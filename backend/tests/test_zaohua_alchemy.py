@@ -155,6 +155,7 @@ def test_sync_and_query_zaohua_alchemy_database() -> None:
         assert page["items"][0]["output"]["grade_rank"] == 1
         assert page["items"][0]["output"]["price"] == 30
         assert page["items"][0]["output"]["effect_text"] == "恢复30点气血"
+        assert page["items"][0]["cost_days"] == 3
         assert page["items"][0]["output"]["description"] == "治疗内出血。"
         assert page["items"][0]["example_items"][0]["icon_url"] == "/api/zaohua/media/icons/Item/herb/100015"
         assert page["items"][0]["example_items"][0]["crafting_attributes"] == [
@@ -165,6 +166,7 @@ def test_sync_and_query_zaohua_alchemy_database() -> None:
         assert grade_page["total"] == 1
         assert grade_page["items"][0]["output"]["name"] == "止血散"
         assert grade_page["items"][0]["output"]["effect_text"] == "修炼效率 +100%，持续 1 月"
+        assert grade_page["items"][0]["cost_days"] == 5
 
         descending_page = list_zaohua_alchemy_recipes(
             sort_by="number", sort_order="desc", page=1, page_size=20, session=session

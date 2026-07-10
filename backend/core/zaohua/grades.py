@@ -23,6 +23,27 @@ GRADE_DEFINITIONS: dict[int, dict[str, Any]] = {
     315: {"name": "五阶上品", "order": 15, "color_index": 12, "color_hex": "#8b0b0b"},
 }
 
+# CommonConst.CraftingDrugDefaultCostTimeList indexed by TbGradeCfg.weight.
+CRAFTING_DRUG_COST_DAYS_BY_GRADE_ORDER = {
+    1: 3,
+    2: 5,
+    3: 10,
+    4: 30,
+    5: 60,
+    6: 120,
+    7: 360,
+    8: 720,
+    9: 1080,
+    10: 1800,
+    11: 3600,
+    12: 7200,
+}
+
+
+def get_crafting_drug_cost_days(grade_id: Any, grade_name: Any = "") -> int:
+    grade_order = int(get_grade_visual(grade_id, grade_name)["order"])
+    return CRAFTING_DRUG_COST_DAYS_BY_GRADE_ORDER.get(grade_order, 3)
+
 
 def get_grade_visual(grade_id: Any, grade_name: Any = "") -> dict[str, Any]:
     try:

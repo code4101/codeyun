@@ -29,6 +29,26 @@ def get_zaohua_herb_catalog_path() -> Path:
     return get_zaohua_reverse_root() / "parsed_configs" / "herbs" / "herb_catalog.json"
 
 
+def get_zaohua_pasture_catalog_path() -> Path:
+    return get_zaohua_reverse_root() / "parsed_configs" / "pasture" / "pasture_catalog.json"
+
+
+def get_zaohua_pasture_image_path(resource_path: str) -> Path:
+    normalized = resource_path.strip().replace("\\", "/").strip("/").lower()
+    parts = Path(normalized).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=404, detail="灵田素材不存在")
+    image_root = (get_zaohua_reverse_root() / "media" / "pasture").resolve()
+    image_path = image_root.joinpath(*parts).resolve()
+    try:
+        image_path.relative_to(image_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="灵田素材不存在") from exc
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="灵田素材不存在")
+    return image_path
+
+
 def get_zaohua_icon_path(resource_path: str) -> Path:
     normalized = resource_path.strip().replace("\\", "/").strip("/").lower()
     if normalized.endswith(".png"):
@@ -45,6 +65,16 @@ def get_zaohua_icon_path(resource_path: str) -> Path:
     if not icon_path.is_file():
         raise HTTPException(status_code=404, detail="图标不存在")
     return icon_path
+
+
+def get_zaohua_shape_image_path(draw_id: int) -> Path:
+    if draw_id <= 0:
+        raise HTTPException(status_code=404, detail="形状图鉴不存在")
+    shape_root = (get_zaohua_reverse_root() / "media" / "shapes").resolve()
+    shape_path = (shape_root / f"Draw_{draw_id}.png").resolve()
+    if not shape_path.is_file():
+        raise HTTPException(status_code=404, detail="形状图鉴不存在")
+    return shape_path
 
 
 def load_zaohua_catalog() -> dict[str, Any]:
@@ -76,6 +106,19 @@ def load_zaohua_herb_catalog() -> dict[str, Any]:
             status_code=500,
             detail=f"造化仙缘药材 catalog schema 不匹配：{data.get('schema_version')} != {CATALOG_SCHEMA_VERSION}",
         )
+    return data
+
+
+def load_zaohua_pasture_catalog() -> dict[str, Any]:
+    path = get_zaohua_pasture_catalog_path()
+    if not path.is_file():
+        raise HTTPException(status_code=503, detail=f"造化仙缘灵田 catalog 尚未生成：{path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"造化仙缘灵田 catalog 读取失败：{path.name}") from exc
+    if data.get("schema_version") != CATALOG_SCHEMA_VERSION:
+        raise HTTPException(status_code=500, detail="造化仙缘灵田 catalog schema 不匹配")
     return data
 
 

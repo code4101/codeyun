@@ -1,0 +1,57 @@
+.zaohua-catalog-page {
+  --zaohua-cell-padding-y: 4px;
+  --zaohua-cell-padding-x: 11px;
+  --zaohua-icon-size: 32px;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  white-space: nowrap;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table th,
+.zaohua-catalog-page .zaohua-catalog-table td {
+  box-sizing: border-box;
+  height: 40px;
+  padding: var(--zaohua-cell-padding-y) var(--zaohua-cell-padding-x);
+  border-bottom: 1px solid #eceeec;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 32px;
+  background: #f0f2ef;
+  color: #555d61;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table .zaohua-icon-column,
+.zaohua-catalog-page .zaohua-catalog-table .zaohua-icon-cell {
+  width: 42px;
+  padding: 2px 6px;
+  text-align: center;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table .zaohua-icon-cell img {
+  display: block;
+  width: var(--zaohua-icon-size);
+  height: var(--zaohua-icon-size);
+  object-fit: contain;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table .zaohua-number-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.zaohua-catalog-page .zaohua-catalog-table .zaohua-fill-column {
+  width: 100%;
+  padding: 0;
+}

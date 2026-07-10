@@ -5,18 +5,39 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from backend.db import get_session
-from backend.core.zaohua.catalog import get_zaohua_icon_path
-from backend.core.zaohua.grades import get_grade_visual
+from backend.core.zaohua.catalog import (
+    get_zaohua_icon_path,
+    get_zaohua_pasture_image_path,
+    get_zaohua_shape_image_path,
+    load_zaohua_catalog,
+    load_zaohua_pasture_catalog,
+)
+from backend.core.zaohua.grades import get_crafting_drug_cost_days, get_grade_visual
+from backend.core.zaohua.alchemy_solver import solve_alchemy
+from backend.core.zaohua.pasture_solver import optimize_pasture_shape
 from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
 
 router = APIRouter()
 
 PLACEHOLDER_HERB_IDS = tuple(range(70001, 70016))
+
+
+class ZaohuaAlchemySolveRequest(BaseModel):
+    width: int = Field(default=3, ge=1, le=12)
+    height: int = Field(default=3, ge=1, le=12)
+    limit: int = Field(default=5, ge=1, le=100)
+    excluded_item_ids: list[int] = Field(default_factory=list)
+
+
+class ZaohuaPastureSolveRequest(BaseModel):
+    plot_count: int = Field(default=9, ge=1, le=30)
+    enabled_building_ids: list[int] = Field(default_factory=list)
 
 
 def _icon_url(icon_path: Any) -> str:
@@ -34,6 +55,12 @@ def _serialize_item(item: dict[str, Any]) -> dict[str, Any]:
         if key != "name"
     })
     payload["grade_rank"] = grade_visual["order"] if grade_visual["order"] <= 15 else 0
+    return payload
+
+
+def _serialize_furnace(item: dict[str, Any]) -> dict[str, Any]:
+    payload = _serialize_item(item)
+    payload["source_build_id"] = str(item.get("source_build_id") or "")
     return payload
 
 
@@ -94,6 +121,7 @@ def _serialize_recipe(
         "name": record.name,
         "technique": record.technique,
         "output": output,
+        "cost_days": get_crafting_drug_cost_days(record.output_grade_id, record.output_grade_name),
         "attr_limits": list(record.attr_limits or []),
         "example_items": example_items,
         "state_rules": list(record.state_rules or []),
@@ -127,6 +155,10 @@ def _recipe_herb_attributes(
 
 
 def _serialize_herb(record: ZaohuaHerb) -> dict[str, Any]:
+    source_json = dict(record.source_json or {})
+    shape = source_json.pop("shape", None)
+    if isinstance(shape, dict) and int(shape.get("draw_id") or 0) > 0:
+        shape["image_url"] = f"/api/zaohua/media/shapes/{int(shape['draw_id'])}"
     payload = {
         "item_id": record.item_id,
         "source_build_id": record.source_build_id,
@@ -146,7 +178,8 @@ def _serialize_herb(record: ZaohuaHerb) -> dict[str, Any]:
         "crafting_attributes": list(record.crafting_attributes or []),
         "recipe_count": record.recipe_count,
         "recipes": list(record.recipes or []),
-        "source_evidence": dict(record.source_json or {}),
+        "shape": shape,
+        "source_evidence": source_json,
         "content_hash": record.content_hash,
     }
     grade_visual = get_grade_visual(record.grade_id, record.grade_name)
@@ -166,6 +199,56 @@ def get_zaohua_icon(resource_path: str) -> FileResponse:
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
+
+
+@router.get("/media/shapes/{draw_id}")
+def get_zaohua_shape_image(draw_id: int) -> FileResponse:
+    return FileResponse(
+        get_zaohua_shape_image_path(draw_id),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get("/media/pasture/{resource_path:path}")
+def get_zaohua_pasture_image(resource_path: str) -> FileResponse:
+    return FileResponse(
+        get_zaohua_pasture_image_path(resource_path),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get("/pasture/meta")
+def get_zaohua_pasture_meta() -> dict[str, Any]:
+    catalog = load_zaohua_pasture_catalog()
+    buildings = []
+    for row in catalog.get("buildings", []):
+        item = dict(row)
+        media_path = str(item.get("image_media_path") or "").replace("\\", "/")
+        if media_path.startswith("pasture/"):
+            media_path = media_path[len("pasture/"):]
+        item["image_url"] = f"/api/zaohua/media/pasture/{media_path}" if media_path else ""
+        buildings.append(item)
+    return {
+        "source": catalog.get("source", {}),
+        "stats": catalog.get("stats", {}),
+        "model": catalog.get("model", {}),
+        "buildings": buildings,
+    }
+
+
+@router.post("/pasture/solve")
+def solve_zaohua_pasture(request: ZaohuaPastureSolveRequest) -> dict[str, Any]:
+    catalog = load_zaohua_pasture_catalog()
+    try:
+        return optimize_pasture_shape(
+            request.plot_count,
+            catalog.get("buildings", []),
+            request.enabled_building_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/alchemy/meta")
@@ -200,6 +283,55 @@ def get_zaohua_alchemy_meta(session: Session = Depends(get_session)) -> dict[str
         ),
         "storage": "database",
     }
+
+
+@router.get("/furnaces/meta")
+def get_zaohua_furnace_meta() -> dict[str, Any]:
+    catalog = load_zaohua_catalog()
+    furnaces = [row for row in catalog.get("furnaces", []) if isinstance(row, dict)]
+    grade_counts = Counter(str(row.get("grade_name") or "未命名") for row in furnaces)
+    grade_ids = {str(row.get("grade_name") or "未命名"): int(row.get("grade_id") or 0) for row in furnaces}
+    element_counts = Counter((str(row.get("element_key") or "none"), str(row.get("element_name") or "无")) for row in furnaces)
+    return {
+        "furnace_count": len(furnaces),
+        "build_ids": [str(catalog.get("source", {}).get("steam_build_id") or "")],
+        "grades": sorted([
+            {"name": name, "count": count, "grade_id": grade_ids[name], **{
+                key: value for key, value in get_grade_visual(grade_ids[name], name).items() if key != "name"
+            }} for name, count in grade_counts.items()
+        ], key=lambda item: (item["order"], item["name"])),
+        "elements": [{"key": key, "name": name, "count": count} for (key, name), count in element_counts.items()],
+        "storage": "static_catalog",
+    }
+
+
+@router.get("/furnaces")
+def list_zaohua_furnaces(
+    q: str = "", grade: str = "", element: str = "",
+    sort_by: str = Query("number", pattern="^(number|grade)$"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
+    page: int = Query(1, ge=1), page_size: int = Query(40, ge=1, le=200),
+) -> dict[str, Any]:
+    catalog = load_zaohua_catalog()
+    rows = [row for row in catalog.get("furnaces", []) if isinstance(row, dict)]
+    query = q.strip().lower()
+    rows = [row for row in rows if (not query or query in str(row.get("search_text") or ""))
+            and (not grade or row.get("grade_name") == grade)
+            and (not element or row.get("element_key") == element)]
+    key = (lambda row: int(row.get("grade_id") or 0)) if sort_by == "grade" else (lambda row: int(row.get("display_order") or 0))
+    rows.sort(key=lambda row: (key(row), int(row.get("item_id") or 0)), reverse=sort_order == "desc")
+    total = len(rows)
+    start = (page - 1) * page_size
+    return {"items": [_serialize_furnace(row) for row in rows[start:start + page_size]], "page": page, "page_size": page_size, "total": total}
+
+
+@router.get("/furnaces/{item_id}")
+def get_zaohua_furnace(item_id: int) -> dict[str, Any]:
+    catalog = load_zaohua_catalog()
+    row = next((row for row in catalog.get("furnaces", []) if int(row.get("item_id") or 0) == item_id), None)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="丹炉不存在")
+    return _serialize_furnace(row)
 
 
 @router.get("/alchemy/recipes")
@@ -254,6 +386,42 @@ def get_zaohua_alchemy_recipe(
         raise HTTPException(status_code=404, detail="丹方不存在")
     herb_attributes = _recipe_herb_attributes([record], session)
     return _serialize_recipe(record, herb_attributes)
+
+
+@router.post("/alchemy/recipes/{recipe_id}/solve")
+def solve_zaohua_alchemy_recipe(
+    recipe_id: int,
+    request: ZaohuaAlchemySolveRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    recipe = session.get(ZaohuaAlchemyRecipe, recipe_id)
+    if recipe is None or not recipe.is_active:
+        raise HTTPException(status_code=404, detail="丹药不存在")
+    herbs = session.exec(
+        select(ZaohuaHerb).where(
+            ZaohuaHerb.is_active == True,  # noqa: E712
+            ZaohuaHerb.item_id.notin_(PLACEHOLDER_HERB_IDS),
+        )
+    ).all()
+    result = solve_alchemy(
+        recipe,
+        herbs,
+        request.width,
+        request.height,
+        request.limit,
+        excluded_item_ids=request.excluded_item_ids,
+    )
+    for herb in result["available_herbs"]:
+        herb["icon_url"] = _icon_url(herb.get("icon_path"))
+    for solution in result["solutions"]:
+        for placement in solution["placements"]:
+            draw_id = int(placement.get("shape_draw_id") or 0)
+            placement["shape_image_url"] = f"/api/zaohua/media/shapes/{draw_id}" if draw_id else ""
+    return {
+        "recipe_id": recipe.recipe_id,
+        "furnace": {"width": request.width, "height": request.height},
+        **result,
+    }
 
 
 @router.get("/herbs/meta")

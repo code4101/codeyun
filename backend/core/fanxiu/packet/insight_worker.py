@@ -9,7 +9,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from backend.core.fanxiu.packet.activity_sync import sync_fanxiu_activity_packets
 from backend.core.fanxiu.packet.insights import (
@@ -91,6 +91,13 @@ def _write_json(path: Path, payload: Any) -> None:
                 pass
             if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
                 raise
+            try:
+                path.write_text(text, encoding="utf-8")
+                return
+            except OSError as fallback_exc:
+                last_error = fallback_exc
+                if getattr(fallback_exc, "winerror", None) not in {5, 32} and not isinstance(fallback_exc, PermissionError):
+                    raise
             time.sleep(0.05 * (attempt + 1))
     try:
         path.write_text(text, encoding="utf-8")
@@ -1580,6 +1587,7 @@ def sync_fanxiu_capture_maintenance_backlog(
     include_activity_packet_sync: bool = False,
     include_historical_business_backlog: bool = True,
     include_mail_business_backlog: bool = True,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the non-urgent catch-up pass over historical live captures.
 
@@ -1588,6 +1596,20 @@ def sync_fanxiu_capture_maintenance_backlog(
     old missed captures, failed gaps, and newly fixed parser rules can be
     retried without depending on UI refreshes or behavior-tree jobs.
     """
+    def emit_progress(phase: str, **extra: Any) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "ok": True,
+                "mode": "maintenance",
+                "phase": phase,
+                "updated_at": _now_text(),
+                **extra,
+            }
+        )
+
+    emit_progress("live_capture_backlog")
     result = sync_fanxiu_live_capture_backlog(
         data_dir=data_dir,
         state_path=_maintenance_state_path(data_dir),
@@ -1599,6 +1621,7 @@ def sync_fanxiu_capture_maintenance_backlog(
         newest_first=True,
         limit=limit,
     )
+    emit_progress("decoded_record_backlog", live_capture_backlog=result)
     if include_decoded_record_backlog:
         decoded_record_sync = sync_fanxiu_decoded_record_backlog(data_dir=data_dir, limit=max(64, int(limit) * 4))
     else:
@@ -1607,6 +1630,7 @@ def sync_fanxiu_capture_maintenance_backlog(
             "skipped": True,
             "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
         }
+    emit_progress("activity_packet_sync", live_capture_backlog=result, decoded_record_db_sync=decoded_record_sync)
     if include_activity_packet_sync:
         activity_sync = sync_fanxiu_activity_packets(data_dir=data_dir, force=False)
     else:
@@ -1615,6 +1639,12 @@ def sync_fanxiu_capture_maintenance_backlog(
             "skipped": True,
             "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
         }
+    emit_progress(
+        "historical_business_backlog",
+        live_capture_backlog=result,
+        decoded_record_db_sync=decoded_record_sync,
+        activity_packet_sync=activity_sync,
+    )
     if include_historical_business_backlog:
         historical_runtime_sync, historical_mail_sync = _sync_historical_business_backlog(data_dir=data_dir)
     else:
@@ -1629,6 +1659,14 @@ def sync_fanxiu_capture_maintenance_backlog(
             "skipped": True,
             "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
         }
+    emit_progress(
+        "mail_business_backlog",
+        live_capture_backlog=result,
+        decoded_record_db_sync=decoded_record_sync,
+        activity_packet_sync=activity_sync,
+        historical_runtime_business_sync=historical_runtime_sync,
+        historical_mail_packet_sync=historical_mail_sync,
+    )
     if include_mail_business_backlog:
         bounded_mail_sync = sync_fanxiu_mail_business_backlog(data_dir=data_dir)
     else:
@@ -1821,10 +1859,21 @@ class FanxiuPacketInsightWorker:
             phase="maintenance_backlog",
             capture_runtime_backstop=capture_backstop,
         )
+        def report_progress(progress: dict[str, Any]) -> None:
+            heartbeat_at = _now_text()
+            payload = {
+                **progress,
+                "heartbeat_at": heartbeat_at,
+                "capture_runtime_backstop": capture_backstop,
+            }
+            self._mark_maintenance_heartbeat(**payload)
+            _write_json(_maintenance_state_path(), _compact_worker_state_payload(payload))
+
         result = sync_fanxiu_capture_maintenance_backlog(
             stable_seconds=self.stable_seconds,
             include_historical_business_backlog=True,
             include_mail_business_backlog=True,
+            progress_callback=report_progress,
         )
         result["capture_runtime_backstop"] = capture_backstop
         with self._lock:

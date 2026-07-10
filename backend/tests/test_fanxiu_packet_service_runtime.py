@@ -641,5 +641,29 @@ def test_write_json_retries_replace_on_windows_permission_error(monkeypatch, tmp
 
     service_runtime._write_json(path, {"ok": True, "value": 1})
 
-    assert calls["count"] >= 2
+    assert calls["count"] >= 1
     assert '"value": 1' in path.read_text(encoding="utf-8")
+
+
+def test_write_json_falls_back_to_direct_write_when_replace_stays_locked(monkeypatch, tmp_path):
+    path = tmp_path / "packet_service_state.json"
+    original_write_text = Path.write_text
+    calls = {"replace": 0, "direct_write": 0}
+
+    def locked_replace(self, target):
+        calls["replace"] += 1
+        raise PermissionError(13, "denied", str(target))
+
+    def track_write_text(self, data, *args, **kwargs):
+        if self == path:
+            calls["direct_write"] += 1
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", locked_replace)
+    monkeypatch.setattr(Path, "write_text", track_write_text)
+
+    service_runtime._write_json(path, {"ok": True, "value": 2})
+
+    assert calls["replace"] == 1
+    assert calls["direct_write"] == 1
+    assert '"value": 2' in path.read_text(encoding="utf-8")
