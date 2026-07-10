@@ -238,6 +238,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "zaohua",
+      "title": "造化仙缘",
+      "node_type": "group",
+      "parent_key": "game-tools",
+      "sort_order": 30,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "fanxiu",
       "title": "凡修手游",
       "node_type": "group",
@@ -524,11 +535,33 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "zaohua.alchemy",
+      "title": "炼丹",
+      "node_type": "feature",
+      "parent_key": "zaohua",
+      "sort_order": 10,
+      "route_paths": ["/zaohua/alchemy"],
+      "menu_paths": ["/zaohua/alchemy"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "zaohua.herbs",
+      "title": "药材",
+      "node_type": "feature",
+      "parent_key": "zaohua",
+      "sort_order": 20,
+      "route_paths": ["/zaohua/herbs"],
+      "menu_paths": ["/zaohua/herbs"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "pokemon-tcg.catalog",
       "title": "宝可梦卡牌",
       "node_type": "feature",
       "parent_key": "game-tools",
-      "sort_order": 26,
+      "sort_order": 27,
       "route_paths": ["/pokemon-tcg/catalog"],
       "menu_paths": ["/pokemon-tcg/catalog"],
       "api_scopes": [],

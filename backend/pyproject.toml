@@ -13,6 +13,7 @@ dependencies = [
     "psutil>=5.9.0",
     "apscheduler>=3.10.0,<4.0.0",
     "DrissionPage>=4.1.1.2",
+    "dnfile>=0.18.0",
     "UnityPy>=1.25.0",
     "pyxllib[kq5034]",
     "beautifulsoup4>=4.14.3",

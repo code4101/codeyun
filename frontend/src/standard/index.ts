@@ -147,6 +147,16 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./mystia/wiki/page.vue'),
   },
   {
+    routeName: 'ZaohuaAlchemyCatalog',
+    canonicalPath: '/zaohua/alchemy',
+    component: () => import('./zaohua/alchemy/page.vue'),
+  },
+  {
+    routeName: 'ZaohuaHerbCatalog',
+    canonicalPath: '/zaohua/herbs',
+    component: () => import('./zaohua/herbs/page.vue'),
+  },
+  {
     routeName: 'PokemonTcgCatalog',
     canonicalPath: '/pokemon-tcg/catalog',
     component: () => import('./pokemon-tcg/page.vue'),

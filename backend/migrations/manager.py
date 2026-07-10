@@ -5190,6 +5190,106 @@ def v80_add_pokemon_tcg_card_records(session: Session):
     print("  Added Pokemon TCG card record table.")
 
 
+def v81_add_zaohua_alchemy_recipes(session: Session):
+    """Migration V81: Add the lightweight Zaohua alchemy query cache."""
+    print("Running System Upgrade V81: Add Zaohua alchemy recipe table...")
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS zaohuaalchemyrecipe (
+            recipe_id INTEGER PRIMARY KEY,
+            source_build_id VARCHAR NOT NULL DEFAULT '',
+            name VARCHAR NOT NULL DEFAULT '',
+            technique TEXT NOT NULL DEFAULT '',
+            output_item_id INTEGER NOT NULL DEFAULT 0,
+            output_item_name VARCHAR NOT NULL DEFAULT '',
+            output_count INTEGER NOT NULL DEFAULT 0,
+            output_grade_id INTEGER NOT NULL DEFAULT 0,
+            output_grade_name VARCHAR NOT NULL DEFAULT '',
+            output_icon_path TEXT NOT NULL DEFAULT '',
+            attr_limits JSON NOT NULL DEFAULT '[]',
+            example_items JSON NOT NULL DEFAULT '[]',
+            state_rules JSON NOT NULL DEFAULT '[]',
+            search_text TEXT NOT NULL DEFAULT '',
+            source_json JSON NOT NULL DEFAULT '{}',
+            content_hash VARCHAR NOT NULL DEFAULT '',
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL
+        )
+    """))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_source_build_id ON zaohuaalchemyrecipe (source_build_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_name ON zaohuaalchemyrecipe (name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_output_item_id ON zaohuaalchemyrecipe (output_item_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_output_item_name ON zaohuaalchemyrecipe (output_item_name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_output_grade_id ON zaohuaalchemyrecipe (output_grade_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_output_grade_name ON zaohuaalchemyrecipe (output_grade_name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_content_hash ON zaohuaalchemyrecipe (content_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaalchemyrecipe_is_active ON zaohuaalchemyrecipe (is_active)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Zaohua alchemy recipe table.")
+
+
+def v82_add_zaohua_alchemy_output_price(session: Session):
+    """Migration V82: Project the output item price into the Zaohua query cache."""
+    print("Running System Upgrade V82: Add Zaohua alchemy output price...")
+    columns = _get_table_columns(session, "zaohuaalchemyrecipe")
+    if "output_price" not in columns:
+        session.exec(text(
+            "ALTER TABLE zaohuaalchemyrecipe ADD COLUMN output_price FLOAT NOT NULL DEFAULT 0"
+        ))
+    session.commit()
+    print("  Added Zaohua alchemy output price.")
+
+
+def v83_add_zaohua_herbs(session: Session):
+    """Migration V83: Add the lightweight Zaohua herb query cache."""
+    print("Running System Upgrade V83: Add Zaohua herb table...")
+    session.exec(text("""
+        CREATE TABLE IF NOT EXISTS zaohuaherb (
+            item_id INTEGER PRIMARY KEY,
+            source_build_id VARCHAR NOT NULL DEFAULT '',
+            display_order INTEGER NOT NULL DEFAULT 0,
+            name VARCHAR NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            effect_description TEXT NOT NULL DEFAULT '',
+            icon_path TEXT NOT NULL DEFAULT '',
+            grade_id INTEGER NOT NULL DEFAULT 0,
+            grade_name VARCHAR NOT NULL DEFAULT '',
+            element_id INTEGER NOT NULL DEFAULT 0,
+            element_key VARCHAR NOT NULL DEFAULT '',
+            element_name VARCHAR NOT NULL DEFAULT '',
+            price FLOAT NOT NULL DEFAULT 0,
+            lingqi INTEGER NOT NULL DEFAULT 0,
+            recipe_count INTEGER NOT NULL DEFAULT 0,
+            recipes JSON NOT NULL DEFAULT '[]',
+            search_text TEXT NOT NULL DEFAULT '',
+            source_json JSON NOT NULL DEFAULT '{}',
+            content_hash VARCHAR NOT NULL DEFAULT '',
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL
+        )
+    """))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_source_build_id ON zaohuaherb (source_build_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_display_order ON zaohuaherb (display_order)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_name ON zaohuaherb (name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_grade_id ON zaohuaherb (grade_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_grade_name ON zaohuaherb (grade_name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_element_id ON zaohuaherb (element_id)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_element_key ON zaohuaherb (element_key)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_element_name ON zaohuaherb (element_name)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_recipe_count ON zaohuaherb (recipe_count)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_content_hash ON zaohuaherb (content_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_zaohuaherb_is_active ON zaohuaherb (is_active)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Zaohua herb table.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5273,6 +5373,9 @@ MIGRATIONS = [
     (78, "Add Device Agent tables", v78_add_device_agent_tables),
     (79, "Add sheet page snapshot table", v79_add_sheet_page_snapshot_table),
     (80, "Add Pokemon TCG card records", v80_add_pokemon_tcg_card_records),
+    (81, "Add Zaohua alchemy recipes", v81_add_zaohua_alchemy_recipes),
+    (82, "Add Zaohua alchemy output price", v82_add_zaohua_alchemy_output_price),
+    (83, "Add Zaohua herbs", v83_add_zaohua_herbs),
 ]
 
 def get_current_version(session: Session) -> int:

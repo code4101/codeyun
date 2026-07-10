@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "7a6fa47261f0154c92fa56b6195fbc2757544ba7"
-last_audited_at: "2026-07-09T12:40:42.8462467+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-09-frontend-design-7a6fa47/report.md"
-last_frontend_commit_summary: "已关闭 918c1b7..7a6fa47：fanxiu runtime 摘要日志继续留在一级页、完整历史可从日志页取回；notes/star 缓存后置未长出一级噪音，attendance/configs 与 notes/list 同链路复验通过。"
-audited_commit_count: 89
+last_audited_commit: "67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc"
+last_audited_at: "2026-07-10T06:38:02.9665998+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-67a7fe4c/report.md"
+last_frontend_commit_summary: "已关闭 7a6fa47..67a7fe4：fanxiu runtime 继续只保留摘要级日志与状态事实，notes/calendar 的缓存补料没有长出一级噪音，attendance/orders 与 cluster/storage 的前置条件/草稿恢复也保持在当前子页或目录内。"
+audited_commit_count: 90
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-10（第二十二轮）
+
+- 完整范围：`7a6fa47261f0154c92fa56b6195fbc2757544ba7..67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc`
+- 覆盖提交：`67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc`
+- 前端入口提交：`67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc`
+- 入口如何牵引到旧问题：这次提交虽然同时落在 `fanxiu/data-annotation/runtime`、`notes/center`、`attendance/orders`、`cluster/storage` 与 `ImageGalleryWorkspace`，但共享的是同一条减法方向：一级页面只保留当前判断事实，把缓存时间戳、日志轮询粒度、草稿恢复时机和重复文件前置条件收回到后台补料、当前子页或当前目录，而不是继续长成一级解释区。因此本轮沿 `fanxiu/runtime -> data-annotation`、`notes/star -> calendar`、`attendance/configs -> orders -> storage -> cluster/files` 三条链路复核，而不是只看单一文件 diff。
+- 本轮减法：没有追加仓库源码修复。真实页面确认 `fanxiu/runtime` 仍维持“守护 / 作业 / 运行状态 / Cell 日志摘要”四块事实，完整历史没有回流一级页；`StarNotes` 与 `CalendarNotes` 的缓存/后台刷新没有长出提示条；`attendance/orders` 的退款与详情子页继续各自独立；`cluster/storage` 在设备根目录切到 `重复文件` 时稳定退回一句前置条件提示；`cluster/files` 的瀑布流补料继续留在组件内部，没有新增任何常驻说明。
+- 信息量保持：`fanxiu/runtime` 仍保留守护启用、作业启用、下次触发、运行状态和 Cell 摘要；`notes` 仍保留时间尺度、筛选程序和节点下钻；`attendance/orders` 仍保留退款与详情两条操作闭环；`cluster/storage` 仍保留目录树和重复文件入口；`cluster/files` 仍保留瀑布流/卡片、排序、目录与搜索能力。减少的是无效前置 pane、跨子页草稿干扰和看起来像“又要刷新一次”的一级噪音，不是能力本身。
+- 概念图/线框图：报告中的 Mermaid 把三条链路统一收回到“先选上下文 -> 只看当前事实 -> 需要时再进入日志/详情/分析”的基础模型；ASCII 线框图明确 `storage/duplicates` 只有在进入具体磁盘或目录后才成立，`notes/calendar` 的 workload 与 `star` 的缓存补料则后置到后台。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-67a7fe4c/report.md`
+- 验证：复用本地 `5173/8000` 开发环境，完成 `fanxiu/data-annotation/runtime`、`fanxiu/data-annotation`、`notes/center?tab=star`、`notes/center?tab=calendar`、`attendance/configs`、`attendance/orders`（退款/详情）、`cluster/storage`（目录树/重复文件）和 `cluster/files`（瀑布流）共 10 个场景在宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 下的 30 张截图。`evidence.json` 记录 30/30 页面满足 `bodyScrollWidth == bodyClientWidth`，页面级 `warn/error` 为 `0`；`cluster/storage` 重复文件页在根目录三视口都稳定显示“请先进入具体磁盘或目录，再分析重复文件。”；`attendance/orders?tab=detail` 首屏未混入退款历史；`cluster/files` 宽屏首屏存在 15 个可见瀑布流媒体卡片。静态校验：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为提交没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开匿名入口；因此仅记录常规 `npm run build --prefix frontend` 通过结果，不单独展开 `dist/index.html` / `main-*.js` 审计。
+- 根因分层：`fanxiu/runtime` 属于前端状态投影与轮询粒度收敛；`notes/star`、`notes/calendar` 属于缓存时间戳与后台补料时机收敛；`attendance/orders`、`cluster/storage` 属于当前子页/目录的前端状态恢复与前置条件投影收敛；`cluster/files` 属于共享组件内部补料策略收敛。本轮未暴露新的后端数据投影或业务建模债务。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口截图与前端静态验证；没有发现需要追加自动修复的新 UI 回退，因此把 `last_audited_commit` 推进到 `67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-09（第二十一轮）
 

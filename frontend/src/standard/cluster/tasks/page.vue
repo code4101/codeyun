@@ -391,26 +391,46 @@ const updateDeviceConfig = async () => {
   }
 };
 
+const TASK_POLL_INTERVAL_MS = 3000;
+const INITIAL_TASK_POLL_DELAY_MS = 6000;
+
 let taskPollTimer: number | null = null;
+let taskPollEntryId = '';
 let systemMonitorObserver: IntersectionObserver | null = null;
 const taskFetchInFlight = new Set<string>();
 const taskFetchVersions = new Map<string, number>();
 
 const stopTaskPolling = () => {
   if (taskPollTimer) {
-    window.clearInterval(taskPollTimer);
+    window.clearTimeout(taskPollTimer);
     taskPollTimer = null;
   }
+  taskPollEntryId = '';
 };
 
-const startTaskPolling = (entryId: string) => {
+const scheduleTaskPoll = (entryId: string, delayMs = TASK_POLL_INTERVAL_MS) => {
+  if (!entryId) return;
+  if (taskPollEntryId !== entryId) {
+    stopTaskPolling();
+    taskPollEntryId = entryId;
+  } else if (taskPollTimer) {
+    window.clearTimeout(taskPollTimer);
+  }
+  taskPollTimer = window.setTimeout(async () => {
+    taskPollTimer = null;
+    if (currentDeviceId.value !== entryId || taskPollEntryId !== entryId) return;
+    await fetchTasks(entryId, true);
+    if (currentDeviceId.value === entryId && taskPollEntryId === entryId) {
+      scheduleTaskPoll(entryId, TASK_POLL_INTERVAL_MS);
+    }
+  }, delayMs);
+};
+
+const startTaskPolling = (entryId: string, delayMs = INITIAL_TASK_POLL_DELAY_MS) => {
   stopTaskPolling();
   if (!entryId) return;
-  taskPollTimer = window.setInterval(() => {
-    if (currentDeviceId.value === entryId) {
-      fetchTasks(entryId, true);
-    }
-  }, 3000);
+  taskPollEntryId = entryId;
+  scheduleTaskPoll(entryId, delayMs);
 };
 
 const activateSystemMonitor = () => {

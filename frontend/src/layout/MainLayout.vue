@@ -85,6 +85,8 @@ const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
+const ZAOHUA_ALCHEMY_PATH = requirePageMenuPath('ZaohuaAlchemyCatalog');
+const ZAOHUA_HERB_PATH = requirePageMenuPath('ZaohuaHerbCatalog');
 const POKEMON_TCG_CATALOG_PATH = requirePageMenuPath('PokemonTcgCatalog');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
 const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
@@ -165,6 +167,9 @@ const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDE
 const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
 const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
 const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
+const ZAOHUA_TITLE = requirePermissionTitle('zaohua');
+const ZAOHUA_ALCHEMY_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_ALCHEMY_PATH);
+const ZAOHUA_HERB_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_HERB_PATH);
 const POKEMON_TCG_CATALOG_TITLE = requirePermissionTitleByMenuPath(POKEMON_TCG_CATALOG_PATH);
 const MAGIC_CRAFT_TITLE = requirePermissionTitle('magic-craft');
 const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH);
@@ -226,6 +231,7 @@ const BUILTIN_MENU_SECTION_KEYS = new Set([
   'ai-tools',
   'attendance-tools',
   'game-tools',
+  'zaohua',
   'fanxiu',
   'magic-craft',
   'note-tools',
@@ -485,10 +491,16 @@ const magicCraftMenuVisible = computed(() =>
   && canAccessMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH),
 );
 
+const zaohuaMenuVisible = computed(() =>
+  canAccessFeature('zaohua')
+  && [ZAOHUA_ALCHEMY_PATH, ZAOHUA_HERB_PATH].some((path) => canAccessMenuPath(path)),
+);
+
 const gameToolsMenuVisible = computed(() =>
   canAccessFeature('game-tools')
   && (
     fanxiuMenuVisible.value
+    || zaohuaMenuVisible.value
     || magicCraftMenuVisible.value
     || canAccessMenuPath(DSP_CALCULATOR_PATH)
     || canAccessMenuPath(MYSTIA_WIKI_PATH)
@@ -617,6 +629,7 @@ const defaultOpeneds = computed(() => {
   }
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
+  if (route.path.startsWith('/zaohua/')) openeds.push('game-tools', 'zaohua');
   if (route.path.startsWith('/pokemon-tcg/')) openeds.push('game-tools');
   if (route.path.startsWith('/notes/')) openeds.push('note-tools');
   if (route.path === NOTES_CENTER_CANONICAL_PATH || route.path === NOTES_CENTER_MENU_PATH || route.path === NOTES_CHAT_DATA_PATH) {
@@ -894,6 +907,17 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(MYSTIA_WIKI_PATH)" :index="MYSTIA_WIKI_PATH">
               <span>{{ MYSTIA_WIKI_TITLE }}</span>
             </el-menu-item>
+            <el-sub-menu v-if="zaohuaMenuVisible" index="zaohua">
+              <template #title>
+                <span>{{ ZAOHUA_TITLE }}</span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_ALCHEMY_PATH)" :index="ZAOHUA_ALCHEMY_PATH">
+                {{ ZAOHUA_ALCHEMY_TITLE }}
+              </el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_HERB_PATH)" :index="ZAOHUA_HERB_PATH">
+                {{ ZAOHUA_HERB_TITLE }}
+              </el-menu-item>
+            </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(POKEMON_TCG_CATALOG_PATH)" :index="POKEMON_TCG_CATALOG_PATH">
               <span>{{ POKEMON_TCG_CATALOG_TITLE }}</span>
             </el-menu-item>
