@@ -8,10 +8,14 @@ import {
   fetchZaohuaHerbMeta,
   fetchZaohuaHerbs,
   type ZaohuaHerb,
+  type ZaohuaHerbCraftingAttribute,
   type ZaohuaHerbMeta,
 } from '@/api/zaohua'
 import StandardPagination from '@/components/StandardPagination.vue'
+import { mixWeightedColors, toHex } from '@/utils/colorMath'
+import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
+import GradeMeter from '../components/GradeMeter.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +29,8 @@ const element = ref('')
 const page = ref(1)
 const pageSize = ref(40)
 const total = ref(0)
+const sortBy = ref<'number' | 'grade'>('number')
+const sortOrder = ref<'asc' | 'desc'>('asc')
 let searchTimer = 0
 let requestSequence = 0
 
@@ -60,15 +66,47 @@ const ELEMENT_COLORS: Record<string, string> = {
   thunder: '#7449a8',
   none: '#697176',
 }
+const elementColor = (key: string) => ELEMENT_COLORS[key.toLowerCase()] || '#697176'
 const elementStyle = (key: string) => ({
-  '--element-color': ELEMENT_COLORS[key.toLowerCase()] || '#697176',
+  '--element-color': elementColor(key),
 })
+const craftingAttributeColor = (attributes: ZaohuaHerbCraftingAttribute[], fallbackKey = 'none') => {
+  const entries = (attributes || [])
+    .filter(item => Number.isFinite(item.value) && item.value !== 0)
+    .map(item => ({
+      color: elementColor(item.element),
+      weight: Math.abs(item.value),
+    }))
+  const totalWeight = entries.reduce((sum, item) => sum + item.weight, 0)
+  return totalWeight > 0
+    ? toHex(mixWeightedColors(entries, { fillToWeight: totalWeight }))
+    : elementColor(fallbackKey)
+}
+const attributeMagnitude = (value: number) => Math.abs(value)
 const elementOptionByKey = (key: string) => meta.value?.elements.find(item => item.key === key)
 const elementLabel = (key: string, name: string) => key === 'none' ? '无属性' : `${name}系`
 
 const formatNumber = (value?: number) => Number.isFinite(value)
   ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value))
   : '—'
+const formatPrice = (value?: number) => Number.isFinite(value)
+  ? formatChineseCompactNumber(value)
+  : '—'
+
+const toggleSort = (field: 'number' | 'grade') => {
+  if (sortBy.value === field) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortOrder.value = 'asc'
+  }
+  page.value = 1
+  void loadHerbs()
+}
+
+const sortMark = (field: 'number' | 'grade') => sortBy.value === field
+  ? (sortOrder.value === 'asc' ? '↑' : '↓')
+  : '↕'
 
 const hideBrokenImage = (event: Event) => {
   const image = event.currentTarget as HTMLImageElement | null
@@ -94,6 +132,8 @@ const loadHerbs = async () => {
       q: query.value.trim(),
       grade: grade.value,
       element: element.value,
+      sort_by: sortBy.value,
+      sort_order: sortOrder.value,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -161,20 +201,28 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
         :prefix-icon="Search"
         placeholder="搜索药材、描述或丹药"
       />
-      <el-select v-model="grade" class="grade-select" placeholder="全部品阶" clearable>
+      <el-select v-model="grade" class="grade-select" aria-label="品阶筛选" placeholder="全部品阶" clearable>
         <template #label="{ value }">
-          <span v-if="gradeOptionByName(String(value || ''))" class="grade-label" :style="gradeStyle(gradeOptionByName(String(value || ''))!)">
-            <i></i><span>{{ value }}</span>
+          <span v-if="gradeOptionByName(String(value || ''))" class="grade-filter-selection">
+            <span class="grade-rank">{{ gradeOptionByName(String(value || ''))?.order }}</span>
+            <GradeMeter
+              class="grade-filter-meter"
+              :rank="gradeOptionByName(String(value || ''))?.order"
+              :label="String(value)"
+            />
           </span>
         </template>
         <el-option v-for="item in meta?.grades || []" :key="item.name" :label="item.name" :value="item.name">
-          <span class="filter-option" :style="gradeStyle(item)">
-            <span class="grade-label"><i></i><span>{{ item.name }}</span></span>
+          <span class="filter-option grade-filter-option">
+            <span class="grade-filter-selection">
+              <span class="grade-rank">{{ item.order }}</span>
+              <GradeMeter class="grade-filter-meter" :rank="item.order" :label="item.name" />
+            </span>
             <em>{{ item.count }}</em>
           </span>
         </el-option>
       </el-select>
-      <el-select v-model="element" class="element-select" placeholder="全部五行" clearable>
+      <el-select v-model="element" class="element-select" placeholder="全部所属五行" clearable>
         <template #label="{ value }">
           <span v-if="elementOptionByKey(String(value || ''))" class="element-text" :style="elementStyle(String(value || ''))">
             {{ elementLabel(String(value || ''), elementOptionByKey(String(value || ''))?.name || '') }}
@@ -194,11 +242,19 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
         <table class="herb-table">
           <thead>
             <tr>
-              <th class="number-column">编号</th>
+              <th class="number-column" :aria-sort="sortBy === 'number' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
+                <button type="button" class="sort-button" :class="{ active: sortBy === 'number' }" @click="toggleSort('number')">
+                  <span>编号</span><span class="sort-mark">{{ sortMark('number') }}</span>
+                </button>
+              </th>
               <th class="icon-column">图标</th>
               <th>药材</th>
-              <th>品阶</th>
-              <th>五行</th>
+              <th :aria-sort="sortBy === 'grade' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
+                <button type="button" class="sort-button" :class="{ active: sortBy === 'grade' }" @click="toggleSort('grade')">
+                  <span>品级</span><span class="sort-mark">{{ sortMark('grade') }}</span>
+                </button>
+              </th>
+              <th>炼丹属性</th>
               <th>灵气</th>
               <th>价格</th>
               <th>用于丹药</th>
@@ -207,26 +263,41 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           </thead>
           <tbody>
             <tr
-              v-for="(herb, herbIndex) in herbs"
+              v-for="herb in herbs"
               :key="herb.item_id"
               :class="{ selected: selected?.item_id === herb.item_id }"
               @click="selectHerb(herb)"
             >
-              <td class="number-cell">{{ (page - 1) * pageSize + herbIndex + 1 }}</td>
+              <td class="number-cell">{{ herb.display_order }}</td>
               <td class="icon-cell">
                 <img v-if="herb.icon_url" :src="herb.icon_url" :alt="herb.name" loading="lazy" @error="hideBrokenImage" />
               </td>
-              <td><span class="grade-text" :style="gradeStyle(herb)">{{ herb.name }}</span></td>
               <td>
-                <span v-if="herb.grade_name" class="grade-label" :style="gradeStyle(herb)">
-                  <i></i><span>{{ herb.grade_name }}</span>
+                <GradeMeter
+                  class="herb-grade-meter"
+                  :rank="herb.grade_rank"
+                  :label="herb.name"
+                  :text-color="craftingAttributeColor(herb.crafting_attributes, herb.element_key)"
+                  :title="herb.grade_name"
+                />
+              </td>
+              <td class="number-cell">{{ herb.grade_rank || '—' }}</td>
+              <td>
+                <span v-if="herb.crafting_attributes.length" class="crafting-attributes">
+                  <span
+                    v-for="item in herb.crafting_attributes"
+                    :key="item.element"
+                    class="crafting-attribute"
+                    :class="{ negative: item.value < 0 }"
+                    :style="elementStyle(item.element)"
+                    :title="item.value < 0 ? '负值' : ''"
+                  >{{ item.label }}{{ attributeMagnitude(item.value) }}</span>
                 </span>
                 <span v-else>—</span>
               </td>
-              <td><span class="element-text" :style="elementStyle(herb.element_key)">{{ elementLabel(herb.element_key, herb.element_name) }}</span></td>
               <td class="number-cell">{{ formatNumber(herb.lingqi) }}</td>
-              <td class="number-cell">{{ formatNumber(herb.price) }}</td>
-              <td class="number-cell">{{ herb.recipe_count || '—' }}</td>
+              <td class="number-cell">{{ formatPrice(herb.price) }}</td>
+              <td class="number-cell">{{ herb.recipe_count || '' }}</td>
               <td class="fill-column" aria-hidden="true"></td>
             </tr>
           </tbody>
@@ -252,7 +323,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
         <div class="detail-title">
           <img v-if="selected.icon_url" :src="selected.icon_url" :alt="selected.name" @error="hideBrokenImage" />
           <div>
-            <h2 class="grade-text" :style="gradeStyle(selected)">{{ selected.name }}</h2>
+            <h2 class="element-text" :style="{ '--element-color': craftingAttributeColor(selected.crafting_attributes, selected.element_key) }">{{ selected.name }}</h2>
             <p>
               <span class="element-text" :style="elementStyle(selected.element_key)">{{ elementLabel(selected.element_key, selected.element_name) }}</span>
               · <span class="grade-text" :style="gradeStyle(selected)">{{ selected.grade_name || '未标品阶' }}</span>
@@ -262,8 +333,22 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
       </header>
 
       <dl class="detail-fields">
+        <dt>炼丹属性</dt>
+        <dd>
+          <span v-if="selected.crafting_attributes.length" class="crafting-attributes">
+            <span
+              v-for="item in selected.crafting_attributes"
+              :key="item.element"
+              class="crafting-attribute"
+              :class="{ negative: item.value < 0 }"
+              :style="elementStyle(item.element)"
+              :title="item.value < 0 ? '负值' : ''"
+            >{{ item.label }}{{ attributeMagnitude(item.value) }}</span>
+          </span>
+          <span v-else>—</span>
+        </dd>
         <dt>灵气</dt><dd>{{ formatNumber(selected.lingqi) }}</dd>
-        <dt>价格</dt><dd>{{ formatNumber(selected.price) }}</dd>
+        <dt>价格</dt><dd>{{ formatPrice(selected.price) }}</dd>
         <dt>描述</dt><dd>{{ selected.description || '—' }}</dd>
         <template v-if="selected.effect_description">
           <dt>附加说明</dt><dd>{{ selected.effect_description }}</dd>
@@ -296,40 +381,52 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 </template>
 
 <style scoped>
-.herb-page { display: flex; flex-direction: column; min-height: calc(100vh - 92px); padding: 18px 22px 28px; color: #272b2f; background: #f6f7f5; }
+.herb-page { display: flex; flex-direction: column; box-sizing: border-box; height: 100%; min-height: 0; padding: 18px 22px 28px; overflow: hidden; color: #272b2f; background: #f6f7f5; }
 .page-head { margin-bottom: 14px; }
 .page-head h1, .detail-head h2 { margin: 0; }
 .page-head h1 { font-size: 22px; }
 .page-head p, .detail-head p { margin: 5px 0 0; color: #6c7379; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
 .search-input { width: 330px; }
-.grade-select { width: 164px; }
+.grade-select { width: 202px; }
 .element-select { width: 142px; }
 .grade-text { color: var(--grade-color); }
 .grade-label { display: inline-flex; gap: 7px; align-items: center; color: var(--grade-color); white-space: nowrap; }
+.grade-rank { min-width: 2ch; color: #687076; font-variant-numeric: tabular-nums; text-align: right; }
 .grade-label i { display: inline-block; flex: none; width: 8px; height: 8px; border: 1px solid color-mix(in srgb, var(--grade-color) 78%, #000); border-radius: 50%; background: var(--grade-color); }
+.grade-filter-selection { display: inline-flex; gap: 6px; align-items: center; min-width: 0; }
+.grade-filter-meter { width: 108px; height: 25px; }
+.grade-filter-option { gap: 10px; }
 .element-text { color: var(--element-color); font-weight: 600; white-space: nowrap; }
+.herb-grade-meter { width: 128px; height: 23px; }
+.crafting-attributes { display: inline-flex; gap: 10px; white-space: nowrap; }
+.crafting-attribute { color: var(--element-color); font-weight: 600; }
+.crafting-attribute.negative { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .filter-option { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .filter-option em { min-width: 2ch; color: #8a9094; font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
 .list-pane { display: flex; flex-direction: column; min-height: 250px; overflow: hidden; border: 1px solid #d9ddda; background: #fff; }
 .table-scroll { flex: 1; min-height: 0; overflow: auto; }
 .herb-table { width: 100%; border-collapse: collapse; table-layout: auto; white-space: nowrap; }
-.herb-table th, .herb-table td { padding: 8px 11px; border-bottom: 1px solid #eceeec; text-align: left; vertical-align: middle; }
+.herb-table th, .herb-table td { padding: 4px 11px; border-bottom: 1px solid #eceeec; text-align: left; vertical-align: middle; }
 .herb-table th { position: sticky; top: 0; z-index: 1; background: #f0f2ef; color: #555d61; font-size: 13px; font-weight: 600; }
-.herb-table tbody tr { cursor: pointer; }
+.sort-button { display: inline-flex; gap: 4px; align-items: center; padding: 0; border: 0; color: inherit; font: inherit; background: transparent; cursor: pointer; }
+.sort-button.active, .sort-button:hover { color: #356a91; }
+.sort-mark { width: 12px; color: #899095; text-align: center; }
+.sort-button.active .sort-mark { color: #356a91; }
+.herb-table tbody tr { cursor: pointer; font-size: 14px; }
 .herb-table tbody tr:hover { background: #f6f8f4; }
 .herb-table tbody tr.selected { background: #e9f1e7; }
 .herb-table .number-cell { text-align: right; font-variant-numeric: tabular-nums; }
 .number-column { width: 48px; text-align: right !important; }
-.icon-column, .icon-cell { width: 46px; padding: 4px 6px !important; text-align: center !important; }
-.icon-cell img { display: block; width: 36px; height: 36px; object-fit: contain; }
+.icon-column, .icon-cell { width: 42px; padding: 2px 6px !important; text-align: center !important; }
+.icon-cell img { display: block; width: 32px; height: 32px; object-fit: contain; }
 .fill-column { width: 100%; padding: 0 !important; }
 .pagination { flex: none; padding: 9px 10px; border-top: 1px solid #eceeec; }
 .empty-state, .detail-empty { padding: 28px; color: #8a9094; text-align: center; }
 .pane-resizer { display: flex; flex: none; align-items: center; justify-content: center; height: 18px; cursor: row-resize; }
 .pane-resizer span { width: 48px; height: 3px; border-radius: 2px; background: #cfd4d0; }
 .pane-resizer:hover span, .herb-page.resizing .pane-resizer span { background: #698663; }
-.detail-pane { padding: 16px 18px; border: 1px solid #d9ddda; background: #fff; }
+.detail-pane { flex: 1; min-height: 0; padding: 16px 18px; overflow: auto; border: 1px solid #d9ddda; background: #fff; }
 .detail-head { padding-bottom: 12px; border-bottom: 1px solid #eceeec; }
 .detail-head h2 { font-size: 19px; }
 .detail-title { display: flex; gap: 12px; align-items: center; }

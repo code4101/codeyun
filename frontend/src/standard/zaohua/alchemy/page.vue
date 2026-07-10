@@ -11,7 +11,10 @@ import {
   type ZaohuaAlchemyRecipe,
 } from '@/api/zaohua'
 import StandardPagination from '@/components/StandardPagination.vue'
+import { mixWeightedColors, toHex } from '@/utils/colorMath'
+import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
+import GradeMeter from '../components/GradeMeter.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +27,8 @@ const grade = ref('')
 const page = ref(1)
 const pageSize = ref(40)
 const total = ref(0)
+const sortBy = ref<'number' | 'grade'>('number')
+const sortOrder = ref<'asc' | 'desc'>('asc')
 let searchTimer = 0
 let requestSequence = 0
 
@@ -43,8 +48,8 @@ const {
 const listPaneStyle = computed(() => ({ height: `${listPaneHeight.value}px` }))
 
 const ingredientText = (recipe: ZaohuaAlchemyRecipe) => recipe.example_items
-  .map(item => `${item.name}×${item.count ?? 0}`)
-  .join('、')
+  .map(item => `${item.name} ${item.count ?? 0}`)
+  .join(' ')
 
 const hideBrokenImage = (event: Event) => {
   const image = event.currentTarget as HTMLImageElement | null
@@ -78,9 +83,36 @@ const elementStyle = (element: string) => ({
   '--element-color': ELEMENT_COLORS[element.toLowerCase()] || '#4f5960',
 })
 
+const mixedElementColor = (limits: ZaohuaAlchemyRecipe['attr_limits']) => {
+  const entries = limits
+    .map(item => ({
+      color: ELEMENT_COLORS[item.element.toLowerCase()] || '#4f5960',
+      weight: Number(item.value) || 0,
+    }))
+    .filter(item => item.weight > 0)
+  const totalWeight = entries.reduce((sum, item) => sum + item.weight, 0)
+  const mixed = mixWeightedColors(entries, { fillToWeight: totalWeight })
+  return mixed ? toHex(mixed) : '#2f3437'
+}
+
 const formatPrice = (value?: number) => Number.isFinite(value)
-  ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value))
+  ? formatChineseCompactNumber(value)
   : '—'
+
+const toggleSort = (field: 'number' | 'grade') => {
+  if (sortBy.value === field) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortOrder.value = 'asc'
+  }
+  page.value = 1
+  void loadRecipes()
+}
+
+const sortMark = (field: 'number' | 'grade') => sortBy.value === field
+  ? (sortOrder.value === 'asc' ? '↑' : '↓')
+  : '↕'
 
 const selectRecipe = async (recipe: ZaohuaAlchemyRecipe, updateRoute = true) => {
   selected.value = recipe
@@ -105,6 +137,8 @@ const loadRecipes = async () => {
     const response = await fetchZaohuaAlchemyRecipes({
       q: query.value.trim(),
       grade: grade.value,
+      sort_by: sortBy.value,
+      sort_order: sortOrder.value,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -168,7 +202,7 @@ onBeforeUnmount(() => {
   <main class="alchemy-page" :class="{ resizing: isResizing }">
     <header class="page-head">
       <div>
-        <h1>造化仙缘 · 炼丹</h1>
+        <h1>造化仙缘 · 丹药</h1>
         <p>丹药、五行需求与炉内规则的静态逆向数据。</p>
       </div>
     </header>
@@ -183,9 +217,13 @@ onBeforeUnmount(() => {
       />
       <el-select v-model="grade" class="grade-select" placeholder="全部品阶" clearable>
         <template #label="{ value }">
-          <span v-if="gradeOptionByName(String(value || ''))" class="grade-label" :style="gradeStyle(gradeOptionByName(String(value || ''))!)">
-            <i></i>
-            <span>{{ value }}</span>
+          <span v-if="gradeOptionByName(String(value || ''))" class="grade-filter-selection">
+            <span class="grade-rank">{{ gradeOptionByName(String(value || ''))?.order }}</span>
+            <GradeMeter
+              class="grade-filter-meter"
+              :rank="gradeOptionByName(String(value || ''))?.order"
+              :label="String(value)"
+            />
           </span>
         </template>
         <el-option
@@ -194,8 +232,11 @@ onBeforeUnmount(() => {
           :label="item.name"
           :value="item.name"
         >
-          <span class="grade-option" :style="gradeStyle(item)">
-            <span class="grade-label"><i></i><span>{{ item.name }}</span></span>
+          <span class="grade-option">
+            <span class="grade-filter-selection">
+              <span class="grade-rank">{{ item.order }}</span>
+              <GradeMeter class="grade-filter-meter" :rank="item.order" :label="item.name" />
+            </span>
             <em>{{ item.count }}</em>
           </span>
         </el-option>
@@ -207,25 +248,34 @@ onBeforeUnmount(() => {
         <table class="recipe-table">
           <thead>
             <tr>
-              <th class="number-column">编号</th>
+              <th class="number-column" :aria-sort="sortBy === 'number' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
+                <button type="button" class="sort-button" :class="{ active: sortBy === 'number' }" @click="toggleSort('number')">
+                  <span>编号</span><span class="sort-mark">{{ sortMark('number') }}</span>
+                </button>
+              </th>
               <th class="icon-column">图标</th>
-              <th>产出</th>
+              <th>丹药</th>
               <th>成丹</th>
-              <th>品阶</th>
+              <th :aria-sort="sortBy === 'grade' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
+                <button type="button" class="sort-button" :class="{ active: sortBy === 'grade' }" @click="toggleSort('grade')">
+                  <span>品级</span><span class="sort-mark">{{ sortMark('grade') }}</span>
+                </button>
+              </th>
               <th>价格</th>
+              <th>作用</th>
               <th>五行需求</th>
-              <th>示例药材</th>
+              <th>炼丹药材</th>
               <th class="fill-column" aria-hidden="true"></th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="(recipe, recipeIndex) in recipes"
+              v-for="recipe in recipes"
               :key="recipe.recipe_id"
               :class="{ selected: selected?.recipe_id === recipe.recipe_id }"
               @click="selectRecipe(recipe)"
             >
-              <td class="number-cell">{{ (page - 1) * pageSize + recipeIndex + 1 }}</td>
+              <td class="number-cell">{{ recipe.recipe_id }}</td>
               <td class="icon-cell">
                 <img
                   v-if="recipe.output.icon_url"
@@ -235,16 +285,19 @@ onBeforeUnmount(() => {
                   @error="hideBrokenImage"
                 />
               </td>
-              <td><span class="grade-text" :style="gradeStyle(recipe.output)">{{ recipe.output.name }}</span></td>
-              <td class="number-cell">{{ recipe.output.count }}</td>
               <td>
-                <span v-if="recipe.output.grade_name" class="grade-label" :style="gradeStyle(recipe.output)">
-                  <i></i>
-                  <span>{{ recipe.output.grade_name }}</span>
-                </span>
-                <span v-else>—</span>
+                <GradeMeter
+                  class="output-grade-meter"
+                  :rank="recipe.output.grade_rank"
+                  :label="recipe.output.name"
+                  :text-color="mixedElementColor(recipe.attr_limits)"
+                  :title="recipe.output.grade_name"
+                />
               </td>
+              <td class="number-cell">{{ recipe.output.count }}</td>
+              <td class="number-cell">{{ recipe.output.grade_rank || '—' }}</td>
               <td class="number-cell">{{ formatPrice(recipe.output.price) }}</td>
+              <td class="effect-cell" :title="recipe.output.effect_text">{{ recipe.output.effect_text || '—' }}</td>
               <td>
                 <span v-if="recipe.attr_limits.length" class="element-list">
                   <span
@@ -256,7 +309,21 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-else>—</span>
               </td>
-              <td class="ingredients-cell" :title="ingredientText(recipe)">{{ ingredientText(recipe) || '—' }}</td>
+              <td class="ingredients-cell" :title="ingredientText(recipe)">
+                <span v-if="recipe.example_items.length" class="ingredient-chips">
+                  <span v-for="item in recipe.example_items" :key="item.item_id" class="ingredient-chip">
+                    <GradeMeter
+                      class="ingredient-grade-meter"
+                      :rank="item.grade_rank"
+                      :label="item.name"
+                      :text-color="mixedElementColor(item.crafting_attributes || [])"
+                      :title="item.grade_name"
+                    />
+                    <em>{{ item.count }}</em>
+                  </span>
+                </span>
+                <span v-else>—</span>
+              </td>
               <td class="fill-column" aria-hidden="true"></td>
             </tr>
           </tbody>
@@ -289,20 +356,26 @@ onBeforeUnmount(() => {
             @error="hideBrokenImage"
           />
           <div>
-            <h2 class="grade-text" :style="gradeStyle(selected.output)">{{ selected.output.name }}</h2>
-            <p>
-              成丹 {{ selected.output.count }} ·
+            <div class="detail-name-row">
+              <h2 class="grade-text" :style="gradeStyle(selected.output)">{{ selected.output.name }}</h2>
               <span v-if="selected.output.grade_name" class="grade-label" :style="gradeStyle(selected.output)">
                 <i></i>
                 <span>{{ selected.output.grade_name }}</span>
               </span>
-              <span v-else>未标品阶</span>
-            </p>
+              <span v-else class="ungraded-label">未标品阶</span>
+            </div>
+            <p>成丹 {{ selected.output.count }}</p>
           </div>
         </div>
       </header>
 
       <dl class="detail-fields">
+        <dt>作用</dt>
+        <dd>{{ selected.output.effect_text || '—' }}</dd>
+
+        <dt>说明</dt>
+        <dd>{{ selected.output.description || '—' }}</dd>
+
         <dt>五行需求</dt>
         <dd>
           <ul class="detail-element-list">
@@ -326,8 +399,14 @@ onBeforeUnmount(() => {
                   @error="hideBrokenImage"
                 />
                 <span class="ingredient-text">
-                  <span class="grade-text" :style="gradeStyle(item)">{{ item.name }}</span>
-                  <em>×{{ item.count }}</em>
+                  <GradeMeter
+                    class="ingredient-grade-meter"
+                    :rank="item.grade_rank"
+                    :label="item.name"
+                    :text-color="mixedElementColor(item.crafting_attributes || [])"
+                    :title="item.grade_name"
+                  />
+                  <em>{{ item.count }}</em>
                 </span>
               </span>
             </li>
@@ -364,8 +443,11 @@ onBeforeUnmount(() => {
 .alchemy-page {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 92px);
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
   padding: 18px 22px 28px;
+  overflow: hidden;
   color: #272b2f;
   background: #f6f7f5;
 }
@@ -404,7 +486,26 @@ onBeforeUnmount(() => {
 }
 
 .grade-select {
-  width: 164px;
+  width: 202px;
+}
+
+.grade-filter-selection {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.grade-rank {
+  min-width: 2ch;
+  color: #687076;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.grade-filter-meter {
+  width: 108px;
+  height: 25px;
 }
 
 .grade-label {
@@ -427,6 +528,7 @@ onBeforeUnmount(() => {
 
 .grade-option {
   display: flex;
+  gap: 10px;
   align-items: center;
   justify-content: space-between;
   width: 100%;
@@ -444,8 +546,14 @@ onBeforeUnmount(() => {
   color: var(--grade-color);
 }
 
+.output-grade-meter {
+  width: 119px;
+  height: 23px;
+}
+
 .element-list {
   display: inline-flex;
+  gap: 10px;
   align-items: baseline;
   white-space: nowrap;
 }
@@ -457,12 +565,6 @@ onBeforeUnmount(() => {
 
 .element-value {
   font-weight: 600;
-}
-
-.element-value:not(:last-child)::after {
-  margin: 0 5px;
-  color: #a1a7aa;
-  content: '·';
 }
 
 .element-text {
@@ -498,7 +600,7 @@ onBeforeUnmount(() => {
 
 .recipe-table th,
 .recipe-table td {
-  padding: 8px 11px;
+  padding: 4px 11px;
   border-bottom: 1px solid #eceeec;
   text-align: left;
   vertical-align: middle;
@@ -514,8 +616,36 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+.sort-button {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sort-button.active,
+.sort-button:hover {
+  color: #356a91;
+}
+
+.sort-mark {
+  width: 12px;
+  color: #899095;
+  text-align: center;
+}
+
+.sort-button.active .sort-mark {
+  color: #356a91;
+}
+
 .recipe-table tbody tr {
   cursor: pointer;
+  font-size: 14px;
 }
 
 .recipe-table tbody tr:hover {
@@ -538,22 +668,53 @@ onBeforeUnmount(() => {
 
 .recipe-table .icon-column,
 .recipe-table .icon-cell {
-  width: 46px;
-  padding: 4px 6px;
+  width: 42px;
+  padding: 2px 6px;
   text-align: center;
 }
 
 .icon-cell img {
   display: block;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
 }
 
 .ingredients-cell {
-  max-width: 440px;
+  max-width: 460px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.effect-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ingredient-chips {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ingredient-chip,
+.ingredient-text {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.ingredient-chip em,
+.ingredient-text em {
+  color: #687076;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.ingredient-grade-meter {
+  width: 97px;
+  height: 23px;
 }
 
 .recipe-table .fill-column {
@@ -596,6 +757,9 @@ onBeforeUnmount(() => {
 }
 
 .detail-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid #d9ddda;
   background: #fff;
   padding: 16px 18px;
@@ -617,6 +781,16 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.detail-name-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.ungraded-label {
+  color: #7b8286;
 }
 
 .detail-title > img {
