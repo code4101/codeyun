@@ -79,6 +79,7 @@ const INPUT_TABLE_MIN_VISIBLE_ROWS = 6
 const QUERY_TABLE_MIN_VISIBLE_ROWS = 4
 const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const SECONDARY_DRAFT_RESTORE_DELAY_MS = 300
+const BACKGROUND_CONFIG_REFRESH_DELAY_MS = 600
 
 type AttendanceOrdersConfigCachePayload = {
   savedAt: number
@@ -125,6 +126,7 @@ let hotTableComponentLoader: Promise<unknown> | null = null
 let hotTableAssetsLoader: Promise<void> | null = null
 let refundHistoryLoadPromise: Promise<void> | null = null
 let refundHistoryDeferredTimer: number | null = null
+let backgroundConfigRefreshTimer: number | null = null
 let secondaryDraftRestoreFrame: number | null = null
 let secondaryDraftRestoreTimer: number | null = null
 let secondaryDraftsReady = false
@@ -1099,7 +1101,7 @@ async function loadPageData() {
         readyMarkName: 'attendance-orders.config.ready',
         source: 'cache',
       })
-      void refreshAttendanceConfig({ background: true, silent: true })
+      scheduleBackgroundConfigRefresh()
     } else {
       await refreshAttendanceConfig()
     }
@@ -1112,6 +1114,24 @@ async function loadPageData() {
   if (activeSubview.value === 'refund') {
     scheduleRefundHistoryLoad()
   }
+}
+
+function clearBackgroundConfigRefreshTimer() {
+  if (backgroundConfigRefreshTimer !== null) {
+    window.clearTimeout(backgroundConfigRefreshTimer)
+    backgroundConfigRefreshTimer = null
+  }
+}
+
+function scheduleBackgroundConfigRefresh(delayMs = BACKGROUND_CONFIG_REFRESH_DELAY_MS) {
+  if (backgroundConfigRefreshTimer !== null) return
+  markBootPerf('attendance-orders.fetch-config.background.deferred', {
+    delayMs,
+  })
+  backgroundConfigRefreshTimer = window.setTimeout(() => {
+    backgroundConfigRefreshTimer = null
+    void refreshAttendanceConfig({ background: true, silent: true })
+  }, delayMs)
 }
 
 async function ensureRefundHistoryLoaded() {
@@ -1613,6 +1633,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearBackgroundConfigRefreshTimer()
   clearRefundHistoryDeferredTimer()
   clearSecondaryDraftRestoreFrame()
   clearSecondaryDraftRestoreTimer()

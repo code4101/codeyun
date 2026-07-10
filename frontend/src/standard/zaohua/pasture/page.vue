@@ -17,9 +17,10 @@ const meta = ref<ZaohuaPastureMeta | null>(null)
 const solution = ref<ZaohuaPastureSolution | null>(null)
 const plotCount = ref(9)
 const enabledBuildingIds = ref<number[]>([])
+const buildingCounts = ref<Record<number, number>>({})
 
 const buildingById = computed(() => new Map((meta.value?.buildings || []).map(item => [item.build_id, item])))
-const selectableBuildings = computed(() => meta.value?.buildings.filter(item => item.type === 1) || [])
+const selectableBuildings = computed(() => meta.value?.buildings.filter(item => item.type === 1 || item.build_id === 3) || [])
 const resultBounds = computed(() => {
   const cells = solution.value?.cells || []
   const xs = cells.map(cell => cell.x)
@@ -42,16 +43,21 @@ function restoreSettings() {
     enabledBuildingIds.value = Array.isArray(saved.enabledBuildingIds)
       ? saved.enabledBuildingIds.map(Number).filter(Number.isFinite)
       : []
+    buildingCounts.value = saved.buildingCounts && typeof saved.buildingCounts === 'object'
+      ? Object.fromEntries(Object.entries(saved.buildingCounts).map(([key, value]) => [Number(key), Math.max(1, Number(value) || 1)]))
+      : {}
   } catch {
     plotCount.value = 9
     enabledBuildingIds.value = []
+    buildingCounts.value = {}
   }
 }
 
-watch([plotCount, enabledBuildingIds], () => {
+watch([plotCount, enabledBuildingIds, buildingCounts], () => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     plotCount: plotCount.value,
     enabledBuildingIds: enabledBuildingIds.value,
+    buildingCounts: buildingCounts.value,
   }))
 }, { deep: true })
 
@@ -61,6 +67,7 @@ async function solve() {
     solution.value = await solveZaohuaPasture({
       plot_count: plotCount.value,
       enabled_building_ids: enabledBuildingIds.value,
+      building_counts: buildingCounts.value,
     })
   } catch (error: any) {
     solution.value = null
@@ -87,6 +94,16 @@ function toggleBuilding(buildingId: number, enabled: boolean) {
   enabledBuildingIds.value = enabled
     ? [...new Set([...enabledBuildingIds.value, buildingId])]
     : enabledBuildingIds.value.filter(id => id !== buildingId)
+  if (enabled && !buildingCounts.value[buildingId]) {
+    buildingCounts.value = { ...buildingCounts.value, [buildingId]: 1 }
+  }
+}
+
+function setBuildingCount(buildingId: number, value: number | undefined) {
+  buildingCounts.value = {
+    ...buildingCounts.value,
+    [buildingId]: Math.max(1, Math.min(plotCount.value, Number(value) || 1)),
+  }
 }
 
 onMounted(() => {
@@ -159,6 +176,17 @@ onMounted(() => {
               @update:model-value="toggleBuilding(building.build_id, Boolean($event))"
             />
             <small>{{ switchLabel(building) }}</small>
+            <el-input-number
+              v-if="!isAdjacencyBonus(building)"
+              :model-value="buildingCounts[building.build_id] || 1"
+              :min="1"
+              :max="plotCount"
+              size="small"
+              controls-position="right"
+              :disabled="!enabledBuildingIds.includes(building.build_id)"
+              aria-label="放置数量"
+              @update:model-value="setBuildingCount(building.build_id, $event)"
+            />
           </div>
         </div>
       </aside>
@@ -189,6 +217,7 @@ onMounted(() => {
 .building-info, .building-switch { display: flex; flex-direction: column; gap: 4px; }
 .building-info b { font-weight: 600; }
 .building-info small, .building-switch small { color: var(--el-text-color-secondary); line-height: 1.35; }
-.building-switch { align-items: center; min-width: 68px; }
+.building-switch { flex-direction: row; align-items: center; justify-content: flex-end; min-width: 92px; }
+.building-switch :deep(.el-input-number) { width: 82px; }
 @media (max-width: 900px) { .workspace { grid-template-columns: 1fr; } .building-settings { border-left: 0; border-top: 1px solid var(--el-border-color-lighter); padding: 14px 0 0; } }
 </style>

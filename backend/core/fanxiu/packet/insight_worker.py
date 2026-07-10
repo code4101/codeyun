@@ -172,6 +172,19 @@ def _compact_worker_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return compacted
 
 
+def _merge_worker_heartbeat_state(previous: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = {
+        **previous,
+        "heartbeat_at": _now_text(),
+        **extra,
+    }
+    if extra.get("ok") is True:
+        for key in ("error", "skipped", "skip_reason"):
+            if key not in extra:
+                merged.pop(key, None)
+    return merged
+
+
 def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
     if os.getenv("PYTEST_CURRENT_TEST"):
         return {"skip": False}
@@ -1715,19 +1728,11 @@ class FanxiuPacketInsightWorker:
 
     def _mark_realtime_heartbeat(self, **extra: Any) -> None:
         with self._lock:
-            self._last_realtime_result = {
-                **self._last_realtime_result,
-                "heartbeat_at": _now_text(),
-                **extra,
-            }
+            self._last_realtime_result = _merge_worker_heartbeat_state(self._last_realtime_result, extra)
 
     def _mark_maintenance_heartbeat(self, **extra: Any) -> None:
         with self._lock:
-            self._last_maintenance_result = {
-                **self._last_maintenance_result,
-                "heartbeat_at": _now_text(),
-                **extra,
-            }
+            self._last_maintenance_result = _merge_worker_heartbeat_state(self._last_maintenance_result, extra)
 
     def start(self) -> None:
         with self._lock:

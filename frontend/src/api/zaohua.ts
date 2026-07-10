@@ -392,6 +392,7 @@ export interface ZaohuaPastureSolution {
 export const solveZaohuaPasture = async (payload: {
   plot_count: number
   enabled_building_ids: number[]
+  building_counts: Record<number, number>
 }): Promise<ZaohuaPastureSolution> => {
   const response = await api.post('/zaohua/pasture/solve', payload)
   return response.data

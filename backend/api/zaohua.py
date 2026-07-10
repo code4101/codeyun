@@ -49,6 +49,7 @@ class ZaohuaAlchemySolveRequest(BaseModel):
 class ZaohuaPastureSolveRequest(BaseModel):
     plot_count: int = Field(default=9, ge=1, le=30)
     enabled_building_ids: list[int] = Field(default_factory=list)
+    building_counts: dict[int, int] = Field(default_factory=dict)
 
 
 def _icon_url(icon_path: Any) -> str:
@@ -257,6 +258,7 @@ def solve_zaohua_pasture(request: ZaohuaPastureSolveRequest) -> dict[str, Any]:
             request.plot_count,
             catalog.get("buildings", []),
             request.enabled_building_ids,
+            request.building_counts,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

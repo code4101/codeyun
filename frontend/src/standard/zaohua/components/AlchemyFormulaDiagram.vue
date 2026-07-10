@@ -60,8 +60,30 @@ const placementStyle = (placement: Placement) => {
     top: `${5 + minY * stride}px`,
     width: `${width * cellSize.value + (width - 1) * 2}px`,
     height: `${height * cellSize.value + (height - 1) * 2}px`,
+  }
+}
+
+const placementCellStyle = (placement: Placement, cell: [number, number]) => {
+  const xs = placement.cells.map(([x]) => x)
+  const ys = placement.cells.map(([, y]) => y)
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  const width = Math.max(...xs) - minX + 1
+  const height = Math.max(...ys) - minY + 1
+  const stride = cellSize.value + 2
+  const relativeX = cell[0] - minX
+  const relativeY = cell[1] - minY
+  const placementWidth = width * cellSize.value + (width - 1) * 2
+  const placementHeight = height * cellSize.value + (height - 1) * 2
+  return {
+    left: `${relativeX * stride}px`,
+    top: `${relativeY * stride}px`,
+    width: `${cellSize.value}px`,
+    height: `${cellSize.value}px`,
     '--herb-image-width': `${placement.shape_width * cellSize.value + (placement.shape_width - 1) * 2}px`,
     '--herb-image-height': `${placement.shape_height * cellSize.value + (placement.shape_height - 1) * 2}px`,
+    '--herb-image-left': `${placementWidth / 2 - relativeX * stride}px`,
+    '--herb-image-top': `${placementHeight / 2 - relativeY * stride}px`,
     '--herb-rotation': `${placement.rotation}deg`,
   }
 }
@@ -84,13 +106,24 @@ const placementStyle = (placement: Placement) => {
           class="formula-herb"
           :style="placementStyle(placement)"
           :title="placement.name"
+          role="img"
+          :aria-label="placement.name"
         >
-          <img
-            v-if="placement.shape_image_url"
-            :src="placement.shape_image_url"
-            :alt="placement.name"
-            draggable="false"
-          />
+          <template v-if="placement.shape_image_url">
+            <span
+              v-for="cell in placement.cells"
+              :key="`${cell[0]}:${cell[1]}`"
+              class="formula-herb-cell"
+              :style="placementCellStyle(placement, cell)"
+            >
+              <img
+                :src="placement.shape_image_url"
+                alt=""
+                aria-hidden="true"
+                draggable="false"
+              />
+            </span>
+          </template>
           <span v-else>{{ placement.name.slice(0, 1) }}</span>
         </span>
       </div>
@@ -162,17 +195,22 @@ const placementStyle = (placement: Placement) => {
 .formula-herb {
   position: absolute;
   z-index: 1;
-  display: grid;
+  display: block;
   overflow: visible;
   color: #59615d;
   font-size: 11px;
-  place-items: center;
 }
 
-.formula-herb img {
+.formula-herb-cell {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  display: block;
+  overflow: hidden;
+}
+
+.formula-herb-cell img {
+  position: absolute;
+  top: var(--herb-image-top);
+  left: var(--herb-image-left);
   display: block;
   width: var(--herb-image-width);
   height: var(--herb-image-height);

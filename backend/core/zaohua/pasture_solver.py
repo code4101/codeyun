@@ -188,6 +188,7 @@ def optimize_pasture_shape(
     plot_count: int,
     buildings: Iterable[dict[str, Any]],
     enabled_building_ids: Iterable[int],
+    building_counts: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     if not 1 <= plot_count <= 30:
         raise ValueError("自动形状求解支持 1 至 30 格")
@@ -196,7 +197,13 @@ def optimize_pasture_shape(
     enabled = [building_by_id[item_id] for item_id in enabled_building_ids if item_id in building_by_id]
     speed = next((item for item in enabled if _herb_bonus(item)[0] > 0), None)
     output = next((item for item in enabled if _herb_bonus(item)[1] > 0), None)
-    required = [item for item in enabled if not _is_optional_adjacency_bonus(item)]
+    counts = building_counts or {}
+    required = [
+        item
+        for item in enabled
+        if not _is_optional_adjacency_bonus(item)
+        for _ in range(max(1, int(counts.get(int(item.get("build_id") or 0), 1))))
+    ]
     if len(required) > plot_count:
         raise ValueError("必放建筑数量超过可用格子数")
 

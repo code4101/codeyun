@@ -2,6 +2,7 @@ from backend.core.zaohua.pasture_solver import optimize_pasture_shape, solve_pas
 
 
 BUILDINGS = [
+    {"build_id": 3, "name": "灵池", "effect_range_type": 0, "effect": "", "effect_params": []},
     {"build_id": 4, "name": "灵泉", "effect_range_type": 11, "effect": "updateGrowSpeed", "effect_params": ["10", "100"]},
     {"build_id": 5, "name": "灵枢台", "effect_range_type": 11, "effect": "updateGrowCount", "effect_params": ["0", "1"]},
     {"build_id": 7, "name": "悟丹亭", "effect_range_type": 0, "effect": "", "effect_params": []},
@@ -88,3 +89,9 @@ def test_two_bonus_types_joint_search_beats_three_by_three_baseline() -> None:
         if cell["kind"] == "plot":
             assert cell["coefficient"] == (1 + cell["speed_count"]) * (1 + cell["yield_count"])
     assert result["total_value"] == sum(cell.get("coefficient", 0) for cell in result["cells"])
+
+
+def test_required_building_count_is_respected() -> None:
+    result = optimize_pasture_shape(9, BUILDINGS, [3], {3: 2})
+    assert result["used_building_ids"].count(3) == 2
+    assert result["base_output"] == 7
