@@ -1,5 +1,6 @@
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 
 from backend.core.runtime.process_launcher import (
@@ -46,6 +49,8 @@ DEFAULT_BACKEND_RELOAD_COOLDOWN_SECONDS = 60.0
 DEFAULT_BACKEND_HOST = "0.0.0.0"
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 5173
+FRONTEND_HEALTH_PATHS = ("/@vite/client", "/src/main.ts", "/src/views/Login.vue")
+FRONTEND_HEALTH_FAILURE_LIMIT = 3
 CONSOLE_HOST_STATUS_FILENAME = "codeyun-console-host.json"
 
 BACKEND_WATCH_TARGETS = ("backend", "pyproject.toml", "uv.lock", ".env")
@@ -59,6 +64,50 @@ IGNORED_DIRS = {
     "__pycache__",
     "node_modules",
 }
+
+
+class DevInstanceLock:
+    def __init__(self, handle=None, file=None):
+        self.handle = handle
+        self.file = file
+
+    def close(self):
+        if self.handle is not None:
+            ctypes.windll.kernel32.CloseHandle(self.handle)
+            self.handle = None
+        if self.file is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.file.close()
+                self.file = None
+
+
+def acquire_dev_instance_lock(root_dir):
+    normalized_root = os.path.normcase(os.path.abspath(root_dir))
+    digest = hashlib.sha1(normalized_root.encode("utf-8")).hexdigest()[:16]
+    if os.name == "nt":
+        name = f"Local\\CodeYunDevSupervisor-{digest}"
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            raise OSError("Unable to create CodeYun development supervisor mutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            raise RuntimeError("Another CodeYun development supervisor is already running for this repository")
+        return DevInstanceLock(handle=handle)
+
+    import fcntl
+
+    path = os.path.join(tempfile.gettempdir(), f"codeyun-dev-{digest}.lock")
+    file = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        file.close()
+        raise RuntimeError("Another CodeYun development supervisor is already running for this repository")
+    return DevInstanceLock(file=file)
 
 
 def log(message):
@@ -871,6 +920,19 @@ def wait_for_tcp_port(host, port, timeout_seconds=20.0):
     return False
 
 
+def probe_frontend_http(port, path="/src/main.ts", timeout_seconds=2.0):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        headers={"Cache-Control": "no-cache"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            return response.status == 200 and "javascript" in content_type
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+
+
 def stop_process(proc, process_guard=None):
     if not proc or proc.poll() is not None:
         return
@@ -1100,6 +1162,12 @@ def main():
     root_dir = os.path.dirname(os.path.abspath(__file__))
     frontend_dir = os.path.join(root_dir, "frontend")
 
+    try:
+        instance_lock = acquire_dev_instance_lock(root_dir)
+    except RuntimeError as exc:
+        log(str(exc))
+        return
+
     log("Starting CodeYun services (supervised dev runner)...")
     env, python_executable, npm_exec = setup_env(root_dir)
     backend_host = read_backend_host(env)
@@ -1124,6 +1192,8 @@ def main():
     backend_pending_change = False
     backend_last_change_at = None
     backend_last_change_reason = None
+    frontend_health_failure_count = 0
+    frontend_health_probe_index = 0
 
     try:
         backend_proc = start_backend(
@@ -1227,6 +1297,24 @@ def main():
                 process_guard.stop(frontend_proc)
                 frontend_proc = start_frontend(frontend_dir, env, npm_exec)
                 process_guard.register(frontend_proc)
+                frontend_health_failure_count = 0
+            else:
+                health_path = FRONTEND_HEALTH_PATHS[frontend_health_probe_index % len(FRONTEND_HEALTH_PATHS)]
+                frontend_health_probe_index += 1
+                if probe_frontend_http(DEFAULT_FRONTEND_PORT, health_path):
+                    frontend_health_failure_count = 0
+                else:
+                    frontend_health_failure_count += 1
+                    log(
+                        f"Frontend health probe failed ({frontend_health_failure_count}/"
+                        f"{FRONTEND_HEALTH_FAILURE_LIMIT}): {health_path}"
+                    )
+                    if frontend_health_failure_count >= FRONTEND_HEALTH_FAILURE_LIMIT:
+                        log("Frontend process is alive but module service is unhealthy. Restarting frontend ...")
+                        process_guard.stop(frontend_proc)
+                        frontend_proc = start_frontend(frontend_dir, env, npm_exec)
+                        process_guard.register(frontend_proc)
+                        frontend_health_failure_count = 0
 
             loop_elapsed = time.monotonic() - loop_started_at
             sleep_for = max(0.0, config.check_interval_seconds - loop_elapsed)
@@ -1245,6 +1333,7 @@ def main():
         process_guard.close()
         if console_host_enabled:
             clear_console_host_status()
+        instance_lock.close()
         log("Goodbye.")
 
 

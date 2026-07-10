@@ -80,6 +80,52 @@ def test_solver_applies_bottom_element_yield_rule() -> None:
     assert solution["total_value"] == 180
 
 
+def test_solver_seeds_high_tier_search_from_official_example() -> None:
+    recipe = ZaohuaAlchemyRecipe(
+        recipe_id=12,
+        output_count=2,
+        output_price=3_000,
+        attr_limits=[
+            {"element": "water", "label": "水", "value": 100},
+            {"element": "wood", "label": "木", "value": 150},
+        ],
+        example_items=[
+            {"item_id": 1, "count": 1},
+            {"item_id": 2, "count": 1},
+        ],
+        state_rules=[{
+            "name": "丹炉底部木属性<100，成丹数+1",
+            "target1": "3",
+            "base_effect": "UpdateCraftingDrugAttr,1,1",
+        }],
+    )
+    herbs = [
+        _herb(1, "甘泉凝脂藤", "water", -100, 1_000, [[0, 0], [1, 0], [1, 1], [2, 1]]),
+        _herb(2, "外朽内荣木", "wood", 150, 1_500, [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]]),
+    ]
+
+    result = solve_alchemy(
+        recipe,
+        herbs,
+        yang_width=10,
+        yang_height=10,
+        yin_width=9,
+        yin_height=10,
+        search_node_limit=1,
+    )
+    solution = result["solutions"][0]
+
+    assert result["seed_solution_found"] is True
+    assert result["exhaustive"] is False
+    assert {(item["item_id"], item["side"]) for item in solution["herbs"]} == {
+        (1, "yin"),
+        (2, "yang"),
+    }
+    assert solution["rule_supported"] is True
+    assert solution["rule_bonus"] == 1
+    assert solution["final_yield"] == 3
+
+
 def test_solver_excludes_disabled_herbs_and_sorts_available_pool_by_price() -> None:
     recipe = ZaohuaAlchemyRecipe(
         recipe_id=1,

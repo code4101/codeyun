@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 from backend.core.fanxiu.packet import service_runtime
@@ -71,6 +72,39 @@ def test_packet_service_command_processes_catch_up(tmp_path, monkeypatch):
     assert len(processed) == 1
     assert processed[0]["ok"] is True
     assert result["result"]["mode"] == "packet_facts_catch_up"
+    assert not command_path.exists()
+
+
+def test_packet_service_command_times_out_and_clears_stuck_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+    monkeypatch.setattr(service_runtime, "_packet_service_command_timeout_seconds", lambda: 1.0)
+
+    class FakeWorker:
+        def maintenance_once(self):
+            time.sleep(1.2)
+            return {"ok": True}
+
+    monkeypatch.setattr(service_runtime, "fanxiu_packet_insight_worker", FakeWorker())
+
+    command_path = service_runtime._packet_service_command_path("cmd-timeout")
+    service_runtime._write_json(
+        command_path,
+        {
+            "schema_version": service_runtime.FANXIU_PACKET_SERVICE_COMMAND_SCHEMA_VERSION,
+            "command_id": "cmd-timeout",
+            "action": "maintenance",
+            "reason": "unit-timeout",
+        },
+    )
+
+    processed = service_runtime.process_pending_fanxiu_packet_service_commands()
+
+    result_path = service_runtime._packet_service_result_path("cmd-timeout")
+    result = service_runtime._read_json(result_path, {})
+    assert len(processed) == 1
+    assert processed[0]["ok"] is False
+    assert processed[0]["timed_out"] is True
+    assert result["timed_out"] is True
     assert not command_path.exists()
 
 

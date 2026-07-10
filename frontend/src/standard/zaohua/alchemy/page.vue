@@ -26,6 +26,16 @@ import GradeMeter from '../components/GradeMeter.vue'
 import AlchemyFormulaDiagram from '../components/AlchemyFormulaDiagram.vue'
 import '../catalog-inspector.css'
 
+const GRADE_FILTER_STORAGE_KEY = 'zaohua:alchemy:grade-filter'
+
+const loadStoredGradeFilter = () => {
+  try {
+    return window.localStorage.getItem(GRADE_FILTER_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
@@ -33,7 +43,7 @@ const meta = ref<ZaohuaAlchemyMeta | null>(null)
 const recipes = ref<ZaohuaAlchemyRecipe[]>([])
 const selected = ref<ZaohuaAlchemyRecipe | null>(null)
 const query = ref('')
-const grade = ref('')
+const grade = ref(loadStoredGradeFilter())
 const page = ref(1)
 const pageSize = ref(40)
 const total = ref(0)
@@ -466,6 +476,12 @@ watch(query, () => {
 })
 
 watch(grade, () => {
+  try {
+    if (grade.value) window.localStorage.setItem(GRADE_FILTER_STORAGE_KEY, grade.value)
+    else window.localStorage.removeItem(GRADE_FILTER_STORAGE_KEY)
+  } catch {
+    // Filtering still works when browser storage is unavailable.
+  }
   page.value = 1
   void loadRecipes()
 })
@@ -827,7 +843,9 @@ onBeforeUnmount(() => {
             </ul>
             <p v-if="solveError" class="solver-error">{{ solveError }}</p>
             <p v-else-if="solveResult && !solveResult.solutions.length" class="solver-empty">
-              当前炉形与单调配平范围内没有可行解。
+              {{ solveResult.exhaustive
+                ? '当前炉形与单调配平范围内没有可行解。'
+                : '当前搜索上限内尚未找到可行解。' }}
             </p>
             <ol v-else-if="solveResult" class="solution-list">
               <li v-for="solution in solveResult.solutions" :key="solution.rank" class="solution-item">

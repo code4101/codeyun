@@ -220,6 +220,16 @@ def optimize_pasture_shape(
             for offset in range(modulus):
                 for linear_form in linear_forms:
                     assignments.append(tuple(states[((linear_form(x, y) + offset) % modulus) % len(states)] for x, y in coordinates))
+        if speed and output:
+            for crop_parity in (0, 1):
+                assignments.append(tuple(
+                    0 if (x + y) % 2 == crop_parity else (1 if x % 2 else 2)
+                    for x, y in coordinates
+                ))
+                assignments.append(tuple(
+                    0 if (x + y) % 2 == crop_parity else (2 if x % 2 else 1)
+                    for x, y in coordinates
+                ))
         assignments.extend(tuple(rng.choice(states) for _ in coordinates) for _ in range(180))
         for assignment in assignments:
             booster_count = sum(state != 0 for state in assignment)

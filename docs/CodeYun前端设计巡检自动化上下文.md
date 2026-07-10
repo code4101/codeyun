@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "e1345446b4d144479a004a53ec06641bea5b2e00"
-last_audited_at: "2026-07-10T14:38:19.7764024+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-e1345446/report.md"
-last_frontend_commit_summary: "已关闭 67a7fe4..e1345446：Zaohua 丹药/药材两页采用统一 inspector 模型接入，没有长出额外统计条、解释卡或重复入口；窄屏仅保留表格内横向滚动这类可接受残余。"
-audited_commit_count: 92
+last_audited_commit: "bda52f6ee6b30ddac0d4b3616971725611f33a22"
+last_audited_at: "2026-07-10T18:42:32.3908874+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-bda52f6e/report.md"
+last_frontend_commit_summary: "已关闭 a9a7ed5d..bda52f6e：Zaohua 价值求解仍留在既有 inspector 模型里；resource-view 在 403 权限态下收回重复 console warn，只保留登录面板与一层必要失败信号。"
+audited_commit_count: 94
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,36 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-10（第二十五轮）
+
+- 完整范围：`a9a7ed5dbad886d482f707f5a0347617cacd941e..bda52f6ee6b30ddac0d4b3616971725611f33a22`
+- 覆盖提交：`bda52f6ee6b30ddac0d4b3616971725611f33a22`
+- 前端入口提交：`bda52f6ee6b30ddac0d4b3616971725611f33a22`
+- 入口如何牵引到旧问题：这次提交继续把 `Zaohua` 的价值评估、公式图和丹炉联动往前推，同时补了 `resource-view` 的公开资源查看链路。巡检边界因此不是只看 `alchemy` 的新增字段，而是沿同一对象链路复核 `游戏工具 -> 造化仙缘 -> 丹药 / 丹炉 / 药材 / 洞天` 的 inspector/规划模型，以及 `sheet lookup / workbook sheet` 的公开查看权限投影是否仍然足够简单。
+- 本轮减法：`Zaohua` 四页没有继续长出新的总览卡、摘要条或并列入口，仍保持 `筛选栏 -> 候选表 -> 详情区 -> 后置结果` 的基础模型。追加的低风险修复落在 `resource-view`：预期的 `401/403` 权限态原本已经用居中登录/拒绝态表达事实，但代码还会再打印一层 `console.warn`，等于把同一事实重复投影到页面和日志；本轮把这层重复告警收回，只在非权限类失败时保留告警。
+- 信息量保持：`alchemy` 仍保留价值、五行、药材示例、丹炉条件和公式图；`furnaces` / `herbs` / `pasture` 仍保留各自对象事实；`resource-view` 仍完整区分公开成功态与权限拒绝态。减少的不是能力，而是去掉 403 权限态下多余的一层前端失败噪音。
+- 概念图/线框图：报告中的 Mermaid 把本轮入口收敛成两条基础闭环：`Zaohua` 继续沿统一 inspector/规划模型展开，`resource-view` 则只保留“资源可访问 / 资源被拒绝”这一个判断分叉；ASCII 线框图直接证明 403 态无需再长一层解释或日志投影。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-bda52f6e/report.md`
+- 验证：复用本地 `5173/8000` 环境，完成 `alchemy / furnaces / herbs / pasture / sheet lookup / workbook 403` 共 6 个场景在 `1600x1000`、`1366x900`、`820x1180` 三视口下的 18 张截图，证据写入 `evidence.json`；18/18 页面满足 `bodyScrollWidth == bodyClientWidth`。修复前 `workbook/14?sheet=58855` 三视口都只出现浏览器原生 403 和一层应用 `console.warn`；修复后复拍 `resource-workbook-403-desktop-after-fix.png`，只剩浏览器原生 403，页面仍保持干净的登录/拒绝态。`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为提交没有改 `frontend/package*.json`、`vite.config.*`、`manualChunks`、自动导入、全局样式、worker/wasm、文件解析器、预览器、编辑器、图表库或公开匿名传播入口装配。
+- 根因分层：`Zaohua` 本轮未暴露新的表现层或业务建模回退；已修复的问题属于 `resource-view` 的前端状态投影重复。当前本地匿名授权数据只覆盖部分 `sheet`，不覆盖 `workbook`，因此 workbook 成功态无法直接实拍，但匿名可访问的 `sheet/58855?view=lookup` 成功态与 `workbook` 403 拒绝态都已验证。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图、真实多视口截图、低风险修复和前端静态验证；没有剩余未审范围，因此把 `last_audited_commit` 推进到 `bda52f6ee6b30ddac0d4b3616971725611f33a22`，`pending_or_skipped_ranges` 保持为空。
+
+### 2026-07-10（第二十四轮）
+
+- 完整范围：`e1345446b4d144479a004a53ec06641bea5b2e00..a9a7ed5dbad886d482f707f5a0347617cacd941e`
+- 覆盖提交：`a9a7ed5dbad886d482f707f5a0347617cacd941e`
+- 前端入口提交：`a9a7ed5dbad886d482f707f5a0347617cacd941e`
+- 入口如何牵引到旧问题：这次提交把 `造化仙缘` 从原先的 `丹药 / 药材` 两页扩成 `丹药 / 丹炉 / 药材 / 洞天` 四页，并给 `丹药` 详情补进求解器和丹炉尺寸。巡检边界因此不是只看两个新路由文件，而是沿同一菜单入口和同一业务链路检查 `游戏工具 -> 造化仙缘` 下的对象选择、候选表、详情区和规划页是否继续落在更少、更正交的基础模型里。
+- 本轮减法：没有追加仓库源码修复。真实页面确认 `丹药 / 丹炉 / 药材` 都继续采用统一的 `筛选栏 -> 候选表 -> 选中详情 -> 后置逆向来源` inspector 模型；`洞天` 也只保留 `格子数与建筑开关 -> 唯一布局结果 -> 建筑列表` 这一条主闭环，没有为新能力再长出总览卡、统计条或重复帮助区。
+- 信息量保持：`丹药` 仍保留五行需求、药材示例、炉内规则与求解结果；`丹炉` 保留尺寸、属性与加成；`药材` 保留灵气、炼丹属性与用途；`洞天` 保留格子数、参与建筑与布局结果。减少的不是能力，而是没有为新增页面再造一层额外摘要或并列入口。
+- 概念图/线框图：报告中的 Mermaid 把 `造化仙缘` 收敛为三张共享图鉴页加一张规划页；ASCII 线框图直接证明前三页仍是同一 inspector 模型，`洞天` 则是轻量工作台模型，不需要再增加解释层。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-a9a7ed5d/report.md`
+- 验证：`alchemy / furnaces / herbs / pasture` 各完成 `1600x1000`、`1366x900`、`820x1180` 三视口实拍，共 12 张截图，证据写入 `evidence.json`；四页都满足 `bodyScrollWidth == bodyClientWidth`，控制台没有新增 `warn/error`。`attendance/configs` 的同提交改动只落在 bootstrap cache 容错路径；匿名访问正确落到 `/login`，复用本机 profile 中可提取 token 时页面仍被权限控制到 `/403`，因此本轮把它记为代码与受限路径复核，而不是新的页面模型焦点。`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为提交没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式注入链，也没有触达公开匿名传播入口。
+- 根因分层：本轮未暴露新的后端数据投影或业务建模债务。`洞天` 宽屏下结果板会留下较多空白，但这是求解结果天然稀疏带来的表现层特征，不是重复 UI 概念堆叠，不做自动修复。
+- 处理结果：本轮已完成完整增量范围的提交归类、概念图、真实多视口截图与前端静态校验；没有发现需要自动止血的低风险 UI 回退，因此把 `last_audited_commit` 推进到 `a9a7ed5dbad886d482f707f5a0347617cacd941e`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-10（第二十三轮）
 

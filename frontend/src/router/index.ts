@@ -19,6 +19,7 @@ import { STANDALONE_PREFIX } from '@/router/standalone'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
 import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
+import { installRouteLoadRecovery } from '@/router/routeLoadRecovery'
 
 markBootPerf('router.module')
 
@@ -133,6 +134,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+installRouteLoadRecovery(router)
 markBootPerf('router.after-create')
 
 function getMatchedPermissionKey(to: RouteLocationNormalized): string | null {

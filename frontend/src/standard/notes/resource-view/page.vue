@@ -358,6 +358,10 @@ function isAccessDeniedStatus(status: number | null) {
   return status === 401 || status === 403
 }
 
+function shouldLogResourceLoadWarning(error: unknown) {
+  return !isAccessDeniedStatus(getNoteSheetApiErrorStatus(error))
+}
+
 function getCleanWorkbookRouteQuery(targetSheetId?: number | null): LocationQueryRaw {
   const query: Record<string, string> = {}
   if (targetSheetId != null) {
@@ -525,7 +529,9 @@ async function loadWorkbookResource() {
             includeWorkbookContext: false,
           }),
         ).catch((error) => {
-          console.warn('Failed to prefetch workbook sheet:', error)
+          if (shouldLogResourceLoadWarning(error)) {
+            console.warn('Failed to prefetch workbook sheet:', error)
+          }
           return null
         })
     const detail = await workbookRequest
@@ -548,7 +554,9 @@ async function loadWorkbookResource() {
           includeWorkbookContext: false,
         }),
       ).catch((error) => {
-        console.warn('Failed to prefetch workbook sheet:', error)
+        if (shouldLogResourceLoadWarning(error)) {
+          console.warn('Failed to prefetch workbook sheet:', error)
+        }
         return null
       })
     }
@@ -591,8 +599,10 @@ async function loadWorkbookResource() {
     if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
       return
     }
-    console.warn('Failed to load public workbook resource:', error)
     const status = getNoteSheetApiErrorStatus(error)
+    if (shouldLogResourceLoadWarning(error)) {
+      console.warn('Failed to load public workbook resource:', error)
+    }
     if (!isAccessDeniedStatus(status) && await redirectWorkbookRouteFromSheetQuery()) {
       return
     }

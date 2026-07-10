@@ -146,6 +146,9 @@ export interface ZaohuaAlchemySolveResult {
   candidate_count: number
   search_nodes: number
   packing_nodes: number
+  pruned_unreachable: number
+  pruned_cell_capacity: number
+  seed_solution_found: boolean
   exhaustive: boolean
   search_mode: 'monotone'
   duration: number
