@@ -7,26 +7,33 @@ type Placement = ZaohuaAlchemySolution['placements'][number]
 
 const props = defineProps<{
   solution: ZaohuaAlchemySolution
-  width: number
-  height: number
+  yangWidth: number
+  yangHeight: number
+  yinWidth: number
+  yinHeight: number
 }>()
 
 const cellSize = computed(() => {
-  const longest = Math.max(props.width, props.height)
+  const longest = Math.max(props.yangWidth, props.yangHeight, props.yinWidth, props.yinHeight)
   if (longest >= 10) return 16
   if (longest >= 7) return 20
   return 27
 })
 
+const sideSize = (side: 'yang' | 'yin') => side === 'yang'
+  ? { width: props.yangWidth, height: props.yangHeight }
+  : { width: props.yinWidth, height: props.yinHeight }
+
 const boardCells = (side: 'yang' | 'yin') => {
+  const { width, height } = sideSize(side)
   const occupied = new Set<string>()
   for (const placement of props.solution.placements) {
     if (placement.side !== side) continue
     for (const [x, y] of placement.cells) occupied.add(`${x}:${y}`)
   }
-  return Array.from({ length: props.width * props.height }, (_, index) => {
-    const x = index % props.width
-    const y = Math.floor(index / props.width)
+  return Array.from({ length: width * height }, (_, index) => {
+    const x = index % width
+    const y = Math.floor(index / width)
     return { key: `${side}:${x}:${y}`, occupied: occupied.has(`${x}:${y}`) }
   })
 }
@@ -35,10 +42,10 @@ const boardPlacements = (side: 'yang' | 'yin') => props.solution.placements.filt
   placement => placement.side === side,
 )
 
-const boardStyle = computed(() => ({
-  '--formula-columns': String(props.width),
+const boardStyle = (side: 'yang' | 'yin') => ({
+  '--formula-columns': String(sideSize(side).width),
   '--formula-cell-size': `${cellSize.value}px`,
-}))
+})
 
 const placementStyle = (placement: Placement) => {
   const xs = placement.cells.map(([x]) => x)
@@ -64,7 +71,7 @@ const placementStyle = (placement: Placement) => {
   <div class="formula-boards">
     <section v-for="side in (['yang', 'yin'] as const)" :key="side" class="formula-board-wrap">
       <span :class="['formula-side', `${side}-text`]">{{ side === 'yang' ? '阳' : '阴' }}</span>
-      <div :class="['formula-board', `${side}-board`]" :style="boardStyle" role="grid">
+      <div :class="['formula-board', `${side}-board`]" :style="boardStyle(side)" role="grid">
         <span
           v-for="cell in boardCells(side)"
           :key="cell.key"

@@ -2,12 +2,33 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
 
 ELEMENT_IDS = {1: "gold", 2: "water", 3: "wood", 4: "fire", 5: "soil", 6: "ice", 7: "wind", 8: "thunder"}
+ValueMetric = Literal["output_input_ratio", "net_profit", "profit_rate"]
+DEFAULT_VALUE_SORT_METRICS: tuple[ValueMetric, ...] = (
+    "output_input_ratio",
+    "net_profit",
+    "profit_rate",
+)
+
+
+def _normalize_value_sort_metrics(metrics: Iterable[ValueMetric]) -> tuple[ValueMetric, ...]:
+    normalized = tuple(metrics)
+    if len(normalized) != len(DEFAULT_VALUE_SORT_METRICS) or set(normalized) != set(DEFAULT_VALUE_SORT_METRICS):
+        raise ValueError("价值排序必须且只能包含产出比、净利润和时利润")
+    return normalized
+
+
+def _result_order_key(result: dict[str, Any], metrics: tuple[ValueMetric, ...]) -> tuple[float, ...]:
+    metric_values = tuple(
+        -float(result[metric]) if result.get(metric) is not None else float("inf")
+        for metric in metrics
+    )
+    return (*metric_values, float(result["cost"]), -float(result["final_yield"]))
 
 
 @dataclass(frozen=True)
@@ -48,8 +69,10 @@ def _attribute_map(attributes: Iterable[dict[str, Any]]) -> dict[str, int]:
 def _candidate_pool(
     recipe: ZaohuaAlchemyRecipe,
     herbs: Iterable[ZaohuaHerb],
-    width: int,
-    height: int,
+    yang_width: int,
+    yang_height: int,
+    yin_width: int,
+    yin_height: int,
 ) -> tuple[tuple[str, ...], tuple[int, ...], list[Candidate]]:
     target_map = _attribute_map(recipe.attr_limits or [])
     elements = tuple(target_map)
@@ -61,12 +84,13 @@ def _candidate_pool(
         if not raw_cells:
             continue
         cells = _normalize((int(cell[0]), int(cell[1])) for cell in raw_cells)
-        if len(cells) > width * height:
-            continue
         attrs = _attribute_map(herb.crafting_attributes or [])
         # First version deliberately keeps only monotone contributions. Mixed-sign
         # cancellation remains valid game logic, but would make the search unbounded.
         for side, sign in (("yang", 1), ("yin", -1)):
+            width, height = (yang_width, yang_height) if side == "yang" else (yin_width, yin_height)
+            if len(cells) > width * height:
+                continue
             vector = tuple(sign * attrs.get(element, 0) for element in elements)
             outside = any(sign * value != 0 for key, value in attrs.items() if key not in target_map)
             if outside or not any(vector) or any(value < 0 for value in vector):
@@ -111,15 +135,25 @@ def _poses(candidate: Candidate, width: int, height: int, prefer: str = "") -> l
 def _pack(
     choices: tuple[int, ...],
     candidates: list[Candidate],
-    width: int,
-    height: int,
+    yang_width: int,
+    yang_height: int,
+    yin_width: int,
+    yin_height: int,
     rule_name: str,
     node_limit: int = 20_000,
 ) -> tuple[list[dict[str, Any]] | None, int]:
     prefer = next((label for label in ("底部", "顶部", "左侧", "右侧") if label in rule_name), "")
     instances = [candidates[index] for index in choices]
     instances.sort(key=lambda item: (-len(item.cells), item.herb.item_id, item.side))
-    pose_sets = [_poses(item, width, height, prefer) for item in instances]
+    pose_sets = [
+        _poses(
+            item,
+            yang_width if item.side == "yang" else yin_width,
+            yang_height if item.side == "yang" else yin_height,
+            prefer,
+        )
+        for item in instances
+    ]
     occupied = {"yang": 0, "yin": 0}
     placements: list[dict[str, Any]] = []
     nodes = 0
@@ -158,7 +192,15 @@ def _pack(
     return (placements if visit(0) else None), nodes
 
 
-def _rule_bonus(recipe: ZaohuaAlchemyRecipe, placements: list[dict[str, Any]], herbs: dict[int, ZaohuaHerb], width: int, height: int) -> tuple[int, bool]:
+def _rule_bonus(
+    recipe: ZaohuaAlchemyRecipe,
+    placements: list[dict[str, Any]],
+    herbs: dict[int, ZaohuaHerb],
+    yang_width: int,
+    yang_height: int,
+    yin_width: int,
+    yin_height: int,
+) -> tuple[int, bool]:
     bonus = 0
     supported = True
     for rule in recipe.state_rules or []:
@@ -180,6 +222,11 @@ def _rule_bonus(recipe: ZaohuaAlchemyRecipe, placements: list[dict[str, Any]], h
             continue
         count = 0
         for placement in placements:
+            width, height = (
+                (yang_width, yang_height)
+                if placement["side"] == "yang"
+                else (yin_width, yin_height)
+            )
             herb = herbs[placement["item_id"]]
             if herb.element_key != target_key:
                 continue
@@ -198,22 +245,37 @@ def _rule_bonus(recipe: ZaohuaAlchemyRecipe, placements: list[dict[str, Any]], h
 def solve_alchemy(
     recipe: ZaohuaAlchemyRecipe,
     herbs: Iterable[ZaohuaHerb],
-    width: int,
-    height: int,
+    yang_width: int,
+    yang_height: int,
+    yin_width: int | None = None,
+    yin_height: int | None = None,
     limit: int = 5,
     search_node_limit: int = 120_000,
     packing_node_limit: int = 80_000,
     solution_limit: int = 400,
     excluded_item_ids: Iterable[int] = (),
+    duration: float = 1.0,
+    sort_metrics: Iterable[ValueMetric] = DEFAULT_VALUE_SORT_METRICS,
 ) -> dict[str, Any]:
+    yin_width = yang_width if yin_width is None else yin_width
+    yin_height = yang_height if yin_height is None else yin_height
     excluded_ids = {int(item_id) for item_id in excluded_item_ids}
+    normalized_sort_metrics = _normalize_value_sort_metrics(sort_metrics)
+    normalized_duration = float(duration)
     herb_list = [herb for herb in herbs if herb.item_id not in excluded_ids]
-    elements, target, candidates = _candidate_pool(recipe, herb_list, width, height)
-    results: dict[tuple[tuple[int, str, int], ...], dict[str, Any]] = {}
+    elements, target, candidates = _candidate_pool(
+        recipe,
+        herb_list,
+        yang_width,
+        yang_height,
+        yin_width,
+        yin_height,
+    )
+    results: dict[tuple[int, ...], dict[str, Any]] = {}
     search_nodes = 0
     packing_nodes = 0
     exhausted = True
-    max_cells = width * height * 2
+    max_cells = yang_width * yang_height + yin_width * yin_height
     rule_name = " ".join(str(rule.get("name") or "") for rule in recipe.state_rules or [])
     herb_by_id = {herb.item_id: herb for herb in herb_list}
 
@@ -224,21 +286,45 @@ def solve_alchemy(
             exhausted = False
             return
         if not any(remaining):
-            if packing_nodes >= packing_node_limit or len(results) >= solution_limit:
+            composition = Counter((candidates[index].herb.item_id, candidates[index].side) for index in choices)
+            combination_key = tuple(sorted({item_id for item_id, _ in composition}))
+            if packing_nodes >= packing_node_limit or (combination_key not in results and len(results) >= solution_limit):
                 exhausted = False
                 return
-            placements, nodes = _pack(choices, candidates, width, height, rule_name, node_limit=4_000)
+            placements, nodes = _pack(
+                choices,
+                candidates,
+                yang_width,
+                yang_height,
+                yin_width,
+                yin_height,
+                rule_name,
+                node_limit=4_000,
+            )
             packing_nodes += nodes
             if placements is None:
                 return
-            composition = Counter((candidates[index].herb.item_id, candidates[index].side) for index in choices)
             key = tuple(sorted((item_id, side, count) for (item_id, side), count in composition.items()))
             cost = sum(float(herb_by_id[item_id].price) * count for item_id, _, count in key)
-            rule_bonus, rule_supported = _rule_bonus(recipe, placements, herb_by_id, width, height)
+            rule_bonus, rule_supported = _rule_bonus(
+                recipe,
+                placements,
+                herb_by_id,
+                yang_width,
+                yang_height,
+                yin_width,
+                yin_height,
+            )
             final_yield = max(0, int(recipe.output_count) + rule_bonus)
             total_value = final_yield * float(recipe.output_price)
+            output_input_ratio = total_value / cost if cost > 0 else None
+            net_profit = total_value - cost
+            profit_rate = net_profit / normalized_duration if normalized_duration > 0 else None
             result = {
-                "ratio": total_value / cost if cost > 0 else None,
+                "ratio": output_input_ratio,
+                "output_input_ratio": output_input_ratio,
+                "net_profit": net_profit,
+                "profit_rate": profit_rate,
                 "cost": cost,
                 "base_yield": int(recipe.output_count),
                 "rule_bonus": rule_bonus,
@@ -251,9 +337,11 @@ def solve_alchemy(
                 ],
                 "placements": placements,
             }
-            previous = results.get(key)
-            if previous is None or (result["ratio"] or 0) > (previous["ratio"] or 0):
-                results[key] = result
+            previous = results.get(combination_key)
+            result_order = _result_order_key(result, normalized_sort_metrics)
+            previous_order = _result_order_key(previous, normalized_sort_metrics) if previous is not None else None
+            if previous_order is None or result_order < previous_order:
+                results[combination_key] = result
             return
         for index in range(start, len(candidates)):
             candidate = candidates[index]
@@ -268,9 +356,19 @@ def solve_alchemy(
                 return
 
     visit(0, target, (), 0)
+    undominated_results = [
+        result
+        for combination_key, result in results.items()
+        if not any(
+            set(other_key) < set(combination_key)
+            and _result_order_key(other_result, normalized_sort_metrics)
+            <= _result_order_key(result, normalized_sort_metrics)
+            for other_key, other_result in results.items()
+        )
+    ]
     all_ordered = sorted(
-        results.values(),
-        key=lambda item: (-(item["ratio"] or 0), item["cost"], -item["final_yield"]),
+        undominated_results,
+        key=lambda item: _result_order_key(item, normalized_sort_metrics),
     )
     ordered = all_ordered[:limit]
     available_item_ids = {
@@ -300,6 +398,8 @@ def solve_alchemy(
         "packing_nodes": packing_nodes,
         "exhaustive": exhausted,
         "search_mode": "monotone",
+        "duration": normalized_duration,
+        "sort_metrics": list(normalized_sort_metrics),
         "has_more": len(all_ordered) > limit,
         "solution_count": len(all_ordered),
         "available_herbs": available_herbs,

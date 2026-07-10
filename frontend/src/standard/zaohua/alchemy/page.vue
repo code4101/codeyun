@@ -7,15 +7,21 @@ import {
   fetchZaohuaAlchemyMeta,
   fetchZaohuaAlchemyRecipe,
   fetchZaohuaAlchemyRecipes,
+  fetchZaohuaFurnaces,
   solveZaohuaAlchemy,
   type ZaohuaAlchemyMeta,
   type ZaohuaAlchemyRecipe,
+  type ZaohuaAlchemySolution,
   type ZaohuaAlchemySolveResult,
+  type ZaohuaAlchemyValueMetric,
+  type ZaohuaFurnace,
 } from '@/api/zaohua'
+import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { mixWeightedColors, toHex } from '@/utils/colorMath'
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
+import { useSortableList } from '@/utils/useSortableList'
 import GradeMeter from '../components/GradeMeter.vue'
 import AlchemyFormulaDiagram from '../components/AlchemyFormulaDiagram.vue'
 import '../catalog-inspector.css'
@@ -33,8 +39,8 @@ const pageSize = ref(40)
 const total = ref(0)
 const sortBy = ref<'number' | 'grade'>('number')
 const sortOrder = ref<'asc' | 'desc'>('asc')
-const furnaceWidth = ref(3)
-const furnaceHeight = ref(3)
+const furnaces = ref<ZaohuaFurnace[]>([])
+const selectedFurnaceId = ref(0)
 const solving = ref(false)
 const solveResult = ref<ZaohuaAlchemySolveResult | null>(null)
 const solveError = ref('')
@@ -47,22 +53,51 @@ type SolverHerbOption = {
 }
 const solverHerbs = ref<SolverHerbOption[]>([])
 const disabledSolverHerbIds = ref<number[]>([])
+const valueSortListRef = ref<HTMLElement | null>(null)
 const solverLimit = ref(5)
 let searchTimer = 0
 let requestSequence = 0
 let solveRequestSequence = 0
 
-const FURNACE_SHAPE_STORAGE_PREFIX = 'zaohua:alchemy:furnace-shape:'
+const FURNACE_SELECTION_STORAGE_KEY = 'zaohua:alchemy:furnace-item-id'
+const VALUE_SORT_STORAGE_KEY = 'zaohua:alchemy:value-sort-program'
 const SOLVER_HERB_STATE_STORAGE_PREFIX = 'zaohua:alchemy:solver-herbs:'
 const SOLVER_RESULT_CACHE_PREFIX = 'zaohua:alchemy:solver-result:'
-const SOLVER_CACHE_SCHEMA_VERSION = 2
-const FURNACE_DIMENSION_MIN = 1
-const FURNACE_DIMENSION_MAX = 12
+const SOLVER_CACHE_SCHEMA_VERSION = 4
+const DEFAULT_VALUE_SORT_METRICS: ZaohuaAlchemyValueMetric[] = [
+  'output_input_ratio',
+  'net_profit',
+  'profit_rate',
+]
+const VALUE_METRIC_LABELS: Record<ZaohuaAlchemyValueMetric, string> = {
+  output_input_ratio: '产出比',
+  net_profit: '净利润',
+  profit_rate: '日利润',
+}
 
-const clampFurnaceDimension = (value: unknown) => Math.min(
-  FURNACE_DIMENSION_MAX,
-  Math.max(FURNACE_DIMENSION_MIN, Math.trunc(Number(value) || 3)),
-)
+const normalizeValueSortMetrics = (value: unknown): ZaohuaAlchemyValueMetric[] => {
+  if (!Array.isArray(value)) return [...DEFAULT_VALUE_SORT_METRICS]
+  const normalized = value.filter(
+    (item): item is ZaohuaAlchemyValueMetric => DEFAULT_VALUE_SORT_METRICS.includes(item as ZaohuaAlchemyValueMetric),
+  )
+  return normalized.length === DEFAULT_VALUE_SORT_METRICS.length
+    && new Set(normalized).size === DEFAULT_VALUE_SORT_METRICS.length
+    ? normalized
+    : [...DEFAULT_VALUE_SORT_METRICS]
+}
+
+const loadValueSortMetrics = () => {
+  try {
+    return normalizeValueSortMetrics(JSON.parse(window.localStorage.getItem(VALUE_SORT_STORAGE_KEY) || 'null'))
+  } catch {
+    return [...DEFAULT_VALUE_SORT_METRICS]
+  }
+}
+
+const valueSortMetrics = ref<ZaohuaAlchemyValueMetric[]>(loadValueSortMetrics())
+const selectedFurnace = computed(() => furnaces.value.find(
+  item => item.item_id === selectedFurnaceId.value,
+) || null)
 
 const formatCraftingTime = (days: number) => {
   const normalizedDays = Math.max(0, Math.trunc(Number(days) || 0))
@@ -72,19 +107,11 @@ const formatCraftingTime = (days: number) => {
   return `${normalizedDays} 天`
 }
 
-const furnaceShapeStorageKey = (recipeId: number) => `${FURNACE_SHAPE_STORAGE_PREFIX}${recipeId}`
-
-const loadFurnaceShape = (recipeId: number) => {
+const loadFurnaceSelection = () => {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(furnaceShapeStorageKey(recipeId)) || '{}') as {
-      width?: number
-      height?: number
-    }
-    furnaceWidth.value = clampFurnaceDimension(saved.width)
-    furnaceHeight.value = clampFurnaceDimension(saved.height)
+    return Number(window.localStorage.getItem(FURNACE_SELECTION_STORAGE_KEY) || 0)
   } catch {
-    furnaceWidth.value = 3
-    furnaceHeight.value = 3
+    return 0
   }
 }
 
@@ -126,8 +153,9 @@ const solverResultCacheKey = (recipe: ZaohuaAlchemyRecipe, limit: number) => {
     `v${SOLVER_CACHE_SCHEMA_VERSION}`,
     recipe.source_build_id || 'unknown',
     recipe.recipe_id,
-    `${furnaceWidth.value}x${furnaceHeight.value}`,
+    `f${selectedFurnaceId.value || '-'}`,
     `e${excluded || '-'}`,
+    `s${valueSortMetrics.value.join('.')}`,
     `l${limit}`,
   ].join(':')
 }
@@ -249,8 +277,27 @@ const formatPrice = (value?: number) => Number.isFinite(value)
 
 const formatRatio = (value: number | null) => value == null ? '—' : value.toFixed(2)
 
+const formatMetricNumber = (value: number) => {
+  if (!Number.isFinite(value)) return '—'
+  const sign = value < 0 ? '-' : ''
+  const magnitude = Math.abs(value)
+  if (magnitude >= 10_000) return `${sign}${formatChineseCompactNumber(magnitude)}`
+  return `${sign}${Number(magnitude.toFixed(2))}`
+}
+
+const formatValueMetric = (
+  solution: ZaohuaAlchemySolution,
+  metric: ZaohuaAlchemyValueMetric,
+) => {
+  if (metric === 'output_input_ratio') return formatRatio(solution.output_input_ratio)
+  if (metric === 'profit_rate') {
+    return solution.profit_rate == null ? '—' : `${formatMetricNumber(solution.profit_rate)}/天`
+  }
+  return formatMetricNumber(solution.net_profit)
+}
+
 const requestSolverResults = async () => {
-  if (!selected.value) return
+  if (!selected.value || !selectedFurnace.value) return
   const recipe = selected.value
   const cachedResult = loadCachedSolverResult(recipe, solverLimit.value)
   if (cachedResult) {
@@ -265,10 +312,10 @@ const requestSolverResults = async () => {
   solveError.value = ''
   try {
     const result = await solveZaohuaAlchemy(recipe.recipe_id, {
-      width: furnaceWidth.value,
-      height: furnaceHeight.value,
+      furnace_item_id: selectedFurnace.value.item_id,
       limit: solverLimit.value,
       excluded_item_ids: disabledSolverHerbIds.value,
+      sort_metrics: valueSortMetrics.value,
     })
     if (sequence === solveRequestSequence) {
       applySolverResult(result)
@@ -303,6 +350,31 @@ const toggleSolverHerb = (itemId: number) => {
   void requestSolverResults()
 }
 
+const reorderValueMetric = (oldIndex: number, newIndex: number) => {
+  const next = [...valueSortMetrics.value]
+  const [moved] = next.splice(oldIndex, 1)
+  if (!moved) return
+  next.splice(newIndex, 0, moved)
+  valueSortMetrics.value = next
+  try {
+    window.localStorage.setItem(VALUE_SORT_STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    // The current sort program remains usable when browser storage is unavailable.
+  }
+  solverLimit.value = 5
+  void requestSolverResults()
+}
+
+const promoteValueMetric = (index: number) => {
+  if (index > 0) reorderValueMetric(index, 0)
+}
+
+useSortableList({
+  listRef: valueSortListRef,
+  getDeps: () => [valueSortListRef.value, valueSortMetrics.value.join(',')],
+  onReorder: reorderValueMetric,
+})
+
 const toggleSort = (field: 'number' | 'grade') => {
   if (sortBy.value === field) {
     sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
@@ -332,6 +404,20 @@ const selectRecipe = async (recipe: ZaohuaAlchemyRecipe, updateRoute = true) => 
 
 const loadMeta = async () => {
   meta.value = await fetchZaohuaAlchemyMeta()
+}
+
+const loadFurnaces = async () => {
+  const response = await fetchZaohuaFurnaces({
+    sort_by: 'number',
+    sort_order: 'asc',
+    page: 1,
+    page_size: 100,
+  })
+  furnaces.value = response.items
+  const savedId = loadFurnaceSelection()
+  selectedFurnaceId.value = furnaces.value.some(item => item.item_id === savedId)
+    ? savedId
+    : (furnaces.value[0]?.item_id || 0)
 }
 
 const loadRecipes = async () => {
@@ -393,25 +479,20 @@ watch(page, () => {
   void loadRecipes()
 })
 
-watch([furnaceWidth, furnaceHeight], ([width, height]) => {
-  if (selected.value) {
-    try {
-      window.localStorage.setItem(
-        furnaceShapeStorageKey(selected.value.recipe_id),
-        JSON.stringify({ width, height }),
-      )
-    } catch {
-      // Solving still works when browser storage is unavailable.
-    }
+watch(selectedFurnaceId, (itemId) => {
+  try {
+    if (itemId > 0) window.localStorage.setItem(FURNACE_SELECTION_STORAGE_KEY, String(itemId))
+  } catch {
+    // The current selection remains usable when browser storage is unavailable.
   }
   solveRequestSequence += 1
+  solverLimit.value = 5
   restoreCachedSolverResult()
 })
 
 watch(() => selected.value?.recipe_id, () => {
   solveRequestSequence += 1
   if (selected.value) {
-    loadFurnaceShape(selected.value.recipe_id)
     loadSolverHerbState(selected.value.recipe_id)
   }
   else {
@@ -424,7 +505,7 @@ watch(() => selected.value?.recipe_id, () => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadMeta(), loadRecipes()])
+  await Promise.all([loadMeta(), loadFurnaces(), loadRecipes()])
 })
 
 onBeforeUnmount(() => {
@@ -659,38 +740,40 @@ onBeforeUnmount(() => {
         <dt>炼丹时间</dt>
         <dd>{{ formatCraftingTime(selected.cost_days) }}</dd>
 
-        <dt>丹炉尺寸</dt>
+        <dt>丹炉</dt>
         <dd>
-          <div class="furnace-dimensions">
-            <label class="dimension-control">
-              <span>宽</span>
-              <el-input-number
-                v-model="furnaceWidth"
-                class="dimension-input"
-                :min="FURNACE_DIMENSION_MIN"
-                :max="FURNACE_DIMENSION_MAX"
-                :step="1"
-                :precision="0"
-                controls-position="right"
-                size="small"
-                aria-label="丹炉宽度"
-              />
-            </label>
-            <label class="dimension-control">
-              <span>高</span>
-              <el-input-number
-                v-model="furnaceHeight"
-                class="dimension-input"
-                :min="FURNACE_DIMENSION_MIN"
-                :max="FURNACE_DIMENSION_MAX"
-                :step="1"
-                :precision="0"
-                controls-position="right"
-                size="small"
-                aria-label="丹炉高度"
-              />
-            </label>
-          </div>
+          <el-select
+            v-model="selectedFurnaceId"
+            class="furnace-select"
+            filterable
+            placeholder="选择丹炉"
+          >
+            <template #label>
+              <span v-if="selectedFurnace" class="furnace-selection">
+                <img :src="selectedFurnace.icon_url" :alt="selectedFurnace.name" />
+                <strong>{{ selectedFurnace.name }}</strong>
+                <small>
+                  阳 {{ selectedFurnace.yang_grid_size.width }}×{{ selectedFurnace.yang_grid_size.height }}
+                  · 阴 {{ selectedFurnace.yin_grid_size.width }}×{{ selectedFurnace.yin_grid_size.height }}
+                </small>
+              </span>
+            </template>
+            <el-option
+              v-for="furnace in furnaces"
+              :key="furnace.item_id"
+              :label="furnace.name"
+              :value="furnace.item_id"
+            >
+              <span class="furnace-option">
+                <img :src="furnace.icon_url" :alt="furnace.name" />
+                <strong>{{ furnace.name }}</strong>
+                <small>
+                  阳 {{ furnace.yang_grid_size.width }}×{{ furnace.yang_grid_size.height }}
+                  · 阴 {{ furnace.yin_grid_size.width }}×{{ furnace.yin_grid_size.height }}
+                </small>
+              </span>
+            </el-option>
+          </el-select>
         </dd>
 
         <dt>求解</dt>
@@ -700,6 +783,23 @@ onBeforeUnmount(() => {
               <el-button type="primary" size="small" :loading="solving" @click="runSolver">
                 求解
               </el-button>
+              <div class="value-sort-control">
+                <span>排序</span>
+                <ol ref="valueSortListRef" aria-label="价值指标排序程序">
+                  <li v-for="(metric, index) in valueSortMetrics" :key="metric">
+                    <SortableOrderHandle
+                      :index="index"
+                      :total="valueSortMetrics.length"
+                      size="xs"
+                      :pad="false"
+                      :title="`点击将${VALUE_METRIC_LABELS[metric]}设为第一优先级；也可拖拽调整顺序`"
+                      :aria-label="`点击将${VALUE_METRIC_LABELS[metric]}设为第一优先级，也可拖拽调整顺序`"
+                      @click="promoteValueMetric(index)"
+                    />
+                    <span>{{ VALUE_METRIC_LABELS[metric] }}</span>
+                  </li>
+                </ol>
+              </div>
               <span v-if="solveResult" class="solver-scope">
                 {{ solveResult.exhaustive ? '已穷尽当前模型' : '当前搜索范围' }}
                 · {{ solveResult.search_nodes.toLocaleString() }} 节点
@@ -734,20 +834,27 @@ onBeforeUnmount(() => {
                 <div class="solution-summary">
                   <strong class="solution-rank">{{ solution.rank }}</strong>
                   <dl>
-                    <div><dt>性价比</dt><dd class="ratio-value">{{ formatRatio(solution.ratio) }}</dd></div>
-                    <div><dt>成本</dt><dd>{{ formatPrice(solution.cost) }}</dd></div>
+                    <div
+                      v-for="(metric, metricIndex) in valueSortMetrics"
+                      :key="metric"
+                      :class="{ 'is-primary-metric': metricIndex === 0 }"
+                    >
+                      <dt>{{ VALUE_METRIC_LABELS[metric] }}</dt>
+                      <dd>{{ formatValueMetric(solution, metric) }}</dd>
+                    </div>
                     <div>
                       <dt>成丹</dt>
-                      <dd>{{ solution.final_yield }}<em v-if="solution.rule_bonus">+{{ solution.rule_bonus }}</em></dd>
+                      <dd>{{ solution.base_yield }}<em v-if="solution.rule_bonus">+{{ solution.rule_bonus }}</em></dd>
                     </div>
-                    <div><dt>总价值</dt><dd>{{ formatPrice(solution.total_value) }}</dd></div>
                   </dl>
                   <i v-if="!solution.rule_supported" class="rule-pending">规则待补</i>
                 </div>
                 <AlchemyFormulaDiagram
                   :solution="solution"
-                  :width="solveResult.furnace.width"
-                  :height="solveResult.furnace.height"
+                  :yang-width="solveResult.furnace.yang_grid_size.width"
+                  :yang-height="solveResult.furnace.yang_grid_size.height"
+                  :yin-width="solveResult.furnace.yin_grid_size.width"
+                  :yin-height="solveResult.furnace.yin_grid_size.height"
                 />
               </li>
             </ol>
@@ -1190,25 +1297,38 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.furnace-dimensions {
-  display: flex;
-  gap: 14px;
-  align-items: center;
+.furnace-select {
+  width: 360px;
+  max-width: 100%;
 }
 
-.dimension-control {
+.furnace-selection,
+.furnace-option {
   display: inline-flex;
-  gap: 5px;
+  gap: 7px;
   align-items: center;
+  min-width: 0;
 }
 
-.dimension-control > span {
-  color: #59615d;
+.furnace-selection img,
+.furnace-option img {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+
+.furnace-selection strong,
+.furnace-option strong {
   font-size: 13px;
+  font-weight: 600;
 }
 
-.dimension-input {
-  width: 66px;
+.furnace-selection small,
+.furnace-option small {
+  color: #7b8280;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .solver-module {
@@ -1222,6 +1342,35 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.value-sort-control,
+.value-sort-control ol,
+.value-sort-control li {
+  display: flex;
+  align-items: center;
+}
+
+.value-sort-control {
+  gap: 5px;
+  color: #747b78;
+  font-size: 12px;
+}
+
+.value-sort-control ol {
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.value-sort-control li {
+  gap: 4px;
+  padding: 2px 6px 2px 2px;
+  border: 1px solid #d4dad6;
+  color: #4f5953;
+  background: #fafbfa;
+  white-space: nowrap;
 }
 
 .solver-herb-pool {
@@ -1369,7 +1518,7 @@ onBeforeUnmount(() => {
   content: '：';
 }
 
-.solution-summary .ratio-value {
+.solution-summary .is-primary-metric dd {
   color: #267044;
   font-weight: 700;
 }

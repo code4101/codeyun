@@ -308,6 +308,14 @@ def request_fanxiu_packet_service_catch_up(*, reason: str = "api", wait_seconds:
     )
 
 
+def request_fanxiu_packet_service_maintenance(*, reason: str = "api", wait_seconds: float = 30.0) -> dict[str, Any]:
+    return submit_fanxiu_packet_service_command(
+        "maintenance",
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
+
+
 def _iter_pending_packet_service_commands() -> list[Path]:
     command_dir = get_fanxiu_packet_service_command_dir()
     try:
@@ -339,6 +347,8 @@ def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
     try:
         if action == "packet_facts_catch_up":
             action_result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
+        elif action == "maintenance":
+            action_result = fanxiu_packet_insight_worker.maintenance_once()
         else:
             raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
         payload = {

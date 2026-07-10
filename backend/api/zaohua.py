@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlmodel import Session, select
 
@@ -18,7 +18,11 @@ from backend.core.zaohua.catalog import (
     load_zaohua_pasture_catalog,
 )
 from backend.core.zaohua.grades import get_crafting_drug_cost_days, get_grade_visual
-from backend.core.zaohua.alchemy_solver import solve_alchemy
+from backend.core.zaohua.alchemy_solver import (
+    DEFAULT_VALUE_SORT_METRICS,
+    ValueMetric,
+    solve_alchemy,
+)
 from backend.core.zaohua.pasture_solver import optimize_pasture_shape
 from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
@@ -29,10 +33,17 @@ PLACEHOLDER_HERB_IDS = tuple(range(70001, 70016))
 
 
 class ZaohuaAlchemySolveRequest(BaseModel):
-    width: int = Field(default=3, ge=1, le=12)
-    height: int = Field(default=3, ge=1, le=12)
+    furnace_item_id: int = Field(gt=0)
     limit: int = Field(default=5, ge=1, le=100)
     excluded_item_ids: list[int] = Field(default_factory=list)
+    sort_metrics: list[ValueMetric] = Field(default_factory=lambda: list(DEFAULT_VALUE_SORT_METRICS))
+
+    @field_validator("sort_metrics")
+    @classmethod
+    def validate_sort_metrics(cls, value: list[ValueMetric]) -> list[ValueMetric]:
+        if len(value) != len(DEFAULT_VALUE_SORT_METRICS) or set(value) != set(DEFAULT_VALUE_SORT_METRICS):
+            raise ValueError("价值排序必须且只能包含产出比、净利润和时利润")
+        return value
 
 
 class ZaohuaPastureSolveRequest(BaseModel):
@@ -403,13 +414,36 @@ def solve_zaohua_alchemy_recipe(
             ZaohuaHerb.item_id.notin_(PLACEHOLDER_HERB_IDS),
         )
     ).all()
+    catalog = load_zaohua_catalog()
+    furnace_row = next(
+        (
+            row
+            for row in catalog.get("furnaces", [])
+            if isinstance(row, dict) and int(row.get("item_id") or 0) == request.furnace_item_id
+        ),
+        None,
+    )
+    if not isinstance(furnace_row, dict):
+        raise HTTPException(status_code=404, detail="丹炉不存在")
+    yang_size = dict(furnace_row.get("yang_grid_size") or {})
+    yin_size = dict(furnace_row.get("yin_grid_size") or {})
+    yang_width = int(yang_size.get("width") or 0)
+    yang_height = int(yang_size.get("height") or 0)
+    yin_width = int(yin_size.get("width") or 0)
+    yin_height = int(yin_size.get("height") or 0)
+    if min(yang_width, yang_height, yin_width, yin_height) <= 0:
+        raise HTTPException(status_code=422, detail="丹炉尺寸数据不完整")
     result = solve_alchemy(
         recipe,
         herbs,
-        request.width,
-        request.height,
-        request.limit,
+        yang_width,
+        yang_height,
+        yin_width,
+        yin_height,
+        limit=request.limit,
         excluded_item_ids=request.excluded_item_ids,
+        duration=get_crafting_drug_cost_days(recipe.output_grade_id, recipe.output_grade_name),
+        sort_metrics=request.sort_metrics,
     )
     for herb in result["available_herbs"]:
         herb["icon_url"] = _icon_url(herb.get("icon_path"))
@@ -419,7 +453,7 @@ def solve_zaohua_alchemy_recipe(
             placement["shape_image_url"] = f"/api/zaohua/media/shapes/{draw_id}" if draw_id else ""
     return {
         "recipe_id": recipe.recipe_id,
-        "furnace": {"width": request.width, "height": request.height},
+        "furnace": _serialize_furnace(furnace_row),
         **result,
     }
 
