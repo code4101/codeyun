@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc"
-last_audited_at: "2026-07-10T06:38:02.9665998+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-67a7fe4c/report.md"
-last_frontend_commit_summary: "已关闭 7a6fa47..67a7fe4：fanxiu runtime 继续只保留摘要级日志与状态事实，notes/calendar 的缓存补料没有长出一级噪音，attendance/orders 与 cluster/storage 的前置条件/草稿恢复也保持在当前子页或目录内。"
-audited_commit_count: 90
+last_audited_commit: "e1345446b4d144479a004a53ec06641bea5b2e00"
+last_audited_at: "2026-07-10T14:38:19.7764024+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-e1345446/report.md"
+last_frontend_commit_summary: "已关闭 67a7fe4..e1345446：Zaohua 丹药/药材两页采用统一 inspector 模型接入，没有长出额外统计条、解释卡或重复入口；窄屏仅保留表格内横向滚动这类可接受残余。"
+audited_commit_count: 92
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-10（第二十三轮）
+
+- 完整范围：`67a7fe4c4d0e8b15bc654838c5b5a2f9d9462cdc..e1345446b4d144479a004a53ec06641bea5b2e00`
+- 覆盖提交：`d3183fe1ddb2ab57b5556884bce2e6bf33d0dd2c`、`e1345446b4d144479a004a53ec06641bea5b2e00`
+- 前端入口提交：`d3183fe1ddb2ab57b5556884bce2e6bf33d0dd2c`、`e1345446b4d144479a004a53ec06641bea5b2e00`
+- 入口如何牵引到旧问题：这两次提交把 `Zaohua` 作为一个新游戏工具组接入主导航，并连续补齐 `alchemy/herbs` 两页的前后端数据投影与数值展示。巡检边界因此不是只看两个新页面文件，而是沿同一业务闭环检查 `游戏工具 -> 造化仙缘 -> 丹药/药材` 的菜单挂载、首屏候选表、选中详情和逆向来源后置是否共同落在更简单的基础模型里。
+- 本轮减法：没有追加仓库源码修复。真实页面确认 `alchemy` 与 `herbs` 都使用同一个 `筛选栏 -> 候选表 -> 选中详情 -> 逆向来源` inspector 模型，没有额外长出统计卡、说明条或重复入口；左侧菜单中的 `造化仙缘 -> 丹药 / 药材` 挂载也完整。
+- 信息量保持：`alchemy` 仍保留丹药名、成丹、品级、价格、作用、五行需求、示例药材和炉内规则；`herbs` 仍保留药材名、品级、炼丹属性、灵气、价格和关联丹方。减少的不是能力，而是避免为新标准页面再造一层总览解释区或并列入口。
+- 概念图/线框图：报告中的 Mermaid 把两页统一收回到 `导航选择对象 -> 筛选缩小候选 -> 表格选中当前对象 -> 详情区承接完整事实 -> 逆向来源后置折叠`；ASCII 线框图则直接证明当前结构已经足以承载两类对象，而不需要再加摘要卡或帮助区。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-e1345446/report.md`
+- 验证：为避开主工作树上同链路未提交的 `zaohua` 试验改动，本轮先创建干净 worktree `.../worktrees/codeyun-e1345446-142920`，用 `HEAD` 前端在 `http://127.0.0.1:5174` 做实拍；`alchemy` 与 `herbs` 各完成宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 6 张截图。`evidence.json` 记录 6/6 页面满足 `bodyScrollWidth == bodyClientWidth`，页面级控制台仅有 Vite 连接日志和既有 `<Suspense>` info，没有新增 `warn/error`。由于独立 `8010` 后端未加载到同一份 Zaohua catalog，本轮截图复用了当前本机 `8000` 数据服务；但可见差异仅停留在主工作树后台新增的 `shape` 加法字段，`HEAD` 前端并未消费这些字段，因此不影响本轮页面模型结论。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件，因为提交没有改 `frontend/package*.json`、`vite.config.ts`、`manualChunks`、全局样式、worker/wasm 或公开匿名入口。曾在干净 worktree 尝试 `npm run build --prefix frontend`，但被与本轮 Zaohua 页面无关的既有 `media-sync` 路由依赖缺失挡住，因此不把该构建结果当成本轮页面是否通过的判据。
+- 根因分层：当前可见问题主要停留在表现层和信息密度权衡。`alchemy` 在 820px 窄屏下仍依赖表格内横向滚动来承载 9 列对比，但没有外层页面溢出；是否继续压缩首屏字段属于产品判断，不做自动修复。本轮未暴露新的后端数据投影或业务建模债务，也无需转交 `CodeYun 代码健康优化`。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口截图与菜单挂载核验；没有发现需要自动止血的低风险 UI 回退，因此把 `last_audited_commit` 推进到 `e1345446b4d144479a004a53ec06641bea5b2e00`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-10（第二十二轮）
 

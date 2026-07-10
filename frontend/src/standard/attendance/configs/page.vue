@@ -11,6 +11,7 @@ import {
   updateAttendanceConfig,
   updateAttendanceCourseDataFlowConfig,
 } from '@/api/attendance-configs'
+import type { AttendanceConfigsBootstrapResponse } from '@/api/attendance-configs'
 import type {
   AttendanceAccount,
   AttendanceCourseDataFlowConfigResponse,
@@ -24,6 +25,9 @@ import { taskStore, type Device } from '@/store/taskStore'
 import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf'
 
 markBootPerf('attendance-configs.module')
+
+const BOOTSTRAP_CACHE_KEY = 'codeyun.attendance-configs.bootstrap.v1'
+const BOOTSTRAP_CACHE_TTL_MS = 10 * 60 * 1000
 
 const loading = ref(false)
 const savingCurrent = ref(false)
@@ -157,6 +161,43 @@ function setStepDeviceEntryIds(value?: Record<string, string | null>) {
   }
 }
 
+function readBootstrapCache(): AttendanceConfigsBootstrapResponse | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.sessionStorage.getItem(BOOTSTRAP_CACHE_KEY)
+    if (!raw) return null
+    const payload = JSON.parse(raw) as {
+      savedAt?: number
+      data?: AttendanceConfigsBootstrapResponse
+    }
+    if (
+      !payload
+      || typeof payload.savedAt !== 'number'
+      || !payload.data
+      || Date.now() - payload.savedAt > BOOTSTRAP_CACHE_TTL_MS
+    ) {
+      window.sessionStorage.removeItem(BOOTSTRAP_CACHE_KEY)
+      return null
+    }
+    return payload.data
+  } catch (error) {
+    console.warn('Failed to restore attendance configs bootstrap cache', error)
+    return null
+  }
+}
+
+function persistBootstrapCache(data: AttendanceConfigsBootstrapResponse) {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify({
+      savedAt: Date.now(),
+      data,
+    }))
+  } catch (error) {
+    console.warn('Failed to persist attendance configs bootstrap cache', error)
+  }
+}
+
 function applyConfig(config: AttendanceConfigResponse) {
   currentExecutionDeviceId.value = config.service.execution_device_entry_id || ''
   currentExecutionDeviceLabel.value = config.current_execution_device?.name || ''
@@ -172,6 +213,13 @@ function applyCourseDataFlowConfig(config: AttendanceCourseDataFlowConfigRespons
   courseDataDeviceLabel.value = config.current_data_device?.name || ''
   stepRunners.value = config.course_data_flow.step_runners || []
   setStepDeviceEntryIds(config.course_data_flow.step_device_entry_ids || {})
+}
+
+function applyBootstrap(bootstrap: AttendanceConfigsBootstrapResponse) {
+  taskStore.setDevicesFromApi(bootstrap.devices)
+  accounts.value = bootstrap.accounts
+  applyConfig(bootstrap.config)
+  applyCourseDataFlowConfig(bootstrap.course_data_flow_config)
 }
 
 function getDefaultRunnerLabel(runner: AttendanceCourseDataStepRunnerConfig) {
@@ -218,22 +266,31 @@ function openEditAccountDialog(account: AttendanceAccount) {
 }
 
 async function loadPageData() {
-  loading.value = true
+  const cachedBootstrap = readBootstrapCache()
+  loading.value = !cachedBootstrap
   markBootPerf('attendance-configs.load.start', {
     cachedDeviceCount: taskStore.devices.length,
+    cachedBootstrap: Boolean(cachedBootstrap),
   })
+  if (cachedBootstrap) {
+    applyBootstrap(cachedBootstrap)
+    markBootPerf('attendance-configs.cache-ready', {
+      accountCount: cachedBootstrap.accounts.length,
+      deviceCount: taskStore.devices.length,
+      stepRunnerCount: stepRunners.value.length,
+      stepOverrideCount: stepOverrideCount.value,
+    })
+  }
   try {
     const bootstrap = await markBootPerfAsync('attendance-configs.fetch-bootstrap', () => fetchAttendanceConfigsBootstrap())
-    taskStore.setDevicesFromApi(bootstrap.devices)
+    applyBootstrap(bootstrap)
+    persistBootstrapCache(bootstrap)
     markBootPerf('attendance-configs.fetch-all.ready', {
       accountCount: bootstrap.accounts.length,
       deviceCount: taskStore.devices.length,
       deviceFetchError: taskStore.lastDeviceFetchError || '',
       awaitedDeviceRefresh: false,
     })
-    accounts.value = bootstrap.accounts
-    applyConfig(bootstrap.config)
-    applyCourseDataFlowConfig(bootstrap.course_data_flow_config)
     markBootPerf('attendance-configs.state-ready', {
       accountCount: bootstrap.accounts.length,
       deviceCount: taskStore.devices.length,
@@ -242,12 +299,18 @@ async function loadPageData() {
       awaitedDeviceRefresh: false,
     })
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '加载考勤配置失败')
+    const message = error.response?.data?.detail || '加载考勤配置失败'
+    if (cachedBootstrap) {
+      ElMessage.warning(`${message}，已显示最近一次缓存内容`)
+    } else {
+      ElMessage.error(message)
+    }
   } finally {
     loading.value = false
     markBootPerf('attendance-configs.load.finally', {
       deviceCount: taskStore.devices.length,
       loading: loading.value,
+      cachedBootstrap: Boolean(cachedBootstrap),
     })
   }
 }

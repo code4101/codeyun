@@ -546,6 +546,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "zaohua.furnaces",
+      "title": "丹炉",
+      "node_type": "feature",
+      "parent_key": "zaohua",
+      "sort_order": 15,
+      "route_paths": ["/zaohua/furnaces"],
+      "menu_paths": ["/zaohua/furnaces"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "zaohua.herbs",
       "title": "药材",
       "node_type": "feature",
@@ -553,6 +564,17 @@
       "sort_order": 20,
       "route_paths": ["/zaohua/herbs"],
       "menu_paths": ["/zaohua/herbs"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "zaohua.pasture",
+      "title": "洞天",
+      "node_type": "feature",
+      "parent_key": "zaohua",
+      "sort_order": 30,
+      "route_paths": ["/zaohua/pasture"],
+      "menu_paths": ["/zaohua/pasture"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },

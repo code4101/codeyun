@@ -49,6 +49,7 @@ export interface ZaohuaAlchemyRecipe {
   output: ZaohuaAlchemyItem & {
     count: number
   }
+  cost_days: number
   attr_limits: ZaohuaAlchemyElementLimit[]
   example_items: ZaohuaAlchemyItem[]
   state_rules: ZaohuaAlchemyStateRule[]
@@ -99,6 +100,74 @@ export const fetchZaohuaAlchemyRecipe = async (recipeId: number): Promise<Zaohua
   return response.data
 }
 
+export interface ZaohuaAlchemySolutionHerb {
+  item_id: number
+  name: string
+  side: 'yang' | 'yin'
+  count: number
+  unit_price: number
+}
+
+export interface ZaohuaAlchemySolution {
+  rank: number
+  ratio: number | null
+  cost: number
+  base_yield: number
+  rule_bonus: number
+  final_yield: number
+  total_value: number
+  rule_supported: boolean
+  herbs: ZaohuaAlchemySolutionHerb[]
+  placements: Array<{
+    item_id: number
+    name: string
+    side: 'yang' | 'yin'
+    x: number
+    y: number
+    rotation: number
+    cells: Array<[number, number]>
+    shape_draw_id: number
+    shape_width: number
+    shape_height: number
+    shape_image_url: string
+  }>
+}
+
+export interface ZaohuaAlchemySolveResult {
+  recipe_id: number
+  furnace: { width: number; height: number }
+  solutions: ZaohuaAlchemySolution[]
+  target_vector: Record<string, number>
+  candidate_count: number
+  search_nodes: number
+  packing_nodes: number
+  exhaustive: boolean
+  search_mode: 'monotone'
+  has_more: boolean
+  solution_count: number
+  available_herbs: Array<{
+    item_id: number
+    name: string
+    price: number
+    icon_path: string
+    icon_url: string
+  }>
+  excluded_item_ids: number[]
+}
+
+export const solveZaohuaAlchemy = async (
+  recipeId: number,
+  payload: {
+    width: number
+    height: number
+    limit?: number
+    excluded_item_ids?: number[]
+  },
+): Promise<ZaohuaAlchemySolveResult> => {
+  const response = await api.post(`/zaohua/alchemy/recipes/${recipeId}/solve`, payload)
+  return response.data
+}
+
 export interface ZaohuaHerbRecipeRef {
   recipe_id: number
   output_item_id: number
@@ -135,7 +204,16 @@ export interface ZaohuaHerb {
   crafting_attributes: ZaohuaHerbCraftingAttribute[]
   recipe_count: number
   recipes: ZaohuaHerbRecipeRef[]
-  source_evidence: Record<string, string>
+  shape?: {
+    draw_id: number
+    name: string
+    path: string
+    image_url: string
+    width: number
+    height: number
+    cells: Array<[number, number]>
+  } | null
+  source_evidence: Record<string, unknown>
   content_hash: string
 }
 
@@ -185,5 +263,126 @@ export const fetchZaohuaHerbs = async (params: {
 
 export const fetchZaohuaHerb = async (itemId: number): Promise<ZaohuaHerb> => {
   const response = await api.get(`/zaohua/herbs/${itemId}`)
+  return response.data
+}
+
+export interface ZaohuaFurnace {
+  item_id: number
+  display_order: number
+  name: string
+  description: string
+  effect_description: string
+  icon_path: string
+  icon_url: string
+  grade_id: number
+  grade_name: string
+  grade_rank: number
+  grade_color_hex: string
+  element_id: number
+  element_key: string
+  element_name: string
+  price: number
+  drug_quality: number
+  add_drug_tolerance: number
+  yang_grid_size: { width: number; height: number }
+  yin_grid_size: { width: number; height: number }
+  crafting_effect: Record<string, unknown>
+  source_evidence: Record<string, unknown>
+  content_hash: string
+}
+
+export interface ZaohuaFurnaceMeta {
+  furnace_count: number
+  build_ids: string[]
+  grades: Array<{ name: string; count: number; grade_id: number; order: number; color_hex: string }>
+  elements: Array<{ key: string; name: string; count: number }>
+  storage: string
+}
+
+export interface ZaohuaFurnacePage {
+  items: ZaohuaFurnace[]
+  page: number
+  page_size: number
+  total: number
+}
+
+export const fetchZaohuaFurnaceMeta = async (): Promise<ZaohuaFurnaceMeta> => {
+  const response = await api.get('/zaohua/furnaces/meta')
+  return response.data
+}
+
+export const fetchZaohuaFurnaces = async (params: {
+  q?: string; grade?: string; element?: string
+  sort_by?: 'number' | 'grade'; sort_order?: 'asc' | 'desc'
+  page?: number; page_size?: number
+}): Promise<ZaohuaFurnacePage> => {
+  const response = await api.get('/zaohua/furnaces', { params })
+  return response.data
+}
+
+export const fetchZaohuaFurnace = async (itemId: number): Promise<ZaohuaFurnace> => {
+  const response = await api.get(`/zaohua/furnaces/${itemId}`)
+  return response.data
+}
+
+export interface ZaohuaPastureBuilding {
+  build_id: number
+  name: string
+  description: string
+  type: number
+  size: string
+  effect_range_type: number
+  effect: string
+  effect_params: string[]
+  path: string
+  image_url: string
+  source_evidence: Record<string, string>
+}
+
+export interface ZaohuaPastureMeta {
+  source: { steam_build_id?: string }
+  stats: { building_count: number; image_count: number }
+  model: { plot_name: string; default_plot_count: number; adjacency: 'orthogonal'; code_evidence: string[] }
+  buildings: ZaohuaPastureBuilding[]
+}
+
+export const fetchZaohuaPastureMeta = async (): Promise<ZaohuaPastureMeta> => {
+  const response = await api.get('/zaohua/pasture/meta')
+  return response.data
+}
+
+export interface ZaohuaPastureSolutionCell {
+  index: number
+  x: number
+  y: number
+  kind: 'plot' | 'building'
+  building_id?: number
+  speed?: number
+  yield?: number
+  speed_count?: number
+  yield_count?: number
+  coefficient?: number
+  output?: number
+}
+
+export interface ZaohuaPastureSolution {
+  plot_count: number
+  shape: Array<{ x: number; y: number }>
+  objective: 'herb_output_per_time' | 'total_value'
+  base_output: number
+  equivalent_output: number
+  total_value: number
+  gain: number
+  used_building_ids: number[]
+  cells: ZaohuaPastureSolutionCell[]
+  exact: boolean
+  search?: { shape_candidates: number; layout_candidates: number; method: string }
+}
+
+export const solveZaohuaPasture = async (payload: {
+  plot_count: number
+  enabled_building_ids: number[]
+}): Promise<ZaohuaPastureSolution> => {
+  const response = await api.post('/zaohua/pasture/solve', payload)
   return response.data
 }

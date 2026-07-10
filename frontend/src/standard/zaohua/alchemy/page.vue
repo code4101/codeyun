@@ -7,14 +7,18 @@ import {
   fetchZaohuaAlchemyMeta,
   fetchZaohuaAlchemyRecipe,
   fetchZaohuaAlchemyRecipes,
+  solveZaohuaAlchemy,
   type ZaohuaAlchemyMeta,
   type ZaohuaAlchemyRecipe,
+  type ZaohuaAlchemySolveResult,
 } from '@/api/zaohua'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { mixWeightedColors, toHex } from '@/utils/colorMath'
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
 import GradeMeter from '../components/GradeMeter.vue'
+import AlchemyFormulaDiagram from '../components/AlchemyFormulaDiagram.vue'
+import '../catalog-inspector.css'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,8 +33,152 @@ const pageSize = ref(40)
 const total = ref(0)
 const sortBy = ref<'number' | 'grade'>('number')
 const sortOrder = ref<'asc' | 'desc'>('asc')
+const furnaceWidth = ref(3)
+const furnaceHeight = ref(3)
+const solving = ref(false)
+const solveResult = ref<ZaohuaAlchemySolveResult | null>(null)
+const solveError = ref('')
+type SolverHerbOption = {
+  item_id: number
+  name: string
+  price: number
+  icon_path: string
+  icon_url: string
+}
+const solverHerbs = ref<SolverHerbOption[]>([])
+const disabledSolverHerbIds = ref<number[]>([])
+const solverLimit = ref(5)
 let searchTimer = 0
 let requestSequence = 0
+let solveRequestSequence = 0
+
+const FURNACE_SHAPE_STORAGE_PREFIX = 'zaohua:alchemy:furnace-shape:'
+const SOLVER_HERB_STATE_STORAGE_PREFIX = 'zaohua:alchemy:solver-herbs:'
+const SOLVER_RESULT_CACHE_PREFIX = 'zaohua:alchemy:solver-result:'
+const SOLVER_CACHE_SCHEMA_VERSION = 2
+const FURNACE_DIMENSION_MIN = 1
+const FURNACE_DIMENSION_MAX = 12
+
+const clampFurnaceDimension = (value: unknown) => Math.min(
+  FURNACE_DIMENSION_MAX,
+  Math.max(FURNACE_DIMENSION_MIN, Math.trunc(Number(value) || 3)),
+)
+
+const formatCraftingTime = (days: number) => {
+  const normalizedDays = Math.max(0, Math.trunc(Number(days) || 0))
+  if (normalizedDays >= 360 && normalizedDays % 360 === 0) {
+    return `${normalizedDays / 360} 年（${normalizedDays} 天）`
+  }
+  return `${normalizedDays} 天`
+}
+
+const furnaceShapeStorageKey = (recipeId: number) => `${FURNACE_SHAPE_STORAGE_PREFIX}${recipeId}`
+
+const loadFurnaceShape = (recipeId: number) => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(furnaceShapeStorageKey(recipeId)) || '{}') as {
+      width?: number
+      height?: number
+    }
+    furnaceWidth.value = clampFurnaceDimension(saved.width)
+    furnaceHeight.value = clampFurnaceDimension(saved.height)
+  } catch {
+    furnaceWidth.value = 3
+    furnaceHeight.value = 3
+  }
+}
+
+const solverHerbStateStorageKey = (recipeId: number) => `${SOLVER_HERB_STATE_STORAGE_PREFIX}${recipeId}`
+
+const loadSolverHerbState = (recipeId: number) => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(solverHerbStateStorageKey(recipeId)) || '{}') as {
+      herbs?: SolverHerbOption[]
+      disabled_ids?: number[]
+    }
+    solverHerbs.value = Array.isArray(saved.herbs) ? saved.herbs : []
+    disabledSolverHerbIds.value = Array.isArray(saved.disabled_ids)
+      ? saved.disabled_ids.filter(Number.isInteger)
+      : []
+  } catch {
+    solverHerbs.value = []
+    disabledSolverHerbIds.value = []
+  }
+}
+
+const saveSolverHerbState = (recipeId: number) => {
+  try {
+    window.localStorage.setItem(solverHerbStateStorageKey(recipeId), JSON.stringify({
+      herbs: solverHerbs.value,
+      disabled_ids: disabledSolverHerbIds.value,
+    }))
+  } catch {
+    // The solver remains usable when browser storage is unavailable.
+  }
+}
+
+const solverResultCacheKey = (recipe: ZaohuaAlchemyRecipe, limit: number) => {
+  const excluded = [...disabledSolverHerbIds.value]
+    .sort((a, b) => a - b)
+    .join(',')
+  return [
+    SOLVER_RESULT_CACHE_PREFIX,
+    `v${SOLVER_CACHE_SCHEMA_VERSION}`,
+    recipe.source_build_id || 'unknown',
+    recipe.recipe_id,
+    `${furnaceWidth.value}x${furnaceHeight.value}`,
+    `e${excluded || '-'}`,
+    `l${limit}`,
+  ].join(':')
+}
+
+const loadCachedSolverResult = (recipe: ZaohuaAlchemyRecipe, limit: number) => {
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(solverResultCacheKey(recipe, limit)) || 'null') as {
+      schema_version?: number
+      result?: ZaohuaAlchemySolveResult
+    } | null
+    return cached?.schema_version === SOLVER_CACHE_SCHEMA_VERSION && cached.result
+      ? cached.result
+      : null
+  } catch {
+    return null
+  }
+}
+
+const saveCachedSolverResult = (
+  recipe: ZaohuaAlchemyRecipe,
+  limit: number,
+  result: ZaohuaAlchemySolveResult,
+) => {
+  try {
+    window.localStorage.setItem(solverResultCacheKey(recipe, limit), JSON.stringify({
+      schema_version: SOLVER_CACHE_SCHEMA_VERSION,
+      cached_at: Date.now(),
+      result,
+    }))
+  } catch {
+    // Solver results are a disposable cache; quota failures can be ignored.
+  }
+}
+
+const applySolverResult = (result: ZaohuaAlchemySolveResult) => {
+  const herbsById = new Map(solverHerbs.value.map(item => [item.item_id, item]))
+  for (const herb of result.available_herbs ?? []) herbsById.set(herb.item_id, herb)
+  solverHerbs.value = [...herbsById.values()].sort(
+    (left, right) => left.price - right.price || left.item_id - right.item_id,
+  )
+  solveResult.value = result
+  if (selected.value) saveSolverHerbState(selected.value.recipe_id)
+}
+
+const restoreCachedSolverResult = () => {
+  const cached = selected.value
+    ? loadCachedSolverResult(selected.value, solverLimit.value)
+    : null
+  if (cached) applySolverResult(cached)
+  else solveResult.value = null
+}
 
 const {
   paneHeight: listPaneHeight,
@@ -98,6 +246,62 @@ const mixedElementColor = (limits: ZaohuaAlchemyRecipe['attr_limits']) => {
 const formatPrice = (value?: number) => Number.isFinite(value)
   ? formatChineseCompactNumber(value)
   : '—'
+
+const formatRatio = (value: number | null) => value == null ? '—' : value.toFixed(2)
+
+const requestSolverResults = async () => {
+  if (!selected.value) return
+  const recipe = selected.value
+  const cachedResult = loadCachedSolverResult(recipe, solverLimit.value)
+  if (cachedResult) {
+    solveRequestSequence += 1
+    solving.value = false
+    solveError.value = ''
+    applySolverResult(cachedResult)
+    return
+  }
+  const sequence = ++solveRequestSequence
+  solving.value = true
+  solveError.value = ''
+  try {
+    const result = await solveZaohuaAlchemy(recipe.recipe_id, {
+      width: furnaceWidth.value,
+      height: furnaceHeight.value,
+      limit: solverLimit.value,
+      excluded_item_ids: disabledSolverHerbIds.value,
+    })
+    if (sequence === solveRequestSequence) {
+      applySolverResult(result)
+      saveCachedSolverResult(recipe, solverLimit.value, result)
+    }
+  } catch (error) {
+    if (sequence === solveRequestSequence) {
+      solveResult.value = null
+      solveError.value = error instanceof Error ? error.message : '求解失败'
+    }
+  } finally {
+    if (sequence === solveRequestSequence) solving.value = false
+  }
+}
+
+const runSolver = () => {
+  solverLimit.value = 5
+  return requestSolverResults()
+}
+
+const loadMoreSolutions = () => {
+  solverLimit.value += 5
+  return requestSolverResults()
+}
+
+const toggleSolverHerb = (itemId: number) => {
+  disabledSolverHerbIds.value = disabledSolverHerbIds.value.includes(itemId)
+    ? disabledSolverHerbIds.value.filter(id => id !== itemId)
+    : [...disabledSolverHerbIds.value, itemId]
+  if (selected.value) saveSolverHerbState(selected.value.recipe_id)
+  solverLimit.value = 5
+  void requestSolverResults()
+}
 
 const toggleSort = (field: 'number' | 'grade') => {
   if (sortBy.value === field) {
@@ -189,6 +393,36 @@ watch(page, () => {
   void loadRecipes()
 })
 
+watch([furnaceWidth, furnaceHeight], ([width, height]) => {
+  if (selected.value) {
+    try {
+      window.localStorage.setItem(
+        furnaceShapeStorageKey(selected.value.recipe_id),
+        JSON.stringify({ width, height }),
+      )
+    } catch {
+      // Solving still works when browser storage is unavailable.
+    }
+  }
+  solveRequestSequence += 1
+  restoreCachedSolverResult()
+})
+
+watch(() => selected.value?.recipe_id, () => {
+  solveRequestSequence += 1
+  if (selected.value) {
+    loadFurnaceShape(selected.value.recipe_id)
+    loadSolverHerbState(selected.value.recipe_id)
+  }
+  else {
+    solverHerbs.value = []
+    disabledSolverHerbIds.value = []
+  }
+  solverLimit.value = 5
+  restoreCachedSolverResult()
+  solveError.value = ''
+})
+
 onMounted(async () => {
   await Promise.all([loadMeta(), loadRecipes()])
 })
@@ -199,7 +433,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="alchemy-page" :class="{ resizing: isResizing }">
+  <main class="alchemy-page zaohua-catalog-page" :class="{ resizing: isResizing }">
     <header class="page-head">
       <div>
         <h1>造化仙缘 · 丹药</h1>
@@ -245,7 +479,7 @@ onBeforeUnmount(() => {
 
     <section class="list-pane" :style="listPaneStyle" v-loading="loading">
       <div class="table-scroll">
-        <table class="recipe-table">
+        <table class="recipe-table zaohua-catalog-table">
           <thead>
             <tr>
               <th class="number-column" :aria-sort="sortBy === 'number' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'">
@@ -386,7 +620,7 @@ onBeforeUnmount(() => {
           </ul>
         </dd>
 
-        <dt>示例药材</dt>
+        <dt>炼丹药材</dt>
         <dd>
           <ul class="plain-list">
             <li v-for="item in selected.example_items" :key="item.item_id">
@@ -420,6 +654,112 @@ onBeforeUnmount(() => {
               <span>{{ rule.name || '未命名规则' }}</span>
             </li>
           </ul>
+        </dd>
+
+        <dt>炼丹时间</dt>
+        <dd>{{ formatCraftingTime(selected.cost_days) }}</dd>
+
+        <dt>丹炉尺寸</dt>
+        <dd>
+          <div class="furnace-dimensions">
+            <label class="dimension-control">
+              <span>宽</span>
+              <el-input-number
+                v-model="furnaceWidth"
+                class="dimension-input"
+                :min="FURNACE_DIMENSION_MIN"
+                :max="FURNACE_DIMENSION_MAX"
+                :step="1"
+                :precision="0"
+                controls-position="right"
+                size="small"
+                aria-label="丹炉宽度"
+              />
+            </label>
+            <label class="dimension-control">
+              <span>高</span>
+              <el-input-number
+                v-model="furnaceHeight"
+                class="dimension-input"
+                :min="FURNACE_DIMENSION_MIN"
+                :max="FURNACE_DIMENSION_MAX"
+                :step="1"
+                :precision="0"
+                controls-position="right"
+                size="small"
+                aria-label="丹炉高度"
+              />
+            </label>
+          </div>
+        </dd>
+
+        <dt>求解</dt>
+        <dd>
+          <div class="solver-module">
+            <div class="solver-actions">
+              <el-button type="primary" size="small" :loading="solving" @click="runSolver">
+                求解
+              </el-button>
+              <span v-if="solveResult" class="solver-scope">
+                {{ solveResult.exhaustive ? '已穷尽当前模型' : '当前搜索范围' }}
+                · {{ solveResult.search_nodes.toLocaleString() }} 节点
+              </span>
+            </div>
+            <ul v-if="solverHerbs.length" class="solver-herb-pool" aria-label="可用药材池">
+              <li v-for="herb in solverHerbs" :key="herb.item_id">
+                <button
+                  type="button"
+                  :class="{ 'is-disabled': disabledSolverHerbIds.includes(herb.item_id) }"
+                  :aria-label="`${disabledSolverHerbIds.includes(herb.item_id) ? '恢复' : '停用'}${herb.name}`"
+                  :aria-pressed="disabledSolverHerbIds.includes(herb.item_id)"
+                  :title="herb.name"
+                  @click="toggleSolverHerb(herb.item_id)"
+                >
+                  <img
+                    v-if="herb.icon_url"
+                    :src="herb.icon_url"
+                    :alt="herb.name"
+                    @error="hideBrokenImage"
+                  />
+                  <span v-else>{{ herb.name.slice(0, 1) }}</span>
+                </button>
+              </li>
+            </ul>
+            <p v-if="solveError" class="solver-error">{{ solveError }}</p>
+            <p v-else-if="solveResult && !solveResult.solutions.length" class="solver-empty">
+              当前炉形与单调配平范围内没有可行解。
+            </p>
+            <ol v-else-if="solveResult" class="solution-list">
+              <li v-for="solution in solveResult.solutions" :key="solution.rank" class="solution-item">
+                <div class="solution-summary">
+                  <strong class="solution-rank">{{ solution.rank }}</strong>
+                  <dl>
+                    <div><dt>性价比</dt><dd class="ratio-value">{{ formatRatio(solution.ratio) }}</dd></div>
+                    <div><dt>成本</dt><dd>{{ formatPrice(solution.cost) }}</dd></div>
+                    <div>
+                      <dt>成丹</dt>
+                      <dd>{{ solution.final_yield }}<em v-if="solution.rule_bonus">+{{ solution.rule_bonus }}</em></dd>
+                    </div>
+                    <div><dt>总价值</dt><dd>{{ formatPrice(solution.total_value) }}</dd></div>
+                  </dl>
+                  <i v-if="!solution.rule_supported" class="rule-pending">规则待补</i>
+                </div>
+                <AlchemyFormulaDiagram
+                  :solution="solution"
+                  :width="solveResult.furnace.width"
+                  :height="solveResult.furnace.height"
+                />
+              </li>
+            </ol>
+            <button
+              v-if="solveResult?.has_more"
+              type="button"
+              class="load-more-solutions"
+              :disabled="solving"
+              @click="loadMoreSolutions"
+            >{{ solving ? '加载中…' : '加载更多 5 个' }}</button>
+            <p class="solver-note">阴炉药材按负向量参与配平；当前版本先排除需要中间抵消的组合。</p>
+          </div>
         </dd>
       </dl>
 
@@ -848,6 +1188,210 @@ onBeforeUnmount(() => {
 .detail-element-list li {
   display: inline-flex;
   gap: 10px;
+}
+
+.furnace-dimensions {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.dimension-control {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.dimension-control > span {
+  color: #59615d;
+  font-size: 13px;
+}
+
+.dimension-input {
+  width: 66px;
+}
+
+.solver-module {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.solver-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.solver-herb-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.solver-herb-pool button {
+  display: grid;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid #b9c8be;
+  color: #59615d;
+  background: #edf4ef;
+  cursor: pointer;
+  font: inherit;
+  place-items: center;
+}
+
+.solver-herb-pool button:hover {
+  border-color: #7e9b88;
+  background: #e4eee7;
+}
+
+.solver-herb-pool img {
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
+}
+
+.solver-herb-pool button.is-disabled {
+  border-color: #cfd2d0;
+  color: #9a9e9b;
+  background: #e4e6e5;
+}
+
+.solver-herb-pool button.is-disabled img {
+  filter: grayscale(1);
+  opacity: 0.35;
+}
+
+.solver-scope,
+.solver-note,
+.solver-empty {
+  color: #747b78;
+  font-size: 12px;
+}
+
+.solver-note,
+.solver-empty,
+.solver-error {
+  margin: 0;
+}
+
+.solver-error {
+  color: #b5443c;
+}
+
+.solution-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.load-more-solutions {
+  justify-self: start;
+  padding: 5px 10px;
+  border: 1px solid #c7cfca;
+  color: #4f6657;
+  background: #f7f9f7;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.load-more-solutions:hover:not(:disabled) {
+  border-color: #9eaea4;
+  background: #f1f5f2;
+}
+
+.load-more-solutions:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.solution-item {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid #e7eae7;
+}
+
+.solution-summary {
+  display: grid;
+  grid-template-columns: 26px max-content;
+  gap: 8px;
+  align-items: start;
+  font-size: 13px;
+}
+
+.solution-rank {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #cbd1cd;
+  color: #59615d;
+  font-size: 12px;
+  place-items: center;
+}
+
+.solution-summary dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.solution-summary dl > div {
+  display: grid;
+  grid-template-columns: 54px max-content;
+  gap: 6px;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.solution-summary dt,
+.solution-summary dd {
+  margin: 0;
+}
+
+.solution-summary dt {
+  color: #747b78;
+}
+
+.solution-summary dt::after {
+  content: '：';
+}
+
+.solution-summary .ratio-value {
+  color: #267044;
+  font-weight: 700;
+}
+
+.solution-summary em {
+  margin-left: 2px;
+  color: #63806c;
+  font-style: normal;
+}
+
+.rule-pending {
+  grid-column: 2;
+  color: #9a6a2f;
+  font-size: 11px;
+  font-style: normal;
+}
+
+@media (max-width: 1080px) {
+  .solution-item {
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
 }
 
 .plain-list,

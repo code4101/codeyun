@@ -172,6 +172,13 @@ def _write_json(path: Path, payload: Any) -> None:
                 pass
             if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
                 raise
+            try:
+                path.write_text(text, encoding="utf-8")
+                return
+            except OSError as fallback_exc:
+                last_error = fallback_exc
+                if getattr(fallback_exc, "winerror", None) not in {5, 32} and not isinstance(fallback_exc, PermissionError):
+                    raise
             time.sleep(0.05 * (attempt + 1))
     try:
         path.write_text(text, encoding="utf-8")

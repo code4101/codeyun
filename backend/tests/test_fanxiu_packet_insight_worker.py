@@ -184,6 +184,31 @@ def test_maintenance_once_runs_historical_business_backlog(monkeypatch):
     assert calls[0]["include_mail_business_backlog"] is True
 
 
+def test_maintenance_once_reports_stage_heartbeat(monkeypatch):
+    captured_progress: list[dict[str, object]] = []
+    state_dir = Path(os.getenv("TEMP", str(Path.cwd()))) / f"fanxiu-maintenance-heartbeat-{time.time_ns()}"
+    monkeypatch.setenv("CODEYUN_DATA_DIR", str(state_dir))
+
+    def fake_maintenance(**kwargs):
+        progress_callback = kwargs.get("progress_callback")
+        assert callable(progress_callback)
+        progress_callback({"phase": "historical_business_backlog", "historical_runtime_business_sync": {"ok": True}})
+        captured_progress.append(kwargs)
+        return {"ok": True, "updated_at": "2026-07-10 16:10:00"}
+
+    monkeypatch.setattr(worker, "sync_fanxiu_capture_maintenance_backlog", fake_maintenance)
+
+    service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
+    result = service.maintenance_once()
+    written_state = json.loads((state_dir / "fanxiu" / "packet-insights" / "maintenance_worker_state.json").read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert captured_progress
+    assert written_state["phase"] == "historical_business_backlog"
+    assert written_state["heartbeat_at"]
+    assert written_state["capture_runtime_backstop"]["reason"] == "test_disabled"
+
+
 def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
     calls: list[dict[str, object]] = []
 

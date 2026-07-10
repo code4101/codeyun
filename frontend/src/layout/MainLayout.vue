@@ -86,7 +86,9 @@ const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
 const ZAOHUA_ALCHEMY_PATH = requirePageMenuPath('ZaohuaAlchemyCatalog');
+const ZAOHUA_FURNACE_PATH = requirePageMenuPath('ZaohuaFurnaceCatalog');
 const ZAOHUA_HERB_PATH = requirePageMenuPath('ZaohuaHerbCatalog');
+const ZAOHUA_PASTURE_PATH = requirePageMenuPath('ZaohuaPasturePlanner');
 const POKEMON_TCG_CATALOG_PATH = requirePageMenuPath('PokemonTcgCatalog');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
 const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
@@ -169,7 +171,9 @@ const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PAT
 const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
 const ZAOHUA_TITLE = requirePermissionTitle('zaohua');
 const ZAOHUA_ALCHEMY_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_ALCHEMY_PATH);
+const ZAOHUA_FURNACE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_FURNACE_PATH);
 const ZAOHUA_HERB_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_HERB_PATH);
+const ZAOHUA_PASTURE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_PASTURE_PATH);
 const POKEMON_TCG_CATALOG_TITLE = requirePermissionTitleByMenuPath(POKEMON_TCG_CATALOG_PATH);
 const MAGIC_CRAFT_TITLE = requirePermissionTitle('magic-craft');
 const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH);
@@ -493,7 +497,7 @@ const magicCraftMenuVisible = computed(() =>
 
 const zaohuaMenuVisible = computed(() =>
   canAccessFeature('zaohua')
-  && [ZAOHUA_ALCHEMY_PATH, ZAOHUA_HERB_PATH].some((path) => canAccessMenuPath(path)),
+  && [ZAOHUA_ALCHEMY_PATH, ZAOHUA_FURNACE_PATH, ZAOHUA_HERB_PATH, ZAOHUA_PASTURE_PATH].some((path) => canAccessMenuPath(path)),
 );
 
 const gameToolsMenuVisible = computed(() =>
@@ -914,8 +918,14 @@ watch(
               <el-menu-item v-if="canAccessMenuPath(ZAOHUA_ALCHEMY_PATH)" :index="ZAOHUA_ALCHEMY_PATH">
                 {{ ZAOHUA_ALCHEMY_TITLE }}
               </el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_FURNACE_PATH)" :index="ZAOHUA_FURNACE_PATH">
+                {{ ZAOHUA_FURNACE_TITLE }}
+              </el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(ZAOHUA_HERB_PATH)" :index="ZAOHUA_HERB_PATH">
                 {{ ZAOHUA_HERB_TITLE }}
+              </el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_PASTURE_PATH)" :index="ZAOHUA_PASTURE_PATH">
+                {{ ZAOHUA_PASTURE_TITLE }}
               </el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(POKEMON_TCG_CATALOG_PATH)" :index="POKEMON_TCG_CATALOG_PATH">

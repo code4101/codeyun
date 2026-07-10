@@ -152,9 +152,19 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./zaohua/alchemy/page.vue'),
   },
   {
+    routeName: 'ZaohuaFurnaceCatalog',
+    canonicalPath: '/zaohua/furnaces',
+    component: () => import('./zaohua/furnaces/page.vue'),
+  },
+  {
     routeName: 'ZaohuaHerbCatalog',
     canonicalPath: '/zaohua/herbs',
     component: () => import('./zaohua/herbs/page.vue'),
+  },
+  {
+    routeName: 'ZaohuaPasturePlanner',
+    canonicalPath: '/zaohua/pasture',
+    component: () => import('./zaohua/pasture/page.vue'),
   },
   {
     routeName: 'PokemonTcgCatalog',
