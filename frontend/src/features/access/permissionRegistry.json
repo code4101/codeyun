@@ -536,7 +536,7 @@
     },
     {
       "key": "zaohua.alchemy",
-      "title": "炼丹",
+      "title": "丹药",
       "node_type": "feature",
       "parent_key": "zaohua",
       "sort_order": 10,

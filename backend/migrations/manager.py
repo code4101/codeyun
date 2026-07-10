@@ -5290,6 +5290,41 @@ def v83_add_zaohua_herbs(session: Session):
     print("  Added Zaohua herb table.")
 
 
+def v84_add_zaohua_herb_crafting_attributes(session: Session):
+    """Migration V84: Store the signed alchemy attribute vector for herbs."""
+    print("Running System Upgrade V84: Add Zaohua herb crafting attributes...")
+    columns = {
+        str(row[1])
+        for row in session.exec(text("PRAGMA table_info(zaohuaherb)")).all()
+    }
+    if "crafting_attributes" not in columns:
+        session.exec(text(
+            "ALTER TABLE zaohuaherb ADD COLUMN crafting_attributes JSON NOT NULL DEFAULT '[]'"
+        ))
+    session.commit()
+    print("  Added Zaohua herb crafting attributes.")
+
+
+def v85_add_zaohua_alchemy_output_effects(session: Session):
+    """Migration V85: Add business-facing output effect inputs for Zaohua alchemy."""
+    print("Running System Upgrade V85: Add Zaohua alchemy output effects...")
+    columns = _get_table_columns(session, "zaohuaalchemyrecipe")
+    additions = {
+        "output_description": "TEXT NOT NULL DEFAULT ''",
+        "output_effect_description": "TEXT NOT NULL DEFAULT ''",
+        "output_use_effect": "TEXT NOT NULL DEFAULT ''",
+        "output_augment": "INTEGER NOT NULL DEFAULT 0",
+        "output_efficacy": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in additions.items():
+        if column not in columns:
+            session.exec(text(
+                f"ALTER TABLE zaohuaalchemyrecipe ADD COLUMN {column} {definition}"
+            ))
+    session.commit()
+    print("  Added Zaohua alchemy output effects.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5376,6 +5411,8 @@ MIGRATIONS = [
     (81, "Add Zaohua alchemy recipes", v81_add_zaohua_alchemy_recipes),
     (82, "Add Zaohua alchemy output price", v82_add_zaohua_alchemy_output_price),
     (83, "Add Zaohua herbs", v83_add_zaohua_herbs),
+    (84, "Add Zaohua herb crafting attributes", v84_add_zaohua_herb_crafting_attributes),
+    (85, "Add Zaohua alchemy output effects", v85_add_zaohua_alchemy_output_effects),
 ]
 
 def get_current_version(session: Session) -> int:

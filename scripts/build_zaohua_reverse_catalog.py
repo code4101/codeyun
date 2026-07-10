@@ -47,6 +47,10 @@ ITEM_ATTRIBUTE_DEFINITIONS = {
     7: {"key": "wind", "name": "风", "order": 7},
     8: {"key": "thunder", "name": "雷", "order": 8},
 }
+CRAFTING_ATTRIBUTE_ORDER = {
+    definition["key"]: definition["order"]
+    for definition in ITEM_ATTRIBUTE_DEFINITIONS.values()
+}
 
 
 def _sha256(path: Path) -> str:
@@ -116,6 +120,25 @@ def _ids(value: Any) -> list[int]:
         if item:
             result.append(int(item))
     return result
+
+
+def _crafting_attributes(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    attributes: list[dict[str, Any]] = []
+    for raw_element, raw_value in value.items():
+        element = str(raw_element or "").strip().lower()
+        if not element or not isinstance(raw_value, (int, float)) or raw_value == 0:
+            continue
+        attributes.append({
+            "element": element,
+            "label": ELEMENT_LABELS.get(element, element),
+            "value": raw_value,
+        })
+    return sorted(
+        attributes,
+        key=lambda item: (CRAFTING_ATTRIBUTE_ORDER.get(str(item["element"]), 99), str(item["element"])),
+    )
 
 
 def _normalized_icon_key(value: Any) -> str:
@@ -191,6 +214,8 @@ def _item_view(item: dict[str, Any] | None, local: dict[str, str], grades: dict[
         "grade_id": grade_id,
         "grade_name": grade_local.get(str(grade.get("name") or ""), ""),
         "price": item.get("price") or 0,
+        "augment": int(item.get("augment") or 0),
+        "efficacy": int(item.get("efficacy") or 0),
         "drug_quality": item.get("drugQuality") or 0,
         "attribute": item.get("attribute") or 0,
     }
@@ -237,6 +262,7 @@ def build(root: Path) -> dict[str, Any]:
     selected_assets = {
         "TbDrugRecipeCfg.json": config_assets["TbDrugRecipeCfg"],
         "TbItemCfg.json": config_assets["TbItemCfg"],
+        "CraftingItem.json": config_assets["CraftingItem"],
         "TbDrugRecipeStateCfg.xml": xml_assets["TbDrugRecipeStateCfg"],
         "TbGradeCfg.xml": xml_assets["TbGradeCfg"],
         "TbTypeCfg.xml": xml_assets["TbTypeCfg"],
@@ -251,6 +277,7 @@ def build(root: Path) -> dict[str, Any]:
 
     recipe_rows = json.loads(config_assets["TbDrugRecipeCfg"])
     item_rows = json.loads(config_assets["TbItemCfg"])
+    crafting_item_rows = json.loads(config_assets["CraftingItem"])
     state_rows = _xml_rows(xml_assets["TbDrugRecipeStateCfg"])
     grade_rows = _xml_rows(xml_assets["TbGradeCfg"])
     type_rows = _xml_rows(xml_assets["TbTypeCfg"])
@@ -261,6 +288,7 @@ def build(root: Path) -> dict[str, Any]:
     type_local = _local_map(_xml_rows(local_assets["TbTypeCfgLocal"]))
 
     items = {int(row.get("id") or 0): row for row in item_rows}
+    crafting_items = {int(row.get("id") or 0): row for row in crafting_item_rows}
     states = {int(row.get("id") or 0): row for row in state_rows}
     grades = {int(row.get("id") or 0): row for row in grade_rows}
     recipes: list[dict[str, Any]] = []
@@ -344,6 +372,8 @@ def build(root: Path) -> dict[str, Any]:
             {"key": "none", "name": "无", "order": 99},
         )
         recipes_using = herb_recipe_refs.get(herb["item_id"], [])
+        crafting_item = crafting_items.get(herb["item_id"], {})
+        crafting_attributes = _crafting_attributes(crafting_item.get("attrDic"))
         herb.update({
             "display_order": raw_index,
             "type_name": type_local.get(str(next((item.get("name") for item in type_rows if int(item.get("id") or 0) == HERB_TYPE_ID), "")), "灵草"),
@@ -352,16 +382,19 @@ def build(root: Path) -> dict[str, Any]:
             "element_name": element["name"],
             "element_order": element["order"],
             "lingqi": int(row.get("lingqi") or 0),
+            "crafting_attributes": crafting_attributes,
             "recipe_count": len(recipes_using),
             "recipes": recipes_using,
             "source_evidence": {
                 "config_bundle": CONFIG_BUNDLE,
                 "config_asset": "Assets/Resources/Json/TbItemCfg.json",
+                "crafting_asset": "Assets/Resources/Json/CraftingItem.json",
                 "type_bundle": XML_BUNDLE,
                 "type_asset": "Assets/Resources/Xml/TbTypeCfg.xml",
                 "local_bundle": LOCAL_BUNDLE,
                 "local_asset": "Assets/Resources/LocalXml/TbItemCfgLocal.xml",
                 "assembly_type": "TbItemCfg",
+                "crafting_assembly_type": "TbCraftingItemCfg",
                 "type_id": str(HERB_TYPE_ID),
             },
             "raw": row,
@@ -372,6 +405,7 @@ def build(root: Path) -> dict[str, Any]:
             str(herb.get("effect_description") or ""),
             str(herb.get("element_name") or ""),
             str(herb.get("grade_name") or ""),
+            *[f"{item['label']}{item['value']:+g}" for item in crafting_attributes],
             *[str(item.get("output_name") or "") for item in recipes_using],
         ]).lower()
         herb_rows.append(herb)
@@ -451,6 +485,15 @@ def build(root: Path) -> dict[str, Any]:
             "herb_count": len(herb_rows),
             "recipe_herb_count": len(herb_recipe_refs),
             "output_item_count": len({row["output"]["item_id"] for row in recipes}),
+            "localized_output_effect_count": sum(
+                bool(str(row["output"].get("effect_description") or "").strip())
+                for row in recipes
+            ),
+            "practice_output_effect_count": sum(
+                not str(row["output"].get("effect_description") or "").strip()
+                and int(row["output"].get("augment") or 0) > 0
+                for row in recipes
+            ),
             "example_item_count": len({item["item_id"] for row in recipes for item in row["example_items"]}),
             "alchemy_icon_count": len(icon_exports),
             "alchemy_icon_missing_count": len({
@@ -479,6 +522,7 @@ def build(root: Path) -> dict[str, Any]:
             "herb_count": len(herb_rows),
             "recipe_herb_count": len(herb_recipe_refs),
             "unused_herb_count": len(herb_rows) - len(herb_recipe_refs),
+            "crafting_attribute_herb_count": sum(bool(item.get("crafting_attributes")) for item in herb_rows),
             "herb_icon_count": len({
                 _normalized_icon_key(item.get("icon_path"))
                 for item in herb_rows
@@ -513,14 +557,23 @@ def build(root: Path) -> dict[str, Any]:
         "",
         "## 炼丹数据链",
         "",
-        "`TbDrugRecipeCfg → TbItemCfg → TbDrugRecipeStateCfg`，中文文本分别由对应 `*Local` 表解析。",
+        "`TbDrugRecipeCfg → TbItemCfg / CraftingItem → TbDrugRecipeStateCfg`，中文文本分别由对应 `*Local` 表解析。",
         "",
         f"- 丹方：{len(recipes)}",
         f"- 丹方状态规则：{len(state_rows)}",
         f"- 丹方产出物：{len({row['output']['item_id'] for row in recipes})}",
         f"- 示例药材：{len({item['item_id'] for row in recipes for item in row['example_items']})}",
         f"- 完整药材图鉴：{len(herb_rows)}",
+        f"- 含炼丹属性向量的药材：{sum(bool(item.get('crafting_attributes')) for item in herb_rows)}",
         f"- 炼丹图标：{len(icon_exports)}",
+        "",
+        "## 丹药作用字段",
+        "",
+        "- 普通可服用丹药：`TbItemCfg.effDes` 经 `TbItemCfgLocal` 解析为业务效果文案；`useEff` 是底层执行指令，只作为证据保留。",
+        "- 修炼丹（`typeId = 242`）：`augment` 表示修炼效率加成百分比，`efficacy` 表示持续月数；12 个月折算为 1 年。",
+        "- 代码证据：`PackTipContrast.SetXiuLian`、`CraftingDrugRecipeInfoCell.SetInfo`、`PracticeItemCell.SetInfo/GetTimeStr`、`PracticePanel.GetPracticeExp`。",
+        f"- 本地化效果文案：{sum(bool(str(row['output'].get('effect_description') or '').strip()) for row in recipes)} 种。",
+        f"- 由修炼字段投影效果：{sum(not str(row['output'].get('effect_description') or '').strip() and int(row['output'].get('augment') or 0) > 0 for row in recipes)} 种。",
         "",
         "## 产出品阶分布",
         "",

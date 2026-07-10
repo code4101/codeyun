@@ -17,10 +17,15 @@ export interface ZaohuaAlchemyItem {
   icon_url?: string
   grade_id?: number
   grade_name?: string
+  grade_rank?: number
   grade_order?: number
   grade_color_index?: number
   grade_color_hex?: string
   price?: number
+  effect_text?: string
+  augment?: number
+  efficacy?: number
+  crafting_attributes?: ZaohuaAlchemyElementLimit[]
 }
 
 export interface ZaohuaAlchemyStateRule {
@@ -80,6 +85,8 @@ export const fetchZaohuaAlchemyMeta = async (): Promise<ZaohuaAlchemyMeta> => {
 export const fetchZaohuaAlchemyRecipes = async (params: {
   q?: string
   grade?: string
+  sort_by?: 'number' | 'grade'
+  sort_order?: 'asc' | 'desc'
   page?: number
   page_size?: number
 }): Promise<ZaohuaAlchemyRecipePage> => {
@@ -99,6 +106,12 @@ export interface ZaohuaHerbRecipeRef {
   required_count: number
 }
 
+export interface ZaohuaHerbCraftingAttribute {
+  element: string
+  label: string
+  value: number
+}
+
 export interface ZaohuaHerb {
   item_id: number
   source_build_id: string
@@ -110,6 +123,7 @@ export interface ZaohuaHerb {
   icon_url: string
   grade_id: number
   grade_name: string
+  grade_rank: number
   grade_order: number
   grade_color_index: number
   grade_color_hex: string
@@ -118,6 +132,7 @@ export interface ZaohuaHerb {
   element_name: string
   price: number
   lingqi: number
+  crafting_attributes: ZaohuaHerbCraftingAttribute[]
   recipe_count: number
   recipes: ZaohuaHerbRecipeRef[]
   source_evidence: Record<string, string>
@@ -159,6 +174,8 @@ export const fetchZaohuaHerbs = async (params: {
   q?: string
   grade?: string
   element?: string
+  sort_by?: 'number' | 'grade'
+  sort_order?: 'asc' | 'desc'
   page?: number
   page_size?: number
 }): Promise<ZaohuaHerbPage> => {
