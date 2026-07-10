@@ -5,6 +5,34 @@ import time
 from backend.core.fanxiu.packet import insight_worker as worker
 
 
+def test_worker_heartbeat_clears_stale_error_and_skip_flags_on_new_ok_cycle():
+    packet_worker = worker.FanxiuPacketInsightWorker()
+    packet_worker._last_realtime_result = {
+        "ok": False,
+        "updated_at": "2026-07-11 02:00:00",
+        "error": "stale realtime error",
+        "skipped": True,
+        "skip_reason": "host_commit_pressure",
+    }
+    packet_worker._last_maintenance_result = {
+        "ok": False,
+        "updated_at": "2026-07-11 02:00:00",
+        "error": "stale maintenance error",
+        "skipped": True,
+        "skip_reason": "host_commit_pressure",
+    }
+
+    packet_worker._mark_realtime_heartbeat(ok=True, mode="realtime_scan", phase="capture_backstop")
+    packet_worker._mark_maintenance_heartbeat(ok=True, mode="maintenance", phase="capture_backstop")
+
+    assert "error" not in packet_worker._last_realtime_result
+    assert "skipped" not in packet_worker._last_realtime_result
+    assert "skip_reason" not in packet_worker._last_realtime_result
+    assert "error" not in packet_worker._last_maintenance_result
+    assert "skipped" not in packet_worker._last_maintenance_result
+    assert "skip_reason" not in packet_worker._last_maintenance_result
+
+
 def test_live_capture_backlog_decodes_stable_unprocessed_pcap(tmp_path, monkeypatch):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)

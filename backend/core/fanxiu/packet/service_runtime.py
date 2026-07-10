@@ -162,9 +162,35 @@ def _read_json(path: Path, fallback: Any) -> Any:
         return fallback
 
 
+def _retry_on_permission_error(action, *, retries: int = 5, delay_seconds: float = 0.05) -> None:
+    last_error: PermissionError | None = None
+    for attempt in range(max(1, int(retries))):
+        try:
+            action()
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt >= max(1, int(retries)) - 1:
+                break
+            time.sleep(max(0.0, float(delay_seconds)))
+    if last_error is not None:
+        raise last_error
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_state(path, payload, permission_retries=6)
+    try:
+        _retry_on_permission_error(
+            lambda: write_json_state(path, payload, permission_retries=1),
+        )
+    except PermissionError:
+        _write_json_non_atomic(path, payload)
+
+
+def _write_json_non_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    _retry_on_permission_error(lambda: path.write_text(text, encoding="utf-8"))
 
 
 def _state_snapshot_path(path: Path) -> Path:
@@ -203,6 +229,12 @@ def _write_packet_service_state_json(path: Path, payload: Any) -> None:
     _prune_state_snapshots()
     try:
         _write_json(path, payload)
+        return
+    except OSError:
+        pass
+    try:
+        # Some Windows readers block atomic rename but still allow truncate/write.
+        _write_json_non_atomic(path, payload)
     except OSError:
         # Keep the snapshot as the freshest readable state when the primary file is locked.
         return

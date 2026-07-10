@@ -703,3 +703,30 @@ def test_write_json_falls_back_to_direct_write_when_replace_stays_locked(monkeyp
     assert calls["replace"] == 1
     assert calls["direct_write"] == 1
     assert '"value": 2' in path.read_text(encoding="utf-8")
+
+
+def test_write_packet_service_state_retries_direct_write_when_target_is_temporarily_locked(monkeypatch, tmp_path):
+    monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+    state_path = service_runtime.get_fanxiu_packet_service_state_path()
+    original_write_text = Path.write_text
+    calls = {"state_writes": 0}
+
+    def fake_write_json(path, payload):
+        if path == state_path:
+            raise PermissionError(13, "denied", str(path))
+        return service_runtime._write_json_non_atomic(path, payload)
+
+    def flaky_write_text(self, data, *args, **kwargs):
+        if self == state_path:
+            calls["state_writes"] += 1
+            if calls["state_writes"] < 3:
+                raise PermissionError(13, "denied", str(self))
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(service_runtime, "_write_json", fake_write_json)
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    service_runtime._write_packet_service_state_json(state_path, {"updated_at": "2026-07-11 04:10:00", "ok": True})
+
+    assert calls["state_writes"] == 3
+    assert service_runtime._read_json(state_path, {})["updated_at"] == "2026-07-11 04:10:00"

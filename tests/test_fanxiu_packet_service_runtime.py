@@ -20,7 +20,7 @@ def test_packet_service_state_read_prefers_newer_snapshot(tmp_path, monkeypatch)
     assert payload["packet_worker"]["ok"] is True
 
 
-def test_packet_service_state_write_keeps_snapshot_when_primary_locked(tmp_path, monkeypatch):
+def test_packet_service_state_write_falls_back_to_direct_write_when_atomic_replace_is_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
     state_path = service_runtime.get_fanxiu_packet_service_state_path()
     original_write_json = service_runtime._write_json
@@ -36,8 +36,9 @@ def test_packet_service_state_write_keeps_snapshot_when_primary_locked(tmp_path,
     snapshot_dir = service_runtime.get_fanxiu_packet_service_state_snapshot_dir()
     snapshots = list(snapshot_dir.glob("*.json"))
 
-    assert not state_path.exists()
+    assert state_path.exists()
     assert len(snapshots) == 1
+    assert service_runtime._read_json(state_path, {})["updated_at"] == "2026-07-10 04:10:00"
     assert service_runtime._read_packet_service_state_json(state_path)["updated_at"] == "2026-07-10 04:10:00"
 
 
