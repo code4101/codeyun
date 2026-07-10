@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pyxllib.prog import process_runtime
+from pyxllib.prog import process_runtime, write_json_state
 from sqlalchemy import text
 
 from backend.core.fanxiu.packet.insight_worker import fanxiu_packet_insight_worker
@@ -82,6 +83,13 @@ def _capture_watchdog_interval_seconds() -> float:
         return float(os.getenv("FX_CAPTURE_RUNTIME_WATCHDOG_INTERVAL_SECONDS") or 60)
     except (TypeError, ValueError):
         return 60.0
+
+
+def _packet_service_command_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("FX_PACKET_SERVICE_COMMAND_TIMEOUT_SECONDS") or 45.0))
+    except (TypeError, ValueError):
+        return 45.0
 
 
 def _safe_cmdline(proc: Any) -> list[str]:
@@ -156,36 +164,7 @@ def _read_json(path: Path, fallback: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    last_error: OSError | None = None
-    for attempt in range(5):
-        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-        try:
-            temp_path.write_text(text, encoding="utf-8")
-            temp_path.replace(path)
-            return
-        except OSError as exc:
-            last_error = exc
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
-                raise
-            try:
-                path.write_text(text, encoding="utf-8")
-                return
-            except OSError as fallback_exc:
-                last_error = fallback_exc
-                if getattr(fallback_exc, "winerror", None) not in {5, 32} and not isinstance(fallback_exc, PermissionError):
-                    raise
-            time.sleep(0.05 * (attempt + 1))
-    try:
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        if last_error is not None:
-            raise last_error
-        raise
+    write_json_state(path, payload, permission_retries=6)
 
 
 def _state_snapshot_path(path: Path) -> Path:
@@ -333,6 +312,16 @@ def _iter_pending_packet_service_commands() -> list[Path]:
     return paths
 
 
+def _run_packet_service_command_action(action: str, *, reason: str) -> dict[str, Any]:
+    if action == "packet_facts_catch_up":
+        result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
+    elif action == "maintenance":
+        result = fanxiu_packet_insight_worker.maintenance_once()
+    else:
+        raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
+    return result if isinstance(result, dict) else {"ok": True}
+
+
 def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
     command = _read_json(path, {})
     if not isinstance(command, dict):
@@ -344,15 +333,33 @@ def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
     reason = str(command.get("reason") or "service-command").strip() or "service-command"
     result_path = _packet_service_result_path(command_id)
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    timeout_seconds = _packet_service_command_timeout_seconds()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-packet-command")
     try:
-        if action == "packet_facts_catch_up":
-            action_result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
-        elif action == "maintenance":
-            action_result = fanxiu_packet_insight_worker.maintenance_once()
-        else:
-            raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
+        future = executor.submit(_run_packet_service_command_action, action, reason=reason)
+        try:
+            action_result = future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            payload = {
+                "ok": False,
+                "command_id": command_id,
+                "action": action,
+                "reason": reason,
+                "started_at": started_at,
+                "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "timed_out": True,
+                "timeout_seconds": timeout_seconds,
+                "error": f"抓包服务命令执行超时（>{timeout_seconds:.1f}s）",
+                "result": {},
+            }
+            _write_json(result_path, payload)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return payload
         payload = {
-            "ok": bool(action_result.get("ok", True)) if isinstance(action_result, dict) else True,
+            "ok": bool(action_result.get("ok", True)),
             "command_id": command_id,
             "action": action,
             "reason": reason,
@@ -370,6 +377,8 @@ def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
             "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "error": str(exc),
         }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     _write_json(result_path, payload)
     try:
         path.unlink(missing_ok=True)
@@ -854,11 +863,13 @@ def run_fanxiu_packet_service_loop(*, state_interval_seconds: float = 15.0) -> N
     try:
         while True:
             try:
-                processed_commands = process_pending_fanxiu_packet_service_commands()
                 now = time.monotonic()
-                if processed_commands or now >= next_state_at:
-                    write_fanxiu_packet_service_state({"processed_commands": processed_commands[-5:]})
+                if now >= next_state_at:
+                    write_fanxiu_packet_service_state()
                     next_state_at = now + max(1.0, float(state_interval_seconds))
+                processed_commands = process_pending_fanxiu_packet_service_commands()
+                if processed_commands:
+                    write_fanxiu_packet_service_state({"processed_commands": processed_commands[-5:]})
             except Exception as exc:
                 print(f"[fanxiu-packet-service] loop tick failed: {exc}", flush=True)
             time.sleep(0.5)

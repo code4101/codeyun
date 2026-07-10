@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'dayjs/locale/zh-cn'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
+import { reloadCurrentPage, routeLoadError } from '@/router/routeLoadRecovery'
 
 const route = useRoute()
 const featureAccessStore = useFeatureAccessStore()
@@ -39,7 +40,14 @@ onMounted(() => {
 
 <template>
   <el-config-provider :locale="zhCn">
-    <router-view v-if="routeReady" v-slot="{ Component }">
+    <div v-if="routeLoadError" class="app-route-loading app-route-loading--error" role="alert">
+      <div>
+        <p class="app-route-loading__title">页面没有加载成功</p>
+        <p class="app-route-loading__text">{{ routeLoadError }}</p>
+        <button class="app-route-loading__retry" type="button" @click="reloadCurrentPage">重新加载</button>
+      </div>
+    </div>
+    <router-view v-else-if="routeReady" v-slot="{ Component }">
       <suspense>
         <component :is="Component" />
         <template #fallback>
@@ -133,6 +141,20 @@ body {
   color: #6b7280;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.app-route-loading--error {
+  grid-template-columns: minmax(0, 420px);
+}
+
+.app-route-loading__retry {
+  margin-top: 16px;
+  padding: 7px 14px;
+  border: 1px solid #409eff;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #409eff;
+  cursor: pointer;
 }
 
 @keyframes app-route-loading-spin {

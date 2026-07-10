@@ -76,3 +76,15 @@ def test_user_counterexample_is_a_lower_bound_for_joint_search() -> None:
 def test_speed_only_joint_search_beats_checkerboard_baseline() -> None:
     result = optimize_pasture_shape(9, BUILDINGS, [4])
     assert result["total_value"] >= 17
+
+
+def test_two_bonus_types_joint_search_beats_three_by_three_baseline() -> None:
+    exact_square = solve_pasture(SQUARE, BUILDINGS, [4, 5])
+    assert exact_square["total_value"] == 25
+
+    result = optimize_pasture_shape(9, BUILDINGS, [4, 5])
+    assert result["total_value"] >= exact_square["total_value"]
+    for cell in result["cells"]:
+        if cell["kind"] == "plot":
+            assert cell["coefficient"] == (1 + cell["speed_count"]) * (1 + cell["yield_count"])
+    assert result["total_value"] == sum(cell.get("coefficient", 0) for cell in result["cells"])
