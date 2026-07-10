@@ -131,6 +131,7 @@ from backend.core.fanxiu.packet.service_runtime import (
     get_fanxiu_packet_worker_status as get_fanxiu_packet_daemon_worker_status,
     get_fanxiu_packet_service_status,
     request_fanxiu_packet_service_catch_up,
+    request_fanxiu_packet_service_maintenance,
     start_fanxiu_packet_service,
     stop_fanxiu_packet_service,
 )
@@ -2900,15 +2901,22 @@ def run_fanxiu_packet_worker_catch_up(
 
 @status_router.post("/packet-capture/tcp/worker/maintenance")
 def run_fanxiu_packet_worker_maintenance(
+    reason: str = Query("api"),
+    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
     start_result = start_fanxiu_packet_service()
+    command_result = request_fanxiu_packet_service_maintenance(
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
     return {
-        "status": "delegated",
-        "action": "ensure-daemon",
+        "status": command_result.get("status") or "pending",
+        "action": "maintenance",
         "start_result": start_result,
+        "command": command_result,
         "worker": get_fanxiu_packet_daemon_worker_status(),
     }
 

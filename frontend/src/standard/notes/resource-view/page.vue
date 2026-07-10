@@ -36,10 +36,18 @@ import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
 
 markBootPerf('resource-view.module')
 
-const NoteSheetWorkspace = defineAsyncComponent(() => markBootPerfAsync(
+let noteSheetWorkspaceImportPromise: Promise<unknown> | null = null
+
+const loadNoteSheetWorkspace = () => markBootPerfAsync(
   'resource-view.NoteSheetWorkspace.import',
   () => import('../components/NoteSheetWorkspace.vue'),
-))
+)
+
+const preloadNoteSheetWorkspace = () => (
+  noteSheetWorkspaceImportPromise ??= loadNoteSheetWorkspace()
+)
+
+const NoteSheetWorkspace = defineAsyncComponent(() => preloadNoteSheetWorkspace())
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
@@ -418,6 +426,15 @@ function resolveSheetId() {
     .find((id) => id != null && validIds.has(id)) ?? null
 }
 
+function resolveSheetIdFromWorkbookDetail(
+  detail: WorkbookDetail,
+  candidates: Array<number | null | undefined>,
+) {
+  const sheets = detail.sheets ?? []
+  const validIds = new Set(sheets.map((sheet) => sheet.id))
+  return candidates.find((id) => id != null && validIds.has(id)) ?? null
+}
+
 function syncActiveSheetFromWorkbookRoute() {
   if (!isWorkbookMode.value || !workbook.value || workbook.value.id !== workbookId.value) {
     return false
@@ -494,12 +511,13 @@ async function loadWorkbookResource() {
   clearResourceAccessIssue()
   prefetchedSheetDetail.value = null
   try {
+    void preloadNoteSheetWorkspace()
     const workbookRequest = markBootPerfAsync(
       'resource-view.fetchWorkbook',
       () => fetchWorkbook(targetWorkbookId),
     )
-    const sheetRequest = targetSheetId == null
-      ? Promise.resolve<NoteSheetDetail | null>(null)
+    const requestedSheetRequest = targetSheetId == null
+      ? null
       : markBootPerfAsync(
           'resource-view.prefetchSheet',
           () => fetchNoteSheet(targetSheetId, {
@@ -510,7 +528,30 @@ async function loadWorkbookResource() {
           console.warn('Failed to prefetch workbook sheet:', error)
           return null
         })
-    const [detail, prefetchedDetail] = await Promise.all([workbookRequest, sheetRequest])
+    const detail = await workbookRequest
+    let resolvedSheetId: number | null = null
+    if (detail) {
+      resolvedSheetId = resolveSheetIdFromWorkbookDetail(detail, [
+        targetSheetId,
+        activeSheetId.value,
+        detail.sheets[0]?.id ?? null,
+      ])
+    }
+    let prefetchedDetail = requestedSheetRequest == null
+      ? null
+      : await requestedSheetRequest
+    if (prefetchedDetail == null && detail && resolvedSheetId != null) {
+      prefetchedDetail = await markBootPerfAsync(
+        'resource-view.prefetchSheet',
+        () => fetchNoteSheet(resolvedSheetId!, {
+          workbookId: targetWorkbookId,
+          includeWorkbookContext: false,
+        }),
+      ).catch((error) => {
+        console.warn('Failed to prefetch workbook sheet:', error)
+        return null
+      })
+    }
     markBootPerf('resource-view.loadWorkbook.responses', {
       hasWorkbook: !!detail,
       hasPrefetchedSheet: !!prefetchedDetail,
@@ -533,7 +574,7 @@ async function loadWorkbookResource() {
       return
     }
     workbook.value = detail
-    activeSheetId.value = resolveSheetId()
+    activeSheetId.value = resolvedSheetId
     prefetchedSheetDetail.value = prefetchedDetail?.id === activeSheetId.value ? prefetchedDetail : null
     markBootPerf('resource-view.loadWorkbook.state-ready', {
       activeSheetId: activeSheetId.value,

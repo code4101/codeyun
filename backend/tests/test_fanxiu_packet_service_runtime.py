@@ -69,6 +69,42 @@ def test_packet_worker_status_is_service_state_projection(monkeypatch, tmp_path)
     assert status["pids"] == [1234]
 
 
+def test_request_fanxiu_packet_service_maintenance_submits_maintenance_action(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_submit(action: str, *, reason: str = "api", wait_seconds: float = 30.0):
+        captured.update(action=action, reason=reason, wait_seconds=wait_seconds)
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr(service_runtime, "submit_fanxiu_packet_service_command", fake_submit)
+
+    result = service_runtime.request_fanxiu_packet_service_maintenance(reason="test", wait_seconds=12)
+
+    assert result["action"] == "maintenance"
+    assert captured == {"action": "maintenance", "reason": "test", "wait_seconds": 12}
+
+
+def test_process_packet_service_command_runs_maintenance(monkeypatch, tmp_path):
+    command_path = tmp_path / "maintenance.json"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    command_path.write_text('{"command_id":"maintenance-test","action":"maintenance","reason":"test"}', encoding="utf-8")
+    monkeypatch.setattr(service_runtime, "_packet_service_result_path", lambda _command_id: result_dir / "maintenance-test.json")
+    monkeypatch.setattr(
+        service_runtime.fanxiu_packet_insight_worker,
+        "maintenance_once",
+        lambda: {"ok": True, "updated_at": "2026-07-10 17:40:00"},
+    )
+
+    payload = service_runtime._process_packet_service_command(command_path)
+
+    assert payload["ok"] is True
+    assert payload["action"] == "maintenance"
+    assert payload["result"]["updated_at"] == "2026-07-10 17:40:00"
+    assert not command_path.exists()
+    assert (result_dir / "maintenance-test.json").exists()
+
+
 def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
     monkeypatch.setattr(
         service_runtime,

@@ -108,9 +108,14 @@ export interface ZaohuaAlchemySolutionHerb {
   unit_price: number
 }
 
+export type ZaohuaAlchemyValueMetric = 'output_input_ratio' | 'net_profit' | 'profit_rate'
+
 export interface ZaohuaAlchemySolution {
   rank: number
   ratio: number | null
+  output_input_ratio: number | null
+  net_profit: number
+  profit_rate: number | null
   cost: number
   base_yield: number
   rule_bonus: number
@@ -135,7 +140,7 @@ export interface ZaohuaAlchemySolution {
 
 export interface ZaohuaAlchemySolveResult {
   recipe_id: number
-  furnace: { width: number; height: number }
+  furnace: ZaohuaFurnace
   solutions: ZaohuaAlchemySolution[]
   target_vector: Record<string, number>
   candidate_count: number
@@ -143,6 +148,8 @@ export interface ZaohuaAlchemySolveResult {
   packing_nodes: number
   exhaustive: boolean
   search_mode: 'monotone'
+  duration: number
+  sort_metrics: ZaohuaAlchemyValueMetric[]
   has_more: boolean
   solution_count: number
   available_herbs: Array<{
@@ -158,10 +165,10 @@ export interface ZaohuaAlchemySolveResult {
 export const solveZaohuaAlchemy = async (
   recipeId: number,
   payload: {
-    width: number
-    height: number
+    furnace_item_id: number
     limit?: number
     excluded_item_ids?: number[]
+    sort_metrics?: ZaohuaAlchemyValueMetric[]
   },
 ): Promise<ZaohuaAlchemySolveResult> => {
   const response = await api.post(`/zaohua/alchemy/recipes/${recipeId}/solve`, payload)
