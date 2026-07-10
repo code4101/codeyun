@@ -438,6 +438,60 @@ class PokemonTcgCardRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class ZaohuaAlchemyRecipe(SQLModel, table=True):
+    __tablename__ = "zaohuaalchemyrecipe"
+    __table_args__ = {"extend_existing": True}
+
+    recipe_id: int = Field(primary_key=True)
+    source_build_id: str = Field(default="", index=True)
+    name: str = Field(default="", index=True)
+    technique: str = Field(default="", sa_column=Column(Text))
+    output_item_id: int = Field(default=0, index=True)
+    output_item_name: str = Field(default="", index=True)
+    output_count: int = Field(default=0)
+    output_grade_id: int = Field(default=0, index=True)
+    output_grade_name: str = Field(default="", index=True)
+    output_icon_path: str = Field(default="", sa_column=Column(Text))
+    output_price: float = Field(default=0)
+    attr_limits: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    example_items: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    state_rules: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    search_text: str = Field(default="", sa_column=Column(Text))
+    source_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    content_hash: str = Field(default="", index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class ZaohuaHerb(SQLModel, table=True):
+    __tablename__ = "zaohuaherb"
+    __table_args__ = {"extend_existing": True}
+
+    item_id: int = Field(primary_key=True)
+    source_build_id: str = Field(default="", index=True)
+    display_order: int = Field(default=0, index=True)
+    name: str = Field(default="", index=True)
+    description: str = Field(default="", sa_column=Column(Text))
+    effect_description: str = Field(default="", sa_column=Column(Text))
+    icon_path: str = Field(default="", sa_column=Column(Text))
+    grade_id: int = Field(default=0, index=True)
+    grade_name: str = Field(default="", index=True)
+    element_id: int = Field(default=0, index=True)
+    element_key: str = Field(default="", index=True)
+    element_name: str = Field(default="", index=True)
+    price: float = Field(default=0)
+    lingqi: int = Field(default=0)
+    recipe_count: int = Field(default=0, index=True)
+    recipes: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    search_text: str = Field(default="", sa_column=Column(Text))
+    source_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    content_hash: str = Field(default="", index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class PdfDocument(SQLModel, table=True):
     __tablename__ = "pdfdocument"
     __table_args__ = (

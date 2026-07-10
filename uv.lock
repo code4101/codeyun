@@ -792,6 +792,7 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "chardet" },
     { name = "cryptography" },
+    { name = "dnfile" },
     { name = "drissionpage" },
     { name = "fastapi" },
     { name = "jieba" },
@@ -833,6 +834,7 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'" },
     { name = "chardet", specifier = ">=5.2.0" },
     { name = "cryptography", specifier = ">=46.0.0" },
+    { name = "dnfile", specifier = ">=0.18.0" },
     { name = "drissionpage", specifier = ">=4.1.1.2" },
     { name = "fastapi", specifier = ">=0.110.0" },
     { name = "isort", marker = "extra == 'dev'" },
@@ -1159,6 +1161,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/a3/6eed6a39991aaef974ae8d917aa9cc201c8f56844ab0f0dfeb319cd63f25/disjoint_set-0.9.0.tar.gz", hash = "sha256:f9640f906824d6c3bf5f92597616245112b953125d73f60490d49124ba731585", size = 3537, upload-time = "2026-02-21T15:05:42.288Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/c6/bd8bdd42d4b8b473890cba9cbd69f941c4b29d91a1e4cdcdb05ebb41da9f/disjoint_set-0.9.0-py3-none-any.whl", hash = "sha256:58378ee8d474355f07bca1c0633803e01259abd6e02cc3d49a9799aa203457ea", size = 4804, upload-time = "2026-02-21T15:05:43.183Z" },
+]
+
+[[package]]
+name = "dnfile"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pefile" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/01/c3/89dbe3a48dfa303060d59b74b97b8401cc70b9b4d4c24982202861fd82e9/dnfile-0.18.0.tar.gz", hash = "sha256:24eec63d65535b702236001e648bbf2fa139d1a7bea191fdca17c3be337eb4db", size = 51519, upload-time = "2026-01-31T05:09:11.212Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/39/ad/4f945155a78800cea02cb258bc0b7704c43cf94f50f75c808f0618694153/dnfile-0.18.0-py3-none-any.whl", hash = "sha256:7579fe2d6bb1d854aa154929c309fbf34e70b622053a043a51d42f079fad1772", size = 48044, upload-time = "2026-01-31T05:09:09.703Z" },
 ]
 
 [[package]]
@@ -3389,6 +3403,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/fa/36/e27608899f9b8d4dff0617b2d9ab17ca5608956ca44461ac14ac48b44015/pathspec-1.0.4.tar.gz", hash = "sha256:0210e2ae8a21a9137c0d470578cb0e595af87edaa6ebf12ff176f14a02e0e645", size = 131200, upload-time = "2026-01-27T03:59:46.938Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ef/3c/2c197d226f9ea224a9ab8d197933f9da0ae0aac5b6e0f884e2b8d9c8e9f7/pathspec-1.0.4-py3-none-any.whl", hash = "sha256:fb6ae2fd4e7c921a165808a552060e722767cfa526f99ca5156ed2ce45a5c723", size = 55206, upload-time = "2026-01-27T03:59:45.137Z" },
+]
+
+[[package]]
+name = "pefile"
+version = "2024.8.26"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/4f/2750f7f6f025a1507cd3b7218691671eecfd0bbebebe8b39aa0fe1d360b8/pefile-2024.8.26.tar.gz", hash = "sha256:3ff6c5d8b43e8c37bb6e6dd5085658d658a7a0bdcd20b6a07b1fcfc1c4e9d632", size = 76008, upload-time = "2024-08-26T20:58:38.155Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl", hash = "sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f", size = 74766, upload-time = "2024-08-26T21:01:02.632Z" },
 ]
 
 [[package]]

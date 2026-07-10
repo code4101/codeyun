@@ -1329,12 +1329,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { VueFlow, MarkerType, type Edge, type Node } from '@vue-flow/core';
-import { Controls } from '@vue-flow/controls';
-import ELK from 'elkjs/lib/elk.bundled.js';
+import type { Edge, Node } from '@vue-flow/core';
 import {
   Folder,
   Picture,
@@ -1420,13 +1418,27 @@ import {
   type FanxiuPseudoCodeRunResponse,
 } from '@/api/fanxiu';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
-import ElkEdge from '@/components/ElkEdge.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { useSortableList } from '@/utils/useSortableList';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
+
+const VueFlow = defineAsyncComponent(() => import('@vue-flow/core').then((mod) => mod.VueFlow));
+const Controls = defineAsyncComponent(() => import('@vue-flow/controls').then((mod) => mod.Controls));
+const ElkEdge = defineAsyncComponent(() => import('@/components/ElkEdge.vue'));
+
+const SCENE_GRAPH_ARROW_MARKER = 'arrowclosed' as const;
+let sceneRelationGraphElkPromise: Promise<{ layout: (graph: unknown) => Promise<any> }> | null = null;
+const getSceneRelationGraphElk = async () => {
+  if (!sceneRelationGraphElkPromise) {
+    sceneRelationGraphElkPromise = import('elkjs/lib/elk.bundled.js')
+      .then(({ default: ELK }) => new ELK());
+  }
+  return sceneRelationGraphElkPromise;
+};
+
 interface OverlayBox {
   id: string;
   name: string;
@@ -8656,7 +8668,6 @@ const selectedSceneGraphKey = computed(() => (
 const sceneRelationGraphEdgeTypes = {
   elk: ElkEdge,
 };
-const sceneRelationGraphElk = new ELK();
 const SCENE_GRAPH_NODE_WIDTH = 156;
 const SCENE_GRAPH_NODE_HEIGHT = 42;
 
@@ -8947,7 +8958,7 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
         label,
         animated: true,
         markerEnd: {
-          type: MarkerType.ArrowClosed,
+          type: SCENE_GRAPH_ARROW_MARKER,
           color,
           width: 16,
           height: 16,
@@ -8974,7 +8985,7 @@ const selectedSceneGraphBaseEdges = computed<Edge<SceneGraphEdgeData>[]>(() => {
     label,
     animated: edge.kind === 'recognition',
     markerEnd: {
-      type: MarkerType.ArrowClosed,
+      type: SCENE_GRAPH_ARROW_MARKER,
       color,
       width: 16,
       height: 16,
@@ -9008,6 +9019,7 @@ const layoutSelectedSceneGraph = async () => {
   if (!baseEdges.length) return;
 
   try {
+    const sceneRelationGraphElk = await getSceneRelationGraphElk();
     const graph = await sceneRelationGraphElk.layout({
       id: 'scene-relation-graph',
       layoutOptions: {
