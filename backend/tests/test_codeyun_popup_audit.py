@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scripts import codeyun_popup_audit
 from scripts.codeyun_popup_audit import is_codeyun_event
 from scripts.codeyun_popup_audit import is_codeyun_workspace_event
 
@@ -326,3 +327,28 @@ def test_fanxiu_watch_doctor_terminal_is_codeyun_service_event():
 
     assert is_codeyun_event(event, Path("D:/home/chenkunze/slns/codeyun")) is True
     assert is_codeyun_workspace_event(event, Path("D:/home/chenkunze/slns/codeyun")) is False
+
+
+def test_audit_recent_uses_recent_window(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_audit_since(started_at, *, monitor_status=None):
+        captured["started_at"] = started_at
+        captured["monitor_status"] = monitor_status
+        return {
+            "coverage_valid": True,
+            "total_events": 0,
+            "codeyun_events": 0,
+            "codeyun_workspace_events": 0,
+            "attention_events": 0,
+        }
+
+    monkeypatch.setattr(codeyun_popup_audit, "audit_since", fake_audit_since)
+    monkeypatch.setattr(codeyun_popup_audit, "STATUS_PATH", tmp_path / "status.json")
+
+    status = codeyun_popup_audit.audit_recent(2, monitor_status={"alive": True})
+
+    assert status["mode"] == "recent"
+    assert status["window_hours"] == 2.0
+    assert captured["monitor_status"] == {"alive": True}
+    assert captured["started_at"]

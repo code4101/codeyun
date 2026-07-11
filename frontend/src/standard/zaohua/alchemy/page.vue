@@ -47,7 +47,7 @@ const grade = ref(loadStoredGradeFilter())
 const page = ref(1)
 const pageSize = ref(40)
 const total = ref(0)
-const sortBy = ref<'number' | 'grade'>('number')
+const sortBy = ref<'number' | 'grade'>('grade')
 const sortOrder = ref<'asc' | 'desc'>('asc')
 const furnaces = ref<ZaohuaFurnace[]>([])
 const selectedFurnaceId = ref(0)
@@ -594,6 +594,7 @@ onBeforeUnmount(() => {
               </th>
               <th>价格</th>
               <th>作用</th>
+              <th>耐药</th>
               <th>五行需求</th>
               <th>炼丹药材</th>
               <th class="fill-column" aria-hidden="true"></th>
@@ -629,6 +630,9 @@ onBeforeUnmount(() => {
               <td class="number-cell">{{ recipe.output.grade_rank || '—' }}</td>
               <td class="number-cell">{{ formatPrice(recipe.output.price) }}</td>
               <td class="effect-cell" :title="recipe.output.effect_text">{{ recipe.output.effect_text || '—' }}</td>
+              <td class="number-cell" :title="recipe.output.drug_max ? `每次服用增加 ${recipe.output.add_drug_tolerance || 0} 点，累计达到 ${recipe.output.drug_max} 后耐药` : ''">
+                {{ recipe.output.drug_max || '—' }}
+              </td>
               <td>
                 <span v-if="recipe.attr_limits.length" class="element-list">
                   <span
@@ -706,6 +710,12 @@ onBeforeUnmount(() => {
 
         <dt>说明</dt>
         <dd>{{ selected.output.description || '—' }}</dd>
+
+        <dt>耐药性</dt>
+        <dd v-if="selected.output.drug_max">
+          每次服用增加 {{ selected.output.add_drug_tolerance || 0 }} 点，累计达到 {{ selected.output.drug_max }} 后耐药
+        </dd>
+        <dd v-else>无</dd>
 
         <dt>五行需求</dt>
         <dd>

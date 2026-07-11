@@ -16,6 +16,7 @@ LOCAL_RUNTIME_SCRIPTS = [
     ROOT / "scripts" / "codeyun_watchdog.py",
     ROOT / "scripts" / "codeyun_popup_audit.py",
     ROOT / "scripts" / "codeyun_visible_console_monitor.py",
+    ROOT / "scripts" / "codeyun_stability_check.py",
 ]
 SERVICE_ENTRYPOINTS_REQUIRING_NO_WINDOW_DEFAULT = {
     BACKEND / "app.py",

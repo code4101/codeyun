@@ -9,13 +9,21 @@ CodeYun 需要在本机长期运行，并且不能因为后端导入失败、前
 - CodeYun 每次启动时都确认本机守护存在；没有则启动。
 - 守护独立于 CodeYun 主进程；CodeYun 崩溃不能带死守护。
 - 日常开发以用户打开的 `uv run dev.py` 命令行窗口作为主控。
+- 用户日常优先使用仓库根目录 `codeyun-dev.cmd` 打开主控；它只是固定 cwd、环境变量和 `uv run dev.py`，不另建一套运行逻辑。
 - 守护负责恢复 CodeYun 可用性；当命令行主控仍存活时，守护只观测，不接管热加载或重启。
-- 启动器负责单实例收敛和本窗口内的后端热加载；守护只在没有主控时兜底调用启动器。
+- `dev.py` 负责单实例收敛和本窗口内的后端热加载；守护只在没有主控时用隐藏 `pythonw dev.py` 兜底恢复。
 - 后台运行不得弹出控制台窗口。
+- 另有 2 小时稳定性巡检，定期检查健康、守护、主控心跳和可见控制台弹窗证据。
 
 ## 总体设计
 
 ```text
+用户手动启动
+  -> codeyun-dev.cmd
+  -> uv run dev.py
+  -> 当前控制台成为 console host
+  -> dev.py 在原控制台内记录心跳、管理热加载和子服务
+
 CodeYun 后端启动
   -> ensure_local_builtin_services_on_startup()
   -> 检查 CodeYun 本机守护是否存在
@@ -40,6 +48,13 @@ dev.py
   -> 启动一个后端和一个前端
   -> 默认使用 outer backend watcher，在当前进程内完成后端延迟热加载
   -> 写入系统临时目录中的 console host 心跳，告知守护不要接管
+
+2 小时稳定性巡检
+  -> Windows 计划任务 CodeYun Stability Check
+  -> pythonw 启动 scripts/codeyun_stability_check.py --json
+  -> 检查后端/前端健康、watchdog 进程、console host 心跳
+  -> 确保可见控制台监控器存在，并审计最近 2 小时事件
+  -> 报告写入系统临时目录，不弹窗口，不接管热加载
 ```
 
 ## 职责边界
@@ -77,6 +92,18 @@ CodeYun 后端只负责自举守护：
 - 后端热加载只有 `outer` 和 `off` 两种模式；不再保留 `uvicorn --reload` 这条第二套热加载路径。
 - 启动时写入 `%TEMP%\codeyun\codeyun-console-host.json` 心跳；守护据此退让。
 - 不默认关闭守护自启动。
+
+### codeyun-dev.cmd
+
+`codeyun-dev.cmd` 是面向用户的唯一推荐主控启动入口：
+
+- 固定切换到仓库根目录，避免从其他 cwd 启动导致状态和路径分裂。
+- 设置 `CODEYUN_DEV_CONSOLE_HOST=1`，显式声明当前进程是命令行主控。
+- 默认设置 `CODEYUN_DEV_BACKEND_RELOAD_MODE=outer`，让后端热加载由 `dev.py` 外层 watcher 控制。
+- 优先运行 `uv run dev.py`；仅在 `uv` 不可用时回落到 `.venv\Scripts\python.exe dev.py`。
+- 不使用 `pythonw.exe`，因为这条路径本来就应该有一个用户可见的主控制台。
+
+这层壳不做健康判断、不做作业管理、不隐藏子进程、不另起 watchdog。它只把“用户启动 CodeYun 主控”这件事固定成一个可重复的入口。
 
 ## 重启策略
 
@@ -175,6 +202,46 @@ CodeYun 常驻服务、守护、ADB/MuMu/tshark 调用和公网前端构建，�
 - 如果监控器死亡，审计入口会用无窗口方式重新拉起。
 - 监控器死亡后重新拉起时，24 小时无弹窗的有效观察窗口必须重新计算；不能把监控断档前后的时间拼起来当作连续证据。
 - 当前 24 小时基线写在系统临时目录 `codeyun/visible-console-monitor/codeyun_popup_24h_baseline.json`。
+- 稳定性巡检不依赖 24 小时基线是否干净；它使用 `scripts/codeyun_popup_audit.py --since-hours 2`
+  审计最近 2 小时，避免历史旧弹窗长期污染当前巡检结论。
+
+## 2 小时稳定性巡检
+
+稳定性巡检是观察和报告程序，不替代 watchdog，也不参与热加载。它的入口是
+`scripts/codeyun_stability_check.py`。
+
+默认检查项：
+
+- 后端 `/api/health` 和前端首页是否可访问。
+- `scripts/codeyun_watchdog.py --loop` 是否存在。
+- 如果 console host 心跳新鲜，则确认热加载主控存在；健康短暂失败时按启动宽限期处理。
+- 可见控制台监控器是否仍在覆盖当前窗口。
+- 最近 2 小时是否出现 CodeYun 服务链路导致的可见控制台窗口。
+
+输出位置：
+
+- 最新报告：`%TEMP%\codeyun\stability-check\latest.json`
+- 历史报告：`%TEMP%\codeyun\stability-check\history.jsonl`
+
+手动运行：
+
+```bash
+uv run python scripts/codeyun_stability_check.py --json
+```
+
+安装 2 小时计划任务：
+
+```bash
+uv run python scripts/codeyun_stability_check.py --install-task
+```
+
+查看计划任务：
+
+```bash
+uv run python scripts/codeyun_stability_check.py --task-status
+```
+
+这个计划任务使用 `pythonw.exe` 运行巡检脚本，因此不会弹出控制台窗口。它只报告问题；真正的恢复仍由每分钟运行的 watchdog 负责。
 
 ## 单实例原则
 
@@ -205,6 +272,9 @@ CodeYun 常驻服务、守护、ADB/MuMu/tshark 调用和公网前端构建，�
 - `CODEYUN_WATCHDOG_INTERVAL_SECONDS`：守护检查间隔，默认 60 秒。
 - `CODEYUN_WATCHDOG_LOG`：守护日志路径，默认位于系统临时目录。
 - `CODEYUN_WATCHDOG_LOCK`：守护 pid 文件路径，默认位于系统临时目录。
+- `CODEYUN_STABILITY_POPUP_WINDOW_HOURS`：稳定性巡检的弹窗审计窗口，默认 2 小时。
+- `CODEYUN_STABILITY_REQUEST_TIMEOUT`：稳定性巡检 HTTP 探针超时，默认 10 秒。
+- `CODEYUN_STABILITY_STARTUP_GRACE_SECONDS`：console host 刚启动时允许健康探针暂时失败的宽限期，默认 180 秒。
 
 `CODEYUN_WATCHDOG_AUTOSTART` 不是系统开机自启开关。系统登录自启由 Windows 计划任务
 `CodeYun Watchdog` 管理；运行页中 CodeYun 本机守护的“配置”入口只创建或禁用这一个固定任务，不扫描其他启动项来源。
@@ -216,3 +286,6 @@ CodeYun 常驻服务、守护、ADB/MuMu/tshark 调用和公网前端构建，�
 - 修改后端源码后，由用户打开的 `uv run dev.py` 控制台在原窗口内完成热加载；守护只观测 console host 心跳。
 - 命令行主控存活时，即使健康探针短暂失败，守护也不杀掉主控或新建隐藏实例。
 - 守护和 CodeYun 后台启动均不弹控制台窗口。
+- `codeyun-dev.cmd` 从用户控制台启动 `dev.py`，不使用隐藏 Python。
+- `scripts/codeyun_stability_check.py --install-task` 创建 2 小时巡检计划任务，任务命令使用 `pythonw.exe`。
+- 稳定性巡检报告中 CodeYun 服务弹窗数为 0；若出现服务弹窗，报告状态必须进入 `attention_required`。

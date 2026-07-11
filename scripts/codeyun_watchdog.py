@@ -32,6 +32,7 @@ DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_STARTUP_GRACE_SECONDS = 180.0
 DEFAULT_CONSOLE_HOST_STALE_SECONDS = 20.0
+WATCHDOG_BACKEND_RELOAD_MODE_ENV = "CODEYUN_WATCHDOG_BACKEND_RELOAD_MODE"
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
 
 
@@ -307,7 +308,12 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
     if psutil is None:
         _log(log_path, "psutil is unavailable; cannot clean stale dev processes.")
         return []
-    targets = [psutil.Process(item["pid"]) for item in list_dev_component_processes()]
+    targets = []
+    for item in list_dev_component_processes():
+        try:
+            targets.append(psutil.Process(item["pid"]))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
     if not targets:
         return []
 
@@ -371,6 +377,7 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["CODEYUN_DEV_BACKEND_RELOAD_MODE"] = os.getenv(WATCHDOG_BACKEND_RELOAD_MODE_ENV, "outer").strip() or "outer"
     with stdout_path.open("ab") as stdout_file, stderr_path.open("ab") as stderr_file:
         stdout_file.write(f"\n[{_now()}] CodeYun watchdog detached start: {' '.join(command)}\n".encode("utf-8"))
         proc = popen_service(

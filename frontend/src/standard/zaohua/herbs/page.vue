@@ -24,7 +24,10 @@ const router = useRouter()
 const loading = ref(false)
 const meta = ref<ZaohuaHerbMeta | null>(null)
 const herbs = ref<ZaohuaHerb[]>([])
+const matrixHerbs = ref<ZaohuaHerb[]>([])
+const matrixLoading = ref(false)
 const selected = ref<ZaohuaHerb | null>(null)
+const viewMode = ref<'matrix' | 'list'>('matrix')
 const query = ref('')
 const grade = ref('')
 const element = ref('')
@@ -35,6 +38,175 @@ const sortBy = ref<'number' | 'grade'>('number')
 const sortOrder = ref<'asc' | 'desc'>('asc')
 let searchTimer = 0
 let requestSequence = 0
+
+type MatrixColumn = { key: string; label: string }
+type MatrixGroup = 'cycle' | 'polarity' | 'variant' | 'shop'
+const MATRIX_GROUP_STORAGE_KEY = 'zaohua:herbs:matrix-group'
+const MATRIX_GROUPS: Array<{ value: MatrixGroup; code: string; label: string }> = [
+  { value: 'cycle', code: 'A', label: '五行互生' },
+  { value: 'polarity', code: 'B', label: '五行阴阳' },
+  { value: 'variant', code: 'C', label: '异灵根' },
+  { value: 'shop', code: '', label: '灵材铺' },
+]
+const loadMatrixGroup = (): MatrixGroup => {
+  try {
+    const saved = window.localStorage.getItem(MATRIX_GROUP_STORAGE_KEY)
+    return saved === 'polarity' || saved === 'variant' || saved === 'shop' ? saved : 'cycle'
+  } catch {
+    return 'cycle'
+  }
+}
+const matrixGroup = ref<MatrixGroup>(loadMatrixGroup())
+const MATRIX_COLUMNS: MatrixColumn[] = [
+  { key: 'mix_gold_water', label: '金水' },
+  { key: 'mix_water_wood', label: '水木' },
+  { key: 'mix_wood_fire', label: '木火' },
+  { key: 'mix_fire_soil', label: '火土' },
+  { key: 'mix_soil_gold', label: '土金' },
+  { key: 'yang_gold', label: '阳金' }, { key: 'yin_gold', label: '阴金' },
+  { key: 'yang_water', label: '阳水' }, { key: 'yin_water', label: '阴水' },
+  { key: 'yang_wood', label: '阳木' }, { key: 'yin_wood', label: '阴木' },
+  { key: 'yang_fire', label: '阳火' }, { key: 'yin_fire', label: '阴火' },
+  { key: 'yang_soil', label: '阳土' }, { key: 'yin_soil', label: '阴土' },
+  { key: 'yang_ice', label: '阳冰' }, { key: 'yin_ice_yang_water', label: '阴冰阳水' },
+  { key: 'yang_wind', label: '阳风' }, { key: 'yin_wind_yang_wood', label: '阴风阳木' },
+  { key: 'yang_thunder', label: '阳雷' }, { key: 'yin_thunder_yang_fire', label: '阴雷阳火' },
+]
+const MATRIX_GROUP_RANGES: Record<MatrixGroup, [number, number]> = {
+  cycle: [0, 5],
+  polarity: [5, 15],
+  variant: [15, 21],
+  shop: [0, 0],
+}
+const visibleMatrixColumns = computed(() => {
+  const [start, end] = MATRIX_GROUP_RANGES[matrixGroup.value]
+  return MATRIX_COLUMNS.slice(start, end)
+})
+const matrixGroupLabel = computed(() => MATRIX_GROUPS.find(item => item.value === matrixGroup.value)?.label || '')
+const matrixGroupCode = computed(() => MATRIX_GROUPS.find(item => item.value === matrixGroup.value)?.code || '')
+const isShopMatrix = computed(() => matrixGroup.value === 'shop')
+const PLANTING_DAYS_BY_RANK = [10, 20, 30, 360, 720, 1080, 3600, 7200, 10800, 36000, 72000, 108000]
+const plantingTime = (rank: number) => {
+  const days = PLANTING_DAYS_BY_RANK[rank - 1]
+  if (!days) return null
+  return { days, years: days >= 360 ? days / 360 : null }
+}
+
+type ShopPool = {
+  startRank: number
+  endRank: number
+  drawCount: number
+  label: string
+  perItem: 'one' | 'random'
+  note?: string
+}
+type ShopStage = { key: string; label: string; pools: ShopPool[] }
+const SHOP_STAGES: ShopStage[] = [
+  {
+    key: 'chapter-1',
+    label: '第一章',
+    pools: [
+      { startRank: 1, endRank: 1, drawCount: 20, label: '一阶下品池', perItem: 'random' },
+      { startRank: 2, endRank: 2, drawCount: 10, label: '一阶中品池', perItem: 'one' },
+    ],
+  },
+  {
+    key: 'chapter-2-6',
+    label: '第二至六章',
+    pools: [
+      { startRank: 1, endRank: 1, drawCount: 20, label: '一阶下品池', perItem: 'random' },
+      { startRank: 2, endRank: 2, drawCount: 10, label: '一阶中品池', perItem: 'one', note: '第三章仙缘城抽20株，单种数量随机' },
+      { startRank: 3, endRank: 3, drawCount: 5, label: '一阶上品池', perItem: 'one' },
+    ],
+  },
+  {
+    key: 'chapter-7',
+    label: '第七章',
+    pools: [
+      { startRank: 1, endRank: 3, drawCount: 20, label: '一阶合池', perItem: 'one' },
+      { startRank: 4, endRank: 4, drawCount: 10, label: '二阶下品池', perItem: 'one' },
+    ],
+  },
+  {
+    key: 'map-1005',
+    label: '赤霄秘境',
+    pools: [
+      { startRank: 1, endRank: 6, drawCount: 20, label: '一至二阶合池', perItem: 'one' },
+      { startRank: 7, endRank: 9, drawCount: 10, label: '三阶合池', perItem: 'one' },
+    ],
+  },
+]
+const shopPoolForRank = (stage: ShopStage, rank: number) => (
+  stage.pools.find(pool => rank >= pool.startRank && rank <= pool.endRank)
+)
+type MatrixPriceColumn = { key: string; label: string; slotKeys: string[] }
+const visiblePriceColumns = computed<MatrixPriceColumn[]>(() => {
+  if (matrixGroup.value === 'shop') return []
+  if (matrixGroup.value === 'cycle') {
+    return [{ key: 'cycle', label: '互生价', slotKeys: MATRIX_COLUMNS.slice(0, 5).map(item => item.key) }]
+  }
+  if (matrixGroup.value === 'polarity') {
+    return [
+      { key: 'yang', label: '阳价', slotKeys: MATRIX_COLUMNS.slice(5, 15).filter(item => item.key.startsWith('yang_')).map(item => item.key) },
+      { key: 'yin', label: '阴价', slotKeys: MATRIX_COLUMNS.slice(5, 15).filter(item => item.key.startsWith('yin_')).map(item => item.key) },
+    ]
+  }
+  return [
+    { key: 'yang', label: '阳价', slotKeys: MATRIX_COLUMNS.slice(15).filter(item => item.key.startsWith('yang_')).map(item => item.key) },
+    { key: 'yin', label: '阴价', slotKeys: MATRIX_COLUMNS.slice(15).filter(item => item.key.startsWith('yin_')).map(item => item.key) },
+  ]
+})
+
+const matrixPriceEntries = (row: { cells: Map<string, ZaohuaHerb[]> }, column: MatrixPriceColumn) => {
+  const herbs = column.slotKeys.flatMap(key => row.cells.get(key) || [])
+  const byPrice = new Map<number, string[]>()
+  for (const herb of herbs) byPrice.set(herb.price, [...(byPrice.get(herb.price) || []), herb.name])
+  return [...byPrice.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([price, names]) => ({ price, names }))
+}
+
+const matrixSlotKey = (herb: ZaohuaHerb) => {
+  const values = new Map(herb.crafting_attributes.map(item => [item.element, item.value]))
+  const positive = [...values].filter(([, value]) => value > 0).map(([key]) => key)
+  const negative = [...values].filter(([, value]) => value < 0).map(([key]) => key)
+  const pair = (left: string, right: string) => positive.includes(left) && positive.includes(right) && values.size === 2
+  if (pair('gold', 'water')) return 'mix_gold_water'
+  if (pair('water', 'wood')) return 'mix_water_wood'
+  if (pair('wood', 'fire')) return 'mix_wood_fire'
+  if (pair('fire', 'soil')) return 'mix_fire_soil'
+  if (pair('soil', 'gold')) return 'mix_soil_gold'
+  if (negative.includes('ice') && positive.includes('water')) return 'yin_ice_yang_water'
+  if (negative.includes('wind') && positive.includes('wood')) return 'yin_wind_yang_wood'
+  if (negative.includes('thunder') && positive.includes('fire')) return 'yin_thunder_yang_fire'
+  if (values.size === 1) {
+    const [elementKey, value] = [...values][0] || []
+    if (elementKey && value) return `${value < 0 ? 'yin' : 'yang'}_${elementKey}`
+  }
+  return 'other'
+}
+
+const matrixRows = computed(() => {
+  const byGrade = new Map<number, ZaohuaHerb[]>()
+  for (const herb of matrixHerbs.value) byGrade.set(herb.grade_rank, [...(byGrade.get(herb.grade_rank) || []), herb])
+  const rows = [...byGrade.entries()].sort(([left], [right]) => left - right).map(([rank, gradeHerbs]) => {
+    const cells = new Map<string, ZaohuaHerb[]>()
+    for (const herb of gradeHerbs) {
+      const key = matrixSlotKey(herb)
+      cells.set(key, [...(cells.get(key) || []), herb])
+    }
+    return {
+      rank,
+      gradeName: gradeHerbs[0]?.grade_name || '',
+      prices: [...new Set(gradeHerbs.map(item => item.price))].sort((a, b) => a - b),
+      cells,
+    }
+  })
+  for (const [rank, gradeName] of [[13, '五阶下品'], [14, '五阶中品'], [15, '五阶上品']] as const) {
+    if (!byGrade.has(rank)) rows.push({ rank, gradeName, prices: [], cells: new Map<string, ZaohuaHerb[]>() })
+  }
+  return rows
+})
 
 const {
   paneHeight: listPaneHeight,
@@ -164,6 +336,21 @@ const loadHerbs = async () => {
   }
 }
 
+const loadMatrixHerbs = async () => {
+  matrixLoading.value = true
+  try {
+    const response = await fetchZaohuaHerbs({
+      sort_by: 'grade',
+      sort_order: 'asc',
+      page: 1,
+      page_size: 200,
+    })
+    matrixHerbs.value = response.items
+  } finally {
+    matrixLoading.value = false
+  }
+}
+
 watch(query, () => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => {
@@ -179,8 +366,16 @@ watch([grade, element, pageSize], () => {
 
 watch(page, () => void loadHerbs())
 
+watch(matrixGroup, (value) => {
+  try {
+    window.localStorage.setItem(MATRIX_GROUP_STORAGE_KEY, value)
+  } catch {
+    // The matrix remains usable when browser storage is unavailable.
+  }
+})
+
 onMounted(async () => {
-  await Promise.all([loadMeta(), loadHerbs()])
+  await Promise.all([loadMeta(), loadHerbs(), loadMatrixHerbs()])
 })
 
 onBeforeUnmount(() => window.clearTimeout(searchTimer))
@@ -196,14 +391,32 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
     </header>
 
     <section class="toolbar">
+      <el-select v-model="viewMode" class="view-mode-select" aria-label="药材视图">
+        <el-option label="归纳表" value="matrix" />
+        <el-option label="明细" value="list" />
+      </el-select>
+      <el-select
+        v-if="viewMode === 'matrix'"
+        v-model="matrixGroup"
+        class="matrix-group-select"
+        aria-label="规律类别"
+      >
+        <el-option
+          v-for="item in MATRIX_GROUPS"
+          :key="item.value"
+          :label="item.code ? `${item.code} · ${item.label}` : item.label"
+          :value="item.value"
+        />
+      </el-select>
       <el-input
+        v-if="viewMode === 'list'"
         v-model="query"
         class="search-input"
         clearable
         :prefix-icon="Search"
         placeholder="搜索药材、描述或丹药"
       />
-      <el-select v-model="grade" class="grade-select" aria-label="品阶筛选" placeholder="全部品阶" clearable>
+      <el-select v-if="viewMode === 'list'" v-model="grade" class="grade-select" aria-label="品阶筛选" placeholder="全部品阶" clearable>
         <template #label="{ value }">
           <span v-if="gradeOptionByName(String(value || ''))" class="grade-filter-selection">
             <span class="grade-rank">{{ gradeOptionByName(String(value || ''))?.order }}</span>
@@ -224,7 +437,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           </span>
         </el-option>
       </el-select>
-      <el-select v-model="element" class="element-select" placeholder="全部所属五行" clearable>
+      <el-select v-if="viewMode === 'list'" v-model="element" class="element-select" placeholder="全部所属五行" clearable>
         <template #label="{ value }">
           <span v-if="elementOptionByKey(String(value || ''))" class="element-text" :style="elementStyle(String(value || ''))">
             {{ elementLabel(String(value || ''), elementOptionByKey(String(value || ''))?.name || '') }}
@@ -239,8 +452,113 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
       </el-select>
     </section>
 
-    <section class="list-pane" :style="listPaneStyle" v-loading="loading">
-      <div class="table-scroll">
+    <section class="list-pane" :style="listPaneStyle" v-loading="viewMode !== 'list' ? matrixLoading : loading">
+      <div v-if="viewMode !== 'list'" class="matrix-scroll">
+        <table class="herb-matrix">
+          <thead>
+            <tr>
+              <th rowspan="2" class="sticky-grade-rank">品级</th>
+              <th rowspan="2" class="sticky-grade-name">品阶</th>
+              <th rowspan="2" class="planting-time-column">种植时间</th>
+              <th v-for="column in isShopMatrix ? [] : visiblePriceColumns" :key="column.key" rowspan="2" class="matrix-price">
+                {{ column.label }}
+              </th>
+              <th :colspan="isShopMatrix ? SHOP_STAGES.length : visibleMatrixColumns.length">
+                <template v-if="isShopMatrix">灵材铺 · 每30日刷新</template>
+                <template v-else>{{ matrixGroupCode }} · {{ matrixGroupLabel }}</template>
+              </th>
+            </tr>
+            <tr>
+              <th v-for="stage in isShopMatrix ? SHOP_STAGES : []" :key="stage.key">
+                {{ stage.label }}
+              </th>
+              <th v-for="(column, index) in isShopMatrix ? [] : visibleMatrixColumns" :key="column.key">
+                {{ matrixGroupCode }}{{ index + 1 }} · {{ column.label }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in matrixRows" :key="row.rank">
+              <td class="sticky-grade-rank number-cell">{{ row.rank }}</td>
+              <td class="sticky-grade-name">
+                <GradeMeter
+                  class="matrix-grade-meter"
+                  :rank="row.rank"
+                  :label="row.gradeName"
+                />
+              </td>
+              <td class="planting-time-cell number-cell">
+                <template v-if="plantingTime(row.rank)">
+                  <strong>{{ formatNumber(plantingTime(row.rank)?.days || 0) }}日</strong>
+                  <small v-if="plantingTime(row.rank)?.years">{{ formatNumber(plantingTime(row.rank)?.years || 0) }}年</small>
+                </template>
+                <template v-else>
+                  <strong class="not-configured">未配置</strong>
+                </template>
+              </td>
+              <td v-for="column in isShopMatrix ? [] : visiblePriceColumns" :key="column.key" class="matrix-price number-cell">
+                <span
+                  v-for="entry in matrixPriceEntries(row, column)"
+                  :key="entry.price"
+                  class="matrix-price-entry"
+                  :title="entry.names.join('、')"
+                >
+                  {{ formatPrice(entry.price) }}
+                  <small v-if="matrixPriceEntries(row, column).length > 1">
+                    {{ entry.names.length === 1 ? entry.names[0] : `${entry.names.length}种` }}
+                  </small>
+                </span>
+                <span v-if="!matrixPriceEntries(row, column).length">—</span>
+              </td>
+              <template v-if="row.rank >= 13">
+                <td :colspan="isShopMatrix ? SHOP_STAGES.length : visibleMatrixColumns.length" class="unimplemented-cell">
+                  药材未实装
+                </td>
+              </template>
+              <template v-else-if="isShopMatrix">
+                <template v-for="stage in SHOP_STAGES" :key="stage.key">
+                  <td
+                    v-if="shopPoolForRank(stage, row.rank)?.startRank === row.rank"
+                    :rowspan="(shopPoolForRank(stage, row.rank)?.endRank || row.rank) - row.rank + 1"
+                    class="shop-pool-cell"
+                  >
+                    <strong>{{ shopPoolForRank(stage, row.rank)?.perItem === 'one' ? '每种1株' : '单种随机' }}</strong>
+                    <span>
+                      {{ shopPoolForRank(stage, row.rank)?.label }} · 共抽{{ shopPoolForRank(stage, row.rank)?.drawCount }}株
+                    </span>
+                    <small v-if="shopPoolForRank(stage, row.rank)?.note">
+                      {{ shopPoolForRank(stage, row.rank)?.note }}
+                    </small>
+                  </td>
+                  <td v-else-if="!shopPoolForRank(stage, row.rank)" class="shop-pool-cell empty">—</td>
+                </template>
+              </template>
+              <td v-for="column in isShopMatrix || row.rank >= 13 ? [] : visibleMatrixColumns" :key="column.key" class="matrix-cell">
+                <button
+                  v-for="herb in row.cells.get(column.key) || []"
+                  :key="herb.item_id"
+                  type="button"
+                  class="matrix-herb"
+                  :class="{ selected: selected?.item_id === herb.item_id }"
+                  @click="selectHerb(herb)"
+                >
+                  <span>{{ herb.name }}</span>
+                  <small>
+                    <i
+                      v-for="attribute in herb.crafting_attributes"
+                      :key="attribute.element"
+                      :class="{ negative: attribute.value < 0 }"
+                      :style="elementStyle(attribute.element)"
+                    >{{ attribute.label }}{{ attributeMagnitude(attribute.value) }}</i>
+                  </small>
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!matrixLoading && !matrixRows.length" class="empty-state">没有匹配的药材</div>
+      </div>
+      <div v-else class="table-scroll">
         <table class="herb-table zaohua-catalog-table">
           <thead>
             <tr>
@@ -307,6 +625,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
         <div v-if="!loading && !herbs.length" class="empty-state">没有匹配的药材</div>
       </div>
       <StandardPagination
+        v-if="viewMode === 'list'"
         class="pagination"
         :page="page"
         :page-size="pageSize"
@@ -402,6 +721,8 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .search-input { width: 330px; }
 .grade-select { width: 202px; }
 .element-select { width: 142px; }
+.view-mode-select { width: 104px; }
+.matrix-group-select { width: 148px; }
 .grade-text { color: var(--grade-color); }
 .grade-label { display: inline-flex; gap: 7px; align-items: center; color: var(--grade-color); white-space: nowrap; }
 .grade-rank { min-width: 2ch; color: #687076; font-variant-numeric: tabular-nums; text-align: right; }
@@ -418,6 +739,38 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .filter-option em { min-width: 2ch; color: #8a9094; font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
 .list-pane { display: flex; flex-direction: column; min-height: 250px; overflow: hidden; border: 1px solid #d9ddda; background: #fff; }
 .table-scroll { flex: 1; min-height: 0; overflow: auto; }
+.matrix-scroll { flex: 1; min-height: 0; overflow: auto; }
+.herb-matrix { width: 100%; min-width: 0; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; }
+.herb-matrix th, .herb-matrix td { min-width: 0; padding: 5px 7px; overflow: hidden; border-right: 1px solid #e4e7e4; border-bottom: 1px solid #e4e7e4; text-align: left; vertical-align: top; }
+.herb-matrix th { position: sticky; top: 0; z-index: 3; background: #f0f2ef; color: #555d61; font-weight: 600; text-align: center; }
+.herb-matrix thead tr:nth-child(2) th { top: 29px; }
+.herb-matrix .sticky-grade-rank { left: 0; min-width: 48px; width: 48px; z-index: 5; text-align: right; }
+.herb-matrix .sticky-grade-name { left: 62px; min-width: 116px; width: 116px; z-index: 5; background: #f7f8f6; white-space: nowrap; }
+.matrix-grade-meter { width: 100%; height: 24px; }
+.herb-matrix .matrix-price { width: 84px; white-space: nowrap; }
+.herb-matrix thead .sticky-grade-rank, .herb-matrix thead .sticky-grade-name { background: #f0f2ef; }
+.matrix-price-entry { display: block; }
+.matrix-price-entry small { display: block; overflow: hidden; color: #788086; font-size: 10px; text-overflow: ellipsis; }
+.shop-pool-cell { padding: 8px 10px !important; text-align: center !important; vertical-align: middle !important; background: #fff; }
+.shop-pool-cell strong, .shop-pool-cell span, .shop-pool-cell small { display: block; }
+.shop-pool-cell strong { color: #324d62; font-size: 14px; font-variant-numeric: tabular-nums; }
+.shop-pool-cell span { margin-top: 2px; color: #626b70; }
+.shop-pool-cell small { margin-top: 4px; color: #8a6a32; font-size: 10px; }
+.shop-pool-cell.empty { color: #a3a9a5; background: #fafbfa; }
+.herb-matrix .planting-time-column { width: 108px; white-space: nowrap; }
+.planting-time-cell { vertical-align: middle !important; white-space: nowrap; }
+.planting-time-cell strong { color: #324d62; font-size: 12px; font-weight: 600; }
+.planting-time-cell small { margin-left: 7px; color: #737c80; font-size: 10px; }
+.planting-time-cell .not-configured { color: #8a9094; font-size: 12px; font-weight: 500; }
+.unimplemented-cell { color: #8a9094; text-align: center !important; vertical-align: middle !important; background: #fafbfa; }
+.matrix-cell:empty { background: #fafbfa; }
+.matrix-herb { display: block; width: 100%; padding: 3px 4px; border: 0; color: #333a3d; text-align: left; background: transparent; cursor: pointer; }
+.matrix-herb + .matrix-herb { margin-top: 4px; border-top: 1px dashed #d8dcda; }
+.matrix-herb:hover, .matrix-herb.selected { background: #e9f1e7; }
+.matrix-herb > span { display: block; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.matrix-herb small { display: flex; gap: 5px; margin-top: 2px; white-space: nowrap; }
+.matrix-herb small i { color: var(--element-color); font-style: normal; font-weight: 600; }
+.matrix-herb small i.negative { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .herb-table { width: 100%; border-collapse: collapse; table-layout: auto; white-space: nowrap; }
 .herb-table th, .herb-table td { padding: 4px 11px; border-bottom: 1px solid #eceeec; text-align: left; vertical-align: middle; }
 .herb-table th { position: sticky; top: 0; z-index: 1; background: #f0f2ef; color: #555d61; font-size: 13px; font-weight: 600; }

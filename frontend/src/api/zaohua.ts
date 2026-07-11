@@ -25,6 +25,8 @@ export interface ZaohuaAlchemyItem {
   effect_text?: string
   augment?: number
   efficacy?: number
+  add_drug_tolerance?: number
+  drug_max?: number
   crafting_attributes?: ZaohuaAlchemyElementLimit[]
 }
 
@@ -367,6 +369,7 @@ export interface ZaohuaPastureSolutionCell {
   y: number
   kind: 'plot' | 'building'
   building_id?: number
+  productive?: boolean
   speed?: number
   yield?: number
   speed_count?: number
@@ -383,6 +386,12 @@ export interface ZaohuaPastureSolution {
   equivalent_output: number
   total_value: number
   gain: number
+  herb_count: number
+  pool_count: number
+  herb_value: number
+  fish_value: number
+  production_mode: 'free' | 'exact' | 'target_ratio'
+  ratio_deviation: number
   used_building_ids: number[]
   cells: ZaohuaPastureSolutionCell[]
   exact: boolean
@@ -391,6 +400,11 @@ export interface ZaohuaPastureSolution {
 
 export const solveZaohuaPasture = async (payload: {
   plot_count: number
+  production_mode: 'free' | 'exact' | 'target_ratio'
+  herb_count: number
+  pool_count: number
+  herb_weight?: number
+  fish_weight?: number
   enabled_building_ids: number[]
   building_counts: Record<number, number>
 }): Promise<ZaohuaPastureSolution> => {

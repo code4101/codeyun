@@ -159,6 +159,8 @@ def sync_zaohua_catalog_to_database(session: Session, catalog: dict[str, Any] | 
             "output_use_effect": str(output.get("use_effect") or ""),
             "output_augment": int(output.get("augment") or 0),
             "output_efficacy": int(output.get("efficacy") or 0),
+            "output_add_drug_tolerance": int(output.get("add_drug_tolerance") or 0),
+            "output_drug_max": int(output.get("drug_max") or 0),
             "attr_limits": list(recipe.get("attr_limits") or []),
             "example_items": list(recipe.get("example_items") or []),
             "state_rules": list(recipe.get("state_rules") or []),

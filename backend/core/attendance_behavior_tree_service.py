@@ -12,7 +12,8 @@ from typing import Any
 
 import psutil
 
-from backend.core.device import build_background_popen_kwargs, process_candidates_by_name
+from backend.core.device import process_candidates_by_name
+from backend.core.runtime.process_launcher import popen_service, run_quiet
 from backend.core.settings import ROOT_DIR
 
 
@@ -461,7 +462,7 @@ def _run_attendance_script_command(*args: str, timeout: float = 30.0) -> dict[st
         raise RuntimeError(f"考勤入口脚本不存在：{script_path}")
 
     command = [os.fspath(python_path), os.fspath(script_path), *args]
-    proc = subprocess.run(  # noqa: S603 - explicit local Python and script paths.
+    proc = run_quiet(
         command,
         cwd=os.fspath(cwd),
         env=_attendance_subprocess_env(paths),
@@ -495,7 +496,7 @@ def probe_attendance_subprocess_utf8(text: str = "考勤中文探针", timeout: 
         "-c",
         "import sys; print(sys.stdout.encoding); print(sys.stderr.encoding, file=sys.stderr); print(%r)" % str(text),
     ]
-    proc = subprocess.run(  # noqa: S603 - explicit local Python path with fixed inline diagnostic.
+    proc = run_quiet(
         command,
         cwd=os.fspath(cwd),
         env=_attendance_subprocess_env(paths),
@@ -596,13 +597,12 @@ def start_attendance_behavior_tree_service(*, replace_existing: bool = True) -> 
 
     with service_log_path.open("ab") as log_file:
         log_file.write(f"\n[{_now_text()}] CodeYun start attendance behavior tree\n".encode("utf-8"))
-        proc = subprocess.Popen(  # noqa: S603 - explicit local Python and script paths.
+        proc = popen_service(
             [os.fspath(python_path), os.fspath(script_path)],
             cwd=os.fspath(cwd),
             env=env,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            **build_background_popen_kwargs(independent=True),
         )
 
     time.sleep(0.5)

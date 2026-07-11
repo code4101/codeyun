@@ -192,7 +192,21 @@ def _format_number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.2f}".rstrip("0").rstrip(".")
 
 
-def _attendance_summary_paid_rows(attendance_rows: list[list[Any]], order_amount_index: int) -> list[list[Any]]:
+def _attendance_summary_paid_rows(
+    attendance_rows: list[list[Any]],
+    order_amount_index: int,
+    merchant_order_index: int | None = None,
+) -> list[list[Any]]:
+    """Return paid enrollment rows for course-summary statistics.
+
+    A merchant order number is the authoritative proof that a person belongs
+    to the paid population.  Some attendance sheets also contain auditors,
+    repeat students, or manually appended learners with a copied order amount;
+    those rows must not inflate completion statistics.  Legacy sheets without
+    a merchant-order column retain the historical positive-amount fallback.
+    """
+    if merchant_order_index is not None:
+        return [row for row in attendance_rows if _normalize_text(row[merchant_order_index])]
     return [row for row in attendance_rows if _to_number(row[order_amount_index]) > 0]
 
 
@@ -283,7 +297,16 @@ def _refresh_summary_money_fields_from_attendance_sheet(
     ]
     refunded_index = _column_index(attendance_columns, "已返款")
     order_amount_index = _column_index(attendance_columns, "订单金额")
-    paid_rows = _attendance_summary_paid_rows(attendance_rows, order_amount_index)
+    merchant_order_index = (
+        attendance_columns.index("商户订单号")
+        if "商户订单号" in attendance_columns
+        else None
+    )
+    paid_rows = _attendance_summary_paid_rows(
+        attendance_rows,
+        order_amount_index,
+        merchant_order_index,
+    )
     registration_count = len(paid_rows)
     refund_count = 0
     refunded_total = sum(_to_number(row[refunded_index]) for row in paid_rows)

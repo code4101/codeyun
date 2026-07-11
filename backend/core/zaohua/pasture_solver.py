@@ -189,9 +189,17 @@ def optimize_pasture_shape(
     buildings: Iterable[dict[str, Any]],
     enabled_building_ids: Iterable[int],
     building_counts: dict[int, int] | None = None,
+    *,
+    production_mode: str = "free",
+    herb_count: int = 0,
+    pool_count: int = 0,
+    herb_weight: float = 1,
+    fish_weight: float = 1,
 ) -> dict[str, Any]:
-    if not 1 <= plot_count <= 30:
-        raise ValueError("自动形状求解支持 1 至 30 格")
+    if not 1 <= plot_count <= 60:
+        raise ValueError("自动形状求解支持 1 至 60 格")
+    if production_mode not in {"free", "exact", "target_ratio"}:
+        raise ValueError("未知的生产格约束模式")
     building_list = list(buildings)
     building_by_id = {int(item.get("build_id") or 0): item for item in building_list}
     enabled = [building_by_id[item_id] for item_id in enabled_building_ids if item_id in building_by_id]
@@ -204,7 +212,15 @@ def optimize_pasture_shape(
         if not _is_optional_adjacency_bonus(item)
         for _ in range(max(1, int(counts.get(int(item.get("build_id") or 0), 1))))
     ]
-    if len(required) > plot_count:
+    legacy_pools = [item for item in required if int(item.get("build_id") or 0) == 3]
+    pool_building = building_by_id.get(3)
+    requested_pool_count = len(legacy_pools) if legacy_pools else pool_count
+    pool_count_is_exact = production_mode == "exact" or bool(legacy_pools)
+    pools = ([pool_building] * requested_pool_count) if pool_building else []
+    blockers = [item for item in required if int(item.get("build_id") or 0) != 3]
+    if production_mode == "exact" and herb_count + requested_pool_count + len(blockers) > plot_count:
+        raise ValueError("灵田、灵池和必放建筑数量超过总格子数")
+    if len(pools) + len(blockers) > plot_count:
         raise ValueError("必放建筑数量超过可用格子数")
 
     rng = random.Random(260710 + plot_count * 97 + sum(int(item.get("build_id") or 0) for item in enabled))
@@ -240,8 +256,8 @@ def optimize_pasture_shape(
         assignments.extend(tuple(rng.choice(states) for _ in coordinates) for _ in range(180))
         for assignment in assignments:
             booster_count = sum(state != 0 for state in assignment)
-            crop_count = plot_count - booster_count - len(required)
-            if crop_count < 0:
+            available_count = plot_count - booster_count
+            if available_count < len(required):
                 continue
             contributions = []
             for index, state in enumerate(assignment):
@@ -252,16 +268,54 @@ def optimize_pasture_shape(
                 speed_factor = 1 + speed_count
                 yield_factor = 1 + yield_count
                 coefficient = speed_factor * yield_factor
-                contributions.append((coefficient, index, speed_count, yield_count))
-            contributions.sort(key=lambda item: (-item[0], item[1]))
-            crops = contributions[:crop_count]
-            score = sum(item[0] for item in crops)
+                contributions.append({
+                    "index": index,
+                    "speed_count": speed_count,
+                    "yield_count": yield_count,
+                    "crop_value": coefficient,
+                    "pool_value": yield_factor,
+                })
+            dp: dict[tuple[int, int, int], tuple[float, dict[int, dict[str, Any]]]] = {(0, 0, 0): (0, {})}
+            for item in contributions:
+                next_dp: dict[tuple[int, int], tuple[int, dict[int, dict[str, Any]]]] = {}
+                for (crop_used, pool_used, blocker_used), (value, placements) in dp.items():
+                    options = [(crop_used + 1, pool_used, blocker_used, item["crop_value"] * herb_weight, "plot")]
+                    pool_limit = requested_pool_count if pool_count_is_exact else available_count
+                    if pool_used < pool_limit and pool_building:
+                        options.append((crop_used, pool_used + 1, blocker_used, item["pool_value"] * fish_weight, "pool"))
+                    if blocker_used < len(blockers):
+                        options.append((crop_used, pool_used, blocker_used + 1, 0, "blocker"))
+                    for next_crop, next_pool, next_blocker, added_value, kind in options:
+                        key = (next_crop, next_pool, next_blocker)
+                        candidate_value = value + added_value
+                        if key not in next_dp or candidate_value > next_dp[key][0]:
+                            next_dp[key] = (
+                                candidate_value,
+                                {**placements, item["index"]: {**item, "kind": kind}},
+                            )
+                dp = next_dp
+            finals = []
+            for (actual_herbs, actual_pools, actual_blockers), resolved in dp.items():
+                if actual_blockers != len(blockers):
+                    continue
+                if pool_count_is_exact and actual_pools != requested_pool_count:
+                    continue
+                if production_mode == "exact" and actual_herbs != herb_count:
+                    continue
+                ratio_gap = 0.0
+                if production_mode == "target_ratio" and herb_count + pool_count > 0 and actual_herbs + actual_pools > 0:
+                    ratio_gap = abs(actual_herbs * pool_count - actual_pools * herb_count) / ((actual_herbs + actual_pools) * (herb_count + pool_count))
+                finals.append((resolved[0], -ratio_gap, actual_herbs + actual_pools, -actual_pools, resolved[1], actual_herbs, actual_pools, ratio_gap))
+            if not finals:
+                continue
+            score, _, _, _, placements, actual_herbs, actual_pools, ratio_gap = max(finals, key=lambda item: item[:4])
             searched += 1
-            if best is None or score > best["score"]:
-                best = {"score": score, "shape": shape, "assignment": assignment, "crops": crops, "blockers": [item[1] for item in contributions[crop_count:]]}
+            candidate_key = (score, -ratio_gap, actual_herbs + actual_pools)
+            if best is None or candidate_key > best["key"]:
+                best = {"key": candidate_key, "score": score, "shape": shape, "assignment": assignment, "placements": placements, "herb_count": actual_herbs, "pool_count": actual_pools, "ratio_gap": ratio_gap}
     assert best is not None
-    crop_by_index = {item[1]: item for item in best["crops"]}
-    required_by_index = dict(zip(sorted(best["blockers"]), required, strict=True))
+    pool_iter = itertools.repeat(pool_building)
+    blocker_iter = iter(blockers)
     cells = []
     for index, (x, y) in enumerate(best["shape"]):
         state = best["assignment"][index]
@@ -269,12 +323,20 @@ def optimize_pasture_shape(
             cells.append({"index": index, "x": x, "y": y, "kind": "building", "building_id": speed["build_id"]})
         elif state == 2 and output:
             cells.append({"index": index, "x": x, "y": y, "kind": "building", "building_id": output["build_id"]})
-        elif index in required_by_index:
-            cells.append({"index": index, "x": x, "y": y, "kind": "building", "building_id": required_by_index[index]["build_id"]})
         else:
-            coefficient, _, speed_count, yield_count = crop_by_index[index]
-            cells.append({"index": index, "x": x, "y": y, "kind": "plot", "speed_count": speed_count, "yield_count": yield_count, "coefficient": coefficient, "output": coefficient})
+            placement = best["placements"][index]
+            if placement["kind"] == "pool":
+                pool = next(pool_iter)
+                coefficient = placement["pool_value"]
+                cells.append({"index": index, "x": x, "y": y, "kind": "building", "building_id": pool["build_id"], "productive": True, "speed_count": 0, "yield_count": placement["yield_count"], "coefficient": coefficient, "output": coefficient})
+            elif placement["kind"] == "blocker":
+                blocker = next(blocker_iter)
+                cells.append({"index": index, "x": x, "y": y, "kind": "building", "building_id": blocker["build_id"]})
+            else:
+                coefficient = placement["crop_value"]
+                cells.append({"index": index, "x": x, "y": y, "kind": "plot", "speed_count": placement["speed_count"], "yield_count": placement["yield_count"], "coefficient": coefficient, "output": coefficient})
     base_output = sum(cell["kind"] == "plot" for cell in cells)
+    base_value = sum(bool(cell["kind"] == "plot" or cell.get("productive")) for cell in cells)
     return {
         "plot_count": plot_count,
         "shape": [{"x": x, "y": y} for x, y in best["shape"]],
@@ -282,7 +344,14 @@ def optimize_pasture_shape(
         "base_output": base_output,
         "equivalent_output": best["score"],
         "total_value": best["score"],
-        "gain": best["score"] - base_output,
+        "base_value": base_value,
+        "herb_count": best["herb_count"],
+        "pool_count": best["pool_count"],
+        "herb_value": sum(cell.get("output", 0) * herb_weight for cell in cells if cell["kind"] == "plot"),
+        "fish_value": sum(cell.get("output", 0) * fish_weight for cell in cells if cell.get("productive")),
+        "production_mode": production_mode,
+        "ratio_deviation": best["ratio_gap"],
+        "gain": best["score"] - base_value,
         "used_building_ids": [cell["building_id"] for cell in cells if cell["kind"] == "building"],
         "cells": cells,
         "exact": False,

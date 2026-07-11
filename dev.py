@@ -50,7 +50,7 @@ DEFAULT_BACKEND_HOST = "0.0.0.0"
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 5173
 FRONTEND_HEALTH_PATHS = ("/@vite/client", "/src/main.ts", "/src/views/Login.vue")
-FRONTEND_HEALTH_FAILURE_LIMIT = 3
+FRONTEND_HEALTH_FAILURE_LIMIT = 12
 CONSOLE_HOST_STATUS_FILENAME = "codeyun-console-host.json"
 
 BACKEND_WATCH_TARGETS = ("backend", "pyproject.toml", "uv.lock", ".env")

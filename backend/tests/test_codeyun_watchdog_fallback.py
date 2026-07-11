@@ -163,6 +163,33 @@ def test_watchdog_fallback_uses_pythonw_dev_on_windows(monkeypatch, tmp_path):
     assert codeyun_watchdog._resolve_dev_start_command() == [os.fspath(pythonw), "dev.py"]
 
 
+def test_watchdog_detached_dev_defaults_to_outer_backend_reload(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 123
+
+    def fake_popen_service(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setenv("CODEYUN_DEV_BACKEND_RELOAD_MODE", "off")
+    monkeypatch.delenv(codeyun_watchdog.WATCHDOG_BACKEND_RELOAD_MODE_ENV, raising=False)
+    monkeypatch.setattr(codeyun_watchdog, "_resolve_dev_start_command", lambda: ["pythonw.exe", "dev.py"])
+    monkeypatch.setattr(codeyun_watchdog, "popen_service", fake_popen_service)
+
+    started_pid = codeyun_watchdog.start_detached_dev(
+        tmp_path / "watchdog.log",
+        tmp_path / "dev.out.log",
+        tmp_path / "dev.err.log",
+    )
+
+    assert started_pid == 123
+    assert captured["command"] == ["pythonw.exe", "dev.py"]
+    assert captured["env"]["CODEYUN_DEV_BACKEND_RELOAD_MODE"] == "outer"
+
+
 def test_codeyun_instance_summary_avoids_duplicate_state_fields():
     summary = codeyun_watchdog.summarize_codeyun_dev_instance([
         {"pid": 10, "name": "pythonw.exe", "cmdline": "pythonw.exe dev.py"},
@@ -209,6 +236,38 @@ def test_terminate_dev_processes_keeps_watchdog_child(tmp_path, monkeypatch):
     assert backend_child.terminated is True
     assert watchdog_child.terminated is False
     assert dev_proc.terminated is True
+
+
+def test_terminate_dev_processes_ignores_vanished_pid(tmp_path, monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            self.terminated = False
+
+        def children(self, recursive=False):
+            return []
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            raise AssertionError("live process should not need kill")
+
+    live_proc = FakeProcess(101)
+
+    def fake_process(pid):
+        if pid == 100:
+            raise codeyun_watchdog.psutil.NoSuchProcess(pid)
+        return live_proc
+
+    monkeypatch.setattr(codeyun_watchdog, "list_dev_component_processes", lambda: [{"pid": 100}, {"pid": 101}])
+    monkeypatch.setattr(codeyun_watchdog.psutil, "Process", fake_process)
+    monkeypatch.setattr(codeyun_watchdog.psutil, "wait_procs", lambda processes, timeout: (list(processes), []))
+
+    stopped = codeyun_watchdog.terminate_dev_processes(0.1, tmp_path / "watchdog.log")
+
+    assert stopped == [101]
+    assert live_proc.terminated is True
 
 
 def test_vite_build_is_not_classified_as_dev_runner(monkeypatch):

@@ -2,6 +2,7 @@ import json
 from unittest.mock import patch
 
 from backend.app import app
+from backend.core.ai import chat as ai_chat
 from backend.core.ai.chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
 from backend.core import settings as settings_module
 from backend.core.ai.chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
@@ -441,6 +442,37 @@ def test_ai_chat_builtin_provider_list_includes_new_openai_compatible_sources(cl
     assert response.status_code == 200
     provider_ids = {item["id"] for item in response.json()["items"]}
     assert {"ollama", "deepseek", "302ai", "aihubmix", "openrouter"} <= provider_ids
+
+
+def test_ai_chat_codex_cmd_config_resolves_without_cmd_wrapper(monkeypatch, tmp_path):
+    repo_tools = tmp_path / "tools" / "node"
+    repo_tools.mkdir(parents=True)
+    native = (
+        repo_tools
+        / "node_modules"
+        / "@openai"
+        / "codex"
+        / "node_modules"
+        / "@openai"
+        / "codex-win32-x64"
+        / "vendor"
+        / "x86_64-pc-windows-msvc"
+        / "codex"
+        / "codex.exe"
+    )
+    native.parent.mkdir(parents=True)
+    native.write_text("", encoding="utf-8")
+
+    configured_cmd = tmp_path / "AppData" / "Local" / "OpenAI" / "Codex" / "bin" / "codex.cmd"
+    configured_cmd.parent.mkdir(parents=True)
+    configured_cmd.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ai_chat.os, "name", "nt")
+    monkeypatch.setattr(ai_chat, "_codex_tools_node_dir", lambda: repo_tools)
+
+    resolved = ai_chat._resolve_command_path([str(configured_cmd), "exec", "--json"])
+
+    assert resolved == [str(native), "exec", "--json"]
 
 
 def test_ai_chat_status_adds_qwen35_instruct_alias_for_ollama_models(monkeypatch):

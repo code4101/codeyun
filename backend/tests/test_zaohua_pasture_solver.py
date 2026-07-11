@@ -95,3 +95,32 @@ def test_required_building_count_is_respected() -> None:
     result = optimize_pasture_shape(9, BUILDINGS, [3], {3: 2})
     assert result["used_building_ids"].count(3) == 2
     assert result["base_output"] == 7
+
+
+def test_pivot_bonus_applies_to_spirit_pool_output() -> None:
+    result = optimize_pasture_shape(9, BUILDINGS, [3, 5], {3: 2})
+    pools = [cell for cell in result["cells"] if cell.get("building_id") == 3]
+    assert len(pools) == 2
+    assert all(pool["productive"] is True for pool in pools)
+    assert any(pool["yield_count"] > 0 and pool["coefficient"] > 1 for pool in pools)
+    assert result["total_value"] == sum(cell.get("output", 0) for cell in result["cells"])
+
+
+def test_exact_production_counts_are_respected() -> None:
+    result = optimize_pasture_shape(9, BUILDINGS, [4, 5], production_mode="exact", herb_count=5, pool_count=1)
+    assert result["herb_count"] == 5
+    assert result["pool_count"] == 1
+    support_count = sum(cell["kind"] == "building" and not cell.get("productive") for cell in result["cells"])
+    assert result["herb_count"] + result["pool_count"] + support_count == 9
+
+
+def test_target_ratio_is_only_a_secondary_objective() -> None:
+    all_herbs = optimize_pasture_shape(9, BUILDINGS, [4], production_mode="target_ratio", herb_count=1, pool_count=1)
+    assert all_herbs["total_value"] >= 17
+    assert all_herbs["production_mode"] == "target_ratio"
+
+
+def test_free_mode_can_choose_the_production_mix() -> None:
+    result = optimize_pasture_shape(9, BUILDINGS, [5], production_mode="free")
+    assert result["herb_count"] + result["pool_count"] > 0
+    assert result["total_value"] == result["herb_value"] + result["fish_value"]

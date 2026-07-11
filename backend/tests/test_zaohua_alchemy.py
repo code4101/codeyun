@@ -36,6 +36,8 @@ def _catalog() -> dict:
                     "description": "治疗内出血。",
                     "effect_description": "恢复30点气血",
                     "use_effect": "UpdateHp,30",
+                    "add_drug_tolerance": 1,
+                    "drug_max": 20,
                 },
                 "attr_limits": [{"element": "wood", "label": "木", "value": 4}],
                 "example_items": [{"item_id": 100015, "name": "木灵草", "count": 2, "icon_path": "Item/herb/100015"}],
@@ -155,6 +157,8 @@ def test_sync_and_query_zaohua_alchemy_database() -> None:
         assert page["items"][0]["output"]["grade_rank"] == 1
         assert page["items"][0]["output"]["price"] == 30
         assert page["items"][0]["output"]["effect_text"] == "恢复30点气血"
+        assert page["items"][0]["output"]["add_drug_tolerance"] == 1
+        assert page["items"][0]["output"]["drug_max"] == 20
         assert page["items"][0]["cost_days"] == 3
         assert page["items"][0]["output"]["description"] == "治疗内出血。"
         assert page["items"][0]["example_items"][0]["icon_url"] == "/api/zaohua/media/icons/Item/herb/100015"
