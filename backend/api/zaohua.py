@@ -55,6 +55,7 @@ class ZaohuaPastureSolveRequest(BaseModel):
     fish_weight: float = Field(default=1, gt=0)
     enabled_building_ids: list[int] = Field(default_factory=list)
     building_counts: dict[int, int] = Field(default_factory=dict)
+    exact_building_counts: bool = False
 
 
 def _icon_url(icon_path: Any) -> str:
@@ -271,6 +272,7 @@ def solve_zaohua_pasture(request: ZaohuaPastureSolveRequest) -> dict[str, Any]:
             pool_count=request.pool_count,
             herb_weight=request.herb_weight,
             fish_weight=request.fish_weight,
+            exact_building_counts=request.exact_building_counts,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -184,6 +184,22 @@ def _candidate_shapes(plot_count: int, beam_size: int = 240) -> list[tuple[tuple
     return beam
 
 
+def _unique_samples_from_fixed_states(
+    fixed_states: tuple[int, ...],
+    rng: random.Random,
+    sample_count: int,
+) -> list[tuple[int, ...]]:
+    samples: list[tuple[int, ...]] = [fixed_states]
+    seen = {fixed_states}
+    for _ in range(sample_count):
+        candidate = tuple(rng.sample(fixed_states, len(fixed_states)))
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        samples.append(candidate)
+    return samples
+
+
 def optimize_pasture_shape(
     plot_count: int,
     buildings: Iterable[dict[str, Any]],
@@ -195,6 +211,7 @@ def optimize_pasture_shape(
     pool_count: int = 0,
     herb_weight: float = 1,
     fish_weight: float = 1,
+    exact_building_counts: bool = False,
 ) -> dict[str, Any]:
     if not 1 <= plot_count <= 60:
         raise ValueError("自动形状求解支持 1 至 60 格")
@@ -206,6 +223,8 @@ def optimize_pasture_shape(
     speed = next((item for item in enabled if _herb_bonus(item)[0] > 0), None)
     output = next((item for item in enabled if _herb_bonus(item)[1] > 0), None)
     counts = building_counts or {}
+    speed_count_required = int(counts.get(int(speed.get("build_id") or 0), 0)) if speed and exact_building_counts else None
+    output_count_required = int(counts.get(int(output.get("build_id") or 0), 0)) if output and exact_building_counts else None
     required = [
         item
         for item in enabled
@@ -253,8 +272,20 @@ def optimize_pasture_shape(
                     0 if (x + y) % 2 == crop_parity else (2 if x % 2 else 1)
                     for x, y in coordinates
                 ))
-        assignments.extend(tuple(rng.choice(states) for _ in coordinates) for _ in range(180))
+        if exact_building_counts:
+            fixed_states = ([1] * (speed_count_required or 0)) + ([2] * (output_count_required or 0))
+            fixed_states += [0] * (plot_count - len(fixed_states))
+            if len(fixed_states) != plot_count:
+                continue
+            assignments = _unique_samples_from_fixed_states(tuple(fixed_states), rng, 360)
+        else:
+            assignments.extend(tuple(rng.choice(states) for _ in coordinates) for _ in range(180))
         for assignment in assignments:
+            if exact_building_counts and (
+                assignment.count(1) != (speed_count_required or 0)
+                or assignment.count(2) != (output_count_required or 0)
+            ):
+                continue
             booster_count = sum(state != 0 for state in assignment)
             available_count = plot_count - booster_count
             if available_count < len(required):
@@ -313,7 +344,8 @@ def optimize_pasture_shape(
             candidate_key = (score, -ratio_gap, actual_herbs + actual_pools)
             if best is None or candidate_key > best["key"]:
                 best = {"key": candidate_key, "score": score, "shape": shape, "assignment": assignment, "placements": placements, "herb_count": actual_herbs, "pool_count": actual_pools, "ratio_gap": ratio_gap}
-    assert best is not None
+    if best is None:
+        raise ValueError("当前建筑数量无法填满全部格子，请检查数量总和")
     pool_iter = itertools.repeat(pool_building)
     blocker_iter = iter(blockers)
     cells = []

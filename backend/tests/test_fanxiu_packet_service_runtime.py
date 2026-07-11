@@ -771,3 +771,34 @@ def test_write_packet_service_state_retries_direct_write_when_target_is_temporar
 
     assert calls["state_writes"] == 3
     assert service_runtime._read_json(state_path, {})["updated_at"] == "2026-07-11 04:10:00"
+
+
+def test_service_loop_still_processes_commands_when_state_write_fails(monkeypatch):
+    events = {"processed": False, "state_writes": 0}
+
+    monkeypatch.setattr(service_runtime.fanxiu_capture_runtime_service, "start_watchdog", lambda **_: None)
+    monkeypatch.setattr(service_runtime.fanxiu_capture_runtime_service, "stop_watchdog", lambda: None)
+    monkeypatch.setattr(service_runtime.fanxiu_packet_insight_worker, "start", lambda: None)
+    monkeypatch.setattr(service_runtime.fanxiu_packet_insight_worker, "stop", lambda: None)
+    monkeypatch.setattr(service_runtime.time, "monotonic", lambda: 100.0)
+
+    def fake_write_state(extra=None):
+        events["state_writes"] += 1
+        if extra is None:
+            raise PermissionError(13, "denied", "packet_service_state.json")
+        return {"ok": True, "extra": extra}
+
+    def fake_process_commands():
+        events["processed"] = True
+        raise SystemExit(0)
+
+    monkeypatch.setattr(service_runtime, "write_fanxiu_packet_service_state", fake_write_state)
+    monkeypatch.setattr(service_runtime, "process_pending_fanxiu_packet_service_commands", fake_process_commands)
+
+    try:
+        service_runtime.run_fanxiu_packet_service_loop(state_interval_seconds=15.0)
+    except SystemExit:
+        pass
+
+    assert events["state_writes"] == 1
+    assert events["processed"] is True

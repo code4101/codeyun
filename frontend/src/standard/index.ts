@@ -167,6 +167,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./zaohua/pasture/page.vue'),
   },
   {
+    routeName: 'ZaohuaPasturePlanDemo',
+    canonicalPath: '/zaohua/pasture/plan-demo',
+    component: () => import('./zaohua/pasture-plan/page.vue'),
+    permissionKey: 'zaohua.pasture-plan-demo',
+    menuPath: null,
+  },
+  {
     routeName: 'PokemonTcgCatalog',
     canonicalPath: '/pokemon-tcg/catalog',
     component: () => import('./pokemon-tcg/page.vue'),

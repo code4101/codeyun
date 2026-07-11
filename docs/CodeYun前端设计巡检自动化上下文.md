@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05"
-last_audited_at: "2026-07-11T06:39:58.2896508+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-fdd0b7a/report.md"
-last_frontend_commit_summary: "已关闭 bda52f6e..fdd0b7a4：Zaohua 丹药/洞天与路由恢复保持单一主判断；洞天页收回 7 个未启用建筑的常驻禁用数量控件。"
-audited_commit_count: 96
+last_audited_commit: "cbd92e4e6c69611cd5dfe23028adf47fbac712d2"
+last_audited_at: "2026-07-11T19:40:29.9024518+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-cbd92e4-partial/report.md"
+last_frontend_commit_summary: "follow-up：当前 git 增量为空，Zaohua pasture 把 11 个常驻数量框收回到 1 个灵田步进器 + 10 个启用开关；巡检游标维持 cbd92e4e。"
+audited_commit_count: 97
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,36 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-11（第二十七轮）
+
+- 完整范围：`fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05..cbd92e4e6c69611cd5dfe23028adf47fbac712d2`
+- 覆盖提交：`cbd92e4e6c69611cd5dfe23028adf47fbac712d2`
+- 前端入口提交：`cbd92e4e6c69611cd5dfe23028adf47fbac712d2`
+- 入口如何牵引到旧问题：这次提交同时把 `Zaohua` 的药材展示从纯明细表扩到分组矩阵，把 `pasture` 的单一格子输入扩到 `境界 / 生产计划 / 灵田灵池`，并调整 `notes/list` 的查询缓存刷新时机。它们共享的不是同一业务对象，而是同一条减法约束：一级页面只保留当前对象判断和当前工作集事实，不把重复请求、重复过滤或额外摘要层继续堆回首屏。因此本轮沿 `zaohua/alchemy / furnaces / herbs / pasture` 和 `notes/center?tab=list` 这两条旧链路一起复核。
+- 本轮减法：没有追加仓库源码修复。真实页面确认 `alchemy / furnaces / herbs` 仍保持 `选择视角 -> 当前对象 -> 单一详情` 的 inspector 主闭环；`pasture` 虽然新增了计划控件，但仍只服务于同一个求解输入模型，没有再长出总览卡或第二条结果链；`notes/list` 则把“缓存已足够新时仍立刻重刷”收掉，二次进入直接恢复已缓存的 50 行工作集。
+- 信息量保持：`alchemy` 新增的 `耐药` 仍落在已有表格列和详情字段里；`herbs` 仍保留药材品阶、价格、种植时间、炼丹属性和丹方去向，只是把默认首屏改成归纳矩阵；`pasture` 仍保留格子、建筑与结果布局，只是把输入从“格子数”扩成同一求解模型下的更明确计划参数；`notes/list` 仍保留后端筛选、前端筛选和 50 行结果摘要，减少的是二次进入的重复刷新，不是减少工作集能力。
+- 概念图/线框图：报告中的 Mermaid 把本轮收敛成两条基础闭环：`Zaohua 视角选择 -> 归纳/候选 -> 当前对象详情 -> 仅在需要时求解`，以及 `notes/list 同一查询 -> 命中新缓存 -> 直接恢复工作集`；ASCII 线框图直接对比了 `herbs` 从长表扫描收成矩阵归纳，以及 `notes/list` 从“缓存后仍重刷”收回到“缓存即事实”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-cbd92e4/report.md`
+- 验证：为避开主工作树未提交的 [`frontend/src/standard/zaohua/herbs/page.vue`](D:/home/chenkunze/slns/codeyun/frontend/src/standard/zaohua/herbs/page.vue) 试验改动，本轮创建干净 worktree `C:/Users/kzche/AppData/Local/Temp/codeyun/worktrees/codeyun-cbd92e4-5174`，在 `http://127.0.0.1:5174` 复用本机 `8000` 后端取证。`alchemy / furnaces / herbs / pasture` 均完成 `1600x1000`、`1366x900`、`820x1180` 三视口截图；`notes/list` 额外完成三视口两轮进入截图与请求计数。`evidence.json` 记录各页 `bodyOverflowX = 0`、`docOverflowX = 0`、console `warn/error = 0`；`notes/list` 首次进入 `query-program` 请求数分别为宽屏 `2`、普通桌面 `1`、窄屏 `1`，30 秒内第二次进入三视口均为 `0`，证明 `skipImmediateRefresh` 已生效。由于本轮未做源码修改且未命中入口依赖污染检查条件，未运行 `npm run typecheck --prefix frontend` 或 `npm run build --prefix frontend`。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件。提交未改 `frontend/package*.json`、`vite.config.*`、`manualChunks`、自动导入、全局样式、worker/wasm 或公开匿名入口装配边界。
+- 根因分层：本轮前端变化属于前端状态投影和信息归纳方式的调整，不是后端 DTO 泄漏或业务对象不正交。未发现需要转交 `CodeYun 代码健康优化` 的模型债务。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口截图和缓存行为复核，没有新增 UI 回归或需自动修复的问题，因此把 `last_audited_commit` 推进到 `cbd92e4e6c69611cd5dfe23028adf47fbac712d2`，`pending_or_skipped_ranges` 保持为空。
+
+### 2026-07-11（第二十七轮 follow-up）
+
+- 完整范围：`cbd92e4e6c69611cd5dfe23028adf47fbac712d2..HEAD`（当前为空，不推进巡检游标）
+- 关联已关闭范围：`fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05..cbd92e4e6c69611cd5dfe23028adf47fbac712d2`
+- 入口如何牵引到旧问题：上一轮虽然已经在干净 worktree 里确认 `pasture` 没有新增总览卡或第二条结果链，但当前主工作树里同链路的 `frontend/src/standard/zaohua/pasture/page.vue` 又把 `building_counts` 扩成“所有建筑常驻数量框”，把“是否启用”和“启用后数量”两层事实重新混在一级首屏。这仍然是 `zaohua/pasture` 同一求解输入模型上的旧问题复发，不是无关扩散。
+- 本轮减法：把建筑配置从“11 个常驻数量输入”收回到“1 个灵田数量输入 + 10 个启用开关”；只有建筑已启用且支持多份时才显示数量框，并把默认基线恢复到 `9 / 9` 灵田，避免第一次进入就掉进空计划态。
+- 信息量保持：灵田格数、可选建筑、建筑数量、境界切换和求解结果都仍保留；减少的是未启用建筑占据的重复输入，不是减少求解能力。
+- 概念图/线框图：follow-up 报告里的 Mermaid 把首屏闭环重新收回到 `选择境界 -> 确认灵田基线 -> 决定是否启用建筑 -> 仅在启用后补数量 -> 查看布局结果`；ASCII 线框图直接对比了右栏从“所有建筑都带 [0]”回到“默认只看开关，启用后再看数量”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-cbd92e4-partial/report.md`
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；真实页面 `http://127.0.0.1:4174/zaohua/pasture` 已补齐 `1600x1000`、`1366x900`、`820x1180` 三视口截图，`pasture-verified-evidence.json` 记录 `switchCount = 10`、`stepperCount = 1`、`summaryText = 已配置 9 / 9 格`、`bodyOverflowX = 0`、`rootOverflowX = 0`。
+- 入口依赖污染检查：本轮没有新的前端提交命中强制入口污染检查条件；执行 `npm run build --prefix frontend` 仅作为 follow-up 静态验证，不改变上一轮对入口依赖边界的结论。
+- 根因分层：本轮问题属于前端状态投影/交互密度问题，不是后端 DTO 泄漏或业务对象重构问题。
+- 剩余风险：当前主工作树仍有 `frontend/src/standard/zaohua/alchemy/page.vue`、`frontend/src/standard/zaohua/herbs/page.vue`、`frontend/vite.config.ts` 等同链路未提交改动，因此这些页面的当前截图只作为现场参考，不作为新的纯 commit 关闭证据。
+- 处理结果：本轮只完成同链路 follow-up 减法修复与验证；由于 `last_audited_commit..HEAD` 当前为空，`last_audited_commit` 维持 `cbd92e4e6c69611cd5dfe23028adf47fbac712d2`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-11（第二十六轮）
 
