@@ -238,6 +238,24 @@ NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS = {
     NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
     NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
 }
+NOTE_SHEET_ATTENDANCE_REGISTRATION_AUTHORITATIVE_COLUMNS = {
+    "报名日期",
+    "学号",
+    "分组",
+    "组号",
+    "姓名",
+    "昵称",
+    "微信昵称",
+    "手机号",
+    "微信支付订单号",
+    "订单日期",
+    "商户订单号",
+    "订单金额",
+    "已返款",
+    "用户ID",
+    NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+    "匹配得分",
+}
 NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_BACKGROUND_COLORS = [
     "#DDEBF7",
     "#FCE4D6",
@@ -5075,6 +5093,66 @@ def _repair_attendance_student_id_column_config(document_json: dict[str, Any]) -
     return _repair_group_scoped_sequence_column_config(document_json, "学号")
 
 
+def _repair_attendance_group_column_configs(document_json: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    configs = normalized.get("column_configs")
+    if not isinstance(configs, dict):
+        return normalized
+    next_configs = dict(configs)
+    changed = False
+    for column_name in (NOTE_SHEET_REGISTRATION_GROUP_COLUMN, "组号"):
+        current = next_configs.get(column_name)
+        if not isinstance(current, dict) or "value_type" not in current:
+            continue
+        next_config = dict(current)
+        next_config.pop("value_type", None)
+        next_configs[column_name] = next_config
+        changed = True
+    if changed:
+        normalized["column_configs"] = next_configs
+    return normalized
+
+
+def _repair_attendance_note_row_style(document_json: dict[str, Any]) -> dict[str, Any]:
+    """Keep the attendance note row visually consistent with the sheet standard."""
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    note_row_index = int(normalized.get("data_start_row") or 1) - 1
+    if not columns or note_row_index < 0:
+        return normalized
+    source_meta = normalized.get("cell_meta")
+    next_meta = dict(source_meta) if isinstance(source_meta, dict) else {}
+    for column_index in range(len(columns)):
+        key = f"{note_row_index}:{column_index}"
+        cell = dict(next_meta.get(key) or {})
+        style = dict(cell.get("style") or {})
+        style["background_color"] = "#D8D8D8"
+        cell["style"] = style
+        next_meta[key] = cell
+    export_key = f"{note_row_index}:0"
+    export_cell = dict(next_meta.get(export_key) or {})
+    export_cell["action"] = {"type": "attendance_export", "label": "导出excel"}
+    next_meta[export_key] = export_cell
+    grid_rows = normalized.get("grid_rows")
+    if isinstance(grid_rows, list) and note_row_index < len(grid_rows):
+        next_grid_rows = [list(row) if isinstance(row, list) else row for row in grid_rows]
+        note_row = list(next_grid_rows[note_row_index])
+        while len(note_row) < len(columns):
+            note_row.append("")
+        note_row[0] = "导出excel"
+        next_grid_rows[note_row_index] = note_row
+        normalized["grid_rows"] = next_grid_rows
+    # The merged FAQ anchor follows the legacy template's emphasized near-grey.
+    faq_key = f"{note_row_index}:1"
+    faq_cell = dict(next_meta.get(faq_key) or {})
+    faq_style = dict(faq_cell.get("style") or {})
+    faq_style["background_color"] = "#D9D9D9"
+    faq_cell["style"] = faq_style
+    next_meta[faq_key] = faq_cell
+    normalized["cell_meta"] = next_meta
+    return normalized
+
+
 def _insert_document_data_rows_for_excel_import(
     document_json: dict[str, Any],
     insert_index: int,
@@ -5996,6 +6074,15 @@ def _update_registration_order_match_document(
 ) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
+    if "已返款" not in columns:
+        normalized, _ = _append_document_extra_columns_for_excel_import(normalized, ["已返款"])
+        column_configs = dict(normalized.get("column_configs") or {})
+        refunded_config = dict(column_configs.get("已返款") or {})
+        refunded_config["hidden"] = True
+        refunded_config.setdefault("note", "订单匹配衍生字段；隐藏保存并同步到考勤表")
+        column_configs["已返款"] = refunded_config
+        normalized["column_configs"] = column_configs
+    columns = _normalize_document_columns(normalized)
     indexes = _find_registration_column_indexes(
         columns,
         NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
@@ -6022,7 +6109,7 @@ def _update_registration_order_match_document(
     next_rows: list[list[Any]] = []
     browser_candidates: list[dict[str, Any]] = []
     fill_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS if column in indexes]
-    required_completeness_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS if column in indexes]
+    required_completeness_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:] if column in indexes]
     completeness_columns = fill_columns[1:]
 
     for source_row in rows:
@@ -7219,7 +7306,7 @@ def _build_attendance_row_from_registration(
         elif header == "订单金额":
             next_row[index] = source_order_amount()
         elif header == "已返款" and not _is_formula_expression(next_row[index]):
-            next_row[index] = "0"
+            next_row[index] = source_value("已返款") or "0"
         elif header == "用户ID":
             next_row[index] = source_value("用户ID")
         elif header == NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN:
@@ -7819,6 +7906,12 @@ def _merge_attendance_registration_defaults(
         should_fill = False
         if _is_formula_expression(candidate_value):
             should_fill = not current_text or not _is_formula_expression(current_value)
+        elif header == "已返款":
+            candidate_amount = _parse_number_sort_value(candidate_value)
+            current_amount = _parse_number_sort_value(current_value)
+            should_fill = candidate_amount is not None and (
+                current_amount is None or abs(candidate_amount - current_amount) > 1e-9
+            )
         elif header in NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS:
             should_fill = not current_text
         elif header == "报名日期":
@@ -7838,7 +7931,13 @@ def _merge_attendance_registration_defaults(
                     or abs(candidate_amount - current_amount) > 1e-9
                 )
         elif header in NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS:
-            should_fill = not current_text
+            should_fill = (
+                not current_text
+                or (
+                    header in NOTE_SHEET_ATTENDANCE_REGISTRATION_AUTHORITATIVE_COLUMNS
+                    and current_value != candidate_value
+                )
+            )
         if should_fill and current_value != candidate_value:
             next_row[index] = candidate_value
             changed = True
@@ -8880,6 +8979,8 @@ def _sync_registration_rows_to_attendance_document(
             )
         next_document["cell_meta"] = next_cell_meta
     next_document = _repair_attendance_student_id_column_config(next_document)
+    next_document = _repair_attendance_group_column_configs(next_document)
+    next_document = _repair_attendance_note_row_style(next_document)
     next_document, managed_formula_repaired_count = _normalize_attendance_managed_refund_formulas(next_document)
     if managed_formula_repaired_count:
         next_rows = [
@@ -9218,7 +9319,7 @@ def _run_registration_order_match_background(
                 is_active=True,
                 is_superuser=bool(current_user_snapshot.get("is_superuser")),
             )
-            document, access, _workbook = _get_note_sheet_or_404(
+            document, access, workbook = _get_note_sheet_or_404(
                 session,
                 current_user,
                 sheet_id,
@@ -9249,18 +9350,37 @@ def _run_registration_order_match_background(
                 session.add(document)
                 session.commit()
                 _broadcast_sheet_resource_update(document)
+            attendance_summary = _build_registration_match_summary()
+            attendance, _attendance_workbook = _resolve_registration_attendance_sheet(session, document, workbook)
+            if attendance is not None:
+                registration_document = _normalize_document_json(dict(document.document_json or {}))
+                attendance_document = _normalize_document_json(dict(attendance.document_json or {}))
+                next_attendance_document, attendance_summary = _sync_registration_rows_to_attendance_document(
+                    registration_document,
+                    attendance_document,
+                )
+                if attendance_document != next_attendance_document:
+                    attendance.document_json = next_attendance_document
+                    attendance.version = max(int(attendance.version or 1), 1) + 1
+                    attendance.updated_by_user_id = current_user.id
+                    attendance.updated_at = time.time()
+                    session.add(attendance)
+                    session.commit()
             _update_registration_match_run(
                 run_id,
                 processed_count=total_count,
-                updated_count=summary["updated_count"],
-                skipped_count=summary["skipped_count"],
-                error_count=summary["error_count"],
-                warning_count=summary["warning_count"],
+                updated_count=summary["updated_count"] + attendance_summary["updated_count"],
+                skipped_count=summary["skipped_count"] + attendance_summary["skipped_count"],
+                error_count=summary["error_count"] + attendance_summary["error_count"],
+                warning_count=summary["warning_count"] + attendance_summary["warning_count"],
             )
             _finish_registration_match_run(
                 run_id,
                 "completed",
-                message=_format_registration_order_match_message(summary),
+                message=(
+                    f"{_format_registration_order_match_message(summary)}；"
+                    f"{_format_registration_attendance_sync_message(attendance_summary)}"
+                ),
             )
     except Exception as exc:
         _finish_registration_match_run(

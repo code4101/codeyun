@@ -413,6 +413,36 @@ def test_realtime_scan_runs_latest_mail_business_backlog(monkeypatch):
     assert result["mail_business_backlog_sync"] == {"ok": True, "selected_count": 1}
 
 
+def test_realtime_scan_auto_triggers_bounded_maintenance_on_cursor_lag(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(scan_interval_seconds=15, maintenance_interval_seconds=600, stable_seconds=1)
+    maintenance_calls = 0
+
+    monkeypatch.setattr(
+        worker,
+        "sync_fanxiu_live_capture_backlog",
+        lambda **_kwargs: {"ok": True, "has_unconfirmed_gap": True, "latest_scanned_mtime": 100.0},
+    )
+    monkeypatch.setattr(worker, "sync_fanxiu_mail_business_backlog", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(worker, "latest_fanxiu_live_capture_summary", lambda: {"latest_mtime": 400.0})
+
+    def fake_maintenance_once():
+        nonlocal maintenance_calls
+        maintenance_calls += 1
+        return {"ok": True, "mode": "maintenance", "updated_at": "2026-07-11 05:40:00"}
+
+    monkeypatch.setattr(service, "maintenance_once", fake_maintenance_once)
+
+    first = service.scan_once()
+    second = service.scan_once()
+
+    assert maintenance_calls == 1
+    assert first["auto_maintenance"]["triggered"] is True
+    assert first["auto_maintenance"]["reason"] == "realtime_cursor_lagging"
+    assert first["auto_maintenance"]["maintenance_result"]["mode"] == "maintenance"
+    assert second["auto_maintenance"]["triggered"] is False
+    assert second["auto_maintenance"]["reason"] == "cooldown_active"
+
+
 def test_mail_source_protocol_probe_distinguishes_source_and_action_packets(tmp_path):
     mailbox_path = tmp_path / "mailbox.json"
     mailbox_path.write_text(

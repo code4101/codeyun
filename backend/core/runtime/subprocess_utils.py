@@ -154,13 +154,25 @@ def resolve_npm_executable() -> str:
     return "npm.cmd"
 
 
+def _resolve_node_executable_near_npm(npm_executable: str | Path | None = None) -> str | None:
+    node = shutil.which("node.exe") or shutil.which("node")
+    if node:
+        return node
+    npm = Path(os.fspath(npm_executable or resolve_npm_executable())).resolve(strict=False)
+    sibling_node = npm.parent / "node.exe"
+    if sibling_node.is_file():
+        return os.fspath(sibling_node)
+    return None
+
+
 def node_npm_command(*args: str, npm_executable: str | Path | None = None) -> list[str]:
     """Run npm through node+npm-cli.js on Windows to avoid npm.cmd/cmd.exe consoles."""
 
     npm = os.fspath(npm_executable) if npm_executable else resolve_npm_executable()
     if os.name == "nt":
-        node = shutil.which("node.exe") or shutil.which("node")
-        npm_cli = Path(npm).resolve(strict=False).parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        npm_dir = Path(npm).resolve(strict=False).parent
+        node = _resolve_node_executable_near_npm(npm)
+        npm_cli = npm_dir / "node_modules" / "npm" / "bin" / "npm-cli.js"
         if node and npm_cli.is_file():
             return [node, os.fspath(npm_cli), *args]
     return [npm, *args]
@@ -178,6 +190,13 @@ def apply_node_windows_hide_env(env: dict[str, str], *, root_dir: str | Path | N
 
     if os.name != "nt":
         return env
+    node = _resolve_node_executable_near_npm()
+    if node:
+        node_dir = os.fspath(Path(node).parent)
+        path_parts = [part for part in str(env.get("PATH") or "").split(os.pathsep) if part]
+        normalized = {os.path.normcase(os.path.abspath(part)) for part in path_parts}
+        if os.path.normcase(os.path.abspath(node_dir)) not in normalized:
+            env["PATH"] = os.pathsep.join([node_dir, *path_parts])
     root = Path(root_dir).resolve(strict=False) if root_dir is not None else _repo_root_from_runtime()
     preload = (root / "scripts" / "node_windows_hide_child_processes.cjs").resolve(strict=False)
     if not preload.is_file():

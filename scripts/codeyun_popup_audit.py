@@ -430,6 +430,17 @@ def audit_since(started_at: str, *, monitor_status: dict[str, Any] | None = None
     return status
 
 
+def audit_recent(hours: float, *, monitor_status: dict[str, Any] | None = None) -> dict[str, Any]:
+    window_hours = max(0.05, float(hours))
+    started_at = (datetime.now() - timedelta(hours=window_hours)).strftime(TIME_FORMAT)
+    status = audit_since(started_at, monitor_status=monitor_status)
+    status["mode"] = "recent"
+    status["window_hours"] = window_hours
+    status["window_started_at"] = started_at
+    STATUS_PATH.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    return status
+
+
 def reset_baseline() -> dict[str, Any]:
     baseline_at = datetime.now()
     monitor_status = ensure_monitor_running(min_covered_until=baseline_at + timedelta(hours=24))
@@ -450,6 +461,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Audit visible console popup events for CodeYun process chains.")
     parser.add_argument("--reset-baseline", action="store_true")
     parser.add_argument("--ensure-monitor", action="store_true")
+    parser.add_argument("--since-hours", type=float, default=None)
     args = parser.parse_args()
 
     if args.reset_baseline:
@@ -462,7 +474,9 @@ def main() -> None:
         )
         baseline = _load_baseline()
         started_at = str(baseline.get("started_at") or "")
-        if not started_at:
+        if args.since_hours is not None:
+            status = audit_recent(args.since_hours, monitor_status=monitor_status)
+        elif not started_at:
             status = reset_baseline()
         else:
             status = audit_since(started_at, monitor_status=monitor_status)

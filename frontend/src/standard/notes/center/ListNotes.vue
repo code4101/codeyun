@@ -225,6 +225,7 @@ const BatchNoteEditDialog = defineAsyncComponent(() => import('@/components/Batc
 const NOTES_LIST_QUERY_CACHE_KEY = 'codeyun:notes:list-query-cache:v1';
 const NOTES_LIST_SHARED_QUERY_CACHE_KEY = 'codeyun:notes:list-query-cache-shared:v1';
 const NOTES_LIST_QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
+const NOTES_LIST_QUERY_CACHE_SKIP_REFRESH_MS = 30 * 1000;
 const props = defineProps<{
   tabId: string;
   active?: boolean;
@@ -388,7 +389,7 @@ const writeListQueryCache = (request: NoteProgramRequest, data: NoteProgramRespo
 const hydrateListQueryCache = (request: NoteProgramRequest) => {
   const cached = readListQueryCache(request);
   if (!cached) {
-    return false;
+    return null;
   }
   noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.data);
   if (listPerfEnabled) {
@@ -397,7 +398,7 @@ const hydrateListQueryCache = (request: NoteProgramRequest) => {
       ageMs: Date.now() - cached.savedAt,
     });
   }
-  return true;
+  return cached;
 };
 
 // Computed
@@ -737,11 +738,18 @@ const currentListQueryIncludesCustomFields = () => {
 onMounted(() => {
   const hasCachedNotes = noteStore.getTabNotes(props.tabId).length > 0;
   const queryRequest = buildListQueryRequest();
-  const hydratedFromCache = !hasCachedNotes && hydrateListQueryCache(queryRequest);
+  const hydratedCache = !hasCachedNotes ? hydrateListQueryCache(queryRequest) : null;
+  const hydratedFromCache = hydratedCache !== null;
+  const cacheAgeMs = hydratedCache ? Math.max(0, Date.now() - hydratedCache.savedAt) : null;
+  const skipImmediateRefresh = hydratedFromCache
+    && cacheAgeMs !== null
+    && cacheAgeMs <= NOTES_LIST_QUERY_CACHE_SKIP_REFRESH_MS;
   if (listPerfEnabled) {
     markBootPerf('notes-list.mounted', {
       hasCachedNotes,
       hydratedFromCache,
+      skipImmediateRefresh,
+      cacheAgeMs,
       needsCustomFields: listViewNeedsCustomFields.value,
     });
   }
@@ -755,6 +763,15 @@ onMounted(() => {
       });
     }
   });
+  if (skipImmediateRefresh) {
+    if (listPerfEnabled) {
+      markBootPerf('notes-list.refresh.skipped', {
+        cacheAgeMs,
+        freshThresholdMs: NOTES_LIST_QUERY_CACHE_SKIP_REFRESH_MS,
+      });
+    }
+    return;
+  }
   if (!hasCachedNotes || (listViewNeedsCustomFields.value && !currentListQueryIncludesCustomFields())) {
     void runDataProgram(getAppliedDataProgram(), false, {
       silent: hydratedFromCache,

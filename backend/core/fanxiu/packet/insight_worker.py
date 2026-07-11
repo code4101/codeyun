@@ -37,6 +37,8 @@ from backend.core.fanxiu.runtime.capture_runtime import (
 DEFAULT_SCAN_INTERVAL_SECONDS = 15.0
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 30 * 60.0
 DEFAULT_STABLE_SECONDS = 8.0
+DEFAULT_AUTO_MAINTENANCE_LAG_SECONDS = 180.0
+DEFAULT_AUTO_MAINTENANCE_COOLDOWN_SECONDS = 10 * 60.0
 DEFAULT_FAILED_RETRY_SECONDS = 600.0
 DEFAULT_LIVE_CAPTURE_MAX_AGE_SECONDS = 24 * 60 * 60
 DEFAULT_MAINTENANCE_DECODE_LIMIT = 32
@@ -1725,6 +1727,7 @@ class FanxiuPacketInsightWorker:
         self._last_maintenance_result: dict[str, Any] = {}
         self._realtime_cycle_started_at: float | None = None
         self._maintenance_cycle_started_at: float | None = None
+        self._last_auto_maintenance_at: float | None = None
 
     def _mark_realtime_heartbeat(self, **extra: Any) -> None:
         with self._lock:
@@ -1848,6 +1851,7 @@ class FanxiuPacketInsightWorker:
             "skipped": True,
             "reason": "realtime_scan_only_handles_recent_live_capture",
         }
+        result["auto_maintenance"] = self._maybe_run_auto_maintenance(result)
         with self._lock:
             self._last_realtime_result = result
         return result
@@ -1919,6 +1923,68 @@ class FanxiuPacketInsightWorker:
                 with self._lock:
                     self._maintenance_cycle_started_at = None
             self._maintenance_stop_event.wait(self.maintenance_interval_seconds)
+
+    def _auto_maintenance_lag_threshold_seconds(self) -> float:
+        return max(
+            DEFAULT_AUTO_MAINTENANCE_LAG_SECONDS,
+            self.scan_interval_seconds * 8.0,
+            self.stable_seconds * 8.0,
+        )
+
+    def _auto_maintenance_cooldown_seconds(self) -> float:
+        return min(
+            DEFAULT_AUTO_MAINTENANCE_COOLDOWN_SECONDS,
+            max(180.0, self.maintenance_interval_seconds / 3.0),
+        )
+
+    def _maybe_run_auto_maintenance(self, realtime_result: dict[str, Any]) -> dict[str, Any]:
+        if not bool(realtime_result.get("has_unconfirmed_gap")):
+            return {"triggered": False, "reason": "no_unconfirmed_gap"}
+        latest_scanned_mtime = realtime_result.get("latest_scanned_mtime")
+        if not isinstance(latest_scanned_mtime, (int, float)) or latest_scanned_mtime <= 0:
+            return {"triggered": False, "reason": "missing_latest_scanned_mtime"}
+        latest_live = latest_fanxiu_live_capture_summary()
+        latest_live_mtime = latest_live.get("latest_mtime") if isinstance(latest_live, dict) else None
+        if not isinstance(latest_live_mtime, (int, float)) or latest_live_mtime <= 0:
+            return {"triggered": False, "reason": "missing_latest_live_capture"}
+        lag_seconds = max(0.0, float(latest_live_mtime) - float(latest_scanned_mtime))
+        threshold_seconds = self._auto_maintenance_lag_threshold_seconds()
+        if lag_seconds <= threshold_seconds:
+            return {
+                "triggered": False,
+                "reason": "lag_below_threshold",
+                "lag_seconds": lag_seconds,
+                "threshold_seconds": threshold_seconds,
+            }
+        with self._lock:
+            if self._maintenance_cycle_started_at is not None:
+                return {
+                    "triggered": False,
+                    "reason": "maintenance_already_running",
+                    "lag_seconds": lag_seconds,
+                    "threshold_seconds": threshold_seconds,
+                }
+            cooldown_seconds = self._auto_maintenance_cooldown_seconds()
+            if (
+                self._last_auto_maintenance_at is not None
+                and (time.time() - self._last_auto_maintenance_at) < cooldown_seconds
+            ):
+                return {
+                    "triggered": False,
+                    "reason": "cooldown_active",
+                    "lag_seconds": lag_seconds,
+                    "threshold_seconds": threshold_seconds,
+                    "cooldown_seconds": cooldown_seconds,
+                }
+            self._last_auto_maintenance_at = time.time()
+        maintenance_result = self.maintenance_once()
+        return {
+            "triggered": True,
+            "reason": "realtime_cursor_lagging",
+            "lag_seconds": lag_seconds,
+            "threshold_seconds": threshold_seconds,
+            "maintenance_result": _compact_worker_state_payload(maintenance_result),
+        }
 
 
 fanxiu_packet_insight_worker = FanxiuPacketInsightWorker()

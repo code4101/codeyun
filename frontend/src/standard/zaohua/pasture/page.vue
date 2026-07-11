@@ -10,17 +10,25 @@ import {
   type ZaohuaPastureSolution,
 } from '@/api/zaohua'
 
-const STORAGE_KEY = 'zaohua:pasture:solver-v1'
+const STORAGE_KEY = 'zaohua:pasture:solver-v2'
+const REALMS = [
+  { label: '炼气', count: 9 }, { label: '筑基', count: 14 }, { label: '结丹', count: 19 },
+  { label: '元婴', count: 24 }, { label: '化神', count: 29 }, { label: '炼虚', count: 34 },
+]
 const loading = ref(false)
 const solving = ref(false)
 const meta = ref<ZaohuaPastureMeta | null>(null)
 const solution = ref<ZaohuaPastureSolution | null>(null)
 const plotCount = ref(9)
+const realm = ref('炼气')
+const productionMode = ref<'free' | 'exact' | 'target_ratio'>('target_ratio')
+const herbCount = ref(9)
+const poolCount = ref(0)
 const enabledBuildingIds = ref<number[]>([])
 const buildingCounts = ref<Record<number, number>>({})
 
 const buildingById = computed(() => new Map((meta.value?.buildings || []).map(item => [item.build_id, item])))
-const selectableBuildings = computed(() => meta.value?.buildings.filter(item => item.type === 1 || item.build_id === 3) || [])
+const selectableBuildings = computed(() => meta.value?.buildings.filter(item => item.type === 1 && item.build_id !== 3) || [])
 const resultBounds = computed(() => {
   const cells = solution.value?.cells || []
   const xs = cells.map(cell => cell.x)
@@ -39,7 +47,11 @@ function switchLabel(building: ZaohuaPastureBuilding) {
 function restoreSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-    plotCount.value = Math.max(1, Math.min(30, Number(saved.plotCount) || 9))
+    plotCount.value = Math.max(1, Math.min(60, Number(saved.plotCount) || 9))
+    realm.value = String(saved.realm || '炼气')
+    productionMode.value = ['free', 'exact', 'target_ratio'].includes(saved.productionMode) ? saved.productionMode : 'target_ratio'
+    herbCount.value = Math.max(0, saved.herbCount == null ? 9 : Number(saved.herbCount) || 0)
+    poolCount.value = Math.max(0, Number(saved.poolCount) || 0)
     enabledBuildingIds.value = Array.isArray(saved.enabledBuildingIds)
       ? saved.enabledBuildingIds.map(Number).filter(Number.isFinite)
       : []
@@ -53,9 +65,10 @@ function restoreSettings() {
   }
 }
 
-watch([plotCount, enabledBuildingIds, buildingCounts], () => {
+watch([plotCount, realm, productionMode, herbCount, poolCount, enabledBuildingIds, buildingCounts], () => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     plotCount: plotCount.value,
+    realm: realm.value, productionMode: productionMode.value, herbCount: herbCount.value, poolCount: poolCount.value,
     enabledBuildingIds: enabledBuildingIds.value,
     buildingCounts: buildingCounts.value,
   }))
@@ -66,6 +79,9 @@ async function solve() {
   try {
     solution.value = await solveZaohuaPasture({
       plot_count: plotCount.value,
+      production_mode: productionMode.value,
+      herb_count: herbCount.value,
+      pool_count: poolCount.value,
       enabled_building_ids: enabledBuildingIds.value,
       building_counts: buildingCounts.value,
     })
@@ -75,6 +91,17 @@ async function solve() {
   } finally {
     solving.value = false
   }
+}
+
+function selectRealm(value: string) {
+  realm.value = value
+  const selected = REALMS.find(item => item.label === value)
+  if (selected) plotCount.value = selected.count
+}
+
+function markCustomCount() {
+  const matched = REALMS.find(item => item.count === plotCount.value)
+  realm.value = matched?.label || '自定义'
 }
 
 
@@ -116,11 +143,26 @@ onMounted(() => {
   <div v-loading="loading" class="pasture-page">
     <header class="toolbar">
       <h1>洞天求解</h1>
+      <label>境界</label>
+      <el-select :model-value="realm" class="realm-select" @update:model-value="selectRealm">
+        <el-option v-for="item in REALMS" :key="item.label" :label="`${item.label} · ${item.count}格`" :value="item.label" />
+        <el-option v-if="realm === '自定义'" label="自定义" value="自定义" />
+      </el-select>
       <label>格子数</label>
-      <el-input-number v-model="plotCount" :min="1" :max="30" controls-position="right" />
+      <el-input-number v-model="plotCount" :min="1" :max="60" controls-position="right" @change="markCustomCount" />
+      <label>生产计划</label>
+      <el-select v-model="productionMode" class="mode-select">
+        <el-option label="保持比例" value="target_ratio" />
+        <el-option label="精确数量" value="exact" />
+        <el-option label="完全自由" value="free" />
+      </el-select>
+      <template v-if="productionMode !== 'free'">
+        <label>灵田</label><el-input-number v-model="herbCount" :min="0" :max="plotCount" controls-position="right" />
+        <label>灵池</label><el-input-number v-model="poolCount" :min="0" :max="plotCount" controls-position="right" />
+      </template>
       <el-button type="primary" :loading="solving" @click="solve">联合求解形状与布局</el-button>
       <span v-if="solution" class="result">
-        总价值 {{ solution.total_value.toFixed(1) }} · {{ solution.base_output }} 格种植
+        总价值 {{ solution.total_value.toFixed(1) }} · 灵田 {{ solution.herb_count }} · 灵池 {{ solution.pool_count }}
         <template v-if="solution.gain > 0"> · 加成 +{{ solution.gain.toFixed(1) }}</template>
       </span>
     </header>
@@ -156,6 +198,10 @@ onMounted(() => {
             <template v-else>
               <img v-if="buildingById.get(cell.building_id || 0)?.image_url" :src="buildingById.get(cell.building_id || 0)?.image_url" alt="" />
               <span>{{ buildingById.get(cell.building_id || 0)?.name }}</span>
+              <small v-if="cell.productive">×{{ cell.coefficient || 1 }}</small>
+              <small v-if="cell.productive && (cell.yield_count || 0)" class="factor-detail">
+                枢×{{ 1 + (cell.yield_count || 0) }}
+              </small>
             </template>
           </div>
         </div>
@@ -177,7 +223,7 @@ onMounted(() => {
             />
             <small>{{ switchLabel(building) }}</small>
             <el-input-number
-              v-if="!isAdjacencyBonus(building)"
+              v-if="enabledBuildingIds.includes(building.build_id) && !isAdjacencyBonus(building)"
               :model-value="buildingCounts[building.build_id] || 1"
               :min="1"
               :max="plotCount"
@@ -197,9 +243,12 @@ onMounted(() => {
 <style scoped>
 .pasture-page { box-sizing: border-box; height: 100%; min-height: 0; overflow: hidden; padding: 18px 22px; display: flex; flex-direction: column; gap: 16px; }
 .toolbar { display: flex; align-items: center; gap: 12px; flex: none; }
+.toolbar { flex-wrap: wrap; }
 .toolbar h1 { margin: 0 10px 0 0; font-size: 22px; }
 .toolbar label { color: var(--el-text-color-regular); }
 .toolbar :deep(.el-input-number) { width: 112px; }
+.realm-select { width: 126px; }
+.mode-select { width: 112px; }
 .result { color: var(--el-text-color-secondary); margin-left: 4px; }
 .section-title { font-weight: 600; margin-bottom: 8px; }
 .section-title small { margin-left: 8px; color: var(--el-text-color-secondary); font-weight: 400; }

@@ -30,11 +30,11 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "bda52f6ee6b30ddac0d4b3616971725611f33a22"
-last_audited_at: "2026-07-10T18:42:32.3908874+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-10-frontend-design-bda52f6e/report.md"
-last_frontend_commit_summary: "已关闭 a9a7ed5d..bda52f6e：Zaohua 价值求解仍留在既有 inspector 模型里；resource-view 在 403 权限态下收回重复 console warn，只保留登录面板与一层必要失败信号。"
-audited_commit_count: 94
+last_audited_commit: "fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05"
+last_audited_at: "2026-07-11T06:39:58.2896508+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-fdd0b7a/report.md"
+last_frontend_commit_summary: "已关闭 bda52f6e..fdd0b7a4：Zaohua 丹药/洞天与路由恢复保持单一主判断；洞天页收回 7 个未启用建筑的常驻禁用数量控件。"
+audited_commit_count: 96
 pending_or_skipped_ranges: []
 ```
 
@@ -279,6 +279,21 @@ pending_or_skipped_ranges: []
 - 启动服务失败、截图失败、验证失败：`NOTIFY`
 
 ## 巡检记录
+
+### 2026-07-11（第二十六轮）
+
+- 完整范围：`bda52f6ee6b30ddac0d4b3616971725611f33a22..fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05`
+- 覆盖提交：`ae7fc535fdbedbcf2e29c8505590d2fcabdfd438`、`fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05`
+- 前端入口提交：`ae7fc535fdbedbcf2e29c8505590d2fcabdfd438`、`fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05`
+- 入口如何牵引到旧问题：这两次提交把 `Zaohua` 的丹药/洞天求解、全局路由动态加载恢复、`resource-view` 公开工作簿权限态和 `attendance/orders` 的后台配置恢复一起往前推。它们共享的不是同一业务实体，而是同一条减法约束：一级页面只呈现当前对象和当前失败事实，不把未参与求解的参数、后台恢复节奏或动态加载故障细节扩成常驻控件。因此本轮沿 `zaohua/alchemy -> zaohua/pasture`、`public sheet/workbook resource`、`attendance/orders` 以及真实 `route load error` 兜底链路一起复核。
+- 本轮减法：提交本身已经把 `resource-view` 的 401/403 告警收回到页面单一卡片，并为动态路由失败补上一次自动重载后的单一错误卡。本轮追加的低风险修复只落在 `frontend/src/standard/zaohua/pasture/page.vue`：`building_counts` 是参与求解后的细节，不该在未启用建筑上以 7 个禁用 `el-input-number` 常驻首屏；修复后数量控件只在建筑启用后出现，保持同等求解能力，同时把首屏噪音收回。
+- 信息量保持：`alchemy` 仍保留品阶筛选、配方列表、选中详情和炉内求解；`pasture` 仍保留格子数、建筑选择和数量能力，只是把数量从“默认常驻”收回到“启用后出现”；`attendance/orders` 仍保留退款/详情和历史闭环，后台配置刷新没有回长成一级提示；`public workbook 403` 仍只保留登录/重试卡片，`routeLoadRecovery` 仍保留一次自动重载后的显式重试按钮。
+- 概念图/线框图：报告中的 Mermaid 把本轮收敛成两条基础闭环：`对象进入求解 -> 只在参与后显示细节参数`，以及 `资源/路由失败 -> 自动重试一次 -> 单一错误卡 + 重试按钮`；ASCII 线框图直接对比了 `pasture` 修复前后右栏从“开关 + 标签 + 7 个禁用 stepper”回到“开关 + 标签，启用后才出现数量”。
+- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-fdd0b7a/report.md`
+- 验证：复用本地 `5173/8000` 环境，对 `zaohua/alchemy`、`zaohua/pasture`、`attendance/orders`、公开 `sheet/58855?view=lookup`、公开 `workbook/14?sheet=58855` 完成 `1600x1000`、`1366x900`、`820x1180` 三视口截图，证据见 `evidence.json`。修复前 `pasture` 三视口都有 `7` 个禁用数量控件；修复后 `pasture-after-evidence.json` 记录三视口 `stepperCount = 0`、`bodyOverflowX = 0`。`public workbook 403` 三视口都只剩浏览器原生 `403` 网络错误和页面内单一卡片，没有再出现额外 `console.warn`。另外通过浏览器拦截 `src/standard/zaohua/pasture/page.vue` 两次真实复现了动态路由加载失败，`route-load-error-real-evidence.json` 记录三视口都落到 `页面没有加载成功 / 重新加载` 的单一错误卡，且 `bodyOverflowX = 0`。静态校验 `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 入口依赖污染检查：本轮未命中强制入口污染检查条件。提交未改 `frontend/package*.json`、`vite.config.*`、`manualChunks`、自动导入、全局样式、worker/wasm 或重依赖装配边界；动态路由恢复只涉及现有懒加载失败兜底，不涉及主入口依赖扩面。
+- 根因分层：本轮唯一需要自动修复的问题属于 `Zaohua pasture` 的前端状态投影/交互密度问题，不是后端 DTO 或业务建模问题。`attendance/orders` 的后台配置恢复、`resource-view` 的权限拒绝态和 `routeLoadRecovery` 的失败兜底都保持在正确的一级事实层，没有暴露新的模型债务，也无需转交 `CodeYun 代码健康优化`。
+- 处理结果：本轮已完成完整增量范围的提交归类、业务建模、概念图、真实多视口截图、低风险减法修复和前端验证，因此把 `last_audited_commit` 推进到 `fdd0b7a4dc32b508af4939ea2b88ba4cc4629a05`，`pending_or_skipped_ranges` 保持为空。
 
 ### 2026-07-10（第二十五轮）
 

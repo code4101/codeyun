@@ -250,6 +250,27 @@ class DailyFoundationTaskMixin:
         if remaining is None:
             remaining = _parse_daily_boss_reward_remaining(runtime.ocr_text(update=True))
         if remaining == 0:
+            # A single OCR ``0`` must not suppress the whole day's boss job.  The
+            # counter is small and animated; a bad crop/read previously wrote a
+            # cross-day retry even while the daily ledger still showed 0/3.
+            # Confirm it from a newly captured frame before treating it as the
+            # authoritative completion signal.
+            confirm_frame = runtime.cur_frame(update=True)
+            confirm_text = runtime.ocr_text_in_shapes(
+                View(image178),
+                ("剩余奖励次数",),
+                padding=12,
+                frame_data_url=confirm_frame,
+            )
+            confirmed_remaining = _parse_daily_boss_reward_remaining(confirm_text)
+            if confirmed_remaining != 0:
+                with self._lock:
+                    self._log_locked(
+                        "warning",
+                        "日常_首领：首次读到剩余奖励次数 0，但新帧未确认，继续查找首领",
+                    )
+                remaining = confirmed_remaining
+        if remaining == 0:
             next_time = self._record_daily_boss_done_for_today(payload)
             with self._lock:
                 self._set_status_locked(

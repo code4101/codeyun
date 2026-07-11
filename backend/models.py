@@ -458,6 +458,8 @@ class ZaohuaAlchemyRecipe(SQLModel, table=True):
     output_use_effect: str = Field(default="", sa_column=Column(Text))
     output_augment: int = Field(default=0)
     output_efficacy: int = Field(default=0)
+    output_add_drug_tolerance: int = Field(default=0)
+    output_drug_max: int = Field(default=0)
     attr_limits: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     example_items: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     state_rules: list[dict] = Field(default_factory=list, sa_column=Column(JSON))

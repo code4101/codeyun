@@ -273,6 +273,8 @@ def _item_view(item: dict[str, Any] | None, local: dict[str, str], grades: dict[
         "price": item.get("price") or 0,
         "augment": int(item.get("augment") or 0),
         "efficacy": int(item.get("efficacy") or 0),
+        "add_drug_tolerance": int(item.get("addDrugTolerance") or 0),
+        "drug_max": int(item.get("drugMax") or 0),
         "drug_quality": item.get("drugQuality") or 0,
         "attribute": item.get("attribute") or 0,
     }

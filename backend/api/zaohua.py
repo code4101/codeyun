@@ -47,7 +47,12 @@ class ZaohuaAlchemySolveRequest(BaseModel):
 
 
 class ZaohuaPastureSolveRequest(BaseModel):
-    plot_count: int = Field(default=9, ge=1, le=30)
+    plot_count: int = Field(default=9, ge=1, le=60)
+    production_mode: str = Field(default="target_ratio", pattern="^(free|exact|target_ratio)$")
+    herb_count: int = Field(default=9, ge=0, le=60)
+    pool_count: int = Field(default=0, ge=0, le=60)
+    herb_weight: float = Field(default=1, gt=0)
+    fish_weight: float = Field(default=1, gt=0)
     enabled_building_ids: list[int] = Field(default_factory=list)
     building_counts: dict[int, int] = Field(default_factory=dict)
 
@@ -125,6 +130,8 @@ def _serialize_recipe(
         "use_effect": record.output_use_effect,
         "augment": record.output_augment,
         "efficacy": record.output_efficacy,
+        "add_drug_tolerance": record.output_add_drug_tolerance,
+        "drug_max": record.output_drug_max,
     })
     output["effect_text"] = _output_effect_text(output)
     return {
@@ -259,6 +266,11 @@ def solve_zaohua_pasture(request: ZaohuaPastureSolveRequest) -> dict[str, Any]:
             catalog.get("buildings", []),
             request.enabled_building_ids,
             request.building_counts,
+            production_mode=request.production_mode,
+            herb_count=request.herb_count,
+            pool_count=request.pool_count,
+            herb_weight=request.herb_weight,
+            fish_weight=request.fish_weight,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

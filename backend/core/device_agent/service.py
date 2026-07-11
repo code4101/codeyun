@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
+import uuid
 from typing import Any
 
 from sqlmodel import Session, select
@@ -11,7 +13,6 @@ from sqlmodel import Session, select
 from backend.core.ai.app_config import AI_APP_DEVICE_AGENT, resolve_ai_app_runtime_config
 from backend.core.ai.chat import OllamaClientError, chat_with_provider, get_ai_provider_status
 from backend.core.devices.device import get_device_id
-from backend.core.runtime.background_task_queue import background_task_queue
 from backend.db import engine
 from backend.models import AppSetting, DeviceAgentSession, DeviceAgentTurn, User
 
@@ -21,7 +22,6 @@ DEVICE_AGENT_DEFAULT_PROVIDER = "codex-cli"
 DEVICE_AGENT_DEFAULT_MODEL = ""
 DEVICE_AGENT_FALLBACK_MODEL = "gpt-5.5"
 DEVICE_AGENT_RUNTIME_CONTEXT_KEY = "_device_agent_runtime"
-DEVICE_AGENT_TASK_NAME = "device_agent_turn"
 DEVICE_AGENT_DEFAULT_AI_TIMEOUT_SECONDS = 300
 
 
@@ -294,8 +294,8 @@ def _create_turn(
         instruction=instruction.strip(),
         context=turn_context,
         status="pending",
-        stage="queued",
-        stage_label="已进入设备代理队列",
+        stage="starting",
+        stage_label="正在启动设备代理",
         heartbeat_at=now,
         created_at=now,
         updated_at=now,
@@ -310,18 +310,26 @@ def _create_turn(
     session.add(item)
     session.commit()
 
-    queue_task_id = background_task_queue.enqueue(
-        DEVICE_AGENT_TASK_NAME,
-        run_device_agent_turn_worker,
-        turn.id,
-        metadata={"turn_id": turn.id, "session_id": item.id},
-    )
-    turn.queue_task_id = queue_task_id
+    execution_id = start_device_agent_turn(turn.id)
+    turn.queue_task_id = execution_id
     turn.updated_at = _now()
     session.add(turn)
     session.commit()
     session.refresh(turn)
     return turn
+
+
+def start_device_agent_turn(turn_id: str) -> str:
+    """Start an agent turn immediately, independently of the shared job queue."""
+    execution_id = uuid.uuid4().hex
+    worker = threading.Thread(
+        target=run_device_agent_turn_worker,
+        args=(turn_id,),
+        name=f"codeyun-device-agent-{execution_id[:8]}",
+        daemon=True,
+    )
+    worker.start()
+    return execution_id
 
 
 def list_device_agent_sessions(session: Session, *, limit: int = 30) -> list[dict[str, Any]]:

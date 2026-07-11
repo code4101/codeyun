@@ -123,12 +123,14 @@ def test_device_agent_session_runs_turn_and_returns_report(client, session, auth
             )
         }
 
-    def fake_enqueue(name, func, *args, **kwargs):
-        func(*args)
-        return "queue-1"
+    def fake_start(turn_id):
+        from backend.core.device_agent.service import run_device_agent_turn_worker
+
+        run_device_agent_turn_worker(turn_id)
+        return "execution-1"
 
     monkeypatch.setattr("backend.core.device_agent.service.chat_with_provider", fake_chat_with_provider)
-    monkeypatch.setattr("backend.core.device_agent.service.background_task_queue.enqueue", fake_enqueue)
+    monkeypatch.setattr("backend.core.device_agent.service.start_device_agent_turn", fake_start)
     save_user_ai_chat_provider_config(
         session,
         auth_user.id,

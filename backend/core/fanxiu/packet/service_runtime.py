@@ -92,6 +92,19 @@ def _packet_service_command_timeout_seconds() -> float:
         return 45.0
 
 
+def _packet_service_action_timeout_seconds(action: str) -> float:
+    action_name = str(action or "").strip()
+    if action_name == "maintenance":
+        try:
+            return max(
+                _packet_service_command_timeout_seconds(),
+                float(os.getenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS") or 180.0),
+            )
+        except (TypeError, ValueError):
+            return max(_packet_service_command_timeout_seconds(), 180.0)
+    return _packet_service_command_timeout_seconds()
+
+
 def _safe_cmdline(proc: Any) -> list[str]:
     try:
         return [str(part) for part in proc.cmdline()]
@@ -179,12 +192,36 @@ def _retry_on_permission_error(action, *, retries: int = 5, delay_seconds: float
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            temp_path.write_text(text, encoding="utf-8")
+            temp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if getattr(exc, "winerror", None) not in {5, 32} and not isinstance(exc, PermissionError):
+                raise
+            try:
+                path.write_text(text, encoding="utf-8")
+                return
+            except OSError as fallback_exc:
+                last_error = fallback_exc
+                if getattr(fallback_exc, "winerror", None) not in {5, 32} and not isinstance(fallback_exc, PermissionError):
+                    raise
+            time.sleep(0.05 * (attempt + 1))
     try:
-        _retry_on_permission_error(
-            lambda: write_json_state(path, payload, permission_retries=1),
-        )
-    except PermissionError:
-        _write_json_non_atomic(path, payload)
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        if last_error is not None:
+            raise last_error
+        raise
 
 
 def _write_json_non_atomic(path: Path, payload: Any) -> None:
@@ -365,7 +402,7 @@ def _process_packet_service_command(path: Path) -> dict[str, Any] | None:
     reason = str(command.get("reason") or "service-command").strip() or "service-command"
     result_path = _packet_service_result_path(command_id)
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
-    timeout_seconds = _packet_service_command_timeout_seconds()
+    timeout_seconds = _packet_service_action_timeout_seconds(action)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-packet-command")
     try:
         future = executor.submit(_run_packet_service_command_action, action, reason=reason)

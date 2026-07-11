@@ -84,6 +84,21 @@ def test_request_fanxiu_packet_service_maintenance_submits_maintenance_action(mo
     assert captured == {"action": "maintenance", "reason": "test", "wait_seconds": 12}
 
 
+def test_packet_service_action_timeout_uses_longer_budget_for_maintenance(monkeypatch):
+    monkeypatch.delenv("FX_PACKET_SERVICE_COMMAND_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", raising=False)
+
+    assert service_runtime._packet_service_action_timeout_seconds("maintenance") == 180.0
+    assert service_runtime._packet_service_action_timeout_seconds("packet_facts_catch_up") == 45.0
+
+
+def test_packet_service_action_timeout_respects_global_floor_for_maintenance(monkeypatch):
+    monkeypatch.setenv("FX_PACKET_SERVICE_COMMAND_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", "180")
+
+    assert service_runtime._packet_service_action_timeout_seconds("maintenance") == 240.0
+
+
 def test_process_packet_service_command_runs_maintenance(monkeypatch, tmp_path):
     command_path = tmp_path / "maintenance.json"
     result_dir = tmp_path / "results"
@@ -700,9 +715,35 @@ def test_write_json_falls_back_to_direct_write_when_replace_stays_locked(monkeyp
 
     service_runtime._write_json(path, {"ok": True, "value": 2})
 
-    assert calls["replace"] == 1
+    assert calls["replace"] >= 1
     assert calls["direct_write"] == 1
     assert '"value": 2' in path.read_text(encoding="utf-8")
+
+
+def test_write_json_falls_back_when_atomic_write_reports_winerror_5(monkeypatch, tmp_path):
+    path = tmp_path / "packet_service_state.json"
+    original_write_text = Path.write_text
+    calls = {"replace": 0, "direct_write": 0}
+
+    def locked_replace(self, target):
+        calls["replace"] += 1
+        exc = OSError(13, "denied", str(target))
+        exc.winerror = 5
+        raise exc
+
+    def track_write_text(self, data, *args, **kwargs):
+        if self == path:
+            calls["direct_write"] += 1
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", locked_replace)
+    monkeypatch.setattr(Path, "write_text", track_write_text)
+
+    service_runtime._write_json(path, {"ok": True, "value": 3})
+
+    assert calls["replace"] >= 1
+    assert calls["direct_write"] == 1
+    assert '"value": 3' in path.read_text(encoding="utf-8")
 
 
 def test_write_packet_service_state_retries_direct_write_when_target_is_temporarily_locked(monkeypatch, tmp_path):

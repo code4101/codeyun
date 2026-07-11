@@ -76,8 +76,12 @@ def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(sessi
             sheet_key="9001",
             title="第41届念住考勤表",
             document_json={
-                "columns": ["姓名", "已返款", "订单金额"],
-                "rows": [["甲", "100", "620"], ["乙", "200", "620"]],
+                "columns": ["姓名", "商户订单号", "已返款", "订单金额"],
+                "rows": [
+                    ["甲", "ORDER-1", "100", "620"],
+                    ["乙", "ORDER-2", "200", "620"],
+                    ["旁听", "", "0", "620"],
+                ],
             },
         )
     )
@@ -88,8 +92,12 @@ def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(sessi
             sheet_key="9002",
             title="第47届觉观考勤表",
             document_json={
-                "columns": ["姓名", "已返款", "订单金额"],
-                "rows": [["丙", "30", "499"], ["丁", "40", "0"], ["戊", "50", "499"]],
+                "columns": ["姓名", "商户订单号", "已返款", "订单金额"],
+                "rows": [
+                    ["丙", "ORDER-3", "30", "499"],
+                    ["丁", "", "40", "499"],
+                    ["戊", "ORDER-4", "50", "499"],
+                ],
             },
         )
     )

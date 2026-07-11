@@ -5325,6 +5325,23 @@ def v85_add_zaohua_alchemy_output_effects(session: Session):
     print("  Added Zaohua alchemy output effects.")
 
 
+def v86_add_zaohua_alchemy_drug_tolerance(session: Session):
+    """Migration V86: Add the drug-resistance inputs for Zaohua alchemy outputs."""
+    print("Running System Upgrade V86: Add Zaohua alchemy drug tolerance...")
+    columns = _get_table_columns(session, "zaohuaalchemyrecipe")
+    additions = {
+        "output_add_drug_tolerance": "INTEGER NOT NULL DEFAULT 0",
+        "output_drug_max": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in additions.items():
+        if column not in columns:
+            session.exec(text(
+                f"ALTER TABLE zaohuaalchemyrecipe ADD COLUMN {column} {definition}"
+            ))
+    session.commit()
+    print("  Added Zaohua alchemy drug tolerance.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5413,6 +5430,7 @@ MIGRATIONS = [
     (83, "Add Zaohua herbs", v83_add_zaohua_herbs),
     (84, "Add Zaohua herb crafting attributes", v84_add_zaohua_herb_crafting_attributes),
     (85, "Add Zaohua alchemy output effects", v85_add_zaohua_alchemy_output_effects),
+    (86, "Add Zaohua alchemy drug tolerance", v86_add_zaohua_alchemy_drug_tolerance),
 ]
 
 def get_current_version(session: Session) -> int:
