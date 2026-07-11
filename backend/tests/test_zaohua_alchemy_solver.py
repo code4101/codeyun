@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.core.zaohua.alchemy_solver import shape_rotations, solve_alchemy
+from backend.core.zaohua.alchemy_solver import _result_order_key, shape_rotations, solve_alchemy
 from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
 
@@ -17,6 +17,8 @@ def _herb(
     return ZaohuaHerb(
         item_id=item_id,
         name=name,
+        grade_id=301,
+        grade_name="一阶下品",
         element_id={"water": 2, "wood": 3}[element],
         element_key=element,
         price=price,
@@ -30,7 +32,7 @@ def test_shape_rotations_remove_symmetric_duplicates() -> None:
     assert len(shape_rotations([(0, 0)])) == 1
 
 
-def test_solver_uses_yin_as_negative_vector_and_ranks_by_value_ratio() -> None:
+def test_solver_uses_yin_as_negative_vector_and_ranks_by_grade_profile() -> None:
     recipe = ZaohuaAlchemyRecipe(
         recipe_id=1,
         output_count=2,
@@ -45,9 +47,9 @@ def test_solver_uses_yin_as_negative_vector_and_ranks_by_value_ratio() -> None:
     result = solve_alchemy(recipe, herbs, yang_width=2, yang_height=1, limit=5)
 
     assert result["exhaustive"] is True
-    assert result["solutions"][0]["ratio"] == 5
+    assert result["solutions"][0]["grade_sequence"] == [1]
     assert result["solutions"][0]["herbs"] == [
-        {"item_id": 2, "name": "阴水草", "side": "yin", "count": 2, "unit_price": 20.0}
+        {"item_id": 1, "name": "阳水草", "side": "yang", "count": 1, "unit_price": 100.0}
     ]
 
     first_page = solve_alchemy(recipe, herbs, yang_width=2, yang_height=1, limit=1)
@@ -177,6 +179,73 @@ def test_solver_uses_independent_yang_and_yin_board_sizes() -> None:
     assert allowed["solutions"][0]["placements"][0]["side"] == "yin"
 
 
+def test_solver_uses_bounded_c_family_conversion_and_compensation() -> None:
+    recipe = ZaohuaAlchemyRecipe(
+        recipe_id=1,
+        output_count=1,
+        output_price=100,
+        attr_limits=[{"element": "wind", "label": "风", "value": 1}],
+    )
+    converter = ZaohuaHerb(
+        item_id=1,
+        name="刃风草",
+        element_key="wind",
+        price=10,
+        crafting_attributes=[
+            {"element": "wind", "label": "风", "value": -1},
+            {"element": "wood", "label": "木", "value": 1},
+        ],
+        source_json={"shape": {"draw_id": 1, "cells": [[0, 0]]}},
+    )
+    compensator = _herb(2, "回春草", "wood", 1, 5, [[0, 0]])
+
+    result = solve_alchemy(
+        recipe,
+        [converter, compensator],
+        yang_width=1,
+        yang_height=1,
+        yin_width=1,
+        yin_height=1,
+    )
+
+    assert result["search_mode"] == "grade_descent"
+    assert result["vector_mode"] == "abc_bounded"
+    assert result["converter_candidate_count"] == 1
+    assert result["candidate_family_counts"] == {"B": 1, "C": 1}
+    assert {(item["item_id"], item["side"]) for item in result["solutions"][0]["herbs"]} == {
+        (1, "yin"),
+        (2, "yang"),
+    }
+
+
+def test_solver_prunes_exact_abc_capacity_by_furnace_side() -> None:
+    recipe = ZaohuaAlchemyRecipe(
+        recipe_id=1,
+        output_count=1,
+        output_price=10,
+        attr_limits=[
+            {"element": "water", "label": "水", "value": 2},
+            {"element": "wood", "label": "木", "value": 2},
+        ],
+    )
+    herbs = [
+        _herb(1, "水草", "water", 1, 1, [[0, 0]]),
+        _herb(2, "木草", "wood", 1, 1, [[0, 0]]),
+    ]
+
+    result = solve_alchemy(
+        recipe,
+        herbs,
+        yang_width=3,
+        yang_height=1,
+        yin_width=3,
+        yin_height=1,
+    )
+
+    assert result["solutions"] == []
+    assert result["pruned_exact_capacity"] > 0
+
+
 def test_solver_keeps_only_best_solution_for_each_herb_type_set() -> None:
     recipe = ZaohuaAlchemyRecipe(
         recipe_id=1,
@@ -192,10 +261,11 @@ def test_solver_keeps_only_best_solution_for_each_herb_type_set() -> None:
     result = solve_alchemy(recipe, herbs, yang_width=7, yang_height=1, limit=5)
 
     assert result["solution_count"] == 1
-    assert result["solutions"][0]["cost"] == 13
+    assert result["solutions"][0]["grade_sequence"] == [1, 1, 1]
+    assert result["solutions"][0]["cost"] == 21
     assert {(item["item_id"], item["count"]) for item in result["solutions"][0]["herbs"]} == {
-        (1, 3),
-        (2, 1),
+        (1, 1),
+        (2, 2),
     }
 
 
@@ -214,11 +284,11 @@ def test_solver_removes_lower_ratio_superset_derivations() -> None:
     result = solve_alchemy(recipe, herbs, yang_width=4, yang_height=1, limit=5)
     herb_sets = [{item["item_id"] for item in solution["herbs"]} for solution in result["solutions"]]
 
-    assert herb_sets == [{1}, {2}]
+    assert herb_sets == [{2}, {1}]
     assert result["solution_count"] == 2
 
 
-def test_solver_uses_requested_value_metric_priority() -> None:
+def test_solver_grade_objective_ignores_legacy_value_metric_priority() -> None:
     recipe = ZaohuaAlchemyRecipe(
         recipe_id=1,
         output_count=1,
@@ -250,8 +320,20 @@ def test_solver_uses_requested_value_metric_priority() -> None:
     assert by_ratio["solutions"][0]["output_input_ratio"] == 200
     assert by_ratio["solutions"][0]["net_profit"] == 1_990
     assert by_ratio["solutions"][0]["profit_rate"] == 398
-    assert by_profit["solutions"][0]["herbs"][0]["item_id"] == 2
-    assert by_profit["sort_metrics"] == ["net_profit", "output_input_ratio", "profit_rate"]
+    assert by_profit["solutions"][0]["herbs"][0]["item_id"] == 1
+    assert by_profit["objective"] == "grade_descent"
+
+
+def test_grade_profile_prefers_balanced_simultaneous_downgrade() -> None:
+    common = {
+        "occupied_cells": 2,
+        "final_yield": 1,
+        "herbs": [],
+    }
+    balanced = {**common, "grade_histogram": [0] * 13 + [2, 0]}
+    uneven = {**common, "grade_histogram": [0] * 12 + [1, 0, 1]}
+
+    assert _result_order_key(balanced) < _result_order_key(uneven)
 
 
 def test_solver_rejects_incomplete_value_metric_priority() -> None:

@@ -3,13 +3,24 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import product
 import re
 from typing import Any, Iterable, Literal
 
+from backend.core.zaohua.grades import get_grade_visual
 from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
 
 ELEMENT_IDS = {1: "gold", 2: "water", 3: "wood", 4: "fire", 5: "soil", 6: "ice", 7: "wind", 8: "thunder"}
+ELEMENT_KEYS = tuple(ELEMENT_IDS.values())
+ELEMENT_CYCLE_EDGES = {
+    frozenset(("gold", "water")),
+    frozenset(("water", "wood")),
+    frozenset(("wood", "fire")),
+    frozenset(("fire", "soil")),
+    frozenset(("soil", "gold")),
+}
+EXOTIC_PARENT = {"ice": "water", "wind": "wood", "thunder": "fire"}
 ValueMetric = Literal["output_input_ratio", "net_profit", "profit_rate"]
 DEFAULT_VALUE_SORT_METRICS: tuple[ValueMetric, ...] = (
     "output_input_ratio",
@@ -25,12 +36,13 @@ def _normalize_value_sort_metrics(metrics: Iterable[ValueMetric]) -> tuple[Value
     return normalized
 
 
-def _result_order_key(result: dict[str, Any], metrics: tuple[ValueMetric, ...]) -> tuple[float, ...]:
-    metric_values = tuple(
-        -float(result[metric]) if result.get(metric) is not None else float("inf")
-        for metric in metrics
+def _result_order_key(result: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        *tuple(int(value) for value in result["grade_histogram"]),
+        int(result["occupied_cells"]),
+        -int(result["final_yield"]),
+        tuple((int(item["item_id"]), str(item["side"])) for item in result["herbs"]),
     )
-    return (*metric_values, float(result["cost"]), -float(result["final_yield"]))
 
 
 @dataclass(frozen=True)
@@ -40,6 +52,33 @@ class Candidate:
     vector: tuple[int, ...]
     cells: tuple[tuple[int, int], ...]
     rotations: tuple[tuple[tuple[int, int], ...], ...]
+    family: str
+    grade_rank: int
+
+
+def _herb_family(attributes: dict[str, int]) -> str:
+    nonzero = {key: value for key, value in attributes.items() if value}
+    if len(nonzero) == 1:
+        return "B"
+    positive = {key for key, value in nonzero.items() if value > 0}
+    negative = {key for key, value in nonzero.items() if value < 0}
+    if (
+        len(nonzero) == 2
+        and not negative
+        and frozenset(positive) in ELEMENT_CYCLE_EDGES
+    ):
+        return "A"
+    if len(nonzero) == 2 and any(
+        exotic in negative and parent in positive
+        for exotic, parent in EXOTIC_PARENT.items()
+    ):
+        return "C"
+    return "other"
+
+
+def _herb_grade_rank(herb: ZaohuaHerb) -> int:
+    rank = int(get_grade_visual(herb.grade_id, herb.grade_name)["order"])
+    return rank if 1 <= rank <= 15 else 15
 
 
 def _normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
@@ -49,8 +88,11 @@ def _normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
     return tuple(sorted((x - min_x, y - min_y) for x, y in cells))
 
 
-def shape_rotations(cells: Iterable[tuple[int, int]]) -> tuple[tuple[tuple[int, int], ...], ...]:
-    current = _normalize(cells)
+@lru_cache(maxsize=256)
+def _shape_rotations_cached(
+    normalized_cells: tuple[tuple[int, int], ...],
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    current = normalized_cells
     variants: list[tuple[tuple[int, int], ...]] = []
     for _ in range(4):
         if current not in variants:
@@ -58,6 +100,10 @@ def shape_rotations(cells: Iterable[tuple[int, int]]) -> tuple[tuple[tuple[int, 
         height = max(y for _, y in current) + 1
         current = _normalize((height - 1 - y, x) for x, y in current)
     return tuple(variants)
+
+
+def shape_rotations(cells: Iterable[tuple[int, int]]) -> tuple[tuple[tuple[int, int], ...], ...]:
+    return _shape_rotations_cached(_normalize(cells))
 
 
 def _attribute_map(attributes: Iterable[dict[str, Any]]) -> dict[str, int]:
@@ -75,11 +121,16 @@ def _candidate_pool(
     yang_height: int,
     yin_width: int,
     yin_height: int,
-) -> tuple[tuple[str, ...], tuple[int, ...], list[Candidate]]:
+) -> tuple[tuple[str, ...], tuple[int, ...], list[Candidate], int]:
     target_map = _attribute_map(recipe.attr_limits or [])
-    elements = tuple(target_map)
-    target = tuple(target_map[element] for element in elements)
-    candidates: list[Candidate] = []
+    # C-family herbs are only useful for requested exotic elements. Keep the
+    # compact original vector space for ordinary recipes, and expand it only
+    # when a converter may create a base-element deficit to compensate.
+    has_exotic_target = any(target_map.get(element, 0) > 0 for element in EXOTIC_PARENT)
+    elements = ELEMENT_KEYS if has_exotic_target else tuple(target_map)
+    target = tuple(target_map.get(element, 0) for element in elements)
+    monotone_candidates: list[Candidate] = []
+    converter_candidates: list[Candidate] = []
     for herb in herbs:
         shape = dict((herb.source_json or {}).get("shape") or {})
         raw_cells = shape.get("cells") or []
@@ -87,17 +138,15 @@ def _candidate_pool(
             continue
         cells = _normalize((int(cell[0]), int(cell[1])) for cell in raw_cells)
         attrs = _attribute_map(herb.crafting_attributes or [])
-        # First version deliberately keeps only monotone contributions. Mixed-sign
-        # cancellation remains valid game logic, but would make the search unbounded.
+        family = _herb_family(attrs)
+        if any(value and key not in elements for key, value in attrs.items()):
+            continue
         for side, sign in (("yang", 1), ("yin", -1)):
             width, height = (yang_width, yang_height) if side == "yang" else (yin_width, yin_height)
             if len(cells) > width * height:
                 continue
             vector = tuple(sign * attrs.get(element, 0) for element in elements)
-            outside = any(sign * value != 0 for key, value in attrs.items() if key not in target_map)
-            if outside or not any(vector) or any(value < 0 for value in vector):
-                continue
-            if any(value > limit for value, limit in zip(vector, target, strict=True)):
+            if not any(vector):
                 continue
             rotations = tuple(
                 rotation
@@ -105,15 +154,73 @@ def _candidate_pool(
                 if max(x for x, _ in rotation) < width and max(y for _, y in rotation) < height
             )
             if rotations:
-                candidates.append(Candidate(herb, side, vector, cells, rotations))
-    candidates.sort(key=lambda item: (
-        max(float(item.herb.price), 0.0) / max(sum(item.vector), 1),
-        len(item.cells) / max(sum(item.vector), 1),
-        -sum(item.vector),
-        item.herb.item_id,
-        item.side,
-    ))
-    return elements, target, candidates
+                candidate = Candidate(
+                    herb,
+                    side,
+                    vector,
+                    cells,
+                    rotations,
+                    family,
+                    _herb_grade_rank(herb),
+                )
+                if all(value >= 0 for value in vector):
+                    monotone_candidates.append(candidate)
+                elif (
+                    family == "C"
+                    and sum(value > 0 for value in vector) == 1
+                    and sum(value < 0 for value in vector) == 1
+                    and any(
+                        value > 0 and elements[index] in EXOTIC_PARENT
+                        for index, value in enumerate(vector)
+                    )
+                    and any(value > 0 and target[index] > 0 for index, value in enumerate(vector))
+                ):
+                    converter_candidates.append(candidate)
+
+    def candidate_order(item: Candidate) -> tuple[int, float, int, int, str]:
+        positive_total = sum(max(value, 0) for value in item.vector)
+        return (
+            item.grade_rank,
+            len(item.cells) / max(positive_total, 1),
+            -positive_total,
+            item.herb.item_id,
+            item.side,
+        )
+
+    converter_candidates = [
+        candidate
+        for candidate in converter_candidates
+        if all(value <= target[index] for index, value in enumerate(candidate.vector) if value > 0)
+    ]
+    maximum_required = list(target)
+    for candidate in converter_candidates:
+        positive_index = next(index for index, value in enumerate(candidate.vector) if value > 0)
+        positive_value = candidate.vector[positive_index]
+        maximum_count = target[positive_index] // positive_value
+        side_capacity = yang_width * yang_height if candidate.side == "yang" else yin_width * yin_height
+        maximum_count = min(maximum_count, side_capacity // len(candidate.cells))
+        for index, value in enumerate(candidate.vector):
+            if value < 0:
+                maximum_required[index] += -value * maximum_count
+    needed_dimensions = {index for index, value in enumerate(maximum_required) if value > 0}
+    needed_dimensions.update(
+        index
+        for candidate in converter_candidates
+        for index, value in enumerate(candidate.vector)
+        if value < 0
+    )
+    monotone_candidates = [
+        candidate
+        for candidate in monotone_candidates
+        if all(
+            value == 0 or (index in needed_dimensions and value <= maximum_required[index])
+            for index, value in enumerate(candidate.vector)
+        )
+    ]
+    monotone_candidates.sort(key=candidate_order)
+    converter_candidates.sort(key=candidate_order)
+    candidates = [*monotone_candidates, *converter_candidates]
+    return elements, target, candidates, len(monotone_candidates)
 
 
 def _build_suffix_cell_bounds(
@@ -141,6 +248,56 @@ def _build_suffix_cell_bounds(
             dimension_bounds.append(tuple(minimum_cells))
         suffix_bounds.append(tuple(dimension_bounds))
     return tuple(suffix_bounds)
+
+
+def _build_exact_cell_bounds(
+    candidates: list[Candidate],
+    target: tuple[int, ...],
+    max_states: int = 5_000,
+) -> dict[tuple[int, ...], tuple[tuple[int, int], ...]] | None:
+    """Exact relaxed packing bound for compact ABC vector spaces.
+
+    The table ignores yang/yin separation and geometry, so its cell counts are
+    admissible lower bounds. It is intentionally skipped for large products.
+    """
+
+    state_count = 1
+    for limit in target:
+        state_count *= limit + 1
+        if state_count > max_states:
+            return None
+    zero = tuple(0 for _ in target)
+    capacity_frontiers: dict[tuple[int, ...], tuple[tuple[int, int], ...]] = {
+        zero: ((0, 0),),
+    }
+    for candidate in candidates:
+        if not any(candidate.vector) or any(value < 0 for value in candidate.vector):
+            continue
+        ranges = [range(value, limit + 1) for value, limit in zip(candidate.vector, target, strict=True)]
+        for state in product(*ranges):
+            previous = tuple(
+                value - delta
+                for value, delta in zip(state, candidate.vector, strict=True)
+            )
+            previous_frontier = capacity_frontiers.get(previous)
+            if previous_frontier is None:
+                continue
+            yang_delta = len(candidate.cells) if candidate.side == "yang" else 0
+            yin_delta = len(candidate.cells) if candidate.side == "yin" else 0
+            frontier = list(capacity_frontiers.get(state, ()))
+            for yang_cells, yin_cells in previous_frontier:
+                pair = (yang_cells + yang_delta, yin_cells + yin_delta)
+                if any(yang <= pair[0] and yin <= pair[1] for yang, yin in frontier):
+                    continue
+                frontier = [
+                    (yang, yin)
+                    for yang, yin in frontier
+                    if not (pair[0] <= yang and pair[1] <= yin)
+                ]
+                frontier.append(pair)
+            if frontier:
+                capacity_frontiers[state] = tuple(frontier)
+    return capacity_frontiers
 
 
 def _example_seed_choices(
@@ -235,26 +392,34 @@ def _pack(
         pose_sets.append(poses)
     occupied = {"yang": 0, "yin": 0}
     placements: list[dict[str, Any]] = []
-    failed_states: set[tuple[int, int, int]] = set()
+    failed_states: set[tuple[int, int, int, int]] = set()
+    selected_pose_indexes: list[int] = []
     nodes = 0
     limit_hit = False
 
     def visit(position: int) -> bool:
         nonlocal limit_hit, nodes
-        state = (position, occupied["yang"], occupied["yin"])
+        if position == len(instances):
+            return True
+        same_as_previous = position > 0 and instance_indexes[position] == instance_indexes[position - 1]
+        minimum_pose_index = selected_pose_indexes[-1] if same_as_previous else 0
+        state = (position, occupied["yang"], occupied["yin"], minimum_pose_index)
         if state in failed_states:
             return False
         nodes += 1
         if nodes > node_limit:
             limit_hit = True
             return False
-        if position == len(instances):
-            return True
         candidate = instances[position]
-        for pose in pose_sets[position]:
+        for pose_index, pose in enumerate(pose_sets[position]):
+            # Identical herbs are indistinguishable. Requiring nondecreasing pose
+            # indexes removes factorial permutations of the same placement.
+            if same_as_previous and pose_index < minimum_pose_index:
+                continue
             if occupied[candidate.side] & pose["mask"]:
                 continue
             occupied[candidate.side] |= pose["mask"]
+            selected_pose_indexes.append(pose_index)
             shape = dict((candidate.herb.source_json or {}).get("shape") or {})
             placements.append({
                 "item_id": candidate.herb.item_id,
@@ -271,6 +436,7 @@ def _pack(
             if visit(position + 1):
                 return True
             placements.pop()
+            selected_pose_indexes.pop()
             occupied[candidate.side] ^= pose["mask"]
             if limit_hit:
                 return False
@@ -376,7 +542,7 @@ def solve_alchemy(
     normalized_sort_metrics = _normalize_value_sort_metrics(sort_metrics)
     normalized_duration = float(duration)
     herb_list = [herb for herb in herbs if herb.item_id not in excluded_ids]
-    elements, target, candidates = _candidate_pool(
+    elements, target, candidates, monotone_candidate_count = _candidate_pool(
         recipe,
         herb_list,
         yang_width,
@@ -392,24 +558,33 @@ def solve_alchemy(
     exhausted = True
     pruned_unreachable = 0
     pruned_cell_capacity = 0
+    pruned_exact_capacity = 0
+    converter_search_nodes = 0
     yang_capacity = yang_width * yang_height
     yin_capacity = yin_width * yin_height
     total_capacity = yang_capacity + yin_capacity
     rule_name = " ".join(str(rule.get("name") or "") for rule in recipe.state_rules or [])
     herb_by_id = {herb.item_id: herb for herb in herb_list}
-    suffix_cell_bounds = _build_suffix_cell_bounds(candidates, target)
+    monotone_candidates = candidates[:monotone_candidate_count]
+    converter_start = monotone_candidate_count
+    suffix_bounds_cache: dict[tuple[int, ...], tuple[tuple[tuple[int, ...], ...], ...]] = {}
+    exact_bounds_cache: dict[
+        tuple[int, ...],
+        dict[tuple[int, ...], tuple[tuple[int, int], ...]] | None,
+    ] = {}
 
     def evaluate_choices(choices: tuple[int, ...]) -> bool:
         nonlocal exhausted, packing_nodes
+        normalized_choices = tuple(sorted(choices))
         composition = Counter((candidates[index].herb.item_id, candidates[index].side) for index in choices)
         combination_key = tuple(sorted({item_id for item_id, _ in composition}))
         if packing_nodes >= packing_node_limit or (combination_key not in results and len(results) >= solution_limit):
             exhausted = False
             return False
-        cached_pack = packing_cache.get(choices)
+        cached_pack = packing_cache.get(normalized_choices)
         if cached_pack is None:
             placements, nodes, pack_exhaustive = _pack(
-                choices,
+                normalized_choices,
                 candidates,
                 yang_width,
                 yang_height,
@@ -420,7 +595,7 @@ def solve_alchemy(
                 pose_cache=pose_cache,
             )
             packing_nodes += nodes
-            packing_cache[choices] = (placements, pack_exhaustive)
+            packing_cache[normalized_choices] = (placements, pack_exhaustive)
         else:
             placements, pack_exhaustive = cached_pack
         if not pack_exhaustive:
@@ -429,6 +604,18 @@ def solve_alchemy(
             return False
         key = tuple(sorted((item_id, side, count) for (item_id, side), count in composition.items()))
         cost = sum(float(herb_by_id[item_id].price) * count for item_id, _, count in key)
+        grade_counts = Counter(
+            _herb_grade_rank(herb_by_id[item_id])
+            for item_id, _, count in key
+            for _ in range(count)
+        )
+        grade_histogram = tuple(grade_counts.get(rank, 0) for rank in range(15, 0, -1))
+        grade_sequence = [
+            rank
+            for rank in range(15, 0, -1)
+            for _ in range(grade_counts.get(rank, 0))
+        ]
+        occupied_cells = sum(len(candidates[index].cells) for index in choices)
         rule_bonus, rule_supported = _rule_bonus(
             recipe,
             placements,
@@ -454,15 +641,30 @@ def solve_alchemy(
             "final_yield": final_yield,
             "total_value": total_value,
             "rule_supported": rule_supported,
+            "grade_histogram": list(grade_histogram),
+            "grade_sequence": grade_sequence,
+            "grade_groups": [
+                {"grade_rank": rank, "count": grade_counts[rank]}
+                for rank in range(15, 0, -1)
+                if grade_counts[rank]
+            ],
+            "max_herb_grade": max(grade_sequence, default=0),
+            "occupied_cells": occupied_cells,
             "herbs": [
-                {"item_id": item_id, "name": herb_by_id[item_id].name, "side": side, "count": count, "unit_price": float(herb_by_id[item_id].price)}
+                {
+                    "item_id": item_id,
+                    "name": herb_by_id[item_id].name,
+                    "side": side,
+                    "count": count,
+                    "unit_price": float(herb_by_id[item_id].price),
+                }
                 for item_id, side, count in key
             ],
             "placements": placements,
         }
         previous = results.get(combination_key)
-        result_order = _result_order_key(result, normalized_sort_metrics)
-        previous_order = _result_order_key(previous, normalized_sort_metrics) if previous is not None else None
+        result_order = _result_order_key(result)
+        previous_order = _result_order_key(previous) if previous is not None else None
         if previous_order is None or result_order < previous_order:
             results[combination_key] = result
         return True
@@ -473,8 +675,10 @@ def solve_alchemy(
         choices: tuple[int, ...],
         used_yang_cells: int,
         used_yin_cells: int,
+        suffix_cell_bounds: tuple[tuple[tuple[int, ...], ...], ...],
+        exact_cell_bounds: dict[tuple[int, ...], tuple[tuple[int, int], ...]] | None,
     ) -> None:
-        nonlocal exhausted, pruned_cell_capacity, pruned_unreachable, search_nodes
+        nonlocal exhausted, pruned_cell_capacity, pruned_exact_capacity, pruned_unreachable, search_nodes
         search_nodes += 1
         if search_nodes > search_node_limit:
             exhausted = False
@@ -482,6 +686,19 @@ def solve_alchemy(
         if not any(remaining):
             evaluate_choices(choices)
             return
+        if exact_cell_bounds is not None:
+            exact_frontier = exact_cell_bounds.get(remaining)
+            if exact_frontier is None:
+                pruned_unreachable += 1
+                return
+            remaining_yang_capacity = yang_capacity - used_yang_cells
+            remaining_yin_capacity = yin_capacity - used_yin_cells
+            if not any(
+                yang <= remaining_yang_capacity and yin <= remaining_yin_capacity
+                for yang, yin in exact_frontier
+            ):
+                pruned_exact_capacity += 1
+                return
         dimension_bounds = suffix_cell_bounds[start]
         minimum_cells = []
         for dimension, value in enumerate(remaining):
@@ -493,7 +710,7 @@ def solve_alchemy(
         if used_yang_cells + used_yin_cells + max(minimum_cells, default=0) > total_capacity:
             pruned_cell_capacity += 1
             return
-        for index in range(start, len(candidates)):
+        for index in range(start, monotone_candidate_count):
             candidate = candidates[index]
             next_remaining = tuple(value - delta for value, delta in zip(remaining, candidate.vector, strict=True))
             if any(value < 0 for value in next_remaining):
@@ -504,27 +721,101 @@ def solve_alchemy(
             if next_yang_cells > yang_capacity or next_yin_cells > yin_capacity:
                 pruned_cell_capacity += 1
                 continue
-            visit(index, next_remaining, (*choices, index), next_yang_cells, next_yin_cells)
+            visit(
+                index,
+                next_remaining,
+                (*choices, index),
+                next_yang_cells,
+                next_yin_cells,
+                suffix_cell_bounds,
+                exact_cell_bounds,
+            )
+            if not exhausted:
+                return
+
+    def visit_converters(
+        start: int,
+        remaining: tuple[int, ...],
+        positive_used: tuple[int, ...],
+        choices: tuple[int, ...],
+        used_yang_cells: int,
+        used_yin_cells: int,
+    ) -> None:
+        """Enumerate bounded C-family conversions, then finish with monotone A/B herbs."""
+
+        nonlocal converter_search_nodes, exhausted, pruned_cell_capacity, search_nodes
+        converter_search_nodes += 1
+        search_nodes += 1
+        if search_nodes > search_node_limit:
+            exhausted = False
+            return
+        suffix_cell_bounds = suffix_bounds_cache.get(remaining)
+        if suffix_cell_bounds is None:
+            suffix_cell_bounds = _build_suffix_cell_bounds(monotone_candidates, remaining)
+            suffix_bounds_cache[remaining] = suffix_cell_bounds
+        if remaining not in exact_bounds_cache:
+            exact_bounds_cache[remaining] = _build_exact_cell_bounds(monotone_candidates, remaining)
+        exact_cell_bounds = exact_bounds_cache[remaining]
+        visit(
+            0,
+            remaining,
+            choices,
+            used_yang_cells,
+            used_yin_cells,
+            suffix_cell_bounds,
+            exact_cell_bounds,
+        )
+        if not exhausted:
+            return
+        for index in range(start, len(candidates)):
+            candidate = candidates[index]
+            next_positive_used = tuple(
+                used + max(delta, 0)
+                for used, delta in zip(positive_used, candidate.vector, strict=True)
+            )
+            # A converter may only supply an originally requested positive
+            # component. This makes cancellation finite and prevents cycles.
+            if any(used > limit for used, limit in zip(next_positive_used, target, strict=True)):
+                continue
+            next_remaining = tuple(
+                value - delta
+                for value, delta in zip(remaining, candidate.vector, strict=True)
+            )
+            if any(value < 0 for value in next_remaining):
+                continue
+            cell_count = len(candidate.cells)
+            next_yang_cells = used_yang_cells + (cell_count if candidate.side == "yang" else 0)
+            next_yin_cells = used_yin_cells + (cell_count if candidate.side == "yin" else 0)
+            if next_yang_cells > yang_capacity or next_yin_cells > yin_capacity:
+                pruned_cell_capacity += 1
+                continue
+            visit_converters(
+                index,
+                next_remaining,
+                next_positive_used,
+                (*choices, index),
+                next_yang_cells,
+                next_yin_cells,
+            )
             if not exhausted:
                 return
 
     seed_choices = _example_seed_choices(recipe, candidates, target)
     seed_solution_found = bool(seed_choices and evaluate_choices(seed_choices))
     if exhausted:
-        visit(0, target, (), 0, 0)
+        visit_converters(converter_start, target, tuple(0 for _ in target), (), 0, 0)
     undominated_results = [
         result
         for combination_key, result in results.items()
         if not any(
             set(other_key) < set(combination_key)
-            and _result_order_key(other_result, normalized_sort_metrics)
-            <= _result_order_key(result, normalized_sort_metrics)
+            and _result_order_key(other_result) <= _result_order_key(result)
             for other_key, other_result in results.items()
         )
     ]
     all_ordered = sorted(
         undominated_results,
-        key=lambda item: _result_order_key(item, normalized_sort_metrics),
+        key=_result_order_key,
     )
     ordered = all_ordered[:limit]
     available_item_ids = {
@@ -550,15 +841,20 @@ def solve_alchemy(
         "solutions": ordered,
         "target_vector": dict(zip(elements, target, strict=True)),
         "candidate_count": len(candidates),
+        "candidate_family_counts": dict(Counter(candidate.family for candidate in candidates)),
+        "converter_candidate_count": len(candidates) - monotone_candidate_count,
+        "converter_search_nodes": converter_search_nodes,
         "search_nodes": search_nodes,
         "packing_nodes": packing_nodes,
         "pruned_unreachable": pruned_unreachable,
         "pruned_cell_capacity": pruned_cell_capacity,
+        "pruned_exact_capacity": pruned_exact_capacity,
         "seed_solution_found": seed_solution_found,
         "exhaustive": exhausted,
-        "search_mode": "monotone",
+        "search_mode": "grade_descent",
+        "vector_mode": "abc_bounded",
+        "objective": "grade_descent",
         "duration": normalized_duration,
-        "sort_metrics": list(normalized_sort_metrics),
         "has_more": len(all_ordered) > limit,
         "solution_count": len(all_ordered),
         "available_herbs": available_herbs,

@@ -11,22 +11,19 @@ import {
   solveZaohuaAlchemy,
   type ZaohuaAlchemyMeta,
   type ZaohuaAlchemyRecipe,
-  type ZaohuaAlchemySolution,
   type ZaohuaAlchemySolveResult,
-  type ZaohuaAlchemyValueMetric,
   type ZaohuaFurnace,
 } from '@/api/zaohua'
-import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { mixWeightedColors, toHex } from '@/utils/colorMath'
 import { formatChineseCompactNumber } from '@/utils/numberFormat'
 import { useResizablePane } from '@/utils/useResizablePane'
-import { useSortableList } from '@/utils/useSortableList'
 import GradeMeter from '../components/GradeMeter.vue'
 import AlchemyFormulaDiagram from '../components/AlchemyFormulaDiagram.vue'
 import '../catalog-inspector.css'
 
 const GRADE_FILTER_STORAGE_KEY = 'zaohua:alchemy:grade-filter'
+const VIEW_MODE_STORAGE_KEY = 'zaohua:alchemy:view-mode'
 
 const loadStoredGradeFilter = () => {
   try {
@@ -36,12 +33,23 @@ const loadStoredGradeFilter = () => {
   }
 }
 
+const loadStoredViewMode = (): 'matrix' | 'list' => {
+  try {
+    return window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'list' ? 'list' : 'matrix'
+  } catch {
+    return 'matrix'
+  }
+}
+
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const meta = ref<ZaohuaAlchemyMeta | null>(null)
 const recipes = ref<ZaohuaAlchemyRecipe[]>([])
+const matrixRecipes = ref<ZaohuaAlchemyRecipe[]>([])
+const matrixLoading = ref(false)
 const selected = ref<ZaohuaAlchemyRecipe | null>(null)
+const viewMode = ref<'matrix' | 'list'>(loadStoredViewMode())
 const query = ref('')
 const grade = ref(loadStoredGradeFilter())
 const page = ref(1)
@@ -63,56 +71,51 @@ type SolverHerbOption = {
 }
 const solverHerbs = ref<SolverHerbOption[]>([])
 const disabledSolverHerbIds = ref<number[]>([])
-const valueSortListRef = ref<HTMLElement | null>(null)
 const solverLimit = ref(5)
 let searchTimer = 0
 let requestSequence = 0
 let solveRequestSequence = 0
 
 const FURNACE_SELECTION_STORAGE_KEY = 'zaohua:alchemy:furnace-item-id'
-const VALUE_SORT_STORAGE_KEY = 'zaohua:alchemy:value-sort-program'
 const SOLVER_HERB_STATE_STORAGE_PREFIX = 'zaohua:alchemy:solver-herbs:'
 const SOLVER_RESULT_CACHE_PREFIX = 'zaohua:alchemy:solver-result:'
-const SOLVER_CACHE_SCHEMA_VERSION = 4
-const DEFAULT_VALUE_SORT_METRICS: ZaohuaAlchemyValueMetric[] = [
-  'output_input_ratio',
-  'net_profit',
-  'profit_rate',
-]
-const VALUE_METRIC_LABELS: Record<ZaohuaAlchemyValueMetric, string> = {
-  output_input_ratio: '产出比',
-  net_profit: '净利润',
-  profit_rate: '日利润',
-}
-
-const normalizeValueSortMetrics = (value: unknown): ZaohuaAlchemyValueMetric[] => {
-  if (!Array.isArray(value)) return [...DEFAULT_VALUE_SORT_METRICS]
-  const normalized = value.filter(
-    (item): item is ZaohuaAlchemyValueMetric => DEFAULT_VALUE_SORT_METRICS.includes(item as ZaohuaAlchemyValueMetric),
-  )
-  return normalized.length === DEFAULT_VALUE_SORT_METRICS.length
-    && new Set(normalized).size === DEFAULT_VALUE_SORT_METRICS.length
-    ? normalized
-    : [...DEFAULT_VALUE_SORT_METRICS]
-}
-
-const loadValueSortMetrics = () => {
-  try {
-    return normalizeValueSortMetrics(JSON.parse(window.localStorage.getItem(VALUE_SORT_STORAGE_KEY) || 'null'))
-  } catch {
-    return [...DEFAULT_VALUE_SORT_METRICS]
-  }
-}
-
-const valueSortMetrics = ref<ZaohuaAlchemyValueMetric[]>(loadValueSortMetrics())
+const SOLVER_CACHE_SCHEMA_VERSION = 5
+const CRAFTING_EXP_BY_GRADE_RANK = [4, 8, 16, 50, 100, 200, 600, 1200, 2400, 7200, 14400, 28800]
 const selectedFurnace = computed(() => furnaces.value.find(
   item => item.item_id === selectedFurnaceId.value,
 ) || null)
 
+const matrixRows = computed(() => (meta.value?.grades || []).map((gradeItem) => {
+  const items = matrixRecipes.value.filter(item => item.output.grade_name === gradeItem.name)
+  const countFrequency = new Map<number, number>()
+  for (const item of items) {
+    const count = Number(item.output.count || 0)
+    countFrequency.set(count, (countFrequency.get(count) || 0) + 1)
+  }
+  const highestFrequency = Math.max(0, ...countFrequency.values())
+  const commonCounts = [...countFrequency.entries()]
+    .filter(([, frequency]) => frequency === highestFrequency)
+    .map(([count]) => count)
+    .sort((left, right) => left - right)
+  const toleranceValues = [...new Set(items
+    .map(item => Number(item.output.drug_max || 0))
+    .filter(value => value > 0))]
+    .sort((left, right) => left - right)
+  return {
+    rank: gradeItem.order,
+    gradeName: gradeItem.name,
+    recipeCount: items.length || gradeItem.count,
+    costDays: items[0]?.cost_days || 0,
+    craftingExp: CRAFTING_EXP_BY_GRADE_RANK[gradeItem.order - 1] || 0,
+    commonCounts,
+    toleranceValues,
+  }
+}))
+
 const formatCraftingTime = (days: number) => {
   const normalizedDays = Math.max(0, Math.trunc(Number(days) || 0))
   if (normalizedDays >= 360 && normalizedDays % 360 === 0) {
-    return `${normalizedDays / 360} 年（${normalizedDays} 天）`
+    return `${normalizedDays / 360} 年`
   }
   return `${normalizedDays} 天`
 }
@@ -165,7 +168,6 @@ const solverResultCacheKey = (recipe: ZaohuaAlchemyRecipe, limit: number) => {
     recipe.recipe_id,
     `f${selectedFurnaceId.value || '-'}`,
     `e${excluded || '-'}`,
-    `s${valueSortMetrics.value.join('.')}`,
     `l${limit}`,
   ].join(':')
 }
@@ -233,10 +235,6 @@ const {
 })
 const listPaneStyle = computed(() => ({ height: `${listPaneHeight.value}px` }))
 
-const ingredientText = (recipe: ZaohuaAlchemyRecipe) => recipe.example_items
-  .map(item => `${item.name} ${item.count ?? 0}`)
-  .join(' ')
-
 const hideBrokenImage = (event: Event) => {
   const image = event.currentTarget as HTMLImageElement | null
   if (image) image.style.visibility = 'hidden'
@@ -285,27 +283,6 @@ const formatPrice = (value?: number) => Number.isFinite(value)
   ? formatChineseCompactNumber(value)
   : '—'
 
-const formatRatio = (value: number | null) => value == null ? '—' : value.toFixed(2)
-
-const formatMetricNumber = (value: number) => {
-  if (!Number.isFinite(value)) return '—'
-  const sign = value < 0 ? '-' : ''
-  const magnitude = Math.abs(value)
-  if (magnitude >= 10_000) return `${sign}${formatChineseCompactNumber(magnitude)}`
-  return `${sign}${Number(magnitude.toFixed(2))}`
-}
-
-const formatValueMetric = (
-  solution: ZaohuaAlchemySolution,
-  metric: ZaohuaAlchemyValueMetric,
-) => {
-  if (metric === 'output_input_ratio') return formatRatio(solution.output_input_ratio)
-  if (metric === 'profit_rate') {
-    return solution.profit_rate == null ? '—' : `${formatMetricNumber(solution.profit_rate)}/天`
-  }
-  return formatMetricNumber(solution.net_profit)
-}
-
 const requestSolverResults = async () => {
   if (!selected.value || !selectedFurnace.value) return
   const recipe = selected.value
@@ -325,7 +302,6 @@ const requestSolverResults = async () => {
       furnace_item_id: selectedFurnace.value.item_id,
       limit: solverLimit.value,
       excluded_item_ids: disabledSolverHerbIds.value,
-      sort_metrics: valueSortMetrics.value,
     })
     if (sequence === solveRequestSequence) {
       applySolverResult(result)
@@ -359,31 +335,6 @@ const toggleSolverHerb = (itemId: number) => {
   solverLimit.value = 5
   void requestSolverResults()
 }
-
-const reorderValueMetric = (oldIndex: number, newIndex: number) => {
-  const next = [...valueSortMetrics.value]
-  const [moved] = next.splice(oldIndex, 1)
-  if (!moved) return
-  next.splice(newIndex, 0, moved)
-  valueSortMetrics.value = next
-  try {
-    window.localStorage.setItem(VALUE_SORT_STORAGE_KEY, JSON.stringify(next))
-  } catch {
-    // The current sort program remains usable when browser storage is unavailable.
-  }
-  solverLimit.value = 5
-  void requestSolverResults()
-}
-
-const promoteValueMetric = (index: number) => {
-  if (index > 0) reorderValueMetric(index, 0)
-}
-
-useSortableList({
-  listRef: valueSortListRef,
-  getDeps: () => [valueSortListRef.value, valueSortMetrics.value.join(',')],
-  onReorder: reorderValueMetric,
-})
 
 const toggleSort = (field: 'number' | 'grade') => {
   if (sortBy.value === field) {
@@ -467,6 +418,31 @@ const loadRecipes = async () => {
   }
 }
 
+const loadMatrixRecipes = async () => {
+  if (matrixRecipes.value.length) return
+  matrixLoading.value = true
+  try {
+    const response = await fetchZaohuaAlchemyRecipes({
+      sort_by: 'grade',
+      sort_order: 'asc',
+      page: 1,
+      page_size: 200,
+    })
+    matrixRecipes.value = response.items
+  } finally {
+    matrixLoading.value = false
+  }
+}
+
+watch(viewMode, (value) => {
+  try {
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, value)
+  } catch {
+    // View selection remains usable when browser storage is unavailable.
+  }
+  if (value === 'matrix') void loadMatrixRecipes()
+})
+
 watch(query, () => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => {
@@ -521,7 +497,12 @@ watch(() => selected.value?.recipe_id, () => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadMeta(), loadFurnaces(), loadRecipes()])
+  await Promise.all([
+    loadMeta(),
+    loadFurnaces(),
+    loadRecipes(),
+    viewMode.value === 'matrix' ? loadMatrixRecipes() : Promise.resolve(),
+  ])
 })
 
 onBeforeUnmount(() => {
@@ -539,14 +520,19 @@ onBeforeUnmount(() => {
     </header>
 
     <section class="toolbar">
+      <el-select v-model="viewMode" class="view-mode-select" aria-label="丹药视图">
+        <el-option label="归纳表" value="matrix" />
+        <el-option label="明细" value="list" />
+      </el-select>
       <el-input
+        v-if="viewMode === 'list'"
         v-model="query"
         class="search-input"
         clearable
         :prefix-icon="Search"
         placeholder="搜索丹药、药材或规则"
       />
-      <el-select v-model="grade" class="grade-select" placeholder="全部品阶" clearable>
+      <el-select v-if="viewMode === 'list'" v-model="grade" class="grade-select" placeholder="全部品阶" clearable>
         <template #label="{ value }">
           <span v-if="gradeOptionByName(String(value || ''))" class="grade-filter-selection">
             <span class="grade-rank">{{ gradeOptionByName(String(value || ''))?.order }}</span>
@@ -574,8 +560,34 @@ onBeforeUnmount(() => {
       </el-select>
     </section>
 
-    <section class="list-pane" :style="listPaneStyle" v-loading="loading">
-      <div class="table-scroll">
+    <section class="list-pane" :style="listPaneStyle" v-loading="viewMode === 'matrix' ? matrixLoading : loading">
+      <div v-if="viewMode === 'matrix'" class="table-scroll">
+        <table class="recipe-matrix zaohua-catalog-table">
+          <thead>
+            <tr>
+              <th>品级</th>
+              <th>品阶</th>
+              <th>炼丹时间</th>
+              <th>每批经验</th>
+              <th>丹方数量</th>
+              <th>常见成丹</th>
+              <th title="当前所有产生耐药的丹药，每次服用均固定增加 1 点耐药">耐药上限</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in matrixRows" :key="row.rank">
+              <td class="number-cell">{{ row.rank }}</td>
+              <td><GradeMeter class="matrix-grade-meter" :rank="row.rank" :label="row.gradeName" /></td>
+              <td class="number-cell"><strong>{{ formatCraftingTime(row.costDays) }}</strong></td>
+              <td class="number-cell"><strong>{{ row.craftingExp }}</strong></td>
+              <td class="number-cell">{{ row.recipeCount }}</td>
+              <td class="number-cell">{{ row.commonCounts.join('、') || '—' }}</td>
+              <td class="number-cell">{{ row.toleranceValues.join('/') || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="table-scroll">
         <table class="recipe-table zaohua-catalog-table">
           <thead>
             <tr>
@@ -596,7 +608,6 @@ onBeforeUnmount(() => {
               <th>作用</th>
               <th>耐药</th>
               <th>五行需求</th>
-              <th>炼丹药材</th>
               <th class="fill-column" aria-hidden="true"></th>
             </tr>
           </thead>
@@ -644,21 +655,6 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-else>—</span>
               </td>
-              <td class="ingredients-cell" :title="ingredientText(recipe)">
-                <span v-if="recipe.example_items.length" class="ingredient-chips">
-                  <span v-for="item in recipe.example_items" :key="item.item_id" class="ingredient-chip">
-                    <GradeMeter
-                      class="ingredient-grade-meter"
-                      :rank="item.grade_rank"
-                      :label="item.name"
-                      :text-color="mixedElementColor(item.crafting_attributes || [])"
-                      :title="item.grade_name"
-                    />
-                    <em>{{ item.count }}</em>
-                  </span>
-                </span>
-                <span v-else>—</span>
-              </td>
               <td class="fill-column" aria-hidden="true"></td>
             </tr>
           </tbody>
@@ -666,6 +662,7 @@ onBeforeUnmount(() => {
         <div v-if="!loading && !recipes.length" class="empty-state">没有匹配的丹药</div>
       </div>
       <StandardPagination
+        v-if="viewMode === 'list'"
         class="pagination"
         :page="page"
         :page-size="pageSize"
@@ -712,9 +709,7 @@ onBeforeUnmount(() => {
         <dd>{{ selected.output.description || '—' }}</dd>
 
         <dt>耐药性</dt>
-        <dd v-if="selected.output.drug_max">
-          每次服用增加 {{ selected.output.add_drug_tolerance || 0 }} 点，累计达到 {{ selected.output.drug_max }} 后耐药
-        </dd>
+        <dd v-if="selected.output.drug_max">{{ selected.output.drug_max }}</dd>
         <dd v-else>无</dd>
 
         <dt>五行需求</dt>
@@ -809,23 +804,6 @@ onBeforeUnmount(() => {
               <el-button type="primary" size="small" :loading="solving" @click="runSolver">
                 求解
               </el-button>
-              <div class="value-sort-control">
-                <span>排序</span>
-                <ol ref="valueSortListRef" aria-label="价值指标排序程序">
-                  <li v-for="(metric, index) in valueSortMetrics" :key="metric">
-                    <SortableOrderHandle
-                      :index="index"
-                      :total="valueSortMetrics.length"
-                      size="xs"
-                      :pad="false"
-                      :title="`点击将${VALUE_METRIC_LABELS[metric]}设为第一优先级；也可拖拽调整顺序`"
-                      :aria-label="`点击将${VALUE_METRIC_LABELS[metric]}设为第一优先级，也可拖拽调整顺序`"
-                      @click="promoteValueMetric(index)"
-                    />
-                    <span>{{ VALUE_METRIC_LABELS[metric] }}</span>
-                  </li>
-                </ol>
-              </div>
               <span v-if="solveResult" class="solver-scope">
                 {{ solveResult.exhaustive ? '已穷尽当前模型' : '当前搜索范围' }}
                 · {{ solveResult.search_nodes.toLocaleString() }} 节点
@@ -854,7 +832,7 @@ onBeforeUnmount(() => {
             <p v-if="solveError" class="solver-error">{{ solveError }}</p>
             <p v-else-if="solveResult && !solveResult.solutions.length" class="solver-empty">
               {{ solveResult.exhaustive
-                ? '当前炉形与单调配平范围内没有可行解。'
+                ? '当前炉形与品级降级范围内没有可行解。'
                 : '当前搜索上限内尚未找到可行解。' }}
             </p>
             <ol v-else-if="solveResult" class="solution-list">
@@ -862,13 +840,9 @@ onBeforeUnmount(() => {
                 <div class="solution-summary">
                   <strong class="solution-rank">{{ solution.rank }}</strong>
                   <dl>
-                    <div
-                      v-for="(metric, metricIndex) in valueSortMetrics"
-                      :key="metric"
-                      :class="{ 'is-primary-metric': metricIndex === 0 }"
-                    >
-                      <dt>{{ VALUE_METRIC_LABELS[metric] }}</dt>
-                      <dd>{{ formatValueMetric(solution, metric) }}</dd>
+                    <div class="is-primary-metric">
+                      <dt>品级</dt>
+                      <dd>{{ solution.grade_groups.map(item => `${item.grade_rank}×${item.count}`).join(' ') }}</dd>
                     </div>
                     <div>
                       <dt>成丹</dt>
@@ -893,7 +867,7 @@ onBeforeUnmount(() => {
               :disabled="solving"
               @click="loadMoreSolutions"
             >{{ solving ? '加载中…' : '加载更多 5 个' }}</button>
-            <p class="solver-note">阴炉药材按负向量参与配平；当前版本先排除需要中间抵消的组合。</p>
+            <p class="solver-note">按最高品级逐级降级；阴炉反转与 C 类异灵根采用有界补偿。</p>
           </div>
         </dd>
       </dl>
@@ -958,6 +932,10 @@ onBeforeUnmount(() => {
 
 .search-input {
   width: 330px;
+}
+
+.view-mode-select {
+  width: 104px;
 }
 
 .grade-select {
@@ -1071,6 +1049,39 @@ onBeforeUnmount(() => {
   border-collapse: collapse;
   table-layout: auto;
   white-space: nowrap;
+}
+
+.zaohua-catalog-page .recipe-matrix {
+  display: table;
+  width: max-content;
+  min-width: 0;
+  max-width: none;
+  border-collapse: collapse;
+  table-layout: auto;
+  white-space: nowrap;
+}
+
+.recipe-matrix th,
+.recipe-matrix td {
+  padding: 7px 14px;
+  border-bottom: 1px solid #eceeec;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.recipe-matrix th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f0f2ef;
+  color: #555d61;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.matrix-grade-meter {
+  width: 108px;
+  height: 24px;
 }
 
 .recipe-table th,
@@ -1370,35 +1381,6 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-}
-
-.value-sort-control,
-.value-sort-control ol,
-.value-sort-control li {
-  display: flex;
-  align-items: center;
-}
-
-.value-sort-control {
-  gap: 5px;
-  color: #747b78;
-  font-size: 12px;
-}
-
-.value-sort-control ol {
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.value-sort-control li {
-  gap: 4px;
-  padding: 2px 6px 2px 2px;
-  border: 1px solid #d4dad6;
-  color: #4f5953;
-  background: #fafbfa;
-  white-space: nowrap;
 }
 
 .solver-herb-pool {

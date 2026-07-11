@@ -114,6 +114,11 @@ export type ZaohuaAlchemyValueMetric = 'output_input_ratio' | 'net_profit' | 'pr
 
 export interface ZaohuaAlchemySolution {
   rank: number
+  grade_histogram: number[]
+  grade_sequence: number[]
+  grade_groups: Array<{ grade_rank: number; count: number }>
+  max_herb_grade: number
+  occupied_cells: number
   ratio: number | null
   output_input_ratio: number | null
   net_profit: number
@@ -152,9 +157,10 @@ export interface ZaohuaAlchemySolveResult {
   pruned_cell_capacity: number
   seed_solution_found: boolean
   exhaustive: boolean
-  search_mode: 'monotone'
+  search_mode: 'grade_descent'
+  vector_mode: 'abc_bounded'
+  objective: 'grade_descent'
   duration: number
-  sort_metrics: ZaohuaAlchemyValueMetric[]
   has_more: boolean
   solution_count: number
   available_herbs: Array<{
@@ -407,6 +413,7 @@ export const solveZaohuaPasture = async (payload: {
   fish_weight?: number
   enabled_building_ids: number[]
   building_counts: Record<number, number>
+  exact_building_counts?: boolean
 }): Promise<ZaohuaPastureSolution> => {
   const response = await api.post('/zaohua/pasture/solve', payload)
   return response.data

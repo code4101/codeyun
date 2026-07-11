@@ -124,3 +124,24 @@ def test_free_mode_can_choose_the_production_mix() -> None:
     result = optimize_pasture_shape(9, BUILDINGS, [5], production_mode="free")
     assert result["herb_count"] + result["pool_count"] > 0
     assert result["total_value"] == result["herb_value"] + result["fish_value"]
+
+
+def test_exact_building_counts_use_the_configured_number_of_boosters() -> None:
+    result = optimize_pasture_shape(
+        9, BUILDINGS, [4, 5], {4: 2, 5: 1},
+        production_mode="exact", herb_count=6, pool_count=0, exact_building_counts=True,
+    )
+    assert result["used_building_ids"].count(4) == 2
+    assert result["used_building_ids"].count(5) == 1
+    assert result["herb_count"] == 6
+
+
+def test_exact_building_counts_without_enabled_boosters_avoids_duplicate_layouts() -> None:
+    result = optimize_pasture_shape(
+        9, BUILDINGS, [], {0: 9, 3: 0},
+        production_mode="target_ratio", herb_count=9, pool_count=0, exact_building_counts=True,
+    )
+    assert result["used_building_ids"] == []
+    assert result["herb_count"] == 9
+    assert result["pool_count"] == 0
+    assert result["search"]["layout_candidates"] == result["search"]["shape_candidates"]

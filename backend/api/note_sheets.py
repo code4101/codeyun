@@ -5150,7 +5150,7 @@ def _repair_attendance_note_row_style(document_json: dict[str, Any]) -> dict[str
     faq_cell["style"] = faq_style
     next_meta[faq_key] = faq_cell
     normalized["cell_meta"] = next_meta
-    return normalized
+    return _normalize_attendance_feedback_link(normalized)
 
 
 def _insert_document_data_rows_for_excel_import(

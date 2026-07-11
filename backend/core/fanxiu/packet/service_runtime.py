@@ -931,16 +931,23 @@ def run_fanxiu_packet_service_loop(*, state_interval_seconds: float = 15.0) -> N
     next_state_at = 0.0
     try:
         while True:
-            try:
-                now = time.monotonic()
-                if now >= next_state_at:
+            now = time.monotonic()
+            if now >= next_state_at:
+                next_state_at = now + max(1.0, float(state_interval_seconds))
+                try:
                     write_fanxiu_packet_service_state()
-                    next_state_at = now + max(1.0, float(state_interval_seconds))
+                except Exception as exc:
+                    print(f"[fanxiu-packet-service] state write failed: {exc}", flush=True)
+            try:
                 processed_commands = process_pending_fanxiu_packet_service_commands()
-                if processed_commands:
-                    write_fanxiu_packet_service_state({"processed_commands": processed_commands[-5:]})
             except Exception as exc:
-                print(f"[fanxiu-packet-service] loop tick failed: {exc}", flush=True)
+                print(f"[fanxiu-packet-service] command processing failed: {exc}", flush=True)
+                processed_commands = []
+            if processed_commands:
+                try:
+                    write_fanxiu_packet_service_state({"processed_commands": processed_commands[-5:]})
+                except Exception as exc:
+                    print(f"[fanxiu-packet-service] processed-command state write failed: {exc}", flush=True)
             time.sleep(0.5)
     finally:
         try:

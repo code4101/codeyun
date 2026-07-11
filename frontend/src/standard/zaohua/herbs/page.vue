@@ -68,9 +68,9 @@ const MATRIX_COLUMNS: MatrixColumn[] = [
   { key: 'yang_wood', label: '阳木' }, { key: 'yin_wood', label: '阴木' },
   { key: 'yang_fire', label: '阳火' }, { key: 'yin_fire', label: '阴火' },
   { key: 'yang_soil', label: '阳土' }, { key: 'yin_soil', label: '阴土' },
-  { key: 'yang_ice', label: '阳冰' }, { key: 'yin_ice_yang_water', label: '阴冰阳水' },
-  { key: 'yang_wind', label: '阳风' }, { key: 'yin_wind_yang_wood', label: '阴风阳木' },
-  { key: 'yang_thunder', label: '阳雷' }, { key: 'yin_thunder_yang_fire', label: '阴雷阳火' },
+  { key: 'yang_ice', label: '阳冰' }, { key: 'yin_ice_yang_water', label: '阴冰' },
+  { key: 'yang_wind', label: '阳风' }, { key: 'yin_wind_yang_wood', label: '阴风' },
+  { key: 'yang_thunder', label: '阳雷' }, { key: 'yin_thunder_yang_fire', label: '阴雷' },
 ]
 const MATRIX_GROUP_RANGES: Record<MatrixGroup, [number, number]> = {
   cycle: [0, 5],
@@ -86,10 +86,10 @@ const matrixGroupLabel = computed(() => MATRIX_GROUPS.find(item => item.value ==
 const matrixGroupCode = computed(() => MATRIX_GROUPS.find(item => item.value === matrixGroup.value)?.code || '')
 const isShopMatrix = computed(() => matrixGroup.value === 'shop')
 const PLANTING_DAYS_BY_RANK = [10, 20, 30, 360, 720, 1080, 3600, 7200, 10800, 36000, 72000, 108000]
-const plantingTime = (rank: number) => {
+const plantingTimeLabel = (rank: number) => {
   const days = PLANTING_DAYS_BY_RANK[rank - 1]
-  if (!days) return null
-  return { days, years: days >= 360 ? days / 360 : null }
+  if (!days) return '未配置'
+  return days >= 360 ? `${formatNumber(days / 360)}年` : `${formatNumber(days)}日`
 }
 
 type ShopPool = {
@@ -257,6 +257,47 @@ const craftingAttributeColor = (attributes: ZaohuaHerbCraftingAttribute[], fallb
     : elementColor(fallbackKey)
 }
 const attributeMagnitude = (value: number) => Math.abs(value)
+const herbGridEfficiency = (herb: ZaohuaHerb) => {
+  const cellCount = herb.shape?.cells.length || 0
+  if (!cellCount) return null
+  const attributeTotal = herb.crafting_attributes.reduce((total, attribute) => total + Math.abs(attribute.value), 0)
+  if (!attributeTotal) return null
+  return { value: attributeTotal / cellCount, attributeTotal, cellCount }
+}
+const formatGridEfficiency = (herb: ZaohuaHerb) => {
+  const efficiency = herbGridEfficiency(herb)
+  if (!efficiency) return '—'
+  return Math.trunc(efficiency.value).toString()
+}
+const gridEfficiencyTitle = (herb: ZaohuaHerb) => {
+  const efficiency = herbGridEfficiency(herb)
+  if (!efficiency) return '格效：缺少炼丹属性或占格数据'
+  return `格效 ${formatGridEfficiency(herb)} = 属性绝对值 ${efficiency.attributeTotal} ÷ ${efficiency.cellCount} 格；越高表示单位丹炉空间提供的属性越多`
+}
+const herbCultivationEfficiency = (herb: ZaohuaHerb) => {
+  const plantingDays = PLANTING_DAYS_BY_RANK[herb.grade_rank - 1]
+  if (!plantingDays) return null
+  const attributeTotal = herb.crafting_attributes.reduce((total, attribute) => total + Math.abs(attribute.value), 0)
+  if (!attributeTotal) return null
+  return { value: attributeTotal / plantingDays * 30, attributeTotal, plantingDays }
+}
+const formatCultivationEfficiency = (herb: ZaohuaHerb) => {
+  const efficiency = herbCultivationEfficiency(herb)
+  if (!efficiency) return '—'
+  return Number(efficiency.value.toFixed(2)).toString()
+}
+const cultivationEfficiencyTitle = (herb: ZaohuaHerb) => {
+  const efficiency = herbCultivationEfficiency(herb)
+  if (!efficiency) return '种效：缺少炼丹属性或种植时间'
+  return `种效 ${formatCultivationEfficiency(herb)} = 属性绝对值 ${efficiency.attributeTotal} ÷ ${efficiency.plantingDays} 日 × 30；表示每30日可产出的炼丹属性值`
+}
+const matrixAttributes = (herb: ZaohuaHerb, columnKey: string) => {
+  if (!columnKey.startsWith('yin_')) return herb.crafting_attributes
+  const variantElements = new Set(['ice', 'wind', 'thunder'])
+  return [...herb.crafting_attributes].sort((left, right) => (
+    Number(variantElements.has(right.element)) - Number(variantElements.has(left.element))
+  ))
+}
 const elementOptionByKey = (key: string) => meta.value?.elements.find(item => item.key === key)
 const elementLabel = (key: string, name: string) => key === 'none' ? '无属性' : `${name}系`
 
@@ -408,6 +449,11 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           :value="item.value"
         />
       </el-select>
+      <span
+        v-if="viewMode === 'matrix' && !isShopMatrix"
+        class="efficiency-legend"
+        title="种效 = 炼丹属性绝对值总和 ÷ 种植日数 × 30；格效 = 炼丹属性绝对值总和 ÷ 占格数。单元格按“种效 / 格效”显示。"
+      ><b>单元格第3行：种效 / 格效</b><small>每30日属性 / 每格属性</small></span>
       <el-input
         v-if="viewMode === 'list'"
         v-model="query"
@@ -459,7 +505,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
             <tr>
               <th rowspan="2" class="sticky-grade-rank">品级</th>
               <th rowspan="2" class="sticky-grade-name">品阶</th>
-              <th rowspan="2" class="planting-time-column">种植时间</th>
+              <th rowspan="2" class="planting-time-column"><span>种植<br>时间</span></th>
               <th v-for="column in isShopMatrix ? [] : visiblePriceColumns" :key="column.key" rowspan="2" class="matrix-price">
                 {{ column.label }}
               </th>
@@ -488,13 +534,7 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
                 />
               </td>
               <td class="planting-time-cell number-cell">
-                <template v-if="plantingTime(row.rank)">
-                  <strong>{{ formatNumber(plantingTime(row.rank)?.days || 0) }}日</strong>
-                  <small v-if="plantingTime(row.rank)?.years">{{ formatNumber(plantingTime(row.rank)?.years || 0) }}年</small>
-                </template>
-                <template v-else>
-                  <strong class="not-configured">未配置</strong>
-                </template>
+                <strong :class="{ 'not-configured': row.rank >= 13 }">{{ plantingTimeLabel(row.rank) }}</strong>
               </td>
               <td v-for="column in isShopMatrix ? [] : visiblePriceColumns" :key="column.key" class="matrix-price number-cell">
                 <span
@@ -542,15 +582,22 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
                   :class="{ selected: selected?.item_id === herb.item_id }"
                   @click="selectHerb(herb)"
                 >
-                  <span>{{ herb.name }}</span>
+                  <span class="matrix-herb-heading">
+                    <b>{{ herb.name }}</b>
+                  </span>
                   <small>
                     <i
-                      v-for="attribute in herb.crafting_attributes"
+                      v-for="attribute in matrixAttributes(herb, column.key)"
                       :key="attribute.element"
                       :class="{ negative: attribute.value < 0 }"
                       :style="elementStyle(attribute.element)"
                     >{{ attribute.label }}{{ attributeMagnitude(attribute.value) }}</i>
                   </small>
+                  <span class="matrix-efficiency-line">
+                    <em :title="cultivationEfficiencyTitle(herb)">{{ formatCultivationEfficiency(herb) }}</em>
+                    <i>/</i>
+                    <em :title="gridEfficiencyTitle(herb)">{{ formatGridEfficiency(herb) }}</em>
+                  </span>
                 </button>
               </td>
             </tr>
@@ -668,6 +715,22 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           </span>
           <span v-else>—</span>
         </dd>
+        <dt>种效</dt>
+        <dd class="efficiency-detail">
+          <strong>{{ formatCultivationEfficiency(selected) }}</strong>
+          <span v-if="herbCultivationEfficiency(selected)">
+            每30日属性：{{ herbCultivationEfficiency(selected)?.attributeTotal }} ÷ {{ herbCultivationEfficiency(selected)?.plantingDays }}日 × 30
+          </span>
+          <span v-else>缺少炼丹属性或种植时间</span>
+        </dd>
+        <dt>格效</dt>
+        <dd class="efficiency-detail">
+          <strong>{{ formatGridEfficiency(selected) }}</strong>
+          <span v-if="herbGridEfficiency(selected)">
+            每格属性：{{ herbGridEfficiency(selected)?.attributeTotal }} ÷ {{ herbGridEfficiency(selected)?.cellCount }}格
+          </span>
+          <span v-else>缺少炼丹属性或占格数据</span>
+        </dd>
         <dt>灵气</dt><dd>{{ formatNumber(selected.lingqi) }}</dd>
         <dt>价格</dt><dd>{{ formatPrice(selected.price) }}</dd>
         <dt>描述</dt><dd>{{ selected.description || '—' }}</dd>
@@ -685,7 +748,10 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
           </div>
           <span v-else>当前丹方示例中未使用</span>
         </dd>
-        <dt>占格形状</dt>
+        <dt class="shape-heading">
+          <span>占格形状</span>
+          <span v-if="selected.shape?.name" class="shape-name">{{ selected.shape.name }}</span>
+        </dt>
         <dd class="shape-field">
           <HerbShapePreview
             :shape="selected.shape"
@@ -693,7 +759,6 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
             :label="selected.name"
             :color="elementColor(selected.element_key)"
           />
-          <span v-if="selected.shape?.name" class="shape-name">{{ selected.shape.name }}</span>
         </dd>
       </dl>
 
@@ -723,6 +788,9 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .element-select { width: 142px; }
 .view-mode-select { width: 104px; }
 .matrix-group-select { width: 148px; }
+.efficiency-legend { display: inline-flex; gap: 7px; align-items: baseline; color: #747c80; font-size: 12px; white-space: nowrap; cursor: help; }
+.efficiency-legend b { color: #4e575b; font-weight: 600; }
+.efficiency-legend small { color: #929895; font-size: 11px; }
 .grade-text { color: var(--grade-color); }
 .grade-label { display: inline-flex; gap: 7px; align-items: center; color: var(--grade-color); white-space: nowrap; }
 .grade-rank { min-width: 2ch; color: #687076; font-variant-numeric: tabular-nums; text-align: right; }
@@ -740,14 +808,14 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .list-pane { display: flex; flex-direction: column; min-height: 250px; overflow: hidden; border: 1px solid #d9ddda; background: #fff; }
 .table-scroll { flex: 1; min-height: 0; overflow: auto; }
 .matrix-scroll { flex: 1; min-height: 0; overflow: auto; }
-.herb-matrix { width: 100%; min-width: 0; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; }
-.herb-matrix th, .herb-matrix td { min-width: 0; padding: 5px 7px; overflow: hidden; border-right: 1px solid #e4e7e4; border-bottom: 1px solid #e4e7e4; text-align: left; vertical-align: top; }
-.herb-matrix th { position: sticky; top: 0; z-index: 3; background: #f0f2ef; color: #555d61; font-weight: 600; text-align: center; }
+.herb-matrix { width: max-content; min-width: 0; max-width: none; border-collapse: separate; border-spacing: 0; table-layout: auto; font-size: 12px; }
+.herb-matrix th, .herb-matrix td { box-sizing: border-box; min-width: 0; padding: 5px 7px; overflow: hidden; border-right: 1px solid #e4e7e4; border-bottom: 1px solid #e4e7e4; text-align: left; vertical-align: top; }
+.herb-matrix th { position: sticky; top: 0; z-index: 3; background: #f0f2ef; color: #555d61; font-weight: 600; text-align: center; vertical-align: middle; }
 .herb-matrix thead tr:nth-child(2) th { top: 29px; }
 .herb-matrix .sticky-grade-rank { left: 0; min-width: 48px; width: 48px; z-index: 5; text-align: right; }
-.herb-matrix .sticky-grade-name { left: 62px; min-width: 116px; width: 116px; z-index: 5; background: #f7f8f6; white-space: nowrap; }
+.herb-matrix .sticky-grade-name { left: 48px; min-width: 92px; width: 92px; padding-right: 3px; padding-left: 3px; z-index: 5; background: #f7f8f6; white-space: nowrap; }
 .matrix-grade-meter { width: 100%; height: 24px; }
-.herb-matrix .matrix-price { width: 84px; white-space: nowrap; }
+.herb-matrix .matrix-price { width: 64px; padding-right: 5px; padding-left: 5px; white-space: nowrap; }
 .herb-matrix thead .sticky-grade-rank, .herb-matrix thead .sticky-grade-name { background: #f0f2ef; }
 .matrix-price-entry { display: block; }
 .matrix-price-entry small { display: block; overflow: hidden; color: #788086; font-size: 10px; text-overflow: ellipsis; }
@@ -757,20 +825,24 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .shop-pool-cell span { margin-top: 2px; color: #626b70; }
 .shop-pool-cell small { margin-top: 4px; color: #8a6a32; font-size: 10px; }
 .shop-pool-cell.empty { color: #a3a9a5; background: #fafbfa; }
-.herb-matrix .planting-time-column { width: 108px; white-space: nowrap; }
-.planting-time-cell { vertical-align: middle !important; white-space: nowrap; }
+.herb-matrix .planting-time-column { width: 64px; line-height: 1.25; white-space: normal; }
+.planting-time-cell { vertical-align: top !important; white-space: nowrap; }
 .planting-time-cell strong { color: #324d62; font-size: 12px; font-weight: 600; }
-.planting-time-cell small { margin-left: 7px; color: #737c80; font-size: 10px; }
 .planting-time-cell .not-configured { color: #8a9094; font-size: 12px; font-weight: 500; }
 .unimplemented-cell { color: #8a9094; text-align: center !important; vertical-align: middle !important; background: #fafbfa; }
+.matrix-cell { white-space: nowrap; }
 .matrix-cell:empty { background: #fafbfa; }
-.matrix-herb { display: block; width: 100%; padding: 3px 4px; border: 0; color: #333a3d; text-align: left; background: transparent; cursor: pointer; }
+.matrix-herb { display: block; width: auto; min-width: 100%; padding: 0 4px 3px; border: 0; color: #333a3d; text-align: left; background: transparent; cursor: pointer; }
 .matrix-herb + .matrix-herb { margin-top: 4px; border-top: 1px dashed #d8dcda; }
 .matrix-herb:hover, .matrix-herb.selected { background: #e9f1e7; }
-.matrix-herb > span { display: block; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.matrix-herb-heading { display: block !important; white-space: nowrap; }
+.matrix-herb-heading b { font-weight: 600; }
 .matrix-herb small { display: flex; gap: 5px; margin-top: 2px; white-space: nowrap; }
 .matrix-herb small i { color: var(--element-color); font-style: normal; font-weight: 600; }
 .matrix-herb small i.negative { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.matrix-efficiency-line { display: flex; gap: 5px; align-items: baseline; margin-top: 2px; color: #536873; font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.matrix-efficiency-line em { font-style: normal; }
+.matrix-efficiency-line i { color: #9aa09d; font-size: 10px; font-style: normal; font-weight: 400; }
 .herb-table { width: 100%; border-collapse: collapse; table-layout: auto; white-space: nowrap; }
 .herb-table th, .herb-table td { padding: 4px 11px; border-bottom: 1px solid #eceeec; text-align: left; vertical-align: middle; }
 .herb-table th { position: sticky; top: 0; z-index: 1; background: #f0f2ef; color: #555d61; font-size: 13px; font-weight: 600; }
@@ -799,8 +871,12 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 .detail-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 0; padding-top: 15px; }
 .detail-fields > dt, .detail-fields > dd { margin: 0; padding: 9px 0; border-bottom: 1px solid #eceeec; }
 .detail-fields > dt { padding-right: 28px; color: #4b524f; font-size: 14px; font-weight: 600; }
+.efficiency-detail { display: flex; gap: 14px; align-items: baseline; }
+.efficiency-detail strong { min-width: 3ch; color: #324d62; font-variant-numeric: tabular-nums; }
+.efficiency-detail span { color: #747c80; font-size: 12px; }
 .recipe-links { display: flex; flex-wrap: wrap; gap: 6px 20px; }
-.shape-field { display: flex; gap: 14px; align-items: center; }
+.detail-fields > .shape-heading { display: flex; grid-column: 1 / -1; gap: 18px; align-items: baseline; padding-bottom: 3px; border-bottom: 0; }
+.shape-field { display: block; grid-column: 1 / -1; padding-top: 3px !important; }
 .shape-name { color: #687076; }
 .recipe-links a { color: #356a91; text-decoration: none; }
 .recipe-links a:hover { text-decoration: underline; }
