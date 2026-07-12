@@ -465,14 +465,35 @@ namespace Code4101.Zaohua.Tiandao
             };
             SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
             Debug.Log($"[Code4101 Tiandao] background solve started recipe={request.Recipe.id}, generation={generation}");
-            _solveTask = AlchemySolveWorker.RunAsync(request, token);
-            StartCoroutine(CompleteSolveOnMainThread(_solveTask));
+            var progress = new AlchemySolveProgress();
+            _solveTask = AlchemySolveWorker.RunAsync(request, progress, token);
+            StartCoroutine(CompleteSolveOnMainThread(_solveTask, progress, request));
         }
 
         private IEnumerator CompleteSolveOnMainThread(
-            Task<AlchemySolveResponse> task)
+            Task<AlchemySolveResponse> task,
+            AlchemySolveProgress progress,
+            AlchemySolveRequest activeRequest)
         {
-            while (!task.IsCompleted) yield return null;
+            var nextProgressRefresh = Time.realtimeSinceStartup + 5f;
+            var publishedRevision = 0;
+            while (!task.IsCompleted)
+            {
+                if (Time.realtimeSinceStartup >= nextProgressRefresh)
+                {
+                    nextProgressRefresh = Time.realtimeSinceStartup + 5f;
+                    var snapshot = progress.Snapshot(50, out var revision);
+                    if (revision > publishedRevision && snapshot.Count > 0 &&
+                        activeRequest.Generation == _solveGeneration &&
+                        _smartPanel.activeSelf && _activeSolveKey == activeRequest.CacheKey)
+                    {
+                        publishedRevision = revision;
+                        _solutions = snapshot;
+                        RenderSmartResults();
+                    }
+                }
+                yield return null;
+            }
             if (task.IsCanceled) yield break;
             var result = task.Result;
             var request = result.Request;

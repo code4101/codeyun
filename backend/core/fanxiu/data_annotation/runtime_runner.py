@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -4797,6 +4798,8 @@ class DataAnnotationRuntimeRunner(
                 )
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
+            exception_detail = f"{type(exc).__name__}: {detail}"
+            exception_traceback = traceback.format_exc(limit=20)
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
             if scheduler_task_id:
@@ -4804,8 +4807,9 @@ class DataAnnotationRuntimeRunner(
                 self._mark_scheduler_task(tasks, scheduler_task_id, "error")
             with self._lock:
                 self._clear_current_task_locked()
-                self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", self._task_cell_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
+                self._status.update({"ok": False, "status": "error", "phase": "error", "message": exception_detail, "error": exception_detail, "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("error", self._task_cell_log_message(task_id, exception_detail), scope="manual_job", item_id="manual_job")
+                self._log_locked("detail", exception_traceback, scope="manual_job", item_id="manual_job")
                 self._append_runtime_cell_log_locked(
                     title=f"作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
                     source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),

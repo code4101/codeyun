@@ -322,6 +322,42 @@ def test_pending_job_recovery_keeps_recent_task_running_owner(monkeypatch):
     assert shutdowns == []
 
 
+def test_pending_job_recovery_uses_raw_persisted_state_not_owner_overlay(monkeypatch):
+    shutdowns: list[dict] = []
+
+    monkeypatch.setattr(bt, "_fanxiu_process_matches_service_owner", lambda pid: pid == 1234)
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda _pid: False)
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_task_cells",
+        lambda: [{"id": "job-1", "status": "running", "updated_at": 10.0, "created_at": 9.0}],
+    )
+    monkeypatch.setattr(bt.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        bt,
+        "read_fanxiu_runtime_status",
+        lambda: {"running": False, "service_running": False, "status": "stopped", "phase": "stopped"},
+    )
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: (_ for _ in ()).throw(AssertionError("recovery must not use owner-overlay status")),
+    )
+    monkeypatch.setattr(
+        bt,
+        "request_fanxiu_behavior_tree_service_shutdown",
+        lambda **kwargs: shutdowns.append(kwargs),
+    )
+
+    result = bt._restart_stuck_external_service_for_pending_jobs(
+        {"active": True, "stale": False, "pid": 1234, "step": "task_running", "updated_at": 10.0}
+    )
+
+    assert result["restarted"] is True
+    assert result["reason"] == "pending_jobs_stuck_task_running"
+    assert shutdowns == [{"entry_id": "", "reason": "pending_jobs_stuck_task_running"}]
+
+
 def test_fanxiu_kernel_task_cell_facade_hides_runtime_plumbing(monkeypatch):
     calls: list[dict] = []
 

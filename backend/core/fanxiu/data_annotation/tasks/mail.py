@@ -56,6 +56,8 @@ from pyxllib.prog import BehaviorTreeStatus
 
 
 class MailTaskMixin:
+    _FORCE_CLAIM_MAIL_TITLE_KEYWORDS = ("宗门灵泉", "宗门镇邪")
+
     def _execute_mail_legacy_scan_task(
         self,
         ctx: dict[str, Any],
@@ -207,14 +209,15 @@ class MailTaskMixin:
 
         frame = runtime.cur_frame(update=True)
         startup_frame = frame
-        pending_scene_id, pending_score = self._identify_scene_number(ctx, frame, [278])
-        if pending_scene_id == 278:
+        pending_scene_id, pending_score = self._identify_scene_number(ctx, frame, [348, 278])
+        if pending_scene_id in {348, 278}:
             startup_frame = None
             with self._lock:
-                self._set_status_locked("running", "邮件_清理：处理遗留一键删除确认", phase="mail_cleanup_resume_confirm_delete_read", current_scene=278)
-                self._log_locked("action", f"邮件_清理：启动时检测到 #278 一键删除确认 {pending_score:.0f}%，点击「确认」")
-            self._click_confirmed_mail_delete_prompt(runtime, 278, frame_data_url=frame)
-            resumed_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：遗留确认后等待邮件页或世界页")
+                self._set_status_locked("running", "邮件_清理：处理遗留一键删除确认", phase="mail_cleanup_resume_confirm_delete_read", current_scene=pending_scene_id)
+                self._log_locked("action", f"邮件_清理：启动时检测到 #{pending_scene_id} 一键删除确认 {pending_score:.0f}%，点击「确认」")
+            self._click_confirmed_mail_delete_prompt(runtime, pending_scene_id, frame_data_url=frame)
+            resumed_targets = (121,) if pending_scene_id == 348 else (121, 34)
+            resumed_view = yield from runtime.wait_view(*resumed_targets, timeout=12.0, label="邮件_清理：遗留确认后等待邮件页")
             resumed_scene_id = resumed_view.id if isinstance(resumed_view, View) else None
             if resumed_scene_id == 34:
                 with self._lock:
@@ -257,7 +260,6 @@ class MailTaskMixin:
             else:
                 self._log("error", "邮件_清理：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
         elif scene_id in {122, 123}:
-            action_title = "领取" if scene_id == 122 else "删除"
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -265,16 +267,16 @@ class MailTaskMixin:
                     phase="mail_cleanup_resume_detail",
                     current_scene=scene_id,
                 )
-                self._log_locked("action", f"邮件_清理：启动时位于 #{scene_id}，点击「{action_title}」后继续扫描")
-            yield from runtime.wait_click(scene_id, action_title, timeout=8.0)
-            yield from self._wait_mail_list_after_detail_action(
-                ctx,
-                stop_event,
-                runtime,
-                scene_id,
-                timeout=18.0,
-                label="邮件_清理：遗留详情页处理后返回邮件 #121",
-            )
+                self._log_locked(
+                    "action",
+                    f"邮件_清理：启动时位于 #{scene_id}，缺少本轮列表策略证据，只返回列表不领取/删除",
+                )
+            detail_image = ctx.get("images", {}).get(scene_id) if isinstance(ctx.get("images"), dict) else None
+            back_shape = self._find_shape(detail_image, "空白-返回") if isinstance(detail_image, dict) else None
+            if back_shape is None:
+                raise RuntimeError(f"邮件_清理：启动时位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
+            back_shape.click(runtime)
+            yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：遗留详情页安全返回邮件 #121")
         else:
             with self._lock:
                 self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
@@ -478,14 +480,15 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
                     self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
                 delete_read_shape.click(runtime)
-                delete_result_view = yield from runtime.wait_view(210, 278, 121, timeout=12.0, label="邮件_清理：一键删除后等待确认弹窗")
+                delete_result_view = yield from runtime.wait_view(348, 210, 278, 121, timeout=12.0, label="邮件_清理：一键删除后等待确认弹窗或邮件页")
                 delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
-                if delete_result_scene in {210, 278}:
+                if delete_result_scene in {348, 210, 278}:
                     with self._lock:
                         self._set_status_locked("running", "邮件_清理：确认一键删除", phase="mail_cleanup_confirm_delete_read", current_scene=delete_result_scene)
                         self._log_locked("action", f"邮件_清理：#{delete_result_scene} 一键删除确认弹窗，点击「确认」")
                     self._click_confirmed_mail_delete_prompt(runtime, delete_result_scene)
-                    delete_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：确认一键删除后等待邮件页或世界页")
+                    result_targets = (121,) if delete_result_scene == 348 else (121, 34)
+                    delete_result_view = yield from runtime.wait_view(*result_targets, timeout=12.0, label="邮件_清理：确认一键删除后等待邮件 #121")
                     delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
                     self._refresh_recent_mail_packets_for_runtime_log("一键删除已阅后同步", flush_capture=True)
                 elif delete_result_scene == 121:
@@ -2014,9 +2017,21 @@ class MailTaskMixin:
             row["packet_match"] = "missing"
             row["packet_missing_reason"] = self._mail_row_packet_missing_reason(title, time_text)
         if action_enabled:
-            policy = self._mail_row_packet_action_policy(title, time_text, records=records)
+            # These recurring sect activity mails are known reward mails.  Their
+            # packet state can lag behind the visible list, so title recognition
+            # is the authoritative claim rule for them.
+            policy = (
+                "claim"
+                if self._mail_title_forces_claim(title)
+                else self._mail_row_packet_action_policy(title, time_text, records=records)
+            )
             allowed_policies = (set(action_policies or {"claim"}) & {"claim"}) or {"claim"}
             row["policy"] = policy if policy in allowed_policies else ""
+
+    def _mail_title_forces_claim(self, title: str) -> bool:
+        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
+        compact_title = re.sub(r"\s+", "", normalized_title)
+        return any(keyword in compact_title for keyword in self._FORCE_CLAIM_MAIL_TITLE_KEYWORDS)
 
     def _mail_row_packet_action_policy(self, title: str, time_text: str, *, records: list[Any] | None = None) -> str:
         if records is None:
