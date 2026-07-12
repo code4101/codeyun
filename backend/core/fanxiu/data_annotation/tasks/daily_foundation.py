@@ -4702,16 +4702,14 @@ class DailyFoundationTaskMixin:
         scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-            self._log("success", "洞天_行动力：已在 #279 洞天福地，等待下一步清行动力实现")
-            raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
+            return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
                 scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
                 text = runtime.ocr_text(frame)
                 if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-                    self._log("success", "洞天_行动力：已回到 #279 洞天福地，等待下一步清行动力实现")
-                    raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
+                    return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
@@ -4741,7 +4739,87 @@ class DailyFoundationTaskMixin:
             )
             return "skipped"
         yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
-        raise RuntimeError("洞天_行动力：已进入 #279 洞天福地，后续清行动力真实动作尚未实现")
+        return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
+
+    def _continue_daily_dongtian_clear_from_home(
+        self,
+        runtime: Any,
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+    ):
+        enemy_places = [str(item).strip() for item in payload.get("enemy_places") or [] if str(item).strip()]
+        if not enemy_places:
+            self._log("success", "洞天_行动力：已在 #279 洞天福地，等待抓包提供敌对地点集合")
+            raise RuntimeError("洞天_行动力：已进入 #279，但尚未获得敌对地点集合")
+
+        clicked_place = yield from self._daily_dongtian_click_first_enemy_place(
+            runtime,
+            stop_event,
+            enemy_places,
+            max_scrolls=max(0, int(payload.get("place_max_scrolls") or 12)),
+            click_offset_y=float(payload.get("place_click_offset_y") or 122.0),
+        )
+        if bool(payload.get("pause_after_enemy_place_click")):
+            self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
+            return "manual_check_pending"
+        yield from self._daily_dongtian_continue_enemy_occupation(runtime)
+        self._log("success", f"洞天_行动力：已完成敌对地点「{clicked_place}」的已知占领链路，#346「继续」之后状态待补")
+        return "manual_check_pending"
+
+    def _daily_dongtian_continue_enemy_occupation(self, runtime: Any):
+        yield from runtime.wait_click_then_view(341, "位置1", 342)
+        yield from runtime.wait_click_then_view(342, "占领", 343)
+        yield from runtime.wait_click_then_view(343, "占领", 344)
+        yield from runtime.wait_click_then_view(344, "战斗", 346)
+        yield from runtime.wait_click(346, "继续")
+
+    def _daily_dongtian_click_first_enemy_place(
+        self,
+        runtime: Any,
+        stop_event: threading.Event,
+        enemy_places: list[str],
+        *,
+        max_scrolls: int,
+        click_offset_y: float,
+    ):
+        view279 = runtime.view(279)
+        window_shape = runtime.shape(279, "窗口")
+        if window_shape is None:
+            raise RuntimeError("洞天_行动力：缺少 #279「窗口」标注，无法查找敌对地点")
+
+        normalized_targets = {re.sub(r"^\[(?:洞天|福地)\]", "", item).strip(): item for item in enemy_places}
+        for scroll_index in range(max_scrolls + 1):
+            self._raise_if_stopped(stop_event)
+            yield from runtime.wait_view(279, label="洞天_行动力：等待 #279 洞天福地")
+            frame = runtime.cur_frame(update=True)
+            lines = runtime.ocr_lines_in_shapes(279, ["窗口"], frame_data_url=frame)
+            matches: list[tuple[float, float, str, dict[str, Any]]] = []
+            for line in lines:
+                text = _sanitize_ocr_text(line.get("text"))
+                for normalized, original in normalized_targets.items():
+                    if normalized and normalized in text:
+                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line))
+                        break
+            if matches:
+                _y, _x, place, line = min(matches, key=lambda item: (item[0], item[1]))
+                click_x = float(line.get("x") or 0) + float(line.get("w") or 0) * 0.5
+                click_y = float(line.get("y") or 0) + float(line.get("h") or 0) * 0.5 - click_offset_y
+                if click_x <= 0 or click_y <= 0:
+                    raise RuntimeError(f"洞天_行动力：地点「{place}」 OCR 坐标无效，line={line}")
+                self._log(
+                    "click",
+                    f"洞天_行动力：命中敌对地点「{place}」，地名中心=({click_x:.0f},{click_y + click_offset_y:.0f})，点击地图主体=({click_x:.0f},{click_y:.0f})",
+                )
+                runtime.click_frame_point(279, click_x, click_y)
+                yield from runtime.wait_action_settle(float(runtime.payload.get("place_click_settle_seconds") or 2.0))
+                return place
+            if scroll_index >= max_scrolls:
+                break
+            self._log("action", f"洞天_行动力：当前窗口未找到敌对地点，向下滚动 {scroll_index + 1}/{max_scrolls}")
+            changed = yield from runtime.scroll_shape_content(view279, window_shape, direction="down")
+            if not changed:
+                break
+        raise RuntimeError(f"洞天_行动力：#279 窗口未找到敌对地点，candidates={enemy_places}")
 
     def _runtime_daily_window_next_time(self, task_id: str, task_type: str, now: datetime | None = None) -> str | None:
         now = now or _runtime_runner._now()

@@ -2575,10 +2575,12 @@ from backend.core.fanxiu.data_annotation.tasks.misc_actions import MiscActionTas
 from backend.core.fanxiu.data_annotation.tasks.signup_misc import SignupMiscTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianfu import XianfuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mixin
+from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 
 
 class DataAnnotationRuntimeRunner(
     PopupGuardMixin,
+    ZhenxieTaskMixin,
     日常异火任务Mixin,
     DailyFoundationTaskMixin,
     DailyResourceTaskMixin,
@@ -4257,8 +4259,9 @@ class DataAnnotationRuntimeRunner(
         label: str,
         message: str,
         current_scene: int | None = 34,
+        next_time: str | None = None,
     ) -> None:
-        next_time = self._next_daily_boss_reset_time_text()
+        next_time = str(next_time or self._next_daily_boss_reset_time_text())
         scheduler_task_id = str(payload.get("__scheduler_task_id") or f"legacy-{task_type}")
         self._record_scheduler_task_discovered_next_time(
             scheduler_task_id,
@@ -4326,11 +4329,15 @@ class DataAnnotationRuntimeRunner(
             return task_result
         runtime_attrs = getattr(runtime, "attrs", None)
         completion_message = str(runtime_attrs.get("completion_message") or "").strip() if isinstance(runtime_attrs, dict) else ""
+        if isinstance(flow_result, dict):
+            completion_message = str(flow_result.get("message") or completion_message).strip()
         self._finish_daily_runtime_task(
             payload,
             task_type=task_type,
             label=label,
             message=completion_message or f"{label}完成，已回到世界",
+            current_scene=flow_result.get("current_scene", 34) if isinstance(flow_result, dict) else 34,
+            next_time=str(flow_result.get("next_time") or "") if isinstance(flow_result, dict) else None,
         )
         return "success"
 
