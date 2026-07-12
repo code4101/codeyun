@@ -32,11 +32,21 @@
 ```yaml
 last_audited_commit: "6b5ff516022894ed440c22b48be041f8cdafeffc"
 last_audited_at: "2026-07-12T01:07:48.7046689+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-12-frontend-design-6b5ff516/report.md"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-13-frontend-design-1608d81b/report.md"
 last_frontend_commit_summary: "完整审查 6b5ff516：炼丹/药材归纳表与洞天配置三视口无溢出；洞天把常驻数量框收敛为 1 个步进器 + 10 个按需开关；Vite 入口未预载重依赖。"
 audited_commit_count: 98
-pending_or_skipped_ranges: []
+pending_or_skipped_ranges:
+  - range: "6b5ff516022894ed440c22b48be041f8cdafeffc..1608d81b7751504afa74fde528a1db8d68ff6a22"
+    reason: "法宝阵图提交 00921bd9 的真实页面被当前账号权限路由到 /403，无法完成智能方案状态、候选入口密度与三视口交互审查；游标未推进。"
 ```
+
+### 2026-07-13 · `1608d81b`（未闭环）
+
+- 完整范围：`6b5ff516022894ed440c22b48be041f8cdafeffc..1608d81b7751504afa74fde528a1db8d68ff6a22`；逐提交归类为 `8ecef5d4 frontend_relevant`、`e41f6933 not_frontend_relevant`、`45218a94 not_frontend_relevant`、`00921bd9 frontend_relevant`、`8415e397 not_frontend_relevant`、`f4052c7b not_frontend_relevant`、`1608d81b frontend_relevant`。
+- 入口与减法：独立 `pasture-plan` 已回收到洞天的“配置 → 求解 → 种植策略 → 可选保存”模型；真实页面发现无方案时仍常驻空侧栏，宽屏占用 280px、窄屏形成大段空白。本轮让方案侧栏仅在存在保存数据时出现，工作区由固定双列收敛为按数据出现的双列，没有新增 UI 概念。
+- 真实页面：洞天和标注页均完成 `1600x1000`、`1366x900`、`820x1180` 截图；修复后洞天三视口 `savedAsideCount=0`、`bodyOverflowX/rootOverflowX=0`，工作区单列宽度为 `1345px / 1111px / 712px`。标注页三视口无横向溢出，爆发截图改动未新增 UI 概念。
+- 阻塞：法宝阵图访问被路由到 `/403`，未能验证提交新增的“智能放置状态 + 最多三个候选方案入口”在真实数据下是否过度常驻；因此不推进 `last_audited_commit`，完整范围保留在 `pending_or_skipped_ranges`。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；本轮未涉及强制入口依赖污染检查触发项。报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-13-frontend-design-1608d81b/report.md`。
 
 ### 2026-07-12 · `6b5ff516`
 
