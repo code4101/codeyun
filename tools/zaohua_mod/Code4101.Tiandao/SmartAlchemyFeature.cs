@@ -1,6 +1,9 @@
 using HarmonyLib;
 using System.Collections.Generic;
+using System.Collections;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -53,6 +56,10 @@ namespace Code4101.Zaohua.Tiandao
             new Dictionary<string, List<AlchemySolution>>();
         private TbDrugRecipeCfg _solvedRecipe;
         private int _visibleSolutionCount = 5;
+        private CancellationTokenSource _solveCancellation;
+        private Task<AlchemySolveResponse> _solveTask;
+        private string _activeSolveKey;
+        private int _solveGeneration;
 
         internal TbPackSto Furnace { get; private set; }
         internal IReadOnlyList<HerbStock> Herbs { get; private set; } = new List<HerbStock>();
@@ -103,6 +110,7 @@ namespace Code4101.Zaohua.Tiandao
             if (_smartButton != null) _smartButton.gameObject.SetActive(enabled);
             if (!enabled)
             {
+                CancelActiveSolve();
                 HideSmart();
             }
         }
@@ -400,10 +408,10 @@ namespace Code4101.Zaohua.Tiandao
             _cell.view.craftingLogScroll.gameObject.SetActive(false);
             _spectrumPanel.SetActive(false);
             _smartPanel.SetActive(true);
-            SolveAndRender();
+            StartSolveOrRenderCache();
         }
 
-        private void SolveAndRender()
+        private void StartSolveOrRenderCache()
         {
             ClearSmartResults();
             var recipeSto = _cell.lockRecipeSto;
@@ -426,22 +434,62 @@ namespace Code4101.Zaohua.Tiandao
             }
 
             _visibleSolutionCount = 5;
-            SetMessage("智能炼丹\n\n正在使用当前丹炉与有限药材库存计算……");
             var cacheKey = BuildSolutionCacheKey();
-            if (!_solutionCache.TryGetValue(cacheKey, out _solutions))
-            {
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                _solutions = FiniteInventoryAlchemySolver.Solve(_solvedRecipe, Furnace, Herbs, 50);
-                stopwatch.Stop();
-                if (_solutionCache.Count >= 32) _solutionCache.Clear();
-                _solutionCache[cacheKey] = _solutions;
-                Debug.Log($"[Code4101 Tiandao] solved recipe={_solvedRecipe.id}, " +
-                          $"solutions={_solutions.Count}, elapsed={stopwatch.ElapsedMilliseconds}ms");
-            }
-            else
+            if (_solutionCache.TryGetValue(cacheKey, out _solutions))
             {
                 Debug.Log($"[Code4101 Tiandao] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
+                RenderSmartResults();
+                return;
             }
+
+            if (_solveTask != null && !_solveTask.IsCompleted && _activeSolveKey == cacheKey)
+            {
+                SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
+                return;
+            }
+
+            _solveCancellation?.Cancel();
+            _solveCancellation?.Dispose();
+            _solveCancellation = new CancellationTokenSource();
+            var token = _solveCancellation.Token;
+            var generation = ++_solveGeneration;
+            _activeSolveKey = cacheKey;
+            var request = new AlchemySolveRequest
+            {
+                CacheKey = cacheKey,
+                Generation = generation,
+                Recipe = _solvedRecipe,
+                Furnace = Furnace,
+                Herbs = Herbs.ToList(),
+                Limit = 50,
+            };
+            SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
+            Debug.Log($"[Code4101 Tiandao] background solve started recipe={request.Recipe.id}, generation={generation}");
+            _solveTask = AlchemySolveWorker.RunAsync(request, token);
+            StartCoroutine(CompleteSolveOnMainThread(_solveTask));
+        }
+
+        private IEnumerator CompleteSolveOnMainThread(
+            Task<AlchemySolveResponse> task)
+        {
+            while (!task.IsCompleted) yield return null;
+            if (task.IsCanceled) yield break;
+            var result = task.Result;
+            var request = result.Request;
+            if (request.Generation != _solveGeneration) yield break;
+            if (result.Error != null)
+            {
+                Debug.LogError($"[Code4101 Tiandao] background solve failed: {result.Error}");
+                if (_smartPanel.activeSelf) SetMessage("智能炼丹\n\n后台求解失败，请重新选择丹方后再试");
+                yield break;
+            }
+            if (_solutionCache.Count >= 32) _solutionCache.Clear();
+            _solutionCache[request.CacheKey] = result.Solutions;
+            Debug.Log($"[Code4101 Tiandao] background solved recipe={request.Recipe.id}, " +
+                      $"solutions={result.Solutions.Count}, elapsed={result.ElapsedMilliseconds}ms");
+            if (!_smartPanel.activeSelf || _activeSolveKey != request.CacheKey) yield break;
+            _solutions = result.Solutions;
+            _solvedRecipe = request.Recipe;
             RenderSmartResults();
         }
 
@@ -524,6 +572,7 @@ namespace Code4101.Zaohua.Tiandao
 
         internal void OnRecipeChanged()
         {
+            CancelActiveSolve();
             ClearSmartResults();
             _solutions.Clear();
             _solvedRecipe = null;
@@ -536,6 +585,24 @@ namespace Code4101.Zaohua.Tiandao
             {
                 _smartContent.anchoredPosition = Vector2.zero;
             }
+        }
+
+        private void CancelActiveSolve()
+        {
+            if (_solveTask != null && !_solveTask.IsCompleted)
+            {
+                Debug.Log($"[Code4101 Tiandao] background solve cancellation requested generation={_solveGeneration}");
+            }
+            _solveCancellation?.Cancel();
+            _solveCancellation?.Dispose();
+            _solveCancellation = null;
+            _activeSolveKey = null;
+            _solveGeneration++;
+        }
+
+        private void OnDestroy()
+        {
+            CancelActiveSolve();
         }
 
         private static void NormalizeListItem(GameObject item, GameObject sourcePrefab)

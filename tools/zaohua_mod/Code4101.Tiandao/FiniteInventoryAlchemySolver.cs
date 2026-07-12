@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace Code4101.Zaohua.Tiandao
 {
@@ -91,7 +92,8 @@ namespace Code4101.Zaohua.Tiandao
             TbDrugRecipeCfg recipe,
             TbPackSto furnace,
             IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
-            int limit)
+            int limit,
+            CancellationToken cancellationToken = default)
         {
             if (recipe == null || furnace == null || stocks == null || limit <= 0)
             {
@@ -145,6 +147,7 @@ namespace Code4101.Zaohua.Tiandao
 
             void Search(int startIndex)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (searchNodes++ >= SearchNodeLimit || solutions.Count >= Math.Max(limit * 5, 40)) return;
 
                 var stateKey = BuildSearchStateKey(startIndex, vector, inventory, initialInventory, candidates);
@@ -158,7 +161,7 @@ namespace Code4101.Zaohua.Tiandao
                         .Select(group => $"{group.Key}:{group.Count()}"));
                     if (solutionKeys.Add(key) && TryPack(
                             chosen, furnaceCfg, recipe, poseModelCache,
-                            out var placements, out var ruleOutcome))
+                            out var placements, out var ruleOutcome, cancellationToken))
                     {
                         solutions.Add(new AlchemySolution
                         {
@@ -420,7 +423,8 @@ namespace Code4101.Zaohua.Tiandao
             TbDrugRecipeCfg recipe,
             Dictionary<HerbCandidate, List<PlacementPose>> sharedPoseCache,
             out List<AlchemyPlacement> placements,
-            out AlchemyRuleOutcome ruleOutcome)
+            out AlchemyRuleOutcome ruleOutcome,
+            CancellationToken cancellationToken)
         {
             placements = new List<AlchemyPlacement>();
             ruleOutcome = new AlchemyRuleOutcome();
@@ -468,6 +472,7 @@ namespace Code4101.Zaohua.Tiandao
 
             bool PackAt(int pieceIndex)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (nodes++ >= PackingNodeLimit) return true;
                 if (pieceIndex >= pieces.Count)
                 {

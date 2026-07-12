@@ -16,13 +16,14 @@ namespace Code4101.Zaohua.Tiandao
     {
         public const string PluginGuid = "code4101.zaohua.tiandao";
         public const string PluginName = "Code4101的天道系统";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.2.0";
 
         private Harmony _harmony;
 
         private void Awake()
         {
             TiandaoState.Initialize(Config);
+            BagEnhancementState.Initialize(Config);
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll();
             SmartAlchemyFeature.ApplyConfiguredState();
@@ -32,6 +33,16 @@ namespace Code4101.Zaohua.Tiandao
         private void OnDestroy()
         {
             _harmony?.UnpatchSelf();
+        }
+
+        private void Update()
+        {
+            EquipmentLoadoutRuntime.Tick();
+        }
+
+        private void OnApplicationQuit()
+        {
+            EquipmentLoadoutRuntime.Flush();
         }
     }
 
@@ -50,10 +61,12 @@ namespace Code4101.Zaohua.Tiandao
         private static ConfigEntry<bool> _speedMultiplier;
         private static ConfigEntry<bool> _alchemyAssistant;
         private static ConfigEntry<bool> _saveMigrationCompleted;
+        private static ConfigEntry<int> _configSchemaVersion;
 
         internal static void Initialize(ConfigFile config)
         {
             _config = config;
+            _configSchemaVersion = config.Bind("系统", "配置版本", 1, "用于后续新增参数或迁移配置结构");
             _multiplier = config.Bind("天道试炼", "属性倍率", 1, "NPC最终属性倍率，最低为1且不设上限");
             _speedMultiplier = config.Bind("天道试炼", "速度倍率", false, "NPC属性倍率是否对速度生效");
             _alchemyAssistant = config.Bind("天道助缘", "炼丹助手", true, "开启丹谱与智能炼丹功能");
@@ -438,11 +451,9 @@ namespace Code4101.Zaohua.Tiandao
 
             var trialHeaderRow = GetClonedRow("txtBattleImpulse");
             var assistanceHeaderRow = GetClonedRow("txtLanguage");
-            var unusedRow = GetClonedRow("txtQuality");
-            ArrangeGroupedRows(trialHeaderRow, multiplierRow, speedRow, assistanceHeaderRow, alchemyRow, unusedRow);
+            ArrangeGroupedRows(trialHeaderRow, multiplierRow, speedRow, assistanceHeaderRow, alchemyRow);
             CreateGroupHeader(trialHeaderRow, "天道试炼");
             CreateGroupHeader(assistanceHeaderRow, "天道助缘");
-            unusedRow.gameObject.SetActive(false);
 
             _multiplierLower = FindCloneComponent(_view.GameSetting, _panel, GetField<Button>("btnAutoSaveLower"));
             var upper = FindCloneComponent(_view.GameSetting, _panel, GetField<Button>("btnAutoSaveUpper"));
@@ -532,6 +543,7 @@ namespace Code4101.Zaohua.Tiandao
         {
             foreach (Transform child in row.Cast<Transform>().ToList()) child.gameObject.SetActive(false);
             foreach (var button in row.GetComponents<Button>()) button.enabled = false;
+            foreach (var image in row.GetComponents<Image>()) image.enabled = false;
 
             var header = Instantiate(_view.Title, row);
             header.gameObject.name = "Code4101" + title;
