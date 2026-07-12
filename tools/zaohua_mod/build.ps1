@@ -3,6 +3,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$project = Join-Path $PSScriptRoot "Zaohua.HelloWorld\Zaohua.HelloWorld.csproj"
+$projects = @(
+    "Zaohua.HelloWorld\Zaohua.HelloWorld.csproj",
+    "Zaohua.NpcDifficulty\Zaohua.NpcDifficulty.csproj"
+)
 
-dotnet build $project -c Release -p:ZaohuaGameDir=$GameDir
+foreach ($relativeProject in $projects) {
+    $project = Join-Path $PSScriptRoot $relativeProject
+    dotnet build $project -c Release -p:ZaohuaGameDir=$GameDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed: $project"
+    }
+}
