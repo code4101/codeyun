@@ -7388,7 +7388,20 @@ def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
 def test_mail_cleanup_default_scroll_limit_supports_large_mailbox(tmp_path, monkeypatch):
     source = (Path(__file__).parents[1] / "core/fanxiu/data_annotation/tasks/mail.py").read_text(encoding="utf-8")
 
-    assert 'payload.get("max_scrolls") or 80' in source
+    assert 'payload.get("max_scrolls") or 150' in source
+
+
+def test_mail_visible_row_keys_ignore_dynamic_title_overlay():
+    runner = create_fanxiu_runtime_runner()
+    view = runtime_runner_core.View(_image("邮件", "0121.png"))
+    shape = runtime_runner_core.Shape(
+        {"id": "row", "kind": "rect", "title": "邮件", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.05},
+        parent_view=view,
+    )
+    before = [runtime_runner_core._RuntimeMailRow({"title": "未取之宝", "time_text": "2026年07月06日 12:00"}, shape)]
+    covered = [runtime_runner_core._RuntimeMailRow({"title": "击败幻瑶谷首领获得", "time_text": "2026年07月06日 12:00"}, shape)]
+
+    assert runner._mail_visible_row_keys(before) == runner._mail_visible_row_keys(covered)
 
 
 def test_xianfu_learn_skill_is_dynamic_runtime_task():

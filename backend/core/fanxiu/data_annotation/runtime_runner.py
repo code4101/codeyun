@@ -1904,6 +1904,9 @@ class FanxiuRuntime(Runtime):
         duration: float = DEFAULT_SCROLL_DURATION_SECONDS,
         settle_seconds: float = DEFAULT_SCROLL_SETTLE_SECONDS,
         unchanged_threshold: float = DEFAULT_SCROLL_UNCHANGED_THRESHOLD,
+        stable_sample_interval: float = 0.35,
+        stable_sample_count: int = 3,
+        unchanged_confirmations: int = 2,
     ) -> bool:
         target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
         signature_shape = target_shape
@@ -1919,8 +1922,54 @@ class FanxiuRuntime(Runtime):
         self.drag_shape_content(target_shape, direction=direction, ratio=ratio, duration=duration)
         yield from self.wait_action_settle(settle_seconds)
         after_signature = self.image_signature_bytes_in_shape(signature_shape)
+        # 滚动动画结束不代表画面已经稳定。连续采样，优先采用相邻稳定后的帧；
+        # 横幅等持续动态内容应通过遮挡标注或 observe_scroll_content 的语义键规避。
+        for _ in range(max(1, int(stable_sample_count)) - 1):
+            yield from self.wait_action_settle(max(0.1, float(stable_sample_interval)))
+            candidate_signature = self.image_signature_bytes_in_shape(signature_shape)
+            if self.image_signature_similarity(after_signature, candidate_signature) >= float(unchanged_threshold):
+                after_signature = candidate_signature
+                break
+            after_signature = candidate_signature
         similarity = self.image_signature_similarity(before_signature, after_signature)
-        return bool(after_signature and similarity < float(unchanged_threshold))
+        changed = bool(after_signature and similarity < float(unchanged_threshold))
+        shape_identity = str(target_shape.raw.get("id") or target_shape.raw.get("title") or "shape")
+        state_key = f"{shape_identity}:{direction or target_shape.content_direction or 'down'}"
+        confirmation_state = self.attrs.setdefault("_scroll_unchanged_confirmations", {})
+        if changed:
+            confirmation_state[state_key] = 0
+            return True
+        confirmations = int(confirmation_state.get(state_key) or 0) + 1
+        confirmation_state[state_key] = confirmations
+        return confirmations < max(1, int(unchanged_confirmations))
+
+    def observe_scroll_content(
+        self,
+        view_or_shape: View | int | str | Shape,
+        visible_keys: Any,
+        *,
+        direction: str | None = None,
+        unchanged_confirmations: int = 2,
+    ) -> bool:
+        """用业务可见项键统一判断滚动是否仍出现新内容。
+
+        返回 ``False`` 表示连续多次没有任何新键，已可确认到底。动态横幅、列表
+        高度动画不会进入业务键，因此比整块截图哈希可靠。
+        """
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) else self.shape(view_or_shape, "")
+        normalized_keys = {str(item).strip() for item in (visible_keys or ()) if str(item).strip()}
+        shape_identity = str(target_shape.raw.get("id") or target_shape.raw.get("title") or "shape")
+        state_key = f"{shape_identity}:{direction or target_shape.content_direction or 'down'}"
+        states = self.attrs.setdefault("_scroll_semantic_progress", {})
+        state = states.setdefault(state_key, {"seen": set(), "unchanged": 0})
+        seen = state.setdefault("seen", set())
+        has_new = bool(normalized_keys - seen)
+        if has_new:
+            seen.update(normalized_keys)
+            state["unchanged"] = 0
+            return True
+        state["unchanged"] = int(state.get("unchanged") or 0) + 1
+        return int(state["unchanged"]) < max(1, int(unchanged_confirmations))
 
     def nudge_shape_content_for_box(
         self,

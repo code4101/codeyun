@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import type {
   FanxiuFormationEffectDetailImportItem,
@@ -63,6 +63,21 @@ interface FormationCard {
 interface FormationCardStoragePayload {
   version: 4;
   cards: FormationCard[];
+}
+
+type SmartRecipeStatus = 'idle' | 'computing' | 'optimizing' | 'ready' | 'unavailable';
+
+interface SmartRecipe {
+  id: string;
+  itemIds: string[];
+  triggeredCount: number;
+}
+
+interface SmartRecipeState {
+  status: SmartRecipeStatus;
+  fingerprint: string;
+  revision: number;
+  recipes: SmartRecipe[];
 }
 
 interface LegacyFormationCardStoragePayload {
@@ -267,6 +282,9 @@ const snapshot = ref<FanxiuMagicTreasureHallSnapshot>({
 const cards = ref<FormationCard[]>([]);
 const pendingRequirementImportCardId = ref('');
 const importingRequirementCardId = ref('');
+const smartRecipeStates = reactive<Record<string, SmartRecipeState>>({});
+const smartRecipeRunIds = new Map<string, number>();
+const smartRecipeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const storageKey = computed(() => {
   const scope = userStore.user?.id ?? userStore.user?.username ?? 'fanxiu';
@@ -331,6 +349,11 @@ watch(storageKey, async () => {
   reconcileCardsWithInventory();
 }, { flush: 'post' });
 
+watch([cards, inventoryItems], () => {
+  if (!storageReady.value) return;
+  scheduleSmartRecipes();
+}, { deep: true, flush: 'post' });
+
 onMounted(async () => {
   window.addEventListener('paste', handleWindowPaste);
   const hasStoredCards = loadCardsFromStorage();
@@ -340,10 +363,14 @@ onMounted(async () => {
   }
   reconcileCardsWithInventory();
   storageReady.value = true;
+  scheduleSmartRecipes();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('paste', handleWindowPaste);
+  for (const timer of smartRecipeTimers.values()) clearTimeout(timer);
+  smartRecipeTimers.clear();
+  for (const cardId of smartRecipeRunIds.keys()) cancelSmartRecipeRun(cardId);
 });
 
 async function loadInventory() {
@@ -1627,65 +1654,205 @@ function getEffectiveRequirements(card: FormationCard) {
 function smartPlace(cardId: string) {
   const card = cards.value.find(entry => entry.id === cardId);
   if (!card) return;
+  const recipe = smartRecipeStates[cardId]?.recipes[0];
+  if (!recipe) {
+    ElMessage.info(getSmartRecipeStatusText(cardId));
+    return;
+  }
+  applySmartRecipe(cardId, recipe.id);
+}
 
+function getSmartRecipeState(cardId: string) {
+  return smartRecipeStates[cardId] || null;
+}
+
+function getSmartRecipeStatusText(cardId: string) {
+  const state = getSmartRecipeState(cardId);
+  if (!state || state.status === 'idle') return '等待自动计算';
+  if (state.status === 'computing') return '正在快速计算…';
+  if (state.status === 'optimizing') return `已有较优方案，后台优化中 · 第 ${state.revision} 版`;
+  if (state.status === 'unavailable') return '当前没有可用配方';
+  return `当前最优 · 第 ${state.revision} 版`;
+}
+
+function applySmartRecipe(cardId: string, recipeId: string) {
+  const card = cards.value.find(entry => entry.id === cardId);
+  const recipe = smartRecipeStates[cardId]?.recipes.find(entry => entry.id === recipeId);
+  if (!card || !recipe) return;
   const emptyIndexes = card.slots
     .map((slot, index) => ({ slot, index }))
     .filter(entry => !entry.slot.itemId)
     .map(entry => entry.index);
-
-  if (!emptyIndexes.length) {
-    ElMessage.info('这个阵图已经放满了');
-    return;
-  }
-
-  const currentItems = getCardItems(card);
-  const currentNames = new Set(currentItems.map(item => item.name));
-  const usedElsewhere = new Set<string>();
-  for (const otherCard of cards.value) {
-    if (otherCard.id === card.id) continue;
-    for (const slot of otherCard.slots) {
-      if (slot.itemId) usedElsewhere.add(slot.itemId);
-    }
-  }
-
-  const available = inventoryItems.value.filter(item => {
-    if (usedElsewhere.has(item.id)) return false;
-    if (card.slots.some(slot => slot.itemId === item.id)) return false;
-    return true;
-  });
-
-  const remainingFillCount = emptyIndexes.length;
-  const remainingCandidates = available;
-  const effectiveRequirements = getEffectiveRequirements(card);
-  const searchCandidates = buildSearchCandidatePool(remainingCandidates, effectiveRequirements, card.rank, remainingFillCount);
-  if (searchCandidates.length < remainingFillCount) {
-    ElMessage.warning('剩余可用法宝不足，没法补满空位');
-    return;
-  }
-
-  const chosen = remainingFillCount
-    ? searchBestCandidates({
-      baseItems: currentItems,
-      candidates: searchCandidates,
-      cardRank: card.rank,
-      pickCount: remainingFillCount,
-      requirements: effectiveRequirements,
-    })
-    : [];
-
-  if (remainingFillCount && !chosen) {
-    ElMessage.warning('当前规则下没有找到可用补全结果');
-    return;
-  }
-
-  const nextItems = [...(chosen || [])].sort(compareMagicTreasureItems);
-
+  const nextItems = recipe.itemIds
+    .map(itemId => inventoryMap.value.get(itemId))
+    .filter((item): item is FanxiuInventoryItem => Boolean(item))
+    .sort(compareMagicTreasureItems);
   emptyIndexes.forEach((slotIndex, index) => {
     card.slots[slotIndex].itemId = nextItems[index]?.id ?? null;
   });
-
   const finalState = getCardState(card);
-  ElMessage.success(`已补入 ${nextItems.length} 个法宝，触发 ${finalState.triggeredCount}/${finalState.activeRequirementCount} 条条件`);
+  ElMessage.success(`已应用智能配方，触发 ${finalState.triggeredCount}/${finalState.activeRequirementCount} 条条件`);
+}
+
+function scheduleSmartRecipes() {
+  const existingIds = new Set(cards.value.map(card => card.id));
+  for (const cardId of Object.keys(smartRecipeStates)) {
+    if (existingIds.has(cardId)) continue;
+    cancelSmartRecipeRun(cardId);
+    delete smartRecipeStates[cardId];
+  }
+  for (const card of cards.value) scheduleSmartRecipe(card.id);
+}
+
+function scheduleSmartRecipe(cardId: string) {
+  cancelSmartRecipeRun(cardId);
+  const timer = setTimeout(() => {
+    smartRecipeTimers.delete(cardId);
+    void calculateSmartRecipes(cardId);
+  }, 80);
+  smartRecipeTimers.set(cardId, timer);
+}
+
+function cancelSmartRecipeRun(cardId: string) {
+  const timer = smartRecipeTimers.get(cardId);
+  if (timer) clearTimeout(timer);
+  smartRecipeTimers.delete(cardId);
+  smartRecipeRunIds.set(cardId, (smartRecipeRunIds.get(cardId) || 0) + 1);
+}
+
+function buildSmartRecipeContext(card: FormationCard) {
+  const emptyIndexes = card.slots
+    .map((slot, index) => ({ slot, index }))
+    .filter(entry => !entry.slot.itemId)
+    .map(entry => entry.index);
+  const currentItems = getCardItems(card);
+  const usedElsewhere = new Set<string>();
+  for (const otherCard of cards.value) {
+    if (otherCard.id === card.id) continue;
+    for (const slot of otherCard.slots) if (slot.itemId) usedElsewhere.add(slot.itemId);
+  }
+  const available = inventoryItems.value.filter(item => (
+    !usedElsewhere.has(item.id) && !card.slots.some(slot => slot.itemId === item.id)
+  ));
+  const requirements = getEffectiveRequirements(card);
+  const candidates = buildSearchCandidatePool(available, requirements, card.rank, emptyIndexes.length);
+  const fingerprint = JSON.stringify({
+    rank: card.rank,
+    slots: card.slots.map(slot => slot.itemId),
+    requirements,
+    candidates: candidates.map(item => [item.id, item.rank, item.quality]),
+  });
+  return { card, emptyIndexes, currentItems, requirements, candidates, fingerprint };
+}
+
+function buildQuickRecipe(
+  baseItems: FanxiuInventoryItem[],
+  candidates: FanxiuInventoryItem[],
+  pickCount: number,
+  cardRank: number,
+  requirements: FormationRequirement[],
+) {
+  const selected: FanxiuInventoryItem[] = [];
+  const remaining = [...candidates];
+  while (selected.length < pickCount && remaining.length) {
+    let bestIndex = 0;
+    for (let index = 1; index < remaining.length; index += 1) {
+      const left = [...baseItems, ...selected, remaining[index]];
+      const right = [...baseItems, ...selected, remaining[bestIndex]];
+      if (compareSolutionSets(left, right, cardRank, requirements) > 0) bestIndex = index;
+    }
+    selected.push(remaining.splice(bestIndex, 1)[0]);
+  }
+  return selected.length === pickCount ? selected : null;
+}
+
+function* iterateCandidateCombinations(candidates: FanxiuInventoryItem[], pickCount: number) {
+  function* choose(startIndex: number, selected: FanxiuInventoryItem[]): Generator<FanxiuInventoryItem[]> {
+    if (selected.length === pickCount) {
+      yield [...selected];
+      return;
+    }
+    const remainingNeeded = pickCount - selected.length;
+    for (let index = startIndex; index <= candidates.length - remainingNeeded; index += 1) {
+      selected.push(candidates[index]);
+      yield* choose(index + 1, selected);
+      selected.pop();
+    }
+  }
+  yield* choose(0, []);
+}
+
+function publishSmartRecipe(
+  state: SmartRecipeState,
+  selected: FanxiuInventoryItem[],
+  baseItems: FanxiuInventoryItem[],
+  cardRank: number,
+  requirements: FormationRequirement[],
+) {
+  const id = selected.map(item => item.id).sort().join('|');
+  if (state.recipes.some(recipe => recipe.id === id)) return false;
+  const recipe: SmartRecipe = {
+    id,
+    itemIds: selected.map(item => item.id),
+    triggeredCount: requirements.filter(requirement => (
+      getRequirementState(requirement, [...baseItems, ...selected], cardRank, requirements).triggered
+    )).length,
+  };
+  const next = [...state.recipes, recipe].sort((left, right) => {
+    const leftItems = left.itemIds.map(itemId => inventoryMap.value.get(itemId)).filter((item): item is FanxiuInventoryItem => Boolean(item));
+    const rightItems = right.itemIds.map(itemId => inventoryMap.value.get(itemId)).filter((item): item is FanxiuInventoryItem => Boolean(item));
+    return -compareSolutionSets([...baseItems, ...leftItems], [...baseItems, ...rightItems], cardRank, requirements);
+  }).slice(0, 3);
+  if (next[0]?.id === state.recipes[0]?.id && state.recipes.length >= 3) return false;
+  state.recipes = next;
+  state.revision += 1;
+  return true;
+}
+
+async function calculateSmartRecipes(cardId: string) {
+  const card = cards.value.find(entry => entry.id === cardId);
+  if (!card) return;
+  const runId = (smartRecipeRunIds.get(cardId) || 0) + 1;
+  smartRecipeRunIds.set(cardId, runId);
+  const context = buildSmartRecipeContext(card);
+  const state: SmartRecipeState = reactive({
+    status: 'computing',
+    fingerprint: context.fingerprint,
+    revision: 0,
+    recipes: [],
+  });
+  smartRecipeStates[cardId] = state;
+  if (!context.emptyIndexes.length || context.candidates.length < context.emptyIndexes.length) {
+    state.status = 'unavailable';
+    return;
+  }
+
+  const quick = buildQuickRecipe(
+    context.currentItems,
+    context.candidates,
+    context.emptyIndexes.length,
+    card.rank,
+    context.requirements,
+  );
+  if (quick) publishSmartRecipe(state, quick, context.currentItems, card.rank, context.requirements);
+  state.status = 'optimizing';
+
+  const combinations = iterateCandidateCombinations(context.candidates, context.emptyIndexes.length);
+  let exhausted = false;
+  const optimizationStartedAt = performance.now();
+  while (!exhausted && smartRecipeRunIds.get(cardId) === runId && performance.now() - optimizationStartedAt < 5000) {
+    const sliceStartedAt = performance.now();
+    while (performance.now() - sliceStartedAt < 4) {
+      const next = combinations.next();
+      if (next.done) {
+        exhausted = true;
+        break;
+      }
+      publishSmartRecipe(state, next.value, context.currentItems, card.rank, context.requirements);
+    }
+    if (!exhausted) await new Promise<void>(resolve => setTimeout(resolve, 16));
+  }
+  if (smartRecipeRunIds.get(cardId) === runId) state.status = state.recipes.length ? 'ready' : 'unavailable';
 }
 
 function buildSearchCandidatePool(
@@ -2157,7 +2324,28 @@ function parseFlexibleNumber(input: string) {
               <div class="formation-card-subtitle">{{ getCardSummary(card) }}</div>
             </div>
             <div class="formation-card-actions">
-              <el-button size="small" @click="smartPlace(card.id)">智能放置</el-button>
+              <div class="smart-recipe-control">
+                <div class="smart-recipe-main">
+                  <el-button
+                    size="small"
+                    :loading="getSmartRecipeState(card.id)?.status === 'computing'"
+                    :disabled="getSmartRecipeState(card.id)?.status === 'unavailable'"
+                    @click="smartPlace(card.id)"
+                  >智能放置</el-button>
+                  <span class="smart-recipe-status">{{ getSmartRecipeStatusText(card.id) }}</span>
+                </div>
+                <div v-if="(getSmartRecipeState(card.id)?.recipes.length || 0) > 1" class="smart-recipe-list">
+                  <button
+                    v-for="(recipe, index) in getSmartRecipeState(card.id)?.recipes"
+                    :key="recipe.id"
+                    type="button"
+                    class="smart-recipe-option"
+                    @click="applySmartRecipe(card.id, recipe.id)"
+                  >
+                    方案 {{ index + 1 }} · 触发 {{ recipe.triggeredCount }}/{{ getEffectiveRequirements(card).length }}
+                  </button>
+                </div>
+              </div>
               <el-button size="small" @click="clearUnlocked(card.id)">清空未锁定</el-button>
               <el-button size="small" type="danger" plain @click="removeCard(card.id)">删除</el-button>
             </div>
@@ -2351,6 +2539,35 @@ function parseFlexibleNumber(input: string) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.smart-recipe-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.smart-recipe-main,
+.smart-recipe-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.smart-recipe-status {
+  font-size: 12px;
+  color: #7a8799;
+}
+
+.smart-recipe-option {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .formation-card-body {

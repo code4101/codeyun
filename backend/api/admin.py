@@ -37,6 +37,11 @@ from backend.core.notes.metadata_feedback import (
     get_note_metadata_feedback_status,
 )
 from backend.core.fanxiu.runtime.slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
+from backend.core.fanxiu_wechat_reminder import (
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+    get_fanxiu_wechat_reminder_status,
+)
 from backend.models import AppSetting, DeviceFile, User, NoteNode
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.resources.storage import (
@@ -727,10 +732,16 @@ def get_background_task_status(session: Session = Depends(get_session)):
     auto_git_status = get_auto_git_commit_status(session)
     codex_diary_status = get_codex_diary_auto_import_status(session)
     fanxiu_slimming_status = get_fanxiu_slimming_status(session)
+    fanxiu_boss_reminder_status = get_fanxiu_wechat_reminder_status(FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY, session)
+    fanxiu_shengzu_reminder_status = get_fanxiu_wechat_reminder_status(FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY, session)
     metadata_latest = metadata_status.get("latest_run") if isinstance(metadata_status, dict) else None
     auto_git_latest = auto_git_status.get("latest_run") if isinstance(auto_git_status, dict) else None
     codex_diary_latest = codex_diary_status.get("latest_run") if isinstance(codex_diary_status, dict) else None
     fanxiu_slimming_latest = fanxiu_slimming_status.get("latest_run") if isinstance(fanxiu_slimming_status, dict) else None
+    fanxiu_boss_reminder_latest = fanxiu_boss_reminder_status.get("latest_run") if isinstance(fanxiu_boss_reminder_status, dict) else None
+    fanxiu_shengzu_reminder_latest = (
+        fanxiu_shengzu_reminder_status.get("latest_run") if isinstance(fanxiu_shengzu_reminder_status, dict) else None
+    )
 
     def _is_task_enabled(task_key: str) -> bool:
         row = session.get(AppSetting, f"background_task.{task_key}.enabled")
@@ -749,6 +760,16 @@ def get_background_task_status(session: Session = Depends(get_session)):
         "attendance_summary_monthly_templates": _queue_run_payload(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_run_payload(queue, "storage_analysis"),
         FANXIU_SLIMMING_TASK_KEY: fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else _queue_run_payload(queue, FANXIU_SLIMMING_TASK_KEY),
+        FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY: (
+            fanxiu_boss_reminder_latest
+            if isinstance(fanxiu_boss_reminder_latest, dict)
+            else _queue_run_payload(queue, FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY)
+        ),
+        FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY: (
+            fanxiu_shengzu_reminder_latest
+            if isinstance(fanxiu_shengzu_reminder_latest, dict)
+            else _queue_run_payload(queue, FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY)
+        ),
     })
     active_by_key = {
         spec.key: _queue_task_is_active(queue, spec.key)
@@ -765,6 +786,14 @@ def get_background_task_status(session: Session = Depends(get_session)):
         "storage_analysis": _queue_task_is_active(queue, "storage_analysis"),
         FANXIU_SLIMMING_TASK_KEY: _run_is_active(fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else None)
         or _queue_task_is_active(queue, FANXIU_SLIMMING_TASK_KEY),
+        FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY: _run_is_active(
+            fanxiu_boss_reminder_latest if isinstance(fanxiu_boss_reminder_latest, dict) else None
+        )
+        or _queue_task_is_active(queue, FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY),
+        FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY: _run_is_active(
+            fanxiu_shengzu_reminder_latest if isinstance(fanxiu_shengzu_reminder_latest, dict) else None
+        )
+        or _queue_task_is_active(queue, FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY),
     })
 
     tasks = []

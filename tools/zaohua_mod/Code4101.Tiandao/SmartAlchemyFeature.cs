@@ -1,32 +1,36 @@
-using BepInEx;
-using BepInEx.Unity.Mono;
 using HarmonyLib;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 
-namespace CodeYun.Zaohua.SmartAlchemy
+namespace Code4101.Zaohua.Tiandao
 {
-    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    public sealed class SmartAlchemyPlugin : BaseUnityPlugin
+    internal static class SmartAlchemyFeature
     {
-        public const string PluginGuid = "codeyun.zaohua.smartalchemy";
-        public const string PluginName = "CodeYun Zaohua Smart Alchemy";
-        public const string PluginVersion = "0.1.0";
+        internal static bool Enabled { get; private set; } = true;
+        internal static bool IsEnabled => TiandaoState.GetAlchemyAssistantEnabled();
 
-        private Harmony _harmony;
-
-        private void Awake()
+        internal static void ApplyConfiguredState()
         {
-            _harmony = new Harmony(PluginGuid);
-            _harmony.PatchAll();
-            Logger.LogInfo("Smart Alchemy patches registered.");
+            SetEnabled(TiandaoState.GetAlchemyAssistantEnabled());
         }
 
-        private void OnDestroy()
+        internal static void SetEnabled(bool enabled)
         {
-            _harmony?.UnpatchSelf();
+            Enabled = enabled;
+            foreach (var ui in Resources.FindObjectsOfTypeAll<SmartAlchemyUi>())
+            {
+                ui.SetFeatureEnabled(enabled);
+            }
+            if (!enabled) return;
+            foreach (var cell in Resources.FindObjectsOfTypeAll<CraftingDrugCell>())
+            {
+                if (!cell.gameObject.scene.IsValid()) continue;
+                var ui = cell.gameObject.GetComponent<SmartAlchemyUi>() ?? cell.gameObject.AddComponent<SmartAlchemyUi>();
+                ui.Initialize(cell);
+                ui.SetFeatureEnabled(true);
+            }
         }
     }
 
@@ -69,12 +73,12 @@ namespace CodeYun.Zaohua.SmartAlchemy
 
             var sourceButton = buttons.Last();
             var officialButtons = buttons.ToList();
-            _spectrumButton = CreateTabButton(sourceButton, buttons, "CodeYunAlchemySpectrumButton", "丹", "谱");
+            _spectrumButton = CreateTabButton(sourceButton, buttons, "Code4101AlchemySpectrumButton", "丹", "谱");
             _spectrumButton.onClick.AddListener(ShowSpectrum);
 
             sourceButton = buttons.Last();
             _smartButton = Instantiate(sourceButton, sourceButton.transform.parent);
-            _smartButton.name = "CodeYunSmartAlchemyButton";
+            _smartButton.name = "Code4101SmartAlchemyButton";
             _smartButton.onClick.RemoveAllListeners();
             _smartButton.transform.SetAsLastSibling();
 
@@ -91,6 +95,16 @@ namespace CodeYun.Zaohua.SmartAlchemy
                 officialButton.onClick.AddListener(HideSmart);
             }
             RefreshGameState();
+        }
+
+        internal void SetFeatureEnabled(bool enabled)
+        {
+            if (_spectrumButton != null) _spectrumButton.gameObject.SetActive(enabled);
+            if (_smartButton != null) _smartButton.gameObject.SetActive(enabled);
+            if (!enabled)
+            {
+                HideSmart();
+            }
         }
 
         private static Button CreateTabButton(
@@ -165,7 +179,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
         {
             var sourceScroll = _cell.view.recipeScroll;
             _spectrumPanel = Instantiate(sourceScroll.gameObject, sourceScroll.transform.parent);
-            _spectrumPanel.name = "CodeYunAlchemySpectrumPanel";
+            _spectrumPanel.name = "Code4101AlchemySpectrumPanel";
             var emptyTipName = _cell.view.txtNoRecipeTip.gameObject.name;
             foreach (var tip in _spectrumPanel.GetComponentsInChildren<TextPro>(true)
                          .Where(text => text.gameObject.name == emptyTipName))
@@ -333,7 +347,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
         {
             var sourceScroll = _cell.view.craftingLogScroll;
             _smartPanel = Instantiate(sourceScroll.gameObject, sourceScroll.transform.parent);
-            _smartPanel.name = "CodeYunSmartAlchemyPanel";
+            _smartPanel.name = "Code4101SmartAlchemyPanel";
             var emptyTipName = _cell.view.txtNoCraftingLogTip.gameObject.name;
             foreach (var tip in _smartPanel.GetComponentsInChildren<TextPro>(true)
                          .Where(text => text.gameObject.name == emptyTipName))
@@ -421,12 +435,12 @@ namespace CodeYun.Zaohua.SmartAlchemy
                 stopwatch.Stop();
                 if (_solutionCache.Count >= 32) _solutionCache.Clear();
                 _solutionCache[cacheKey] = _solutions;
-                Debug.Log($"[CodeYun SmartAlchemy] solved recipe={_solvedRecipe.id}, " +
+                Debug.Log($"[Code4101 Tiandao] solved recipe={_solvedRecipe.id}, " +
                           $"solutions={_solutions.Count}, elapsed={stopwatch.ElapsedMilliseconds}ms");
             }
             else
             {
-                Debug.Log($"[CodeYun SmartAlchemy] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
+                Debug.Log($"[Code4101 Tiandao] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
             }
             RenderSmartResults();
         }
@@ -453,7 +467,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
             for (var index = 0; index < count; index++)
             {
                 var card = ABMgr.InstantiateObj(_cell.view.craftingLogInfoCellPrefab, _smartContent);
-                card.gameObject.name = $"CodeYunSmartSolution_{index + 1}";
+                card.gameObject.name = $"Code4101SmartSolution_{index + 1}";
                 card.SetInfo(_solutions[index].ToTemplate(_solvedRecipe, index), false, false);
                 NormalizeSmartSolutionCard(card);
                 _smartResultObjects.Add(card.gameObject);
@@ -467,7 +481,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
 
         private void CreateLoadMoreButton(int shownCount)
         {
-            var buttonObject = new GameObject("CodeYunLoadMore", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
+            var buttonObject = new GameObject("Code4101LoadMore", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
             buttonObject.layer = _smartPanel.layer;
             buttonObject.transform.SetParent(_smartContent, false);
             var image = buttonObject.GetComponent<Image>();
@@ -658,6 +672,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
     {
         private static void Postfix(CraftingDrugCell __instance)
         {
+            if (!SmartAlchemyFeature.IsEnabled) return;
             var ui = __instance.gameObject.GetComponent<SmartAlchemyUi>() ??
                      __instance.gameObject.AddComponent<SmartAlchemyUi>();
             ui.Initialize(__instance);
@@ -669,6 +684,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
     {
         private static void Prefix()
         {
+            if (!SmartAlchemyFeature.IsEnabled) return;
             // 此插件的主要工作区在“炼制丹药”，每次打开炼丹菜单都直接进入该页。
             CommonStatic.craftingPanelSubpanelIndex = 1;
         }
@@ -679,6 +695,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
     {
         private static void Prefix(CraftingDrugCell __instance)
         {
+            if (!SmartAlchemyFeature.IsEnabled) return;
             __instance.gameObject.GetComponent<SmartAlchemyUi>()?.HideSmart();
         }
     }
@@ -688,6 +705,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
     {
         private static void Postfix(CraftingDrugCell __instance)
         {
+            if (!SmartAlchemyFeature.IsEnabled) return;
             __instance.gameObject.GetComponent<SmartAlchemyUi>()?.RefreshGameState();
         }
     }
@@ -697,6 +715,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
     {
         private static void Postfix(CraftingDrugCell __instance)
         {
+            if (!SmartAlchemyFeature.IsEnabled) return;
             __instance.gameObject.GetComponent<SmartAlchemyUi>()?.OnRecipeChanged();
         }
     }

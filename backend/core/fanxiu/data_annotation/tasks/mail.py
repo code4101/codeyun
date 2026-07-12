@@ -200,9 +200,9 @@ class MailTaskMixin:
         self._wait_mail_capture_runtime_ready("清理入口", stop_event=stop_event)
         raw_max_actions = int(payload.get("max_actions") or 0)
         max_actions = raw_max_actions if raw_max_actions > 0 else None
-        # 邮箱可能长期积累超过 24 页；24 次只是旧的调试保护值，会把仍在正常
-        # 加载新邮件的完整扫描误判为失败。正式作业允许继续扫到真实列表底部。
-        max_scrolls = max(1, int(payload.get("max_scrolls") or 80))
+        # 上限只负责防失控，不能承担“到底”判断。200 封邮件叠加半页滚动时仍可能
+        # 超过 80 次，因此保留更宽的工程保险；正常流程应由重复邮件行主动收尾。
+        max_scrolls = max(1, int(payload.get("max_scrolls") or 150))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
         frame = runtime.cur_frame(update=True)
@@ -294,6 +294,7 @@ class MailTaskMixin:
         seen_count = 0
         scroll_count = 0
         scanned_to_end = False
+        last_semantic_observation_scroll = -1
         first_scan_frame = frame if scene_id == 121 else None
         while (max_actions is None or processed_count < max_actions) and scroll_count < max_scrolls:
             self._raise_if_stopped(stop_event)
@@ -306,6 +307,21 @@ class MailTaskMixin:
             else:
                 frame = runtime.cur_frame(update=True)
             rows = self._runtime_mail_rows_from_frame(runtime, view121, frame)
+            visible_row_keys = self._mail_visible_row_keys(rows)
+            if (
+                visible_row_keys
+                and scroll_count != last_semantic_observation_scroll
+                and not runtime.observe_scroll_content(
+                list_shape,
+                visible_row_keys,
+                unchanged_confirmations=2,
+                )
+            ):
+                scanned_to_end = True
+                self._log("success", "邮件_清理：连续两次滚动未出现新邮件行，确认已到底")
+                break
+            if visible_row_keys:
+                last_semantic_observation_scroll = scroll_count
             aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup", dry_run=True)
             if aligned_result.get("updated"):
                 self._log(
@@ -424,7 +440,12 @@ class MailTaskMixin:
                 )
 
             scroll_started_at = time.monotonic()
-            runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(list_shape)
+            runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(
+                list_shape,
+                # 邮件页会出现横幅、飘字等动态遮挡；多等一拍可避免滚动动画尚未
+                # 稳定就计算图像签名。行级重复检测仍是最终的到底依据。
+                settle_seconds=2.0,
+            )
             scroll_elapsed = time.monotonic() - scroll_started_at
             self._log("detail", f"邮件_清理：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
             if not runtime.attrs.get("load_new"):
@@ -756,6 +777,24 @@ class MailTaskMixin:
             if shape is not None:
                 result.append(_RuntimeMailRow(row, shape))
         return result
+
+    @staticmethod
+    def _mail_visible_row_keys(rows: list[_RuntimeMailRow]) -> set[str]:
+        """生成不受横幅、飘字和列表高度动画影响的可见邮件行签名。"""
+        occurrences: dict[str, int] = {}
+        keys: set[str] = set()
+        for row in rows:
+            raw = row.raw if isinstance(row, _RuntimeMailRow) else {}
+            time_text = re.sub(r"\s+", "", str(raw.get("time_text") or ""))
+            title = re.sub(r"\s+", "", _sanitize_ocr_text(str(raw.get("title") or "")))
+            # 时间通常位于横幅遮挡区之外，比整块截图哈希稳定；缺时间时再退回标题。
+            base = f"time:{time_text}" if time_text else f"title:{title}"
+            if base in {"time:", "title:"}:
+                continue
+            occurrence = occurrences.get(base, 0) + 1
+            occurrences[base] = occurrence
+            keys.add(f"{base}#{occurrence}")
+        return keys
 
     def _mail_row_title_shape(self, view: View, row: dict[str, Any]) -> Shape | None:
         if not isinstance(view.raw, dict):
