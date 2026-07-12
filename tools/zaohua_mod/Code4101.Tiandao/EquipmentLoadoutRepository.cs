@@ -85,7 +85,7 @@ namespace Code4101.Zaohua.Tiandao
             Save();
         }
 
-        internal static EquipmentLoadoutEntity CreateFromCurrent()
+        internal static EquipmentLoadoutEntity CreateEmptyLoadout()
         {
             CaptureActive();
             var state = GetCurrentSaveState();
@@ -96,10 +96,11 @@ namespace Code4101.Zaohua.Tiandao
             {
                 id = Guid.NewGuid().ToString("N"),
                 name = $"方案{number}",
-                slots = CaptureSlots(BsSaveDataImpl.nowActor.packStoList),
+                slots = BagEnhancementState.EquipmentSlots
+                    .Select(slot => new EquipmentLoadoutSlot { slot = slot })
+                    .ToList(),
             };
             state.loadouts.Add(entity);
-            state.activeLoadoutId = entity.id;
             Save();
             return entity;
         }
@@ -109,6 +110,15 @@ namespace Code4101.Zaohua.Tiandao
             if (state == null || entity == null) return;
             state.activeLoadoutId = entity.id;
             Save();
+        }
+
+        internal static bool Rename(EquipmentLoadoutEntity entity, string name)
+        {
+            var normalized = name?.Trim();
+            if (entity == null || string.IsNullOrEmpty(normalized)) return false;
+            entity.name = normalized.Length > 12 ? normalized.Substring(0, 12) : normalized;
+            Save();
+            return true;
         }
 
         internal static void Save()
@@ -228,18 +238,13 @@ namespace Code4101.Zaohua.Tiandao
 
             EquipmentLoadoutRepository.CaptureActive();
             var resolved = new Dictionary<int, TbPackSto>();
-            var missing = new List<int>();
             foreach (var desired in target.slots.Where(item => item.packId != 0))
             {
-                var item = actor.packStoList.FirstOrDefault(candidate => candidate.id == desired.packId) ??
-                           actor.packStoList.FirstOrDefault(candidate =>
-                               (int)candidate.itemId.blendEnum == desired.blendType &&
-                               candidate.itemId.sedId == desired.itemId &&
-                               candidate.npcStoId == 10000);
-                if (item == null) missing.Add(desired.slot);
-                else resolved[desired.slot] = item;
+                // 配装引用的是具体物品实例。实例已经出售、丢弃或消耗后，该槽位必须留空，
+                // 不能按配置 ID 找另一件同名装备代替，也不能因此阻止其他槽位切换。
+                var item = actor.packStoList.FirstOrDefault(candidate => candidate.id == desired.packId);
+                if (item != null) resolved[desired.slot] = item;
             }
-            if (missing.Count > 0) return "缺少装备：" + string.Join("、", missing.Select(SlotLabel));
 
             IsApplying = true;
             try
@@ -268,16 +273,6 @@ namespace Code4101.Zaohua.Tiandao
             }
         }
 
-        private static string SlotLabel(int slot)
-        {
-            switch ((ItemSlot)slot)
-            {
-                case ItemSlot.helmet: return "头饰";
-                case ItemSlot.clothes: return "服饰";
-                case ItemSlot.shoe: return "鞋履";
-                default: return "饰品";
-            }
-        }
     }
 
     [HarmonyLib.HarmonyPatch(typeof(BsBagImpl), nameof(BsBagImpl.EquipItem))]
