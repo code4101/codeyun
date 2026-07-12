@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -24,10 +25,50 @@ namespace Code4101.Zaohua.Tiandao
         internal Exception Error { get; set; }
     }
 
+    internal sealed class AlchemySolveProgress
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<string, AlchemySolution> _solutions =
+            new Dictionary<string, AlchemySolution>();
+        private int _revision;
+
+        internal void Publish(AlchemySolution solution)
+        {
+            if (solution == null) return;
+            var key = string.Join(";", solution.Placements
+                .GroupBy(item => $"{item.ItemId.sedId}:{item.PoolType}")
+                .OrderBy(group => group.Key)
+                .Select(group => $"{group.Key}:{group.Count()}"));
+            lock (_gate)
+            {
+                if (!_solutions.TryGetValue(key, out var existing) ||
+                    solution.RuleOutcome.Score > existing.RuleOutcome.Score ||
+                    (solution.RuleOutcome.Score == existing.RuleOutcome.Score &&
+                     solution.GradeScore < existing.GradeScore))
+                {
+                    _solutions[key] = solution;
+                    _revision++;
+                }
+            }
+        }
+
+        internal List<AlchemySolution> Snapshot(int limit, out int revision)
+        {
+            List<AlchemySolution> copy;
+            lock (_gate)
+            {
+                copy = _solutions.Values.ToList();
+                revision = _revision;
+            }
+            return FiniteInventoryAlchemySolver.RankAndSelectSolutions(copy, limit);
+        }
+    }
+
     internal static class AlchemySolveWorker
     {
         internal static Task<AlchemySolveResponse> RunAsync(
             AlchemySolveRequest request,
+            AlchemySolveProgress progress,
             CancellationToken cancellationToken)
         {
             return Task.Run(() =>
@@ -41,7 +82,8 @@ namespace Code4101.Zaohua.Tiandao
                         request.Furnace,
                         request.Herbs,
                         request.Limit,
-                        cancellationToken);
+                        cancellationToken,
+                        progress.Publish);
                 }
                 catch (OperationCanceledException)
                 {

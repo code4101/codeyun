@@ -70,7 +70,7 @@ namespace Code4101.Zaohua.Tiandao
         internal static void Initialize(ConfigFile config)
         {
             _config = config;
-            _rememberDerivedFilter = config.Bind("储物空间", "记住衍生筛选", true, "分别记住丹药和装备的二级筛选");
+            _rememberDerivedFilter = config.Bind("储物空间", "记住衍生筛选", true, "分别记住丹药、装备、法宝、功法、术法和符箓的细分筛选");
         }
 
         internal static DerivedBagFilter GetFilter(int parentTypeId)
@@ -105,9 +105,15 @@ namespace Code4101.Zaohua.Tiandao
         {
             if (parentTypeId == 0) return null;
             var name = Singleton<TbItemImpl>.Instance.GetTypeName(parentTypeId) ?? string.Empty;
-            // 游戏顶部按钮的真实父类映射：防具=1，丹药（含丹方）=6。
-            if (parentTypeId == 6 || name.Contains("丹") || name.Contains("药")) return "drug";
+            // BagPanel 使用顶部按钮序号：符箓=5、丹药（含丹方）=6；它与 TbTypeCfg 根 ID 的5/6顺序相反。
+            if (parentTypeId == 6) return "drug";
+            if (parentTypeId == 5) return "talisman";
+            if (name.Contains("丹") || name.Contains("药")) return "drug";
+            if (name.Contains("符箓")) return "talisman";
             if (parentTypeId == 1 || name.Contains("防具") || name.Contains("装备") || name.Contains("服饰")) return "equipment";
+            if (parentTypeId == 2 || name.Contains("法宝")) return "treasure";
+            if (parentTypeId == 3 || name.Contains("功法")) return "art";
+            if (parentTypeId == 4 || name.Contains("术法")) return "magic";
             return null;
         }
 
@@ -130,7 +136,113 @@ namespace Code4101.Zaohua.Tiandao
                 case DerivedBagFilter.Ornament:
                     return ContainsAny(typeName, "饰品", "饰", "佩", "环", "戒");
                 default:
+                    var nativeTypeId = (int)filter;
+                    if ((nativeTypeId >= 151 && nativeTypeId <= 200) ||
+                        (nativeTypeId >= 201 && nativeTypeId <= 207) ||
+                        (nativeTypeId >= 221 && nativeTypeId <= 227) ||
+                        (nativeTypeId >= 261 && nativeTypeId <= 280))
+                        return item.itemCfg?.typeId == nativeTypeId;
+                    if (nativeTypeId >= 301 && nativeTypeId <= 308)
+                        return item.itemCfg != null && (int)item.itemCfg.attribute == nativeTypeId - 300;
                     return true;
+            }
+        }
+
+        internal static List<(DerivedBagFilter Filter, string Label)> GetAvailableTreasureFilters()
+        {
+            var actor = BsSaveDataImpl.nowActor;
+            if (actor?.packStoList == null) return new List<(DerivedBagFilter, string)>();
+            return actor.packStoList
+                .Where(item => item?.itemCfg != null)
+                .Select(item => item.itemCfg.typeId)
+                .Where(typeId => (typeId >= 151 && typeId <= 174) || typeId == 200)
+                .Distinct()
+                .OrderBy(typeId => typeId)
+                .Select(typeId =>
+                {
+                    var label = Singleton<TbItemImpl>.Instance.GetTypeName(typeId) ?? typeId.ToString();
+                    var separator = label.LastIndexOf('-');
+                    if (separator >= 0 && separator + 1 < label.Length) label = label.Substring(separator + 1);
+                    return ((DerivedBagFilter)typeId, label.Trim());
+                })
+                .Where(item => !string.IsNullOrEmpty(item.Item2))
+                .ToList();
+        }
+
+        internal static List<(DerivedBagFilter Filter, string Label)> GetAvailableArtFilters()
+        {
+            return GetAvailableCultivationFilters(201, 207);
+        }
+
+        internal static List<(DerivedBagFilter Filter, string Label)> GetAvailableMagicFilters()
+        {
+            return GetAvailableCultivationFilters(221, 227);
+        }
+
+        internal static List<(DerivedBagFilter Filter, string Label)> GetAvailableTalismanFilters()
+        {
+            var actor = BsSaveDataImpl.nowActor;
+            if (actor?.packStoList == null) return new List<(DerivedBagFilter, string)>();
+            var validTypes = new HashSet<int> { 261, 262, 263, 264, 265, 280 };
+            return actor.packStoList
+                .Where(item => item?.itemCfg != null && validTypes.Contains(item.itemCfg.typeId))
+                .Select(item => item.itemCfg.typeId)
+                .Distinct()
+                .OrderBy(typeId => typeId)
+                .Select(typeId =>
+                {
+                    var label = Singleton<TbItemImpl>.Instance.GetTypeName(typeId) ?? typeId.ToString();
+                    var separator = label.LastIndexOf('-');
+                    if (separator >= 0 && separator + 1 < label.Length) label = label.Substring(separator + 1);
+                    return ((DerivedBagFilter)typeId, label.Trim());
+                })
+                .Where(item => !string.IsNullOrEmpty(item.Item2))
+                .ToList();
+        }
+
+        private static List<(DerivedBagFilter Filter, string Label)> GetAvailableCultivationFilters(
+            int minimumTypeId,
+            int maximumTypeId)
+        {
+            var actor = BsSaveDataImpl.nowActor;
+            if (actor?.packStoList == null) return new List<(DerivedBagFilter, string)>();
+            var arts = actor.packStoList
+                .Where(item => item?.itemCfg != null &&
+                               item.itemCfg.typeId >= minimumTypeId && item.itemCfg.typeId <= maximumTypeId)
+                .ToList();
+            var systems = arts.Select(item => item.itemCfg.typeId)
+                .Distinct()
+                .OrderBy(typeId => typeId)
+                .Select(typeId =>
+                {
+                    var label = Singleton<TbItemImpl>.Instance.GetTypeName(typeId) ?? typeId.ToString();
+                    var separator = label.LastIndexOf('-');
+                    if (separator >= 0 && separator + 1 < label.Length) label = label.Substring(separator + 1);
+                    return ((DerivedBagFilter)typeId, label.Trim());
+                });
+            var attributes = arts.Select(item => (int)item.itemCfg.attribute)
+                .Where(attribute => attribute >= 1 && attribute <= 8)
+                .Distinct()
+                .OrderBy(attribute => attribute)
+                .Select(attribute => ((DerivedBagFilter)(300 + attribute), AttributeLabel(attribute)));
+            return systems.Concat(attributes)
+                .Where(item => !string.IsNullOrEmpty(item.Item2))
+                .ToList();
+        }
+
+        private static string AttributeLabel(int attribute)
+        {
+            switch (attribute)
+            {
+                case 1: return "金";
+                case 2: return "水";
+                case 3: return "木";
+                case 4: return "火";
+                case 5: return "土";
+                case 6: return "冰";
+                case 7: return "风";
+                case 8: return "雷";
+                default: return string.Empty;
             }
         }
 
@@ -140,11 +252,32 @@ namespace Code4101.Zaohua.Tiandao
         }
     }
 
+    internal sealed class InlineRenameCaret : MonoBehaviour
+    {
+        internal TMPro.TMP_InputField Input;
+        internal TextPro Text;
+        internal RectTransform Viewport;
+        internal Image Caret;
+
+        private void Update()
+        {
+            if (Input == null || Text == null || Viewport == null || Caret == null) return;
+            Caret.enabled = Input.isFocused && Mathf.FloorToInt(Time.unscaledTime * 2f) % 2 == 0;
+            if (!Input.isFocused) return;
+            var position = Mathf.Clamp(Input.stringPosition, 0, Input.text?.Length ?? 0);
+            var prefix = position == 0 ? string.Empty : Input.text.Substring(0, position);
+            var x = Mathf.Min(Text.GetPreferredValues(prefix).x, Mathf.Max(0f, Viewport.rect.width - 3f));
+            Caret.rectTransform.anchoredPosition = new Vector2(x, 0f);
+        }
+    }
+
     internal sealed class BagEnhancementUi : MonoBehaviour
     {
         private BagPanel _panel;
         private TextPro _textTemplate;
         private GameObject _filterPopup;
+        private VerticalLayoutGroup _filterVerticalLayout;
+        private GridLayoutGroup _filterGridLayout;
         private Button _filterTrigger;
         private TextPro _filterTriggerLabel;
         private GameObject _loadoutPopup;
@@ -154,6 +287,8 @@ namespace Code4101.Zaohua.Tiandao
         private readonly List<Button> _filterButtons = new List<Button>();
         private readonly List<Button> _loadoutButtons = new List<Button>();
         private readonly List<Image> _renameIcons = new List<Image>();
+        private readonly Dictionary<Image, TextPro> _renameIconFallbacks =
+            new Dictionary<Image, TextPro>();
         private int _lastParentType = -1;
         private float _nextRenameIconLookup;
 
@@ -239,12 +374,19 @@ namespace Code4101.Zaohua.Tiandao
             popupRect.localPosition = triggerRect.localPosition + new Vector3(0f, -45f, 0f);
             popupRect.sizeDelta = new Vector2(170f, 260f);
             _filterPopup.GetComponent<Image>().color = new Color(0.055f, 0.045f, 0.035f, 0.96f);
-            var layout = _filterPopup.GetComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(8, 8, 8, 8);
-            layout.spacing = 6f;
-            layout.childAlignment = TextAnchor.UpperCenter;
-            layout.childControlWidth = false;
-            layout.childControlHeight = false;
+            _filterVerticalLayout = _filterPopup.GetComponent<VerticalLayoutGroup>();
+            _filterVerticalLayout.padding = new RectOffset(8, 8, 8, 8);
+            _filterVerticalLayout.spacing = 6f;
+            _filterVerticalLayout.childAlignment = TextAnchor.UpperCenter;
+            _filterVerticalLayout.childControlWidth = false;
+            _filterVerticalLayout.childControlHeight = false;
+            _filterGridLayout = _filterPopup.AddComponent<GridLayoutGroup>();
+            _filterGridLayout.padding = new RectOffset(8, 8, 8, 8);
+            _filterGridLayout.spacing = new Vector2(6f, 6f);
+            _filterGridLayout.cellSize = new Vector2(100f, 44f);
+            _filterGridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+            _filterGridLayout.constraintCount = 3;
+            _filterGridLayout.enabled = false;
             _filterPopup.SetActive(false);
         }
 
@@ -323,27 +465,67 @@ namespace Code4101.Zaohua.Tiandao
             _loadoutTrigger.gameObject.SetActive(true);
             _loadoutPopup.SetActive(false);
             if (context == null) return;
+            var useGrid = context == "treasure" || context == "art" || context == "magic" ||
+                          context == "talisman";
+            _filterVerticalLayout.enabled = !useGrid;
+            _filterGridLayout.enabled = useGrid;
             AddFilterButton(parentType, DerivedBagFilter.All, "全部");
             if (context == "drug")
             {
                 AddFilterButton(parentType, DerivedBagFilter.Pill, "丹药");
                 AddFilterButton(parentType, DerivedBagFilter.Recipe, "丹方");
             }
-            else
+            else if (context == "equipment")
             {
                 AddFilterButton(parentType, DerivedBagFilter.Helmet, "头饰");
                 AddFilterButton(parentType, DerivedBagFilter.Clothes, "服饰");
                 AddFilterButton(parentType, DerivedBagFilter.Shoes, "鞋履");
                 AddFilterButton(parentType, DerivedBagFilter.Ornament, "饰品");
             }
-            ((RectTransform)_filterPopup.transform).sizeDelta =
-                new Vector2(170f, 16f + _filterButtons.Count * 44f + Math.Max(0, _filterButtons.Count - 1) * 6f);
+            else if (context == "treasure")
+            {
+                var available = DerivedBagFiltering.GetAvailableTreasureFilters();
+                foreach (var option in available) AddFilterButton(parentType, option.Filter, option.Label);
+                var selected = BagEnhancementState.GetFilter(parentType);
+                if (selected != DerivedBagFilter.All && available.All(option => option.Filter != selected))
+                    BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
+            }
+            else if (context == "art" || context == "magic")
+            {
+                var available = context == "magic"
+                    ? DerivedBagFiltering.GetAvailableMagicFilters()
+                    : DerivedBagFiltering.GetAvailableArtFilters();
+                foreach (var option in available) AddFilterButton(parentType, option.Filter, option.Label);
+                var selected = BagEnhancementState.GetFilter(parentType);
+                if (selected != DerivedBagFilter.All && available.All(option => option.Filter != selected))
+                    BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
+            }
+            else
+            {
+                var available = DerivedBagFiltering.GetAvailableTalismanFilters();
+                foreach (var option in available) AddFilterButton(parentType, option.Filter, option.Label);
+                var selected = BagEnhancementState.GetFilter(parentType);
+                if (selected != DerivedBagFilter.All && available.All(option => option.Filter != selected))
+                    BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
+            }
+            var popupRect = (RectTransform)_filterPopup.transform;
+            if (useGrid)
+            {
+                var rows = Mathf.CeilToInt(_filterButtons.Count / 3f);
+                popupRect.sizeDelta = new Vector2(328f, 16f + rows * 44f + Math.Max(0, rows - 1) * 6f);
+            }
+            else
+            {
+                popupRect.sizeDelta = new Vector2(170f,
+                    16f + _filterButtons.Count * 44f + Math.Max(0, _filterButtons.Count - 1) * 6f);
+            }
             RefreshFilterButtonColors(parentType);
         }
 
         private void AddFilterButton(int parentType, DerivedBagFilter filter, string label)
         {
-            var button = CreateButton(_filterPopup.transform, filter.ToString(), label, new Vector2(150f, 44f));
+            var button = CreateButton(_filterPopup.transform, filter.ToString(), label,
+                new Vector2(_filterGridLayout.enabled ? 100f : 150f, 44f));
             button.onClick.AddListener(() =>
             {
                 BagEnhancementState.SetFilter(parentType, filter);
@@ -433,7 +615,7 @@ namespace Code4101.Zaohua.Tiandao
         private void AddInlineRenameButton(Button row, EquipmentLoadoutEntity entity, bool active)
         {
             var label = row.transform.Find("Text")?.GetComponent<TextPro>();
-            if (label != null) ((RectTransform)label.transform).offsetMax = new Vector2(-42f, 0f);
+            if (label != null) ((RectTransform)label.transform).offsetMax = new Vector2(-58f, 0f);
             var editObject = new GameObject("Rename", typeof(RectTransform), typeof(Image), typeof(Button));
             editObject.layer = gameObject.layer;
             editObject.transform.SetParent(row.transform, false);
@@ -444,38 +626,68 @@ namespace Code4101.Zaohua.Tiandao
             rect.anchorMax = new Vector2(1f, 1f);
             rect.pivot = new Vector2(1f, 0.5f);
             rect.anchoredPosition = Vector2.zero;
-            rect.sizeDelta = new Vector2(42f, 0f);
+            rect.sizeDelta = new Vector2(58f, 0f);
             var iconObject = new GameObject("NativeRenameIcon", typeof(RectTransform), typeof(Image));
             iconObject.layer = gameObject.layer;
             iconObject.transform.SetParent(edit.transform, false);
             var icon = iconObject.GetComponent<Image>();
             icon.raycastTarget = false;
             icon.preserveAspect = true;
+            // Unity 的空 Image 默认会画白色矩形；原生图标尚未找到时必须保持透明。
+            icon.color = Color.clear;
             var iconRect = (RectTransform)icon.transform;
             iconRect.anchorMin = new Vector2(0.5f, 0.5f);
             iconRect.anchorMax = new Vector2(0.5f, 0.5f);
             iconRect.pivot = new Vector2(0.5f, 0.5f);
             iconRect.anchoredPosition = Vector2.zero;
             iconRect.sizeDelta = new Vector2(22f, 22f);
+            var fallback = CreateText(edit.transform, "RenameFallback", "改名", new Vector2(54f, 34f));
+            fallback.fontSize = 16f;
+            fallback.alignment = TMPro.TextAlignmentOptions.Center;
+            var fallbackRect = (RectTransform)fallback.transform;
+            fallbackRect.anchorMin = new Vector2(0.5f, 0.5f);
+            fallbackRect.anchorMax = new Vector2(0.5f, 0.5f);
+            fallbackRect.pivot = new Vector2(0.5f, 0.5f);
+            fallbackRect.anchoredPosition = Vector2.zero;
+            fallbackRect.sizeDelta = new Vector2(54f, 34f);
             _renameIcons.Add(icon);
-            ApplyNativeRenameIcon(icon);
+            _renameIconFallbacks[icon] = fallback;
+            fallback.gameObject.SetActive(!ApplyNativeRenameIcon(icon));
             edit.onClick.AddListener(() => BeginInlineRename(row, edit, entity));
         }
 
         private void RefreshNativeRenameIcons()
         {
             foreach (var icon in _renameIcons.Where(icon => icon != null && icon.sprite == null))
-                ApplyNativeRenameIcon(icon);
+            {
+                var loaded = ApplyNativeRenameIcon(icon);
+                if (loaded && _renameIconFallbacks.TryGetValue(icon, out var fallback) && fallback != null)
+                    fallback.gameObject.SetActive(false);
+            }
         }
 
-        private static void ApplyNativeRenameIcon(Image target)
+        private static bool ApplyNativeRenameIcon(Image target)
         {
             var source = Resources.FindObjectsOfTypeAll<CombinationCellController>()
                 .Select(cell => Traverse.Create(cell).Field<Button>("btnChangeName").Value)
                 .Where(button => button != null)
-                .Select(button => button.targetGraphic as Image ?? button.GetComponentInChildren<Image>(true))
+                .SelectMany(button =>
+                {
+                    var background = button.targetGraphic as Image;
+                    var children = button.GetComponentsInChildren<Image>(true)
+                        .Where(image => image != background && image.transform != button.transform)
+                        .OrderByDescending(image =>
+                        {
+                            var name = image.gameObject.name.ToLowerInvariant();
+                            return name.Contains("edit") || name.Contains("change") || name.Contains("pen") ||
+                                   name.Contains("icon");
+                        })
+                        .ThenBy(image => image.rectTransform.rect.width * image.rectTransform.rect.height);
+                    // 有些原生按钮直接把毛笔 Image 作为 targetGraphic，并没有额外子图。
+                    return background == null ? children : children.Concat(new[] { background });
+                })
                 .FirstOrDefault(image => image != null && image.sprite != null);
-            if (source == null) return;
+            if (source == null) return false;
             target.sprite = source.sprite;
             target.type = source.type;
             target.material = source.material;
@@ -483,7 +695,11 @@ namespace Code4101.Zaohua.Tiandao
             target.preserveAspect = true;
             var sourceSize = ((RectTransform)source.transform).rect.size * 0.5f;
             if (sourceSize.x > 0f && sourceSize.y > 0f)
-                ((RectTransform)target.transform).sizeDelta = sourceSize;
+            {
+                var scale = Mathf.Min(1f, 28f / Mathf.Max(sourceSize.x, sourceSize.y));
+                ((RectTransform)target.transform).sizeDelta = sourceSize * scale;
+            }
+            return true;
         }
 
         private void BeginInlineRename(Button row, Button edit, EquipmentLoadoutEntity entity)
@@ -529,6 +745,24 @@ namespace Code4101.Zaohua.Tiandao
             input.caretBlinkRate = 0.65f;
             input.text = entity.name;
 
+            var caretObject = new GameObject("Code4101VisibleCaret", typeof(RectTransform), typeof(Image));
+            caretObject.layer = gameObject.layer;
+            caretObject.transform.SetParent(viewportObject.transform, false);
+            var caret = caretObject.GetComponent<Image>();
+            caret.color = Color.white;
+            caret.raycastTarget = false;
+            var caretRect = (RectTransform)caret.transform;
+            caretRect.anchorMin = new Vector2(0f, 0.5f);
+            caretRect.anchorMax = new Vector2(0f, 0.5f);
+            caretRect.pivot = new Vector2(0.5f, 0.5f);
+            caretRect.sizeDelta = new Vector2(2f, 28f);
+            caretRect.anchoredPosition = Vector2.zero;
+            var visibleCaret = inputObject.AddComponent<InlineRenameCaret>();
+            visibleCaret.Input = input;
+            visibleCaret.Text = inputText;
+            visibleCaret.Viewport = viewportRect;
+            visibleCaret.Caret = caret;
+
             var finished = false;
             void FinishRename(string value)
             {
@@ -560,6 +794,7 @@ namespace Code4101.Zaohua.Tiandao
             foreach (Transform child in _loadoutPopup.transform) Destroy(child.gameObject);
             _loadoutButtons.Clear();
             _renameIcons.Clear();
+            _renameIconFallbacks.Clear();
         }
 
         private void RefreshLoadoutTrigger()
@@ -619,6 +854,7 @@ namespace Code4101.Zaohua.Tiandao
             PhyDef,
             Armor,
             Shield,
+            Fate,
         }
 
         private static readonly (ExtraSortKind Kind, ArtAttrEnum Attribute, string Label)[] EquipmentSorts =
@@ -630,19 +866,24 @@ namespace Code4101.Zaohua.Tiandao
             (ExtraSortKind.PhyDef, ArtAttrEnum.PhyDef, "物防"),
             (ExtraSortKind.Armor, ArtAttrEnum.Armor, "护甲"),
             (ExtraSortKind.Shield, ArtAttrEnum.Shield, "护盾"),
+            (ExtraSortKind.Fate, ArtAttrEnum.Fate, "气运"),
         };
 
         private BagPanel _panel;
         private Toggle _nameToggle;
         private TextPro _nameLabel;
-        private Toggle _attributeToggle;
-        private TextPro _attributeLabel;
-        private GameObject _attributePopup;
+        private readonly Dictionary<ExtraSortKind, Toggle> _attributeToggles =
+            new Dictionary<ExtraSortKind, Toggle>();
         private GameObject _sortPopup;
         private Toggle[] _nativeToggles;
         private Vector2 _rowStep;
         private Vector2 _nativePopupPosition;
         private float _nativePopupHeight;
+        private Quaternion _nativeDescendingArrowRotation;
+        private Vector3 _nativeArrowScale = Vector3.one;
+        private string _nativeArrowText = "▼";
+        private readonly Dictionary<Toggle, TextPro> _sortArrowTexts =
+            new Dictionary<Toggle, TextPro>();
         private ExtraSortKind _kind;
         private bool _equipmentContext;
         private bool _initialized;
@@ -659,86 +900,99 @@ namespace Code4101.Zaohua.Tiandao
             var fields = Traverse.Create(view);
             var typeToggle = fields.Field<Toggle>("togSortType").Value;
             var levelToggle = fields.Field<Toggle>("togSortLevel").Value;
+            var timeToggle = fields.Field<Toggle>("togSortTime").Value;
+            var timeTexts = timeToggle.GetComponentsInChildren<TextPro>(true);
+            var timeArrow = timeTexts.Skip(1).FirstOrDefault(text => !string.IsNullOrWhiteSpace(text.text));
+            if (timeArrow != null)
+            {
+                _nativeDescendingArrowRotation = timeArrow.rectTransform.localRotation;
+                _nativeArrowScale = timeArrow.rectTransform.localScale;
+                _nativeArrowText = timeArrow.text;
+            }
             _sortPopup = typeToggle.transform.parent.gameObject;
+            var sortGroup = _sortPopup.GetComponent<ToggleGroup>() ?? _sortPopup.AddComponent<ToggleGroup>();
+            sortGroup.allowSwitchOff = true;
             _nameToggle = Instantiate(typeToggle, typeToggle.transform.parent);
             _nameToggle.gameObject.name = "Code4101SortByName";
-            _nameToggle.onValueChanged.RemoveAllListeners();
-            _nameToggle.group = null;
-            _nameToggle.SetIsOnWithoutNotify(false);
-            foreach (var localization in _nameToggle.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
-            var labels = _nameToggle.GetComponentsInChildren<TextPro>(true);
-            _nameLabel = labels.FirstOrDefault();
-            for (var i = 1; i < labels.Length; i++) labels[i].text = string.Empty;
+            ConfigureToggle(_nameToggle, out _nameLabel);
+            _nameToggle.group = sortGroup;
 
             var typeRect = (RectTransform)typeToggle.transform;
             var levelRect = (RectTransform)levelToggle.transform;
             var nameRect = (RectTransform)_nameToggle.transform;
             _rowStep = typeRect.anchoredPosition - levelRect.anchoredPosition;
-            nameRect.anchoredPosition = typeRect.anchoredPosition + _rowStep;
+            // 名称排序直接接替被移除的类别排序位置。
+            nameRect.anchoredPosition = typeRect.anchoredPosition;
             nameRect.SetAsLastSibling();
+            typeToggle.gameObject.SetActive(false);
             var popupRect = (RectTransform)_sortPopup.transform;
             _nativePopupPosition = popupRect.anchoredPosition;
             _nativePopupHeight = popupRect.sizeDelta.y;
 
-            _attributeToggle = Instantiate(typeToggle, typeToggle.transform.parent);
-            _attributeToggle.gameObject.name = "Code4101SortByEquipmentAttribute";
-            ConfigureToggle(_attributeToggle, out _attributeLabel);
-            var attributeRect = (RectTransform)_attributeToggle.transform;
-            attributeRect.anchoredPosition = nameRect.anchoredPosition + _rowStep;
-            attributeRect.SetAsLastSibling();
-            _attributeToggle.gameObject.SetActive(false);
-            CreateAttributePopup(typeToggle, popupRect, attributeRect);
+            for (var index = 0; index < EquipmentSorts.Length; index++)
+            {
+                var definition = EquipmentSorts[index];
+                var toggle = Instantiate(typeToggle, typeToggle.transform.parent);
+                toggle.gameObject.name = "Code4101SortBy" + definition.Kind;
+                ConfigureToggle(toggle, out var label);
+                toggle.group = sortGroup;
+                label.text = definition.Label + "排序";
+                var rowRect = (RectTransform)toggle.transform;
+                rowRect.anchoredPosition = nameRect.anchoredPosition + _rowStep * (index + 1);
+                rowRect.SetAsLastSibling();
+                toggle.gameObject.SetActive(false);
+                toggle.onValueChanged.AddListener(_ =>
+                {
+                    Select(definition.Kind);
+                    RefreshLabel();
+                    _sortPopup.SetActive(false);
+                    _panel.RefreshBag(false);
+                });
+                _attributeToggles[definition.Kind] = toggle;
+            }
 
             _nativeToggles = new[]
                      {
                          fields.Field<Toggle>("togSortTime").Value,
                          fields.Field<Toggle>("togSortValue").Value,
                          fields.Field<Toggle>("togSortLevel").Value,
-                         fields.Field<Toggle>("togSortType").Value,
                      };
+            foreach (var nativeToggle in _nativeToggles) nativeToggle.group = sortGroup;
             foreach (var nativeToggle in _nativeToggles)
             {
                 nativeToggle.onValueChanged.AddListener(isOn =>
                 {
-                    if (isOn) _kind = ExtraSortKind.None;
+                    if (!isOn) return;
+                    _kind = ExtraSortKind.None;
+                    foreach (var candidate in _nativeToggles)
+                    {
+                        foreach (var arrow in candidate.GetComponentsInChildren<TextPro>(true).Skip(1))
+                            arrow.gameObject.SetActive(candidate == nativeToggle);
+                    }
+                    RefreshNativeArrows();
                 });
             }
 
             _nameToggle.onValueChanged.AddListener(isOn =>
             {
-                if (!isOn) return;
                 Select(ExtraSortKind.Name);
                 RefreshLabel();
-                _nameToggle.SetIsOnWithoutNotify(false);
                 _sortPopup.SetActive(false);
                 _panel.RefreshBag(false);
             });
-            _attributeToggle.onValueChanged.AddListener(isOn =>
-            {
-                if (!isOn) return;
-                _attributeToggle.SetIsOnWithoutNotify(false);
-                ShowAttributeMenu();
-            });
             RefreshLabel();
-        }
-
-        private void Update()
-        {
-            if (_attributePopup != null && _attributePopup.activeSelf && !_sortPopup.activeSelf)
-                HideAttributeMenu();
         }
 
         internal void UpdateContext(int parentId)
         {
             if (!_initialized) return;
             _equipmentContext = parentId == 1;
-            _attributeToggle.gameObject.SetActive(_equipmentContext);
+            foreach (var toggle in _attributeToggles.Values) toggle.gameObject.SetActive(_equipmentContext);
             if (!_equipmentContext)
             {
-                _attributePopup.SetActive(false);
                 if (_kind != ExtraSortKind.None && _kind != ExtraSortKind.Name) _kind = ExtraSortKind.None;
             }
-            ResizePopup(_equipmentContext ? 2 : 1);
+            ResizePopup(_equipmentContext ? EquipmentSorts.Length : 0);
             RefreshLabel();
         }
 
@@ -780,21 +1034,45 @@ namespace Code4101.Zaohua.Tiandao
 
         private void RefreshLabel()
         {
-            if (_nameLabel != null) _nameLabel.text = "名称排序" + (_kind == ExtraSortKind.Name ? (Ascending ? "▲" : "▼") : string.Empty);
-            if (_attributeLabel != null)
-            {
-                var current = EquipmentSorts.FirstOrDefault(entry => entry.Kind == _kind);
-                _attributeLabel.text = _kind == ExtraSortKind.None || _kind == ExtraSortKind.Name
-                    ? "属性排序"
-                    : current.Label + "排序" + (Ascending ? "▲" : "▼");
-            }
+            if (_nameLabel != null) _nameLabel.text = "名称排序";
+            RefreshNativeArrows();
         }
 
         private void Select(ExtraSortKind kind)
         {
+            // 名称天然按字典序阅读，首次升序；数值属性首次仍按高到低。
             Ascending = _kind == kind ? !Ascending : kind == ExtraSortKind.Name;
             _kind = kind;
             foreach (var nativeToggle in _nativeToggles) nativeToggle.SetIsOnWithoutNotify(false);
+            RefreshNativeArrows();
+        }
+
+        private void RefreshNativeArrows()
+        {
+            if (_kind != ExtraSortKind.None)
+            {
+                // 原生排序逻辑仍可能保留上一次的箭头文字；扩展排序生效时必须显式隐藏。
+                foreach (var nativeToggle in _nativeToggles)
+                {
+                    var texts = nativeToggle.GetComponentsInChildren<TextPro>(true);
+                    foreach (var arrow in texts.Skip(1)) arrow.gameObject.SetActive(false);
+                }
+            }
+            SetNativeArrow(_nameToggle, _kind == ExtraSortKind.Name);
+            foreach (var pair in _attributeToggles) SetNativeArrow(pair.Value, _kind == pair.Key);
+        }
+
+        private void SetNativeArrow(Toggle toggle, bool active)
+        {
+            if (toggle == null) return;
+            toggle.SetIsOnWithoutNotify(active);
+            if (!_sortArrowTexts.TryGetValue(toggle, out var arrow) || arrow == null) return;
+            arrow.text = _nativeArrowText;
+            arrow.gameObject.SetActive(active);
+            var rect = arrow.rectTransform;
+            rect.localScale = _nativeArrowScale;
+            rect.localRotation = _nativeDescendingArrowRotation *
+                                 Quaternion.Euler(0f, 0f, active && Ascending ? 180f : 0f);
         }
 
         private void ConfigureToggle(Toggle toggle, out TextPro label)
@@ -805,86 +1083,17 @@ namespace Code4101.Zaohua.Tiandao
             foreach (var localization in toggle.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
             var labels = toggle.GetComponentsInChildren<TextPro>(true);
             label = labels.FirstOrDefault();
-            for (var i = 1; i < labels.Length; i++) labels[i].text = string.Empty;
-        }
-
-        private void CreateAttributePopup(Toggle template, RectTransform sortRect, RectTransform attributeRect)
-        {
-            _attributePopup = new GameObject("Code4101EquipmentAttributeSortPopup", typeof(RectTransform),
-                typeof(Image), typeof(VerticalLayoutGroup));
-            _attributePopup.layer = _sortPopup.layer;
-            _attributePopup.transform.SetParent(_sortPopup.transform, false);
-            var image = _attributePopup.GetComponent<Image>();
-            var sourceImage = _sortPopup.GetComponent<Image>();
-            if (sourceImage != null)
+            var arrow = labels.Skip(1).FirstOrDefault();
+            if (arrow != null)
             {
-                image.sprite = sourceImage.sprite;
-                image.type = sourceImage.type;
-                image.color = sourceImage.color;
+                arrow.text = _nativeArrowText;
+                arrow.gameObject.SetActive(false);
+                _sortArrowTexts[toggle] = arrow;
             }
-            else image.color = new Color(0.08f, 0.08f, 0.08f, 0.94f);
-            var rect = (RectTransform)_attributePopup.transform;
-            rect.anchorMin = new Vector2(0f, 1f);
-            rect.anchorMax = new Vector2(1f, 1f);
-            rect.pivot = new Vector2(0.5f, 1f);
-            rect.anchoredPosition = Vector2.zero;
-            rect.sizeDelta = new Vector2(0f, Mathf.Abs(_rowStep.y) * (EquipmentSorts.Length + 1));
-            var layout = _attributePopup.GetComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(0, 0, 0, 0);
-            layout.spacing = 0f;
-            layout.childAlignment = TextAnchor.UpperCenter;
-            layout.childControlWidth = true;
-            layout.childControlHeight = true;
-            layout.childForceExpandWidth = true;
-            layout.childForceExpandHeight = false;
-
-            var back = Instantiate(template, rect);
-            back.gameObject.name = "Code4101BackToMainSorts";
-            ConfigureToggle(back, out var backLabel);
-            backLabel.text = "‹ 返回";
-            var backLayout = back.GetComponent<LayoutElement>() ?? back.gameObject.AddComponent<LayoutElement>();
-            backLayout.preferredHeight = Mathf.Abs(_rowStep.y);
-            back.onValueChanged.AddListener(isOn =>
+            for (var i = 2; i < labels.Length; i++)
             {
-                if (!isOn) return;
-                back.SetIsOnWithoutNotify(false);
-                HideAttributeMenu();
-            });
-
-            foreach (var definition in EquipmentSorts)
-            {
-                var toggle = Instantiate(template, rect);
-                toggle.gameObject.name = "Code4101SortBy" + definition.Kind;
-                ConfigureToggle(toggle, out var label);
-                label.text = definition.Label + "排序";
-                var rowLayout = toggle.GetComponent<LayoutElement>() ?? toggle.gameObject.AddComponent<LayoutElement>();
-                rowLayout.preferredHeight = Mathf.Abs(_rowStep.y);
-                toggle.onValueChanged.AddListener(isOn =>
-                {
-                    if (!isOn) return;
-                    Select(definition.Kind);
-                    toggle.SetIsOnWithoutNotify(false);
-                    HideAttributeMenu();
-                    _sortPopup.SetActive(false);
-                    RefreshLabel();
-                    _panel.RefreshBag(false);
-                });
+                labels[i].text = string.Empty;
             }
-            _attributePopup.SetActive(false);
-        }
-
-        private void ShowAttributeMenu()
-        {
-            _attributePopup.SetActive(true);
-            _attributePopup.transform.SetAsLastSibling();
-            // 二级清单替换一级清单，而不是接在其后面叠加显示。
-            ResizePopup(EquipmentSorts.Length + 1 - 4);
-        }
-
-        private void HideAttributeMenu()
-        {
-            _attributePopup.SetActive(false);
-            ResizePopup(_equipmentContext ? 2 : 1);
         }
 
         private int GetEquipmentAttribute(TbPackSto item, ArtAttrEnum attribute)

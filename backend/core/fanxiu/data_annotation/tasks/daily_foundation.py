@@ -4674,6 +4674,9 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
+        # TODO(fanxiu-dongtian-clear-incomplete): 本作业尚未完整闭环。当前只验证/实现到
+        # #346「继续」；点击后的场景、结算证据、是否继续消耗行动力与最终返回 #34
+        # 均待真实游戏补充。在补齐前不得把 manual_check_pending 当作业完成。
         payload = {"max_scrolls": 24, "reverse_scrolls": 6, **dict(payload or {})}
         if not bool(payload.get("ignore_schedule_window")):
             outside_window_next_time = self._runtime_daily_window_next_time(
@@ -4749,8 +4752,9 @@ class DailyFoundationTaskMixin:
     ):
         enemy_places = [str(item).strip() for item in payload.get("enemy_places") or [] if str(item).strip()]
         if not enemy_places:
-            self._log("success", "洞天_行动力：已在 #279 洞天福地，等待抓包提供敌对地点集合")
-            raise RuntimeError("洞天_行动力：已进入 #279，但尚未获得敌对地点集合")
+            enemy_places = self._daily_dongtian_enemy_places_from_latest_packet(payload)
+        if not enemy_places:
+            raise RuntimeError("洞天_行动力：最新洞天抓包未解析出敌对地点")
 
         clicked_place = yield from self._daily_dongtian_click_first_enemy_place(
             runtime,
@@ -4763,8 +4767,62 @@ class DailyFoundationTaskMixin:
             self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
             return "manual_check_pending"
         yield from self._daily_dongtian_continue_enemy_occupation(runtime)
-        self._log("success", f"洞天_行动力：已完成敌对地点「{clicked_place}」的已知占领链路，#346「继续」之后状态待补")
+        # TODO(fanxiu-dongtian-clear-incomplete): 下一次从 #346「继续」的真实落点继续。
+        self._log("warning", f"洞天_行动力：已走到敌对地点「{clicked_place}」的 #346「继续」，作业尚未闭环，后续状态待补")
         return "manual_check_pending"
+
+    def _daily_dongtian_enemy_places_from_latest_packet(self, payload: dict[str, Any]) -> list[str]:
+        own_union_id = int(payload.get("own_union_id") or 0)
+        own_union_name = str(payload.get("own_union_name") or "").strip()
+        if own_union_id <= 0 and not own_union_name:
+            raise RuntimeError("洞天_行动力：缺少我方联盟 own_union_id/own_union_name 配置，无法判断敌我")
+
+        from sqlmodel import Session
+
+        from backend.core.fanxiu.packet.current_facts import catch_up_and_list_fanxiu_packet_decoded_records
+        from backend.db import engine
+
+        with Session(engine) as session:
+            facts = catch_up_and_list_fanxiu_packet_decoded_records(
+                session,
+                names=["SM_XianLvMineEnterSync"],
+                pro_ids=[95102],
+                since_seconds=max(30, int(payload.get("dongtian_packet_since_seconds") or 300)),
+                limit=3,
+                reason="daily-dongtian-clear",
+                wait_seconds=max(1.0, min(30.0, float(payload.get("dongtian_packet_wait_seconds") or 15.0))),
+            )
+        records = ((facts.get("decoded_records") or {}).get("records") or []) if isinstance(facts, dict) else []
+        if not records:
+            raise RuntimeError("洞天_行动力：进入 #279 后未获得最近 5 分钟的 SM_XianLvMineEnterSync 抓包")
+
+        packet = records[0] if isinstance(records[0], dict) else {}
+        parsed = (((packet.get("payload") or {}).get("parsed") or {}) if isinstance(packet.get("payload"), dict) else {})
+        mines = ((parsed.get("mines") or {}).get("items") or []) if isinstance(parsed, dict) else []
+        place_by_id = {index + 1: name for index, name in enumerate(_DONGTIAN_PLACE_ANCHORS)}
+        enemies: list[str] = []
+        union_summary: list[tuple[int, str, str]] = []
+        for mine in mines:
+            if not isinstance(mine, dict):
+                continue
+            mine_id = int(mine.get("id") or 0)
+            union = mine.get("crossUnion") if isinstance(mine.get("crossUnion"), dict) else {}
+            union_id = int(union.get("id") or 0)
+            union_name = str(union.get("name") or "").strip()
+            place = place_by_id.get(mine_id, "")
+            union_summary.append((mine_id, place, union_name))
+            if not place or (union_id <= 0 and not union_name):
+                continue
+            if own_union_id > 0 and union_id == own_union_id:
+                continue
+            if own_union_name and union_name == own_union_name:
+                continue
+            enemies.append(place)
+        self._log(
+            "detail",
+            f"洞天_行动力：抓包解析敌对地点 {enemies}，已解码 {len(mines)}/{int(((parsed.get('mines') or {}).get('_count') or len(mines)) if isinstance(parsed, dict) else len(mines))} 个，unions={union_summary}",
+        )
+        return enemies
 
     def _daily_dongtian_continue_enemy_occupation(self, runtime: Any):
         yield from runtime.wait_click_then_view(341, "位置1", 342)

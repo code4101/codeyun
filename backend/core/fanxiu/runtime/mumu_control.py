@@ -2092,6 +2092,32 @@ def _frame_phash(frame: Any) -> str:
     return f"{bits:016x}"
 
 
+def _burst_frame_unusable_summary(frame: Any) -> dict[str, Any]:
+    """Reject placeholder/black capture frames before they poison burst deduplication."""
+    import cv2
+    import numpy as np
+
+    bgr = _ensure_bgr_frame(frame)
+    height, width = bgr.shape[:2]
+    if width < 32 or height < 32:
+        return {"unusable": True, "reason": "too_small", "width": width, "height": height}
+    sample = cv2.resize(bgr, (64, 64), interpolation=cv2.INTER_AREA)
+    near_dark = np.all(sample < 24, axis=2)
+    near_dark_ratio = float(np.mean(near_dark))
+    mean = [float(value) for value in np.mean(bgr, axis=(0, 1))]
+    unique_colors = int(len(np.unique(sample.reshape(-1, sample.shape[2]), axis=0)))
+    unusable = near_dark_ratio >= 0.985 and max(mean) < 18.0 and unique_colors <= 48
+    return {
+        "unusable": bool(unusable),
+        "reason": "near_black_placeholder" if unusable else "",
+        "width": width,
+        "height": height,
+        "mean_bgr": [round(value, 3) for value in mean],
+        "near_dark_ratio": round(near_dark_ratio, 6),
+        "unique_sample_colors": unique_colors,
+    }
+
+
 def _decode_image_data_url_bgr(data_url: str):
     import cv2
     import numpy as np
@@ -2799,6 +2825,34 @@ def save_fanxiu_burst_frame(
             fixed_height=fixed_height,
             prefer_cached=True,
         )
+    quality = _burst_frame_unusable_summary(frame)
+    if quality["unusable"] and not current_frame_data_url:
+        # A stale cached PrintWindow frame can be a black placeholder. Retry a
+        # real capture once, but never persist an unusable retry.
+        frame = capture_mumu_window_frame(
+            title=title,
+            title_match=title_match,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            prefer_cached=False,
+        )
+        quality = _burst_frame_unusable_summary(frame)
+    if quality["unusable"]:
+        return {
+            "ok": True,
+            "saved": False,
+            "skipped": True,
+            "reason": "unusable_frame",
+            "quality": quality,
+            "filename": "",
+            "width": quality["width"],
+            "height": quality["height"],
+        }
     height, width = frame.shape[:2]
     phash = _frame_phash(frame)
     data = _encode_png_frame(frame)

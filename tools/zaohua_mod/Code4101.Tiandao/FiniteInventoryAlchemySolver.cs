@@ -93,7 +93,8 @@ namespace Code4101.Zaohua.Tiandao
             TbPackSto furnace,
             IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
             int limit,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Action<AlchemySolution> onSolution = null)
         {
             if (recipe == null || furnace == null || stocks == null || limit <= 0)
             {
@@ -163,14 +164,16 @@ namespace Code4101.Zaohua.Tiandao
                             chosen, furnaceCfg, recipe, poseModelCache,
                             out var placements, out var ruleOutcome, cancellationToken))
                     {
-                        solutions.Add(new AlchemySolution
+                        var solution = new AlchemySolution
                         {
                             Placements = placements,
                             ItemCounts = chosen.GroupBy(c => c.Stock.ItemId.sedId)
                                 .ToDictionary(group => group.Key, group => group.Count()),
                             GradeScore = chosen.Sum(c => c.GradeWeight),
                             RuleOutcome = ruleOutcome,
-                        });
+                        };
+                        solutions.Add(solution);
+                        onSolution?.Invoke(solution);
                     }
                     return;
                 }
@@ -200,6 +203,13 @@ namespace Code4101.Zaohua.Tiandao
             }
 
             Search(0);
+            return RankAndSelectSolutions(solutions, limit);
+        }
+
+        internal static List<AlchemySolution> RankAndSelectSolutions(
+            IEnumerable<AlchemySolution> solutions,
+            int limit)
+        {
             var orderedSolutions = solutions
                 .OrderByDescending(solution => solution.RuleOutcome.Score)
                 // 与 CodeYun 页面求解器一致：优先使用更低品阶、占位更少的药材组合。

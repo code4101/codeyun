@@ -294,7 +294,12 @@ def _restart_stuck_external_service_for_pending_jobs(owner: dict[str, Any]) -> d
             "job_count": len(jobs),
             "age_seconds": max(0.0, now_ts - newest_activity_at),
         }
-    persisted = fanxiu_data_annotation_runtime_status()
+    # Read the raw persisted runner state here.  The public status facade
+    # deliberately overlays an active external owner's heartbeat and can turn
+    # a stopped runner back into service_running/task_running.  Using that
+    # facade for recovery makes a dead task look healthy forever after the
+    # backend reloads.
+    persisted = read_fanxiu_runtime_status()
     persisted_running = bool((persisted or {}).get("running"))
     persisted_status = str((persisted or {}).get("status") or "")
     persisted_phase = str((persisted or {}).get("phase") or "")

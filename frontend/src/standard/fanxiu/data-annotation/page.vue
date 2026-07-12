@@ -5108,18 +5108,30 @@ const saveCurrentFrame = async () => {
   }
 };
 
-const burstFramePayload = async () => ({
-  entry_id: selectedEntryId.value,
-  title: targetTitle.value.trim(),
-  title_match: titleMatch.value,
-  mode: 'screen' as const,
-  area: captureArea.value,
-  crop: cropText.value.trim(),
-  trim_border: trimBorderText.value.trim(),
-  rotate: rotateDegrees.value,
-  fixed_width: fixedFrameWidth.value,
-  fixed_height: fixedFrameHeight.value,
-});
+const burstFramePayload = async () => {
+  // Prefer the frame already visible on the annotation page. This keeps burst
+  // capture aligned with what the user sees and avoids a separate PrintWindow
+  // capture returning a not-yet-ready black placeholder.
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('frontend', {
+    preferLiveFrame: true,
+    liveFrameWaitMs: 400,
+    cachedScreencapOnly: true,
+    screencapTimeoutMs: 1000,
+  });
+  return {
+    entry_id: selectedEntryId.value,
+    title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
+    mode: 'screen' as const,
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
+    current_frame_data_url: currentFrameDataUrl || undefined,
+  };
+};
 
 const releaseBurstPreviewUrls = () => {
   Object.values(burstPreviewUrls.value).forEach((url) => URL.revokeObjectURL(url));

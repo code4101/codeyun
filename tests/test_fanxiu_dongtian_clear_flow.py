@@ -27,3 +27,32 @@ def test_daily_dongtian_known_occupation_chain():
         ("wait_click_then_view", 344, "\u6218\u6597", 346),
         ("wait_click", 346, "\u7ee7\u7eed"),
     ]
+
+
+def test_daily_dongtian_packet_builds_enemy_place_list(monkeypatch):
+    from backend.core.fanxiu.packet import current_facts
+
+    def fake_facts(*_args, **_kwargs):
+        return {
+            "decoded_records": {
+                "records": [{
+                    "payload": {
+                        "parsed": {
+                            "mines": {
+                                "_count": 39,
+                                "items": [
+                                    {"id": 1, "crossUnion": {"id": 11, "name": "enemy"}},
+                                    {"id": 7, "crossUnion": {"id": 22, "name": "own"}},
+                                ],
+                            }
+                        }
+                    }
+                }]
+            }
+        }
+
+    monkeypatch.setattr(current_facts, "catch_up_and_list_fanxiu_packet_decoded_records", fake_facts)
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner._log = lambda *_args, **_kwargs: None
+
+    assert runner._daily_dongtian_enemy_places_from_latest_packet({"own_union_name": "own"}) == ["\u767d\u7389\u4eac"]
