@@ -136,6 +136,17 @@ def test_exact_building_counts_use_the_configured_number_of_boosters() -> None:
     assert result["herb_count"] == 6
 
 
+def test_special_cells_are_connected_zero_value_blockers() -> None:
+    result = optimize_pasture_shape(
+        9, BUILDINGS, [], production_mode="exact", herb_count=8, pool_count=0, special_cell_count=1,
+    )
+    special_cells = [cell for cell in result["cells"] if cell.get("building_id") == -1]
+    assert len(special_cells) == 1
+    assert special_cells[0].get("output", 0) == 0
+    assert result["herb_count"] == 8
+    assert result["total_value"] == 8
+
+
 def test_exact_building_counts_without_enabled_boosters_avoids_duplicate_layouts() -> None:
     result = optimize_pasture_shape(
         9, BUILDINGS, [], {0: 9, 3: 0},

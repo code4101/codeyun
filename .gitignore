@@ -56,7 +56,8 @@ backend/data/
 /.codex-runtime-logs/
 /凡修/
 /.trae
-/tools/
+/tools/*
+!/tools/zaohua_mod/
 
 
 # Environment Variables

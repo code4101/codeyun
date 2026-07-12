@@ -9680,7 +9680,7 @@ class DataAnnotationRuntimeRunner(
         is_signup_activity_offer = (
             ("活动规则" in compact or "活动时间" in compact)
             and "前往" in compact
-            and any(token in compact for token in ("云梦试剑", "道法争锋", "宗门灵泉", "宗门镇邪", "炼体法相"))
+            and any(token in compact for token in ("云梦试剑", "道法争锋", "宗门灵泉", "宗门镇邪", "炼体法相", "天地弈局"))
         )
         if not (is_store_offer or is_signup_activity_offer):
             return False
