@@ -15,5 +15,5 @@ def test_clone_rebinds_zen_refund_names_to_target_course():
     )
     by_name = {item["name"]: item["formula"] for item in result}
 
-    assert by_name["开始日期"] == '="2026-07-05"'
-    assert by_name["返款说明"] == '="修道班11期3阶第"&返款周期&"周返款"'
+    assert by_name["开始日期"] == "=课程开始日期"
+    assert by_name["返款说明"] == '=课程标题&"第"&返款周期&"周返款"'
