@@ -272,7 +272,7 @@ class MailTaskMixin:
                     f"邮件_清理：启动时位于 #{scene_id}，缺少本轮列表策略证据，只返回列表不领取/删除",
                 )
             detail_image = ctx.get("images", {}).get(scene_id) if isinstance(ctx.get("images"), dict) else None
-            back_shape = self._find_shape(detail_image, "空白-返回") if isinstance(detail_image, dict) else None
+            back_shape = View(detail_image).get_shape("空白-返回") if isinstance(detail_image, dict) else None
             if back_shape is None:
                 raise RuntimeError(f"邮件_清理：启动时位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
             back_shape.click(runtime)

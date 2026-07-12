@@ -374,7 +374,7 @@ onMounted(() => {
       </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace" :class="{ 'has-saved-plans': savedPlans.length }">
       <section class="board-panel">
         <div class="section-title">
           <span>最优布局</span>
@@ -450,9 +450,8 @@ onMounted(() => {
           <small v-if="strategyRows.length && !strategyPlan" class="strategy-hint">选择药材后，会在布局中标注对应的种植位置。</small>
         </section>
       </section>
-      <aside class="saved-plans">
+      <aside v-if="savedPlans.length" class="saved-plans">
         <div class="saved-plans-title">已保存方案</div>
-        <small v-if="!savedPlans.length" class="saved-empty">暂无方案</small>
         <button
           v-for="plan in savedPlans" :key="plan.id" type="button" class="saved-plan-row"
           :class="{ active: selectedPlanId === plan.id }" @click="loadSavedPlan(plan.id)"
@@ -484,7 +483,8 @@ onMounted(() => {
 .count-summary.invalid { color: var(--el-color-danger); }
 .section-title { display: flex; align-items: baseline; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .section-title small { margin-left: 8px; color: var(--el-text-color-secondary); font-weight: 400; }
-.workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(420px, 1fr) 280px; gap: 20px; }
+.workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(420px, 1fr); gap: 20px; }
+.workspace.has-saved-plans { grid-template-columns: minmax(420px, 1fr) 280px; }
 .board-panel { min-height: 0; height: 100%; overflow: auto; }
 .board { display: grid; gap: 8px; width: max-content; padding: 2px; }
 .plot-cell { width: 88px; height: 88px; box-sizing: border-box; border: 1px solid var(--el-border-color); background: #eef5e8; color: var(--el-text-color-primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
@@ -510,12 +510,11 @@ onMounted(() => {
 .herb-option img { width: 22px; height: 22px; object-fit: contain; }
 .saved-plans { min-height: 0; overflow: auto; border-left: 1px solid var(--el-border-color-lighter); padding-left: 16px; }
 .saved-plans-title { margin-bottom: 8px; font-weight: 600; }
-.saved-empty { color: var(--el-text-color-secondary); }
 .saved-plan-row { width: 100%; border: 0; border-bottom: 1px solid var(--el-border-color-lighter); background: transparent; display: flex; align-items: center; gap: 8px; padding: 10px 4px; text-align: left; color: inherit; cursor: pointer; }
 .saved-plan-row:hover, .saved-plan-row.active { background: var(--el-fill-color-light); }
 .saved-plan-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .saved-plan-info b, .saved-plan-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-plan-info small { color: var(--el-text-color-secondary); }
 .saved-plan-delete { flex: none; color: var(--el-color-danger); font-size: 18px; padding: 2px 6px; }
-@media (max-width: 900px) { .workspace { grid-template-columns: 1fr; } .saved-plans { border-left: 0; border-top: 1px solid var(--el-border-color-lighter); padding: 14px 0 0; } }
+@media (max-width: 900px) { .workspace.has-saved-plans { grid-template-columns: 1fr; } .board-panel { height: auto; } .saved-plans { border-left: 0; border-top: 1px solid var(--el-border-color-lighter); padding: 14px 0 0; } }
 </style>

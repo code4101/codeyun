@@ -276,7 +276,6 @@ namespace Code4101.Zaohua.Tiandao
         private BagPanel _panel;
         private TextPro _textTemplate;
         private GameObject _filterPopup;
-        private VerticalLayoutGroup _filterVerticalLayout;
         private GridLayoutGroup _filterGridLayout;
         private Button _filterTrigger;
         private TextPro _filterTriggerLabel;
@@ -364,7 +363,7 @@ namespace Code4101.Zaohua.Tiandao
             });
 
             _filterPopup = new GameObject("Code4101DerivedFilterPopup",
-                typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup));
+                typeof(RectTransform), typeof(Image), typeof(GridLayoutGroup));
             _filterPopup.layer = gameObject.layer;
             _filterPopup.transform.SetParent(controlParent, false);
             var popupRect = (RectTransform)_filterPopup.transform;
@@ -374,19 +373,12 @@ namespace Code4101.Zaohua.Tiandao
             popupRect.localPosition = triggerRect.localPosition + new Vector3(0f, -45f, 0f);
             popupRect.sizeDelta = new Vector2(170f, 260f);
             _filterPopup.GetComponent<Image>().color = new Color(0.055f, 0.045f, 0.035f, 0.96f);
-            _filterVerticalLayout = _filterPopup.GetComponent<VerticalLayoutGroup>();
-            _filterVerticalLayout.padding = new RectOffset(8, 8, 8, 8);
-            _filterVerticalLayout.spacing = 6f;
-            _filterVerticalLayout.childAlignment = TextAnchor.UpperCenter;
-            _filterVerticalLayout.childControlWidth = false;
-            _filterVerticalLayout.childControlHeight = false;
-            _filterGridLayout = _filterPopup.AddComponent<GridLayoutGroup>();
+            _filterGridLayout = _filterPopup.GetComponent<GridLayoutGroup>();
             _filterGridLayout.padding = new RectOffset(8, 8, 8, 8);
             _filterGridLayout.spacing = new Vector2(6f, 6f);
-            _filterGridLayout.cellSize = new Vector2(100f, 44f);
+            _filterGridLayout.cellSize = new Vector2(150f, 44f);
             _filterGridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-            _filterGridLayout.constraintCount = 3;
-            _filterGridLayout.enabled = false;
+            _filterGridLayout.constraintCount = 1;
             _filterPopup.SetActive(false);
         }
 
@@ -467,8 +459,8 @@ namespace Code4101.Zaohua.Tiandao
             if (context == null) return;
             var useGrid = context == "treasure" || context == "art" || context == "magic" ||
                           context == "talisman";
-            _filterVerticalLayout.enabled = !useGrid;
-            _filterGridLayout.enabled = useGrid;
+            _filterGridLayout.constraintCount = useGrid ? 3 : 1;
+            _filterGridLayout.cellSize = new Vector2(useGrid ? 100f : 150f, 44f);
             AddFilterButton(parentType, DerivedBagFilter.All, "全部");
             if (context == "drug")
             {
@@ -525,7 +517,7 @@ namespace Code4101.Zaohua.Tiandao
         private void AddFilterButton(int parentType, DerivedBagFilter filter, string label)
         {
             var button = CreateButton(_filterPopup.transform, filter.ToString(), label,
-                new Vector2(_filterGridLayout.enabled ? 100f : 150f, 44f));
+                new Vector2(_filterGridLayout.constraintCount == 3 ? 100f : 150f, 44f));
             button.onClick.AddListener(() =>
             {
                 BagEnhancementState.SetFilter(parentType, filter);
