@@ -30,13 +30,22 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "cbd92e4e6c69611cd5dfe23028adf47fbac712d2"
-last_audited_at: "2026-07-11T19:40:29.9024518+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-11-frontend-design-cbd92e4-partial/report.md"
-last_frontend_commit_summary: "follow-up：当前 git 增量为空，Zaohua pasture 把 11 个常驻数量框收回到 1 个灵田步进器 + 10 个启用开关；巡检游标维持 cbd92e4e。"
-audited_commit_count: 97
+last_audited_commit: "6b5ff516022894ed440c22b48be041f8cdafeffc"
+last_audited_at: "2026-07-12T01:07:48.7046689+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-12-frontend-design-6b5ff516/report.md"
+last_frontend_commit_summary: "完整审查 6b5ff516：炼丹/药材归纳表与洞天配置三视口无溢出；洞天把常驻数量框收敛为 1 个步进器 + 10 个按需开关；Vite 入口未预载重依赖。"
+audited_commit_count: 98
 pending_or_skipped_ranges: []
 ```
+
+### 2026-07-12 · `6b5ff516`
+
+- 完整范围：`cbd92e4e6c69611cd5dfe23028adf47fbac712d2..6b5ff516022894ed440c22b48be041f8cdafeffc`；覆盖提交仅 `6b5ff516022894ed440c22b48be041f8cdafeffc`，归类为 `frontend_relevant`。
+- 入口与减法：提交联动 `zaohua/alchemy`、`zaohua/herbs`、`zaohua/pasture` 及一个临时牧场方案页。炼丹把可拖拽价值排序程序收回为稳定的品阶降序结果，药材/丹药用归纳表承担跨品阶比较；洞天配置从 11 个常驻数量框收敛为 1 个灵田步进器 + 10 个启用开关，仅允许多份的建筑在启用后显示数量，信息量不减但一级控件显著减少。
+- 入口牵引到旧问题：新 `pasture-plan` 专页把固定“聚元丹方案”另起路由、权限节点和常驻链接，和洞天求解结果属于同一对象却形成平行入口；当前主工作树已有未提交改动将它删除并把方案能力收回洞天页，本轮为避免覆盖在途工作不重复修改。
+- 真实页面：复用提交形成前已采集的同内容证据，`alchemy`、`herbs`、`pasture` 均覆盖 `1600x1000`、`1366x900`、`820x1180`，`bodyOverflowX/rootOverflowX` 均为 `0`；洞天首屏为 `switchCount=10`、`stepperCount=1`、`已配置 9 / 9 格`。
+- 工程验证：干净提交快照 `npm run typecheck --prefix frontend` 通过；补入本机按既有插件契约存在但未跟踪的 `media-sync` 模块后，`npm run build --prefix frontend` 通过。`dist/index.html` 未预载 `file-viewer/handsontable/hyperformula/pdfjs/wangeditor/echarts/elk/worker`，`main-BIDFzFAY.js` 唯一顶层 import 为 `_plugin-vue_export-helper`，本轮新增 Element Plus 样式优化项未污染主入口。
+- 报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-12-frontend-design-6b5ff516/report.md`。
 
 更新规则：
 

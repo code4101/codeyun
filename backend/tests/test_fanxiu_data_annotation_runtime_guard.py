@@ -1835,6 +1835,30 @@ def test_unknown_signup_activity_offer_page_recovery_uses_existing_return_shape(
     assert clicked == [(23, 76.5, 1528.0)]
 
 
+def test_unknown_tiandi_yiju_offer_page_recovery_uses_existing_return_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image23 = _image("报名", "0023.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.03, "y": 0.925, "w": 0.11, "h": 0.06},
+    ])
+    ctx = {"images": {23: image23}}
+    clicked: list[tuple[int | None, float, float]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_lines",
+        lambda _ctx, _frame: [{"text": "活动规则 天地弈局 雁行布陈众未晓,虎穴得子人皆惊 前往"}],
+    )
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_click_frame_point",
+        lambda _ctx, image, x, y: clicked.append((runner._image_number(image), round(x, 1), round(y, 1))),
+    )
+
+    assert runner._recover_unknown_start_to_world(ctx, "frame", target_scene_id=34) is True
+    assert clicked == [(23, 76.5, 1528.0)]
+
+
 def test_compare_frame_crops_resizes_current_crop_without_mask():
     reference = np.full((45, 48, 3), 120, dtype=np.uint8)
     current = np.full((36, 38, 3), 120, dtype=np.uint8)

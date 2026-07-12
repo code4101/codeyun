@@ -851,13 +851,15 @@ onBeforeUnmount(() => {
                   </dl>
                   <i v-if="!solution.rule_supported" class="rule-pending">规则待补</i>
                 </div>
-                <AlchemyFormulaDiagram
-                  :solution="solution"
-                  :yang-width="solveResult.furnace.yang_grid_size.width"
-                  :yang-height="solveResult.furnace.yang_grid_size.height"
-                  :yin-width="solveResult.furnace.yin_grid_size.width"
-                  :yin-height="solveResult.furnace.yin_grid_size.height"
-                />
+                <div class="solution-diagram">
+                  <AlchemyFormulaDiagram
+                    :solution="solution"
+                    :yang-width="solveResult.furnace.yang_grid_size.width"
+                    :yang-height="solveResult.furnace.yang_grid_size.height"
+                    :yin-width="solveResult.furnace.yin_grid_size.width"
+                    :yin-height="solveResult.furnace.yin_grid_size.height"
+                  />
+                </div>
               </li>
             </ol>
             <button
@@ -1475,19 +1477,26 @@ onBeforeUnmount(() => {
 }
 
 .solution-item {
+  --solution-content-indent: 38px;
+
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
   align-items: start;
   padding: 12px 0;
   border-bottom: 1px solid #e7eae7;
 }
 
+.solution-diagram {
+  min-width: 0;
+  margin-left: var(--solution-content-indent);
+}
+
 .solution-summary {
   display: grid;
-  grid-template-columns: 26px max-content;
-  gap: 8px;
-  align-items: start;
+  grid-template-columns: 26px max-content max-content;
+  gap: 8px 12px;
+  align-items: center;
   font-size: 13px;
 }
 
@@ -1502,8 +1511,9 @@ onBeforeUnmount(() => {
 }
 
 .solution-summary dl {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
   margin: 0;
 }
 
@@ -1540,16 +1550,18 @@ onBeforeUnmount(() => {
 }
 
 .rule-pending {
-  grid-column: 2;
   color: #9a6a2f;
   font-size: 11px;
   font-style: normal;
 }
 
 @media (max-width: 1080px) {
-  .solution-item {
-    grid-template-columns: 1fr;
-    gap: 9px;
+  .solution-summary {
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .rule-pending {
+    grid-column: 2;
   }
 }
 

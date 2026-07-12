@@ -569,6 +569,7 @@ class NoteSheetQueryRequest(BaseModel):
 class NoteSheetTableResponse(BaseModel):
     id: int
     workbook_id: int | None = None
+    workbook_title: str = ""
     title: str
     version: int
     value_mode: Literal["text", "raw"] = "text"
@@ -1477,6 +1478,28 @@ def _set_workbook_defined_names(
     setting.value = {"names": normalized}
     setting.updated_at = time.time()
     session.add(setting)
+
+
+def _adapt_course_template_workbook_defined_names(
+    names: list[dict[str, Any]],
+    *,
+    target_title: str,
+    target_owner_key: str,
+) -> list[dict[str, Any]]:
+    """Rebind cloned attendance names to the target course instead of its template."""
+    target_date = _parse_attendance_course_owner_key_date(target_owner_key)
+    is_zen_stage = _is_attendance_zen_stage_context(target_title)
+    result: list[dict[str, Any]] = []
+    for source in names:
+        item = dict(source)
+        name = _normalize_sheet_text(item.get("name"))
+        if name == "开始日期" and target_date is not None:
+            item["formula"] = f'="{target_date.isoformat()}"'
+        elif name == "返款说明" and is_zen_stage:
+            safe_title = _normalize_sheet_text(target_title).replace('"', '""')
+            item["formula"] = f'="{safe_title}第"&返款周期&"周返款"'
+        result.append(item)
+    return _normalize_attendance_refund_defined_names_for_context(result, context_text=target_title)
 
 
 def _get_sheet_defined_names(document_json: dict[str, Any]) -> list[dict[str, Any]]:
@@ -16727,6 +16750,7 @@ def _build_note_sheet_table_response(
     return NoteSheetTableResponse(
         id=_require_sheet_numeric_id(document),
         workbook_id=_require_workbook_numeric_id(workbook) if workbook is not None else None,
+        workbook_title=_normalize_sheet_text(workbook.title) if workbook is not None else "",
         title=document.title,
         version=int(document.version or 1),
         value_mode=value_mode,
@@ -20157,7 +20181,15 @@ def save_as_workbook(
     session.add(workbook)
     session.flush()
     _ensure_workbook_identity(session, workbook)
-    _set_workbook_defined_names(session, workbook, _get_workbook_defined_names(session, source_workbook))
+    _set_workbook_defined_names(
+        session,
+        workbook,
+        _adapt_course_template_workbook_defined_names(
+            _get_workbook_defined_names(session, source_workbook),
+            target_title=workbook.title,
+            target_owner_key=owner_key,
+        ),
+    )
 
     for link in links:
         source_sheet = source_sheet_map.get(str(link.sheet_id))

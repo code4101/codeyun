@@ -212,6 +212,7 @@ def optimize_pasture_shape(
     herb_weight: float = 1,
     fish_weight: float = 1,
     exact_building_counts: bool = False,
+    special_cell_count: int = 0,
 ) -> dict[str, Any]:
     if not 1 <= plot_count <= 60:
         raise ValueError("自动形状求解支持 1 至 60 格")
@@ -237,6 +238,7 @@ def optimize_pasture_shape(
     pool_count_is_exact = production_mode == "exact" or bool(legacy_pools)
     pools = ([pool_building] * requested_pool_count) if pool_building else []
     blockers = [item for item in required if int(item.get("build_id") or 0) != 3]
+    blockers.extend({"build_id": -1, "name": "特殊格"} for _ in range(special_cell_count))
     if production_mode == "exact" and herb_count + requested_pool_count + len(blockers) > plot_count:
         raise ValueError("灵田、灵池和必放建筑数量超过总格子数")
     if len(pools) + len(blockers) > plot_count:

@@ -579,17 +579,6 @@
       "default_anonymous_allow": true
     },
     {
-      "key": "zaohua.pasture-plan-demo",
-      "title": "聚元丹方案",
-      "node_type": "feature",
-      "parent_key": "zaohua.pasture",
-      "sort_order": 10,
-      "route_paths": ["/zaohua/pasture/plan-demo"],
-      "menu_paths": ["/zaohua/pasture/plan-demo"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
       "key": "pokemon-tcg.catalog",
       "title": "宝可梦卡牌",
       "node_type": "feature",

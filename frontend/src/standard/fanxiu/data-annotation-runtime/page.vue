@@ -63,6 +63,7 @@ const CELL_LOG_LIMIT = 24;
 const CELL_LOG_ENTRY_LIMIT = 200;
 const CELL_LOG_POLL_LIMIT = 1;
 const CELL_LOG_POLL_ENTRY_LIMIT = 80;
+const SLOW_STATE_POLL_TICKS = 10;
 const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
 const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
 const HUMAN_ISOLATION_TTL_SECONDS = 21600;
@@ -480,13 +481,22 @@ const refreshLogs = async (options: { latestOnly?: boolean } = {}) => {
 };
 
 const refreshScheduler = async () => {
-  const [tasksResponse, planResponse] = await Promise.all([
-    getFanxiuDataAnnotationSchedulerTasks(),
-    getFanxiuDataAnnotationSchedulerPlan(),
-  ]);
+  const [tasksResponse, planResponse] = await Promise.all([getFanxiuDataAnnotationSchedulerTasks(), getFanxiuDataAnnotationSchedulerPlan()]);
   schedulerTasks.value = tasksResponse.tasks || [];
   schedulerPlan.value = planResponse;
   schedulerJobGroupEnabled.value = tasksResponse.job_group_enabled ?? planResponse.job_group_enabled ?? true;
+};
+
+const refreshSchedulerTasks = async () => {
+  const response = await getFanxiuDataAnnotationSchedulerTasks();
+  schedulerTasks.value = response.tasks || [];
+  schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
+};
+
+const refreshSchedulerPlan = async () => {
+  const response = await getFanxiuDataAnnotationSchedulerPlan();
+  schedulerPlan.value = response;
+  schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
 };
 
 const refreshDoctorWatchLatest = async () => {
@@ -545,7 +555,7 @@ const scheduleLogsRefresh = () => {
 const refreshAll = async () => {
   loading.value = true;
   try {
-    const [statusResult, schedulerResult] = await Promise.allSettled([refreshStatus(), refreshScheduler()]);
+    const [statusResult, schedulerResult] = await Promise.allSettled([refreshStatus(), refreshSchedulerTasks()]);
     if (statusResult.status === 'rejected') {
       warnRefreshFailure('refresh status', statusResult.reason);
     }
@@ -556,6 +566,9 @@ const refreshAll = async () => {
     loading.value = false;
   }
   scheduleLogsRefresh();
+  void refreshSchedulerPlan().catch((error) => {
+    warnRefreshFailure('refresh scheduler plan', error);
+  });
   void refreshDoctorWatchPanel().catch((error) => {
     warnRefreshFailure('refresh doctor watch', error);
   });
@@ -656,7 +669,7 @@ const startPolling = () => {
     if (polling) return;
     polling = true;
     pollTick += 1;
-    const syncSlowState = pollTick % 2 === 0;
+    const syncSlowState = pollTick % SLOW_STATE_POLL_TICKS === 0;
     void (async () => {
       try {
         try {

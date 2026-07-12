@@ -4,8 +4,7 @@ import zaohuaAlchemyPage from './alchemy'
 import zaohuaHerbPage from './herbs'
 import zaohuaFurnacePage from './furnaces'
 import zaohuaPasturePage from './pasture'
-import zaohuaPasturePlanPage from './pasture-plan'
 
-const pages: AppPageDefinition[] = [zaohuaAlchemyPage, zaohuaFurnacePage, zaohuaHerbPage, zaohuaPasturePage, zaohuaPasturePlanPage]
+const pages: AppPageDefinition[] = [zaohuaAlchemyPage, zaohuaFurnacePage, zaohuaHerbPage, zaohuaPasturePage]
 
 export default pages

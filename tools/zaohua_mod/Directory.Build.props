@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <ZaohuaGameDir Condition="'$(ZaohuaGameDir)' == ''">D:\SteamLibrary\steamapps\common\GodWorld</ZaohuaGameDir>
+  </PropertyGroup>
+</Project>
