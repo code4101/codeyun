@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>CodeYun.Zaohua.NpcDifficulty</AssemblyName>
+    <RootNamespace>CodeYun.Zaohua.NpcDifficulty</RootNamespace>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="UnityEngine"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Core"><HintPath>$(ZaohuaGameDir)\BepInEx\core\BepInEx.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.Mono"><HintPath>$(ZaohuaGameDir)\BepInEx\core\BepInEx.Unity.Mono.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(ZaohuaGameDir)\BepInEx\core\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

@@ -45,6 +45,8 @@ namespace CodeYun.Zaohua.SmartAlchemy
         private RectTransform _smartContent;
         private readonly List<GameObject> _smartResultObjects = new List<GameObject>();
         private List<AlchemySolution> _solutions = new List<AlchemySolution>();
+        private readonly Dictionary<string, List<AlchemySolution>> _solutionCache =
+            new Dictionary<string, List<AlchemySolution>>();
         private TbDrugRecipeCfg _solvedRecipe;
         private int _visibleSolutionCount = 5;
 
@@ -66,6 +68,7 @@ namespace CodeYun.Zaohua.SmartAlchemy
             }
 
             var sourceButton = buttons.Last();
+            var officialButtons = buttons.ToList();
             _spectrumButton = CreateTabButton(sourceButton, buttons, "CodeYunAlchemySpectrumButton", "丹", "谱");
             _spectrumButton.onClick.AddListener(ShowSpectrum);
 
@@ -83,6 +86,10 @@ namespace CodeYun.Zaohua.SmartAlchemy
 
             CreateSpectrumPanel();
             CreateSmartPanel();
+            foreach (var officialButton in officialButtons)
+            {
+                officialButton.onClick.AddListener(HideSmart);
+            }
             RefreshGameState();
         }
 
@@ -267,10 +274,10 @@ namespace CodeYun.Zaohua.SmartAlchemy
             _spectrumRecipeCards.Add(card);
             card.btnDelete.gameObject.SetActive(false);
             card.togFollow.gameObject.SetActive(false);
+            card.imgArrow.gameObject.SetActive(false);
             card._tog.onValueChanged.RemoveAllListeners();
             card._tog.onValueChanged.AddListener(isOn =>
             {
-                card.imgArrow.transform.rotation = Quaternion.Euler(0f, 0f, isOn ? -90f : 90f);
                 if (_changingSpectrumRecipeSelection) return;
                 if (isOn)
                 {
@@ -279,7 +286,6 @@ namespace CodeYun.Zaohua.SmartAlchemy
                     {
                         if (otherCard == null || otherCard == card || !otherCard._tog.isOn) continue;
                         otherCard._tog.SetIsOnWithoutNotify(false);
-                        otherCard.imgArrow.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
                     }
                     _changingSpectrumRecipeSelection = false;
                 }
@@ -328,6 +334,12 @@ namespace CodeYun.Zaohua.SmartAlchemy
             var sourceScroll = _cell.view.craftingLogScroll;
             _smartPanel = Instantiate(sourceScroll.gameObject, sourceScroll.transform.parent);
             _smartPanel.name = "CodeYunSmartAlchemyPanel";
+            var emptyTipName = _cell.view.txtNoCraftingLogTip.gameObject.name;
+            foreach (var tip in _smartPanel.GetComponentsInChildren<TextPro>(true)
+                         .Where(text => text.gameObject.name == emptyTipName))
+            {
+                tip.gameObject.SetActive(false);
+            }
             var scroll = _smartPanel.GetComponent<ScrollRect>();
             _smartContent = scroll.content;
             foreach (Transform child in _smartContent)
@@ -339,8 +351,8 @@ namespace CodeYun.Zaohua.SmartAlchemy
                          _smartContent.gameObject.AddComponent<VerticalLayoutGroup>();
             layout.spacing = 12f;
             layout.childAlignment = TextAnchor.UpperCenter;
-            layout.childControlWidth = false;
-            layout.childControlHeight = false;
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
             layout.childForceExpandWidth = true;
             layout.childForceExpandHeight = false;
             var fitter = _smartContent.GetComponent<ContentSizeFitter>() ??
@@ -401,8 +413,30 @@ namespace CodeYun.Zaohua.SmartAlchemy
 
             _visibleSolutionCount = 5;
             SetMessage("智能炼丹\n\n正在使用当前丹炉与有限药材库存计算……");
-            _solutions = FiniteInventoryAlchemySolver.Solve(_solvedRecipe, Furnace, Herbs, 50);
+            var cacheKey = BuildSolutionCacheKey();
+            if (!_solutionCache.TryGetValue(cacheKey, out _solutions))
+            {
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                _solutions = FiniteInventoryAlchemySolver.Solve(_solvedRecipe, Furnace, Herbs, 50);
+                stopwatch.Stop();
+                if (_solutionCache.Count >= 32) _solutionCache.Clear();
+                _solutionCache[cacheKey] = _solutions;
+                Debug.Log($"[CodeYun SmartAlchemy] solved recipe={_solvedRecipe.id}, " +
+                          $"solutions={_solutions.Count}, elapsed={stopwatch.ElapsedMilliseconds}ms");
+            }
+            else
+            {
+                Debug.Log($"[CodeYun SmartAlchemy] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
+            }
             RenderSmartResults();
+        }
+
+        private string BuildSolutionCacheKey()
+        {
+            return $"solver-v2|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
+                   $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}|" +
+                   string.Join(";", Herbs.OrderBy(stock => stock.ItemId.sedId)
+                       .Select(stock => $"{stock.ItemId.sedId}:{stock.Count}"));
         }
 
         private void RenderSmartResults()
@@ -419,9 +453,9 @@ namespace CodeYun.Zaohua.SmartAlchemy
             for (var index = 0; index < count; index++)
             {
                 var card = ABMgr.InstantiateObj(_cell.view.craftingLogInfoCellPrefab, _smartContent);
-                NormalizeListItem(card.gameObject, _cell.view.craftingLogInfoCellPrefab.gameObject);
                 card.gameObject.name = $"CodeYunSmartSolution_{index + 1}";
                 card.SetInfo(_solutions[index].ToTemplate(_solvedRecipe, index), false, false);
+                NormalizeSmartSolutionCard(card);
                 _smartResultObjects.Add(card.gameObject);
             }
             if (count < _solutions.Count)
@@ -467,9 +501,27 @@ namespace CodeYun.Zaohua.SmartAlchemy
         {
             foreach (var resultObject in _smartResultObjects)
             {
-                if (resultObject != null) Destroy(resultObject);
+                if (resultObject == null) continue;
+                resultObject.SetActive(false);
+                Destroy(resultObject);
             }
             _smartResultObjects.Clear();
+        }
+
+        internal void OnRecipeChanged()
+        {
+            ClearSmartResults();
+            _solutions.Clear();
+            _solvedRecipe = null;
+            _visibleSolutionCount = 5;
+            if (_message != null)
+            {
+                SetMessage("智能炼丹\n\n丹方已更换，进入“智能”后将重新计算");
+            }
+            if (_smartContent != null)
+            {
+                _smartContent.anchoredPosition = Vector2.zero;
+            }
         }
 
         private static void NormalizeListItem(GameObject item, GameObject sourcePrefab)
@@ -486,6 +538,36 @@ namespace CodeYun.Zaohua.SmartAlchemy
             layout.preferredHeight = sourceRect.rect.height;
             layout.minWidth = sourceRect.rect.width;
             layout.minHeight = sourceRect.rect.height;
+        }
+
+        private void NormalizeSmartSolutionCard(CraftingLogInfoCell card)
+        {
+            const float minimumCardHeight = 176f;
+            var cardRect = card.transform as RectTransform;
+            if (cardRect == null) return;
+            cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, minimumCardHeight);
+            Canvas.ForceUpdateCanvases();
+            var attrRect = card.txtAttrLimit.transform as RectTransform;
+            if (attrRect != null)
+            {
+                var requiredHeight = card.txtAttrLimit.preferredHeight;
+                if (requiredHeight > attrRect.rect.height)
+                {
+                    attrRect.sizeDelta = new Vector2(attrRect.sizeDelta.x, requiredHeight + 8f);
+                }
+            }
+
+            var textHeight = card.txtEffect.preferredHeight +
+                             card.txtName.preferredHeight +
+                             card.txtAttrLimit.preferredHeight + 44f;
+            var height = Mathf.Max(minimumCardHeight, textHeight);
+            cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, height);
+            var cardLayout = card.GetComponent<LayoutElement>() ?? card.gameObject.AddComponent<LayoutElement>();
+            cardLayout.preferredWidth = -1f;
+            cardLayout.minWidth = -1f;
+            cardLayout.flexibleWidth = 1f;
+            cardLayout.preferredHeight = height;
+            cardLayout.minHeight = height;
         }
 
         private void SetMessage(string text)
@@ -582,6 +664,16 @@ namespace CodeYun.Zaohua.SmartAlchemy
         }
     }
 
+    [HarmonyPatch(typeof(CraftingPanel), nameof(CraftingPanel.ShowMe))]
+    internal static class CraftingPanelShowPatch
+    {
+        private static void Prefix()
+        {
+            // 此插件的主要工作区在“炼制丹药”，每次打开炼丹菜单都直接进入该页。
+            CommonStatic.craftingPanelSubpanelIndex = 1;
+        }
+    }
+
     [HarmonyPatch(typeof(CraftingDrugCell), nameof(CraftingDrugCell.UpdateTog))]
     internal static class CraftingDrugCellUpdateTogPatch
     {
@@ -597,6 +689,15 @@ namespace CodeYun.Zaohua.SmartAlchemy
         private static void Postfix(CraftingDrugCell __instance)
         {
             __instance.gameObject.GetComponent<SmartAlchemyUi>()?.RefreshGameState();
+        }
+    }
+
+    [HarmonyPatch(typeof(CraftingDrugCell), nameof(CraftingDrugCell.UpdateLockRecipe))]
+    internal static class CraftingDrugCellUpdateLockRecipePatch
+    {
+        private static void Postfix(CraftingDrugCell __instance)
+        {
+            __instance.gameObject.GetComponent<SmartAlchemyUi>()?.OnRecipeChanged();
         }
     }
 }
