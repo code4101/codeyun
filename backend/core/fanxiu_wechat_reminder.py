@@ -28,7 +28,7 @@ DEFAULT_XLPROJECT_ROOT = Path(r"C:\home\chenkunze\slns\xlproject")
 _REMINDERS: dict[str, dict[str, str]] = {
     FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY: {
         "function": "提醒boss",
-        "label": "准备打boss",
+        "label": "@所有人 准备打魔狱封阵",
         "target": "xlsln.ckz2025.fx.tools.prompt:提醒boss",
     },
     FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY: {
