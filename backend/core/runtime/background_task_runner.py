@@ -40,6 +40,16 @@ from backend.core.fanxiu_tianjige_crawler import (
     enqueue_fanxiu_tianjige_quiz,
     is_fanxiu_tianjige_quiz_allowed_host,
 )
+from backend.core.fanxiu_wechat_reminder import (
+    FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME,
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS,
+    enqueue_fanxiu_wechat_boss_reminder,
+    enqueue_fanxiu_wechat_shengzu_reminder,
+    is_fanxiu_wechat_reminder_allowed_host,
+)
 from backend.core.runtime.public_frontend_deploy import (
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     run_public_frontend_deploy_check,
@@ -72,7 +82,7 @@ WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY = "critical_command_services_check"
 NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 8
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 9
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
@@ -90,6 +100,8 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
     CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
 }
 
@@ -107,7 +119,14 @@ class BackgroundTaskSpec:
     default_visible: bool = True
 
 
-DEFAULT_ENABLED_TASK_KEYS: set[str] = set()
+DEFAULT_ENABLED_TASK_KEYS: set[str] = {
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+}
+FANXIU_WECHAT_REMINDER_TASK_KEYS = {
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+}
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -238,6 +257,17 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
             },
             retry_minutes=10,
         )
+    if task_key == FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}, retry_minutes=10)
+    if task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "weekly",
+                "weekdays": list(FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS),
+                "time": FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
+            },
+            retry_minutes=10,
+        )
     return None
 
 
@@ -314,10 +344,14 @@ def _is_task_enabled(task_key: str) -> bool:
                 return False
             if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
                 return False
+            if task_key in FANXIU_WECHAT_REMINDER_TASK_KEYS and not is_fanxiu_wechat_reminder_allowed_host():
+                return False
             return bool(row.value.get("enabled", False))
         if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
             return False
         if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
+            return False
+        if task_key in FANXIU_WECHAT_REMINDER_TASK_KEYS and not is_fanxiu_wechat_reminder_allowed_host():
             return False
         if task_key in DEFAULT_ENABLED_TASK_KEYS:
             return True
@@ -832,6 +866,26 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         action=enqueue_fanxiu_tianjige_quiz,
         manual_warning="会调用 xlproject 虚拟环境执行凡修天机阁抢答爬虫；默认只允许在 mi15 执行。",
         default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+        title="凡修微信群 Boss 提醒",
+        category="凡修",
+        description="调用 xlproject 的凡修微信群提醒函数，只向三清道宗发送“准备打boss”。",
+        schedule_label=f"每天 {FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_fanxiu_wechat_boss_reminder,
+        manual_warning="会操作本机微信向三清道宗发送凡修提醒；默认只允许在 mi15 执行。",
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+        title="凡修微信群圣祖提醒",
+        category="凡修",
+        description="调用 xlproject 的凡修微信群提醒函数，只向三清道宗发送“打圣祖”。",
+        schedule_label=f"每周日 {FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_fanxiu_wechat_shengzu_reminder,
+        manual_warning="会操作本机微信向三清道宗发送凡修提醒；默认只允许在 mi15 执行。",
     ),
 )
 

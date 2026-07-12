@@ -4,8 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projects = @(
-    "Zaohua.HelloWorld\Zaohua.HelloWorld.csproj",
-    "Zaohua.NpcDifficulty\Zaohua.NpcDifficulty.csproj"
+    "Code4101.Tiandao\Code4101.Tiandao.csproj"
 )
 
 foreach ($relativeProject in $projects) {

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace CodeYun.Zaohua.SmartAlchemy
+namespace Code4101.Zaohua.Tiandao
 {
     internal sealed class AlchemyRuleOutcome
     {

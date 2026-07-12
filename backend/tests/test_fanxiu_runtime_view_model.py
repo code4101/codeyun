@@ -189,6 +189,27 @@ def test_fanxiu_runtime_shape_load_uses_existing_drag_action(monkeypatch):
     assert runtime.attrs["load_new"] is True
 
 
+def test_scroll_semantic_progress_requires_two_unchanged_observations():
+    runner = create_fanxiu_runtime_runner()
+    image = {
+        "type": "image",
+        "title": "列表",
+        "filename": "0001.png",
+        "width": 100,
+        "height": 200,
+        "shapes": [
+            {"id": "list", "kind": "rect", "title": "列表区", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"}
+        ],
+    }
+    runtime = runner._fanxiu_runtime({"entry": object()})
+    shape = View(image).get_shape("列表区")
+
+    assert runtime.observe_scroll_content(shape, {"a", "b"}) is True
+    assert runtime.observe_scroll_content(shape, {"a", "b"}) is True
+    assert runtime.observe_scroll_content(shape, {"a", "b"}) is False
+    assert runtime.observe_scroll_content(shape, {"a", "b", "c"}) is True
+
+
 def test_fanxiu_runtime_wait_view_uses_scene_recognition(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = {
