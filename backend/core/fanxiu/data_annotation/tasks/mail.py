@@ -200,7 +200,9 @@ class MailTaskMixin:
         self._wait_mail_capture_runtime_ready("清理入口", stop_event=stop_event)
         raw_max_actions = int(payload.get("max_actions") or 0)
         max_actions = raw_max_actions if raw_max_actions > 0 else None
-        max_scrolls = max(1, int(payload.get("max_scrolls") or 24))
+        # 邮箱可能长期积累超过 24 页；24 次只是旧的调试保护值，会把仍在正常
+        # 加载新邮件的完整扫描误判为失败。正式作业允许继续扫到真实列表底部。
+        max_scrolls = max(1, int(payload.get("max_scrolls") or 80))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
         frame = runtime.cur_frame(update=True)

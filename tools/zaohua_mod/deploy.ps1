@@ -3,8 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$source = Join-Path $PSScriptRoot "Zaohua.HelloWorld\bin\Release\CodeYun.Zaohua.HelloWorld.dll"
-$pluginDir = Join-Path $GameDir "BepInEx\plugins\CodeYun.Zaohua.HelloWorld"
+$source = Join-Path $PSScriptRoot "Zaohua.HelloWorld\bin\Release\CodeYun.Zaohua.SmartAlchemy.dll"
+$pluginDir = Join-Path $GameDir "BepInEx\plugins\CodeYun.Zaohua.SmartAlchemy"
 
 if (-not (Test-Path -LiteralPath $source)) {
     throw "Plugin has not been built: $source"

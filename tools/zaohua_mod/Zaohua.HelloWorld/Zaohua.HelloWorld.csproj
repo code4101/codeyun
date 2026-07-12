@@ -3,8 +3,8 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <AssemblyName>CodeYun.Zaohua.HelloWorld</AssemblyName>
-    <RootNamespace>CodeYun.Zaohua.HelloWorld</RootNamespace>
+    <AssemblyName>CodeYun.Zaohua.SmartAlchemy</AssemblyName>
+    <RootNamespace>CodeYun.Zaohua.SmartAlchemy</RootNamespace>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
@@ -13,8 +13,12 @@
       <HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="BepInEx">
-      <HintPath>$(ZaohuaGameDir)\BepInEx\core\BepInEx.dll</HintPath>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(ZaohuaGameDir)\BepInEx\core\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.Mono">
+      <HintPath>$(ZaohuaGameDir)\BepInEx\core\BepInEx.Unity.Mono.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
@@ -43,6 +47,10 @@
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
       <HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

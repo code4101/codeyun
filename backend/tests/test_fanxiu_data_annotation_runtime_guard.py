@@ -7385,6 +7385,12 @@ def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
     assert retries[0][2] == "skipped"
 
 
+def test_mail_cleanup_default_scroll_limit_supports_large_mailbox(tmp_path, monkeypatch):
+    source = (Path(__file__).parents[1] / "core/fanxiu/data_annotation/tasks/mail.py").read_text(encoding="utf-8")
+
+    assert 'payload.get("max_scrolls") or 80' in source
+
+
 def test_xianfu_learn_skill_is_dynamic_runtime_task():
     task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "xianfu-learn-skill")
 

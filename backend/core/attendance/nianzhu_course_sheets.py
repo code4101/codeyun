@@ -433,6 +433,8 @@ def _highlight_video_refund_for_item(
     item: VideoConfigItem,
     rule_version: str,
     value: Any,
+    *,
+    zen_stage_refund_amount: float | None = None,
 ) -> tuple[float, str | None]:
     text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
     if text_rules:
@@ -441,8 +443,11 @@ def _highlight_video_refund_for_item(
         _rules_for_version(item.rules_by_version, rule_version),
         value,
     )
-    if _is_zen_stage_video_item(item) and _is_legacy_delayed_completed_video_text(value):
-        return 0, ZERO_REFUND_COMPLETED_BACKGROUND
+    if _is_zen_stage_video_item(item):
+        if _is_legacy_delayed_completed_video_text(value):
+            return 0, ZERO_REFUND_COMPLETED_BACKGROUND
+        if zen_stage_refund_amount is not None and _normalize_text(value) == "准时完成":
+            return max(float(zen_stage_refund_amount), 0.0), color
     return refund_amount, color
 
 
@@ -1459,19 +1464,104 @@ def _attendance_video_refund_source_meta(
     }
 
 
-def _attendance_legacy_zen_video_refund_amount(document: dict[str, Any], columns: list[str]) -> float:
+def _attendance_zen_video_refund_rule(
+    document: dict[str, Any],
+    columns: list[str],
+    *,
+    expected_refund_count: int,
+) -> tuple[int, float, float]:
+    """Parse and validate the B-class refund rule declared in the row-3 note."""
     refund_index = _find_column_index(columns, "视频应返款")
     if refund_index is None:
-        return 0.0
+        raise ValueError("B类课程考勤表缺少“视频应返款”列，已阻断返款计算")
     note_value = _grid_cell_value(
         document,
         max(_normalize_document_data_start_row(document) - 1, 0),
         refund_index,
     )
-    match = re.search(r"\*\s*(\d+(?:\.\d+)?)\s*元", _normalize_text(note_value))
+    note_text = _normalize_text(note_value)
+    match = re.search(
+        r"(\d+)\s*(?:课|节|个)?\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
+        note_text,
+    )
     if not match:
-        return 0.0
-    return _to_float(match.group(1))
+        raise ValueError(
+            "B类课程第3行“视频应返款”备注无法解析；"
+            "请使用“39课×18元=702元”格式明确计费课数、单课金额和上限"
+        )
+    refund_count = int(match.group(1))
+    refund_amount = _to_float(match.group(2))
+    refund_limit = _to_float(match.group(3))
+    if refund_count <= 0 or refund_amount <= 0:
+        raise ValueError(f"B类课程第3行返款规则必须为正数，当前为：{note_text}")
+    if abs(refund_count * refund_amount - refund_limit) > 0.001:
+        raise ValueError(
+            f"B类课程第3行返款规则不自洽：{refund_count}×{refund_amount} != {refund_limit}"
+        )
+    if refund_count != expected_refund_count:
+        raise ValueError(
+            "B类课程第3行计费课数与视频配置不一致："
+            f"备注={refund_count}，实际参与返款课次={expected_refund_count}"
+        )
+    return refund_count, refund_amount, refund_limit
+
+
+def _attendance_zen_clockin_refund_formula(
+    document: dict[str, Any],
+    columns: list[str],
+    *,
+    row_number: int,
+) -> tuple[str, float]:
+    """Build the B-class clock-in refund formula from row-3 column notes."""
+    config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
+    parts: list[str] = []
+    limits: list[float] = []
+    clockin_columns = [
+        (index, name)
+        for index, name in enumerate(columns)
+        if name == "共学打卡" or name.startswith("共修打卡-")
+    ]
+    if not clockin_columns:
+        raise ValueError("B类课程缺少共学/共修打卡列，已阻断打卡返款计算")
+
+    for column_index, field_name in clockin_columns:
+        note_text = _normalize_text(_grid_cell_value(document, config_row_index, column_index))
+        cell_ref = _formula_cell_ref(column_index, row_number)
+        per_count = re.search(
+            r"(\d+)\s*次\s*[×xX*]\s*(?:每次)?\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
+            note_text,
+        )
+        if per_count:
+            count = int(per_count.group(1))
+            amount = _to_float(per_count.group(2))
+            limit = _to_float(per_count.group(3))
+            if count <= 0 or amount <= 0 or abs(count * amount - limit) > 0.001:
+                raise ValueError(f"B类课程第3行“{field_name}”规则不自洽：{note_text}")
+            parts.append(f"MIN(IFERROR(VALUE({cell_ref}),0),{count})*{_format_numeric_cell(amount)}")
+            limits.append(limit)
+            continue
+
+        pairs = [
+            (int(count), _to_float(amount))
+            for count, amount in re.findall(r"(\d+)\s*次\s*(\d+(?:\.\d+)?)\s*元", note_text)
+        ]
+        if not pairs:
+            raise ValueError(
+                f"B类课程第3行“{field_name}”备注无法解析：{note_text or '空'}"
+            )
+        pairs.sort(key=lambda item: item[0], reverse=True)
+        expression = "0"
+        for count, amount in reversed(pairs):
+            if count <= 0 or amount < 0:
+                raise ValueError(f"B类课程第3行“{field_name}”规则必须为非负有效值：{note_text}")
+            expression = (
+                f"IF(IFERROR(VALUE({cell_ref}),0)>={count},"
+                f"{_format_numeric_cell(amount)},{expression})"
+            )
+        parts.append(expression)
+        limits.append(max(amount for _, amount in pairs))
+
+    return "=" + "+".join(parts), sum(limits)
 
 
 def _parse_clockin_rule_from_formula(value: Any) -> str:
@@ -4083,7 +4173,22 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             "当前应返款": _find_column_index(columns, "当前应返款"),
         }
         rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
-    legacy_zen_video_refund_amount = _attendance_legacy_zen_video_refund_amount(current_document, columns)
+    zen_refund_items = [
+        item for item in video_config if item.participates_refund and _is_zen_stage_video_item(item)
+    ]
+    legacy_zen_video_refund_amount = 0.0
+    if zen_refund_items:
+        _, legacy_zen_video_refund_amount, _ = _attendance_zen_video_refund_rule(
+            current_document,
+            columns,
+            expected_refund_count=len(zen_refund_items),
+        )
+        # Validate the row-3 B-class clock-in declarations before touching rows.
+        _attendance_zen_clockin_refund_formula(
+            current_document,
+            columns,
+            row_number=_normalize_document_data_start_row(current_document) + 1,
+        )
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     video_source_meta = dict(video_config_document.get("source_meta") or {})
     international_shift_user_ids = _international_video_shift_user_ids(video_source_meta)
@@ -4227,7 +4332,16 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                 completed_count = _video_completed_count_for_item(item, rule_version, value)
                 if completed_count > 0:
                     completed_video_count += 1
-                refund_amount, color = _highlight_video_refund_for_item(item, rule_version, value)
+                refund_amount, color = _highlight_video_refund_for_item(
+                    item,
+                    rule_version,
+                    value,
+                    zen_stage_refund_amount=(
+                        legacy_zen_video_refund_amount
+                        if _is_zen_stage_video_item(item)
+                        else None
+                    ),
+                )
                 video_refund += refund_amount
                 if item.participates_score and refund_amount > 0:
                     score += max(completed_count - 1, 0)
@@ -4295,7 +4409,13 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             rule_version=rule_version,
         )
         clockin_refund_formula = (
-            _build_clockin_refund_formula(
+            _attendance_zen_clockin_refund_formula(
+                current_document,
+                columns,
+                row_number=row_number,
+            )[0]
+            if zen_refund_items
+            else _build_clockin_refund_formula(
                 columns,
                 row_number=row_number,
                 rules=_clockin_refund_rules_for_formula(
@@ -4305,7 +4425,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                     clockin_rules=clockin_rules,
                 ),
             )
-            if has_refund_tracking_context
+            if has_refund_tracking_context or zen_refund_items
             else None
         )
         total_refund_formula = _build_total_refund_formula(
@@ -4631,12 +4751,19 @@ def _build_video_refund_formula(
             rule_version=rule_version,
         )
     if VIDEO_RULE_SYSTEM_ZEN_STAGE in systems:
+        zen_refund_count = sum(
+            1
+            for item in video_config
+            if item.participates_refund
+            and _is_zen_stage_video_item(item)
+            and video_column_indexes.get(item.lesson_id) is not None
+        )
         return _build_legacy_zen_video_refund_formula(
             video_config,
             video_column_indexes,
             row_number=row_number,
             refund_amount=legacy_zen_refund_amount,
-            max_refund_count=49,
+            max_refund_count=zen_refund_count,
         )
     return _build_timed_video_refund_formula(
         video_config,

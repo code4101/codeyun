@@ -1487,17 +1487,15 @@ def _adapt_course_template_workbook_defined_names(
     target_owner_key: str,
 ) -> list[dict[str, Any]]:
     """Rebind cloned attendance names to the target course instead of its template."""
-    target_date = _parse_attendance_course_owner_key_date(target_owner_key)
     is_zen_stage = _is_attendance_zen_stage_context(target_title)
     result: list[dict[str, Any]] = []
     for source in names:
         item = dict(source)
         name = _normalize_sheet_text(item.get("name"))
-        if name == "开始日期" and target_date is not None:
-            item["formula"] = f'="{target_date.isoformat()}"'
+        if name == "开始日期":
+            item["formula"] = "=课程开始日期"
         elif name == "返款说明" and is_zen_stage:
-            safe_title = _normalize_sheet_text(target_title).replace('"', '""')
-            item["formula"] = f'="{safe_title}第"&返款周期&"周返款"'
+            item["formula"] = '=课程标题&"第"&返款周期&"周返款"'
         result.append(item)
     return _normalize_attendance_refund_defined_names_for_context(result, context_text=target_title)
 
@@ -1573,6 +1571,12 @@ def _defined_names_for_formula(
     workbook: WorkbookDocument | None,
 ) -> dict[str, str]:
     names: dict[str, str] = {}
+    workbook_title = _normalize_sheet_text(workbook.title if workbook is not None else "")
+    course_start = _parse_attendance_course_owner_key_date(document.owner_key)
+    if workbook_title:
+        names["课程标题"] = f'="{workbook_title.replace(chr(34), chr(34) * 2)}"'
+    if course_start is not None:
+        names["课程开始日期"] = f'="{course_start.isoformat()}"'
     context_text = " ".join(
         item
         for item in [
