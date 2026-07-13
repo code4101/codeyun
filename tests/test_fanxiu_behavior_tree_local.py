@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
+from backend.core.fanxiu.runtime import jupyter_kernel as jupyter_kernel_core
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
@@ -400,23 +401,14 @@ def test_fanxiu_kernel_code_cell_facade(monkeypatch):
         calls.append({"code": code, **kwargs})
         return {"status": "success", "output": "ok"}
 
-    monkeypatch.setattr(bt, "submit_fanxiu_code_cell", fake_submit)
+    monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: object())
+    monkeypatch.setattr(bt, "ensure_fanxiu_behavior_tree_service", lambda *_args: {})
+    monkeypatch.setattr(jupyter_kernel_core, "execute_fanxiu_jupyter_cell", fake_submit)
 
     status = FanxiuKernel(entry_id="entry-1").code("result = ctx.scene()", timeout_seconds=5).run()
 
     assert status["status"] == "success"
-    assert calls == [
-        {
-            "code": "result = ctx.scene()",
-            "entry_id": "entry-1",
-            "mode": "readonly",
-            "timeout_seconds": 5.0,
-            "max_output_chars": 4000,
-            "isolate_jobs": True,
-            "wait": True,
-            "wait_timeout_seconds": 35.0,
-        }
-    ]
+    assert calls == [{"code": "result = ctx.scene()", "timeout_seconds": 35.0, "max_output_chars": 4000}]
 
 
 def test_fanxiu_kernel_cell_is_canonical_code_cell_facade(monkeypatch):
@@ -426,21 +418,59 @@ def test_fanxiu_kernel_cell_is_canonical_code_cell_facade(monkeypatch):
         calls.append({"code": code, **kwargs})
         return {"status": "success", "output": "ok"}
 
-    monkeypatch.setattr(bt, "submit_fanxiu_code_cell", fake_submit)
+    monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: object())
+    monkeypatch.setattr(bt, "ensure_fanxiu_behavior_tree_service", lambda *_args: {})
+    monkeypatch.setattr(jupyter_kernel_core, "execute_fanxiu_jupyter_cell", fake_submit)
 
-    status = FanxiuKernel(entry_id="entry-1").cell("result = 1", mode="act").run(timeout_seconds=9)
+    status = FanxiuKernel(entry_id="entry-1").cell("result = 1").run(timeout_seconds=9)
 
     assert status["status"] == "success"
-    assert calls == [{
-        "code": "result = 1",
-        "entry_id": "entry-1",
-        "mode": "act",
-        "timeout_seconds": 120.0,
-        "max_output_chars": 4000,
-        "isolate_jobs": True,
-        "wait": True,
-        "wait_timeout_seconds": 9.0,
-    }]
+    assert calls == [{"code": "result = 1", "timeout_seconds": 9.0, "max_output_chars": 4000}]
+
+
+def test_jupyter_task_cell_uses_managed_marker_and_parses_structured_result(monkeypatch):
+    calls: list[tuple[str, float]] = []
+
+    def fake_execute(code, *, timeout_seconds):
+        calls.append((code, timeout_seconds))
+        return {
+            "status": "success",
+            "result_text": "{'result': 'skipped', 'message': '窗口已过'}",
+        }
+
+    monkeypatch.setattr(jupyter_kernel_core, "execute_fanxiu_jupyter_cell", fake_execute)
+
+    result = jupyter_kernel_core.execute_fanxiu_jupyter_task_cell(
+        "daily_mozu",
+        {"enabled": True},
+        timeout_seconds=33,
+    )
+
+    assert result["result"] == "skipped"
+    assert result["message"] == "窗口已过"
+    assert calls == [(
+        "# fanxiu:managed-task-cell\nrun_task_cell('daily_mozu', {'enabled': True})",
+        33,
+    )]
+
+
+def test_jupyter_task_cell_preserves_stop_semantics(monkeypatch):
+    monkeypatch.setattr(
+        jupyter_kernel_core,
+        "execute_fanxiu_jupyter_cell",
+        lambda *_args, **_kwargs: {
+            "status": "error",
+            "message": "InterruptedError: stopped",
+            "error": "InterruptedError: stopped",
+        },
+    )
+
+    try:
+        jupyter_kernel_core.execute_fanxiu_jupyter_task_cell("daily_boss")
+    except InterruptedError:
+        pass
+    else:
+        raise AssertionError("Jupyter stop must remain InterruptedError for Scheduler")
 
 
 def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
@@ -1213,22 +1243,20 @@ def test_core_submit_fanxiu_task_cell_submits_through_runtime_framework(monkeypa
     assert calls[-1]["task_type"] == "detect_scene"
 
 
-def test_core_submit_fanxiu_code_cell_uses_debug_eval_adapter(monkeypatch, tmp_path):
+def test_core_submit_fanxiu_code_cell_uses_real_jupyter_executor(monkeypatch, tmp_path):
     calls = []
     entry = type("Entry", (), {"entry_id": "resolved-entry"})()
 
-    def fake_submit_task_cell(**kwargs):
+    def fake_submit_code_cell(**kwargs):
         calls.append(kwargs)
-        return {"status": "queued", "phase": "task_cell_queued", "queued_cell": {"id": "manual-code"}}
+        return {"status": "success", "phase": "done", "output": "42", "execution_count": 7}
 
-    monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: None)
     monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: entry)
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_task_cell_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(bt, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
-    monkeypatch.setattr(bt, "acquire_fanxiu_job_group_isolation", lambda **kwargs: "iso-code")
-    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda **kwargs: fake_submit_task_cell(**kwargs))
+    monkeypatch.setattr(runtime_framework, "submit_code_cell", fake_submit_code_cell)
 
     status = bt.submit_fanxiu_code_cell(
         "result = ctx.scene()",
@@ -1238,17 +1266,13 @@ def test_core_submit_fanxiu_code_cell_uses_debug_eval_adapter(monkeypatch, tmp_p
         max_output_chars=999,
     )
 
-    assert status["queued_cell"]["id"] == "manual-code"
-    assert status["queued_job"]["id"] == "manual-code"
-    assert calls[-1]["task_type"] == "debug_eval"
-    assert calls[-1]["payload"] == {
-        "code": "result = ctx.scene()",
-        "mode": "readonly",
-        "timeout_seconds": 12.0,
-        "max_output_chars": 999,
-        "call_task": True,
-        "__job_group_isolation_token": "iso-code",
-    }
+    assert status["status"] == "success"
+    assert status["output"] == "42"
+    assert calls[-1]["code"] == "result = ctx.scene()"
+    assert calls[-1]["entry"] is entry
+    assert calls[-1]["entry_id"] == "resolved-entry"
+    assert calls[-1]["timeout_seconds"] == 12.0
+    assert calls[-1]["max_output_chars"] == 999
 
 
 def test_core_run_mode_validation_keeps_direct_on_kernel_path():

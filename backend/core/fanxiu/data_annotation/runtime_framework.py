@@ -199,26 +199,20 @@ def submit_code_cell(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Submit dynamic AI/debug code as a kernel cell.
+    """Execute dynamic code in the resident IPython kernel.
 
-    The public concept is a code cell. ``debug_eval`` remains the internal task
-    adapter until the resident kernel grows a native code-cell executor.
+    ``mode`` and the storage-path arguments are accepted only for compatibility
+    with older HTTP clients. The real Jupyter namespace and protocol own code
+    execution; ``debug_eval`` is no longer the code-cell adapter.
     """
-    return submit_task_cell(
-        entry=entry,
-        entry_id=entry_id,
-        task_type="debug_eval",
-        payload={
-            "code": str(code or ""),
-            "mode": str(mode or "readonly"),
-            "timeout_seconds": float(timeout_seconds or 120.0),
-            "max_output_chars": int(max_output_chars or 4000),
-            "call_task": True,
-        },
-        asset_tree_path=asset_tree_path,
-        task_cell_path=task_cell_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
+    from backend.core.fanxiu.runtime.behavior_tree import ensure_fanxiu_behavior_tree_service
+    from backend.core.fanxiu.runtime.jupyter_kernel import execute_fanxiu_jupyter_cell
+
+    ensure_fanxiu_behavior_tree_service(entry, str(entry_id))
+    return execute_fanxiu_jupyter_cell(
+        str(code or ""),
+        timeout_seconds=float(timeout_seconds or 120.0),
+        max_output_chars=int(max_output_chars or 4000),
     )
 
 

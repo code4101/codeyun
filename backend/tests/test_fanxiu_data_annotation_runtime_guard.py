@@ -4348,42 +4348,6 @@ def test_debug_eval_handler_runs_simple_context_code():
     assert any("debug_eval result" in str(item.get("message") or "") for item in runner.status().get("logs") or [])
 
 
-def test_debug_eval_cells_share_kernel_namespace_without_replaying_old_task():
-    from backend.core.fanxiu.data_annotation.debug_eval import run_data_annotation_debug_eval
-
-    runner = create_fanxiu_runtime_runner()
-    raw_ctx = {"entry_id": "cell-entry", "images": {}, "entry": object()}
-
-    first = run_data_annotation_debug_eval(
-        runner,
-        raw_ctx,
-        {
-            "code": (
-                "shared_value = 41\n"
-                "def task(ctx):\n"
-                "    global task_runs\n"
-                "    task_runs = globals().get('task_runs', 0) + 1\n"
-                "    return shared_value"
-            )
-        },
-        threading.Event(),
-    )
-    second = run_data_annotation_debug_eval(
-        runner,
-        raw_ctx,
-        {"code": "result = shared_value + 1"},
-        threading.Event(),
-    )
-
-    namespace = runner._code_cell_namespaces["0:cell-entry"]
-    assert first == "success"
-    assert second == "success"
-    assert namespace["shared_value"] == 41
-    assert namespace["result"] == 42
-    assert namespace["task_runs"] == 1
-    assert "task" not in namespace
-
-
 def test_debug_eval_act_cell_injects_bound_runtime(monkeypatch, tmp_path):
     from backend.core.fanxiu.data_annotation.debug_eval import run_data_annotation_debug_eval
 
@@ -4407,12 +4371,11 @@ def test_debug_eval_act_cell_injects_bound_runtime(monkeypatch, tmp_path):
     result = run_data_annotation_debug_eval(
         runner,
         raw_ctx,
-        {"code": "bound_marker = runtime.marker", "mode": "act"},
+        {"code": "result = runtime.marker", "mode": "act"},
         stop_event,
     )
 
     assert result == "success"
-    assert runner._code_cell_namespaces["0:cell-entry"]["bound_marker"] == "bound"
     assert calls == [(raw_ctx, raw_ctx["asset_tree_path"], stop_event)]
 
 

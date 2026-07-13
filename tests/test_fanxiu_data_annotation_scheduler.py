@@ -10907,6 +10907,42 @@ def test_data_annotation_runtime_status_overlays_active_resident_owner(tmp_path,
     assert "53420" in status["message"]
 
 
+def test_data_annotation_runtime_status_honors_owner_with_explicit_canonical_path(tmp_path, monkeypatch):
+    runtime_state_path = tmp_path / "runtime_state.json"
+    world_facts_path = tmp_path / "world_facts.json"
+    fanxiu_behavior_tree.persist_fanxiu_runtime_status(
+        {
+            "status": "running",
+            "phase": "scheduler_task",
+            "running": True,
+            "service_running": True,
+            "task_type": "daily_dongtian",
+            "current_task": "洞天_领取",
+            "message": "Scheduler 执行中",
+            "logs": [],
+        },
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_state_path)
+    monkeypatch.setattr(fanxiu_behavior_tree, "read_fanxiu_behavior_tree_service_owner", lambda: {
+        "active": True,
+        "stale": False,
+        "pid": os.getpid() + 1000,
+        "step": "task_running",
+    })
+
+    status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status(
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+    assert status["running"] is True
+    assert status["status"] == "running"
+    assert status["task_type"] == "daily_dongtian"
+    assert status["message"] == "Scheduler 执行中"
+
+
 def test_data_annotation_runtime_status_preserves_scheduler_blocked_phase(tmp_path, monkeypatch):
     runtime_state_path = tmp_path / "runtime_state.json"
     world_facts_path = tmp_path / "world_facts.json"

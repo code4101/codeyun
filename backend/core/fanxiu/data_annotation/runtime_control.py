@@ -744,7 +744,12 @@ def runtime_status(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    owner = read_fanxiu_behavior_tree_service_owner() if runtime_state_path is None else {}
+    canonical_runtime_state_path = fanxiu_data_annotation_runtime_state_path().resolve(strict=False)
+    use_resident_owner = (
+        runtime_state_path is None
+        or Path(runtime_state_path).resolve(strict=False) == canonical_runtime_state_path
+    )
+    owner = read_fanxiu_behavior_tree_service_owner() if use_resident_owner else {}
     owner_active_elsewhere = (
         bool(owner.get("active"))
         and not bool(owner.get("stale"))

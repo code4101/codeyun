@@ -132,8 +132,7 @@ def _configure_stdout() -> None:
 
 
 def _print_status(status: dict[str, Any]) -> None:
-    print(json.dumps(
-        {
+    summary = {
             "status": status.get("status"),
             "phase": status.get("phase"),
             "task_type": status.get("task_type"),
@@ -141,7 +140,13 @@ def _print_status(status: dict[str, Any]) -> None:
             "message": status.get("message"),
             "error": status.get("error"),
             "queued_cell": status.get("queued_cell") or status.get("queued_job") or {},
-        },
+        }
+    if "output" in status:
+        summary["output"] = status.get("output")
+    if "execution_count" in status:
+        summary["execution_count"] = status.get("execution_count")
+    print(json.dumps(
+        summary,
         ensure_ascii=False,
         indent=2,
     ))
@@ -1652,12 +1657,13 @@ def main() -> int:
             isolate_jobs=not bool(args.no_isolate_jobs),
         )
         cell_factory = kernel.cell if args.command == "cell" else kernel.code
-        cell = cell_factory(
-            code,
-            mode=str(args.mode or "readonly"),
-            timeout_seconds=float(args.timeout_seconds or 120.0),
-            max_output_chars=int(args.max_output_chars or 4000),
-        )
+        cell_kwargs = {
+            "timeout_seconds": float(args.timeout_seconds or 120.0),
+            "max_output_chars": int(args.max_output_chars or 4000),
+        }
+        if args.command != "cell":
+            cell_kwargs["mode"] = str(args.mode or "readonly")
+        cell = cell_factory(code, **cell_kwargs)
         if args.command in {"cell", "py"}:
             status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
         else:

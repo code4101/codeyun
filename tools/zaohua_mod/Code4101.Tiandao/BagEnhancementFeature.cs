@@ -655,7 +655,7 @@ namespace Code4101.Zaohua.Tiandao
                 new Vector2(204f, 44f));
             create.onClick.AddListener(() =>
             {
-                var entity = EquipmentLoadoutRepository.CreateEmptyLoadout();
+                var entity = EquipmentLoadoutRepository.CreateLoadoutFromCurrent();
                 _loadoutMessage = EquipmentLoadoutRuntime.Apply(entity);
                 if (string.IsNullOrEmpty(_loadoutMessage))
                 {

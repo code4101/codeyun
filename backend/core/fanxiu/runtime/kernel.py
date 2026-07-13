@@ -79,7 +79,6 @@ class FanxiuKernel:
         self,
         code: str,
         *,
-        mode: str = "readonly",
         timeout_seconds: float = 120.0,
         max_output_chars: int = 4000,
     ) -> FanxiuCell:
@@ -87,7 +86,7 @@ class FanxiuKernel:
             kernel=self,
             kind="code",
             code=str(code or ""),
-            mode=str(mode or "readonly"),
+            mode="jupyter",
             timeout_seconds=float(timeout_seconds or 120.0),
             max_output_chars=int(max_output_chars or 4000),
         )
@@ -103,7 +102,6 @@ class FanxiuKernel:
         """Compatibility alias for :meth:`cell`."""
         return self.cell(
             code,
-            mode=mode,
             timeout_seconds=timeout_seconds,
             max_output_chars=max_output_chars,
         )
@@ -135,15 +133,14 @@ class FanxiuKernel:
         wait: bool = False,
         wait_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        return behavior_tree.submit_fanxiu_code_cell(
+        from backend.core.fanxiu.runtime.jupyter_kernel import execute_fanxiu_jupyter_cell
+
+        entry = behavior_tree.resolve_fanxiu_entry(self.entry_id)
+        behavior_tree.ensure_fanxiu_behavior_tree_service(entry, self.entry_id)
+        return execute_fanxiu_jupyter_cell(
             str(code or ""),
-            entry_id=self.entry_id,
-            mode=str(mode or "readonly"),
-            timeout_seconds=float(timeout_seconds or 120.0),
-            max_output_chars=int(max_output_chars or 4000),
-            isolate_jobs=self.isolate_jobs,
-            wait=wait,
-            wait_timeout_seconds=float(wait_timeout_seconds or (float(timeout_seconds or 120.0) + 30.0)),
+            timeout_seconds=float(wait_timeout_seconds or timeout_seconds or 120.0),
+            max_output_chars=max_output_chars,
         )
 
     def status(self) -> dict[str, Any]:

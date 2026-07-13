@@ -30,6 +30,8 @@ dependencies = [
     "akshare>=1.18.64",
     "adb-shell>=0.4.4",
     "rembg[cpu]>=2.0.69",
+    "ipykernel>=7.2.0,<8.0.0",
+    "jupyter-client>=8.8.0,<9.0.0",
 ]
 
 [project.optional-dependencies]
