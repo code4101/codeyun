@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 
 from backend.core.fanxiu.data_annotation import runtime_framework
+from backend.core.fanxiu.data_annotation import runtime_control
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 
 
@@ -74,3 +75,78 @@ def test_kernel_status_keeps_kernel_and_business_runtime_orthogonal(monkeypatch)
         "kernel": {"alive": True, "execution_state": "idle"},
         "runtime": {"status": "success", "current_task": "demo"},
     }
+
+
+def test_interrupt_and_restart_are_distinct_native_commands(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def send(command: str, *, timeout_seconds: float):
+        calls.append(command)
+        return {"ok": True, "command": command, "timeout": timeout_seconds}
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.send_fanxiu_kernel_manager_command",
+        send,
+    )
+
+    kernel = FanxiuKernel()
+    assert kernel.interrupt(timeout_seconds=2)["command"] == "interrupt"
+    assert kernel.restart(timeout_seconds=3)["command"] == "restart"
+    assert kernel.shutdown(timeout_seconds=4)["command"] == "shutdown"
+    assert calls == ["interrupt", "restart", "shutdown"]
+
+
+def test_restart_replaces_kernel_and_old_cell_cannot_rebind_to_new_connection() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "backend/core/fanxiu/runtime/jupyter_kernel.py").read_text(encoding="utf-8")
+
+    assert "connection_snapshot = path.read_bytes()" in source
+    assert "connection_changed = path.read_bytes() != connection_snapshot" in source
+    assert "当前 cell 已作废" in source
+    assert "manager.shutdown_kernel(now=True)" in source
+    assert "manager = start_kernel()" in source
+
+
+def test_scheduler_arbitration_stays_outside_kernel() -> None:
+    root = Path(__file__).resolve().parents[2]
+    kernel_source = "\n".join(
+        (root / path).read_text(encoding="utf-8")
+        for path in (
+            "backend/core/fanxiu/runtime/kernel.py",
+            "backend/core/fanxiu/runtime/jupyter_kernel.py",
+        )
+    )
+    scheduler_source = (root / "backend/core/fanxiu/data_annotation/runtime_control.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "select_due_scheduled_tasks" not in kernel_source
+    assert "scheduler_tasks.json" not in kernel_source
+    assert "select_due_scheduled_tasks" in scheduler_source
+    assert "submit_runtime_task_cell" in scheduler_source
+
+
+def test_busy_kernel_preserves_persisted_business_running_state(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_control, "read_runtime_status", lambda path=None: {
+        "running": True,
+        "status": "running",
+        "current_task": "demo",
+    })
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", lambda: {
+        "running": False,
+        "status": "idle",
+        "logs": [],
+        "guard_items": {},
+    })
+    monkeypatch.setattr(runtime_control, "is_data_annotation_runtime_live_empty", lambda status: True)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "busy"},
+    )
+    monkeypatch.setattr(runtime_control, "persist_runtime_status", lambda *args, **kwargs: None)
+
+    status = runtime_control.runtime_status()
+
+    assert status["running"] is True
+    assert status["current_task"] == "demo"
+    assert status["kernel"]["execution_state"] == "busy"

@@ -553,7 +553,6 @@ export interface FanxiuDataAnnotationDoctorWatchEnsureResponse {
 export interface FanxiuDataAnnotationRuntimeStatus {
   ok: boolean;
   behavior_tree_enabled?: boolean;
-  service_running?: boolean;
   running: boolean;
   guard_group_enabled?: boolean;
   guard_group_running?: boolean;
@@ -575,21 +574,14 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   current_code: string;
   current_task_id?: string;
   interruptible?: boolean;
-  kernel_status?: Record<string, unknown>;
-  cell_status?: Record<string, unknown>;
-  scheduler_status?: Record<string, unknown>;
-  orchestration_status?: Record<string, unknown>;
-  cell_tick?: Record<string, unknown>;
+  kernel?: Record<string, unknown>;
   kernel_restart?: Record<string, unknown>;
-  isolation?: Record<string, unknown>;
   started_at: number;
   updated_at: number;
   finished_at: number;
   error: string;
   logs: Array<{ time: string; kind: string; message: string }>;
   cell_logs?: FanxiuDataAnnotationRuntimeCellLog[];
-  queued_cell?: Record<string, unknown>;
-  queued_job?: Record<string, unknown>;
 }
 
 export interface FanxiuDataAnnotationSchedulerTaskItem {
@@ -5182,7 +5174,7 @@ export const submitFanxiuDataAnnotationTaskCell = (
 export const submitFanxiuDataAnnotationCodeCell = (
   entryId: string,
   code: string,
-  options: { mode?: 'readonly' | 'act'; timeoutSeconds?: number; maxOutputChars?: number } = {},
+  options: { timeoutSeconds?: number; maxOutputChars?: number } = {},
 ) => {
   const timeoutSeconds = options.timeoutSeconds ?? 120;
   return api
@@ -5191,7 +5183,6 @@ export const submitFanxiuDataAnnotationCodeCell = (
       {
         entry_id: entryId,
         code,
-        mode: options.mode ?? 'readonly',
         timeout_seconds: timeoutSeconds,
         max_output_chars: options.maxOutputChars ?? 4000,
       },
@@ -5242,49 +5233,6 @@ export const setFanxiuDataAnnotationRuntimeGuardGroup = (entryId: string, enable
       '/fanxiu/data-annotation/runtime/guard/group/set',
       { entry_id: entryId, enabled },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
-    )
-    .then(res => res.data);
-};
-
-export const setFanxiuDataAnnotationRuntimeIsolation = (
-  entryId: string,
-  enabled: boolean,
-  token = '',
-  ttlSeconds = 21600,
-) => {
-  return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/isolation/set',
-      { entry_id: entryId, enabled, token, ttl_seconds: ttlSeconds },
-      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
-    )
-    .then(res => res.data);
-};
-
-export const tickFanxiuDataAnnotationRuntimeCell = (
-  entryId: string,
-  options: {
-    guard?: boolean;
-    task_cell?: boolean;
-    scheduled_job?: boolean;
-    run_mode?: 'tick_once' | 'until_idle' | 'current_job';
-    max_ticks?: number;
-    timeout_seconds?: number;
-  } = {},
-) => {
-  return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/cell/tick',
-      {
-        entry_id: entryId,
-        guard: options.guard ?? true,
-        task_cell: options.task_cell ?? true,
-        scheduled_job: options.scheduled_job ?? true,
-        run_mode: options.run_mode ?? 'tick_once',
-        max_ticks: options.max_ticks ?? 10,
-        timeout_seconds: options.timeout_seconds ?? 30,
-      },
-      { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, ((options.timeout_seconds ?? 30) * 1000) + 5000) },
     )
     .then(res => res.data);
 };

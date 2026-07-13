@@ -214,7 +214,6 @@ class FanxiuJupyterBinding:
 def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
     """Load the Fanxiu framework into the current, real IPython kernel."""
     from backend.core.fanxiu.runtime.behavior_tree import (
-        FANXIU_EMBEDDED_SERVICE_ENV,
         data_annotation_asset_tree_path,
         get_fanxiu_runtime_runner,
         resolve_fanxiu_entry,
@@ -224,7 +223,6 @@ def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
     shell = get_ipython()  # type: ignore[name-defined]
     if shell is None:
         raise RuntimeError("凡修框架只能加载到真实 IPython/Jupyter kernel")
-    os.environ[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
     resolved_entry_id = str(entry_id)
     entry = resolve_fanxiu_entry(resolved_entry_id)
     asset_tree_path = data_annotation_asset_tree_path(resolved_entry_id)
@@ -430,7 +428,7 @@ def execute_fanxiu_jupyter_cell(
     client.load_connection_file()
     client.start_channels()
     try:
-        client.wait_for_ready(timeout=min(3.0, max(1.0, deadline - time.time())))
+        client.wait_for_ready(timeout=min(10.0, max(1.0, deadline - time.time())))
     except Exception:
         client.stop_channels()
         raise

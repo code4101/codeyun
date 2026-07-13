@@ -388,7 +388,6 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationDoctorWatchLatestResponse,
     FanxiuDataAnnotationRuntimeCellLog,
     FanxiuDataAnnotationRuntimeCellLogResponse,
-    FanxiuDataAnnotationRuntimeCellTickRequest,
     FanxiuDataAnnotationRuntimeCodeCellRequest,
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
@@ -461,7 +460,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_scheduler_settings_path as _core_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
-    fanxiu_runtime_runner_wake,
     clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
     register_fanxiu_runtime_runner,
     resolve_fanxiu_entry,
@@ -4249,7 +4247,6 @@ def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[s
     status["behavior_tree_enabled"] = behavior_enabled
     if not behavior_enabled:
         status.update({
-            "service_running": False,
             "running": False,
             "guard_running": False,
             "guard_group_running": False,
@@ -4334,9 +4331,6 @@ def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> No
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    fanxiu_runtime_runner_wake()
-
-
 def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
     return _runtime_control.task_payload_with_meta(task)
 
@@ -4386,12 +4380,7 @@ def _submit_data_annotation_task_cell(
         _raise_fanxiu_runtime_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    log_source = {
-        "cmd": "submit_task_cell",
-        "entry_id": entry_id,
-        "task_type": task_type,
-        "payload": cell_payload,
-    }
+    log_source = {"code": f"run_task_cell({task_type!r}, {cell_payload!r})"}
     if source:
         log_source["source"] = source
     return _record_runtime_cell_log(
@@ -4427,7 +4416,6 @@ def _submit_data_annotation_code_cell(
         "cmd": "submit_code_cell",
         "entry_id": entry_id,
         "code": req.code,
-        "mode": req.mode,
         "timeout_seconds": req.timeout_seconds,
         "max_output_chars": req.max_output_chars,
     }
@@ -6070,78 +6058,6 @@ def set_fanxiu_data_annotation_runtime_service_guard_group(
     return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
 
 
-def _tick_fanxiu_data_annotation_runtime_cell(
-    entry: Any,
-    entry_id: str,
-    req: FanxiuDataAnnotationRuntimeCellTickRequest,
-    *,
-    source: str = "",
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
-    status = _runtime_framework.execute_tick(
-        entry=entry,
-        entry_id=entry_id,
-        guard=req.guard,
-        task_cell=req.task_cell,
-        scheduled_job=req.scheduled_job,
-        run_mode=req.run_mode,
-        max_ticks=req.max_ticks,
-        timeout_seconds=req.timeout_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    log_source = {
-        "cmd": "cell.tick",
-        "entry_id": entry_id,
-        "policy": {
-            "guard": req.guard,
-            "task_cell": req.task_cell,
-            "scheduled_job": req.scheduled_job,
-            "run_mode": req.run_mode,
-            "max_ticks": req.max_ticks,
-            "timeout_seconds": req.timeout_seconds,
-        },
-    }
-    if source:
-        log_source["source"] = source
-    status = _record_runtime_cell_log(
-        status,
-        title=f"{'服务' if source == 'service' else '调度器'}提交 tick：{req.run_mode}",
-        source=log_source,
-        before_keys=before_keys,
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
-
-
-@status_router.post("/data-annotation/runtime/cell/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-def tick_fanxiu_data_annotation_runtime_cell(
-    req: FanxiuDataAnnotationRuntimeCellTickRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_cell(entry, entry_id, req)
-
-
-@status_router.post(
-    "/data-annotation/runtime/service/cell/tick",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
-)
-def tick_fanxiu_data_annotation_runtime_service_cell(
-    req: FanxiuDataAnnotationRuntimeCellTickRequest,
-    session: Session = Depends(get_session),
-):
-    entry = _get_service_user_device_or_404(session, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _tick_fanxiu_data_annotation_runtime_cell(entry, entry_id, req, source="service")
-
-
 @status_router.get("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
 def get_fanxiu_data_annotation_runtime_logs(
     limit: int = Query(80, ge=1, le=2000),
@@ -6224,54 +6140,10 @@ def _runtime_cell_py_literal(value: Any) -> str:
     return repr(value)
 
 
-def _runtime_cell_bool(value: Any) -> str:
-    return "True" if bool(value) else "False"
-
-
 def _runtime_cell_source(payload: dict[str, Any]) -> str:
     if isinstance(payload.get("code"), str) and payload["code"].strip():
         return payload["code"].strip()
-    cmd = str(payload.get("cmd") or "")
-    prefix = "# 由后端服务提交\n" if payload.get("source") == "service" else ""
-    if cmd in {"cell.tick", "framework.tick"}:
-        policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
-        mode_name = {
-            "tick_once": "单步",
-            "until_idle": "到空闲",
-            "current_job": "本作业",
-        }.get(str(policy.get("run_mode") or ""), str(policy.get("run_mode") or "tick_once"))
-        return (
-            f"{prefix}runtime_framework.execute_tick(\n"
-            f"    guard={_runtime_cell_bool(policy.get('guard', True))},\n"
-            f"    task_cell={_runtime_cell_bool(policy.get('task_cell', True))},\n"
-            f"    scheduled_job={_runtime_cell_bool(policy.get('scheduled_job', True))},\n"
-            f"    run_mode={_runtime_cell_py_literal(mode_name)},\n"
-            f"    max_ticks={int(policy.get('max_ticks') or 1)},\n"
-            f"    timeout_seconds={float(policy.get('timeout_seconds') or 10.0):g},\n"
-            f")"
-        )
-    if cmd == "submit_task_tick":
-        task_type = str(payload.get("task_type") or "")
-        task_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-        return (
-            f"{prefix}task = 行为树.create_task({_runtime_cell_py_literal(task_type)}, {_runtime_cell_py_literal(task_payload)})\n"
-            "行为树.step(task, 守护=True)"
-        )
-    if cmd == "submit_task_cell":
-        task_type = str(payload.get("task_type") or "")
-        task_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-        return (
-            f"{prefix}行为树.submit_task_cell(\n"
-            f"    {_runtime_cell_py_literal(task_type)},\n"
-            f"    payload={_runtime_cell_py_literal(task_payload)},\n"
-            ")"
-        )
-    if cmd == "runtime_log_cell":
-        return _runtime_cell_log_source(str(payload.get("title") or "运行日志 cell"), [])
-    return (
-        "# 未识别的历史 cell 元数据\n"
-        f"cell_meta = {_runtime_cell_py_literal(payload)}"
-    )
+    return f"cell_meta = {_runtime_cell_py_literal(payload)}"
 
 
 def _runtime_cell_display_source(source: str) -> str:
@@ -6350,8 +6222,6 @@ def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
     message = entry.message.strip()
     if "启动" in message and "任务" in message:
         return message
-    if entry.scope == "manual_job":
-        return "作业 cell"
     if entry.scope == "job":
         return "自动作业 cell"
     if entry.scope == "guard":
@@ -6548,7 +6418,6 @@ def put_fanxiu_data_annotation_scheduler_tasks(
         now=datetime.now(),
     )
     _sync_data_annotation_runtime_runner_to_core()
-    fanxiu_runtime_runner_wake()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
@@ -6604,7 +6473,6 @@ def put_fanxiu_data_annotation_scheduler_settings(
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    fanxiu_runtime_runner_wake()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
@@ -6718,7 +6586,6 @@ def advance_next_fanxiu_data_annotation_scheduler_task(
     settings = _runtime_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
-    fanxiu_runtime_runner_wake()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))

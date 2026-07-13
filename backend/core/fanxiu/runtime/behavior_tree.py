@@ -1,37 +1,18 @@
 from __future__ import annotations
 
-import json
 import os
-import re
 import sys
 import time
-import uuid
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any
 
-import psutil
-from filelock import FileLock, Timeout
-from pyxllib.prog import (
-    acquire_json_lease,
-    clear_job_queue,
-    clear_stale_json_lease,
-    filter_status_logs,
-    is_json_lease_active,
-    owner_active_for_other_process,
-    read_json_lease,
-    read_json_object_status,
-    release_json_lease,
-    should_enqueue_local_run,
-    write_json_command,
-)
+from pyxllib.prog import filter_status_logs
 
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_log_once,
-    data_annotation_runtime_owner_message,
     is_data_annotation_runtime_live_empty,
     normalize_data_annotation_runtime_display,
     normalize_data_annotation_runtime_logs_for_display,
@@ -62,17 +43,6 @@ from backend.core.settings import ROOT_DIR, get_settings
 
 DEFAULT_FANXIU_ENTRY_ID = DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID
 _RUNTIME_RUNNER: Any | None = None
-FANXIU_EMBEDDED_SERVICE_ENV = "CODEYUN_FANXIU_EMBEDDED_BEHAVIOR_TREE_SERVICE"
-FANXIU_EXTERNAL_SERVICE_ENV = "CODEYUN_FANXIU_EXTERNAL_BEHAVIOR_TREE_SERVICE"
-
-
-@dataclass(frozen=True)
-class FanxiuLocalRunRequest:
-    task_type: str
-    payload: dict[str, Any] = field(default_factory=dict)
-    entry_id: str = DEFAULT_FANXIU_ENTRY_ID
-    isolate_jobs: bool = True
-    tick_seconds: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -152,213 +122,6 @@ def fanxiu_data_annotation_mail_scan_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "mail_scan_state.json"
 
 
-def fanxiu_behavior_tree_service_start_lock_path() -> Path:
-    return fanxiu_data_annotation_runtime_dir() / "behavior_tree_service_start.lock"
-
-
-def _fanxiu_process_exists(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        return psutil.pid_exists(pid)
-    except Exception:
-        pass
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        if os.name != "nt":
-            return False
-        try:
-            import ctypes
-
-            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
-            if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)
-                return True
-        except Exception:
-            return False
-        return False
-    return True
-
-
-def _fanxiu_process_matches_service_owner(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    try:
-        proc = psutil.Process(pid)
-        name = str(proc.name() or "").lower()
-        cmdline = [str(part) for part in proc.cmdline()]
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
-        return False
-    command = " ".join(cmdline).lower().replace("/", "\\")
-    if not command:
-        return False
-    if "python" not in name and "uv" not in name:
-        return False
-    return "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command) is not None
-
-
-def _fanxiu_service_processes() -> list[dict[str, Any]]:
-    processes: list[dict[str, Any]] = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            pid = int(proc.info.get("pid") or 0)
-            name = str(proc.info.get("name") or "")
-            cmdline = [str(part) for part in (proc.info.get("cmdline") or [])]
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError, TypeError, ValueError):
-            continue
-        command = " ".join(cmdline).lower().replace("/", "\\")
-        if pid != os.getpid() and "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command):
-            processes.append({"pid": pid, "name": name, "cmdline": cmdline})
-    return processes
-
-
-def _restart_stuck_external_service_for_pending_jobs(owner: dict[str, Any]) -> dict[str, Any]:
-    if not bool(owner.get("active")) or bool(owner.get("stale")):
-        return {"restarted": False, "reason": "owner_inactive"}
-    try:
-        owner_pid = int(owner.get("pid") or 0)
-    except (TypeError, ValueError):
-        owner_pid = 0
-    if owner_pid <= 0 or owner_pid == os.getpid() or not _fanxiu_process_matches_service_owner(owner_pid):
-        return {"restarted": False, "reason": "owner_not_external_service", "pid": owner_pid}
-    if str(owner.get("step") or "") != "task_running":
-        return {"restarted": False, "reason": "owner_not_in_task_running", "step": owner.get("step") or ""}
-    jobs = [
-        item
-        for item in fanxiu_data_annotation_task_cells()
-        if str(item.get("status") or "") in {"pending", "queued", "running"}
-    ]
-    if not jobs:
-        return {"restarted": False, "reason": "no_pending_jobs"}
-    now_ts = time.time()
-    recent_timestamps: list[float] = []
-    for value in (owner.get("updated_at"), owner.get("heartbeat_at")):
-        try:
-            timestamp = float(value or 0)
-        except (TypeError, ValueError):
-            timestamp = 0.0
-        if timestamp > 0:
-            recent_timestamps.append(timestamp)
-    for job in jobs:
-        for value in (job.get("updated_at"), job.get("created_at")):
-            try:
-                timestamp = float(value or 0)
-            except (TypeError, ValueError):
-                timestamp = 0.0
-            if timestamp > 0:
-                recent_timestamps.append(timestamp)
-    newest_activity_at = max(recent_timestamps) if recent_timestamps else 0.0
-    if newest_activity_at > 0 and now_ts - newest_activity_at < 30.0:
-        return {
-            "restarted": False,
-            "reason": "task_start_grace",
-            "pid": owner_pid,
-            "job_count": len(jobs),
-            "age_seconds": max(0.0, now_ts - newest_activity_at),
-        }
-    # Read the raw persisted runner state here.  The public status facade
-    # deliberately overlays an active external owner's heartbeat and can turn
-    # a stopped runner back into service_running/task_running.  Using that
-    # facade for recovery makes a dead task look healthy forever after the
-    # backend reloads.
-    persisted = read_fanxiu_runtime_status()
-    persisted_running = bool((persisted or {}).get("running"))
-    persisted_status = str((persisted or {}).get("status") or "")
-    persisted_phase = str((persisted or {}).get("phase") or "")
-    persisted_service_running = bool((persisted or {}).get("service_running"))
-    looks_idle = (not persisted_running) and persisted_status in {"", "idle", "success", "stopped", "error"}
-    service_state_split = looks_idle or not persisted_service_running
-    if not service_state_split:
-        return {
-            "restarted": False,
-            "reason": "runtime_not_idle",
-            "status": persisted_status,
-            "phase": persisted_phase,
-        }
-    request_fanxiu_behavior_tree_service_shutdown(
-        entry_id=str(owner.get("entry_id") or ""),
-        reason="pending_jobs_stuck_task_running",
-    )
-    deadline = time.time() + 3.0
-    while time.time() < deadline and _fanxiu_process_exists(owner_pid):
-        time.sleep(0.2)
-    terminated = False
-    killed = False
-    if _fanxiu_process_exists(owner_pid):
-        try:
-            process = psutil.Process(owner_pid)
-            process.terminate()
-            terminated = True
-        except Exception:
-            pass
-        deadline = time.time() + 3.0
-        while time.time() < deadline and _fanxiu_process_exists(owner_pid):
-            time.sleep(0.2)
-    if _fanxiu_process_exists(owner_pid):
-        try:
-            process = psutil.Process(owner_pid)
-            process.kill()
-            killed = True
-        except Exception:
-            pass
-        deadline = time.time() + 2.0
-        while time.time() < deadline and _fanxiu_process_exists(owner_pid):
-            time.sleep(0.2)
-    return {
-        "restarted": not _fanxiu_process_exists(owner_pid),
-        "reason": "pending_jobs_stuck_task_running",
-        "pid": owner_pid,
-        "terminated": terminated,
-        "killed": killed,
-        "job_count": len(jobs),
-        "status": persisted_status,
-        "phase": persisted_phase,
-        "service_running": persisted_service_running,
-    }
-
-
-def request_fanxiu_behavior_tree_stop(
-    *,
-    entry_id: str = "",
-    reason: str = "local_cli",
-    path: Path | None = None,
-) -> dict[str, Any]:
-    del path, reason
-    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
-
-    return FanxiuKernel(entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).interrupt()
-
-
-def request_fanxiu_behavior_tree_wake(
-    *,
-    entry_id: str = "",
-    reason: str = "wake",
-    path: Path | None = None,
-) -> dict[str, Any]:
-    del reason, path
-    entry = resolve_fanxiu_entry(entry_id or DEFAULT_FANXIU_ENTRY_ID)
-    return ensure_fanxiu_behavior_tree_service(entry, entry_id or DEFAULT_FANXIU_ENTRY_ID)
-
-
-def request_fanxiu_behavior_tree_service_shutdown(
-    *,
-    entry_id: str = "",
-    reason: str = "service_migration",
-    path: Path | None = None,
-) -> dict[str, Any]:
-    del path, reason
-    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
-
-    return FanxiuKernel(entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).shutdown()
-
-
 def restart_fanxiu_behavior_tree_service(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
@@ -366,153 +129,13 @@ def restart_fanxiu_behavior_tree_service(
     tick_seconds: float = 1.0,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Replace the resident Runtime/Jupyter process and wait for its owner.
+    del tick_seconds, force
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 
-    ``force=True`` matches an IDE's Restart Kernel action: request a graceful
-    shutdown briefly, then terminate only the verified Fanxiu service process.
-    """
-    if _current_process_is_fanxiu_service_host():
-        raise RuntimeError("不能从 resident service 自身执行 restart")
-
-    resolved_entry_id = str(entry_id or DEFAULT_FANXIU_ENTRY_ID)
-    before = read_fanxiu_behavior_tree_service_owner(stale_after_seconds=max(5.0, timeout_seconds))
-    old_pid = int(before.get("pid") or 0)
-    shutdown_request: dict[str, Any] = {}
-    if old_pid and bool(before.get("active")) and not bool(before.get("stale")):
-        shutdown_request = request_fanxiu_behavior_tree_service_shutdown(
-            entry_id=resolved_entry_id,
-            reason="explicit_restart",
-        )
-
-    requested_timeout = max(1.0, float(timeout_seconds or 15.0))
-    graceful_seconds = min(2.0, requested_timeout) if force else requested_timeout
-    deadline = time.time() + graceful_seconds
-    while old_pid and _fanxiu_process_exists(old_pid) and time.time() < deadline:
-        time.sleep(0.2)
-
-    if old_pid and _fanxiu_process_exists(old_pid):
-        if not force:
-            return {
-                "restarted": False,
-                "reason": "shutdown_timeout",
-                "old_pid": old_pid,
-                "shutdown_request": shutdown_request,
-                "owner": read_fanxiu_behavior_tree_service_owner(),
-            }
-        if not _fanxiu_process_matches_service_owner(old_pid):
-            return {
-                "restarted": False,
-                "reason": "force_refused_unverified_process",
-                "old_pid": old_pid,
-                "shutdown_request": shutdown_request,
-                "owner": read_fanxiu_behavior_tree_service_owner(),
-            }
-        try:
-            psutil.Process(old_pid).terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            pass
-        terminate_deadline = time.time() + min(1.5, requested_timeout)
-        while _fanxiu_process_exists(old_pid) and time.time() < terminate_deadline:
-            time.sleep(0.1)
-        if _fanxiu_process_exists(old_pid):
-            try:
-                psutil.Process(old_pid).kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-                pass
-        kill_deadline = time.time() + min(1.5, requested_timeout)
-        while _fanxiu_process_exists(old_pid) and time.time() < kill_deadline:
-            time.sleep(0.1)
-        if _fanxiu_process_exists(old_pid):
-            return {
-                "restarted": False,
-                "reason": "force_kill_timeout",
-                "old_pid": old_pid,
-                "shutdown_request": shutdown_request,
-                "owner": read_fanxiu_behavior_tree_service_owner(),
-            }
-
-    _clear_stale_fanxiu_behavior_tree_shutdown_request()
-    started = _start_external_fanxiu_behavior_tree_service(
-        resolved_entry_id,
-        tick_seconds=max(0.2, float(tick_seconds or 1.0)),
-        wait_seconds=max(1.0, min(10.0, requested_timeout)),
+    result = FanxiuKernel(entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).restart(
+        timeout_seconds=max(1.0, float(timeout_seconds or 15.0)),
     )
-    owner = read_fanxiu_behavior_tree_service_owner()
-    new_pid = int(owner.get("pid") or started.get("pid") or 0)
-    active = bool(owner.get("active")) and not bool(owner.get("stale"))
-    return {
-        "restarted": active and (not old_pid or new_pid != old_pid),
-        "reason": "restarted" if active else str(started.get("reason") or "start_failed"),
-        "old_pid": old_pid,
-        "new_pid": new_pid,
-        "shutdown_request": shutdown_request,
-        "start": started,
-        "owner": owner,
-    }
-
-
-def _clear_stale_fanxiu_behavior_tree_shutdown_request() -> None:
-    control_path = fanxiu_behavior_tree_control_path()
-    try:
-        payload = json.loads(control_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return
-    except Exception:
-        return
-    if not isinstance(payload, dict):
-        return
-    if str(payload.get("command") or "") != "shutdown_service":
-        return
-    try:
-        control_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-
-
-def read_fanxiu_behavior_tree_service_owner(
-    path: Path | None = None,
-    *,
-    stale_after_seconds: float = 120.0,
-) -> dict[str, Any]:
-    owner_path = path or fanxiu_behavior_tree_service_owner_path()
-    status = read_json_object_status(
-        owner_path,
-        stale_after_seconds=stale_after_seconds,
-        invalid_message="owner 文件不是 JSON object",
-    )
-    try:
-        owner_pid = int(status.get("pid") or 0)
-    except (TypeError, ValueError):
-        owner_pid = 0
-    if bool(status.get("active")) and owner_pid and owner_pid != os.getpid() and not _fanxiu_process_exists(owner_pid):
-        return {
-            **status,
-            "active": False,
-            "stale": True,
-            "error": f"owner 进程不存在：pid={owner_pid}",
-        }
-    if bool(status.get("active")) and owner_pid and not _fanxiu_process_matches_service_owner(owner_pid):
-        return {
-            **status,
-            "active": False,
-            "stale": True,
-            "error": f"owner 进程不是凡修常驻服务：pid={owner_pid}",
-        }
-    return status
-
-
-def _current_process_is_fanxiu_service_host() -> bool:
-    if str(os.environ.get(FANXIU_EMBEDDED_SERVICE_ENV) or "").strip() in {"1", "true", "True"}:
-        return True
-    command = " ".join(str(part) for part in sys.argv).lower().replace("/", "\\")
-    return "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command) is not None
-
-
-def _external_behavior_tree_service_enabled() -> bool:
-    value = str(os.environ.get(FANXIU_EXTERNAL_SERVICE_ENV) or "1").strip().lower()
-    return value not in {"0", "false", "no", "off"}
+    return {**result, "restarted": bool(result.get("ok"))}
 
 
 def _start_external_fanxiu_behavior_tree_service(
@@ -521,82 +144,16 @@ def _start_external_fanxiu_behavior_tree_service(
     tick_seconds: float = 1.0,
     wait_seconds: float = 5.0,
 ) -> dict[str, Any]:
-    if _current_process_is_fanxiu_service_host():
-        owner = read_fanxiu_behavior_tree_service_owner()
-        return {"started": False, "reason": "current_process_is_service_host", "owner": owner}
-    lock = FileLock(str(fanxiu_behavior_tree_service_start_lock_path()))
-    try:
-        with lock.acquire(timeout=8.0):
-            return _start_external_fanxiu_behavior_tree_service_locked(
-                entry_id,
-                tick_seconds=tick_seconds,
-                wait_seconds=wait_seconds,
-            )
-    except Timeout:
-        owner = read_fanxiu_behavior_tree_service_owner()
-        if bool(owner.get("active")) and not bool(owner.get("stale")):
-            return {"started": False, "reason": "owner_already_active_after_lock_timeout", "owner": owner}
-        return {"started": False, "reason": "service_start_lock_timeout", "owner": owner}
+    del tick_seconds
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
 
-
-def _start_external_fanxiu_behavior_tree_service_locked(
-    entry_id: str,
-    *,
-    tick_seconds: float = 1.0,
-    wait_seconds: float = 5.0,
-) -> dict[str, Any]:
-    if not _external_behavior_tree_service_enabled():
-        return {"started": False, "reason": "external_service_disabled"}
+    before = fanxiu_kernel_manager_status()
+    if bool(before.get("alive")):
+        return {"started": False, "reason": "kernel_already_alive", "kernel": before}
     script_path = ROOT_DIR / "scripts" / "fanxiu_bt.py"
     if not script_path.is_file():
         return {"started": False, "reason": f"service_script_missing:{script_path}"}
-    before = read_fanxiu_behavior_tree_service_owner()
-    if bool(before.get("active")) and not bool(before.get("stale")):
-        return {"started": False, "reason": "owner_already_active", "owner": before}
-    existing_services = _fanxiu_service_processes()
-    if existing_services:
-        owner_missing_or_stale = not bool(before.get("exists")) or bool(before.get("stale"))
-        if not owner_missing_or_stale:
-            return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": before}
-        request_fanxiu_behavior_tree_service_shutdown(entry_id=entry_id, reason="stale_external_service_takeover")
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            existing_services = _fanxiu_service_processes()
-            if not existing_services:
-                break
-            time.sleep(0.2)
-        if existing_services:
-            stopped: list[int] = []
-            for item in existing_services:
-                try:
-                    process = psutil.Process(int(item.get("pid") or 0))
-                    process.terminate()
-                    stopped.append(process.pid)
-                except Exception:
-                    continue
-            deadline = time.time() + 3.0
-            while time.time() < deadline:
-                existing_services = _fanxiu_service_processes()
-                if not existing_services:
-                    break
-                time.sleep(0.2)
-            if existing_services:
-                return {
-                    "started": False,
-                    "reason": "stale_service_process_stop_failed",
-                    "stopped_pids": stopped,
-                    "process": existing_services[0],
-                    "owner": read_fanxiu_behavior_tree_service_owner(),
-                }
-    if bool(before.get("exists")) and before.get("pid"):
-        request_fanxiu_behavior_tree_service_shutdown(entry_id=entry_id, reason="external_service_takeover")
-        time.sleep(1.0)
-        existing_services = _fanxiu_service_processes()
-        if existing_services:
-            return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": read_fanxiu_behavior_tree_service_owner()}
-    _clear_stale_fanxiu_behavior_tree_shutdown_request()
     env = os.environ.copy()
-    env[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
     log_dir = codeyun_temp_root("fanxiu-runtime")
@@ -611,8 +168,6 @@ def _start_external_fanxiu_behavior_tree_service_locked(
             "--entry-id",
             str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
             "service",
-            "--tick-seconds",
-            str(max(0.2, float(tick_seconds or 1.0))),
             preferred_root=ROOT_DIR,
             executable=sys.executable,
             cwd=os.fspath(ROOT_DIR),
@@ -627,16 +182,16 @@ def _start_external_fanxiu_behavior_tree_service_locked(
     stdout_file.close()
     stderr_file.close()
     deadline = time.time() + max(0.1, float(wait_seconds or 5.0))
-    owner: dict[str, Any] = {}
+    status: dict[str, Any] = {}
     while time.time() < deadline:
-        owner = read_fanxiu_behavior_tree_service_owner()
-        if bool(owner.get("active")) and not bool(owner.get("stale")):
+        status = fanxiu_kernel_manager_status()
+        if bool(status.get("alive")):
             break
         time.sleep(0.2)
     return {
-        "started": True,
+        "started": bool(status.get("alive")),
         "pid": process.pid,
-        "owner": owner,
+        "kernel": status,
         "stdout_path": os.fspath(stdout_path),
         "stderr_path": os.fspath(stderr_path),
     }
@@ -697,36 +252,8 @@ def fanxiu_runtime_guard_definitions() -> Any:
     return getattr(get_fanxiu_runtime_runner(), "guard_definitions", {}) or {}
 
 
-def fanxiu_runtime_runner_wake() -> None:
-    runner = get_fanxiu_runtime_runner()
-    wake_event = getattr(runner, "_service_wake_event", None)
-    if wake_event is not None:
-        wake_event.set()
-    try:
-        request_fanxiu_behavior_tree_wake(reason="runtime_wake")
-    except Exception:
-        pass
-
-
 def fanxiu_runtime_task_label(task_type: str, payload: dict[str, Any] | None = None) -> str:
     return get_fanxiu_runtime_runner()._runtime_task_label(task_type, payload)
-
-
-def start_fanxiu_task_cell(
-    *,
-    entry: Any,
-    entry_id: str,
-    task: dict[str, Any],
-    asset_tree_path: Path | None = None,
-) -> dict[str, Any]:
-    ensure_fanxiu_runtime_jobs_registered()
-    resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or DEFAULT_FANXIU_ENTRY_ID)
-    return get_fanxiu_runtime_runner().start_task_cell(
-        entry=entry,
-        entry_id=resolved_entry_id,
-        task=task,
-        asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
-    )
 
 
 def set_fanxiu_runtime_guard(
@@ -794,134 +321,43 @@ def fanxiu_data_annotation_runtime_status(
     world_facts_path: Path | None = None,
     include_cell_logs: bool = True,
 ) -> dict[str, Any]:
+    """Return business Runtime state with native Kernel state kept separate."""
     runner = get_fanxiu_runtime_runner()
-    persisted = read_fanxiu_runtime_status(runtime_state_path) if runtime_state_path is not None else read_fanxiu_runtime_status()
-    canonical_runtime_state_path = fanxiu_data_annotation_runtime_state_path().resolve(strict=False)
-    use_resident_owner = (
-        runtime_state_path is None
-        or Path(runtime_state_path).resolve(strict=False) == canonical_runtime_state_path
-    )
-    owner = read_fanxiu_behavior_tree_service_owner() if use_resident_owner else {}
-    owner_active_elsewhere = (
-        bool(owner.get("active"))
-        and not bool(owner.get("stale"))
-        and int(owner.get("pid") or 0) != os.getpid()
-    )
-    if owner_active_elsewhere and isinstance(persisted, dict) and persisted:
-        status = dict(persisted)
-        owner_step = str(owner.get("step") or "")
-        if bool(status.get("running")) and owner_step in {
-            "idle_guard",
-            "idle_guard_done",
-            "task_cell_poll",
-            "scheduler_poll",
-            "scheduler_isolated",
-            "waiting_context",
-        }:
-            status["running"] = False
-            status["status"] = "idle"
-            status["phase"] = owner_step
-            status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner_step)
-            status["current_task"] = ""
-            status["current_task_id"] = ""
-            status["task_type"] = ""
-            status["updated_at"] = time.time()
-    else:
-        try:
-            status = runner.status(include_cell_logs=include_cell_logs)
-        except TypeError:
-            status = runner.status()
-    owner_error = str(owner.get("error") or "") if isinstance(owner, dict) else ""
-    if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
+    persisted = read_fanxiu_runtime_status(runtime_state_path)
+    try:
+        status = runner.status(include_cell_logs=include_cell_logs)
+    except TypeError:
+        status = runner.status()
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    kernel_state = fanxiu_kernel_manager_status()
+    if persisted and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
-        status["running"] = False
-        status["guard_running"] = False
-        status["service_running"] = False
         status["updated_at"] = time.time()
-        if persisted.get("running"):
+        if persisted.get("running") and kernel_state.get("execution_state") != "busy":
+            status["running"] = False
+            status["guard_running"] = False
             status["status"] = "stopped"
             status["phase"] = "stopped"
-            status["message"] = "后端已重载，运行状态已结束"
+            status["message"] = "Kernel 已重载，先前业务任务已结束"
             status["finished_at"] = status.get("finished_at") or time.time()
             append_data_annotation_runtime_log_once(
                 status,
                 "stop",
-                "后端已重载，运行状态已结束",
+                "Kernel 已重载，先前业务任务已结束",
                 time_text=datetime.now().strftime("%H:%M:%S"),
             )
-        elif persisted.get("guard_enabled") or persisted.get("guard_running"):
-            status["status"] = "idle"
-            status["message"] = "后端已重载，行为树服务待恢复"
-            append_data_annotation_runtime_log_once(
-                status,
-                "stop",
-                "后端已重载，行为树服务待恢复",
-                time_text=datetime.now().strftime("%H:%M:%S"),
-            )
-    if (
-        runtime_state_path is None
-        and isinstance(owner, dict)
-        and bool(owner.get("exists"))
-        and not owner_active_elsewhere
-        and bool(owner.get("stale"))
-        and not bool(status.get("running"))
-        and str(status.get("phase") or "") == "service_owned_by_other"
-    ):
-        status["status"] = "idle"
-        status["phase"] = "idle"
-        status["service_running"] = False
-        status["guard_running"] = False
-        status["message"] = f"行为树常驻服务未运行，等待恢复：{owner_error or 'owner 已过期'}"
-        status["updated_at"] = time.time()
-    if runtime_state_path is None:
-        if bool(owner.get("active")) and not bool(owner.get("stale")):
-            status["service_running"] = True
-            status["updated_at"] = time.time()
-            if not bool(status.get("running")):
-                status["status"] = "idle"
-                status_blocking_overlays = [
-                    item
-                    for item in (status.get("blocking_overlays") or [])
-                    if isinstance(item, dict) and bool(item.get("blocking"))
-                ]
-                persisted_blocking_overlays = [
-                    item
-                    for item in ((persisted or {}).get("blocking_overlays") or [])
-                    if isinstance(item, dict) and bool(item.get("blocking"))
-                ] if isinstance(persisted, dict) else []
-                has_blocking_overlay = bool(status_blocking_overlays or persisted_blocking_overlays)
-                if (
-                    has_blocking_overlay
-                    and (
-                        str(status.get("phase") or "") == "scheduler_blocked"
-                        or str((persisted or {}).get("phase") or "") == "scheduler_blocked"
-                    )
-                ):
-                    status["phase"] = "scheduler_blocked"
-                    status["blocking_overlays"] = status_blocking_overlays or persisted_blocking_overlays
-                    status["message"] = str(
-                        (persisted or {}).get("message")
-                        or (persisted or {}).get("last_scheduler_block_message")
-                        or status.get("message")
-                        or "Scheduler 已阻断"
-                    )
-                    status["last_scheduler_block_message"] = str(
-                        (persisted or {}).get("last_scheduler_block_message") or status.get("message") or ""
-                    )
-                else:
-                    status["phase"] = str(owner.get("step") or "scheduler_poll")
-                    status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner.get("step") or "scheduler_poll")
+    status["kernel"] = kernel_state
     normalize_data_annotation_runtime_guard_items(status, runner.guard_definitions)
     normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
     if not include_cell_logs:
         status.pop("cell_logs", None)
-    if owner_active_elsewhere:
-        return status
-    if runtime_state_path is None and world_facts_path is None:
-        persist_fanxiu_runtime_status(status)
-    else:
-        persist_fanxiu_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    persist_fanxiu_runtime_status(
+        status,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
     return status
 
 
@@ -1075,32 +511,16 @@ def _fanxiu_task_wait_timeout_seconds(payload: dict[str, Any], *, fallback: floa
 
 
 
-def run_fanxiu_local_task(request: FanxiuLocalRunRequest) -> dict[str, Any]:
-    """Submit a behavior-tree task to the single resident kernel and wait."""
-    return submit_fanxiu_task_cell(
-        str(request.task_type or ""),
-        dict(request.payload or {}),
-        entry_id=str(request.entry_id or DEFAULT_FANXIU_ENTRY_ID),
-        isolate_jobs=bool(request.isolate_jobs),
-        wait=True,
-        wait_timeout_seconds=_fanxiu_task_wait_timeout_seconds(dict(request.payload or {})),
-        wait_poll_seconds=max(0.1, float(request.tick_seconds or 0.5)),
-    )
-
-
 def run_fanxiu_task(
     task_type: str,
     payload: dict[str, Any] | None = None,
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    isolate_jobs: bool = True,
 ) -> dict[str, Any]:
     return submit_fanxiu_task_cell(
         str(task_type or ""),
         dict(payload or {}),
         entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
-        isolate_jobs=bool(isolate_jobs),
-        wait=True,
     )
 
 
@@ -1108,12 +528,8 @@ def go_fanxiu_scene(
     scene_id: Any,
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    run_mode: str = "auto",
-    isolate_jobs: bool = True,
     timeout_seconds: float = 0.0,
-    wait: bool = False,
     wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"target_scene_id": parse_data_annotation_scene_id(scene_id)}
     if timeout_seconds:
@@ -1122,10 +538,7 @@ def go_fanxiu_scene(
         "go_scene",
         payload,
         entry_id=entry_id,
-        isolate_jobs=isolate_jobs,
-        wait=wait or normalize_fanxiu_local_run_mode(run_mode) == "direct",
         wait_timeout_seconds=wait_timeout_seconds,
-        wait_poll_seconds=wait_poll_seconds,
     )
 
 
@@ -1136,12 +549,8 @@ def run_fanxiu_mail_cleanup(
     scan_mode: str = "incremental",
     skip_capture: bool = False,
     max_actions: int = 0,
-    run_mode: str = "auto",
-    isolate_jobs: bool = True,
     timeout_seconds: float = 0.0,
-    wait: bool = False,
     wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "observe_only": bool(observe_only),
@@ -1155,10 +564,7 @@ def run_fanxiu_mail_cleanup(
         "mail_cleanup",
         payload,
         entry_id=entry_id,
-        isolate_jobs=isolate_jobs,
-        wait=wait or normalize_fanxiu_local_run_mode(run_mode) == "direct",
         wait_timeout_seconds=wait_timeout_seconds,
-        wait_poll_seconds=wait_poll_seconds,
     )
 
 
@@ -1169,12 +575,8 @@ def run_fanxiu_mail_claim_check(**kwargs: Any) -> dict[str, Any]:
 def run_fanxiu_xianfu_visit_partner(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    run_mode: str = "auto",
-    isolate_jobs: bool = True,
     timeout_seconds: float = 0.0,
-    wait: bool = False,
     wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if timeout_seconds:
@@ -1183,22 +585,15 @@ def run_fanxiu_xianfu_visit_partner(
         "xianfu_visit_partner",
         payload,
         entry_id=entry_id,
-        isolate_jobs=isolate_jobs,
-        wait=wait or normalize_fanxiu_local_run_mode(run_mode) == "direct",
         wait_timeout_seconds=wait_timeout_seconds,
-        wait_poll_seconds=wait_poll_seconds,
     )
 
 
 def run_fanxiu_xianfu_learn_skill(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    run_mode: str = "auto",
-    isolate_jobs: bool = True,
     timeout_seconds: float = 0.0,
-    wait: bool = False,
     wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if timeout_seconds:
@@ -1207,9 +602,6 @@ def run_fanxiu_xianfu_learn_skill(
         "xianfu_learn_skill",
         payload,
         entry_id=entry_id,
-        isolate_jobs=isolate_jobs,
-        wait=wait or normalize_fanxiu_local_run_mode(run_mode) == "direct",
         wait_timeout_seconds=wait_timeout_seconds,
-        wait_poll_seconds=wait_poll_seconds,
     )
 

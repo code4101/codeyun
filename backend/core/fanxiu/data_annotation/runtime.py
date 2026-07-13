@@ -140,47 +140,20 @@ class DataAnnotationRuntimeContainer:
             state_path=None,
             trace=0,
         )
-        heartbeat_stop = threading.Event()
-
-        def mark_heartbeat(step: str = "task_running") -> None:
-            marker = getattr(self.owner, "_mark_service_heartbeat", None)
-            if callable(marker):
-                try:
-                    marker(step)
-                except Exception:
-                    pass
-
-        def heartbeat_loop() -> None:
-            interval = max(1.0, min(15.0, float(tick_seconds or 1.0) * 10))
-            while not heartbeat_stop.wait(interval):
-                mark_heartbeat()
-
-        heartbeat_thread = threading.Thread(
-            target=heartbeat_loop,
-            name="fanxiu-runtime-job-heartbeat",
-            daemon=True,
-        )
-        heartbeat_thread.start()
-        try:
-            while True:
-                self.owner._raise_if_stopped(self.stop_event)
-                if max_runtime_seconds is not None and time.monotonic() - started_at > max_runtime_seconds:
-                    self.stop_event.set()
-                    raise RuntimeError(f"行为树任务超时：{label} 超过 {max_runtime_seconds:.0f} 秒")
-                mark_heartbeat()
-                tick_started_at = time.monotonic()
-                status = runner.run_once()
-                mark_heartbeat()
-                tick_elapsed = time.monotonic() - tick_started_at
-                if tick_elapsed >= 10.0:
-                    log = getattr(self.owner, "_log", None)
-                    if callable(log):
-                        log("detail", f"{label}：行为树tick耗时 {tick_elapsed:.2f}s status={status}")
-                if status == BehaviorTreeStatus.SUCCESS:
-                    return result_holder.get("value")
-                if status == BehaviorTreeStatus.FAILURE:
-                    raise RuntimeError(f"行为树节点失败：{label}")
-                self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
-        finally:
-            heartbeat_stop.set()
-            heartbeat_thread.join(timeout=0.2)
+        while True:
+            self.owner._raise_if_stopped(self.stop_event)
+            if max_runtime_seconds is not None and time.monotonic() - started_at > max_runtime_seconds:
+                self.stop_event.set()
+                raise RuntimeError(f"行为树任务超时：{label} 超过 {max_runtime_seconds:.0f} 秒")
+            tick_started_at = time.monotonic()
+            status = runner.run_once()
+            tick_elapsed = time.monotonic() - tick_started_at
+            if tick_elapsed >= 10.0:
+                log = getattr(self.owner, "_log", None)
+                if callable(log):
+                    log("detail", f"{label}：行为树tick耗时 {tick_elapsed:.2f}s status={status}")
+            if status == BehaviorTreeStatus.SUCCESS:
+                return result_holder.get("value")
+            if status == BehaviorTreeStatus.FAILURE:
+                raise RuntimeError(f"行为树节点失败：{label}")
+            self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))

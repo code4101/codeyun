@@ -18,7 +18,6 @@ import {
   setFanxiuDataAnnotationRuntimeBehaviorTree,
   setFanxiuDataAnnotationRuntimeGuard,
   setFanxiuDataAnnotationRuntimeGuardGroup,
-  setFanxiuDataAnnotationRuntimeIsolation,
   stopFanxiuDataAnnotationRuntimeCurrentTask,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
   type FanxiuDataAnnotationRuntimeCellLog,
@@ -65,8 +64,6 @@ const CELL_LOG_POLL_LIMIT = 1;
 const CELL_LOG_POLL_ENTRY_LIMIT = 80;
 const SLOW_STATE_POLL_TICKS = 10;
 const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
-const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
-const HUMAN_ISOLATION_TTL_SECONDS = 21600;
 
 const devices = computed(() => taskStore.devices);
 const behaviorTreeEnabled = computed(() => runtimeStatus.value?.behavior_tree_enabled ?? true);
@@ -74,23 +71,8 @@ const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enable
 const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
 const machineName = 'codepc_mf';
-const isolation = computed(() => runtimeStatus.value?.isolation || {});
-const isolationReason = computed(() => String(isolation.value.reason || ''));
-const isolationActive = computed(() => Boolean(isolation.value.active));
-const humanIsolationActive = computed(() => (
-  isolationActive.value
-  && (isolationReason.value === 'human_using_runtime' || isolationReason.value.startsWith('human_using_runtime:'))
-));
-const nonHumanIsolationActive = computed(() => isolationActive.value && !humanIsolationActive.value);
-const isolationToken = computed(() => String(isolation.value.token || ''));
 const runtimeMessage = computed(() => runtimeStatus.value?.message || '-');
-type RuntimeLayerStatusKey = 'kernel_status' | 'cell_status' | 'scheduler_status' | 'orchestration_status';
-
-const statusText = (section: RuntimeLayerStatusKey, key: string, fallback = '-') => {
-  const value = runtimeStatus.value?.[section]?.[key];
-  return value === undefined || value === null || value === '' ? fallback : String(value);
-};
-const kernelMessageText = computed(() => statusText('kernel_status', 'message', runtimeMessage.value));
+const kernelMessageText = computed(() => String(runtimeStatus.value?.kernel?.execution_state || 'dead'));
 const kernelToggleText = computed(() => (behaviorTreeEnabled.value ? '内核开启' : '内核关闭'));
 const kernelToggleTitle = computed(() => (behaviorTreeEnabled.value ? '点击关闭内核' : '点击打开内核'));
 const runtimeSecondaryMessage = computed(() => {
@@ -98,22 +80,16 @@ const runtimeSecondaryMessage = computed(() => {
   if (!message || message === '-') return '';
   return message === kernelMessageText.value.trim() ? '' : message;
 });
-const schedulerOwnerKey = computed<'engineering' | 'ai' | 'human' | 'isolated'>(() => {
-  if (humanIsolationActive.value) return 'human';
-  if (nonHumanIsolationActive.value) return 'isolated';
-  return schedulerJobGroupEnabled.value ? 'engineering' : 'ai';
-});
+const schedulerOwnerKey = computed<'engineering' | 'ai'>(() => (schedulerJobGroupEnabled.value ? 'engineering' : 'ai'));
 const schedulerOwnerOptions = [
-  { label: '人工', value: 'human' },
   { label: 'AI', value: 'ai' },
   { label: '工程', value: 'engineering' },
 ];
-const schedulerOwnerTitle = computed(() => {
-  if (humanIsolationActive.value) return '人工使用；AI 和工程只能等待';
-  if (nonHumanIsolationActive.value) return `已有隔离锁：${isolationReason.value || 'unknown'}`;
-  if (schedulerJobGroupEnabled.value) return '工程使用；工程自动执行到期作业，AI 只旁观';
-  return 'AI使用；工程不自动执行，到期作业等待 AI 显式提交 cell';
-});
+const schedulerOwnerTitle = computed(() => (
+  schedulerJobGroupEnabled.value
+    ? '工程调度：自动提交到期 Cell'
+    : 'AI 调度：工程暂停自动提交'
+));
 const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
   const items = runtimeStatus.value?.guard_items || {};
   return Object.values(items).map((item) => ({
@@ -407,16 +383,6 @@ const openDoctorAnnotationTarget = () => {
   });
 };
 
-const getStoredHumanIsolationToken = () => localStorage.getItem(HUMAN_ISOLATION_TOKEN_KEY) || '';
-
-const ensureHumanIsolationToken = () => {
-  const stored = getStoredHumanIsolationToken();
-  if (stored) return stored;
-  const token = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  localStorage.setItem(HUMAN_ISOLATION_TOKEN_KEY, token);
-  return token;
-};
-
 const warnRefreshFailure = (scope: string, error: unknown) => {
   console.warn(`${scope} failed`, error);
 };
@@ -450,16 +416,6 @@ const applyCellLogsPayload = (
 
 const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
-  const nextIsolation = status.isolation || {};
-  const reason = String(nextIsolation.reason || '');
-  const active = Boolean(nextIsolation.active);
-  const token = String(nextIsolation.token || '');
-  const isHuman = reason === 'human_using_runtime' || reason.startsWith('human_using_runtime:');
-  if (active && isHuman && token) {
-    localStorage.setItem(HUMAN_ISOLATION_TOKEN_KEY, token);
-  } else if (!active) {
-    localStorage.removeItem(HUMAN_ISOLATION_TOKEN_KEY);
-  }
 };
 
 const refreshStatus = async () => {
@@ -597,34 +553,15 @@ const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntim
 
 const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
 
-const setHumanIsolation = (enabled: boolean) => {
-  const token = enabled ? ensureHumanIsolationToken() : (isolationToken.value || getStoredHumanIsolationToken());
-  return setFanxiuDataAnnotationRuntimeIsolation(entryId.value, enabled, token, HUMAN_ISOLATION_TTL_SECONDS);
-};
-
 const changeSchedulerOwner = async (value: string) => {
-  if (!['engineering', 'ai', 'human'].includes(value)) return;
+  if (!['engineering', 'ai'].includes(value)) return;
   if (value === schedulerOwnerKey.value) return;
-  const owner = value as 'engineering' | 'ai' | 'human';
+  const owner = value as 'engineering' | 'ai';
   actionLoading.value = 'scheduler-owner';
   try {
-    let status: FanxiuDataAnnotationRuntimeStatus | null = null;
-    if (humanIsolationActive.value && owner !== 'human') {
-      status = await setHumanIsolation(false);
-      applyStatus(status);
-    }
-    if (owner === 'human') {
-      if (runtimeStatus.value?.running || runtimeStatus.value?.status === 'running') {
-        status = await stopFanxiuDataAnnotationRuntimeCurrentTask(entryId.value);
-        applyStatus(status);
-      }
-      status = await setHumanIsolation(true);
-      applyStatus(status);
-    } else {
-      const response = await setFanxiuDataAnnotationSchedulerSettings(owner === 'engineering', entryId.value);
-      schedulerTasks.value = response.tasks || [];
-      schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
-    }
+    const response = await setFanxiuDataAnnotationSchedulerSettings(owner === 'engineering', entryId.value);
+    schedulerTasks.value = response.tasks || [];
+    schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
     const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
     await Promise.all(followups);
   } catch (error: any) {
@@ -815,9 +752,9 @@ onUnmounted(() => {
                   </el-button>
                 </template>
                 <div class="runtime-help-doc">
-                  <h4>使用者</h4>
-                  <p>同一时间只有一个使用者：我、AI、工程。</p>
-                  <p>我使用时，AI 和工程都等待；AI 使用时，工程不自动跑；工程使用时，AI 只旁观。</p>
+                  <h4>调度来源</h4>
+                  <p>工程模式自动提交到期 Cell；AI 模式暂停工程自动提交。</p>
+                  <p>两者都通过同一个 Kernel Cell 入口执行。</p>
                 </div>
               </el-popover>
             </span>
@@ -825,17 +762,11 @@ onUnmounted(() => {
               class="scheduler-owner-select"
               size="small"
               :model-value="schedulerOwnerKey"
-              :disabled="nonHumanIsolationActive || actionLoading === 'scheduler-owner'"
+              :disabled="actionLoading === 'scheduler-owner'"
               :loading="actionLoading === 'scheduler-owner'"
               :title="schedulerOwnerTitle"
               @change="changeSchedulerOwner"
             >
-              <el-option
-                v-if="nonHumanIsolationActive"
-                label="隔离中"
-                value="isolated"
-                disabled
-              />
               <el-option
                 v-for="option in schedulerOwnerOptions"
                 :key="option.value"

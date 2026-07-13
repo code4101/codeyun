@@ -72,19 +72,16 @@ from backend.core.fanxiu.packet.service_runtime import (
     stop_fanxiu_packet_service,
 )
 from backend.core.fanxiu.runtime.behavior_tree import (
-    fanxiu_data_annotation_task_cells,
     ensure_fanxiu_behavior_tree_service,
     fanxiu_data_annotation_runtime_dir,
     fanxiu_data_annotation_runtime_status,
     fanxiu_data_annotation_runtime_state_path,
     fanxiu_data_annotation_world_facts_path,
-    read_fanxiu_behavior_tree_service_owner,
-    read_fanxiu_job_group_isolation,
-    request_fanxiu_behavior_tree_service_shutdown,
-    request_fanxiu_behavior_tree_wake,
     resolve_fanxiu_entry,
     stop_fanxiu_behavior_tree_current_task,
 )
+from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.data_annotation.runtime_control import ensure_doctor_watch_background, read_doctor_watch_latest
 from backend.core.runtime.units import (
     command_runtime_group,
@@ -1106,14 +1103,10 @@ def _summarize_doctor_watch_latest(payload: dict[str, Any]) -> dict[str, Any]:
 
 def inspect_fanxiu_behavior_tree_service() -> dict[str, Any]:
     status = _get_data_annotation_behavior_tree_status()
-    task_cells = fanxiu_data_annotation_task_cells()
     return {
         "status": "ok",
         "service": status,
-        "owner": read_fanxiu_behavior_tree_service_owner(),
-        "task_cell_count": len(task_cells),
-        "task_cells": [_serialize_fanxiu_task_cell_item(job) for job in task_cells[:20] if isinstance(job, dict)],
-        "isolation": read_fanxiu_job_group_isolation(),
+        "kernel": fanxiu_kernel_manager_status(),
         "doctor_watch": _summarize_doctor_watch_latest(read_doctor_watch_latest()),
     }
 
@@ -1125,10 +1118,7 @@ def restart_attendance_behavior_tree_service() -> dict[str, Any]:
 def wake_fanxiu_behavior_tree_service() -> dict[str, Any]:
     status = _get_data_annotation_behavior_tree_status()
     entry_id = str(status.get("entry_id") or status.get("guard_entry_id") or "")
-    request = request_fanxiu_behavior_tree_wake(
-        entry_id=entry_id,
-        reason="runtime_management_action",
-    )
+    request = ensure_fanxiu_behavior_tree_service(resolve_fanxiu_entry(entry_id), entry_id or None)
     refreshed = _get_data_annotation_behavior_tree_status()
     return {
         "status": "ok",
@@ -1139,29 +1129,15 @@ def wake_fanxiu_behavior_tree_service() -> dict[str, Any]:
 
 
 def restart_fanxiu_behavior_tree_service(*, timeout_seconds: float = 15.0, poll_seconds: float = 0.5) -> dict[str, Any]:
+    del poll_seconds
     before = _get_data_annotation_behavior_tree_status()
     entry_id = str(before.get("entry_id") or before.get("guard_entry_id") or "")
-    shutdown_request = request_fanxiu_behavior_tree_service_shutdown(
-        entry_id=entry_id,
-        reason="runtime_management_restart",
-    )
-    deadline = time.time() + max(1.0, float(timeout_seconds or 15.0))
-    owner = read_fanxiu_behavior_tree_service_owner()
-    while time.time() < deadline:
-        owner = read_fanxiu_behavior_tree_service_owner()
-        if not bool(owner.get("active")):
-            break
-        time.sleep(max(0.1, float(poll_seconds or 0.5)))
-    if bool(owner.get("active")):
-        raise HTTPException(status_code=409, detail="凡修行为树仍未停止，暂不能重启")
-
-    entry = resolve_fanxiu_entry(entry_id)
-    refreshed = ensure_fanxiu_behavior_tree_service(entry, entry_id or None)
+    restarted = FanxiuKernel(entry_id=entry_id).restart(timeout_seconds=max(1.0, float(timeout_seconds or 15.0)))
+    refreshed = _get_data_annotation_behavior_tree_status()
     return {
         "status": "ok",
         "action": "restart",
-        "shutdown_request": shutdown_request,
-        "owner_before_restart": owner,
+        "kernel_restart": restarted,
         "service": refreshed,
     }
 
@@ -1185,18 +1161,18 @@ def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
 def _fanxiu_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
     return {
         "labels": {
-            "trigger": "确保行为树",
-            "stop": "停止当前任务",
+            "trigger": "确保 Kernel",
+            "stop": "中断当前 Cell",
             "inspect": "运行诊断",
-            "restart": "重启行为树",
-            "wake": "唤醒行为树",
+            "restart": "重启 Kernel",
+            "wake": "确保 Kernel",
         },
         "descriptions": {
-            "trigger": "确保 resident service 存在并恢复必要附属服务，不是旧 external-service 起脚本。",
-            "stop": "只停止当前业务任务，不关闭 resident service。",
-            "inspect": "读取 runtime、owner、task cell 队列、隔离锁和 doctor 摘要。",
-            "restart": "写入 shutdown_service，等待 owner 释放后重新 ensure resident service。",
-            "wake": "写入 wake_service，唤醒 resident loop 立即重新轮询。",
+            "trigger": "确保原生 Jupyter Kernel 存活并已加载凡修框架。",
+            "stop": "原生 interrupt 当前 Cell，保留 Kernel namespace。",
+            "inspect": "分别读取 Kernel、Runtime、Scheduler 和 doctor 摘要。",
+            "restart": "原生 restart Kernel，清空 namespace 并重新加载凡修框架。",
+            "wake": "确保 Kernel 存活；Scheduler 仍在 Kernel 外部。",
         },
         "success_messages": {
             "trigger": "已确保凡修行为树常驻服务",
@@ -1447,9 +1423,7 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return build_attendance_behavior_tree_log_lines()
     if item.get("key") == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-        owner = read_fanxiu_behavior_tree_service_owner()
-        isolation = read_fanxiu_job_group_isolation()
-        task_cells = fanxiu_data_annotation_task_cells()
+        kernel = fanxiu_kernel_manager_status()
         doctor_watch = _summarize_doctor_watch_latest(read_doctor_watch_latest())
         lines = [
             f"名称：{item.get('title') or item.get('key')}",
@@ -1457,10 +1431,8 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
             f"入口：{raw.get('route_path') or '/fanxiu/data-annotation/runtime'}",
             f"Runtime 状态文件：{raw.get('runtime_state_path') or '-'}",
             f"World Facts：{raw.get('world_facts_path') or '-'}",
-            "动作语义：trigger=ensure resident service；stop=停止当前任务；restart=shutdown_service 后重新 ensure 常驻服务；wake=唤醒 resident loop 立即重轮询",
-            f"Owner：active={bool(owner.get('active'))} pid={owner.get('pid') or '-'} step={owner.get('step') or '-'}",
-            f"普通作业隔离：active={bool(isolation.get('active'))} reason={isolation.get('reason') or '-'}",
-            f"task cell 队列：{len(task_cells)}",
+            "动作语义：trigger=确保 Kernel 存活；stop=interrupt 当前 Cell；restart=原生重启 Kernel",
+            f"Kernel：alive={bool(kernel.get('alive'))} pid={kernel.get('kernel_pid') or '-'} state={kernel.get('execution_state') or '-'}",
             f"Doctor：{doctor_watch.get('snapshot', {}).get('maintenance', {}).get('severity') or '-'} · {doctor_watch.get('message') or '无巡检摘要'}",
         ]
         for job in task_cells[:10]:

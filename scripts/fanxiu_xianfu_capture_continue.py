@@ -18,7 +18,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path,
-    fanxiu_data_annotation_task_cells,
 )
 from backend.core.fanxiu.data_annotation.runtime_runner import (
     _parse_xianfu_visit_cd_seconds,
@@ -123,23 +122,11 @@ def _preflight_report(
         screenshot_dir=screenshot_dir,
         audit_ocr=False,
     )
-    task_cells = fanxiu_data_annotation_task_cells()
     optional_175 = next((row for row in audit.get("rows") or [] if row.get("number") == 175), {})
     return {
-        "ok": bool(audit.get("ok")) and not task_cells,
+        "ok": bool(audit.get("ok")),
         "asset_audit_ok": bool(audit.get("ok")),
         "image_175_present": bool(optional_175.get("present")),
-        "task_cell_count": len(task_cells),
-        "task_cells": [
-            {
-                "id": item.get("id"),
-                "status": item.get("status"),
-                "task_type": item.get("task_type"),
-                "label": item.get("label"),
-            }
-            for item in task_cells
-            if isinstance(item, dict)
-        ],
         "wait_plan": _scheduler_wait_plan(extra_seconds=wait_extra_seconds),
         "asset_audit_output": audit.get("output_json"),
     }
@@ -282,8 +269,6 @@ def _run_xianfu_runtime_task(
     *,
     entry_id: str,
     timeout_seconds: float,
-    run_mode: str = "auto",
-    wait: bool = True,
 ) -> dict[str, Any]:
     timeout = float(timeout_seconds or 180.0)
     command = [
@@ -291,14 +276,11 @@ def _run_xianfu_runtime_task(
         str(ROOT / "scripts" / "fanxiu_bt.py"),
         "--entry-id",
         str(entry_id),
-        "--run-mode",
-        str(run_mode or "auto"),
         "--timeout-seconds",
         str(timeout),
+        "--wait-timeout-seconds",
+        str(timeout),
     ]
-    effective_wait = bool(wait) or str(run_mode or "").strip().lower() == "direct"
-    if effective_wait:
-        command.extend(["--wait", "--wait-timeout-seconds", str(timeout)])
     command.extend([
         "task",
         "xianfu_visit_partner",
@@ -326,14 +308,10 @@ def _run_runtime_after_install(
     *,
     entry_id: str,
     timeout_seconds: float,
-    run_mode: str = "auto",
-    wait: bool = True,
 ) -> dict[str, Any]:
     return _run_xianfu_runtime_task(
         entry_id=entry_id,
         timeout_seconds=timeout_seconds,
-        run_mode=run_mode,
-        wait=wait,
     )
 
 
@@ -345,8 +323,6 @@ def main() -> int:
     parser.add_argument("--install", action="store_true", help="OCR 全部复核后安装 #175 到资产树")
     parser.add_argument("--run-runtime-after-install", action="store_true", help="安装 #175 后立即运行 xianfu_visit_partner 完成弹窗处理和 next_time 写入")
     parser.add_argument("--prepare-via-runtime", action="store_true", help="等待前先通过公开 Runtime 跑一次 xianfu_visit_partner，把画面准备到 #174")
-    parser.add_argument("--runtime-run-mode", choices=["auto", "direct"], default="auto")
-    parser.add_argument("--runtime-no-wait", action="store_true", help="运行准备/收尾 Runtime 任务时不等待 queued job 完成")
     parser.add_argument("--runtime-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--max-reprepare-count", type=int, default=20, help="等待免费期间不在 #174 时，最多重新通过 Runtime 准备的次数；0 表示不限")
     parser.add_argument("--max-unreadable-count", type=int, default=3, help="等待免费期间 #174 倒计时 OCR 不可读时的重试次数")
@@ -384,8 +360,6 @@ def main() -> int:
         result = _run_xianfu_runtime_task(
             entry_id=str(args.entry_id),
             timeout_seconds=float(args.runtime_timeout_seconds or 180.0),
-            run_mode=str(args.runtime_run_mode or "auto"),
-            wait=not bool(args.runtime_no_wait),
         )
         prepare_results.append(result)
         return result
@@ -460,8 +434,6 @@ def main() -> int:
                 runtime_result = _run_runtime_after_install(
                     entry_id=str(args.entry_id),
                     timeout_seconds=float(args.runtime_timeout_seconds or 180.0),
-                    run_mode=str(args.runtime_run_mode or "auto"),
-                    wait=not bool(args.runtime_no_wait),
                 )
             _print_json({
                 "ok": True,
