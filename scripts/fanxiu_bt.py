@@ -28,27 +28,17 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     FANXIU_EMBEDDED_SERVICE_ENV,
     FanxiuLocalServiceRequest,
-    acquire_fanxiu_job_group_isolation,
-    cancel_fanxiu_task_cell,
-    clear_fanxiu_task_cells,
-    clear_stale_fanxiu_job_group_isolation,
     clear_fanxiu_data_annotation_runtime_logs,
-    fanxiu_data_annotation_task_cells,
     fanxiu_data_annotation_task_cell_catalog,
     fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status,
     fanxiu_data_annotation_dir,
     data_annotation_asset_tree_path,
-    read_fanxiu_job_group_isolation,
     read_fanxiu_behavior_tree_service_owner,
-    release_fanxiu_job_group_isolation,
-    request_fanxiu_behavior_tree_stop,
-    restart_fanxiu_behavior_tree_service,
     resolve_fanxiu_entry,
     run_fanxiu_local_service,
     start_fanxiu_local_service,
     stop_fanxiu_local_service,
-    wait_fanxiu_task_cell,
 )
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.runtime.jupyter_kernel import run_fanxiu_jupyter_kernel_service
@@ -140,7 +130,6 @@ def _print_status(status: dict[str, Any]) -> None:
             "current_scene": status.get("current_scene"),
             "message": status.get("message"),
             "error": status.get("error"),
-            "queued_cell": status.get("queued_cell") or status.get("queued_job") or {},
         }
     if "output" in status:
         summary["output"] = status.get("output")
@@ -171,41 +160,6 @@ def _print_owner(owner: dict[str, Any]) -> None:
         indent=2,
         default=str,
     ))
-
-
-def _print_task_cells(jobs: list[dict[str, Any]]) -> None:
-    if not jobs:
-        print("task cell 队列为空")
-        return
-    for job in jobs:
-        print(json.dumps(
-            {
-                "id": job.get("id"),
-                "status": job.get("status"),
-                "task_type": job.get("task_type"),
-                "label": job.get("label"),
-                "created_at": job.get("created_at"),
-                "started_at": job.get("started_at"),
-            },
-            ensure_ascii=False,
-            default=str,
-        ))
-
-
-def _wait_and_print_queued_cell(status: dict[str, Any], timeout_seconds: float) -> int:
-    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
-    if not queued_cell:
-        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_cell.get("id") or "")
-    if not job_id:
-        print("没有 queued_cell.id，无法等待")
-        return 1
-    result = wait_fanxiu_task_cell(job_id, timeout_seconds=float(timeout_seconds or 300.0))
-    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    runtime_status = result.get("runtime_status") if isinstance(result.get("runtime_status"), dict) else {}
-    if not bool(result.get("done")):
-        return 1
-    return 0 if str(runtime_status.get("status") or "") not in {"error", "stopped"} else 1
 
 
 def _print_job_catalog(items: list[dict[str, Any]]) -> None:
@@ -831,7 +785,6 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
     owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
-    isolation = report.get("isolation") if isinstance(report.get("isolation"), dict) else {}
     next_action = str(scheduler.get("next_action") or "")
     if next_action in {"job_group_disabled", "run_due"}:
         report["auto_run_due_blocked_reason"] = next_action
@@ -839,10 +792,6 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     if next_action != "manual_ai_cell":
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
-        return False
-    if [item for item in (report.get("task_cells") or []) if isinstance(item, dict)]:
-        return False
-    if bool(isolation.get("active")):
         return False
     if str(maintenance.get("severity") or "") in {"blocked", "error"}:
         return False
@@ -853,42 +802,6 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     return True
 
 
-def _watch_wait_for_queued_cell(status: dict[str, Any], *, entry_id: str, timeout_seconds: float) -> dict[str, Any]:
-    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
-    if not queued_cell:
-        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_cell.get("id") or "")
-    if not job_id:
-        return {"waited": False, "error": "missing_queued_cell_id"}
-    previous_embedded = os.environ.get(FANXIU_EMBEDDED_SERVICE_ENV)
-    result: dict[str, Any] | None = None
-    try:
-        os.environ[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
-        service_status = start_fanxiu_local_service(
-            FanxiuLocalServiceRequest(entry_id=entry_id, tick_seconds=0.5)
-        )
-        result = wait_fanxiu_task_cell(
-            job_id,
-            timeout_seconds=max(1.0, float(timeout_seconds or 900.0)),
-            poll_seconds=0.5,
-        )
-        return {
-            "waited": True,
-            "job_id": job_id,
-            "done": bool(result.get("done")),
-            "result": result.get("result"),
-            "runtime_status": result.get("runtime_status"),
-            "service_status": service_status,
-        }
-    finally:
-        if result is not None and bool(result.get("done")):
-            stop_fanxiu_local_service()
-        if previous_embedded is None:
-            os.environ.pop(FANXIU_EMBEDDED_SERVICE_ENV, None)
-        else:
-            os.environ[FANXIU_EMBEDDED_SERVICE_ENV] = previous_embedded
-
-
 def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float = 900.0) -> dict[str, Any]:
     owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
     entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
@@ -897,16 +810,6 @@ def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float =
         entry_id=entry_id,
         asset_tree_path=data_annotation_asset_tree_path(entry_id),
     )
-    wait_result: dict[str, Any] = {}
-    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
-    if not queued_cell:
-        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    if str(status.get("phase") or "") == "scheduler_due_queued" and queued_cell.get("id"):
-        wait_result = _watch_wait_for_queued_cell(
-            status,
-            entry_id=entry_id,
-            timeout_seconds=wait_timeout_seconds,
-        )
     return {
         "triggered": True,
         "entry_id": entry_id,
@@ -915,8 +818,7 @@ def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float =
         "message": status.get("message"),
         "current_task_id": status.get("current_task_id"),
         "blocking_overlays": status.get("blocking_overlays") or [],
-        "queued_cell": queued_cell or None,
-        "wait_result": wait_result,
+        "wait_result": {"done": True, "result": status.get("status")},
     }
 
 
@@ -1296,8 +1198,6 @@ def _run_doctor_watch(
 def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[str, Any]:
     owner = read_fanxiu_behavior_tree_service_owner()
     runtime_status = fanxiu_data_annotation_runtime_status()
-    jobs = fanxiu_data_annotation_task_cells()
-    isolation = read_fanxiu_job_group_isolation()
     entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     scheduler_plan = build_scheduler_plan(
         entry=resolve_fanxiu_entry(entry_id),
@@ -1313,8 +1213,6 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
         "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "owner": owner,
         "runtime": _runtime_status_summary(runtime_status),
-        "task_cells": jobs,
-        "isolation": isolation,
         "scheduler": {
             "next_action": scheduler_plan.get("next_action"),
             "message": scheduler_plan.get("message"),
@@ -1424,19 +1322,13 @@ def main() -> int:
     stop = subparsers.add_parser("stop", help="请求 resident service 停止当前任务")
     stop.add_argument("--reason", default="local_cli")
 
+    interrupt = subparsers.add_parser("interrupt", help="立即中断当前 Jupyter cell")
+    interrupt.add_argument("--interrupt-timeout-seconds", type=float, default=3.0)
+
     restart = subparsers.add_parser("restart", help="重启 resident Runtime/Jupyter 内核")
     restart.add_argument("--restart-timeout-seconds", type=float, default=15.0)
     restart.add_argument("--tick-seconds", type=float, default=1.0)
-
-    queue = subparsers.add_parser("queue", help="查看本地 task cell 队列")
-    queue.add_argument("--json", action="store_true", help="输出 JSON")
-
-    cancel = subparsers.add_parser("cancel", help="取消本地 task cell 队列中的任务")
-    cancel.add_argument("job_id")
-    cancel.add_argument("--force", action="store_true", help="允许删除 running 记录；停止执行仍应优先用 stop")
-
-    clear_queue = subparsers.add_parser("clear-queue", help="清空本地 task cell 队列")
-    clear_queue.add_argument("--force", action="store_true", help="同时删除 running 记录")
+    restart.add_argument("--graceful", action="store_true", help="只请求优雅退出，不强制替换无响应内核")
 
     status_parser = subparsers.add_parser("status", help="查看本地 Runtime 状态")
     status_parser.add_argument("--raw", action="store_true", help="输出完整 JSON")
@@ -1491,17 +1383,6 @@ def main() -> int:
     owner_parser = subparsers.add_parser("owner", help="查看行为树全局单例 owner")
     owner_parser.add_argument("--stale-after-seconds", type=float, default=120.0)
     owner_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
-
-    isolation = subparsers.add_parser("isolation", help="查看工程作业隔离锁")
-    isolation.add_argument("--json", action="store_true", help="输出 JSON")
-    isolation.add_argument("--clear-stale", action="store_true", help="清理已过期隔离锁")
-
-    isolate = subparsers.add_parser("isolate", help="手动隔离工程作业")
-    isolate.add_argument("--reason", default="local_cli")
-    isolate.add_argument("--ttl-seconds", type=float, default=300.0)
-
-    release_isolation = subparsers.add_parser("release-isolation", help="按 token 释放工程作业隔离锁")
-    release_isolation.add_argument("token")
 
     subparsers.add_parser("clear-logs", help="清空本地 Runtime 日志")
 
@@ -1609,29 +1490,6 @@ def main() -> int:
         else:
             _print_owner(owner)
         return 0 if bool(owner.get("active")) else 1
-    if args.command == "isolation":
-        status = clear_stale_fanxiu_job_group_isolation() if bool(args.clear_stale) else read_fanxiu_job_group_isolation()
-        print(json.dumps(status, ensure_ascii=False, indent=2, default=str))
-        return 0 if bool(status.get("active")) or bool(status.get("cleared")) or not bool(status.get("exists")) else 1
-    if args.command == "isolate":
-        token = acquire_fanxiu_job_group_isolation(
-            reason=str(args.reason or "local_cli"),
-            ttl_seconds=float(args.ttl_seconds or 300.0),
-        )
-        print(json.dumps(read_fanxiu_job_group_isolation(), ensure_ascii=False, indent=2, default=str))
-        print(f"token={token}")
-        return 0
-    if args.command == "release-isolation":
-        release_fanxiu_job_group_isolation(str(args.token or ""))
-        print(json.dumps(read_fanxiu_job_group_isolation(), ensure_ascii=False, indent=2, default=str))
-        return 0
-    if args.command == "queue":
-        jobs = fanxiu_data_annotation_task_cells()
-        if args.json:
-            print(json.dumps(jobs, ensure_ascii=False, indent=2, default=str))
-        else:
-            _print_task_cells(jobs)
-        return 0
     if args.command == "tasks":
         items = fanxiu_data_annotation_task_cell_catalog()
         if args.json:
@@ -1639,43 +1497,32 @@ def main() -> int:
         else:
             _print_job_catalog(items)
         return 0
-    if args.command == "stop":
-        request = request_fanxiu_behavior_tree_stop(entry_id=str(args.entry_id), reason=str(args.reason or "local_cli"))
-        print(json.dumps(request, ensure_ascii=False, indent=2, default=str))
-        return 0
-    if args.command == "cancel":
-        result = cancel_fanxiu_task_cell(str(args.job_id), force=bool(args.force))
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0 if bool(result.get("cancelled")) else 1
-    if args.command == "clear-queue":
-        result = clear_fanxiu_task_cells(force=bool(args.force))
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0
-    if args.command == "restart":
-        result = restart_fanxiu_behavior_tree_service(
-            entry_id=str(args.entry_id),
-            timeout_seconds=float(args.restart_timeout_seconds or 15.0),
-            tick_seconds=float(args.tick_seconds or 1.0),
+    if args.command in {"stop", "interrupt"}:
+        kernel = FanxiuKernel(entry_id=str(args.entry_id))
+        result = kernel.interrupt(
+            timeout_seconds=float(getattr(args, "interrupt_timeout_seconds", 3.0) or 3.0),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0 if bool(result.get("restarted")) else 1
+        return 0 if bool(result.get("ok")) else 1
+    if args.command == "restart":
+        kernel = FanxiuKernel(entry_id=str(args.entry_id))
+        result = kernel.restart(
+            timeout_seconds=float(args.restart_timeout_seconds or 15.0),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if bool(result.get("ok")) else 1
     if args.command in {"cell", "code-cell", "py"}:
         code = str(args.code or "")
         if args.file:
             code = Path(args.file).read_text(encoding="utf-8")
         if not code.strip():
             raise SystemExit(f"{args.command} 需要提供代码或 --file")
-        kernel = FanxiuKernel(
-            entry_id=str(args.entry_id),
-            isolate_jobs=not bool(args.no_isolate_jobs),
-        )
-        cell_factory = kernel.cell if args.command == "cell" else kernel.code
+        kernel = FanxiuKernel(entry_id=str(args.entry_id))
+        cell_factory = kernel.cell
         cell_kwargs = {
             "timeout_seconds": float(args.timeout_seconds or 120.0),
             "max_output_chars": int(args.max_output_chars or 4000),
         }
-        if args.command != "cell":
-            cell_kwargs["mode"] = str(args.mode or "readonly")
         cell = cell_factory(code, **cell_kwargs)
         status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
         _print_status(status)
@@ -1694,26 +1541,15 @@ def main() -> int:
         return 0
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
-    kernel = FanxiuKernel(
-        entry_id=str(args.entry_id),
-        isolate_jobs=not bool(args.no_isolate_jobs),
-    )
+    kernel = FanxiuKernel(entry_id=str(args.entry_id))
     if args.command == "run":
         status = kernel.task(task_type, payload).run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
         _print_status(status)
         return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
-    run_mode = str(args.run_mode or "auto")
-    wait = bool(args.wait) or run_mode == "direct"
     cell = kernel.task(task_type, payload)
-    status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0)) if wait else cell.submit()
-    if wait and run_mode != "direct":
-        print(json.dumps(status, ensure_ascii=False, indent=2, default=str))
-        runtime_status = status.get("runtime_status") if isinstance(status.get("runtime_status"), dict) else {}
-        return 0 if bool(status.get("done")) and str(runtime_status.get("status") or "") not in {"error", "stopped"} else 1
+    status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
     _print_status(status)
-    if run_mode == "direct":
-        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
-    return 0 if str(status.get("status") or "") not in {"error"} else 1
+    return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
 
 
 if __name__ == "__main__":

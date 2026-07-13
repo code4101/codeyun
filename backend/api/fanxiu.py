@@ -378,12 +378,7 @@ from backend.core.fanxiu.mail.packet_sync import (
 from backend.core.fanxiu.data_annotation.jobs import (
     DataAnnotationTaskCellDefinition as _DataAnnotationTaskCellDefinition,
     _DATA_ANNOTATION_TASK_CELL_REGISTRY,
-    create_data_annotation_task_cell,
-    data_annotation_task_cells_state,
     get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
-    pop_next_data_annotation_task_cell,
-    read_data_annotation_task_cells,
-    requeue_running_data_annotation_task_cells,
     register_fanxiu_data_annotation_task_cell,
 )
 from backend.core.fanxiu.data_annotation import runtime_control as _runtime_control
@@ -455,13 +450,10 @@ from backend.core.fanxiu.data_annotation.runtime import (
 )
 from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
-    acquire_fanxiu_job_group_isolation,
-    clear_stale_fanxiu_job_group_isolation,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
     fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
-    fanxiu_data_annotation_task_cell_state_path as _core_task_cell_state_path,
     fanxiu_data_annotation_runtime_dir as _core_data_annotation_runtime_dir,
     fanxiu_data_annotation_runtime_logs as _core_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status as _core_data_annotation_runtime_status,
@@ -469,11 +461,8 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_scheduler_settings_path as _core_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
-    fanxiu_job_group_isolated,
-    fanxiu_job_group_isolation_path as _core_job_group_isolation_path,
     fanxiu_runtime_runner_wake,
     clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
-    release_fanxiu_job_group_isolation,
     register_fanxiu_runtime_runner,
     resolve_fanxiu_entry,
 )
@@ -4205,14 +4194,6 @@ def _data_annotation_scheduler_settings_path() -> Path:
     return _core_scheduler_settings_path()
 
 
-def _data_annotation_task_cell_state_path() -> Path:
-    return _core_task_cell_state_path()
-
-
-def _data_annotation_job_group_isolation_path() -> Path:
-    return _core_job_group_isolation_path()
-
-
 def _data_annotation_mail_scan_state_path() -> Path:
     return _core_mail_scan_state_path()
 
@@ -4254,14 +4235,6 @@ def _normalize_data_annotation_runtime_guard_items(status: dict[str, Any]) -> No
     _runtime_control.normalize_runtime_guard_items(status)
 
 
-def _repair_orphaned_data_annotation_scheduler_runs(tasks: list[dict[str, Any]]) -> bool:
-    _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.repair_orphaned_scheduler_runs(
-        tasks,
-        task_cell_path=_data_annotation_task_cell_state_path(),
-    )
-
-
 def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
     status = _core_data_annotation_runtime_status(
@@ -4269,7 +4242,6 @@ def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[s
         world_facts_path=_data_annotation_world_facts_path(),
         include_cell_logs=include_cell_logs,
     )
-    status["isolation"] = clear_stale_fanxiu_job_group_isolation(_data_annotation_job_group_isolation_path())
     settings = _runtime_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
@@ -4287,124 +4259,16 @@ def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[s
     return status
 
 
-def _is_human_runtime_isolation(status: dict[str, Any]) -> bool:
-    reason = str(status.get("reason") or "")
-    return reason == "human_using_runtime" or reason.startswith("human_using_runtime:")
-
-
-def _set_fanxiu_data_annotation_runtime_isolation(
-    entry: Any,
-    entry_id: str,
-    req: FanxiuDataAnnotationRuntimeIsolationRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    isolation_path = _data_annotation_job_group_isolation_path()
-    status = clear_stale_fanxiu_job_group_isolation(isolation_path)
-    active = bool(status.get("active"))
-    token = str(req.token or "").strip()
-    if req.enabled:
-        if active and not _is_human_runtime_isolation(status):
-            raise HTTPException(status_code=409, detail="工程作业已有非人工隔离锁，不能覆盖")
-        token = token or uuid.uuid4().hex
-        acquire_fanxiu_job_group_isolation(
-            reason="human_using_runtime",
-            ttl_seconds=req.ttl_seconds,
-            token=token,
-            path=isolation_path,
-        )
-    else:
-        if active:
-            if not _is_human_runtime_isolation(status) and token != str(status.get("token") or ""):
-                raise HTTPException(status_code=409, detail="工程作业已有非人工隔离锁，不能解除")
-            release_token = token or str(status.get("token") or "")
-            if not release_token:
-                raise HTTPException(status_code=400, detail="缺少隔离锁 token")
-            release_fanxiu_job_group_isolation(release_token, path=isolation_path)
-    fanxiu_runtime_runner_wake()
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
-
-
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
     return _runtime_control.read_scheduler_tasks(
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        task_cell_path=_data_annotation_task_cell_state_path(),
         now=datetime.now(),
     )
 
 
 def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
     _runtime_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
-
-
-def _read_data_annotation_task_cells() -> list[dict[str, Any]]:
-    return _runtime_control.read_task_cells(_data_annotation_task_cell_state_path())
-
-
-def _write_data_annotation_task_cells(task_cells: list[dict[str, Any]]) -> None:
-    _runtime_control.write_task_cells(task_cells, _data_annotation_task_cell_state_path())
-
-
-def _requeue_running_data_annotation_task_cells() -> int:
-    return _runtime_control.requeue_running_task_cells(_data_annotation_task_cell_state_path())
-
-
-def _remove_data_annotation_task_cell(cell_id: str) -> None:
-    _runtime_control.remove_task_cell(cell_id, _data_annotation_task_cell_state_path())
-
-
-def _enqueue_data_annotation_task_cell(
-    task_type: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    label: str = "",
-    interruptible: bool | None = None,
-) -> dict[str, Any]:
-    return _runtime_control.enqueue_task_cell(
-        task_type,
-        payload,
-        label=label,
-        interruptible=interruptible,
-        task_cell_path=_data_annotation_task_cell_state_path(),
-    )
-
-
-def _queue_data_annotation_task_cell_status(
-    *,
-    entry: UserDevice,
-    entry_id: str,
-    task_type: str,
-    payload: dict[str, Any] | None = None,
-    label: str = "",
-    interruptible: bool | None = None,
-) -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.queue_runtime_task_cell_status(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=payload,
-        label=label,
-        interruptible=interruptible,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        task_cell_path=_data_annotation_task_cell_state_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-
-
-def _pop_next_data_annotation_task_cell() -> dict[str, Any] | None:
-    return _runtime_control.pop_next_task_cell(_data_annotation_task_cell_state_path())
-
-
-def _start_next_data_annotation_task_cell_if_idle(entry: UserDevice, entry_id: str) -> dict[str, Any] | None:
-    _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.start_next_task_cell_if_idle(
-        entry=entry,
-        entry_id=entry_id,
-        task_cell_path=_data_annotation_task_cell_state_path(),
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-    )
 
 
 def _next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
@@ -4450,7 +4314,6 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        task_cell_path=_data_annotation_task_cell_state_path(),
     )
 
 
@@ -4459,10 +4322,6 @@ def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> No
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
     if not (bool(settings.get("job_group_enabled", True)) and bool(settings.get("behavior_tree_enabled", True))):
-        return
-    status = _data_annotation_runtime_status(include_cell_logs=False)
-    if bool(status.get("service_running")):
-        fanxiu_runtime_runner_wake()
         return
     if entry is None:
         return
@@ -4522,10 +4381,6 @@ def _submit_data_annotation_task_cell(
             entry_id=entry_id,
             task_type=task_type,
             payload=cell_payload,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            task_cell_path=_data_annotation_task_cell_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
         )
     except FanxiuRuntimeError as exc:
         _raise_fanxiu_runtime_http_error(exc)
@@ -4561,13 +4416,8 @@ def _submit_data_annotation_code_cell(
             entry=entry,
             entry_id=entry_id,
             code=req.code,
-            mode=req.mode,
             timeout_seconds=req.timeout_seconds,
             max_output_chars=req.max_output_chars,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            task_cell_path=_data_annotation_task_cell_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
         )
     except FanxiuRuntimeError as exc:
         _raise_fanxiu_runtime_http_error(exc)
@@ -6192,18 +6042,6 @@ def set_fanxiu_data_annotation_runtime_guard_group(
     return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/isolation/set", response_model=FanxiuDataAnnotationRuntimeStatus)
-def set_fanxiu_data_annotation_runtime_isolation(
-    req: FanxiuDataAnnotationRuntimeIsolationRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_isolation(entry, entry_id, req)
-
-
 @status_router.post(
     "/data-annotation/runtime/service/guard/set",
     response_model=FanxiuDataAnnotationRuntimeStatus,
@@ -6230,20 +6068,6 @@ def set_fanxiu_data_annotation_runtime_service_guard_group(
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
     return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
-
-
-@status_router.post(
-    "/data-annotation/runtime/service/isolation/set",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
-)
-def set_fanxiu_data_annotation_runtime_service_isolation(
-    req: FanxiuDataAnnotationRuntimeIsolationRequest,
-    session: Session = Depends(get_session),
-):
-    entry = _get_service_user_device_or_404(session, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_isolation(entry, entry_id, req)
 
 
 def _tick_fanxiu_data_annotation_runtime_cell(
@@ -6721,7 +6545,6 @@ def put_fanxiu_data_annotation_scheduler_tasks(
         [item.model_dump() for item in tasks],
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        task_cell_path=_data_annotation_task_cell_state_path(),
         now=datetime.now(),
     )
     _sync_data_annotation_runtime_runner_to_core()
@@ -6808,7 +6631,6 @@ def _run_now_fanxiu_data_annotation_scheduler_task(
             scheduler_state_path=_data_annotation_scheduler_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
-            task_cell_path=_data_annotation_task_cell_state_path(),
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         )
     except LookupError as exc:
@@ -6830,7 +6652,6 @@ def _run_due_fanxiu_data_annotation_scheduler_tasks(
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
-        task_cell_path=_data_annotation_task_cell_state_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)

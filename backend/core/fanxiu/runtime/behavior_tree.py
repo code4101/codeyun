@@ -148,39 +148,8 @@ def fanxiu_data_annotation_scheduler_settings_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "scheduler_settings.json"
 
 
-def fanxiu_data_annotation_task_cell_state_path() -> Path:
-    return fanxiu_data_annotation_runtime_dir() / "manual_jobs.json"
-
-
 def fanxiu_data_annotation_mail_scan_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "mail_scan_state.json"
-
-
-def fanxiu_job_group_isolation_path() -> Path:
-    return fanxiu_data_annotation_runtime_dir() / "job_group_isolation.json"
-
-
-def read_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
-    isolation_path = path or fanxiu_job_group_isolation_path()
-    return read_json_lease(isolation_path, invalid_message="isolation 文件不是 JSON object")
-
-
-def _fanxiu_job_group_isolation_owner_dead(status: dict[str, Any]) -> bool:
-    if not bool(status.get("active")):
-        return False
-    try:
-        pid = int(status.get("pid") or 0)
-    except (TypeError, ValueError):
-        pid = 0
-    return bool(pid and not _fanxiu_process_exists(pid))
-
-
-def fanxiu_behavior_tree_service_owner_path() -> Path:
-    return fanxiu_data_annotation_runtime_dir() / "behavior_tree_service_owner.json"
-
-
-def fanxiu_behavior_tree_control_path() -> Path:
-    return fanxiu_data_annotation_runtime_dir() / "behavior_tree_control.json"
 
 
 def fanxiu_behavior_tree_service_start_lock_path() -> Path:
@@ -361,15 +330,10 @@ def request_fanxiu_behavior_tree_stop(
     reason: str = "local_cli",
     path: Path | None = None,
 ) -> dict[str, Any]:
-    control_path = path or fanxiu_behavior_tree_control_path()
-    return write_json_command(
-        control_path,
-        command="stop_current_task",
-        request_id=uuid.uuid4().hex,
-        created_at=time.time(),
-        entry_id=str(entry_id or ""),
-        reason=str(reason or "local_cli"),
-    )
+    del path, reason
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+
+    return FanxiuKernel(entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).interrupt()
 
 
 def request_fanxiu_behavior_tree_wake(
@@ -378,15 +342,9 @@ def request_fanxiu_behavior_tree_wake(
     reason: str = "wake",
     path: Path | None = None,
 ) -> dict[str, Any]:
-    control_path = path or fanxiu_behavior_tree_control_path()
-    return write_json_command(
-        control_path,
-        command="wake_service",
-        request_id=uuid.uuid4().hex,
-        created_at=time.time(),
-        entry_id=str(entry_id or ""),
-        reason=str(reason or "wake"),
-    )
+    del reason, path
+    entry = resolve_fanxiu_entry(entry_id or DEFAULT_FANXIU_ENTRY_ID)
+    return ensure_fanxiu_behavior_tree_service(entry, entry_id or DEFAULT_FANXIU_ENTRY_ID)
 
 
 def request_fanxiu_behavior_tree_service_shutdown(
@@ -395,15 +353,10 @@ def request_fanxiu_behavior_tree_service_shutdown(
     reason: str = "service_migration",
     path: Path | None = None,
 ) -> dict[str, Any]:
-    control_path = path or fanxiu_behavior_tree_control_path()
-    return write_json_command(
-        control_path,
-        command="shutdown_service",
-        request_id=uuid.uuid4().hex,
-        created_at=time.time(),
-        entry_id=str(entry_id or ""),
-        reason=str(reason or "service_migration"),
-    )
+    del path, reason
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+
+    return FanxiuKernel(entry_id=str(entry_id or DEFAULT_FANXIU_ENTRY_ID)).shutdown()
 
 
 def restart_fanxiu_behavior_tree_service(
@@ -411,8 +364,13 @@ def restart_fanxiu_behavior_tree_service(
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
     timeout_seconds: float = 15.0,
     tick_seconds: float = 1.0,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Gracefully replace the resident Runtime/Jupyter process and wait for its owner."""
+    """Replace the resident Runtime/Jupyter process and wait for its owner.
+
+    ``force=True`` matches an IDE's Restart Kernel action: request a graceful
+    shutdown briefly, then terminate only the verified Fanxiu service process.
+    """
     if _current_process_is_fanxiu_service_host():
         raise RuntimeError("不能从 resident service 自身执行 restart")
 
@@ -426,24 +384,58 @@ def restart_fanxiu_behavior_tree_service(
             reason="explicit_restart",
         )
 
-    deadline = time.time() + max(1.0, float(timeout_seconds or 15.0))
+    requested_timeout = max(1.0, float(timeout_seconds or 15.0))
+    graceful_seconds = min(2.0, requested_timeout) if force else requested_timeout
+    deadline = time.time() + graceful_seconds
     while old_pid and _fanxiu_process_exists(old_pid) and time.time() < deadline:
         time.sleep(0.2)
 
     if old_pid and _fanxiu_process_exists(old_pid):
-        return {
-            "restarted": False,
-            "reason": "shutdown_timeout",
-            "old_pid": old_pid,
-            "shutdown_request": shutdown_request,
-            "owner": read_fanxiu_behavior_tree_service_owner(),
-        }
+        if not force:
+            return {
+                "restarted": False,
+                "reason": "shutdown_timeout",
+                "old_pid": old_pid,
+                "shutdown_request": shutdown_request,
+                "owner": read_fanxiu_behavior_tree_service_owner(),
+            }
+        if not _fanxiu_process_matches_service_owner(old_pid):
+            return {
+                "restarted": False,
+                "reason": "force_refused_unverified_process",
+                "old_pid": old_pid,
+                "shutdown_request": shutdown_request,
+                "owner": read_fanxiu_behavior_tree_service_owner(),
+            }
+        try:
+            psutil.Process(old_pid).terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            pass
+        terminate_deadline = time.time() + min(1.5, requested_timeout)
+        while _fanxiu_process_exists(old_pid) and time.time() < terminate_deadline:
+            time.sleep(0.1)
+        if _fanxiu_process_exists(old_pid):
+            try:
+                psutil.Process(old_pid).kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                pass
+        kill_deadline = time.time() + min(1.5, requested_timeout)
+        while _fanxiu_process_exists(old_pid) and time.time() < kill_deadline:
+            time.sleep(0.1)
+        if _fanxiu_process_exists(old_pid):
+            return {
+                "restarted": False,
+                "reason": "force_kill_timeout",
+                "old_pid": old_pid,
+                "shutdown_request": shutdown_request,
+                "owner": read_fanxiu_behavior_tree_service_owner(),
+            }
 
     _clear_stale_fanxiu_behavior_tree_shutdown_request()
     started = _start_external_fanxiu_behavior_tree_service(
         resolved_entry_id,
         tick_seconds=max(0.2, float(tick_seconds or 1.0)),
-        wait_seconds=max(1.0, min(10.0, float(timeout_seconds or 15.0))),
+        wait_seconds=max(1.0, min(10.0, requested_timeout)),
     )
     owner = read_fanxiu_behavior_tree_service_owner()
     new_pid = int(owner.get("pid") or started.get("pid") or 0)
@@ -649,67 +641,6 @@ def _start_external_fanxiu_behavior_tree_service_locked(
         "stderr_path": os.fspath(stderr_path),
     }
 
-
-
-def fanxiu_job_group_isolated(path: Path | None = None) -> bool:
-    isolation_path = path or fanxiu_job_group_isolation_path()
-    status = read_fanxiu_job_group_isolation(isolation_path)
-    if _fanxiu_job_group_isolation_owner_dead(status):
-        try:
-            isolation_path.unlink()
-        except FileNotFoundError:
-            pass
-        return False
-    return is_json_lease_active(isolation_path)
-
-
-def clear_stale_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
-    isolation_path = path or fanxiu_job_group_isolation_path()
-    status = read_fanxiu_job_group_isolation(isolation_path)
-    if _fanxiu_job_group_isolation_owner_dead(status):
-        try:
-            isolation_path.unlink()
-        except FileNotFoundError:
-            pass
-        return {"cleared": True, "reason": "owner_dead", "path": str(isolation_path)}
-    return clear_stale_json_lease(isolation_path)
-
-
-def acquire_fanxiu_job_group_isolation(
-    *,
-    reason: str,
-    ttl_seconds: float = 300.0,
-    token: str | None = None,
-    path: Path | None = None,
-) -> str:
-    isolation_path = path or fanxiu_job_group_isolation_path()
-    return acquire_json_lease(
-        isolation_path,
-        reason=str(reason or "local_run"),
-        ttl_seconds=max(5.0, float(ttl_seconds or 300.0)),
-        token=str(token or uuid.uuid4().hex),
-        now=time.time(),
-        extra={"pid": os.getpid()},
-    )
-
-
-def release_fanxiu_job_group_isolation(token: str, path: Path | None = None) -> None:
-    isolation_path = path or fanxiu_job_group_isolation_path()
-    release_json_lease(isolation_path, str(token or ""))
-
-
-@contextmanager
-def isolate_fanxiu_job_group(
-    *,
-    reason: str = "local_script",
-    ttl_seconds: float = 300.0,
-    path: Path | None = None,
-) -> Iterator[str]:
-    token = acquire_fanxiu_job_group_isolation(reason=reason, ttl_seconds=ttl_seconds, path=path)
-    try:
-        yield token
-    finally:
-        release_fanxiu_job_group_isolation(token, path=path)
 
 
 def register_fanxiu_runtime_runner(runner: Any) -> Any:
@@ -1024,140 +955,6 @@ def clear_fanxiu_data_annotation_runtime_logs(
     return status
 
 
-def fanxiu_data_annotation_task_cells() -> list[dict[str, Any]]:
-    from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
-
-    return runtime_control.read_task_cells(fanxiu_data_annotation_task_cell_state_path())
-
-
-def cancel_fanxiu_task_cell(job_id: str, *, force: bool = False) -> dict[str, Any]:
-    from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
-
-    resolved_job_id = str(job_id or "").strip()
-    if not resolved_job_id:
-        raise ValueError("job_id is required")
-    path = fanxiu_data_annotation_task_cell_state_path()
-    jobs = runtime_control.read_task_cells(path)
-    target = next((job for job in jobs if str(job.get("id") or "") == resolved_job_id), None)
-    if target is None:
-        return {"cancelled": False, "reason": "not_found", "job_id": resolved_job_id, "remaining": len(jobs)}
-    if str(target.get("status") or "") == "running":
-        if not force:
-            return {"cancelled": False, "reason": "running", "job_id": resolved_job_id, "remaining": len(jobs)}
-        request = request_fanxiu_behavior_tree_stop(
-            entry_id=str(target.get("entry_id") or ""),
-            reason=f"cancel_task_cell:{resolved_job_id}",
-        )
-        return {
-            "cancelled": True,
-            "cancel_requested": True,
-            "reason": "running_stop_requested",
-            "job_id": resolved_job_id,
-            "remaining": len(jobs),
-            "request": request,
-        }
-    runtime_control.remove_task_cell(resolved_job_id, path)
-    return {"cancelled": True, "job_id": resolved_job_id, "remaining": len(jobs) - 1}
-
-
-def clear_fanxiu_task_cells(*, force: bool = False) -> dict[str, Any]:
-    from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
-
-    path = fanxiu_data_annotation_task_cell_state_path()
-    jobs = runtime_control.read_task_cells(path)
-    kept, removed = clear_job_queue(
-        jobs,
-        keep_job=lambda job: str(job.get("status") or "") == "running" and not force,
-    )
-    runtime_control.write_task_cells(kept, path)
-    return {"removed": removed, "remaining": len(kept)}
-
-
-def wait_fanxiu_task_cell(
-    job_id: str,
-    *,
-    timeout_seconds: float = 300.0,
-    poll_seconds: float = 0.5,
-) -> dict[str, Any]:
-    resolved_job_id = str(job_id or "").strip()
-    if not resolved_job_id:
-        raise ValueError("job_id is required")
-    deadline = time.time() + max(0.1, float(timeout_seconds or 300.0))
-    interval = max(0.1, float(poll_seconds or 0.5))
-    last_status: dict[str, Any] = {}
-    while True:
-        jobs = fanxiu_data_annotation_task_cells()
-        matching_job = next((job for job in jobs if str(job.get("id") or "") == resolved_job_id), None)
-        status = fanxiu_data_annotation_runtime_status()
-        last_status = status
-        current_task_id = str(status.get("current_task_id") or "")
-        running = bool(status.get("running"))
-        if matching_job is None and (current_task_id != resolved_job_id or not running):
-            logs = [item for item in status.get("logs") or [] if isinstance(item, dict)]
-            matching_logs = [
-                item
-                for item in logs
-                if resolved_job_id and resolved_job_id in str(item.get("message") or "")
-            ]
-            terminal_logs = [
-                item
-                for item in matching_logs
-                if str(item.get("kind") or "") in {"success", "skip", "stop", "error"}
-            ]
-            if terminal_logs:
-                terminal_log = terminal_logs[-1]
-                return {
-                    "done": True,
-                    "result": "completed",
-                    "job_id": resolved_job_id,
-                    "terminal_kind": str(terminal_log.get("kind") or "success"),
-                    "terminal_message": str(terminal_log.get("message") or ""),
-                    "runtime_status": status,
-                }
-            return {
-                "done": False,
-                "result": "missing_completion_evidence",
-                "job_id": resolved_job_id,
-                "runtime_status": status,
-            }
-        if time.time() >= deadline:
-            logs = [item for item in last_status.get("logs") or [] if isinstance(item, dict)]
-            has_matching_log = any(
-                resolved_job_id and resolved_job_id in str(item.get("message") or "")
-                for item in logs
-            )
-            return {
-                "done": False,
-                "result": "timeout" if matching_job is not None or has_matching_log else "missing_completion_evidence",
-                "job_id": resolved_job_id,
-                "job": matching_job or {},
-                "runtime_status": last_status,
-            }
-        time.sleep(interval)
-
-
-def wait_fanxiu_queued_status(
-    status: dict[str, Any],
-    *,
-    timeout_seconds: float = 300.0,
-    poll_seconds: float = 0.5,
-) -> dict[str, Any]:
-    queued_cell = status.get("queued_cell") if isinstance(status.get("queued_cell"), dict) else {}
-    if not queued_cell:
-        queued_cell = status.get("queued_job") if isinstance(status.get("queued_job"), dict) else {}
-    job_id = str(queued_cell.get("id") or "")
-    if not job_id:
-        return {
-            "done": False,
-            "result": "missing_queued_cell_id",
-            "job_id": "",
-            "submitted_status": status,
-            "runtime_status": status,
-        }
-    result = wait_fanxiu_task_cell(job_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
-    return {**result, "submitted_status": status}
-
-
 def ensure_fanxiu_behavior_tree_service(
     entry: Any,
     entry_id: str | None = None,
@@ -1165,36 +962,23 @@ def ensure_fanxiu_behavior_tree_service(
     asset_tree_path: Path | None = None,
     tick_seconds: float = 1.0,
 ) -> dict[str, Any]:
+    del asset_tree_path, tick_seconds
     ensure_fanxiu_runtime_jobs_registered()
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or DEFAULT_FANXIU_ENTRY_ID)
-    if not _current_process_is_fanxiu_service_host():
-        owner = read_fanxiu_behavior_tree_service_owner()
-        if bool(owner.get("active")) and not bool(owner.get("stale")):
-            restart = _restart_stuck_external_service_for_pending_jobs(owner)
-            if bool(restart.get("restarted")):
-                _start_external_fanxiu_behavior_tree_service(resolved_entry_id, tick_seconds=tick_seconds)
-                status = fanxiu_data_annotation_runtime_status()
-                status["service_recovery"] = restart
-                return status
-            return fanxiu_data_annotation_runtime_status()
-        _start_external_fanxiu_behavior_tree_service(resolved_entry_id, tick_seconds=tick_seconds)
-        return fanxiu_data_annotation_runtime_status()
-    runner = get_fanxiu_runtime_runner()
-    status = runner.ensure_service(
-        entry=entry,
-        entry_id=resolved_entry_id,
-        asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
-        tick_seconds=tick_seconds,
-    )
-    persist_fanxiu_runtime_status(status)
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    status = fanxiu_kernel_manager_status()
+    if not bool(status.get("alive")):
+        _start_external_fanxiu_behavior_tree_service(resolved_entry_id)
+        status = fanxiu_kernel_manager_status(timeout_seconds=3.0)
     return status
 
 
 def stop_fanxiu_behavior_tree_current_task(entry_id: str) -> dict[str, Any]:
-    runner = get_fanxiu_runtime_runner()
-    status = runner.stop_current_task(str(entry_id or ""))
-    persist_fanxiu_runtime_status(status)
-    return status
+    del entry_id
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+
+    return FanxiuKernel().interrupt()
 
 
 def start_fanxiu_local_service(request: FanxiuLocalServiceRequest) -> dict[str, Any]:
@@ -1213,14 +997,9 @@ def start_fanxiu_local_service(request: FanxiuLocalServiceRequest) -> dict[str, 
 
 
 def stop_fanxiu_local_service(*, timeout_seconds: float = 5.0) -> dict[str, Any]:
-    runner = get_fanxiu_runtime_runner()
-    stop_service = getattr(runner, "stop_service", None)
-    if callable(stop_service):
-        status = stop_service(timeout_seconds=timeout_seconds)
-    else:
-        status = fanxiu_runtime_runner_status()
-    persist_fanxiu_runtime_status(status)
-    return status
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+
+    return FanxiuKernel().shutdown(timeout_seconds=timeout_seconds)
 
 
 def run_fanxiu_local_service(request: FanxiuLocalServiceRequest) -> dict[str, Any]:
@@ -1239,78 +1018,32 @@ def submit_fanxiu_task_cell(
     payload: dict[str, Any] | None = None,
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    isolate_jobs: bool = True,
-    isolation_ttl_seconds: float = 300.0,
-    wait: bool = False,
     wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
-    dedupe_active: bool = True,
 ) -> dict[str, Any]:
-    """Submit a registered task through the public kernel-cell mental model."""
+    """Compile a registered task invocation into one ordinary cell."""
     from backend.core.fanxiu.data_annotation import runtime_framework
 
     ensure_fanxiu_runtime_jobs_registered()
     entry = resolve_fanxiu_entry(entry_id)
     resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id or DEFAULT_FANXIU_ENTRY_ID)
     payload_dict = dict(payload or {})
-    existing = _find_matching_active_task_cell(
-        str(task_type or ""),
-        payload_dict,
+    requested_timeout = float(wait_timeout_seconds or _fanxiu_task_wait_timeout_seconds(payload_dict))
+    if requested_timeout > 0:
+        payload_dict.setdefault("max_runtime_seconds", requested_timeout)
+    return runtime_framework.submit_task_cell(
+        entry=entry,
         entry_id=resolved_entry_id,
-    ) if dedupe_active else None
-    if existing is not None:
-        status = _task_cell_existing_status(existing)
-    else:
-        isolation_token = ""
-        if isolate_jobs:
-            isolation_ttl = max(
-                5.0,
-                float(isolation_ttl_seconds or 300.0),
-                _fanxiu_task_wait_timeout_seconds(payload_dict),
-            )
-            isolation_token = acquire_fanxiu_job_group_isolation(
-                reason=f"task_cell:{task_type}",
-                ttl_seconds=isolation_ttl,
-            )
-            payload_dict["__job_group_isolation_token"] = isolation_token
-        try:
-            status = runtime_framework.submit_task_cell(
-                entry=entry,
-                entry_id=resolved_entry_id,
-                task_type=str(task_type or ""),
-                payload=payload_dict,
-                asset_tree_path=data_annotation_asset_tree_path(resolved_entry_id),
-                task_cell_path=fanxiu_data_annotation_task_cell_state_path(),
-                runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
-                world_facts_path=fanxiu_data_annotation_world_facts_path(),
-            )
-        except Exception:
-            if isolation_token:
-                release_fanxiu_job_group_isolation(isolation_token)
-            raise
-        status = _normalize_queued_cell_status(status)
-    if not wait:
-        return status
-    wait_result = wait_fanxiu_queued_status(
-        status,
-        timeout_seconds=float(wait_timeout_seconds or _fanxiu_task_wait_timeout_seconds(payload_dict)),
-        poll_seconds=float(wait_poll_seconds or 0.5),
+        task_type=str(task_type or ""),
+        payload=payload_dict,
     )
-    return _fanxiu_completed_runtime_status(status, wait_result)
 
 
 def submit_fanxiu_code_cell(
     code: str,
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    mode: str = "readonly",
     timeout_seconds: float = 120.0,
     max_output_chars: int = 4000,
-    isolate_jobs: bool = True,
-    isolation_ttl_seconds: float = 300.0,
-    wait: bool = False,
-    wait_timeout_seconds: float = 300.0,
-    wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
     """Execute dynamic Python code in the resident IPython kernel."""
     from backend.core.fanxiu.data_annotation import runtime_framework
@@ -1321,37 +1054,9 @@ def submit_fanxiu_code_cell(
         entry=entry,
         entry_id=resolved_entry_id,
         code=str(code or ""),
-        mode=mode,
-        timeout_seconds=float(wait_timeout_seconds if wait and wait_timeout_seconds else timeout_seconds),
+        timeout_seconds=float(timeout_seconds),
         max_output_chars=max_output_chars,
-        isolate_jobs=isolate_jobs,
-        asset_tree_path=data_annotation_asset_tree_path(resolved_entry_id),
-        task_cell_path=fanxiu_data_annotation_task_cell_state_path(),
-        runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
-        world_facts_path=fanxiu_data_annotation_world_facts_path(),
     )
-
-
-def fanxiu_resident_owner_active_for_other_process() -> bool:
-    return owner_active_for_other_process(read_fanxiu_behavior_tree_service_owner(), current_pid=os.getpid())
-
-
-def fanxiu_local_task_should_enqueue(run_mode: str = "auto") -> bool:
-    mode = normalize_fanxiu_local_run_mode(run_mode)
-    try:
-        return should_enqueue_local_run(
-            mode,
-            owner_active_elsewhere=fanxiu_resident_owner_active_for_other_process(),
-        )
-    except ValueError as exc:
-        raise ValueError("run_mode 只支持 auto/direct") from exc
-
-
-def normalize_fanxiu_local_run_mode(run_mode: str = "auto") -> str:
-    mode = str(run_mode or "auto").strip().lower()
-    if mode not in {"auto", "direct"}:
-        raise ValueError("run_mode 只支持 auto/direct")
-    return mode
 
 
 def _fanxiu_task_wait_timeout_seconds(payload: dict[str, Any], *, fallback: float = 300.0) -> float:
@@ -1368,106 +1073,6 @@ def _fanxiu_task_wait_timeout_seconds(payload: dict[str, Any], *, fallback: floa
     return float(fallback)
 
 
-def _task_cell_comparable_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    return {
-        str(key): value
-        for key, value in dict(payload or {}).items()
-        if str(key) not in {"__job_group_isolation_token"}
-    }
-
-
-def _find_matching_active_task_cell(
-    task_type: str,
-    payload: dict[str, Any] | None,
-    *,
-    entry_id: str = "",
-) -> dict[str, Any] | None:
-    expected_payload = json.dumps(_task_cell_comparable_payload(payload), ensure_ascii=False, sort_keys=True, default=str)
-    for cell in fanxiu_data_annotation_task_cells():
-        if str(cell.get("status") or "") not in {"pending", "queued", "running"}:
-            continue
-        if str(cell.get("task_type") or "") != str(task_type or ""):
-            continue
-        cell_entry_id = str(cell.get("entry_id") or "")
-        if cell_entry_id and entry_id and cell_entry_id != entry_id:
-            continue
-        cell_payload = cell.get("payload") if isinstance(cell.get("payload"), dict) else {}
-        comparable = json.dumps(_task_cell_comparable_payload(cell_payload), ensure_ascii=False, sort_keys=True, default=str)
-        if comparable == expected_payload:
-            return cell
-    return None
-
-
-def _task_cell_existing_status(cell: dict[str, Any]) -> dict[str, Any]:
-    status = fanxiu_data_annotation_runtime_status()
-    cell_status = str(cell.get("status") or "pending")
-    queued_cell = {
-        "id": cell.get("id"),
-        "task_type": cell.get("task_type"),
-        "label": cell.get("label"),
-        "group": cell.get("group"),
-        "status": cell_status,
-        "created_at": cell.get("created_at"),
-        "deduplicated": True,
-    }
-    status.update({
-        "status": "running" if cell_status == "running" else "queued",
-        "phase": "task_cell_deduplicated",
-        "message": f"复用运行中的 task cell：{cell.get('label') or cell.get('task_type')}",
-        "queued_cell": queued_cell,
-        "queued_job": queued_cell,
-    })
-    return status
-
-
-def _normalize_queued_cell_status(status: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(status or {})
-    queued_cell = normalized.get("queued_cell") if isinstance(normalized.get("queued_cell"), dict) else {}
-    if not queued_cell:
-        queued_cell = normalized.get("queued_job") if isinstance(normalized.get("queued_job"), dict) else {}
-    if queued_cell:
-        normalized["queued_cell"] = queued_cell
-        normalized["queued_job"] = queued_cell
-    return normalized
-
-
-def _fanxiu_completed_runtime_status(
-    submitted_status: dict[str, Any],
-    wait_result: dict[str, Any],
-) -> dict[str, Any]:
-    runtime_status = wait_result.get("runtime_status") if isinstance(wait_result.get("runtime_status"), dict) else {}
-    status = dict(runtime_status or submitted_status)
-    submitted_status = _normalize_queued_cell_status(submitted_status)
-    queued_cell = dict(submitted_status.get("queued_cell") or status.get("queued_cell") or {})
-    if bool(wait_result.get("done")):
-        terminal_kind = str(wait_result.get("terminal_kind") or "success")
-        terminal_status = {
-            "success": "success",
-            "skip": "skipped",
-            "stop": "stopped",
-            "error": "error",
-        }.get(terminal_kind, "success")
-        queued_cell["status"] = terminal_status
-        status["status"] = terminal_status
-        status["phase"] = "done" if terminal_status in {"success", "skipped"} else terminal_status
-        status["message"] = str(wait_result.get("terminal_message") or status.get("message") or "cell 已完成")
-        status["error"] = status["message"] if terminal_status == "error" else ""
-        status["completed_cell"] = dict(queued_cell)
-    status["queued_cell"] = queued_cell
-    status["queued_job"] = status["queued_cell"]
-    status["wait_result"] = {
-        key: value
-        for key, value in wait_result.items()
-        if key not in {"runtime_status", "submitted_status"}
-    }
-    if not bool(wait_result.get("done")):
-        current_status = str((wait_result.get("job") or {}).get("status") or queued_cell.get("status") or "running")
-        queued_cell["status"] = current_status
-        status["status"] = "running" if current_status == "running" else "queued"
-        status["phase"] = "task_cell_wait_timeout"
-        status["error"] = ""
-        status["message"] = f"等待超时，task cell 仍在后台{('运行' if current_status == 'running' else '排队')}：{queued_cell.get('id') or ''}"
-    return status
 
 
 def run_fanxiu_local_task(request: FanxiuLocalRunRequest) -> dict[str, Any]:

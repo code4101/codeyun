@@ -157,8 +157,25 @@ namespace Code4101.Zaohua.Tiandao
         {
             var normalized = name?.Trim();
             if (entity == null || string.IsNullOrEmpty(normalized)) return false;
+            var previousName = entity.name;
             entity.name = normalized.Length > 12 ? normalized.Substring(0, 12) : normalized;
             Save();
+            Debug.Log($"[Code4101 Tiandao][Loadout] renamed id={entity.id} " +
+                      $"from={previousName} to={entity.name}");
+            return true;
+        }
+
+        internal static bool Delete(EquipmentLoadoutEntity entity)
+        {
+            var state = GetCurrentSaveState(false);
+            if (state?.loadouts == null || entity == null || state.loadouts.Count <= 1 ||
+                state.activeLoadoutId == entity.id)
+                return false;
+            var removed = state.loadouts.RemoveAll(item => item != null && item.id == entity.id) > 0;
+            if (!removed) return false;
+            Save();
+            Debug.Log($"[Code4101 Tiandao][Loadout] deleted id={entity.id} name={entity.name} " +
+                      $"active={state.activeLoadoutId} remaining={state.loadouts.Count}");
             return true;
         }
 
@@ -442,8 +459,8 @@ namespace Code4101.Zaohua.Tiandao
                     }
                     TraceError(traceId, $"rollback-finished success={rolledBack} actual=[{DescribeEquipped(actor)}]");
                     return rolledBack
-                        ? "切换失败，已恢复原方案"
-                        : "切换失败，请重新打开装备界面";
+                        ? $"切换失败，已恢复原方案（日志编号 {traceId}）"
+                        : $"切换失败，请重新打开装备界面（日志编号 {traceId}）";
                 }
                 EquipmentLoadoutRepository.SetActive(state, target);
                 Trace(traceId, $"success active={DescribeLoadout(target)} actual=[{DescribeEquipped(actor)}]");
@@ -453,7 +470,24 @@ namespace Code4101.Zaohua.Tiandao
             {
                 TraceError(traceId, $"exception type={error.GetType().Name} message={error.Message} " +
                                     $"actual=[{DescribeEquipped(actor)}]\n{error}");
-                return "切换异常，详情已写入插件日志";
+                var rolledBack = false;
+                try
+                {
+                    if (TryResolve(actor, sourceSlots, out var rollbackSlots, out _))
+                    {
+                        ApplyResolved(actor, rollbackSlots, traceId + "E");
+                        rolledBack = Matches(actor, rollbackSlots);
+                    }
+                }
+                catch (Exception rollbackError)
+                {
+                    TraceError(traceId, $"exception-rollback-failed {rollbackError}");
+                }
+                TraceError(traceId, $"exception-rollback-finished success={rolledBack} " +
+                                    $"actual=[{DescribeEquipped(actor)}]");
+                return rolledBack
+                    ? $"切换异常，已恢复原方案（日志编号 {traceId}）"
+                    : $"切换异常，请重新打开装备界面（日志编号 {traceId}）";
             }
             finally
             {

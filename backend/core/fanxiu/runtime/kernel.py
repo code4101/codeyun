@@ -1,73 +1,33 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
 from backend.core.fanxiu.runtime import behavior_tree
 
 
-CellKind = Literal["task", "code"]
-
-
 @dataclass(frozen=True)
 class FanxiuCell:
-    """A user-facing Runtime cell.
-
-    The cell API is the public mental model. Queue files, resident owner leases
-    and service wakeups are implementation details hidden behind submit/run.
-    """
+    """One ordinary Python cell submitted to the current Fanxiu kernel."""
 
     kernel: "FanxiuKernel"
-    kind: CellKind
-    task_type: str = ""
-    payload: dict[str, Any] = field(default_factory=dict)
-    code: str = ""
-    mode: str = "readonly"
+    code: str
     timeout_seconds: float = 120.0
     max_output_chars: int = 4000
 
-    def submit(self) -> dict[str, Any]:
-        if self.kind == "code":
-            raise RuntimeError("code cell 不支持无句柄后台 submit；请使用 .run()")
-        return self.kernel.submit_task(self.task_type, self.payload, wait=False)
-
     def run(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
-        wait_timeout = timeout_seconds
-        if wait_timeout is None and self.kind == "code":
-            wait_timeout = self.timeout_seconds + 30.0
-        if self.kind == "code":
-            return self.kernel.submit_code(
-                self.code,
-                mode=self.mode,
-                timeout_seconds=self.timeout_seconds,
-                max_output_chars=self.max_output_chars,
-                wait=True,
-                wait_timeout_seconds=wait_timeout,
-            )
-        return self.kernel.submit_task(
-            self.task_type,
-            self.payload,
-            wait=True,
-            wait_timeout_seconds=wait_timeout,
+        return self.kernel.execute(
+            self.code,
+            timeout_seconds=float(timeout_seconds or self.timeout_seconds),
+            max_output_chars=self.max_output_chars,
         )
 
 
 @dataclass(frozen=True)
 class FanxiuKernel:
-    """Thin facade for the single Fanxiu resident Runtime kernel."""
+    """Small facade over one long-lived, native Jupyter kernel."""
 
     entry_id: str = behavior_tree.DEFAULT_FANXIU_ENTRY_ID
-    isolate_jobs: bool = True
-
-    def task(self, task_type: str, payload: dict[str, Any] | None = None, **payload_fields: Any) -> FanxiuCell:
-        data = dict(payload or {})
-        data.update(payload_fields)
-        return FanxiuCell(
-            kernel=self,
-            kind="task",
-            task_type=str(task_type or ""),
-            payload=data,
-        )
 
     def cell(
         self,
@@ -78,57 +38,31 @@ class FanxiuKernel:
     ) -> FanxiuCell:
         return FanxiuCell(
             kernel=self,
-            kind="code",
             code=str(code or ""),
-            mode="jupyter",
             timeout_seconds=float(timeout_seconds or 120.0),
             max_output_chars=int(max_output_chars or 4000),
         )
 
-    def code(
-        self,
-        code: str,
-        *,
-        mode: str = "readonly",
-        timeout_seconds: float = 120.0,
-        max_output_chars: int = 4000,
-    ) -> FanxiuCell:
-        """Compatibility alias for :meth:`cell`."""
-        return FanxiuCell(
-            kernel=self,
-            kind="code",
-            code=str(code or ""),
-            mode=str(mode or "readonly"),
-            timeout_seconds=float(timeout_seconds or 120.0),
-            max_output_chars=int(max_output_chars or 4000),
-        )
-
-    def submit_task(
+    def task(
         self,
         task_type: str,
         payload: dict[str, Any] | None = None,
         *,
-        wait: bool = False,
-        wait_timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
-        return behavior_tree.submit_fanxiu_task_cell(
-            str(task_type or ""),
-            dict(payload or {}),
-            entry_id=self.entry_id,
-            isolate_jobs=self.isolate_jobs,
-            wait=wait,
-            wait_timeout_seconds=float(wait_timeout_seconds or 300.0),
-        )
+        timeout_seconds: float = 21630.0,
+        **payload_fields: Any,
+    ) -> FanxiuCell:
+        """Compile a registered task call into an ordinary Python cell."""
+        data = dict(payload or {})
+        data.update(payload_fields)
+        source = f"run_task_cell({str(task_type or '')!r}, {data!r})"
+        return self.cell(source, timeout_seconds=timeout_seconds, max_output_chars=20000)
 
-    def submit_code(
+    def execute(
         self,
         code: str,
         *,
-        mode: str = "readonly",
         timeout_seconds: float = 120.0,
         max_output_chars: int = 4000,
-        wait: bool = False,
-        wait_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         from backend.core.fanxiu.runtime.jupyter_kernel import execute_fanxiu_jupyter_cell
 
@@ -136,32 +70,36 @@ class FanxiuKernel:
         behavior_tree.ensure_fanxiu_behavior_tree_service(entry, self.entry_id)
         return execute_fanxiu_jupyter_cell(
             str(code or ""),
-            timeout_seconds=float(wait_timeout_seconds or timeout_seconds or 120.0),
+            timeout_seconds=float(timeout_seconds or 120.0),
             max_output_chars=max_output_chars,
-            isolate_jobs=self.isolate_jobs,
         )
 
     def status(self) -> dict[str, Any]:
-        return behavior_tree.fanxiu_data_annotation_runtime_status()
+        from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
 
-    def restart(self, *, timeout_seconds: float = 15.0, tick_seconds: float = 1.0) -> dict[str, Any]:
-        return behavior_tree.restart_fanxiu_behavior_tree_service(
-            entry_id=self.entry_id,
-            timeout_seconds=timeout_seconds,
-            tick_seconds=tick_seconds,
-        )
+        return {
+            "kernel": fanxiu_kernel_manager_status(),
+            "runtime": behavior_tree.fanxiu_data_annotation_runtime_status(),
+        }
+
+    def interrupt(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        from backend.core.fanxiu.runtime.jupyter_kernel import send_fanxiu_kernel_manager_command
+
+        return send_fanxiu_kernel_manager_command("interrupt", timeout_seconds=timeout_seconds)
+
+    def restart(self, *, timeout_seconds: float = 20.0) -> dict[str, Any]:
+        from backend.core.fanxiu.runtime.jupyter_kernel import send_fanxiu_kernel_manager_command
+
+        return send_fanxiu_kernel_manager_command("restart", timeout_seconds=timeout_seconds)
+
+    def shutdown(self, *, timeout_seconds: float = 15.0) -> dict[str, Any]:
+        from backend.core.fanxiu.runtime.jupyter_kernel import send_fanxiu_kernel_manager_command
+
+        return send_fanxiu_kernel_manager_command("shutdown", timeout_seconds=timeout_seconds)
 
     def logs(self, *, limit: int = 200, scope: str = "", item_id: str = "") -> list[dict[str, Any]]:
-        return behavior_tree.fanxiu_data_annotation_runtime_logs(
-            limit=limit,
-            scope=scope,
-            item_id=item_id,
-        )
+        return behavior_tree.fanxiu_data_annotation_runtime_logs(limit=limit, scope=scope, item_id=item_id)
 
 
-def kernel(
-    entry_id: str = behavior_tree.DEFAULT_FANXIU_ENTRY_ID,
-    *,
-    isolate_jobs: bool = True,
-) -> FanxiuKernel:
-    return FanxiuKernel(entry_id=str(entry_id or behavior_tree.DEFAULT_FANXIU_ENTRY_ID), isolate_jobs=bool(isolate_jobs))
+def kernel(entry_id: str = behavior_tree.DEFAULT_FANXIU_ENTRY_ID) -> FanxiuKernel:
+    return FanxiuKernel(entry_id=str(entry_id or behavior_tree.DEFAULT_FANXIU_ENTRY_ID))

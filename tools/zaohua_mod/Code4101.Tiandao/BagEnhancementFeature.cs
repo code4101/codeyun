@@ -284,14 +284,14 @@ namespace Code4101.Zaohua.Tiandao
         private ScrollRect _loadoutScroll;
         private Button _loadoutTrigger;
         private TextPro _loadoutTriggerLabel;
+        private Button _loadoutRenameButton;
+        private Button _loadoutDeleteButton;
+        private TextPro _loadoutDeleteLabel;
+        private float _deleteConfirmationUntil;
         private string _loadoutMessage;
         private readonly List<Button> _filterButtons = new List<Button>();
         private readonly List<Button> _loadoutButtons = new List<Button>();
-        private readonly List<Image> _renameIcons = new List<Image>();
-        private readonly Dictionary<Image, TextPro> _renameIconFallbacks =
-            new Dictionary<Image, TextPro>();
         private int _lastParentType = -1;
-        private float _nextRenameIconLookup;
 
         internal void Initialize(BagPanel panel)
         {
@@ -315,11 +315,9 @@ namespace Code4101.Zaohua.Tiandao
         private void Update()
         {
             if (_panel == null) return;
-            if (_renameIcons.Any(icon => icon != null && icon.sprite == null) &&
-                Time.unscaledTime >= _nextRenameIconLookup)
+            if (_deleteConfirmationUntil > 0f && Time.unscaledTime > _deleteConfirmationUntil)
             {
-                _nextRenameIconLookup = Time.unscaledTime + 1f;
-                RefreshNativeRenameIcons();
+                ResetDeleteConfirmation();
             }
             if (_loadoutPopup != null && _loadoutPopup.activeSelf && Input.GetMouseButtonDown(0) &&
                 !ContainsScreenPoint((RectTransform)_loadoutPopup.transform) &&
@@ -422,6 +420,15 @@ namespace Code4101.Zaohua.Tiandao
             }
             _loadoutTrigger.transform.SetAsLastSibling();
 
+            // 当前方案的低频管理动作集中放在标题右侧；下拉列表只负责选择方案。
+            _loadoutRenameButton = CreateLoadoutActionButton(controlParent, triggerRect,
+                "Code4101LoadoutRename", "改名", 116f, new Color(0.08f, 0.08f, 0.08f, 0.68f));
+            _loadoutRenameButton.onClick.AddListener(BeginActiveLoadoutRename);
+            _loadoutDeleteButton = CreateLoadoutActionButton(controlParent, triggerRect,
+                "Code4101LoadoutDelete", "删除", 184f, new Color(0.25f, 0.08f, 0.06f, 0.72f));
+            _loadoutDeleteLabel = _loadoutDeleteButton.GetComponentInChildren<TextPro>();
+            _loadoutDeleteButton.onClick.AddListener(DeleteActiveLoadout);
+
             _loadoutTrigger.onClick.AddListener(() =>
             {
                 if (_loadoutPopup.activeSelf)
@@ -493,6 +500,23 @@ namespace Code4101.Zaohua.Tiandao
             _loadoutScroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.Permanent;
             _loadoutPopup.SetActive(false);
             RefreshLoadoutTrigger();
+        }
+
+        private Button CreateLoadoutActionButton(Transform parent, RectTransform triggerRect,
+            string name, string label, float xOffset, Color background)
+        {
+            var button = CreateButton(parent, name, label, new Vector2(62f, 40f));
+            button.GetComponent<Image>().color = background;
+            var text = button.GetComponentInChildren<TextPro>();
+            if (text != null) text.fontSize = 18f;
+            var rect = (RectTransform)button.transform;
+            rect.anchorMin = triggerRect.anchorMin;
+            rect.anchorMax = triggerRect.anchorMax;
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.localPosition = triggerRect.localPosition + new Vector3(xOffset, 0f, 0f);
+            rect.sizeDelta = new Vector2(62f, 40f);
+            button.transform.SetAsLastSibling();
+            return button;
         }
 
         private void CloseLoadoutPopup()
@@ -648,7 +672,6 @@ namespace Code4101.Zaohua.Tiandao
                     }
                     RefreshLoadoutTrigger();
                 });
-                AddInlineRenameButton(button, entity, active);
                 _loadoutButtons.Add(button);
             }
             var create = CreateButton(_loadoutContent, "CreateLoadout", "＋ 新建方案",
@@ -685,107 +708,22 @@ namespace Code4101.Zaohua.Tiandao
             _loadoutScroll.verticalNormalizedPosition = 1f;
         }
 
-        private void AddInlineRenameButton(Button row, EquipmentLoadoutEntity entity, bool active)
+        private void BeginActiveLoadoutRename()
         {
-            var label = row.transform.Find("Text")?.GetComponent<TextPro>();
-            if (label != null) ((RectTransform)label.transform).offsetMax = new Vector2(-58f, 0f);
-            var editObject = new GameObject("Rename", typeof(RectTransform), typeof(Image), typeof(Button));
-            editObject.layer = gameObject.layer;
-            editObject.transform.SetParent(row.transform, false);
-            editObject.GetComponent<Image>().color = Color.clear;
-            var edit = editObject.GetComponent<Button>();
-            var rect = (RectTransform)edit.transform;
-            rect.anchorMin = new Vector2(1f, 0f);
-            rect.anchorMax = new Vector2(1f, 1f);
-            rect.pivot = new Vector2(1f, 0.5f);
-            rect.anchoredPosition = Vector2.zero;
-            rect.sizeDelta = new Vector2(58f, 0f);
-            var iconObject = new GameObject("NativeRenameIcon", typeof(RectTransform), typeof(Image));
-            iconObject.layer = gameObject.layer;
-            iconObject.transform.SetParent(edit.transform, false);
-            var icon = iconObject.GetComponent<Image>();
-            icon.raycastTarget = false;
-            icon.preserveAspect = true;
-            // Unity 的空 Image 默认会画白色矩形；原生图标尚未找到时必须保持透明。
-            icon.color = Color.clear;
-            var iconRect = (RectTransform)icon.transform;
-            iconRect.anchorMin = new Vector2(0.5f, 0.5f);
-            iconRect.anchorMax = new Vector2(0.5f, 0.5f);
-            iconRect.pivot = new Vector2(0.5f, 0.5f);
-            iconRect.anchoredPosition = Vector2.zero;
-            iconRect.sizeDelta = new Vector2(22f, 22f);
-            var fallback = CreateText(edit.transform, "RenameFallback", "改名", new Vector2(54f, 34f));
-            fallback.fontSize = 16f;
-            fallback.alignment = TMPro.TextAlignmentOptions.Center;
-            var fallbackRect = (RectTransform)fallback.transform;
-            fallbackRect.anchorMin = new Vector2(0.5f, 0.5f);
-            fallbackRect.anchorMax = new Vector2(0.5f, 0.5f);
-            fallbackRect.pivot = new Vector2(0.5f, 0.5f);
-            fallbackRect.anchoredPosition = Vector2.zero;
-            fallbackRect.sizeDelta = new Vector2(54f, 34f);
-            _renameIcons.Add(icon);
-            _renameIconFallbacks[icon] = fallback;
-            fallback.gameObject.SetActive(!ApplyNativeRenameIcon(icon));
-            edit.onClick.AddListener(() => BeginInlineRename(row, edit, entity));
-        }
-
-        private void RefreshNativeRenameIcons()
-        {
-            foreach (var icon in _renameIcons.Where(icon => icon != null && icon.sprite == null))
-            {
-                var loaded = ApplyNativeRenameIcon(icon);
-                if (loaded && _renameIconFallbacks.TryGetValue(icon, out var fallback) && fallback != null)
-                    fallback.gameObject.SetActive(false);
-            }
-        }
-
-        private static bool ApplyNativeRenameIcon(Image target)
-        {
-            var source = Resources.FindObjectsOfTypeAll<CombinationCellController>()
-                .Select(cell => Traverse.Create(cell).Field<Button>("btnChangeName").Value)
-                .Where(button => button != null)
-                .SelectMany(button =>
-                {
-                    var background = button.targetGraphic as Image;
-                    var children = button.GetComponentsInChildren<Image>(true)
-                        .Where(image => image != background && image.transform != button.transform)
-                        .OrderByDescending(image =>
-                        {
-                            var name = image.gameObject.name.ToLowerInvariant();
-                            return name.Contains("edit") || name.Contains("change") || name.Contains("pen") ||
-                                   name.Contains("icon");
-                        })
-                        .ThenBy(image => image.rectTransform.rect.width * image.rectTransform.rect.height);
-                    // 有些原生按钮直接把毛笔 Image 作为 targetGraphic，并没有额外子图。
-                    return background == null ? children : children.Concat(new[] { background });
-                })
-                .FirstOrDefault(image => image != null && image.sprite != null);
-            if (source == null) return false;
-            target.sprite = source.sprite;
-            target.type = source.type;
-            target.material = source.material;
-            target.color = source.color;
-            target.preserveAspect = true;
-            var sourceSize = ((RectTransform)source.transform).rect.size * 0.5f;
-            if (sourceSize.x > 0f && sourceSize.y > 0f)
-            {
-                var scale = Mathf.Min(1f, 28f / Mathf.Max(sourceSize.x, sourceSize.y));
-                ((RectTransform)target.transform).sizeDelta = sourceSize * scale;
-            }
-            return true;
-        }
-
-        private void BeginInlineRename(Button row, Button edit, EquipmentLoadoutEntity entity)
-        {
-            row.interactable = false;
-            edit.gameObject.SetActive(false);
-            var rowLabel = row.transform.Find("Text")?.GetComponent<TextPro>();
-            if (rowLabel != null) rowLabel.gameObject.SetActive(false);
+            var state = EquipmentLoadoutRepository.GetCurrentSaveState();
+            var entity = EquipmentLoadoutRepository.GetActiveLoadout(state);
+            if (entity == null || _loadoutTrigger == null) return;
+            CloseLoadoutPopup();
+            ResetDeleteConfirmation();
+            _loadoutTrigger.interactable = false;
+            _loadoutRenameButton.gameObject.SetActive(false);
+            _loadoutDeleteButton.gameObject.SetActive(false);
+            if (_loadoutTriggerLabel != null) _loadoutTriggerLabel.gameObject.SetActive(false);
 
             var inputObject = new GameObject("LoadoutNameInput", typeof(RectTransform), typeof(Image),
                 typeof(TMPro.TMP_InputField));
             inputObject.layer = gameObject.layer;
-            inputObject.transform.SetParent(row.transform, false);
+            inputObject.transform.SetParent(_loadoutTrigger.transform, false);
             inputObject.GetComponent<Image>().color = new Color(0.12f, 0.11f, 0.09f, 0.96f);
             var inputRect = (RectTransform)inputObject.transform;
             inputRect.anchorMin = Vector2.zero;
@@ -842,13 +780,55 @@ namespace Code4101.Zaohua.Tiandao
                 if (finished) return;
                 finished = true;
                 EquipmentLoadoutRepository.Rename(entity, value);
+                Destroy(inputObject);
+                _loadoutTrigger.interactable = true;
+                if (_loadoutTriggerLabel != null) _loadoutTriggerLabel.gameObject.SetActive(true);
+                _loadoutRenameButton.gameObject.SetActive(true);
                 RefreshLoadoutTrigger();
-                RebuildLoadoutPopup();
             }
 
             input.onSubmit.AddListener(FinishRename);
             input.onEndEdit.AddListener(FinishRename);
             StartCoroutine(FocusRenameInput(input));
+        }
+
+        private void DeleteActiveLoadout()
+        {
+            var state = EquipmentLoadoutRepository.GetCurrentSaveState();
+            var active = EquipmentLoadoutRepository.GetActiveLoadout(state);
+            if (state?.loadouts == null || active == null || state.loadouts.Count <= 1) return;
+            if (_deleteConfirmationUntil <= 0f || Time.unscaledTime > _deleteConfirmationUntil)
+            {
+                _deleteConfirmationUntil = Time.unscaledTime + 3f;
+                if (_loadoutDeleteLabel != null) _loadoutDeleteLabel.text = "确认";
+                _loadoutDeleteButton.GetComponent<Image>().color = new Color(0.48f, 0.08f, 0.04f, 0.92f);
+                return;
+            }
+
+            ResetDeleteConfirmation();
+            var activeIndex = state.loadouts.IndexOf(active);
+            var fallback = activeIndex > 0
+                ? state.loadouts[activeIndex - 1]
+                : state.loadouts.Skip(1).FirstOrDefault(loadout => loadout != null);
+            if (fallback == null) return;
+            _loadoutMessage = EquipmentLoadoutRuntime.Apply(fallback);
+            if (!string.IsNullOrEmpty(_loadoutMessage))
+            {
+                RebuildLoadoutPopup();
+                _loadoutPopup.SetActive(true);
+                return;
+            }
+            EquipmentLoadoutRepository.Delete(active);
+            _panel.RefreshBag(false);
+            RefreshLoadoutTrigger();
+        }
+
+        private void ResetDeleteConfirmation()
+        {
+            _deleteConfirmationUntil = 0f;
+            if (_loadoutDeleteLabel != null) _loadoutDeleteLabel.text = "删除";
+            if (_loadoutDeleteButton != null)
+                _loadoutDeleteButton.GetComponent<Image>().color = new Color(0.25f, 0.08f, 0.06f, 0.72f);
         }
 
         private static IEnumerator FocusRenameInput(TMPro.TMP_InputField input)
@@ -873,8 +853,6 @@ namespace Code4101.Zaohua.Tiandao
         {
             foreach (Transform child in _loadoutContent) Destroy(child.gameObject);
             _loadoutButtons.Clear();
-            _renameIcons.Clear();
-            _renameIconFallbacks.Clear();
         }
 
         private void RefreshLoadoutTrigger()
@@ -882,6 +860,10 @@ namespace Code4101.Zaohua.Tiandao
             var state = EquipmentLoadoutRepository.GetCurrentSaveState();
             var active = EquipmentLoadoutRepository.GetActiveLoadout(state);
             if (_loadoutTriggerLabel != null) _loadoutTriggerLabel.text = active?.name ?? "方案1";
+            var controlsEnabled = active != null && _loadoutTrigger != null && _loadoutTrigger.interactable;
+            if (_loadoutRenameButton != null) _loadoutRenameButton.gameObject.SetActive(controlsEnabled);
+            if (_loadoutDeleteButton != null)
+                _loadoutDeleteButton.gameObject.SetActive(controlsEnabled && state.loadouts.Count > 1);
         }
 
         private Button CreateButton(Transform parent, string name, string label, Vector2 size)

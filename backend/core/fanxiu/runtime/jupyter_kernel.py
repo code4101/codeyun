@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import os
 import queue
-import ast
+import sys
 import threading
 import time
+from multiprocessing.connection import Client, Listener
 from pathlib import Path
 from types import GeneratorType
 from typing import Any
+
+
+FANXIU_KERNEL_MANAGER_ADDRESS = ("127.0.0.1", 48731)
+FANXIU_KERNEL_MANAGER_AUTHKEY = b"codeyun-fanxiu-kernel-v1"
 
 
 def fanxiu_jupyter_connection_path() -> Path:
@@ -84,19 +89,12 @@ class FanxiuJupyterBinding:
         try:
             source = str(getattr(info, "raw_cell", "") or "")
             self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
-            self._cell_isolation_token = ""
-            if source.lstrip().startswith("# fanxiu:manual-code-cell isolate=1"):
-                from backend.core.fanxiu.runtime.behavior_tree import acquire_fanxiu_job_group_isolation
-
-                self._cell_isolation_token = acquire_fanxiu_job_group_isolation(
-                    reason="jupyter_code_cell",
-                    ttl_seconds=21600.0,
-                )
             active_stop_event = getattr(self.runner, "_stop_event", None) if self._managed_task_cell else None
             self.refresh(stop_event=active_stop_event if isinstance(active_stop_event, threading.Event) else None)
-            if not self._managed_task_cell:
-                with self.runner._lock:
+            with self.runner._lock:
+                if not isinstance(active_stop_event, threading.Event):
                     self.runner._stop_event = self.stop_event
+                if not self._managed_task_cell:
                     self.runner._set_status_locked(
                         "running",
                         "Jupyter cell 执行中",
@@ -104,21 +102,17 @@ class FanxiuJupyterBinding:
                     )
             shell.user_ns.update(self.namespace())
         except Exception:
-            isolation_token = str(getattr(self, "_cell_isolation_token", "") or "")
-            if isolation_token:
-                from backend.core.fanxiu.runtime.behavior_tree import release_fanxiu_job_group_isolation
-
-                release_fanxiu_job_group_isolation(isolation_token)
-                self._cell_isolation_token = ""
             self.execution_lock.release()
             raise
 
     def end_cell(self, result: Any) -> None:
         error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
         try:
+            with self.runner._lock:
+                if getattr(self.runner, "_stop_event", None) is self.stop_event:
+                    self.runner._stop_event = None
             if not getattr(self, "_managed_task_cell", False):
                 with self.runner._lock:
-                    self.runner._stop_event = None
                     self.runner._clear_current_task_locked()
                     self.runner._status.update({
                         "status": "error" if error else "success",
@@ -130,12 +124,6 @@ class FanxiuJupyterBinding:
                     })
                 self.runner._persist_status()
         finally:
-            isolation_token = str(getattr(self, "_cell_isolation_token", "") or "")
-            if isolation_token:
-                from backend.core.fanxiu.runtime.behavior_tree import release_fanxiu_job_group_isolation
-
-                release_fanxiu_job_group_isolation(isolation_token)
-                self._cell_isolation_token = ""
             self.execution_lock.release()
 
     def namespace(self) -> dict[str, Any]:
@@ -148,7 +136,19 @@ class FanxiuJupyterBinding:
             "run_task": self.run_task,
             "run_task_cell": self.run_task_cell,
             "refresh": self.refresh,
+            "sleep": self.sleep,
         }
+
+    @staticmethod
+    def sleep(seconds: float, *, quantum: float = 0.1) -> None:
+        """A Jupyter-interruptible wait for debug cells and framework code."""
+        deadline = time.monotonic() + max(0.0, float(seconds or 0.0))
+        interval = max(0.01, min(0.5, float(quantum or 0.1)))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(interval, remaining))
 
     def run(
         self,
@@ -211,9 +211,8 @@ class FanxiuJupyterBinding:
     task = run_task
 
 
-def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.0) -> None:
-    from ipykernel.kernelapp import IPKernelApp
-
+def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
+    """Load the Fanxiu framework into the current, real IPython kernel."""
     from backend.core.fanxiu.runtime.behavior_tree import (
         FANXIU_EMBEDDED_SERVICE_ENV,
         data_annotation_asset_tree_path,
@@ -222,6 +221,9 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
         ensure_fanxiu_runtime_jobs_registered,
     )
 
+    shell = get_ipython()  # type: ignore[name-defined]
+    if shell is None:
+        raise RuntimeError("凡修框架只能加载到真实 IPython/Jupyter kernel")
     os.environ[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
     resolved_entry_id = str(entry_id)
     entry = resolve_fanxiu_entry(resolved_entry_id)
@@ -229,39 +231,177 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     runner = get_fanxiu_runtime_runner()
     ensure_fanxiu_runtime_jobs_registered()
 
+    binding = FanxiuJupyterBinding(runner, entry, resolved_entry_id, asset_tree_path)
+    shell.user_ns.update(binding.namespace())
+    shell.user_ns["_fanxiu_binding"] = binding
+    shell.events.register("pre_run_cell", lambda info: binding.begin_cell(info, shell))
+    shell.events.register("post_run_cell", binding.end_cell)
+    return {
+        "entry_id": resolved_entry_id,
+        "runtime_loaded": binding.runtime is not None,
+        "ctx_loaded": binding.ctx is not None,
+    }
+
+
+def send_fanxiu_kernel_manager_command(
+    command: str,
+    *,
+    timeout_seconds: float = 15.0,
+) -> dict[str, Any]:
+    """Send a lifecycle command to the process that owns KernelManager."""
+    connection = Client(FANXIU_KERNEL_MANAGER_ADDRESS, authkey=FANXIU_KERNEL_MANAGER_AUTHKEY)
+    try:
+        connection.send({"command": str(command or "status"), "timeout_seconds": float(timeout_seconds)})
+        if not connection.poll(max(0.1, float(timeout_seconds))):
+            raise TimeoutError(f"凡修 KernelManager 命令超时：{command}")
+        response = connection.recv()
+    finally:
+        connection.close()
+    if not isinstance(response, dict):
+        raise RuntimeError("凡修 KernelManager 返回了无效响应")
+    return response
+
+
+def fanxiu_kernel_manager_status(*, timeout_seconds: float = 1.0) -> dict[str, Any]:
+    try:
+        return send_fanxiu_kernel_manager_command("status", timeout_seconds=timeout_seconds)
+    except (OSError, EOFError, TimeoutError):
+        return {
+            "alive": False,
+            "execution_state": "dead",
+            "manager_pid": None,
+            "kernel_pid": None,
+        }
+
+
+def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.0) -> None:
+    """Own one native Jupyter KernelManager and its replaceable kernel child."""
+    del tick_seconds  # Scheduling is external; the kernel has no resident polling loop.
+    from jupyter_client import KernelManager
+
     connection_path = fanxiu_jupyter_connection_path()
     connection_path.parent.mkdir(parents=True, exist_ok=True)
-    connection_path.unlink(missing_ok=True)
+    state_lock = threading.RLock()
+    state: dict[str, Any] = {"execution_state": "starting", "generation": 0}
+    monitor_stop: threading.Event | None = None
+    monitor_client: Any = None
+    manager: KernelManager | None = None
 
-    app = IPKernelApp.instance(connection_file=str(connection_path))
-    app.initialize([])
-    binding = FanxiuJupyterBinding(runner, entry, resolved_entry_id, asset_tree_path)
-    app.shell.user_ns.update(binding.namespace())
-    app.shell.events.register("pre_run_cell", lambda info: binding.begin_cell(info, app.shell))
-    app.shell.events.register("post_run_cell", binding.end_cell)
+    def kernel_pid(km: KernelManager | None) -> int | None:
+        provisioner = getattr(km, "provisioner", None) if km is not None else None
+        process = getattr(provisioner, "process", None)
+        return int(process.pid) if process is not None else None
 
-    runner.ensure_service(
-        entry=entry,
-        entry_id=resolved_entry_id,
-        asset_tree_path=asset_tree_path,
-        tick_seconds=max(0.2, float(tick_seconds or 1.0)),
-    )
+    def stop_monitor() -> None:
+        nonlocal monitor_stop, monitor_client
+        if monitor_stop is not None:
+            monitor_stop.set()
+        if monitor_client is not None:
+            try:
+                monitor_client.stop_channels()
+            except Exception:
+                pass
+        monitor_stop = None
+        monitor_client = None
 
-    def stop_kernel_when_service_stops() -> None:
-        while True:
-            time.sleep(0.5)
-            if not bool(runner.status().get("service_running")):
+    def start_monitor(km: KernelManager) -> None:
+        nonlocal monitor_stop, monitor_client
+        stop_event = threading.Event()
+        client = km.client()
+        client.start_channels()
+        monitor_stop = stop_event
+        monitor_client = client
+
+        def monitor() -> None:
+            while not stop_event.is_set():
                 try:
-                    app.io_loop.add_callback(app.io_loop.stop)
+                    message = client.get_iopub_msg(timeout=0.5)
+                except queue.Empty:
+                    continue
                 except Exception:
-                    pass
-                return
+                    return
+                if str(message.get("msg_type") or "") != "status":
+                    continue
+                content = message.get("content") if isinstance(message.get("content"), dict) else {}
+                execution_state = str(content.get("execution_state") or "")
+                if execution_state:
+                    with state_lock:
+                        state["execution_state"] = execution_state
 
-    threading.Thread(target=stop_kernel_when_service_stops, daemon=True).start()
+        threading.Thread(target=monitor, name="fanxiu-kernel-state", daemon=True).start()
+
+    def execute_bootstrap(km: KernelManager) -> None:
+        client = km.blocking_client()
+        client.start_channels()
+        try:
+            client.wait_for_ready(timeout=15.0)
+            source = (
+                "from backend.core.fanxiu.runtime.jupyter_kernel import "
+                "bootstrap_fanxiu_jupyter_kernel\n"
+                f"bootstrap_fanxiu_jupyter_kernel({str(entry_id)!r})"
+            )
+            reply = client.execute_interactive(source, timeout=30.0)
+            content = reply.get("content") if isinstance(reply.get("content"), dict) else {}
+            if str(content.get("status") or "") != "ok":
+                raise RuntimeError(f"凡修 Kernel bootstrap 失败：{content}")
+        finally:
+            client.stop_channels()
+
+    def start_kernel() -> KernelManager:
+        connection_path.unlink(missing_ok=True)
+        km = KernelManager(kernel_name="python3", connection_file=str(connection_path))
+        km.start_kernel(cwd=os.getcwd(), env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        execute_bootstrap(km)
+        with state_lock:
+            state["generation"] = int(state.get("generation") or 0) + 1
+            state["execution_state"] = "idle"
+        start_monitor(km)
+        return km
+
+    listener = Listener(FANXIU_KERNEL_MANAGER_ADDRESS, authkey=FANXIU_KERNEL_MANAGER_AUTHKEY)
     try:
-        app.start()
+        manager = start_kernel()
+        should_exit = False
+        while not should_exit:
+            connection = listener.accept()
+            try:
+                request = connection.recv()
+                command = str(request.get("command") or "status") if isinstance(request, dict) else "status"
+                timeout = float(request.get("timeout_seconds") or 15.0) if isinstance(request, dict) else 15.0
+                if command == "interrupt":
+                    manager.interrupt_kernel()
+                elif command == "restart":
+                    stop_monitor()
+                    manager.shutdown_kernel(now=True)
+                    manager = start_kernel()
+                elif command == "shutdown":
+                    stop_monitor()
+                    manager.shutdown_kernel(now=False)
+                    should_exit = True
+                elif command != "status":
+                    raise ValueError(f"未知 KernelManager 命令：{command}")
+                alive = bool(manager and manager.is_alive()) and not should_exit
+                with state_lock:
+                    response = {
+                        "ok": True,
+                        "command": command,
+                        "alive": alive,
+                        "execution_state": state.get("execution_state") if alive else "dead",
+                        "generation": state.get("generation"),
+                        "manager_pid": os.getpid(),
+                        "kernel_pid": kernel_pid(manager),
+                        "connection_file": str(connection_path),
+                    }
+                connection.send(response)
+            except Exception as exc:
+                connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                connection.close()
     finally:
-        runner.stop_service(timeout_seconds=3.0)
+        stop_monitor()
+        if manager is not None and manager.is_alive():
+            manager.shutdown_kernel(now=True)
+        listener.close()
         connection_path.unlink(missing_ok=True)
 
 
@@ -271,7 +411,6 @@ def execute_fanxiu_jupyter_cell(
     timeout_seconds: float = 120.0,
     max_output_chars: int = 20000,
     connection_path: Path | None = None,
-    isolate_jobs: bool = True,
 ) -> dict[str, Any]:
     from jupyter_client import BlockingKernelClient
 
@@ -281,28 +420,26 @@ def execute_fanxiu_jupyter_cell(
         time.sleep(0.1)
     if not path.is_file():
         raise RuntimeError(f"凡修 Jupyter kernel 尚未就绪：{path}")
+    connection_snapshot = path.read_bytes()
 
-    client: BlockingKernelClient | None = None
-    while client is None:
-        candidate = BlockingKernelClient(connection_file=str(path))
-        candidate.load_connection_file()
-        candidate.start_channels()
-        try:
-            candidate.wait_for_ready(timeout=min(3.0, max(1.0, deadline - time.time())))
-            client = candidate
-        except Exception:
-            candidate.stop_channels()
-            if time.time() >= deadline:
-                raise
-            time.sleep(0.2)
+    # Bind once to the kernel that existed when this cell was submitted.
+    # Re-reading the shared connection file after a restart can accidentally
+    # deliver an old cell to the new kernel, which is unlike normal Jupyter
+    # client semantics and makes interrupted debug code appear to "revive".
+    client = BlockingKernelClient(connection_file=str(path))
+    client.load_connection_file()
+    client.start_channels()
+    try:
+        client.wait_for_ready(timeout=min(3.0, max(1.0, deadline - time.time())))
+    except Exception:
+        client.stop_channels()
+        raise
     outputs: list[str] = []
     error: dict[str, Any] | None = None
     execution_count: int | None = None
     result_text = ""
     try:
         source = str(code or "")
-        if isolate_jobs and not source.lstrip().startswith("# fanxiu:"):
-            source = "# fanxiu:manual-code-cell isolate=1\n" + source
         msg_id = client.execute(source, allow_stdin=False, stop_on_error=True)
         idle = False
         while not idle:
@@ -312,6 +449,12 @@ def execute_fanxiu_jupyter_cell(
             try:
                 message = client.get_iopub_msg(timeout=min(1.0, remaining))
             except queue.Empty:
+                try:
+                    connection_changed = path.read_bytes() != connection_snapshot
+                except FileNotFoundError:
+                    connection_changed = True
+                if connection_changed:
+                    raise RuntimeError("Fanxiu Jupyter kernel 已重启，当前 cell 已作废")
                 continue
             if str(message.get("parent_header", {}).get("msg_id") or "") != msg_id:
                 continue
@@ -367,29 +510,3 @@ def execute_fanxiu_jupyter_cell(
         "execution_count": execution_count,
         "result_text": result_text,
     }
-
-
-def execute_fanxiu_jupyter_task_cell(
-    task_type: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    timeout_seconds: float = 21630.0,
-) -> dict[str, Any]:
-    """Execute one registered Fanxiu job as a cell in the resident IPython kernel."""
-    code = (
-        "# fanxiu:managed-task-cell\n"
-        f"run_task_cell({str(task_type)!r}, {dict(payload or {})!r})"
-    )
-    response = execute_fanxiu_jupyter_cell(code, timeout_seconds=timeout_seconds, isolate_jobs=False)
-    if response.get("status") == "error":
-        if str(response.get("error") or "").startswith("InterruptedError:"):
-            raise InterruptedError(str(response.get("message") or ""))
-        raise RuntimeError(str(response.get("message") or "凡修 Jupyter task cell 执行失败"))
-    text = str(response.get("result_text") or "").strip()
-    try:
-        value = ast.literal_eval(text)
-    except (SyntaxError, ValueError) as exc:
-        raise RuntimeError(f"凡修 Jupyter task cell 缺少结构化结果：{text or '<empty>'}") from exc
-    if not isinstance(value, dict):
-        raise RuntimeError(f"凡修 Jupyter task cell 返回类型错误：{type(value).__name__}")
-    return {**response, **value}

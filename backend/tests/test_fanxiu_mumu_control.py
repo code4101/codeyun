@@ -482,6 +482,30 @@ def test_mumu_adb_failures_recover_only_after_three_recent_failures(monkeypatch)
     assert result["recovered"] is True
 
 
+def test_single_adb_timeout_does_not_restart_after_stale_health_check(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        mumu._mumu_device_health_state.update({
+            "status": "healthy",
+            "checked_monotonic": mumu.time.monotonic() - 600,
+            "checked_at": mumu.time.time() - 600,
+        })
+
+    checks = []
+    recoveries = []
+    monkeypatch.setattr(mumu, "_read_mumu_device_recovery_state", lambda: {})
+    monkeypatch.setattr(mumu, "_mumu_device_last_recovery_at", lambda: 0.0)
+    monkeypatch.setattr(mumu, "mumu_device_health_check", lambda **kwargs: checks.append(kwargs) or {"status": "healthy"})
+    monkeypatch.setattr(mumu, "recover_mumu_device", lambda **kwargs: recoveries.append(kwargs) or {"recovered": True})
+
+    result = mumu.record_mumu_adb_failure("Reading from 192.168.31.181:5555 timed out", recover=True)
+
+    assert result["failure_count"] == 1
+    assert result["status"] == "suspect"
+    assert checks == []
+    assert recoveries == []
+
+
 def test_mumu_adb_failure_defers_recovery_during_startup_grace(monkeypatch):
     mumu.reset_mumu_device_health_state()
     now = mumu.time.time()
@@ -695,6 +719,7 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
     monkeypatch.setattr(mumu, "ensure_mumu_adb_resolution", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(mumu, "normalize_mumu_desktop_window_size", lambda **_kwargs: {"ok": True, "already_target": True})
     monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
+    monkeypatch.setattr(mumu, "wait_mumu_recovery_frame_ready", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
 
     result = mumu.recover_mumu_device(reason="new_process")
@@ -764,6 +789,7 @@ def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
     monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
     monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
+    monkeypatch.setattr(mumu, "wait_mumu_recovery_frame_ready", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(
         mumu,
         "ensure_mumu_adb_resolution",
@@ -783,7 +809,45 @@ def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
     assert result["window_size"]["applied"] is True
     with mumu._MUMU_DEVICE_HEALTH_LOCK:
         assert mumu._mumu_device_health_state["resolution"]["ok"] is True
-        assert mumu._mumu_device_health_state["window_size"]["ok"] is True
+    assert mumu._mumu_device_health_state["window_size"]["ok"] is True
+
+
+def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monkeypatch, tmp_path):
+    mumu.reset_mumu_device_health_state()
+    monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
+    monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
+    checks = {"count": 0}
+
+    def fake_player_info(vmindex="1"):
+        checks["count"] += 1
+        return {
+            "index": str(vmindex),
+            "is_process_started": checks["count"] > 1,
+            "is_android_started": checks["count"] > 1,
+            "player_state": "start_finished" if checks["count"] > 1 else "stopped",
+        }
+
+    monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
+    monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "ensure_mumu_adb_resolution", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
+    monkeypatch.setattr(mumu, "normalize_mumu_desktop_window_size", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        mumu,
+        "wait_mumu_recovery_frame_ready",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("frame stays black")),
+    )
+    monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = mumu.recover_mumu_device(reason="black_frame_probe")
+
+    assert result["recovered"] is False
+    assert result["status"] == "broken"
+    assert "frame stays black" in result["last_error"]
+    persisted = mumu.json.loads((tmp_path / "recovery_state.json").read_text(encoding="utf-8"))
+    assert persisted["startup_grace_active"] is False
 
 
 def test_recover_mumu_device_skips_auto_recovery_when_disabled(monkeypatch):

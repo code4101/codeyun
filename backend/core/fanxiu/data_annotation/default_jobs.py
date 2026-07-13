@@ -24,6 +24,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_signup",
     "daily_boss",
     "daily_jianling",
+    "jianling_cuiling",
     "daily_youli",
     "daily_lingta",
     "daily_lingzu",
@@ -255,6 +256,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_jianling_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_task_cell("jianling_cuiling", "剑灵_淬灵", scheduler_supported=True)
+    def _run_data_annotation_jianling_cuiling_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_jianling_cuiling_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("daily_youli", "日常_游历", scheduler_supported=True)
     def _run_data_annotation_daily_youli_task_cell(
