@@ -40,7 +40,6 @@ class DataAnnotationRuntimeContainer:
 
     group_definitions = (
         DataAnnotationRuntimeGroupSpec("guard", "守护", 10, preempt_same_group=False),
-        DataAnnotationRuntimeGroupSpec("manual_job", "作业", 50, preempt_same_group=False),
         DataAnnotationRuntimeGroupSpec("job", "作业", 100, preempt_same_group=False),
     )
 

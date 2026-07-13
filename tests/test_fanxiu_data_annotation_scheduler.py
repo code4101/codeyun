@@ -5723,6 +5723,73 @@ def test_fanxiu_runtime_wait_click_none_frame_uses_current_scene(monkeypatch):
     assert clicks == [(247, 850, 1700)]
 
 
+def test_jianling_cuiling_closes_popup_and_accepts_full_level_layer0_terminal(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.scenes = iter((349, 351, None))
+            self.levels = iter((([173], "等级：173"), ([1000], "凝炼等级：1000（圆满）")))
+            self.completion_message = ""
+
+        def cur_frame(self, update=False):
+            assert update is True
+            return "frame"
+
+        def current_scene(self, candidates, **_kwargs):
+            assert candidates == [351, 349]
+            return next(self.scenes), 100.0, "frame"
+
+        def ocr_numbers_in_shapes(self, scene_id, shapes, **_kwargs):
+            assert (scene_id, shapes) == (349, ("等级",))
+            return next(self.levels)
+
+        def long_press_shape(self, scene_id, shape, *, duration):
+            actions.append(("long_press_shape", scene_id, shape, duration))
+
+        def wait_click(self, scene_id, shape):
+            actions.append(("wait_click", scene_id, shape))
+            if False:
+                yield None
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+
+        def set_completion_message(self, message):
+            self.completion_message = message
+
+    runtime = FakeRuntime()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+
+    result = _drain_generator(
+        runner._execute_jianling_cuiling_task({}, fanxiu.threading.Event(), {})
+    )
+
+    assert result == "success"
+    assert actions == [
+        ("long_press_shape", 349, "淬灵", 3.0),
+        ("settle", 0.8),
+        ("wait_click", 351, "继续"),
+        ("settle", 0.8),
+    ]
+    assert "1000" in runtime.completion_message
+
+
+def test_jianling_cuiling_is_available_as_manual_catalog_type_not_default_instance():
+    from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks
+
+    data_annotation_default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = runtime_runner_core._data_annotation_task_cell_definition("jianling_cuiling")
+
+    assert definition is not None
+    assert definition.label == "剑灵_淬灵"
+    assert definition.scheduler_supported is True
+    assert all(task["task_type"] != "jianling_cuiling" for task in default_data_annotation_scheduler_tasks())
+
+
 def test_fanxiu_runtime_wait_click_floating_without_condition_uses_fixed_click(monkeypatch):
     image = {
         "id": 216,

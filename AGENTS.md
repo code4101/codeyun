@@ -48,6 +48,14 @@
 - 新增的专用作业类型默认不要出现在运行清单里，应通过“作业 +”的类型目录让用户按需添加。
 - 这样新机器部署 CodeYun 时保持干净清爽，不继承当前机器的一堆个人作业和触发时间。
 
+## 凡修 Kernel / Cell 约定（强约束）
+
+- 凡修只有一个长期存活的真实 Jupyter/Python Kernel；Kernel 启动后加载 runtime、ctx、OCR、ADB、shape、scene、tasks、guards 等行为树能力。
+- 外部唯一执行原语是 Cell：调试、单步和正式任务都提交普通 Python Cell；`kernel.task(...)` 只能构造包含 `run_task(...)` 的 Cell，不能形成第二协议或第二执行器。
+- Scheduler/Dispatch Arbiter 位于 Kernel 外，负责触发时间、优先级、重试及模拟器资源仲裁；Kernel 内禁止 manual queue、来源锁、Scheduler 轮询和跨 restart 重放。
+- 用户说“发一个 cell”时，直接从已有业务代码抽取最小片段提交当前 Kernel；不得新增调试 API、注册临时作业或写内部队列。
+- `interrupt` 只停止当前 Cell并保留 namespace；`restart` 替换 Kernel、清空变量并重新加载凡修框架；`shutdown` 终止 Kernel。三者不得混用。
+
 ## 部署运维约定（重要）
 
 - 仓库内的 GitHub Actions 自动部署链路已于 `2026-04-16` 移除，不要再假设 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh` 仍然存在。

@@ -521,6 +521,49 @@ def test_jupyter_binding_keeps_ctx_identity_and_caches_assets(tmp_path):
     assert runner.loads == 1
 
 
+def test_runtime_long_press_shape_owns_shape_coordinate_conversion():
+    image = {
+        "id": "349",
+        "type": "image",
+        "title": "0349.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "cuiling", "title": "淬灵", "x": 0.4, "y": 0.7, "w": 0.2, "h": 0.1}],
+    }
+    view = runtime_runner_core.View(image)
+    shape = view.get_shapes()[0]
+    calls: list[dict] = []
+
+    class FakeRunner:
+        def _drag_frame_point(self, ctx, source_image, start_x, start_y, end_x, end_y, *, duration_ms):
+            calls.append({
+                "ctx": ctx,
+                "image": source_image,
+                "start": (start_x, start_y),
+                "end": (end_x, end_y),
+                "duration_ms": duration_ms,
+            })
+            return {"ok": True}
+
+    runtime = runtime_runner_core.FanxiuRuntime(FakeRunner(), {"images": {349: image}})
+    runtime.view = lambda _selector: view
+    runtime.resolve_shape_selector = lambda _view, _selector: shape
+    runtime.match_shape = lambda _shape: True
+    runtime._emit_runtime_action = lambda *_args, **_kwargs: None
+    runtime.clear_frame = lambda: None
+
+    result = runtime.long_press_shape(349, "淬灵", duration=5)
+
+    assert result == {"ok": True}
+    assert calls == [{
+        "ctx": runtime.ctx,
+        "image": image,
+        "start": (450.0, 1200.0),
+        "end": (450.0, 1200.0),
+        "duration_ms": 3000,
+    }]
+
+
 def test_jupyter_task_cell_uses_managed_marker_and_parses_structured_result(monkeypatch):
     calls: list[tuple[str, float, bool]] = []
 

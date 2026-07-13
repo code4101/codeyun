@@ -136,24 +136,13 @@ def tick(
     entry_id: str,
     task_type: str | None = None,
     payload: dict[str, Any] | None = None,
-    asset_tree_path: Path | None = None,
-    task_cell_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Submit a task cell into the resident loop.
-
-    This compatibility entry is for business execution, not service diagnosis.
-    """
+    """Run one registered task through the same ordinary-cell path."""
     return runtime_control.submit_tick_task(
         entry=entry,
         entry_id=entry_id,
         task_type=task_type,
         payload=payload,
-        asset_tree_path=asset_tree_path,
-        task_cell_path=task_cell_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
     )
 
 
@@ -163,26 +152,23 @@ def submit_task_cell(
     entry_id: str,
     task_type: str,
     payload: dict[str, Any] | None = None,
-    asset_tree_path: Path | None = None,
-    task_cell_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Submit a registered task as the kernel's single execution unit.
+    """Compile a registered task invocation and execute it as one normal cell."""
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 
-    This is the preferred API boundary for engineering scheduler work. The
-    current implementation still uses the resident queue internally, but callers
-    should reason in terms of cells, not queue records.
-    """
-    return runtime_control.submit_runtime_task_cell(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=payload,
-        asset_tree_path=asset_tree_path,
-        task_cell_path=task_cell_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
+    payload_dict = dict(payload or {})
+    try:
+        runtime_timeout = float(payload_dict.get("max_runtime_seconds", payload_dict.get("timeout_seconds", 600)) or 600)
+    except (TypeError, ValueError):
+        runtime_timeout = 600.0
+    timeout_seconds = max(30.0, runtime_timeout + 30.0)
+    del entry
+    return FanxiuKernel(entry_id=str(entry_id)).task(
+        str(task_type or ""),
+        payload_dict,
+        timeout_seconds=timeout_seconds,
+    ).run(
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -191,31 +177,18 @@ def submit_code_cell(
     entry: Any,
     entry_id: str,
     code: str,
-    mode: str = "readonly",
     timeout_seconds: float = 120.0,
     max_output_chars: int = 4000,
-    isolate_jobs: bool = True,
-    asset_tree_path: Path | None = None,
-    task_cell_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Execute dynamic code in the resident IPython kernel.
+    """Execute arbitrary Python in the same resident Jupyter namespace."""
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 
-    ``mode`` and the storage-path arguments are accepted only for compatibility
-    with older HTTP clients. The real Jupyter namespace and protocol own code
-    execution; ``debug_eval`` is no longer the code-cell adapter.
-    """
-    from backend.core.fanxiu.runtime.behavior_tree import ensure_fanxiu_behavior_tree_service
-    from backend.core.fanxiu.runtime.jupyter_kernel import execute_fanxiu_jupyter_cell
-
-    ensure_fanxiu_behavior_tree_service(entry, str(entry_id))
-    return execute_fanxiu_jupyter_cell(
+    del entry
+    return FanxiuKernel(entry_id=str(entry_id)).cell(
         str(code or ""),
         timeout_seconds=float(timeout_seconds or 120.0),
         max_output_chars=int(max_output_chars or 4000),
-        isolate_jobs=bool(isolate_jobs),
-    )
+    ).run()
 
 
 def execute_tick(

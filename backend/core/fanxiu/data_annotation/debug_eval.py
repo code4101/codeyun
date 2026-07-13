@@ -280,6 +280,23 @@ class DataAnnotationRuntimeDebugContext:
                 raise RuntimeError(f"找不到标注：scene={scene} shape~={title}")
         runtime.click_shape_center(scene, shape)
 
+    def long_press_shape(
+        self,
+        scene: int | str,
+        title: str,
+        *,
+        duration: float = 3.0,
+        contains: bool = False,
+    ) -> None:
+        self._require_act()
+        runtime = self._bound_runtime()
+        shape: str | dict[str, Any] | None = title
+        if contains:
+            shape = self.shape(scene, title, contains=True)
+            if not shape:
+                raise RuntimeError(f"找不到标注：scene={scene} shape~={title}")
+        runtime.long_press_shape(scene, shape, duration=duration)
+
     def wait_action_settle(self, seconds: float = 1.0):
         self._require_act()
         runtime = self._bound_runtime()

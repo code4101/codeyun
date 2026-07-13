@@ -560,10 +560,6 @@ def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
     }
 
 
-def normalize_data_annotation_task_cell(item: Any) -> dict[str, Any] | None:
-    return normalize_job_record(item, default_group="manual_job")
-
-
 def parse_data_annotation_task_time(value: Any) -> float | None:
     return parse_schedule_time(value)
 
