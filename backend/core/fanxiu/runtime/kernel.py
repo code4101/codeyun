@@ -75,7 +75,7 @@ class FanxiuKernel:
             payload=data,
         )
 
-    def code(
+    def cell(
         self,
         code: str,
         *,
@@ -90,6 +90,22 @@ class FanxiuKernel:
             mode=str(mode or "readonly"),
             timeout_seconds=float(timeout_seconds or 120.0),
             max_output_chars=int(max_output_chars or 4000),
+        )
+
+    def code(
+        self,
+        code: str,
+        *,
+        mode: str = "readonly",
+        timeout_seconds: float = 120.0,
+        max_output_chars: int = 4000,
+    ) -> FanxiuCell:
+        """Compatibility alias for :meth:`cell`."""
+        return self.cell(
+            code,
+            mode=mode,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
         )
 
     def submit_task(

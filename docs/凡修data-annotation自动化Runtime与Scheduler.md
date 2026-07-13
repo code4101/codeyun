@@ -293,10 +293,20 @@ for code in codes:
 
 `runtime/cells/code` 是通用临时代码执行入口；底层复用 `debug_eval` 执行能力，但调用方不应再把 `task_type=debug_eval` 当成首选 API。它不是邮件、日常或某个具体业务的专用接口。
 
+在凡修协作语境里，`cell` 默认就指这个入口。推荐本地命令是：
+
+```bash
+uv run python scripts/fanxiu_bt.py cell "result = ctx.scene()"
+```
+
+`cell` 默认等待执行完成；历史 `code-cell` 和 `py` 命令继续兼容。
+
 它用于让 agent/开发者在真实 Runtime 上下文中临时运行一段 Python：
 
 - 默认 `mode=readonly`，允许截图、场景识别、OCR、读取标注和记录日志。
 - 需要点击、拖拽等真实动作时必须显式传 `mode=act`。
+- 同一 entry、同一次常驻内核生命周期内，普通 Python 变量和辅助函数会跨 code cell 保留，形成轻量 Jupyter 式连续上下文；`task` 和 `result` 是本 cell 保留名，每次执行前清理，避免上一段任务被意外重放。重启内核会开启新命名空间。
+- `mode=act` 的 cell 自动注入已绑定当前 entry、资产树和停止事件的 `runtime`。普通调试代码不应再访问 `ctx._runner`、`ctx.raw`，也不应手工传 `asset_tree_path` 或 `stop_event`。
 - 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_scene()`、`ctx.go_scene()`、`ctx.wait_view()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
 - `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
 - `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在代码 cell 中改成固定坐标硬点。
@@ -336,6 +346,21 @@ def task(ctx):
   "mode": "act",
   "code": "ctx.tap_shape(121, '返回')"
 }
+```
+
+从正式作业抽取一小段逐步调试时，可以直接使用已绑定的 `runtime`：
+
+```python
+def task(ctx):
+    yield from runtime.go_scene(69)
+    status = yield from runtime.open_daily_entry(
+        label="日常_论道",
+        title_pattern="论道",
+        progress_can_mark_done=False,
+    )
+    if status != "open":
+        raise RuntimeError(f"未打开论道入口：{status}")
+    yield from runtime.wait_scene(296)
 ```
 
 动作模式只能在明确需要改变游戏状态时使用。邮件、领取、删除等高风险流程仍应优先用 `readonly` 先列出决策表，再提交 `act` 代码或沉淀为正式注册作业。

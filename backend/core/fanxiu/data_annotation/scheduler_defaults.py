@@ -226,7 +226,13 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         runtime_dynamic_task("xianfu-visit-partner", "xianfu_visit_partner", "仙府_寻访仙侣", enabled=True, cooldown_seconds=600),
         runtime_dynamic_task("xianfu-learn-skill", "xianfu_learn_skill", "仙府_领悟绝技", enabled=True, cooldown_seconds=600),
         legacy_dynamic_task("legacy-dynamic-xianlv-lilian", "日常_仙侣历练", fallback_minutes=60),
-        legacy_daily_task("legacy-daily-mozu", "日常_魔祖", "12:29", window=("12:29", "12:35")),
+        runtime_daily_task(
+            "legacy-daily-mozu",
+            "daily_mozu",
+            "日常_魔祖",
+            "12:30",
+            window=("12:30", "12:35"),
+        ),
         legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
         runtime_daily_task(
             "daily-zhenxie",

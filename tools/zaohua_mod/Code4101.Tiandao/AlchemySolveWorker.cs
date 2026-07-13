@@ -13,6 +13,8 @@ namespace Code4101.Zaohua.Tiandao
         internal int Generation { get; set; }
         internal TbDrugRecipeCfg Recipe { get; set; }
         internal TbPackSto Furnace { get; set; }
+        internal int GlobalCountBonus { get; set; }
+        internal int GlobalQualityBonus { get; set; }
         internal IReadOnlyList<SmartAlchemyUi.HerbStock> Herbs { get; set; }
         internal IReadOnlyDictionary<int, long> Inventory { get; set; }
         internal int Limit { get; set; }
@@ -23,6 +25,7 @@ namespace Code4101.Zaohua.Tiandao
         internal AlchemySolveRequest Request { get; set; }
         internal List<AlchemySolution> Solutions { get; set; }
         internal long ElapsedMilliseconds { get; set; }
+        internal int CompletedStage { get; set; }
         internal Exception Error { get; set; }
     }
 
@@ -80,8 +83,11 @@ namespace Code4101.Zaohua.Tiandao
                 try
                 {
                     response.Solutions = FiniteInventoryAlchemySolver.SolvePhased(
-                        request.Recipe, request.Furnace, request.Herbs, request.Inventory,
-                        request.Limit, cancellationToken, progress.Publish);
+                        request.Recipe, request.Furnace,
+                        request.GlobalCountBonus, request.GlobalQualityBonus,
+                        request.Herbs, request.Inventory,
+                        request.Limit, cancellationToken, progress.Publish,
+                        stage => response.CompletedStage = stage);
                 }
                 catch (OperationCanceledException)
                 {

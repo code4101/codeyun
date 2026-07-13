@@ -858,6 +858,13 @@ namespace Code4101.Zaohua.Tiandao
             if (input == null) yield break;
             input.Select();
             input.ActivateInputField();
+            // TMP 会在激活后的 LateUpdate 初始化编辑状态；同帧移动光标会被重置到开头。
+            yield return null;
+            if (input == null) yield break;
+            var end = input.text?.Length ?? 0;
+            input.stringPosition = end;
+            input.selectionStringAnchorPosition = end;
+            input.selectionStringFocusPosition = end;
             input.MoveTextEnd(false);
             input.ForceLabelUpdate();
         }
@@ -927,6 +934,7 @@ namespace Code4101.Zaohua.Tiandao
             PhyDef,
             Armor,
             Shield,
+            Speed,
             Fate,
         }
 
@@ -939,6 +947,7 @@ namespace Code4101.Zaohua.Tiandao
             (ExtraSortKind.PhyDef, ArtAttrEnum.PhyDef, "物防"),
             (ExtraSortKind.Armor, ArtAttrEnum.Armor, "护甲"),
             (ExtraSortKind.Shield, ArtAttrEnum.Shield, "护盾"),
+            (ExtraSortKind.Speed, ArtAttrEnum.Advance, "速度"),
             (ExtraSortKind.Fate, ArtAttrEnum.Fate, "气运"),
         };
 

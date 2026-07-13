@@ -10,13 +10,14 @@ namespace Code4101.Zaohua.Tiandao
 {
     internal static class AlchemySolutionCacheRepository
     {
-        private const int SchemaVersion = 1;
+        private const int SchemaVersion = 3;
 
         [Serializable]
         private sealed class CacheDocument
         {
             public int version;
             public string key;
+            public int completedStage;
             public List<SolutionDto> solutions = new List<SolutionDto>();
         }
 
@@ -25,6 +26,8 @@ namespace Code4101.Zaohua.Tiandao
         {
             public int plantingDays;
             public int searchStage;
+            public int globalCountBonus;
+            public int globalQualityBonus;
             public int triggerCount;
             public int countBonus;
             public int qualityBonus;
@@ -46,9 +49,10 @@ namespace Code4101.Zaohua.Tiandao
             public int rotation;
         }
 
-        internal static bool TryLoad(string key, out List<AlchemySolution> solutions)
+        internal static bool TryLoad(string key, out List<AlchemySolution> solutions, out int completedStage)
         {
             solutions = null;
+            completedStage = 0;
             try
             {
                 var path = GetPath(key);
@@ -56,17 +60,19 @@ namespace Code4101.Zaohua.Tiandao
                 var document = JsonUtility.FromJson<CacheDocument>(File.ReadAllText(path));
                 if (document == null || document.version != SchemaVersion || document.key != key) return false;
                 solutions = document.solutions.Select(FromDto).Where(solution => solution != null).ToList();
+                completedStage = Math.Max(0, Math.Min(3, document.completedStage));
                 return true;
             }
             catch (Exception error)
             {
                 Debug.LogWarning($"[Code4101 Tiandao] alchemy cache ignored: {error.Message}");
                 solutions = null;
+                completedStage = 0;
                 return false;
             }
         }
 
-        internal static void Save(string key, IReadOnlyList<AlchemySolution> solutions)
+        internal static void Save(string key, IReadOnlyList<AlchemySolution> solutions, int completedStage)
         {
             try
             {
@@ -76,6 +82,7 @@ namespace Code4101.Zaohua.Tiandao
                 {
                     version = SchemaVersion,
                     key = key,
+                    completedStage = Math.Max(0, Math.Min(3, completedStage)),
                     solutions = solutions.Select(ToDto).ToList(),
                 };
                 var temporaryPath = path + ".tmp";
@@ -102,6 +109,8 @@ namespace Code4101.Zaohua.Tiandao
             {
                 plantingDays = solution.PlantingDays,
                 searchStage = solution.SearchStage,
+                globalCountBonus = solution.GlobalCountBonus,
+                globalQualityBonus = solution.GlobalQualityBonus,
                 triggerCount = solution.RuleOutcome.TriggerCount,
                 countBonus = solution.RuleOutcome.CountBonus,
                 qualityBonus = solution.RuleOutcome.QualityBonus,
@@ -132,6 +141,8 @@ namespace Code4101.Zaohua.Tiandao
             {
                 PlantingDays = dto.plantingDays,
                 SearchStage = dto.searchStage,
+                GlobalCountBonus = dto.globalCountBonus,
+                GlobalQualityBonus = dto.globalQualityBonus,
                 ItemCounts = dto.itemIds.Select((id, index) => new { id, count = dto.itemCounts[index] })
                     .ToDictionary(pair => pair.id, pair => pair.count),
                 Placements = dto.placements.Select(item => new AlchemyPlacement

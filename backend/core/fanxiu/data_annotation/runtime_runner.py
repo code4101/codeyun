@@ -2573,6 +2573,7 @@ from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResou
 from backend.core.fanxiu.data_annotation.tasks.gift_code import GiftCodeTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.misc_actions import MiscActionTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.mozu import MozuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.signup_misc import SignupMiscTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianfu import XianfuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mixin
@@ -2581,6 +2582,7 @@ from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 
 class DataAnnotationRuntimeRunner(
     PopupGuardMixin,
+    MozuTaskMixin,
     ZhenxieTaskMixin,
     日常异火任务Mixin,
     DailyFoundationTaskMixin,
@@ -2723,6 +2725,7 @@ class DataAnnotationRuntimeRunner(
         self._missing_match_source_filenames: set[str] = set()
         self._log_scope = ""
         self._log_item_id = ""
+        self._cell_execution_lock = threading.RLock()
         self._status: dict[str, Any] = self._initial_status()
 
     def _wait_runtime_action_settle(self, ctx: dict[str, Any], stop_event: threading.Event, seconds: float = 2.0):
@@ -4588,18 +4591,19 @@ class DataAnnotationRuntimeRunner(
         max_runtime_seconds: float | None = None,
         guard_override: bool | None = None,
     ) -> Any:
-        return _DataAnnotationRuntimeContainer(
-            self,
-            runtime_ctx=runtime_ctx,
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-            guard_override=guard_override,
-        ).run_job_until_complete(
-            action=action,
-            label=label,
-            tick_seconds=tick_seconds,
-            max_runtime_seconds=max_runtime_seconds,
-        )
+        with self._cell_execution_lock:
+            return _DataAnnotationRuntimeContainer(
+                self,
+                runtime_ctx=runtime_ctx,
+                asset_tree_path=asset_tree_path,
+                stop_event=stop_event,
+                guard_override=guard_override,
+            ).run_job_until_complete(
+                action=action,
+                label=label,
+                tick_seconds=tick_seconds,
+                max_runtime_seconds=max_runtime_seconds,
+            )
 
     def _task_timeout_seconds(self, payload: dict[str, Any] | None = None) -> float:
         payload = payload if isinstance(payload, dict) else {}

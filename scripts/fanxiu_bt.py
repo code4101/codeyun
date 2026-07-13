@@ -50,6 +50,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     wait_fanxiu_task_cell,
 )
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+from backend.core.fanxiu.runtime.jupyter_kernel import run_fanxiu_jupyter_kernel_service
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
 from backend.core.fanxiu.data_annotation.runtime_control import (
@@ -1391,6 +1392,14 @@ def main() -> int:
     code_cell.add_argument("--wait", action="store_true", help="等待 code cell 完成")
     code_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
+    cell = subparsers.add_parser("cell", help="提交并等待一段 Python cell；凡修调试的默认入口")
+    cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
+    cell.add_argument("--file", default="", help="从文件读取 Python 代码")
+    cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    cell.add_argument("--max-output-chars", type=int, default=4000)
+    cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
+    cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+
     py_cell = subparsers.add_parser("py", help="提交并等待一段 Python code cell 完成")
     py_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     py_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
@@ -1632,22 +1641,24 @@ def main() -> int:
         result = clear_fanxiu_task_cells(force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
-    if args.command in {"code-cell", "py"}:
+    if args.command in {"cell", "code-cell", "py"}:
         code = str(args.code or "")
         if args.file:
             code = Path(args.file).read_text(encoding="utf-8")
         if not code.strip():
             raise SystemExit(f"{args.command} 需要提供代码或 --file")
-        cell = FanxiuKernel(
+        kernel = FanxiuKernel(
             entry_id=str(args.entry_id),
             isolate_jobs=not bool(args.no_isolate_jobs),
-        ).code(
+        )
+        cell_factory = kernel.cell if args.command == "cell" else kernel.code
+        cell = cell_factory(
             code,
             mode=str(args.mode or "readonly"),
             timeout_seconds=float(args.timeout_seconds or 120.0),
             max_output_chars=int(args.max_output_chars or 4000),
         )
-        if args.command == "py":
+        if args.command in {"cell", "py"}:
             status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
         else:
             status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0)) if bool(args.wait) else cell.submit()
@@ -1658,15 +1669,13 @@ def main() -> int:
         print("Runtime 日志已清空")
         return 0
     if args.command == "service":
-        status = run_fanxiu_local_service(FanxiuLocalServiceRequest(
+        if float(args.duration_seconds or 0.0) > 0:
+            raise SystemExit("Jupyter kernel service 不支持 --duration-seconds；请通过 stop/restart 控制生命周期")
+        run_fanxiu_jupyter_kernel_service(
             entry_id=str(args.entry_id),
             tick_seconds=float(args.tick_seconds or 1.0),
-            duration_seconds=float(args.duration_seconds or 0.0),
-        ))
-        _print_status(status)
-        if bool(args.wait):
-            return _wait_and_print_queued_cell(status, float(args.wait_timeout_seconds or 300.0))
-        return 0 if str(status.get("status") or "") not in {"error"} else 1
+        )
+        return 0
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
     kernel = FanxiuKernel(

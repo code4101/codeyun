@@ -419,6 +419,30 @@ def test_fanxiu_kernel_code_cell_facade(monkeypatch):
     ]
 
 
+def test_fanxiu_kernel_cell_is_canonical_code_cell_facade(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_submit(code, **kwargs):
+        calls.append({"code": code, **kwargs})
+        return {"status": "success", "output": "ok"}
+
+    monkeypatch.setattr(bt, "submit_fanxiu_code_cell", fake_submit)
+
+    status = FanxiuKernel(entry_id="entry-1").cell("result = 1", mode="act").run(timeout_seconds=9)
+
+    assert status["status"] == "success"
+    assert calls == [{
+        "code": "result = 1",
+        "entry_id": "entry-1",
+        "mode": "act",
+        "timeout_seconds": 120.0,
+        "max_output_chars": 4000,
+        "isolate_jobs": True,
+        "wait": True,
+        "wait_timeout_seconds": 9.0,
+    }]
+
+
 def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
     latest_path = tmp_path / "fanxiu-watch" / "latest.json"
     heartbeat_path = tmp_path / "fanxiu-watch" / "heartbeat.json"
@@ -1504,7 +1528,31 @@ def test_local_task_cell_wait_observes_queue_removal(monkeypatch):
 
     assert result["done"] is True
     assert result["result"] == "completed"
+    assert result["terminal_kind"] == "success"
     assert calls["jobs"] == 2
+
+
+def test_completed_cell_status_uses_terminal_log_instead_of_submitted_pending():
+    status = bt._fanxiu_completed_runtime_status(
+        {
+            "status": "idle",
+            "queued_cell": {"id": "manual-1", "status": "pending", "task_type": "debug_eval"},
+        },
+        {
+            "done": True,
+            "result": "completed",
+            "job_id": "manual-1",
+            "terminal_kind": "success",
+            "terminal_message": "[manual-1] 作业完成：调试代码",
+            "runtime_status": {"status": "idle", "phase": "scheduler_job_group_disabled"},
+        },
+    )
+
+    assert status["status"] == "success"
+    assert status["phase"] == "done"
+    assert status["queued_cell"]["status"] == "success"
+    assert status["completed_cell"]["id"] == "manual-1"
+    assert status["message"] == "[manual-1] 作业完成：调试代码"
 
 
 def test_local_task_cell_wait_requires_completion_evidence(monkeypatch):
@@ -1794,6 +1842,9 @@ def _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls, *, task_status=None, 
         def code(self, code, *, mode="readonly", timeout_seconds=120.0, max_output_chars=4000):
             return FakeCodeCell(self.entry_id, self.isolate_jobs, code, mode, timeout_seconds, max_output_chars)
 
+        def cell(self, code, *, mode="readonly", timeout_seconds=120.0, max_output_chars=4000):
+            return self.code(code, mode=mode, timeout_seconds=timeout_seconds, max_output_chars=max_output_chars)
+
     monkeypatch.setattr(fanxiu_bt, "FanxiuKernel", FakeKernel)
 
 
@@ -1980,6 +2031,42 @@ def test_fanxiu_bt_py_command_waits_by_default(monkeypatch):
                 "isolate_jobs": True,
                 "wait": True,
                 "wait_timeout_seconds": 77.0,
+            },
+        )
+    ]
+
+
+def test_fanxiu_bt_cell_is_canonical_and_waits_by_default(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    calls = []
+    _patch_fanxiu_bt_kernel(monkeypatch, fanxiu_bt, calls)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "--entry-id",
+            "entry",
+            "cell",
+            "result = ctx.scene()",
+            "--wait-timeout-seconds",
+            "88",
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert calls == [
+        (
+            "result = ctx.scene()",
+            {
+                "entry_id": "entry",
+                "mode": "readonly",
+                "timeout_seconds": 120.0,
+                "max_output_chars": 4000,
+                "isolate_jobs": True,
+                "wait": True,
+                "wait_timeout_seconds": 88.0,
             },
         )
     ]
