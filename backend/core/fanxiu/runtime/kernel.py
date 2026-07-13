@@ -28,13 +28,7 @@ class FanxiuCell:
 
     def submit(self) -> dict[str, Any]:
         if self.kind == "code":
-            return self.kernel.submit_code(
-                self.code,
-                mode=self.mode,
-                timeout_seconds=self.timeout_seconds,
-                max_output_chars=self.max_output_chars,
-                wait=False,
-            )
+            raise RuntimeError("code cell 不支持无句柄后台 submit；请使用 .run()")
         return self.kernel.submit_task(self.task_type, self.payload, wait=False)
 
     def run(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
@@ -100,10 +94,13 @@ class FanxiuKernel:
         max_output_chars: int = 4000,
     ) -> FanxiuCell:
         """Compatibility alias for :meth:`cell`."""
-        return self.cell(
-            code,
-            timeout_seconds=timeout_seconds,
-            max_output_chars=max_output_chars,
+        return FanxiuCell(
+            kernel=self,
+            kind="code",
+            code=str(code or ""),
+            mode=str(mode or "readonly"),
+            timeout_seconds=float(timeout_seconds or 120.0),
+            max_output_chars=int(max_output_chars or 4000),
         )
 
     def submit_task(
@@ -141,10 +138,18 @@ class FanxiuKernel:
             str(code or ""),
             timeout_seconds=float(wait_timeout_seconds or timeout_seconds or 120.0),
             max_output_chars=max_output_chars,
+            isolate_jobs=self.isolate_jobs,
         )
 
     def status(self) -> dict[str, Any]:
         return behavior_tree.fanxiu_data_annotation_runtime_status()
+
+    def restart(self, *, timeout_seconds: float = 15.0, tick_seconds: float = 1.0) -> dict[str, Any]:
+        return behavior_tree.restart_fanxiu_behavior_tree_service(
+            entry_id=self.entry_id,
+            timeout_seconds=timeout_seconds,
+            tick_seconds=tick_seconds,
+        )
 
     def logs(self, *, limit: int = 200, scope: str = "", item_id: str = "") -> list[dict[str, Any]]:
         return behavior_tree.fanxiu_data_annotation_runtime_logs(

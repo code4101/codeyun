@@ -194,6 +194,7 @@ def submit_code_cell(
     mode: str = "readonly",
     timeout_seconds: float = 120.0,
     max_output_chars: int = 4000,
+    isolate_jobs: bool = True,
     asset_tree_path: Path | None = None,
     task_cell_path: Path | None = None,
     runtime_state_path: Path | None = None,
@@ -213,6 +214,7 @@ def submit_code_cell(
         str(code or ""),
         timeout_seconds=float(timeout_seconds or 120.0),
         max_output_chars=int(max_output_chars or 4000),
+        isolate_jobs=bool(isolate_jobs),
     )
 
 

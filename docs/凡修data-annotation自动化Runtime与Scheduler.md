@@ -306,12 +306,12 @@ uv run python scripts/fanxiu_bt.py cell "runtime.current_scene(update=True)[:2]"
 - 命名空间、执行次数、stdout、traceback 和跨 cell 变量全部由真实 IPython kernel 管理；CodeYun 不再自行 `exec` 并维护仿 Jupyter dict。
 - 内核启动时预加载 `fanxiu`、`runner`、`runtime`、`ctx`、`run`、`run_task`。调用方不应手工传 `_runner`、`raw`、`asset_tree_path` 或 `stop_event`。
 - code cell 是本机受信任的 Python 执行，不再伪装成 `readonly/act` 安全沙箱；是否产生游戏动作由 cell 是否调用 `runtime` 动作原语决定。历史 HTTP/CLI 的 `mode` 字段仅兼容旧调用方。
-- 生成器片段用 `run(generator)` 交给凡修行为树容器推进；注册作业用 `run_task(task_type, payload)`。
+- 推荐用短门面：`fanxiu.scene()` 读取当前场景，`fanxiu.go(scene)` 同步前往场景，`fanxiu.task(task_type, payload)` 同步运行注册作业。兼容写法 `run(generator)`、`run_task(task_type, payload)` 继续保留。
 - 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_scene()`、`ctx.go_scene()`、`ctx.wait_view()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
 - `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
 - `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在代码 cell 中改成固定坐标硬点。
 - `ctx.wait_scene(*scenes)` 是动作模式能力，用于等待目标场景出现；`ctx.wait_view(*views)` 仅作为历史兼容名保留。
-- `ctx.go_scene(scene)` 是动作模式能力，用于通过通用场景移动进入目标场景；`ctx.goto_view(...)` 不作为新调试代码示例继续扩散。
+- `ctx.go(scene)` 是同步短入口；`ctx.go_scene(scene)` 返回可组合的生成器。前者适合单步 cell，后者适合抽取并组合现有行为树片段；`ctx.goto_view(...)` 不作为新调试代码示例继续扩散。
 - `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开 code cell / task cell 验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
 - 直接执行普通 Python；若片段返回生成器，显式写 `run(task())`。IPython 不会根据变量名猜测并自动重放 `task`。
 - 调用入口使用 `POST /data-annotation/runtime/cells/code` 或 core `runtime_framework.submit_code_cell(...)`；不要新建第二套调度或后台线程，也不要私有直调 runner。

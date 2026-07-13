@@ -6058,6 +6058,71 @@ def test_daily_mojie_raid_attack_count_candidates_clicks_above_top_count():
     assert candidates == [(384.0, pytest.approx(195.46), "11/30")]
 
 
+def test_daily_mojie_raid_attack_count_candidates_uses_annotated_target_vector():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRunner:
+        @staticmethod
+        def _frame_size(_raw):
+            return 900, 1600
+
+        @staticmethod
+        def _ocr_match_resolved_box(line, _token, _mode):
+            return {key: line[key] for key in ("x", "y", "w", "h")}
+
+    class FakeShape:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def box(self):
+            return {
+                "x": self.raw["x"] * 900,
+                "y": self.raw["y"] * 1600,
+                "w": self.raw["w"] * 900,
+                "h": self.raw["h"] * 1600,
+            }
+
+    class FakeRuntime:
+        runner = FakeRunner()
+
+        @staticmethod
+        def view(_scene):
+            return type("View", (), {"raw": {"width": 900, "height": 1600}})()
+
+        @staticmethod
+        def shape(_view, selector):
+            shapes = {
+                "检索区域/修罗": {
+                    "x": 0.48827160493827165,
+                    "y": 0.128125,
+                    "w": 0.0876543209876543,
+                    "h": 0.05,
+                },
+                "检索区域/队伍数": {
+                    "x": 0.4759259259259259,
+                    "y": 0.29270833333333335,
+                    "w": 0.1,
+                    "h": 0.025,
+                },
+            }
+            return FakeShape(shapes[selector])
+
+        @staticmethod
+        def ocr_lines(_frame):
+            return [{"text": "14/30", "x": 428.333333, "y": 468.333333, "w": 90.0, "h": 40.0}]
+
+    candidates = runner._daily_mojie_raid_attack_count_candidates(FakeRuntime(), "frame", {})
+
+    assert candidates == [(pytest.approx(473.333333), pytest.approx(245.0), "14/30")]
+
+    FakeRuntime.ocr_lines = staticmethod(
+        lambda _frame: [{"text": "15/30困破魔灵宝", "x": 438.0, "y": 428.0, "w": 371.0, "h": 135.0}]
+    )
+    merged_candidates = runner._daily_mojie_raid_attack_count_candidates(FakeRuntime(), "frame", {})
+
+    assert merged_candidates == [(pytest.approx(483.0), pytest.approx(252.166667), "15/30")]
+
+
 def test_daily_mojie_raid_attack_count_candidates_splits_joined_ocr_line():
     runner = create_fanxiu_runtime_runner()
 
@@ -14108,6 +14173,81 @@ def test_scheduler_interrupted_task_marks_stopped_with_retry(tmp_path, monkeypat
     assert all_tasks[0]["last_result"] == "stopped"
     assert all_tasks[0]["next_time"] is None
     assert all_tasks[0]["retry_after"] == "2026-06-02 06:10:00"
+
+
+def test_scheduler_failed_task_cleans_up_to_world_before_recording_error(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "xianfu-learn-skill",
+        "task_type": "xianfu_learn_skill",
+        "label": "仙府_领悟绝技",
+        "schedule_kind": "dynamic",
+        "enabled": True,
+        "next_time": "2026-06-02 05:00:00",
+        "last_result": "",
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "payload": {"__scheduler_definition_task_type": "xianfu_learn_skill"},
+    }
+    all_tasks = [dict(task)]
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda ctx: None)
+    monkeypatch.setattr(runner, "_clear_known_blocking_overlay_if_possible", _no_blocking_overlay_generator)
+    monkeypatch.setattr(
+        runner,
+        "_execute_registered_task_cell",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("寻仙台未进入 #172")),
+    )
+    cleanup_calls = []
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_failed_scheduler_task_to_world",
+        lambda **kwargs: cleanup_calls.append(kwargs) or True,
+    )
+
+    runner._run_scheduler_tasks(
+        entry=object(),
+        entry_id="entry",
+        tasks=[task],
+        all_tasks=all_tasks,
+        asset_tree_path=tmp_path / "entry.json",
+        stop_event=fanxiu.threading.Event(),
+    )
+
+    assert len(cleanup_calls) == 1
+    assert cleanup_calls[0]["task_label"] == "仙府_领悟绝技"
+    assert all_tasks[0]["last_result"] == "error"
+
+
+def test_scheduler_failure_cleanup_accepts_reliably_identified_world_after_undeclared_landing(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+
+    def failed_route(*args, **kwargs):
+        raise RuntimeError("实际到达 #34，但返回 shape 未声明该落点")
+
+    class RuntimeProbe:
+        @staticmethod
+        def current_scene(preferred, update=False):
+            assert preferred == [34]
+            assert update is True
+            return 34, 100.0, "frame"
+
+    monkeypatch.setattr(runner, "_run_direct_runtime_action", failed_route)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: RuntimeProbe())
+
+    cleaned = runner._cleanup_failed_scheduler_task_to_world(
+        ctx={},
+        asset_tree_path=tmp_path / "asset-tree.json",
+        task_label="仙府_领悟绝技",
+    )
+
+    assert cleaned is True
+    assert runner.status()["current_scene"] == 34
+    assert any("目标锚点已可靠确认" in item["message"] for item in runner.status()["logs"])
 
 
 def test_data_annotation_scheduler_repairs_orphaned_queued_run(tmp_path, monkeypatch):

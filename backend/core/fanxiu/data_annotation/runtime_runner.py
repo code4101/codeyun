@@ -4933,6 +4933,15 @@ class DataAnnotationRuntimeRunner(
                     self._mark_scheduler_task(all_tasks, task_id, result or "success")
                     with self._lock:
                         self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")
+                except InterruptedError:
+                    raise
+                except Exception:
+                    self._cleanup_failed_scheduler_task_to_world(
+                        ctx=ctx,
+                        asset_tree_path=asset_tree_path,
+                        task_label=label,
+                    )
+                    raise
                 finally:
                     if previous_log_context is not None:
                         self._restore_log_context(previous_log_context)
@@ -4970,6 +4979,60 @@ class DataAnnotationRuntimeRunner(
         finally:
             self._mark_service_heartbeat("scheduler_poll")
             self._persist_status()
+
+    def _cleanup_failed_scheduler_task_to_world(
+        self,
+        *,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        task_label: str,
+    ) -> bool:
+        """Best-effort atomic cleanup after a Scheduler task fails.
+
+        A fresh stop event is deliberate: a normal task exception should still
+        return the game to the stable world anchor, while an explicit user stop
+        bypasses this helper in ``_run_scheduler_tasks``.
+        """
+        cleanup_stop_event = threading.Event()
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"{task_label}：任务失败，收尾返回世界 #34",
+                phase="scheduler_failure_cleanup",
+            )
+            self._log_locked("action", f"{task_label}：任务失败，通用场景规划收尾到 #34")
+        self._persist_status()
+        try:
+            self._run_direct_runtime_action(
+                lambda: self._go_scene_task(
+                    ctx,
+                    asset_tree_path,
+                    34,
+                    cleanup_stop_event,
+                ),
+                stop_event=cleanup_stop_event,
+                max_runtime_seconds=120.0,
+            )
+        except Exception as cleanup_exc:
+            try:
+                runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=cleanup_stop_event)
+                scene_id, score, _frame = runtime.current_scene([34], update=True)
+            except Exception:
+                scene_id, score = None, 0.0
+            if scene_id == 34:
+                with self._lock:
+                    self._status.update({"current_scene": 34, "updated_at": time.time()})
+                    self._log_locked(
+                        "success",
+                        f"{task_label}：失败收尾已到 #34 {score:.0f}%（来源 shape 落点未声明，但目标锚点已可靠确认）",
+                    )
+                return True
+            with self._lock:
+                self._log_locked("warning", f"{task_label}：失败收尾未回到 #34：{cleanup_exc}")
+            return False
+        with self._lock:
+            self._log_locked("success", f"{task_label}：失败收尾已回到 #34")
+        return True
 
     def _find_asset_image_by_title(self, ctx: dict[str, Any], title: str) -> dict[str, Any] | None:
         def visit(nodes: Any) -> dict[str, Any] | None:

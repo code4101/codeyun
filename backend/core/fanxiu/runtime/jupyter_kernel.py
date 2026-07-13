@@ -30,32 +30,53 @@ class FanxiuJupyterBinding:
         self.runtime_ctx: dict[str, Any] = {}
         self.runtime: Any = None
         self.ctx: Any = None
+        self._asset_signature: tuple[int, int] | None = None
+        self._cached_tree: list[dict[str, Any]] | None = None
+        self._cached_images: dict[int, dict[str, Any]] | None = None
         self.refresh()
 
     def refresh(self, *, stop_event: threading.Event | None = None) -> "FanxiuJupyterBinding":
         from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
 
-        tree = self.runner._load_asset_tree(self.asset_tree_path)
-        self.runtime_ctx = {
+        stat = self.asset_tree_path.stat()
+        signature = (int(stat.st_mtime_ns), int(stat.st_size))
+        if signature != self._asset_signature or self._cached_tree is None or self._cached_images is None:
+            tree = self.runner._load_asset_tree(self.asset_tree_path)
+            images = self.runner._index_images(tree)
+            probe_ctx = {
+                "entry": self.entry,
+                "entry_id": self.entry_id,
+                "asset_tree": tree,
+                "asset_tree_path": self.asset_tree_path,
+                "images": images,
+            }
+            self.runner._require_assets(probe_ctx)
+            self._asset_signature = signature
+            self._cached_tree = tree
+            self._cached_images = images
+        self.runtime_ctx.clear()
+        self.runtime_ctx.update({
             "entry": self.entry,
             "entry_id": self.entry_id,
-            "asset_tree": tree,
+            "asset_tree": self._cached_tree,
             "asset_tree_path": self.asset_tree_path,
-            "images": self.runner._index_images(tree),
-        }
-        self.runner._require_assets(self.runtime_ctx)
+            "images": self._cached_images,
+        })
         self.stop_event = stop_event or threading.Event()
         self.runtime = self.runner._fanxiu_runtime(
             self.runtime_ctx,
             self.asset_tree_path,
             stop_event=self.stop_event,
         )
-        self.ctx = DataAnnotationRuntimeDebugContext(
-            self.runner,
-            self.runtime_ctx,
-            self.stop_event,
-            readonly=False,
-        )
+        if self.ctx is None:
+            self.ctx = DataAnnotationRuntimeDebugContext(
+                self.runner,
+                self.runtime_ctx,
+                self.stop_event,
+                readonly=False,
+            )
+        else:
+            self.ctx.rebind(self.runtime_ctx, self.stop_event, readonly=False)
         return self
 
     def begin_cell(self, info: Any, shell: Any) -> None:
@@ -63,6 +84,14 @@ class FanxiuJupyterBinding:
         try:
             source = str(getattr(info, "raw_cell", "") or "")
             self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
+            self._cell_isolation_token = ""
+            if source.lstrip().startswith("# fanxiu:manual-code-cell isolate=1"):
+                from backend.core.fanxiu.runtime.behavior_tree import acquire_fanxiu_job_group_isolation
+
+                self._cell_isolation_token = acquire_fanxiu_job_group_isolation(
+                    reason="jupyter_code_cell",
+                    ttl_seconds=21600.0,
+                )
             active_stop_event = getattr(self.runner, "_stop_event", None) if self._managed_task_cell else None
             self.refresh(stop_event=active_stop_event if isinstance(active_stop_event, threading.Event) else None)
             if not self._managed_task_cell:
@@ -75,6 +104,12 @@ class FanxiuJupyterBinding:
                     )
             shell.user_ns.update(self.namespace())
         except Exception:
+            isolation_token = str(getattr(self, "_cell_isolation_token", "") or "")
+            if isolation_token:
+                from backend.core.fanxiu.runtime.behavior_tree import release_fanxiu_job_group_isolation
+
+                release_fanxiu_job_group_isolation(isolation_token)
+                self._cell_isolation_token = ""
             self.execution_lock.release()
             raise
 
@@ -95,6 +130,12 @@ class FanxiuJupyterBinding:
                     })
                 self.runner._persist_status()
         finally:
+            isolation_token = str(getattr(self, "_cell_isolation_token", "") or "")
+            if isolation_token:
+                from backend.core.fanxiu.runtime.behavior_tree import release_fanxiu_job_group_isolation
+
+                release_fanxiu_job_group_isolation(isolation_token)
+                self._cell_isolation_token = ""
             self.execution_lock.release()
 
     def namespace(self) -> dict[str, Any]:
@@ -161,6 +202,14 @@ class FanxiuJupyterBinding:
         result_name, message = self.runner._normalize_runtime_task_result(result)
         return {"result": str(result_name or "success"), "message": str(message or "")}
 
+    def scene(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self.ctx.scene(*args, **kwargs)
+
+    def go(self, scene: int | str, **options: Any) -> Any:
+        return self.ctx.go(scene, **options)
+
+    task = run_task
+
 
 def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.0) -> None:
     from ipykernel.kernelapp import IPKernelApp
@@ -222,6 +271,7 @@ def execute_fanxiu_jupyter_cell(
     timeout_seconds: float = 120.0,
     max_output_chars: int = 20000,
     connection_path: Path | None = None,
+    isolate_jobs: bool = True,
 ) -> dict[str, Any]:
     from jupyter_client import BlockingKernelClient
 
@@ -250,7 +300,10 @@ def execute_fanxiu_jupyter_cell(
     execution_count: int | None = None
     result_text = ""
     try:
-        msg_id = client.execute(str(code or ""), allow_stdin=False, stop_on_error=True)
+        source = str(code or "")
+        if isolate_jobs and not source.lstrip().startswith("# fanxiu:"):
+            source = "# fanxiu:manual-code-cell isolate=1\n" + source
+        msg_id = client.execute(source, allow_stdin=False, stop_on_error=True)
         idle = False
         while not idle:
             remaining = deadline - time.time()
@@ -327,7 +380,7 @@ def execute_fanxiu_jupyter_task_cell(
         "# fanxiu:managed-task-cell\n"
         f"run_task_cell({str(task_type)!r}, {dict(payload or {})!r})"
     )
-    response = execute_fanxiu_jupyter_cell(code, timeout_seconds=timeout_seconds)
+    response = execute_fanxiu_jupyter_cell(code, timeout_seconds=timeout_seconds, isolate_jobs=False)
     if response.get("status") == "error":
         if str(response.get("error") or "").startswith("InterruptedError:"):
             raise InterruptedError(str(response.get("message") or ""))

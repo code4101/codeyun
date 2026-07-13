@@ -35,6 +35,21 @@ class DataAnnotationRuntimeDebugContext:
         self.readonly = bool(readonly)
         self.output: list[Any] = []
 
+    def rebind(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        readonly: bool | None = None,
+    ) -> "DataAnnotationRuntimeDebugContext":
+        """Keep the public Jupyter ``ctx`` identity stable across cells."""
+        self._ctx = ctx
+        self._stop_event = stop_event
+        if readonly is not None:
+            self.readonly = bool(readonly)
+        self.output.clear()
+        return self
+
     def _bound_runtime(self) -> Any:
         asset_tree_path = self._ctx.get("asset_tree_path")
         if isinstance(asset_tree_path, Path):
@@ -294,6 +309,56 @@ class DataAnnotationRuntimeDebugContext:
         self._require_act()
         runtime = self._bound_runtime()
         return (yield from runtime.go_scene(scene, **options))
+
+    def run(
+        self,
+        value: Any,
+        *,
+        label: str = "Jupyter cell",
+        tick_seconds: float = 0.2,
+        max_runtime_seconds: float = 21600.0,
+        guard_override: bool | None = None,
+    ) -> Any:
+        """Drive one Runtime generator from the human-facing cell context."""
+        self._require_act()
+        if callable(value) and not isinstance(value, GeneratorType):
+            value = value()
+        if not isinstance(value, GeneratorType):
+            return value
+        return self._runner._run_runtime_behavior_tree(
+            runtime_ctx=self._ctx,
+            asset_tree_path=self._ctx.get("asset_tree_path"),
+            stop_event=self._stop_event,
+            action=lambda: value,
+            label=label,
+            tick_seconds=tick_seconds,
+            max_runtime_seconds=max_runtime_seconds,
+            guard_override=guard_override,
+        )
+
+    def task(self, task_type: str, payload: dict[str, Any] | None = None) -> Any:
+        """Run a registered Fanxiu task directly from a Jupyter cell."""
+        self._require_act()
+        definition = get_fanxiu_data_annotation_task_cell_definition(str(task_type or ""))
+        if definition is None:
+            raise ValueError(f"未知凡修 task cell：{task_type}")
+        normalized = dict(payload or {})
+        if callable(definition.normalize_payload):
+            normalized = definition.normalize_payload(normalized)
+        value = definition.handler(self._runner, self._ctx, normalized, self._stop_event)
+        return self.run(
+            value,
+            label=definition.label,
+            tick_seconds=max(0.1, float(normalized.get("__tick_seconds") or 1.0)),
+            max_runtime_seconds=self._runner._task_timeout_seconds(normalized),
+            guard_override=self._runner._runtime_guard_override_from_payload(normalized),
+        )
+
+    run_task = task
+
+    def go(self, scene: int | str, **options: Any) -> Any:
+        """Human-facing synchronous scene movement shorthand."""
+        return self.run(self.go_scene(scene, **options), label=f"前往场景 #{scene}")
 
     def tap(self, scene: int | str, x: float, y: float) -> None:
         self._require_act()
