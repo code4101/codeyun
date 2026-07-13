@@ -8,6 +8,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
 from backend.core.fanxiu.runtime import jupyter_kernel as jupyter_kernel_core
@@ -408,7 +410,12 @@ def test_fanxiu_kernel_code_cell_facade(monkeypatch):
     status = FanxiuKernel(entry_id="entry-1").code("result = ctx.scene()", timeout_seconds=5).run()
 
     assert status["status"] == "success"
-    assert calls == [{"code": "result = ctx.scene()", "timeout_seconds": 35.0, "max_output_chars": 4000}]
+    assert calls == [{
+        "code": "result = ctx.scene()",
+        "timeout_seconds": 35.0,
+        "max_output_chars": 4000,
+        "isolate_jobs": True,
+    }]
 
 
 def test_fanxiu_kernel_cell_is_canonical_code_cell_facade(monkeypatch):
@@ -425,14 +432,100 @@ def test_fanxiu_kernel_cell_is_canonical_code_cell_facade(monkeypatch):
     status = FanxiuKernel(entry_id="entry-1").cell("result = 1").run(timeout_seconds=9)
 
     assert status["status"] == "success"
-    assert calls == [{"code": "result = 1", "timeout_seconds": 9.0, "max_output_chars": 4000}]
+    assert calls == [{
+        "code": "result = 1",
+        "timeout_seconds": 9.0,
+        "max_output_chars": 4000,
+        "isolate_jobs": True,
+    }]
+
+
+def test_fanxiu_code_cell_submit_rejects_fake_background_execution():
+    with pytest.raises(RuntimeError, match=r"请使用 \.run\(\)"):
+        FanxiuKernel(entry_id="entry-1").cell("1 + 1").submit()
+
+
+def test_fanxiu_kernel_restart_delegates_to_resident_service(monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        bt,
+        "restart_fanxiu_behavior_tree_service",
+        lambda **kwargs: calls.append(kwargs) or {"restarted": True, "new_pid": 2},
+    )
+
+    result = FanxiuKernel(entry_id="entry-1").restart(timeout_seconds=7, tick_seconds=0.5)
+
+    assert result["restarted"] is True
+    assert calls == [{"entry_id": "entry-1", "timeout_seconds": 7, "tick_seconds": 0.5}]
+
+
+def test_restart_waits_for_old_process_after_owner_file_disappears(monkeypatch):
+    process_states = iter([True, True, False, False])
+    starts: list[dict] = []
+    monkeypatch.setattr(bt, "_current_process_is_fanxiu_service_host", lambda: False)
+    monkeypatch.setattr(
+        bt,
+        "read_fanxiu_behavior_tree_service_owner",
+        lambda *args, **kwargs: {"active": True, "stale": False, "pid": 10}
+        if kwargs.get("stale_after_seconds", 0) > 2
+        else {"active": True, "stale": False, "pid": 20},
+    )
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda _pid: next(process_states))
+    monkeypatch.setattr(bt, "request_fanxiu_behavior_tree_service_shutdown", lambda **_kwargs: {"id": "stop"})
+    monkeypatch.setattr(bt, "_clear_stale_fanxiu_behavior_tree_shutdown_request", lambda: None)
+    monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        bt,
+        "_start_external_fanxiu_behavior_tree_service",
+        lambda entry_id, **kwargs: starts.append({"entry_id": entry_id, **kwargs}) or {"started": True, "pid": 20},
+    )
+
+    result = bt.restart_fanxiu_behavior_tree_service(entry_id="entry-1", timeout_seconds=5)
+
+    assert result["restarted"] is True
+    assert result["old_pid"] == 10
+    assert result["new_pid"] == 20
+    assert starts[0]["entry_id"] == "entry-1"
+
+
+def test_jupyter_binding_keeps_ctx_identity_and_caches_assets(tmp_path):
+    asset_path = tmp_path / "asset-tree.json"
+    asset_path.write_text("[]", encoding="utf-8")
+
+    class FakeRunner:
+        def __init__(self):
+            self.loads = 0
+
+        def _load_asset_tree(self, _path):
+            self.loads += 1
+            return []
+
+        def _index_images(self, _tree):
+            return {}
+
+        def _require_assets(self, _ctx):
+            return None
+
+        def _fanxiu_runtime(self, ctx, _path, *, stop_event):
+            return {"ctx": ctx, "stop_event": stop_event}
+
+    runner = FakeRunner()
+    binding = jupyter_kernel_core.FanxiuJupyterBinding(runner, object(), "entry-1", asset_path)
+    original_ctx = binding.ctx
+    original_runtime_ctx = binding.runtime_ctx
+
+    binding.refresh()
+
+    assert binding.ctx is original_ctx
+    assert binding.runtime_ctx is original_runtime_ctx
+    assert runner.loads == 1
 
 
 def test_jupyter_task_cell_uses_managed_marker_and_parses_structured_result(monkeypatch):
-    calls: list[tuple[str, float]] = []
+    calls: list[tuple[str, float, bool]] = []
 
-    def fake_execute(code, *, timeout_seconds):
-        calls.append((code, timeout_seconds))
+    def fake_execute(code, *, timeout_seconds, isolate_jobs):
+        calls.append((code, timeout_seconds, isolate_jobs))
         return {
             "status": "success",
             "result_text": "{'result': 'skipped', 'message': '窗口已过'}",
@@ -451,6 +544,7 @@ def test_jupyter_task_cell_uses_managed_marker_and_parses_structured_result(monk
     assert calls == [(
         "# fanxiu:managed-task-cell\nrun_task_cell('daily_mozu', {'enabled': True})",
         33,
+        False,
     )]
 
 
@@ -1493,7 +1587,47 @@ def test_core_task_cell_entrypoint_uses_runtime_framework(tmp_path, monkeypatch)
     assert submit_call[1]["task_cell_path"] == tmp_path / "manual_jobs.json"
     isolate_call = next(call for call in calls if call[0] == "isolate")
     assert isolate_call[1]["reason"] == "task_cell:go_scene"
-    assert isolate_call[1]["ttl_seconds"] == 60
+    assert isolate_call[1]["ttl_seconds"] == 300
+
+
+def test_task_cell_submit_deduplicates_matching_active_cell(monkeypatch):
+    monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: None)
+    monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda _entry_id: object())
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_task_cells",
+        lambda: [{
+            "id": "cell-1",
+            "entry_id": "entry-1",
+            "task_type": "go_scene",
+            "status": "running",
+            "payload": {"target_scene_id": 34, "__job_group_isolation_token": "old"},
+        }],
+    )
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_status", lambda: {"status": "running"})
+    monkeypatch.setattr(
+        bt,
+        "acquire_fanxiu_job_group_isolation",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("deduplicated cell must not acquire another lease")),
+    )
+
+    status = bt.submit_fanxiu_task_cell("go_scene", {"target_scene_id": 34}, entry_id="entry-1")
+
+    assert status["phase"] == "task_cell_deduplicated"
+    assert status["queued_cell"]["id"] == "cell-1"
+    assert status["queued_cell"]["deduplicated"] is True
+
+
+def test_task_cell_wait_timeout_remains_running_instead_of_error():
+    status = bt._fanxiu_completed_runtime_status(
+        {"status": "queued", "queued_cell": {"id": "cell-1", "status": "pending"}},
+        {"done": False, "result": "timeout", "job": {"id": "cell-1", "status": "running"}},
+    )
+
+    assert status["status"] == "running"
+    assert status["phase"] == "task_cell_wait_timeout"
+    assert status["error"] == ""
+    assert status["queued_cell"]["status"] == "running"
 
 
 def test_local_task_cell_cancel_and_clear_preserve_running_by_default(tmp_path, monkeypatch):
@@ -1517,6 +1651,19 @@ def test_local_task_cell_cancel_and_clear_preserve_running_by_default(tmp_path, 
 
     running_cancel = bt.cancel_fanxiu_task_cell("running-1")
     assert running_cancel == {"cancelled": False, "reason": "running", "job_id": "running-1", "remaining": 1}
+
+    stop_requests: list[dict] = []
+    monkeypatch.setattr(
+        bt,
+        "request_fanxiu_behavior_tree_stop",
+        lambda **kwargs: stop_requests.append(kwargs) or {"request_id": "stop-1"},
+    )
+    forced_running = bt.cancel_fanxiu_task_cell("running-1", force=True)
+    assert forced_running["cancelled"] is True
+    assert forced_running["cancel_requested"] is True
+    assert forced_running["reason"] == "running_stop_requested"
+    assert stop_requests == [{"entry_id": "", "reason": "cancel_task_cell:running-1"}]
+    assert [job["id"] for job in bt.fanxiu_data_annotation_task_cells()] == ["running-1"]
 
     clear_result = bt.clear_fanxiu_task_cells()
     assert clear_result == {"removed": 0, "remaining": 1}
@@ -2017,7 +2164,7 @@ def test_fanxiu_bt_code_cell_uses_code_cell_entrypoint(monkeypatch):
                 "timeout_seconds": 12.0,
                 "max_output_chars": 999,
                 "isolate_jobs": True,
-                "wait": False,
+                "wait": True,
                 "wait_timeout_seconds": 300.0,
             },
         )

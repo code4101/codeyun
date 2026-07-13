@@ -43,6 +43,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     read_fanxiu_behavior_tree_service_owner,
     release_fanxiu_job_group_isolation,
     request_fanxiu_behavior_tree_stop,
+    restart_fanxiu_behavior_tree_service,
     resolve_fanxiu_entry,
     run_fanxiu_local_service,
     start_fanxiu_local_service,
@@ -1388,10 +1389,10 @@ def main() -> int:
     run_task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     run_task.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
-    code_cell = subparsers.add_parser("code-cell", help="提交一段 Python code cell 到 Runtime kernel")
+    code_cell = subparsers.add_parser("code-cell", help=argparse.SUPPRESS)
     code_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     code_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    code_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    code_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
     code_cell.add_argument("--max-output-chars", type=int, default=4000)
     code_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
     code_cell.add_argument("--wait", action="store_true", help="等待 code cell 完成")
@@ -1400,15 +1401,15 @@ def main() -> int:
     cell = subparsers.add_parser("cell", help="提交并等待一段 Python cell；凡修调试的默认入口")
     cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
     cell.add_argument("--max-output-chars", type=int, default=4000)
     cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
     cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
-    py_cell = subparsers.add_parser("py", help="提交并等待一段 Python code cell 完成")
+    py_cell = subparsers.add_parser("py", help=argparse.SUPPRESS)
     py_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     py_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    py_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly")
+    py_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
     py_cell.add_argument("--max-output-chars", type=int, default=4000)
     py_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
     py_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
@@ -1422,6 +1423,10 @@ def main() -> int:
 
     stop = subparsers.add_parser("stop", help="请求 resident service 停止当前任务")
     stop.add_argument("--reason", default="local_cli")
+
+    restart = subparsers.add_parser("restart", help="重启 resident Runtime/Jupyter 内核")
+    restart.add_argument("--restart-timeout-seconds", type=float, default=15.0)
+    restart.add_argument("--tick-seconds", type=float, default=1.0)
 
     queue = subparsers.add_parser("queue", help="查看本地 task cell 队列")
     queue.add_argument("--json", action="store_true", help="输出 JSON")
@@ -1646,6 +1651,14 @@ def main() -> int:
         result = clear_fanxiu_task_cells(force=bool(args.force))
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
+    if args.command == "restart":
+        result = restart_fanxiu_behavior_tree_service(
+            entry_id=str(args.entry_id),
+            timeout_seconds=float(args.restart_timeout_seconds or 15.0),
+            tick_seconds=float(args.tick_seconds or 1.0),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if bool(result.get("restarted")) else 1
     if args.command in {"cell", "code-cell", "py"}:
         code = str(args.code or "")
         if args.file:
@@ -1664,10 +1677,7 @@ def main() -> int:
         if args.command != "cell":
             cell_kwargs["mode"] = str(args.mode or "readonly")
         cell = cell_factory(code, **cell_kwargs)
-        if args.command in {"cell", "py"}:
-            status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
-        else:
-            status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0)) if bool(args.wait) else cell.submit()
+        status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
         _print_status(status)
         return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     if args.command == "clear-logs":

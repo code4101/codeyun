@@ -3006,7 +3006,7 @@ class DailyFoundationTaskMixin:
         if scene_id == 331:
             yield from runtime.click_shape_center_then_view(331, "返回", 320)
             yield from runtime.wait_click(320, "返回")
-            yield from runtime.wait_click(319, "返回")
+            yield from runtime.wait_click_then_view(319, "返回", 34)
         return "success"
 
     def _click_daily_mojie_raid_top_attack_target(
@@ -3054,6 +3054,12 @@ class DailyFoundationTaskMixin:
         width, height = runtime.runner._frame_size(view.raw)
         min_y = height * float(payload.get("mojie_raid_target_min_y_ratio") or 0.08)
         max_y = height * float(payload.get("mojie_raid_target_max_y_ratio") or 0.78)
+        target_offset_x, target_offset_y = self._daily_mojie_raid_annotated_target_offset(
+            runtime,
+            view,
+            height=height,
+            payload=payload,
+        )
         candidates: list[tuple[float, float, str]] = []
         for line in runtime.ocr_lines(frame):
             text = str(line.get("text") or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -3065,9 +3071,29 @@ class DailyFoundationTaskMixin:
                 count_y = float(count_box.get("y") or 0) + float(count_box.get("h") or 0) / 2
                 if not (0 <= x <= width and min_y <= count_y <= max_y):
                     continue
-                click_y = max(min_y, count_y - height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.14))
-                candidates.append((x, click_y, match.group(0)))
+                click_x = max(0.0, min(width, x + target_offset_x))
+                click_y = max(min_y, min(height, count_y + target_offset_y))
+                candidates.append((click_x, click_y, match.group(0)))
         return sorted(candidates, key=lambda item: (item[1], item[0]))
+
+    def _daily_mojie_raid_annotated_target_offset(
+        self,
+        runtime: FanxiuRuntimeSession,
+        view: View,
+        *,
+        height: float,
+        payload: dict[str, Any],
+    ) -> tuple[float, float]:
+        """Return the annotated Y offset from 队伍数 center to 修罗 center."""
+        try:
+            target_shape = runtime.shape(view, "检索区域/修罗")
+            count_shape = runtime.shape(view, "检索区域/队伍数")
+            _target_x, target_y = ActionPlanner().shape_center(view.raw, target_shape.raw)
+            _count_x, count_y = ActionPlanner().shape_center(view.raw, count_shape.raw)
+            return 0.0, float(target_y - count_y)
+        except (RuntimeError, AttributeError, KeyError, TypeError):
+            fallback_y = -height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.14)
+            return 0.0, fallback_y
 
     def _daily_mojie_raid_attack_count_box(
         self,
@@ -3078,12 +3104,34 @@ class DailyFoundationTaskMixin:
     ) -> dict[str, float]:
         token = match.group(0)
         box = runtime.runner._ocr_match_resolved_box(line, token, "contains")
+        try:
+            count_template_box = runtime.shape(runtime.view(320), "检索区域/队伍数").box()
+        except (RuntimeError, AttributeError, KeyError, TypeError):
+            count_template_box = None
         if box is not None and all(key in box for key in ("x", "y", "w", "h")):
-            return box
+            if not count_template_box:
+                return box
+            template_w = float(count_template_box.get("w") or 0)
+            template_h = float(count_template_box.get("h") or 0)
+            if (
+                float(box.get("w") or 0) <= template_w * 1.35
+                and float(box.get("h") or 0) <= template_h * 1.75
+            ):
+                return box
         line_x = float(line.get("x") or 0)
         line_y = float(line.get("y") or 0)
         line_w = float(line.get("w") or 0)
         line_h = float(line.get("h") or 0)
+        if count_template_box:
+            template_w = float(count_template_box.get("w") or 0)
+            template_h = float(count_template_box.get("h") or 0)
+            estimated_x = line_x if match.start() == 0 else float((box or {}).get("x") or line_x)
+            return {
+                "x": estimated_x,
+                "y": line_y + max(0.0, (line_h - template_h) / 2),
+                "w": template_w,
+                "h": template_h,
+            }
         text_len = max(1, len(text))
         start_ratio = max(0.0, min(1.0, match.start() / text_len))
         end_ratio = max(start_ratio, min(1.0, match.end() / text_len))
