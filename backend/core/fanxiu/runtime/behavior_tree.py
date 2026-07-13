@@ -812,7 +812,12 @@ def fanxiu_data_annotation_runtime_status(
 ) -> dict[str, Any]:
     runner = get_fanxiu_runtime_runner()
     persisted = read_fanxiu_runtime_status(runtime_state_path) if runtime_state_path is not None else read_fanxiu_runtime_status()
-    owner = read_fanxiu_behavior_tree_service_owner() if runtime_state_path is None else {}
+    canonical_runtime_state_path = fanxiu_data_annotation_runtime_state_path().resolve(strict=False)
+    use_resident_owner = (
+        runtime_state_path is None
+        or Path(runtime_state_path).resolve(strict=False) == canonical_runtime_state_path
+    )
+    owner = read_fanxiu_behavior_tree_service_owner() if use_resident_owner else {}
     owner_active_elsewhere = (
         bool(owner.get("active"))
         and not bool(owner.get("stale"))
@@ -1221,45 +1226,23 @@ def submit_fanxiu_code_cell(
     wait_timeout_seconds: float = 300.0,
     wait_poll_seconds: float = 0.5,
 ) -> dict[str, Any]:
-    """Submit dynamic Python code as a Runtime kernel cell."""
+    """Execute dynamic Python code in the resident IPython kernel."""
     from backend.core.fanxiu.data_annotation import runtime_framework
 
-    ensure_fanxiu_runtime_jobs_registered()
     entry = resolve_fanxiu_entry(entry_id)
     resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id or DEFAULT_FANXIU_ENTRY_ID)
-    payload_timeout = max(float(timeout_seconds or 120.0), 1.0)
-    payload = {
-        "code": str(code or ""),
-        "mode": str(mode or "readonly"),
-        "timeout_seconds": payload_timeout,
-        "max_output_chars": int(max_output_chars or 4000),
-        "call_task": True,
-    }
-    if isolate_jobs:
-        token = acquire_fanxiu_job_group_isolation(
-            reason="code_cell",
-            ttl_seconds=max(payload_timeout, float(isolation_ttl_seconds or 300.0)),
-        )
-        payload["__job_group_isolation_token"] = token
-    status = runtime_framework.submit_task_cell(
+    return runtime_framework.submit_code_cell(
         entry=entry,
         entry_id=resolved_entry_id,
-        task_type="debug_eval",
-        payload=payload,
+        code=str(code or ""),
+        mode=mode,
+        timeout_seconds=float(wait_timeout_seconds if wait and wait_timeout_seconds else timeout_seconds),
+        max_output_chars=max_output_chars,
         asset_tree_path=data_annotation_asset_tree_path(resolved_entry_id),
         task_cell_path=fanxiu_data_annotation_task_cell_state_path(),
         runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
         world_facts_path=fanxiu_data_annotation_world_facts_path(),
     )
-    status = _normalize_queued_cell_status(status)
-    if not wait:
-        return status
-    wait_result = wait_fanxiu_queued_status(
-        status,
-        timeout_seconds=float(wait_timeout_seconds or payload_timeout + 30.0),
-        poll_seconds=float(wait_poll_seconds or 0.5),
-    )
-    return _fanxiu_completed_runtime_status(status, wait_result)
 
 
 def fanxiu_resident_owner_active_for_other_process() -> bool:

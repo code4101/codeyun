@@ -61,7 +61,7 @@ namespace Code4101.Zaohua.Tiandao
 
     internal static class EquipmentLoadoutRepository
     {
-        private const int CurrentStoreVersion = 4;
+        private const int CurrentStoreVersion = 6;
         private const string DirectoryName = "Code4101.Tiandao";
         private const string FileName = "equipment-loadouts.json";
         private static EquipmentLoadoutStore _store;
@@ -126,20 +126,20 @@ namespace Code4101.Zaohua.Tiandao
             Save();
         }
 
-        internal static EquipmentLoadoutEntity CreateEmptyLoadout()
+        internal static EquipmentLoadoutEntity CreateLoadoutFromCurrent()
         {
             CaptureActive();
             var state = GetCurrentSaveState();
-            if (state == null) return null;
+            var actor = BsSaveDataImpl.nowActor;
+            if (state == null || actor == null) return null;
             var number = Math.Max(2, state.nextLoadoutNumber);
             state.nextLoadoutNumber = number + 1;
             var entity = new EquipmentLoadoutEntity
             {
                 id = Guid.NewGuid().ToString("N"),
                 name = $"方案{number}",
-                slots = BagEnhancementState.EquipmentSlots
-                    .Select(slot => new EquipmentLoadoutSlot { slot = slot })
-                    .ToList(),
+                // 新方案是当前装备的一个分支，而不是“卸下全部装备”的快捷键。
+                slots = CaptureSlots(actor.packStoList),
             };
             state.loadouts.Add(entity);
             Save();
@@ -318,6 +318,7 @@ namespace Code4101.Zaohua.Tiandao
                     state.loadouts.All(loadout => loadout.id != state.activeLoadoutId))
                     state.activeLoadoutId = state.loadouts.FirstOrDefault()?.id;
                 state.nextLoadoutNumber = Math.Max(2, state.nextLoadoutNumber);
+
             }
             _store.version = CurrentStoreVersion;
             if (sourceVersion < CurrentStoreVersion && _store.saves.Count > 0) Save();
@@ -343,6 +344,20 @@ namespace Code4101.Zaohua.Tiandao
             return string.Join(";", (loadout?.slots ?? new List<EquipmentLoadoutSlot>())
                 .OrderBy(slot => slot.slot)
                 .Select(slot => $"{slot.slot}:{slot.packId}:{slot.blendType}:{slot.itemId}"));
+        }
+
+        internal static List<EquipmentLoadoutSlot> CloneSlots(IEnumerable<EquipmentLoadoutSlot> slots)
+        {
+            return (slots ?? Enumerable.Empty<EquipmentLoadoutSlot>())
+                .Where(slot => slot != null)
+                .Select(slot => new EquipmentLoadoutSlot
+                {
+                    slot = slot.slot,
+                    packId = slot.packId,
+                    blendType = slot.blendType,
+                    itemId = slot.itemId,
+                })
+                .ToList();
         }
 
         private static void EnsurePath()
@@ -386,36 +401,10 @@ namespace Code4101.Zaohua.Tiandao
             if (state.activeLoadoutId == target.id) return null;
 
             EquipmentLoadoutRepository.CaptureActive();
-            var resolved = new Dictionary<int, TbPackSto>();
-            var usedItems = new HashSet<TbPackSto>();
-            var targetSlots = (target.slots ?? new List<EquipmentLoadoutSlot>())
-                .Where(item => item != null)
-                .GroupBy(item => item.slot)
-                .ToDictionary(group => group.Key, group => group.First());
-            var missingSlots = new List<EquipmentLoadoutSlot>();
-            foreach (var desired in targetSlots.Values.Where(item => item.itemId != 0))
-            {
-                // packId 是背包实例/位置身份，穿戴、卸下或整理后可能变化；稳定身份是 BlendId。
-                // 同类型装备没有随机实例属性，因此旧实例失效时可安全回退到任一同类型现存装备。
-                var candidates = actor.packStoList
-                    .Where(candidate => candidate != null && !usedItems.Contains(candidate))
-                    .Where(candidate => (int)candidate.itemId.blendEnum == desired.blendType &&
-                                        candidate.itemId.sedId == desired.itemId)
-                    .OrderByDescending(candidate => candidate.id == desired.packId)
-                    .ThenByDescending(candidate => candidate.npcStoId == 10000 && candidate.flag == desired.slot)
-                    .ThenBy(candidate => candidate.id)
-                    .ToList();
-                var item = candidates.FirstOrDefault();
-                if (item == null)
-                {
-                    missingSlots.Add(desired);
-                    continue;
-                }
-                resolved[desired.slot] = item;
-                usedItems.Add(item);
-            }
-
-            if (missingSlots.Count > 0)
+            var source = EquipmentLoadoutRepository.GetActiveLoadout(state);
+            var sourceSlots = EquipmentLoadoutRepository.CloneSlots(source?.slots);
+            if (!TryResolve(actor, target.slots, out var targetSlots, out var resolved,
+                    out var missingSlots))
             {
                 var details = string.Join(", ", missingSlots.Select(item =>
                     $"槽位{item.slot}=BlendId({item.blendType},{item.itemId})/旧实例{item.packId}"));
@@ -426,22 +415,22 @@ namespace Code4101.Zaohua.Tiandao
             IsApplying = true;
             try
             {
-                var bag = Singleton<BsBagImpl>.Instance;
-                foreach (var slot in BagEnhancementState.EquipmentSlots)
+                ApplyResolved(actor, targetSlots);
+                if (!Matches(actor, targetSlots))
                 {
-                    if (!targetSlots.TryGetValue(slot, out var targetSlot)) continue;
-                    var current = actor.packStoList.FirstOrDefault(item => item.npcStoId == 10000 && item.flag == slot);
-                    if (targetSlot.itemId != 0 && resolved.TryGetValue(slot, out var desired))
+                    Debug.LogError("[Code4101 Tiandao] loadout switch verification failed; rolling back source loadout");
+                    var rolledBack = false;
+                    if (TryResolve(actor, sourceSlots, out var rollbackSlots, out var rollbackResolved,
+                            out _))
                     {
-                        if (current?.id != desired.id) bag.EquipItem(current, desired, slot, 10000);
+                        ApplyResolved(actor, rollbackSlots);
+                        rolledBack = Matches(actor, rollbackSlots);
                     }
-                    else if (current != null)
-                    {
-                        bag.EquipItem(current, null, slot, 10000);
-                    }
+                    return rolledBack
+                        ? "切换失败，已恢复原方案"
+                        : "切换失败，请重新打开装备界面";
                 }
                 EquipmentLoadoutRepository.SetActive(state, target);
-                EquipmentLoadoutRepository.CaptureActive();
                 return null;
             }
             finally
@@ -449,6 +438,121 @@ namespace Code4101.Zaohua.Tiandao
                 IsApplying = false;
                 _capturePending = false;
             }
+        }
+
+        private static bool TryResolve(TbActor actor, IEnumerable<EquipmentLoadoutSlot> slots,
+            out Dictionary<int, EquipmentLoadoutSlot> bySlot,
+            out Dictionary<int, TbPackSto> resolved,
+            out List<EquipmentLoadoutSlot> missingSlots)
+        {
+            bySlot = (slots ?? Enumerable.Empty<EquipmentLoadoutSlot>())
+                .Where(item => item != null)
+                .GroupBy(item => item.slot)
+                .ToDictionary(group => group.Key, group => group.First());
+            resolved = new Dictionary<int, TbPackSto>();
+            missingSlots = new List<EquipmentLoadoutSlot>();
+            var usedItems = new HashSet<TbPackSto>();
+            foreach (var desired in bySlot.Values.Where(item => item.itemId != 0))
+            {
+                // packId 是易变的背包实例身份；物品定义 (blendType, itemId) 才是稳定身份。
+                var item = actor.packStoList
+                    .Where(candidate => candidate != null && !usedItems.Contains(candidate))
+                    .Where(candidate => (int)candidate.itemId.blendEnum == desired.blendType &&
+                                        candidate.itemId.sedId == desired.itemId)
+                    .OrderByDescending(candidate => candidate.id == desired.packId)
+                    .ThenByDescending(candidate => candidate.npcStoId == 10000 &&
+                                                   candidate.flag == desired.slot)
+                    .ThenBy(candidate => candidate.id)
+                    .FirstOrDefault();
+                if (item == null) missingSlots.Add(desired);
+                else
+                {
+                    resolved[desired.slot] = item;
+                    usedItems.Add(item);
+                }
+            }
+            return missingSlots.Count == 0;
+        }
+
+        private static void ApplyResolved(TbActor actor,
+            IReadOnlyDictionary<int, EquipmentLoadoutSlot> slots)
+        {
+            var bag = Singleton<BsBagImpl>.Instance;
+            foreach (var slot in BagEnhancementState.EquipmentSlots)
+            {
+                if (!slots.TryGetValue(slot, out var targetSlot)) continue;
+                var current = actor.packStoList.FirstOrDefault(item =>
+                    item != null && item.npcStoId == 10000 && item.flag == slot);
+                if (targetSlot.itemId != 0)
+                {
+                    if (Matches(current, targetSlot)) continue;
+
+                    // EquipItem 每执行一次都会增删/重建背包项。不能复用切换开始时
+                    // 缓存的 TbPackSto 引用；每个槽位都必须从最新集合重新定位。
+                    var desired = FindCurrentCandidate(actor, targetSlot, slot);
+                    if (desired == null)
+                    {
+                        Debug.LogWarning($"[Code4101 Tiandao] slot {slot} candidate disappeared while switching");
+                        continue;
+                    }
+                    bag.EquipItem(current, desired, slot, 10000);
+
+                    var actual = actor.packStoList.FirstOrDefault(item =>
+                        item != null && item.npcStoId == 10000 && item.flag == slot);
+                    if (!Matches(actual, targetSlot))
+                    {
+                        // 宿主调用可能替换实例身份；刷新引用后只重试当前槽位一次。
+                        current = actual;
+                        desired = FindCurrentCandidate(actor, targetSlot, slot);
+                        if (desired != null && desired.id != current?.id)
+                            bag.EquipItem(current, desired, slot, 10000);
+                    }
+                }
+                else if (current != null)
+                {
+                    bag.EquipItem(current, null, slot, 10000);
+                }
+            }
+        }
+
+        private static TbPackSto FindCurrentCandidate(TbActor actor,
+            EquipmentLoadoutSlot desired, int targetSlot)
+        {
+            return actor.packStoList
+                .Where(candidate => Matches(candidate, desired))
+                .OrderByDescending(candidate => candidate.id == desired.packId)
+                .ThenByDescending(candidate => candidate.npcStoId != 10000)
+                .ThenByDescending(candidate => candidate.npcStoId == 10000 &&
+                                               candidate.flag == targetSlot)
+                .ThenBy(candidate => candidate.id)
+                .FirstOrDefault();
+        }
+
+        private static bool Matches(TbPackSto actual, EquipmentLoadoutSlot expected)
+        {
+            return actual != null && expected != null && expected.itemId != 0 &&
+                   (int)actual.itemId.blendEnum == expected.blendType &&
+                   actual.itemId.sedId == expected.itemId;
+        }
+
+        private static bool Matches(TbActor actor,
+            IReadOnlyDictionary<int, EquipmentLoadoutSlot> slots)
+        {
+            foreach (var slot in BagEnhancementState.EquipmentSlots)
+            {
+                if (!slots.TryGetValue(slot, out var expected)) continue;
+                var actual = actor.packStoList.FirstOrDefault(item =>
+                    item != null && item.npcStoId == 10000 && item.flag == slot);
+                if (expected.itemId == 0)
+                {
+                    if (actual != null) return false;
+                }
+                else if (!Matches(actual, expected))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
     }

@@ -4093,6 +4093,7 @@ class DataAnnotationRuntimeRunner(
                 "updated_at": now,
             }
             self._log_locked("info", f"启动 Scheduler：{run_label}，共 {len(tasks)} 个")
+        self._persist_status()
         self._run_scheduler_tasks(
             entry=entry,
             entry_id=entry_id,
@@ -4605,6 +4606,48 @@ class DataAnnotationRuntimeRunner(
                 max_runtime_seconds=max_runtime_seconds,
             )
 
+    def _execute_registered_task_cell(
+        self,
+        *,
+        runtime_ctx: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+        task_type: str,
+        payload: dict[str, Any],
+        label: str,
+    ) -> tuple[str, str]:
+        """Route jobs through Jupyter when hosted by the resident kernel.
+
+        The direct branch is retained for isolated unit tests and explicit
+        in-process tooling that does not start the kernel service.
+        """
+        from backend.core.fanxiu.runtime.jupyter_kernel import (
+            execute_fanxiu_jupyter_task_cell,
+            fanxiu_jupyter_connection_path,
+        )
+
+        connection_path = fanxiu_jupyter_connection_path()
+        embedded = str(os.environ.get("CODEYUN_FANXIU_EMBEDDED_BEHAVIOR_TREE_SERVICE") or "").strip().lower()
+        if embedded in {"1", "true"} and connection_path.is_file():
+            response = execute_fanxiu_jupyter_task_cell(
+                task_type,
+                payload,
+                timeout_seconds=self._task_timeout_seconds(payload) + 30.0,
+            )
+            return str(response.get("result") or "success"), str(response.get("message") or "")
+
+        raw_result = self._run_runtime_behavior_tree(
+            runtime_ctx=runtime_ctx,
+            asset_tree_path=asset_tree_path,
+            stop_event=stop_event,
+            action=lambda: self._execute_runtime_task(runtime_ctx, task_type, payload, stop_event),
+            label=label,
+            tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
+            max_runtime_seconds=self._task_timeout_seconds(payload),
+            guard_override=self._runtime_guard_override_from_payload(payload),
+        )
+        return self._normalize_runtime_task_result(raw_result)
+
     def _task_timeout_seconds(self, payload: dict[str, Any] | None = None) -> float:
         payload = payload if isinstance(payload, dict) else {}
         raw_value = payload.get("max_runtime_seconds", payload.get("timeout_seconds", 600))
@@ -4758,17 +4801,14 @@ class DataAnnotationRuntimeRunner(
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task_type = str(task.get("task_type") or "")
             task_label = str(task.get("label") or self._runtime_task_label(task_type, payload) or task_id or "作业")
-            result = self._run_runtime_behavior_tree(
+            task_result, task_message = self._execute_registered_task_cell(
                 runtime_ctx=ctx,
                 asset_tree_path=asset_tree_path,
                 stop_event=stop_event,
-                action=lambda: self._execute_runtime_task(ctx, task_type, payload, stop_event),
+                task_type=task_type,
+                payload=payload,
                 label=task_label,
-                tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
-                max_runtime_seconds=self._task_timeout_seconds(payload),
-                guard_override=self._runtime_guard_override_from_payload(payload),
             )
-            task_result, task_message = self._normalize_runtime_task_result(result)
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
             if scheduler_task_id:
                 tasks = _read_data_annotation_scheduler_tasks()
@@ -4879,23 +4919,17 @@ class DataAnnotationRuntimeRunner(
                             interruptible=bool(task.get("interruptible", True)),
                         )
                         self._log_locked("action", f"开始到期任务：{label}")
+                    self._persist_status()
                     self._mark_scheduler_task(all_tasks, task_id, "running")
                     task_payload = _data_annotation_task_payload_with_meta(task)
-                    raw_result = self._run_runtime_behavior_tree(
+                    result, _result_message = self._execute_registered_task_cell(
                         runtime_ctx=ctx,
                         asset_tree_path=asset_tree_path,
                         stop_event=stop_event,
-                        action=lambda task=task, task_payload=task_payload: self._execute_runtime_task(
-                            ctx,
-                            str(task.get("task_type") or ""),
-                            task_payload,
-                            stop_event,
-                        ),
+                        task_type=str(task.get("task_type") or ""),
+                        payload=task_payload,
                         label=label,
-                        max_runtime_seconds=self._task_timeout_seconds(task_payload),
-                        guard_override=self._runtime_guard_override_from_payload(task_payload),
                     )
-                    result, _result_message = self._normalize_runtime_task_result(raw_result)
                     self._mark_scheduler_task(all_tasks, task_id, result or "success")
                     with self._lock:
                         self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")

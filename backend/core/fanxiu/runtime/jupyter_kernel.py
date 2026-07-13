@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import ast
 import threading
 import time
 from pathlib import Path
@@ -31,7 +32,7 @@ class FanxiuJupyterBinding:
         self.ctx: Any = None
         self.refresh()
 
-    def refresh(self) -> "FanxiuJupyterBinding":
+    def refresh(self, *, stop_event: threading.Event | None = None) -> "FanxiuJupyterBinding":
         from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
 
         tree = self.runner._load_asset_tree(self.asset_tree_path)
@@ -43,7 +44,7 @@ class FanxiuJupyterBinding:
             "images": self.runner._index_images(tree),
         }
         self.runner._require_assets(self.runtime_ctx)
-        self.stop_event = threading.Event()
+        self.stop_event = stop_event or threading.Event()
         self.runtime = self.runner._fanxiu_runtime(
             self.runtime_ctx,
             self.asset_tree_path,
@@ -57,33 +58,44 @@ class FanxiuJupyterBinding:
         )
         return self
 
-    def begin_cell(self, shell: Any) -> None:
+    def begin_cell(self, info: Any, shell: Any) -> None:
         self.execution_lock.acquire()
-        self.refresh()
-        with self.runner._lock:
-            self.runner._stop_event = self.stop_event
-            self.runner._set_status_locked(
-                "running",
-                "Jupyter cell 执行中",
-                phase="jupyter_cell",
-            )
-        shell.user_ns.update(self.namespace())
+        try:
+            source = str(getattr(info, "raw_cell", "") or "")
+            self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
+            active_stop_event = getattr(self.runner, "_stop_event", None) if self._managed_task_cell else None
+            self.refresh(stop_event=active_stop_event if isinstance(active_stop_event, threading.Event) else None)
+            if not self._managed_task_cell:
+                with self.runner._lock:
+                    self.runner._stop_event = self.stop_event
+                    self.runner._set_status_locked(
+                        "running",
+                        "Jupyter cell 执行中",
+                        phase="jupyter_cell",
+                    )
+            shell.user_ns.update(self.namespace())
+        except Exception:
+            self.execution_lock.release()
+            raise
 
     def end_cell(self, result: Any) -> None:
         error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
-        with self.runner._lock:
-            self.runner._stop_event = None
-            self.runner._clear_current_task_locked()
-            self.runner._status.update({
-                "status": "error" if error else "success",
-                "phase": "error" if error else "done",
-                "message": f"{type(error).__name__}: {error}" if error else "Jupyter cell 执行完成",
-                "error": f"{type(error).__name__}: {error}" if error else "",
-                "finished_at": time.time(),
-                "updated_at": time.time(),
-            })
-        self.runner._persist_status()
-        self.execution_lock.release()
+        try:
+            if not getattr(self, "_managed_task_cell", False):
+                with self.runner._lock:
+                    self.runner._stop_event = None
+                    self.runner._clear_current_task_locked()
+                    self.runner._status.update({
+                        "status": "error" if error else "success",
+                        "phase": "error" if error else "done",
+                        "message": f"{type(error).__name__}: {error}" if error else "Jupyter cell 执行完成",
+                        "error": f"{type(error).__name__}: {error}" if error else "",
+                        "finished_at": time.time(),
+                        "updated_at": time.time(),
+                    })
+                self.runner._persist_status()
+        finally:
+            self.execution_lock.release()
 
     def namespace(self) -> dict[str, Any]:
         return {
@@ -93,10 +105,19 @@ class FanxiuJupyterBinding:
             "ctx": self.ctx,
             "run": self.run,
             "run_task": self.run_task,
+            "run_task_cell": self.run_task_cell,
             "refresh": self.refresh,
         }
 
-    def run(self, value: Any, *, label: str = "Jupyter cell") -> Any:
+    def run(
+        self,
+        value: Any,
+        *,
+        label: str = "Jupyter cell",
+        tick_seconds: float = 0.2,
+        max_runtime_seconds: float = 21600.0,
+        guard_override: bool | None = None,
+    ) -> Any:
         if callable(value) and not isinstance(value, GeneratorType):
             value = value()
         if not isinstance(value, GeneratorType):
@@ -107,8 +128,9 @@ class FanxiuJupyterBinding:
             stop_event=self.stop_event,
             action=lambda: value,
             label=label,
-            tick_seconds=0.2,
-            max_runtime_seconds=21600.0,
+            tick_seconds=tick_seconds,
+            max_runtime_seconds=max_runtime_seconds,
+            guard_override=guard_override,
         )
 
     def run_task(self, task_type: str, payload: dict[str, Any] | None = None) -> Any:
@@ -126,7 +148,18 @@ class FanxiuJupyterBinding:
             normalized,
             self.stop_event,
         )
-        return self.run(value, label=definition.label)
+        return self.run(
+            value,
+            label=definition.label,
+            tick_seconds=max(0.1, float(normalized.get("__tick_seconds") or 1.0)),
+            max_runtime_seconds=self.runner._task_timeout_seconds(normalized),
+            guard_override=self.runner._runtime_guard_override_from_payload(normalized),
+        )
+
+    def run_task_cell(self, task_type: str, payload: dict[str, Any] | None = None) -> dict[str, str]:
+        result = self.run_task(task_type, payload)
+        result_name, message = self.runner._normalize_runtime_task_result(result)
+        return {"result": str(result_name or "success"), "message": str(message or "")}
 
 
 def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.0) -> None:
@@ -137,6 +170,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
         data_annotation_asset_tree_path,
         get_fanxiu_runtime_runner,
         resolve_fanxiu_entry,
+        ensure_fanxiu_runtime_jobs_registered,
     )
 
     os.environ[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
@@ -144,6 +178,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     entry = resolve_fanxiu_entry(resolved_entry_id)
     asset_tree_path = data_annotation_asset_tree_path(resolved_entry_id)
     runner = get_fanxiu_runtime_runner()
+    ensure_fanxiu_runtime_jobs_registered()
 
     connection_path = fanxiu_jupyter_connection_path()
     connection_path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +188,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     app.initialize([])
     binding = FanxiuJupyterBinding(runner, entry, resolved_entry_id, asset_tree_path)
     app.shell.user_ns.update(binding.namespace())
-    app.shell.events.register("pre_run_cell", lambda _info: binding.begin_cell(app.shell))
+    app.shell.events.register("pre_run_cell", lambda info: binding.begin_cell(info, app.shell))
     app.shell.events.register("post_run_cell", binding.end_cell)
 
     runner.ensure_service(
@@ -185,6 +220,7 @@ def execute_fanxiu_jupyter_cell(
     code: str,
     *,
     timeout_seconds: float = 120.0,
+    max_output_chars: int = 20000,
     connection_path: Path | None = None,
 ) -> dict[str, Any]:
     from jupyter_client import BlockingKernelClient
@@ -196,14 +232,24 @@ def execute_fanxiu_jupyter_cell(
     if not path.is_file():
         raise RuntimeError(f"凡修 Jupyter kernel 尚未就绪：{path}")
 
-    client = BlockingKernelClient(connection_file=str(path))
-    client.load_connection_file()
-    client.start_channels()
+    client: BlockingKernelClient | None = None
+    while client is None:
+        candidate = BlockingKernelClient(connection_file=str(path))
+        candidate.load_connection_file()
+        candidate.start_channels()
+        try:
+            candidate.wait_for_ready(timeout=min(3.0, max(1.0, deadline - time.time())))
+            client = candidate
+        except Exception:
+            candidate.stop_channels()
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.2)
     outputs: list[str] = []
     error: dict[str, Any] | None = None
     execution_count: int | None = None
+    result_text = ""
     try:
-        client.wait_for_ready(timeout=min(15.0, max(1.0, deadline - time.time())))
         msg_id = client.execute(str(code or ""), allow_stdin=False, stop_on_error=True)
         idle = False
         while not idle:
@@ -226,6 +272,7 @@ def execute_fanxiu_jupyter_cell(
                 data = content.get("data") if isinstance(content.get("data"), dict) else {}
                 if "text/plain" in data:
                     outputs.append(str(data["text/plain"]))
+                    result_text = str(data["text/plain"])
                 execution_count = content.get("execution_count") or execution_count
             elif msg_type == "error":
                 error = {
@@ -245,15 +292,18 @@ def execute_fanxiu_jupyter_cell(
     finally:
         client.stop_channels()
 
-    output = "".join(outputs).strip()
+    output = "".join(outputs).strip()[:max(200, int(max_output_chars or 20000))]
     if error:
+        error_message = f"{error['ename']}: {error['evalue']}"
         return {
             "status": "error",
             "phase": "error",
-            "message": f"{error['ename']}: {error['evalue']}",
-            "error": error,
+            "message": error_message,
+            "error": error_message,
+            "traceback": error["traceback"],
             "output": output,
             "execution_count": execution_count,
+            "result_text": result_text,
         }
     return {
         "status": "success",
@@ -262,4 +312,31 @@ def execute_fanxiu_jupyter_cell(
         "error": "",
         "output": output,
         "execution_count": execution_count,
+        "result_text": result_text,
     }
+
+
+def execute_fanxiu_jupyter_task_cell(
+    task_type: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout_seconds: float = 21630.0,
+) -> dict[str, Any]:
+    """Execute one registered Fanxiu job as a cell in the resident IPython kernel."""
+    code = (
+        "# fanxiu:managed-task-cell\n"
+        f"run_task_cell({str(task_type)!r}, {dict(payload or {})!r})"
+    )
+    response = execute_fanxiu_jupyter_cell(code, timeout_seconds=timeout_seconds)
+    if response.get("status") == "error":
+        if str(response.get("error") or "").startswith("InterruptedError:"):
+            raise InterruptedError(str(response.get("message") or ""))
+        raise RuntimeError(str(response.get("message") or "凡修 Jupyter task cell 执行失败"))
+    text = str(response.get("result_text") or "").strip()
+    try:
+        value = ast.literal_eval(text)
+    except (SyntaxError, ValueError) as exc:
+        raise RuntimeError(f"凡修 Jupyter task cell 缺少结构化结果：{text or '<empty>'}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"凡修 Jupyter task cell 返回类型错误：{type(value).__name__}")
+    return {**response, **value}

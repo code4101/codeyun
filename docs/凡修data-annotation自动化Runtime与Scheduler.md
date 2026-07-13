@@ -291,29 +291,29 @@ for code in codes:
 
 ### 开发调试代码 cell
 
-`runtime/cells/code` 是通用临时代码执行入口；底层复用 `debug_eval` 执行能力，但调用方不应再把 `task_type=debug_eval` 当成首选 API。它不是邮件、日常或某个具体业务的专用接口。
+`runtime/cells/code` 是通用临时代码执行入口；它直接通过 Jupyter client 向常驻 IPython kernel 发送 `execute_request`。`debug_eval` 只保留为历史 task cell 兼容能力，不再承担 code cell 的命名空间或执行协议。
 
 在凡修协作语境里，`cell` 默认就指这个入口。推荐本地命令是：
 
 ```bash
-uv run python scripts/fanxiu_bt.py cell "result = ctx.scene()"
+uv run python scripts/fanxiu_bt.py cell "runtime.current_scene(update=True)[:2]"
 ```
 
 `cell` 默认等待执行完成；历史 `code-cell` 和 `py` 命令继续兼容。
 
 它用于让 agent/开发者在真实 Runtime 上下文中临时运行一段 Python：
 
-- 默认 `mode=readonly`，允许截图、场景识别、OCR、读取标注和记录日志。
-- 需要点击、拖拽等真实动作时必须显式传 `mode=act`。
-- 同一 entry、同一次常驻内核生命周期内，普通 Python 变量和辅助函数会跨 code cell 保留，形成轻量 Jupyter 式连续上下文；`task` 和 `result` 是本 cell 保留名，每次执行前清理，避免上一段任务被意外重放。重启内核会开启新命名空间。
-- `mode=act` 的 cell 自动注入已绑定当前 entry、资产树和停止事件的 `runtime`。普通调试代码不应再访问 `ctx._runner`、`ctx.raw`，也不应手工传 `asset_tree_path` 或 `stop_event`。
+- 命名空间、执行次数、stdout、traceback 和跨 cell 变量全部由真实 IPython kernel 管理；CodeYun 不再自行 `exec` 并维护仿 Jupyter dict。
+- 内核启动时预加载 `fanxiu`、`runner`、`runtime`、`ctx`、`run`、`run_task`。调用方不应手工传 `_runner`、`raw`、`asset_tree_path` 或 `stop_event`。
+- code cell 是本机受信任的 Python 执行，不再伪装成 `readonly/act` 安全沙箱；是否产生游戏动作由 cell 是否调用 `runtime` 动作原语决定。历史 HTTP/CLI 的 `mode` 字段仅兼容旧调用方。
+- 生成器片段用 `run(generator)` 交给凡修行为树容器推进；注册作业用 `run_task(task_type, payload)`。
 - 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_scene()`、`ctx.go_scene()`、`ctx.wait_view()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
 - `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
 - `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在代码 cell 中改成固定坐标硬点。
 - `ctx.wait_scene(*scenes)` 是动作模式能力，用于等待目标场景出现；`ctx.wait_view(*views)` 仅作为历史兼容名保留。
 - `ctx.go_scene(scene)` 是动作模式能力，用于通过通用场景移动进入目标场景；`ctx.goto_view(...)` 不作为新调试代码示例继续扩散。
 - `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开 code cell / task cell 验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
-- 支持两种写法：直接执行短代码，或定义 `def task(ctx): ...`，系统会自动调用；`task` 返回生成器时继续沿用现有 yield/tick 机制。
+- 直接执行普通 Python；若片段返回生成器，显式写 `run(task())`。IPython 不会根据变量名猜测并自动重放 `task`。
 - 调用入口使用 `POST /data-annotation/runtime/cells/code` 或 core `runtime_framework.submit_code_cell(...)`；不要新建第二套调度或后台线程，也不要私有直调 runner。
 
 只读探针示例：

@@ -105,6 +105,8 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     updated_at: float = 0
     finished_at: float = 0
     error: str = ""
+    output: str = ""
+    execution_count: Optional[int] = None
     logs: list[dict[str, Any]] = Field(default_factory=list)
     cell_logs: list[dict[str, Any]] = Field(default_factory=list)
     queued_cell: dict[str, Any] = Field(default_factory=dict)
