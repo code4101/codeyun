@@ -1034,10 +1034,13 @@ def wait_fanxiu_task_cell(
                 if str(item.get("kind") or "") in {"success", "skip", "stop", "error"}
             ]
             if terminal_logs:
+                terminal_log = terminal_logs[-1]
                 return {
                     "done": True,
                     "result": "completed",
                     "job_id": resolved_job_id,
+                    "terminal_kind": str(terminal_log.get("kind") or "success"),
+                    "terminal_message": str(terminal_log.get("message") or ""),
                     "runtime_status": status,
                 }
             return {
@@ -1313,7 +1316,22 @@ def _fanxiu_completed_runtime_status(
     runtime_status = wait_result.get("runtime_status") if isinstance(wait_result.get("runtime_status"), dict) else {}
     status = dict(runtime_status or submitted_status)
     submitted_status = _normalize_queued_cell_status(submitted_status)
-    status["queued_cell"] = submitted_status.get("queued_cell") or status.get("queued_cell") or {}
+    queued_cell = dict(submitted_status.get("queued_cell") or status.get("queued_cell") or {})
+    if bool(wait_result.get("done")):
+        terminal_kind = str(wait_result.get("terminal_kind") or "success")
+        terminal_status = {
+            "success": "success",
+            "skip": "skipped",
+            "stop": "stopped",
+            "error": "error",
+        }.get(terminal_kind, "success")
+        queued_cell["status"] = terminal_status
+        status["status"] = terminal_status
+        status["phase"] = "done" if terminal_status in {"success", "skipped"} else terminal_status
+        status["message"] = str(wait_result.get("terminal_message") or status.get("message") or "cell 已完成")
+        status["error"] = status["message"] if terminal_status == "error" else ""
+        status["completed_cell"] = dict(queued_cell)
+    status["queued_cell"] = queued_cell
     status["queued_job"] = status["queued_cell"]
     status["wait_result"] = {
         key: value

@@ -19,6 +19,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "gift_code_redeem",
     "go_scene",
     "hide_floating_window",
+    "daily_mozu",
     "daily_zhenxie",
     "daily_signup",
     "daily_boss",
@@ -188,6 +189,22 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         del payload
         runner._execute_hide_floating_window(ctx, stop_event)
         return "success"
+
+    @register_fanxiu_data_annotation_task_cell("daily_mozu", "日常_魔祖", scheduler_supported=True)
+    def _run_data_annotation_daily_mozu_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_runtime_task(
+            ctx,
+            stop_event,
+            payload,
+            task_type="daily_mozu",
+            label="日常_魔祖",
+            flow=runner.daily_mozu_flow,
+        )
 
     @register_fanxiu_data_annotation_task_cell("daily_zhenxie", "\u65e5\u5e38_\u9547\u90aa", scheduler_supported=True)
     def _run_data_annotation_daily_zhenxie_task_cell(

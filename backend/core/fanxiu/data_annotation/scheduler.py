@@ -522,6 +522,7 @@ def repair_data_annotation_scheduler_tasks(
     legacy_daily_yaozu_task: dict[str, Any] | None = None
     legacy_daily_vip_task: dict[str, Any] | None = None
     legacy_daily_xianmeng_task: dict[str, Any] | None = None
+    legacy_daily_mozu_task: dict[str, Any] | None = None
     legacy_daily_zhenxie_task: dict[str, Any] | None = None
     for task in tasks:
         if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
@@ -591,6 +592,20 @@ def repair_data_annotation_scheduler_tasks(
             task["legacy_name"] = "仙府_领悟绝技"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif (
+            str(task.get("id") or "") == "legacy-daily-mozu"
+            and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}
+        ):
+            legacy_daily_mozu_task = task
+            task["task_type"] = "daily_mozu"
+            task["label"] = "日常_魔祖"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["12:30"]
+            task["window"] = ["12:30", "12:35"]
+            task["legacy_name"] = "日常_魔祖"
+            task["enabled"] = True
+            task["payload"] = {}
         elif str(task.get("id") or "") == "legacy-daily-zhenxie":
             legacy_daily_zhenxie_task = task
             task["id"] = "daily-zhenxie"
@@ -754,6 +769,8 @@ def repair_data_annotation_scheduler_tasks(
     if legacy_daily_vip_task is not None:
         changed = True
     if legacy_daily_xianmeng_task is not None:
+        changed = True
+    if legacy_daily_mozu_task is not None:
         changed = True
     if legacy_daily_zhenxie_task is not None:
         changed = True

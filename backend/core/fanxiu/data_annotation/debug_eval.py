@@ -5,6 +5,7 @@ import io
 import json
 import threading
 import time
+from pathlib import Path
 from types import GeneratorType
 from typing import Any, Sequence
 
@@ -33,6 +34,22 @@ class DataAnnotationRuntimeDebugContext:
         self._stop_event = stop_event
         self.readonly = bool(readonly)
         self.output: list[Any] = []
+
+    def _bound_runtime(self) -> Any:
+        asset_tree_path = self._ctx.get("asset_tree_path")
+        if isinstance(asset_tree_path, Path):
+            return self._runner._fanxiu_runtime(
+                self._ctx,
+                asset_tree_path,
+                stop_event=self._stop_event,
+            )
+        return self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+
+    @property
+    def runtime(self) -> Any:
+        """Return the Runtime already bound to this cell's entry and assets."""
+        self._require_act()
+        return self._bound_runtime()
 
     @property
     def raw(self) -> dict[str, Any]:
@@ -85,7 +102,7 @@ class DataAnnotationRuntimeDebugContext:
         options: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         self.check_stop()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return runtime.ocr_words_in_shapes(
             scene,
             tuple(shape_titles),
@@ -114,7 +131,7 @@ class DataAnnotationRuntimeDebugContext:
             return None
         if contains or not hasattr(self._runner, "_fanxiu_runtime"):
             return self._runner._find_shape(image, title, contains=contains)
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         try:
             return runtime.shape(image, title).raw
         except RuntimeError:
@@ -240,7 +257,7 @@ class DataAnnotationRuntimeDebugContext:
 
     def click_shape_center(self, scene: int | str, title: str, *, contains: bool = False) -> None:
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         shape: str | dict[str, Any] | None = title
         if contains:
             shape = self.shape(scene, title, contains=True)
@@ -250,32 +267,32 @@ class DataAnnotationRuntimeDebugContext:
 
     def wait_action_settle(self, seconds: float = 1.0):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.wait_action_settle(seconds))
 
     def wait_click(self, frame: int | str | None, shape: str, **options: Any):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.wait_click(frame, shape, **options))
 
     def wait_click_then_view(self, frame: int | str, shape: str, *targets: int | str | Sequence[int | str], **options: Any):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.wait_click_then_view(frame, shape, *targets, **options))
 
     def wait_scene(self, *scenes: int | str, **options: Any):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.wait_scene(*scenes, **options))
 
     def wait_view(self, *views: int | str, **options: Any):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.wait_view(*views, **options))
 
     def go_scene(self, scene: int | str, **options: Any):
         self._require_act()
-        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        runtime = self._bound_runtime()
         return (yield from runtime.go_scene(scene, **options))
 
     def tap(self, scene: int | str, x: float, y: float) -> None:
@@ -312,6 +329,8 @@ def run_data_annotation_debug_eval(
         "json": json,
         "time": time,
     }
+    if payload["mode"] == "act":
+        namespace["runtime"] = debug_ctx.runtime
     stdout = io.StringIO()
     with runner._lock:
         runner._set_status_locked("running", f"debug_eval 执行中：{payload['mode']}", phase="debug_eval")

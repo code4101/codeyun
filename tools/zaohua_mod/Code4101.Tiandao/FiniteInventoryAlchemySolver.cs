@@ -19,9 +19,13 @@ namespace Code4101.Zaohua.Tiandao
         internal Dictionary<int, int> ItemCounts = new Dictionary<int, int>();
         internal int PlantingDays;
         internal int SearchStage;
+        internal int GlobalCountBonus;
+        internal int GlobalQualityBonus;
         internal AlchemyRuleOutcome RuleOutcome = new AlchemyRuleOutcome();
 
-        internal int QualityRank => Math.Max(1, Math.Min(3, 1 + RuleOutcome.QualityBonus));
+        internal int TotalCountBonus => GlobalCountBonus + RuleOutcome.CountBonus;
+        internal int TotalQualityBonus => GlobalQualityBonus + RuleOutcome.QualityBonus;
+        internal int QualityRank => Math.Max(1, Math.Min(3, 1 + TotalQualityBonus));
 
         internal bool IsAvailable(IReadOnlyDictionary<int, long> inventory)
         {
@@ -39,8 +43,8 @@ namespace Code4101.Zaohua.Tiandao
                 .OrderByDescending(item => item.drugQuality)
                 .FirstOrDefault() ?? data.GetItemCfg(recipe.itemId);
             var bonuses = new List<string>();
-            if (RuleOutcome.QualityBonus != 0) bonuses.Add($"品质{RuleOutcome.QualityBonus:+#;-#;0}");
-            if (RuleOutcome.CountBonus != 0) bonuses.Add($"成丹{RuleOutcome.CountBonus:+#;-#;0}");
+            if (TotalQualityBonus != 0) bonuses.Add($"品质{TotalQualityBonus:+#;-#;0}");
+            if (TotalCountBonus != 0) bonuses.Add($"成丹{TotalCountBonus:+#;-#;0}");
             return new TbCraftingTemplateSto
             {
                 id = -100000 - index,
@@ -60,8 +64,11 @@ namespace Code4101.Zaohua.Tiandao
 
     internal static class FiniteInventoryAlchemySolver
     {
-        private const int SearchNodeLimit = 160000;
+        private const int FormNodeLimit = 160000;
+        private const int QuantityNodeLimit = 240000;
+        private const int QuantityNodesPerForm = 5000;
         private const int PackingNodeLimit = 30000;
+        private const int QuantityCandidatesPerForm = 24;
         private static readonly int[] PlantingDaysByGrade =
             { 10, 20, 30, 360, 720, 1080, 3600, 7200, 10800, 36000, 72000, 108000 };
 
@@ -104,18 +111,22 @@ namespace Code4101.Zaohua.Tiandao
         internal static List<AlchemySolution> SolvePhased(
             TbDrugRecipeCfg recipe,
             TbPackSto furnace,
+            int globalCountBonus,
+            int globalQualityBonus,
             IReadOnlyList<SmartAlchemyUi.HerbStock> catalog,
             IReadOnlyDictionary<int, long> inventory,
             int limit,
             CancellationToken cancellationToken = default,
-            Action<AlchemySolution> onSolution = null)
+            Action<AlchemySolution> onSolution = null,
+            Action<int> onStageCompleted = null)
         {
             var combined = new List<AlchemySolution>();
             for (var stage = 1; stage <= 3; stage++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var availableInStage = new List<AlchemySolution>();
-                var stageSolutions = Solve(recipe, furnace, catalog, limit, stage,
+                var stageSolutions = Solve(recipe, furnace, globalCountBonus, globalQualityBonus,
+                    catalog, limit, stage,
                     cancellationToken, solution =>
                     {
                         solution.SearchStage = stage;
@@ -126,6 +137,7 @@ namespace Code4101.Zaohua.Tiandao
                 combined.AddRange(stageSolutions);
                 combined.AddRange(availableInStage);
                 combined = RankAndSelectSolutions(combined, limit);
+                onStageCompleted?.Invoke(stage);
                 // 阶段内必须完整求解；阶段结束后，只要已有背包可用解就短路。
                 if (availableInStage.Count > 0)
                 {
@@ -144,6 +156,8 @@ namespace Code4101.Zaohua.Tiandao
         private static List<AlchemySolution> Solve(
             TbDrugRecipeCfg recipe,
             TbPackSto furnace,
+            int globalCountBonus,
+            int globalQualityBonus,
             IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
             int limit,
             int searchStage,
@@ -163,6 +177,7 @@ namespace Code4101.Zaohua.Tiandao
                 return new List<AlchemySolution>();
             }
 
+            var candidateStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var candidates = BuildCandidates(stocks, recipe)
                 .Where(candidate => searchStage == 3 || candidate.ExtraKeys.Count <= searchStage - 1)
                 .OrderBy(candidate => candidate.PlantingDays)
@@ -172,6 +187,7 @@ namespace Code4101.Zaohua.Tiandao
                 .ThenBy(candidate => candidate.Stock.ItemId.sedId)
                 .ThenBy(candidate => candidate.Side)
                 .ToList();
+            candidateStopwatch.Stop();
             if (candidates.Count == 0)
             {
                 return new List<AlchemySolution>();
@@ -187,43 +203,48 @@ namespace Code4101.Zaohua.Tiandao
                 foreach (var key in candidate.Crafting.attrDic.Keys) allKeys.Add(key);
             }
 
-            var chosen = new List<HerbCandidate>();
-            var vector = allKeys.ToDictionary(key => key, _ => 0);
+            var form = new List<HerbCandidate>();
             var solutions = new List<AlchemySolution>();
             var solutionKeys = new HashSet<string>();
             var poseModelCache = new Dictionary<HerbCandidate, List<PlacementPose>>();
-            var searchNodes = 0;
-            var visitedStates = new HashSet<string>();
+            var formNodes = 0;
+            var quantityNodes = 0;
+            var solvedForms = 0;
+            var packingAttempts = 0;
+            long packingMilliseconds = 0;
             var maxPieces = Math.Min(
                 (furnaceCfg.yangGridSize.x * furnaceCfg.yangGridSize.y) +
                 (furnaceCfg.yinGridSize.x * furnaceCfg.yinGridSize.y),
                 int.MaxValue);
-            var maximumCounts = stocks.ToDictionary(stock => stock.ItemId.sedId,
-                stock => (long)Math.Max(1, maxPieces));
-            var availableCounts = new Dictionary<int, long>(maximumCounts);
+            var maxFormSize = Math.Min(maxPieces, Math.Max(3, Math.Min(7, allKeys.Count + searchStage + 1)));
 
-            void Search(int startIndex)
+            void EvaluateForm()
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (searchNodes++ >= SearchNodeLimit || solutions.Count >= Math.Max(limit * 5, 40)) return;
+                var extraKeyCount = form.SelectMany(candidate => candidate.ExtraKeys).Distinct().Count();
+                var requiredExtraCount = searchStage == 1 ? 0 : searchStage == 2 ? 1 : 2;
+                if ((searchStage < 3 && extraKeyCount != requiredExtraCount) ||
+                    (searchStage == 3 && extraKeyCount < requiredExtraCount) ||
+                    !CanFormReachTarget(form, target, allKeys)) return;
 
-                var extraKeyCount = chosen.SelectMany(candidate => candidate.ExtraKeys).Distinct().Count();
-                if (searchStage < 3 && extraKeyCount > searchStage - 1) return;
-                var stateKey = BuildSearchStateKey(startIndex, vector, availableCounts, maximumCounts, candidates);
-                if (!visitedStates.Add(stateKey)) return;
-
-                if (MatchesTarget(vector, target))
+                solvedForms++;
+                var quantityCandidates = SolveQuantitiesForForm(
+                    form, target, allKeys, furnaceCfg, cancellationToken,
+                    ref quantityNodes, QuantityNodeLimit, QuantityCandidatesPerForm);
+                foreach (var counts in quantityCandidates)
                 {
-                    var requiredExtraCount = searchStage == 1 ? 0 : searchStage == 2 ? 1 : 2;
-                    if ((searchStage < 3 && extraKeyCount != requiredExtraCount) ||
-                        (searchStage == 3 && extraKeyCount < requiredExtraCount)) return;
-                    var key = string.Join(";", chosen
-                        .GroupBy(candidate => $"{candidate.Stock.ItemId.sedId}:{candidate.Side}")
-                        .OrderBy(group => group.Key)
-                        .Select(group => $"{group.Key}:{group.Count()}"));
-                    if (solutionKeys.Add(key) && TryPack(
-                            chosen, furnaceCfg, recipe, poseModelCache,
-                            out var placements, out var ruleOutcome, cancellationToken))
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var chosen = ExpandForm(form, counts);
+                    var quantityKey = string.Join(";", form.Select((candidate, index) =>
+                        $"{candidate.Stock.ItemId.sedId}:{candidate.Side}:{counts[index]}"));
+                    if (!solutionKeys.Add(quantityKey)) continue;
+                    packingAttempts++;
+                    var packingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    var packed = TryPack(chosen, furnaceCfg, recipe, poseModelCache,
+                        out var placements, out var ruleOutcome, cancellationToken);
+                    packingStopwatch.Stop();
+                    packingMilliseconds += packingStopwatch.ElapsedMilliseconds;
+                    if (packed)
                     {
                         var solution = new AlchemySolution
                         {
@@ -232,44 +253,181 @@ namespace Code4101.Zaohua.Tiandao
                                 .ToDictionary(group => group.Key, group => group.Count()),
                             PlantingDays = chosen.Sum(c => c.PlantingDays),
                             SearchStage = searchStage,
+                            GlobalCountBonus = globalCountBonus,
+                            GlobalQualityBonus = globalQualityBonus,
                             RuleOutcome = ruleOutcome,
                         };
                         solutions.Add(solution);
                         onSolution?.Invoke(solution);
                     }
-                    return;
                 }
+            }
 
-                if (chosen.Count >= maxPieces) return;
-                var usedYangCells = chosen.Where(candidate => candidate.Side == 1).Sum(candidate => candidate.CellCount);
-                var usedYinCells = chosen.Where(candidate => candidate.Side == 2).Sum(candidate => candidate.CellCount);
-                if (!CanStillReachTarget(vector, target, candidates, startIndex, availableCounts,
-                        furnaceCfg.yangGridSize.x * furnaceCfg.yangGridSize.y - usedYangCells,
-                        furnaceCfg.yinGridSize.x * furnaceCfg.yinGridSize.y - usedYinCells)) return;
+            void SearchForms(int startIndex)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (formNodes++ >= FormNodeLimit || quantityNodes >= QuantityNodeLimit) return;
+
+                if (form.Count > 0) EvaluateForm();
+                if (form.Count >= maxFormSize) return;
+
+                var extraKeys = new HashSet<string>(form.SelectMany(candidate => candidate.ExtraKeys));
+                if (searchStage < 3 && extraKeys.Count > searchStage - 1) return;
 
                 for (var index = startIndex; index < candidates.Count; index++)
                 {
                     var candidate = candidates[index];
-                    var itemId = candidate.Stock.ItemId.sedId;
-                    if (!availableCounts.TryGetValue(itemId, out var remaining) || remaining <= 0) continue;
-                    if (!CanMoveTowardTarget(vector, target, candidate)) continue;
-
-                    availableCounts[itemId] = remaining - 1;
-                    chosen.Add(candidate);
-                    AddVector(vector, candidate, 1);
-                    Search(index);
-                    AddVector(vector, candidate, -1);
-                    chosen.RemoveAt(chosen.Count - 1);
-                    availableCounts[itemId] = remaining;
+                    if (form.Any(existing => existing.Stock.ItemId.sedId == candidate.Stock.ItemId.sedId &&
+                                             existing.Side != candidate.Side)) continue;
+                    if (searchStage < 3 && extraKeys.Union(candidate.ExtraKeys).Distinct().Count() > searchStage - 1)
+                        continue;
+                    form.Add(candidate);
+                    SearchForms(index + 1);
+                    form.RemoveAt(form.Count - 1);
                 }
             }
 
-            Search(0);
+            SearchForms(0);
             stageStopwatch.Stop();
             UnityEngine.Debug.Log($"[Code4101 Tiandao] alchemy stage={searchStage}, " +
-                                  $"candidates={candidates.Count}, nodes={searchNodes}, " +
-                                  $"solutions={solutions.Count}, elapsed={stageStopwatch.ElapsedMilliseconds}ms");
+                                  $"candidates={candidates.Count}, forms={formNodes}, solvedForms={solvedForms}, " +
+                                  $"quantityNodes={quantityNodes}, " +
+                                  $"packingAttempts={packingAttempts}, solutions={solutions.Count}, " +
+                                  $"candidateMs={candidateStopwatch.ElapsedMilliseconds}, " +
+                                  $"algebraMs={Math.Max(0, stageStopwatch.ElapsedMilliseconds - candidateStopwatch.ElapsedMilliseconds - packingMilliseconds)}, " +
+                                  $"packingMs={packingMilliseconds}, elapsed={stageStopwatch.ElapsedMilliseconds}ms");
             return RankAndSelectSolutions(solutions, limit);
+        }
+
+        private static bool CanFormReachTarget(
+            IReadOnlyList<HerbCandidate> form,
+            IReadOnlyDictionary<string, int> target,
+            IReadOnlyCollection<string> allKeys)
+        {
+            foreach (var key in allKeys)
+            {
+                var expected = target.TryGetValue(key, out var value) ? value : 0;
+                var contributions = form.Select(candidate => GetContribution(candidate, key)).Where(value => value != 0).ToList();
+                if (expected != 0 && !contributions.Any(value => Math.Sign(value) == Math.Sign(expected))) return false;
+                if (expected == 0 && contributions.Count > 0 &&
+                    !(contributions.Any(value => value > 0) && contributions.Any(value => value < 0))) return false;
+                var gcd = contributions.Aggregate(0, (current, value) => GreatestCommonDivisor(current, Math.Abs(value)));
+                if (gcd != 0 && Math.Abs(expected) % gcd != 0) return false;
+            }
+            return true;
+        }
+
+        private static List<int[]> SolveQuantitiesForForm(
+            IReadOnlyList<HerbCandidate> form,
+            IReadOnlyDictionary<string, int> target,
+            IReadOnlyCollection<string> allKeys,
+            TbCraftingItemCfg furnace,
+            CancellationToken cancellationToken,
+            ref int totalNodes,
+            int nodeLimit,
+            int resultLimit)
+        {
+            var keys = allKeys.OrderBy(key => key).ToList();
+            var pivotIndex = Enumerable.Range(0, form.Count)
+                .OrderByDescending(index => keys.Count(key => GetContribution(form[index], key) != 0))
+                .ThenByDescending(index => keys.Sum(key => Math.Abs(GetContribution(form[index], key))))
+                .First();
+            var variableIndexes = Enumerable.Range(0, form.Count).Where(index => index != pivotIndex)
+                .OrderBy(index => MaximumCount(form[index], furnace)).ToList();
+            var counts = Enumerable.Repeat(1, form.Count).ToArray();
+            var residual = keys.ToDictionary(key => key, key => target.TryGetValue(key, out var value) ? value : 0);
+            var yangCells = furnace.yangGridSize.x * furnace.yangGridSize.y;
+            var yinCells = furnace.yinGridSize.x * furnace.yinGridSize.y;
+            var results = new List<int[]>();
+            var searchResultLimit = resultLimit;
+            var startNodes = totalNodes;
+            var localNodes = totalNodes;
+
+            int PlantingCost(IReadOnlyList<int> countSet)
+            {
+                return form.Select((candidate, index) => candidate.PlantingDays * countSet[index]).Sum();
+            }
+
+            void SearchCount(int depth, int usedYang, int usedYin)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (localNodes++ >= nodeLimit || localNodes - startNodes >= QuantityNodesPerForm) return;
+                if (depth >= variableIndexes.Count)
+                {
+                    var pivot = form[pivotIndex];
+                    int? pivotCount = null;
+                    foreach (var key in keys)
+                    {
+                        var coefficient = GetContribution(pivot, key);
+                        if (coefficient == 0)
+                        {
+                            if (residual[key] != 0) return;
+                            continue;
+                        }
+                        if (residual[key] % coefficient != 0) return;
+                        var derived = residual[key] / coefficient;
+                        if (derived <= 0 || (pivotCount.HasValue && pivotCount.Value != derived)) return;
+                        pivotCount = derived;
+                    }
+                    if (!pivotCount.HasValue) return;
+                    counts[pivotIndex] = pivotCount.Value;
+                    var finalYang = usedYang + (pivot.Side == 1 ? pivot.CellCount * pivotCount.Value : 0);
+                    var finalYin = usedYin + (pivot.Side == 2 ? pivot.CellCount * pivotCount.Value : 0);
+                    if (finalYang > yangCells || finalYin > yinCells) return;
+                    results.Add((int[])counts.Clone());
+                    if (results.Count > searchResultLimit)
+                    {
+                        var worst = results.OrderBy(PlantingCost).ThenBy(countSet => countSet.Sum()).Last();
+                        results.Remove(worst);
+                    }
+                    return;
+                }
+
+                var variableIndex = variableIndexes[depth];
+                var candidate = form[variableIndex];
+                var availableCells = candidate.Side == 1 ? yangCells - usedYang : yinCells - usedYin;
+                var maximum = availableCells / candidate.CellCount;
+                for (var count = 1; count <= maximum; count++)
+                {
+                    counts[variableIndex] = count;
+                    foreach (var key in keys) residual[key] -= GetContribution(candidate, key) * count;
+                    SearchCount(depth + 1,
+                        usedYang + (candidate.Side == 1 ? candidate.CellCount * count : 0),
+                        usedYin + (candidate.Side == 2 ? candidate.CellCount * count : 0));
+                    foreach (var key in keys) residual[key] += GetContribution(candidate, key) * count;
+                    if (localNodes >= nodeLimit || localNodes - startNodes >= QuantityNodesPerForm) break;
+                }
+            }
+
+            SearchCount(0, 0, 0);
+            totalNodes = localNodes;
+            return results
+                .OrderBy(PlantingCost)
+                .ThenBy(countSet => countSet.Sum())
+                .Take(resultLimit)
+                .ToList();
+        }
+
+        private static int MaximumCount(HerbCandidate candidate, TbCraftingItemCfg furnace)
+        {
+            var size = candidate.Side == 1 ? furnace.yangGridSize : furnace.yinGridSize;
+            return Math.Max(1, size.x * size.y / Math.Max(1, candidate.CellCount));
+        }
+
+        private static int GetContribution(HerbCandidate candidate, string key)
+        {
+            return candidate.Crafting.attrDic.TryGetValue(key, out var value)
+                ? value * (candidate.Side == 1 ? 1 : -1)
+                : 0;
+        }
+
+        private static List<HerbCandidate> ExpandForm(IReadOnlyList<HerbCandidate> form, IReadOnlyList<int> counts)
+        {
+            var chosen = new List<HerbCandidate>();
+            for (var index = 0; index < form.Count; index++)
+            for (var count = 0; count < counts[index]; count++)
+                chosen.Add(form[index]);
+            return chosen;
         }
 
         internal static List<AlchemySolution> RankAndSelectSolutions(
@@ -340,61 +498,6 @@ namespace Code4101.Zaohua.Tiandao
             }
         }
 
-        private static string BuildSearchStateKey(
-            int startIndex,
-            Dictionary<string, int> vector,
-            Dictionary<int, long> inventory,
-            Dictionary<int, long> initialInventory,
-            List<HerbCandidate> candidates)
-        {
-            var relevantItems = candidates.Skip(startIndex).Select(candidate => candidate.Stock.ItemId.sedId).Distinct();
-            return startIndex + "|" +
-                   string.Join(",", vector.OrderBy(pair => pair.Key).Select(pair => pair.Key + ":" + pair.Value)) + "|" +
-                   string.Join(",", relevantItems.Where(id => inventory[id] != initialInventory[id])
-                       .OrderBy(id => id).Select(id => id + ":" + inventory[id]));
-        }
-
-        private static bool CanStillReachTarget(
-            Dictionary<string, int> vector,
-            Dictionary<string, int> target,
-            List<HerbCandidate> candidates,
-            int startIndex,
-            Dictionary<int, long> inventory,
-            int remainingYangCells,
-            int remainingYinCells)
-        {
-            if (remainingYangCells < 0 || remainingYinCells < 0) return false;
-            var remainingTotalCells = remainingYangCells + remainingYinCells;
-            foreach (var key in vector.Keys)
-            {
-                var expected = target.TryGetValue(key, out var targetValue) ? targetValue : 0;
-                var deficit = expected - vector[key];
-                if (deficit == 0) continue;
-                long available = 0;
-                var bestPerCell = 0.0;
-                var contributionGcd = 0;
-                for (var index = startIndex; index < candidates.Count; index++)
-                {
-                    var candidate = candidates[index];
-                    var sideCells = candidate.Side == 1 ? remainingYangCells : remainingYinCells;
-                    if (candidate.CellCount > sideCells) continue;
-                    var contribution = candidate.Crafting.attrDic.TryGetValue(key, out var raw)
-                        ? raw * (candidate.Side == 1 ? 1 : -1)
-                        : 0;
-                    if (Math.Sign(contribution) != Math.Sign(deficit)) continue;
-                    var count = inventory.TryGetValue(candidate.Stock.ItemId.sedId, out var stock) ? stock : 0;
-                    available += Math.Abs((long)contribution) * count;
-                    contributionGcd = GreatestCommonDivisor(contributionGcd, Math.Abs(contribution));
-                    bestPerCell = Math.Max(bestPerCell, Math.Abs(contribution) / (double)candidate.CellCount);
-                }
-                if (available < Math.Abs((long)deficit) || bestPerCell <= 0) return false;
-                if (contributionGcd == 0 || Math.Abs(deficit) % contributionGcd != 0) return false;
-                var minimumCells = (int)Math.Ceiling(Math.Abs(deficit) / bestPerCell);
-                if (minimumCells > remainingTotalCells) return false;
-            }
-            return true;
-        }
-
         private static int GreatestCommonDivisor(int left, int right)
         {
             while (right != 0)
@@ -404,83 +507,6 @@ namespace Code4101.Zaohua.Tiandao
                 right = remainder;
             }
             return Math.Abs(left);
-        }
-
-        private static List<AlchemySolution> SelectDiverseSolutions(List<AlchemySolution> ordered, int limit)
-        {
-            var selected = new List<AlchemySolution>();
-            var seenLayouts = new HashSet<string>();
-            var seenCompositions = new HashSet<string>();
-            var seenFamilies = new HashSet<string>();
-
-            bool Add(AlchemySolution solution, bool requireNewFamily)
-            {
-                var composition = string.Join(";", solution.Placements
-                    .GroupBy(item => $"{item.ItemId.sedId}:{item.PoolType}")
-                    .OrderBy(group => group.Key).Select(group => $"{group.Key}:{group.Count()}"));
-                var layout = string.Join(";", solution.Placements
-                    .OrderBy(item => item.ItemId.sedId).ThenBy(item => item.PoolType)
-                    .ThenBy(item => item.Position.x).ThenBy(item => item.Position.y)
-                    .Select(item => $"{item.ItemId.sedId}:{item.PoolType}:{item.Position.x},{item.Position.y}:{item.Rotation}"));
-                var family = $"q{solution.RuleOutcome.QualityBonus}:c{solution.RuleOutcome.CountBonus}:" +
-                             string.Join(",", solution.ItemCounts.Keys.OrderBy(id => id));
-                if (seenLayouts.Contains(layout) || seenCompositions.Contains(composition)) return false;
-                if (requireNewFamily && seenFamilies.Contains(family)) return false;
-                seenLayouts.Add(layout);
-                seenCompositions.Add(composition);
-                seenFamilies.Add(family);
-                selected.Add(solution);
-                return true;
-            }
-
-            foreach (var solution in ordered)
-            {
-                Add(solution, true);
-                if (selected.Count >= limit) return selected;
-            }
-            foreach (var solution in ordered)
-            {
-                Add(solution, false);
-                if (selected.Count >= limit) break;
-            }
-            return selected;
-        }
-
-        private static bool MatchesTarget(Dictionary<string, int> vector, Dictionary<string, int> target)
-        {
-            foreach (var pair in vector)
-            {
-                var expected = target.TryGetValue(pair.Key, out var value) ? value : 0;
-                if (pair.Value != expected) return false;
-            }
-            return true;
-        }
-
-        private static bool CanMoveTowardTarget(
-            Dictionary<string, int> vector,
-            Dictionary<string, int> target,
-            HerbCandidate candidate)
-        {
-            var sign = candidate.Side == 1 ? 1 : -1;
-            foreach (var pair in candidate.Crafting.attrDic)
-            {
-                var current = vector.TryGetValue(pair.Key, out var value) ? value : 0;
-                var expected = target.TryGetValue(pair.Key, out var targetValue) ? targetValue : 0;
-                var next = current + pair.Value * sign;
-                if (Math.Abs(next - expected) < Math.Abs(current - expected)) return true;
-            }
-            return false;
-        }
-
-        private static void AddVector(Dictionary<string, int> vector, HerbCandidate candidate, int multiplier)
-        {
-            var sign = candidate.Side == 1 ? 1 : -1;
-            foreach (var pair in candidate.Crafting.attrDic)
-            {
-                vector[pair.Key] = vector.TryGetValue(pair.Key, out var value)
-                    ? value + pair.Value * sign * multiplier
-                    : pair.Value * sign * multiplier;
-            }
         }
 
         private static List<RotationShape> BuildRotations(List<MyVector2Int> source)

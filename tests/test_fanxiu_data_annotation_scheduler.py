@@ -921,7 +921,7 @@ def test_data_annotation_scheduler_read_removes_assistant_covered_legacy_tasks(t
         {
             "id": "legacy-daily-youli",
             "task_type": "legacy_daily_task",
-            "label": "日常 游历",
+            "label": "日常 灵泉",
             "source": "legacy_behavior_tree",
             "schedule_kind": "daily",
             "enabled": True,
@@ -11219,12 +11219,12 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     fanxiu._write_data_annotation_scheduler_tasks([
         {
-            "id": "legacy-daily-mozu",
+            "id": "legacy-daily-lingquan",
             "task_type": "legacy_daily_task",
             "label": "日常 游历",
             "source": "legacy_behavior_tree",
             "schedule_kind": "daily",
-                "legacy_name": "日常_魔祖",
+                "legacy_name": "日常_灵泉",
             "enabled": True,
             "priority": 120,
             "interruptible": True,
@@ -11235,7 +11235,7 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
             "last_result": "",
             "retry_after": None,
             "cooldown_seconds": 0,
-                "payload": {"legacy_name": "日常_魔祖"},
+                "payload": {"legacy_name": "日常_灵泉"},
             "checkpoint": None,
         }
     ])
@@ -11244,7 +11244,7 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
         fanxiu.run_now_fanxiu_data_annotation_scheduler_task(
             fanxiu.FanxiuDataAnnotationSchedulerRunNowRequest(
                 entry_id="entry",
-                task_id="legacy-daily-mozu",
+                task_id="legacy-daily-lingquan",
                 payload={},
             ),
             current_user=object(),
@@ -11265,12 +11265,12 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
     disabled_assistant["enabled"] = False
     fanxiu._write_data_annotation_scheduler_tasks([
         {
-            "id": "legacy-daily-mozu",
+            "id": "legacy-daily-lingquan",
             "task_type": "legacy_daily_task",
-            "label": "日常 魔祖",
+            "label": "日常 灵泉",
             "source": "legacy_behavior_tree",
             "schedule_kind": "daily",
-            "legacy_name": "日常_魔祖",
+            "legacy_name": "日常_灵泉",
             "enabled": True,
             "priority": 10,
             "interruptible": True,
@@ -11281,7 +11281,7 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
             "last_result": "",
             "retry_after": None,
             "cooldown_seconds": 0,
-            "payload": {"legacy_name": "日常_魔祖"},
+            "payload": {"legacy_name": "日常_灵泉"},
             "checkpoint": None,
         },
         {
@@ -11329,12 +11329,12 @@ def test_data_annotation_run_due_endpoint_queues_synced_default_assistant_task(t
     disabled_assistant["enabled"] = False
     fanxiu._write_data_annotation_scheduler_tasks([
         {
-            "id": "legacy-daily-mozu",
+            "id": "legacy-daily-lingquan",
             "task_type": "legacy_daily_task",
-            "label": "日常 魔祖",
+            "label": "日常 灵泉",
             "source": "legacy_behavior_tree",
             "schedule_kind": "daily",
-            "legacy_name": "日常_魔祖",
+            "legacy_name": "日常_灵泉",
             "enabled": True,
             "priority": 10,
             "interruptible": True,
@@ -11345,7 +11345,7 @@ def test_data_annotation_run_due_endpoint_queues_synced_default_assistant_task(t
             "last_result": "",
             "retry_after": None,
             "cooldown_seconds": 0,
-            "payload": {"legacy_name": "日常_魔祖"},
+            "payload": {"legacy_name": "日常_灵泉"},
             "checkpoint": None,
         },
         disabled_signup,
@@ -12328,7 +12328,7 @@ def test_data_annotation_runtime_task_dispatch_uses_backend_tasks():
     assert runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 69}, stop_event) == "success"
     assert runner._execute_runtime_task(ctx, "hide_floating_window", {}, stop_event) == "success"
     assert runner._execute_runtime_task(ctx, "gift_code_redeem", {"codes": [" a ", "", "b"]}, stop_event) == "success"
-    assert runner._execute_runtime_task(ctx, "legacy_daily_task", {"legacy_name": "日常_魔祖"}, stop_event) == "unsupported"
+    assert runner._execute_runtime_task(ctx, "legacy_daily_task", {"legacy_name": "日常_灵泉"}, stop_event) == "unsupported"
     assert runner._execute_runtime_task(ctx, "legacy_dynamic_task", {"legacy_name": "日常_首领"}, stop_event) == "unsupported"
     with pytest.raises(RuntimeError, match="暂不支持"):
         runner._execute_runtime_task(ctx, "daily_locate", {}, stop_event)
@@ -12337,7 +12337,7 @@ def test_data_annotation_runtime_task_dispatch_uses_backend_tasks():
     assert ("go_scene", 69) in runner.calls
     assert ("hide_floating_window",) in runner.calls
     assert ("gift_code_redeem", ("a", "b")) in runner.calls
-    assert any(call == ("log", "skip", "旧版任务「日常_魔祖」尚未迁移，已跳过") for call in runner.calls)
+    assert any(call == ("log", "skip", "旧版任务「日常_灵泉」尚未迁移，已跳过") for call in runner.calls)
     assert any(call == ("log", "skip", "旧版任务「日常_首领」尚未迁移，已跳过") for call in runner.calls)
 
 

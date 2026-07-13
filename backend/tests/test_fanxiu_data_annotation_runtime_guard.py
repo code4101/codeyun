@@ -4348,6 +4348,102 @@ def test_debug_eval_handler_runs_simple_context_code():
     assert any("debug_eval result" in str(item.get("message") or "") for item in runner.status().get("logs") or [])
 
 
+def test_debug_eval_cells_share_kernel_namespace_without_replaying_old_task():
+    from backend.core.fanxiu.data_annotation.debug_eval import run_data_annotation_debug_eval
+
+    runner = create_fanxiu_runtime_runner()
+    raw_ctx = {"entry_id": "cell-entry", "images": {}, "entry": object()}
+
+    first = run_data_annotation_debug_eval(
+        runner,
+        raw_ctx,
+        {
+            "code": (
+                "shared_value = 41\n"
+                "def task(ctx):\n"
+                "    global task_runs\n"
+                "    task_runs = globals().get('task_runs', 0) + 1\n"
+                "    return shared_value"
+            )
+        },
+        threading.Event(),
+    )
+    second = run_data_annotation_debug_eval(
+        runner,
+        raw_ctx,
+        {"code": "result = shared_value + 1"},
+        threading.Event(),
+    )
+
+    namespace = runner._code_cell_namespaces["0:cell-entry"]
+    assert first == "success"
+    assert second == "success"
+    assert namespace["shared_value"] == 41
+    assert namespace["result"] == 42
+    assert namespace["task_runs"] == 1
+    assert "task" not in namespace
+
+
+def test_debug_eval_act_cell_injects_bound_runtime(monkeypatch, tmp_path):
+    from backend.core.fanxiu.data_annotation.debug_eval import run_data_annotation_debug_eval
+
+    runner = create_fanxiu_runtime_runner()
+    runtime = SimpleNamespace(marker="bound")
+    calls: list[tuple] = []
+
+    def fake_runtime(raw_ctx, asset_tree_path=None, *, stop_event=None):
+        calls.append((raw_ctx, asset_tree_path, stop_event))
+        return runtime
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", fake_runtime)
+    stop_event = threading.Event()
+    raw_ctx = {
+        "entry_id": "cell-entry",
+        "entry": object(),
+        "images": {},
+        "asset_tree_path": tmp_path / "asset-tree.json",
+    }
+
+    result = run_data_annotation_debug_eval(
+        runner,
+        raw_ctx,
+        {"code": "bound_marker = runtime.marker", "mode": "act"},
+        stop_event,
+    )
+
+    assert result == "success"
+    assert runner._code_cell_namespaces["0:cell-entry"]["bound_marker"] == "bound"
+    assert calls == [(raw_ctx, raw_ctx["asset_tree_path"], stop_event)]
+
+
+def test_debug_eval_readonly_cell_does_not_inherit_runtime(monkeypatch, tmp_path):
+    from backend.core.fanxiu.data_annotation.debug_eval import run_data_annotation_debug_eval
+
+    runner = create_fanxiu_runtime_runner()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: SimpleNamespace(marker="bound"))
+    raw_ctx = {
+        "entry_id": "cell-entry",
+        "entry": object(),
+        "images": {},
+        "asset_tree_path": tmp_path / "asset-tree.json",
+    }
+
+    run_data_annotation_debug_eval(
+        runner,
+        raw_ctx,
+        {"code": "act_marker = runtime.marker", "mode": "act"},
+        threading.Event(),
+    )
+
+    with pytest.raises(NameError):
+        run_data_annotation_debug_eval(
+            runner,
+            raw_ctx,
+            {"code": "result = runtime.marker", "mode": "readonly"},
+            threading.Event(),
+        )
+
+
 def test_debug_eval_readonly_blocks_actions():
     definition = fanxiu_api._data_annotation_task_cell_definition("debug_eval")
     runner = create_fanxiu_runtime_runner()
@@ -4658,7 +4754,7 @@ def test_debug_eval_context_exposes_wait_scene():
 def test_debug_eval_context_exposes_go_scene():
     from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
 
-    calls: list[tuple[tuple, dict]] = []
+    calls: list[tuple] = []
 
     class FakeRuntime:
         def go_scene(self, *args, **kwargs):
@@ -4670,14 +4766,20 @@ def test_debug_eval_context_exposes_go_scene():
         def _raise_if_stopped(self, _stop_event):
             return None
 
-        def _fanxiu_runtime(self, _ctx, *, stop_event=None):
+        def _fanxiu_runtime(self, raw_ctx, asset_tree_path=None, *, stop_event=None):
+            calls.append((raw_ctx, asset_tree_path, stop_event))
             return FakeRuntime()
 
-    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), {}, threading.Event(), readonly=False)
+    stop_event = threading.Event()
+    raw_ctx = {"asset_tree_path": Path("asset-tree.json")}
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), raw_ctx, stop_event, readonly=False)
     result = _drain_generator(ctx.go_scene(34, layer0_wait_seconds=30.0))
 
     assert result == "ok"
-    assert calls == [((34,), {"layer0_wait_seconds": 30.0})]
+    assert calls == [
+        (raw_ctx, raw_ctx["asset_tree_path"], stop_event),
+        ((34,), {"layer0_wait_seconds": 30.0}),
+    ]
 
 
 def test_runtime_scene_terms_are_documented():
