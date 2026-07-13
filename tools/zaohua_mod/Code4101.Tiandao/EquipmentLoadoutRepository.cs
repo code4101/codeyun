@@ -41,18 +41,39 @@ namespace Code4101.Zaohua.Tiandao
 
     internal static class EquipmentLoadoutRepository
     {
+        private const int CurrentStoreVersion = 2;
         private const string DirectoryName = "Code4101.Tiandao";
         private const string FileName = "equipment-loadouts.json";
         private static EquipmentLoadoutStore _store;
         private static string _filePath;
+        private static bool _loadBlocked;
 
         internal static EquipmentLoadoutSaveState GetCurrentSaveState(bool create = true)
         {
             var actor = BsSaveDataImpl.nowActor;
             if (actor?.fileSto == null) return null;
             EnsureLoaded();
+            if (_store == null || _loadBlocked) return null;
             var key = $"{actor.id}:{actor.fileSto.buildTime}";
             var state = _store.saves.FirstOrDefault(item => item.saveKey == key);
+            if (state == null)
+            {
+                // buildTime 在部分游戏版本或存档流程中可能变化。旧键存在时迁移到新键，
+                // 绝不能因为精确键未命中就静默创建一套空方案。
+                var legacyStates = _store.saves
+                    .Where(item => item != null && item.saveKey != null &&
+                                   item.saveKey.StartsWith(actor.id + ":", StringComparison.Ordinal))
+                    .OrderByDescending(item => item.loadouts?.Count ?? 0)
+                    .ToList();
+                if (legacyStates.Count > 0)
+                {
+                    state = legacyStates[0];
+                    foreach (var legacy in legacyStates.Skip(1)) MergeState(state, legacy);
+                    foreach (var legacy in legacyStates.Skip(1)) _store.saves.Remove(legacy);
+                    state.saveKey = key;
+                    Save();
+                }
+            }
             if (state != null || !create) return state;
             state = new EquipmentLoadoutSaveState
             {
@@ -123,10 +144,11 @@ namespace Code4101.Zaohua.Tiandao
 
         internal static void Save()
         {
-            if (_store == null) return;
+            if (_store == null || _loadBlocked || _store.saves == null || _store.saves.Count == 0) return;
             try
             {
                 EnsurePath();
+                _store.version = CurrentStoreVersion;
                 var json = JsonUtility.ToJson(_store, true);
                 var temporaryPath = _filePath + ".tmp";
                 var backupPath = _filePath + ".bak";
@@ -135,7 +157,6 @@ namespace Code4101.Zaohua.Tiandao
                 {
                     if (File.Exists(backupPath)) File.Delete(backupPath);
                     File.Replace(temporaryPath, _filePath, backupPath);
-                    if (File.Exists(backupPath)) File.Delete(backupPath);
                 }
                 else
                 {
@@ -168,32 +189,107 @@ namespace Code4101.Zaohua.Tiandao
 
         private static void EnsureLoaded()
         {
-            if (_store != null) return;
+            if (_store != null || _loadBlocked) return;
             EnsurePath();
             if (!File.Exists(_filePath))
             {
-                _store = new EquipmentLoadoutStore();
+                _store = new EquipmentLoadoutStore { version = CurrentStoreVersion };
                 return;
             }
             try
             {
-                _store = JsonUtility.FromJson<EquipmentLoadoutStore>(File.ReadAllText(_filePath)) ??
-                         new EquipmentLoadoutStore();
-                if (_store.saves == null) _store.saves = new List<EquipmentLoadoutSaveState>();
-                foreach (var state in _store.saves)
+                _store = LoadAndValidate(_filePath);
+            }
+            catch (Exception primaryError)
+            {
+                var backupPath = _filePath + ".bak";
+                try
                 {
-                    if (state.loadouts == null) state.loadouts = new List<EquipmentLoadoutEntity>();
-                    foreach (var loadout in state.loadouts)
-                    {
-                        if (loadout.slots == null) loadout.slots = new List<EquipmentLoadoutSlot>();
-                    }
+                    if (!File.Exists(backupPath)) throw;
+                    _store = LoadAndValidate(backupPath);
+                    Debug.LogWarning($"[Code4101 Tiandao] recovered equipment loadouts from backup: {primaryError.Message}");
+                }
+                catch (Exception backupError)
+                {
+                    _store = null;
+                    _loadBlocked = true;
+                    Debug.LogError($"[Code4101 Tiandao] equipment loadouts are read-only blocked; " +
+                                   $"main={primaryError}; backup={backupError}");
+                    return;
                 }
             }
-            catch (Exception error)
+            MigrateStore();
+        }
+
+        private static EquipmentLoadoutStore LoadAndValidate(string path)
+        {
+            var json = File.ReadAllText(path);
+            var store = JsonUtility.FromJson<EquipmentLoadoutStore>(json);
+            if (store == null) throw new InvalidDataException("方案文件无法解析");
+            if (store.saves == null) store.saves = new List<EquipmentLoadoutSaveState>();
+            return store;
+        }
+
+        private static void MigrateStore()
+        {
+            if (_store == null) return;
+            var sourceVersion = _store.version <= 0 ? 1 : _store.version;
+            if (sourceVersion > CurrentStoreVersion)
             {
-                Debug.LogError($"[Code4101 Tiandao] load equipment loadouts failed: {error}");
-                _store = new EquipmentLoadoutStore();
+                _store = null;
+                _loadBlocked = true;
+                Debug.LogError($"[Code4101 Tiandao] equipment loadout schema is newer than supported: {sourceVersion}");
+                return;
             }
+            if (sourceVersion < CurrentStoreVersion && File.Exists(_filePath))
+            {
+                var snapshotPath = Path.Combine(Path.GetDirectoryName(_filePath) ?? string.Empty,
+                    $"equipment-loadouts.v{sourceVersion}.json");
+                if (!File.Exists(snapshotPath)) File.Copy(_filePath, snapshotPath);
+            }
+            foreach (var state in _store.saves.Where(state => state != null))
+            {
+                if (state.loadouts == null) state.loadouts = new List<EquipmentLoadoutEntity>();
+                foreach (var loadout in state.loadouts.Where(loadout => loadout != null))
+                {
+                    if (string.IsNullOrEmpty(loadout.id)) loadout.id = Guid.NewGuid().ToString("N");
+                    if (string.IsNullOrWhiteSpace(loadout.name)) loadout.name = "方案";
+                    if (loadout.slots == null) loadout.slots = new List<EquipmentLoadoutSlot>();
+                    foreach (var slot in BagEnhancementState.EquipmentSlots)
+                    {
+                        if (loadout.slots.All(item => item.slot != slot))
+                            loadout.slots.Add(new EquipmentLoadoutSlot { slot = slot });
+                    }
+                }
+                if (string.IsNullOrEmpty(state.activeLoadoutId) ||
+                    state.loadouts.All(loadout => loadout.id != state.activeLoadoutId))
+                    state.activeLoadoutId = state.loadouts.FirstOrDefault()?.id;
+                state.nextLoadoutNumber = Math.Max(2, state.nextLoadoutNumber);
+            }
+            _store.version = CurrentStoreVersion;
+            if (sourceVersion < CurrentStoreVersion && _store.saves.Count > 0) Save();
+        }
+
+        private static void MergeState(EquipmentLoadoutSaveState target, EquipmentLoadoutSaveState source)
+        {
+            if (target == null || source?.loadouts == null) return;
+            if (target.loadouts == null) target.loadouts = new List<EquipmentLoadoutEntity>();
+            foreach (var loadout in source.loadouts)
+            {
+                if (loadout == null) continue;
+                var duplicate = target.loadouts.Any(existing => existing.id == loadout.id) ||
+                                target.loadouts.Any(existing => existing.name == loadout.name &&
+                                    SlotSignature(existing) == SlotSignature(loadout));
+                if (!duplicate) target.loadouts.Add(loadout);
+            }
+            target.nextLoadoutNumber = Math.Max(target.nextLoadoutNumber, source.nextLoadoutNumber);
+        }
+
+        private static string SlotSignature(EquipmentLoadoutEntity loadout)
+        {
+            return string.Join(";", (loadout?.slots ?? new List<EquipmentLoadoutSlot>())
+                .OrderBy(slot => slot.slot)
+                .Select(slot => $"{slot.slot}:{slot.packId}:{slot.blendType}:{slot.itemId}"));
         }
 
         private static void EnsurePath()

@@ -105,9 +105,9 @@ namespace Code4101.Zaohua.Tiandao
         {
             if (parentTypeId == 0) return null;
             var name = Singleton<TbItemImpl>.Instance.GetTypeName(parentTypeId) ?? string.Empty;
-            // BagPanel 使用顶部按钮序号：符箓=5、丹药（含丹方）=6；它与 TbTypeCfg 根 ID 的5/6顺序相反。
-            if (parentTypeId == 6) return "drug";
-            if (parentTypeId == 5) return "talisman";
+            // BagPanel 与 TbTypeCfg 根类型一致：丹药（含丹方）=5，符箓=6。
+            if (parentTypeId == 5) return "drug";
+            if (parentTypeId == 6) return "talisman";
             if (name.Contains("丹") || name.Contains("药")) return "drug";
             if (name.Contains("符箓")) return "talisman";
             if (parentTypeId == 1 || name.Contains("防具") || name.Contains("装备") || name.Contains("服饰")) return "equipment";
@@ -280,6 +280,8 @@ namespace Code4101.Zaohua.Tiandao
         private Button _filterTrigger;
         private TextPro _filterTriggerLabel;
         private GameObject _loadoutPopup;
+        private RectTransform _loadoutContent;
+        private ScrollRect _loadoutScroll;
         private Button _loadoutTrigger;
         private TextPro _loadoutTriggerLabel;
         private string _loadoutMessage;
@@ -318,6 +320,12 @@ namespace Code4101.Zaohua.Tiandao
             {
                 _nextRenameIconLookup = Time.unscaledTime + 1f;
                 RefreshNativeRenameIcons();
+            }
+            if (_loadoutPopup != null && _loadoutPopup.activeSelf && Input.GetMouseButtonDown(0) &&
+                !ContainsScreenPoint((RectTransform)_loadoutPopup.transform) &&
+                !ContainsScreenPoint((RectTransform)_loadoutTrigger.transform))
+            {
+                CloseLoadoutPopup();
             }
             var parentType = Traverse.Create(_panel).Field<int>("nowTypeParentId").Value;
             if (parentType == _lastParentType) return;
@@ -418,7 +426,7 @@ namespace Code4101.Zaohua.Tiandao
             {
                 if (_loadoutPopup.activeSelf)
                 {
-                    _loadoutPopup.SetActive(false);
+                    CloseLoadoutPopup();
                     return;
                 }
                 RebuildLoadoutPopup();
@@ -427,24 +435,82 @@ namespace Code4101.Zaohua.Tiandao
             });
 
             _loadoutPopup = new GameObject("Code4101EquipmentLoadoutPopup",
-                typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup));
+                typeof(RectTransform), typeof(Image), typeof(ScrollRect));
             _loadoutPopup.layer = gameObject.layer;
             _loadoutPopup.transform.SetParent(controlParent, false);
             var popupRect = (RectTransform)_loadoutPopup.transform;
             popupRect.anchorMin = triggerRect.anchorMin;
             popupRect.anchorMax = triggerRect.anchorMax;
-            popupRect.pivot = new Vector2(0.5f, 1f);
-            popupRect.localPosition = triggerRect.localPosition + new Vector3(0f, -45f, 0f);
+            popupRect.pivot = new Vector2(0.5f, 0f);
+            popupRect.localPosition = triggerRect.localPosition + new Vector3(0f, 45f, 0f);
             popupRect.sizeDelta = new Vector2(220f, 120f);
             _loadoutPopup.GetComponent<Image>().color = new Color(0.055f, 0.045f, 0.035f, 0.96f);
-            var layout = _loadoutPopup.GetComponent<VerticalLayoutGroup>();
+
+            var viewportObject = new GameObject("Viewport", typeof(RectTransform), typeof(RectMask2D));
+            viewportObject.layer = gameObject.layer;
+            viewportObject.transform.SetParent(_loadoutPopup.transform, false);
+            var viewportRect = (RectTransform)viewportObject.transform;
+            viewportRect.anchorMin = Vector2.zero;
+            viewportRect.anchorMax = Vector2.one;
+            viewportRect.offsetMin = Vector2.zero;
+            viewportRect.offsetMax = new Vector2(-18f, 0f);
+
+            var contentObject = new GameObject("Content", typeof(RectTransform), typeof(VerticalLayoutGroup));
+            contentObject.layer = gameObject.layer;
+            contentObject.transform.SetParent(viewportObject.transform, false);
+            _loadoutContent = (RectTransform)contentObject.transform;
+            _loadoutContent.anchorMin = new Vector2(0f, 1f);
+            _loadoutContent.anchorMax = new Vector2(1f, 1f);
+            _loadoutContent.pivot = new Vector2(0.5f, 1f);
+            _loadoutContent.anchoredPosition = Vector2.zero;
+            var layout = contentObject.GetComponent<VerticalLayoutGroup>();
             layout.padding = new RectOffset(8, 8, 8, 8);
             layout.spacing = 6f;
             layout.childAlignment = TextAnchor.UpperCenter;
             layout.childControlWidth = false;
             layout.childControlHeight = false;
+
+            var nativeScrollbar = viewFields.Field<Scrollbar>("Scrollbar").Value;
+            var scrollbar = Instantiate(nativeScrollbar, _loadoutPopup.transform);
+            scrollbar.gameObject.name = "Code4101LoadoutScrollbar";
+            scrollbar.onValueChanged.RemoveAllListeners();
+            scrollbar.direction = Scrollbar.Direction.BottomToTop;
+            var scrollbarRect = (RectTransform)scrollbar.transform;
+            scrollbarRect.anchorMin = new Vector2(1f, 0f);
+            scrollbarRect.anchorMax = new Vector2(1f, 1f);
+            scrollbarRect.pivot = new Vector2(1f, 0.5f);
+            scrollbarRect.anchoredPosition = Vector2.zero;
+            scrollbarRect.sizeDelta = new Vector2(16f, 0f);
+
+            _loadoutScroll = _loadoutPopup.GetComponent<ScrollRect>();
+            _loadoutScroll.viewport = viewportRect;
+            _loadoutScroll.content = _loadoutContent;
+            _loadoutScroll.horizontal = false;
+            _loadoutScroll.vertical = true;
+            _loadoutScroll.movementType = ScrollRect.MovementType.Clamped;
+            _loadoutScroll.scrollSensitivity = 38f;
+            _loadoutScroll.verticalScrollbar = scrollbar;
+            _loadoutScroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.Permanent;
             _loadoutPopup.SetActive(false);
             RefreshLoadoutTrigger();
+        }
+
+        private void CloseLoadoutPopup()
+        {
+            if (_loadoutPopup == null) return;
+            var input = _loadoutPopup.GetComponentInChildren<TMPro.TMP_InputField>(true);
+            if (input != null && input.isFocused) input.DeactivateInputField();
+            _loadoutPopup.SetActive(false);
+        }
+
+        private static bool ContainsScreenPoint(RectTransform rect)
+        {
+            if (rect == null) return false;
+            var canvas = rect.GetComponentInParent<Canvas>();
+            var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                ? canvas.worldCamera
+                : null;
+            return RectTransformUtility.RectangleContainsScreenPoint(rect, Input.mousePosition, camera);
         }
 
         private void RebuildFilterButtons(int parentType)
@@ -457,18 +523,23 @@ namespace Code4101.Zaohua.Tiandao
             _loadoutTrigger.gameObject.SetActive(true);
             _loadoutPopup.SetActive(false);
             if (context == null) return;
-            var useGrid = context == "treasure" || context == "art" || context == "magic" ||
-                          context == "talisman";
-            _filterGridLayout.constraintCount = useGrid ? 3 : 1;
-            _filterGridLayout.cellSize = new Vector2(useGrid ? 100f : 150f, 44f);
             AddFilterButton(parentType, DerivedBagFilter.All, "全部");
             if (context == "drug")
             {
+                var selected = BagEnhancementState.GetFilter(parentType);
+                if (selected != DerivedBagFilter.All && selected != DerivedBagFilter.Pill &&
+                    selected != DerivedBagFilter.Recipe)
+                    BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
                 AddFilterButton(parentType, DerivedBagFilter.Pill, "丹药");
                 AddFilterButton(parentType, DerivedBagFilter.Recipe, "丹方");
             }
             else if (context == "equipment")
             {
+                var selected = BagEnhancementState.GetFilter(parentType);
+                if (selected != DerivedBagFilter.All && selected != DerivedBagFilter.Helmet &&
+                    selected != DerivedBagFilter.Clothes && selected != DerivedBagFilter.Shoes &&
+                    selected != DerivedBagFilter.Ornament)
+                    BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
                 AddFilterButton(parentType, DerivedBagFilter.Helmet, "头饰");
                 AddFilterButton(parentType, DerivedBagFilter.Clothes, "服饰");
                 AddFilterButton(parentType, DerivedBagFilter.Shoes, "鞋履");
@@ -501,23 +572,29 @@ namespace Code4101.Zaohua.Tiandao
                     BagEnhancementState.SetFilter(parentType, DerivedBagFilter.All);
             }
             var popupRect = (RectTransform)_filterPopup.transform;
-            if (useGrid)
-            {
-                var rows = Mathf.CeilToInt(_filterButtons.Count / 3f);
-                popupRect.sizeDelta = new Vector2(328f, 16f + rows * 44f + Math.Max(0, rows - 1) * 6f);
-            }
-            else
-            {
-                popupRect.sizeDelta = new Vector2(170f,
-                    16f + _filterButtons.Count * 44f + Math.Max(0, _filterButtons.Count - 1) * 6f);
-            }
+            const int comfortableRowsPerColumn = 7;
+            const int maximumColumns = 4;
+            const float compactCellWidth = 100f;
+            const float singleColumnWidth = 150f;
+            const float cellHeight = 44f;
+            const float spacing = 6f;
+            const float padding = 16f;
+            var itemCount = Math.Max(1, _filterButtons.Count);
+            var columns = Mathf.Clamp(
+                Mathf.CeilToInt(itemCount / (float)comfortableRowsPerColumn), 1, maximumColumns);
+            var rows = Mathf.CeilToInt(itemCount / (float)columns);
+            var cellWidth = columns == 1 ? singleColumnWidth : compactCellWidth;
+            _filterGridLayout.constraintCount = columns;
+            _filterGridLayout.cellSize = new Vector2(cellWidth, cellHeight);
+            popupRect.sizeDelta = new Vector2(
+                padding + columns * cellWidth + Math.Max(0, columns - 1) * spacing,
+                padding + rows * cellHeight + Math.Max(0, rows - 1) * spacing);
             RefreshFilterButtonColors(parentType);
         }
 
         private void AddFilterButton(int parentType, DerivedBagFilter filter, string label)
         {
-            var button = CreateButton(_filterPopup.transform, filter.ToString(), label,
-                new Vector2(_filterGridLayout.constraintCount == 3 ? 100f : 150f, 44f));
+            var button = CreateButton(_filterPopup.transform, filter.ToString(), label, new Vector2(150f, 44f));
             button.onClick.AddListener(() =>
             {
                 BagEnhancementState.SetFilter(parentType, filter);
@@ -552,7 +629,7 @@ namespace Code4101.Zaohua.Tiandao
             {
                 var entity = loadout;
                 var active = entity.id == state.activeLoadoutId;
-                var button = CreateButton(_loadoutPopup.transform, entity.id,
+                var button = CreateButton(_loadoutContent, entity.id,
                     (active ? "✓ " : "  ") + entity.name, new Vector2(204f, 44f));
                 button.GetComponent<Image>().color = active
                     ? new Color(0.46f, 0.33f, 0.16f, 0.92f)
@@ -574,7 +651,7 @@ namespace Code4101.Zaohua.Tiandao
                 AddInlineRenameButton(button, entity, active);
                 _loadoutButtons.Add(button);
             }
-            var create = CreateButton(_loadoutPopup.transform, "CreateLoadout", "＋ 新建方案",
+            var create = CreateButton(_loadoutContent, "CreateLoadout", "＋ 新建方案",
                 new Vector2(204f, 44f));
             create.onClick.AddListener(() =>
             {
@@ -594,14 +671,18 @@ namespace Code4101.Zaohua.Tiandao
             _loadoutButtons.Add(create);
             if (!string.IsNullOrEmpty(_loadoutMessage))
             {
-                var message = CreateButton(_loadoutPopup.transform, "LoadoutMessage", _loadoutMessage,
+                var message = CreateButton(_loadoutContent, "LoadoutMessage", _loadoutMessage,
                     new Vector2(204f, 44f));
                 message.interactable = false;
                 message.GetComponent<Image>().color = new Color(0.38f, 0.12f, 0.08f, 0.88f);
                 _loadoutButtons.Add(message);
             }
-            ((RectTransform)_loadoutPopup.transform).sizeDelta = new Vector2(220f,
-                16f + _loadoutButtons.Count * 44f + Math.Max(0, _loadoutButtons.Count - 1) * 6f);
+            var contentHeight = 16f + _loadoutButtons.Count * 44f +
+                                Math.Max(0, _loadoutButtons.Count - 1) * 6f;
+            _loadoutContent.sizeDelta = new Vector2(-18f, contentHeight);
+            ((RectTransform)_loadoutPopup.transform).sizeDelta =
+                new Vector2(220f, Mathf.Min(contentHeight, 360f));
+            _loadoutScroll.verticalNormalizedPosition = 1f;
         }
 
         private void AddInlineRenameButton(Button row, EquipmentLoadoutEntity entity, bool active)
@@ -783,7 +864,7 @@ namespace Code4101.Zaohua.Tiandao
 
         private void ClearLoadoutPopup()
         {
-            foreach (Transform child in _loadoutPopup.transform) Destroy(child.gameObject);
+            foreach (Transform child in _loadoutContent) Destroy(child.gameObject);
             _loadoutButtons.Clear();
             _renameIcons.Clear();
             _renameIconFallbacks.Clear();
@@ -1016,11 +1097,22 @@ namespace Code4101.Zaohua.Tiandao
                     return compared * direction;
                 })).ToList();
             }
-            return items.OrderBy(item => item, Comparer<TbPackSto>.Create((left, right) =>
+            var nameItems = items.ToList();
+            var gradeWeights = nameItems.ToDictionary(item => item.id, item =>
             {
-                var compared = string.Compare(left?.name, right?.name, StringComparison.CurrentCulture);
+                var grade = item?.itemCfg == null
+                    ? null
+                    : Singleton<TbDataImpl>.Instance.GetGradeCfg(item.itemCfg.gradeId);
+                return grade?.weight ?? item?.itemCfg?.gradeId ?? 0;
+            });
+            return nameItems.OrderBy(item => item, Comparer<TbPackSto>.Create((left, right) =>
+            {
+                // 主键只反转品阶；名称始终升序，使同品阶套装稳定聚在一起。
+                var compared = gradeWeights[left.id].CompareTo(gradeWeights[right.id]) * direction;
+                if (compared == 0)
+                    compared = string.Compare(left?.name, right?.name, StringComparison.CurrentCulture);
                 if (compared == 0) compared = (left?.id ?? 0).CompareTo(right?.id ?? 0);
-                return compared * direction;
+                return compared;
             })).ToList();
         }
 
@@ -1032,8 +1124,8 @@ namespace Code4101.Zaohua.Tiandao
 
         private void Select(ExtraSortKind kind)
         {
-            // 名称天然按字典序阅读，首次升序；数值属性首次仍按高到低。
-            Ascending = _kind == kind ? !Ascending : kind == ExtraSortKind.Name;
+            // 名称排序的方向表示品阶方向：首次降序，再次升序；名称次键始终升序。
+            Ascending = _kind == kind && !Ascending;
             _kind = kind;
             foreach (var nativeToggle in _nativeToggles) nativeToggle.SetIsOnWithoutNotify(false);
             RefreshNativeArrows();

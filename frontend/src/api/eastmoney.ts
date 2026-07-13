@@ -194,6 +194,16 @@ export interface EastmoneyMarketQuoteRefreshResult {
   items: EastmoneyMarketQuote[]
 }
 
+export interface EastmoneyCalculatorQuoteRefreshResult {
+  provider: string
+  ttl_seconds: number
+  target_count: number
+  cache_hit_count: number
+  downloaded_count: number
+  error_count: number
+  items: EastmoneyMarketQuote[]
+}
+
 export interface EastmoneyAkshareHistoryItem {
   date: string
   symbol: string
@@ -481,6 +491,33 @@ export interface EastmoneyTradeWorkbench {
 
 export interface EastmoneyTradeReport {
   markdown: string
+  updated_at: number | null
+}
+
+export interface EastmoneyCalculatorTarget {
+  market: string
+  symbol: string
+  name: string
+}
+
+export interface EastmoneyCalculatorTrade {
+  id: string
+  time: string
+  price: string
+  quantity: string
+  source_record_id: string
+}
+
+export interface EastmoneyCalculatorItem extends EastmoneyCalculatorTarget {
+  id: string
+  base_price: string
+  trades: EastmoneyCalculatorTrade[]
+}
+
+export interface EastmoneyCalculatorWorkspace {
+  items: EastmoneyCalculatorItem[]
+  targets: EastmoneyCalculatorTarget[]
+  history_by_target: Record<string, EastmoneyCalculatorTrade[]>
   updated_at: number | null
 }
 
@@ -798,5 +835,27 @@ export async function fetchEastmoneyTradeReport() {
 
 export async function saveEastmoneyTradeReport(markdown: string) {
   const response = await api.put<EastmoneyTradeReport>('/eastmoney/trade-report', { markdown })
+  return response.data
+}
+
+export async function fetchEastmoneyCalculatorWorkspace() {
+  const response = await api.get<EastmoneyCalculatorWorkspace>('/eastmoney/calculator-workspace')
+  return response.data
+}
+
+export async function saveEastmoneyCalculatorWorkspace(items: EastmoneyCalculatorItem[]) {
+  const response = await api.put<EastmoneyCalculatorWorkspace>(
+    '/eastmoney/calculator-workspace',
+    { items },
+  )
+  return response.data
+}
+
+export async function syncEastmoneyCalculatorMarketQuotes() {
+  const response = await api.post<EastmoneyCalculatorQuoteRefreshResult>(
+    '/eastmoney/calculator-market-quotes/sync',
+    {},
+    { timeout: 15000 },
+  )
   return response.data
 }
