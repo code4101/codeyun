@@ -1,5 +1,6 @@
 import json
 import time
+from copy import deepcopy
 
 from backend.core.fanxiu.data_annotation import runtime_control
 
@@ -67,3 +68,60 @@ def test_ensure_doctor_watch_background_uses_repo_root_script(monkeypatch, tmp_p
     assert script_path.is_file()
     assert "backend/core/scripts" not in script_path.as_posix()
     assert calls[0]["kwargs"]["cwd"] == str(script_path.parents[1])
+    assert "--auto-run-due" in calls[0]["args"]
+
+
+def test_scheduler_task_cell_records_terminal_success(monkeypatch):
+    state = [{
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "schedule_kind": "daily",
+        "schedule": {"time": "12:30"},
+        "next_time": "2026-07-13 12:30:00",
+        "last_result": "",
+    }]
+    facts = []
+
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda task, result, **_kwargs: facts.append((result, deepcopy(task))))
+    monkeypatch.setattr(runtime_control, "task_payload_with_meta", lambda task: {"scheduler_task_id": task["id"]})
+    monkeypatch.setattr(
+        runtime_control,
+        "submit_runtime_task_cell",
+        lambda **_kwargs: {"status": "success", "message": "done"},
+    )
+    monkeypatch.setattr(runtime_control, "next_scheduler_time", lambda task, now=None: "2026-07-14 12:30:00")
+
+    result = runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    assert result["status"] == "success"
+    assert state[0]["last_result"] == "success"
+    assert state[0]["last_message"] == "done"
+    assert state[0]["next_time"] == "2026-07-14 12:30:00"
+    assert [item[0] for item in facts] == ["running", "success"]
+
+
+def test_prepare_scheduler_task_waits_when_kernel_busy(monkeypatch, tmp_path):
+    persisted = []
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "busy"},
+    )
+    monkeypatch.setattr(runtime_control, "runtime_status", lambda **_kwargs: {"status": "idle"})
+    monkeypatch.setattr(runtime_control, "persist_runtime_status", lambda status, **_kwargs: persisted.append(deepcopy(status)))
+
+    blocked = runtime_control.prepare_runtime_for_scheduler_task(
+        {"id": "daily-a"},
+        [{"id": "daily-a"}],
+        runtime_state_path=tmp_path / "runtime.json",
+        world_facts_path=tmp_path / "facts.json",
+    )
+
+    assert blocked["phase"] == "scheduler_wait_kernel_busy"
+    assert "Kernel 正在执行 Cell" in blocked["message"]
+    assert persisted[-1]["phase"] == "scheduler_wait_kernel_busy"

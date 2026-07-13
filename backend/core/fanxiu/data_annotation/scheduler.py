@@ -967,9 +967,10 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
-            and str(task.get("last_result") or "") not in {"error", "stopped", "skipped", "unsupported", *_UNSCHEDULED_MANUAL_RESULTS}
+            and str(task.get("last_result") or "") not in {"blocked", "error", "stopped", "skipped", "unsupported", *_UNSCHEDULED_MANUAL_RESULTS}
             and not task.get("retry_after")
             and not daily_retry_deferred
+            and not explicit_world_fact_next_time
             and not _daily_task_success_today(task, current_time)
         ):
             today_time = _daily_first_schedule_time_today(task, current_time)

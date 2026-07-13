@@ -7,6 +7,26 @@ from backend.core.runtime import management
 from backend.models import Task
 
 
+def test_fanxiu_startup_enables_external_scheduler_auto_dispatch(monkeypatch):
+    entry = type("Entry", (), {"entry_id": "entry-a"})()
+    calls = []
+    monkeypatch.setattr(management, "_resolve_data_annotation_runtime_entry", lambda _session: entry)
+    monkeypatch.setattr(management, "ensure_fanxiu_behavior_tree_service", lambda **_kwargs: {})
+    monkeypatch.setattr(management, "_get_data_annotation_behavior_tree_status", lambda: {})
+    monkeypatch.setattr(management, "_fanxiu_capture_runtime_service_enabled", lambda: False)
+    monkeypatch.setattr(management, "_fanxiu_doctor_watch_autostart_enabled", lambda: True)
+    monkeypatch.setattr(
+        management,
+        "ensure_doctor_watch_background",
+        lambda **kwargs: calls.append(kwargs) or {"started": True},
+    )
+
+    result = management.ensure_data_annotation_behavior_tree_service(object())
+
+    assert result["doctor_watch"]["started"] is True
+    assert calls == [{"auto_run_due": True}]
+
+
 def test_build_runtime_status_reuses_runtime_device_for_command_status(monkeypatch):
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine, tables=[Task.__table__])

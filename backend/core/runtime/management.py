@@ -889,7 +889,7 @@ def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, 
             result["capture_runtime"] = {"status": "error", "error": str(exc)}
     if _fanxiu_doctor_watch_autostart_enabled():
         try:
-            result["doctor_watch"] = ensure_doctor_watch_background()
+            result["doctor_watch"] = ensure_doctor_watch_background(auto_run_due=True)
         except Exception as exc:
             result["doctor_watch"] = {"ok": False, "started": False, "error": str(exc)}
     return result

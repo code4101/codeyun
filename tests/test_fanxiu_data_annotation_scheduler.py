@@ -908,6 +908,31 @@ def test_data_annotation_scheduler_repair_keeps_xianshi_weekly_resources_enabled
     assert changed is True
 
 
+def test_data_annotation_scheduler_repair_does_not_rewind_blocked_daily_task():
+    task = next(
+        item for item in fanxiu._default_data_annotation_scheduler_tasks()
+        if item["id"] == "legacy-daily-assistant"
+    ).copy()
+    task.update({
+        "enabled": True,
+        "last_result": "blocked",
+        "next_time": "2026-07-14 06:00:00",
+        "retry_after": None,
+    })
+
+    tasks, _changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        [task],
+        fanxiu._default_data_annotation_scheduler_tasks(),
+        {},
+        task_supported=lambda _task: True,
+        now=datetime(2026, 7, 14, 1, 30, 0),
+    )
+
+    repaired = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
+    assert repaired["last_result"] == "blocked"
+    assert repaired["next_time"] == "2026-07-14 06:00:00"
+
+
 def test_data_annotation_scheduler_read_removes_assistant_covered_legacy_tasks(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     fanxiu._write_data_annotation_scheduler_tasks([
@@ -2460,6 +2485,10 @@ class _FakeRuntimeRunner:
 
 
 def test_data_annotation_prepare_scheduler_task_waits_when_runtime_is_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "idle"},
+    )
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
@@ -2492,6 +2521,10 @@ def test_data_annotation_prepare_scheduler_task_waits_when_runtime_is_busy(tmp_p
 
 
 def test_data_annotation_prepare_scheduler_task_interrupts_same_group_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "idle"},
+    )
     statuses = [
         {
             "running": True,

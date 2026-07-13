@@ -360,11 +360,22 @@ def test_doctor_watch_latest_payload_for_frontend_omits_large_auto_run_due(monke
 
 
 def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monkeypatch, tmp_path):
+    class ActiveProcess:
+        def __init__(self, _pid):
+            pass
+
+        def cmdline(self):
+            return ["pythonw.exe", "fanxiu_bt.py", "watch-doctor"]
+
+        def is_running(self):
+            return True
+
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
     monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
     monkeypatch.setattr(runtime_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(runtime_control.psutil, "Process", ActiveProcess)
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -381,7 +392,7 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monk
     stable_path.write_text(json.dumps({"severity": "blocked", "summary": "活跃"}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(runtime_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
 
-    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0)
+    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=False)
 
     assert result["started"] is False
     assert result["reason"] == "heartbeat_recent"
@@ -430,11 +441,22 @@ def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatc
 
 
 def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbeat(monkeypatch, tmp_path):
+    class ActiveProcess:
+        def __init__(self, _pid):
+            pass
+
+        def cmdline(self):
+            return ["pythonw.exe", "fanxiu_bt.py", "watch-doctor"]
+
+        def is_running(self):
+            return True
+
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
     monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
     monkeypatch.setattr(runtime_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(runtime_control.psutil, "Process", ActiveProcess)
     monkeypatch.setattr(runtime_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
     heartbeat_path.write_text(
         json.dumps(
@@ -504,7 +526,7 @@ def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeyp
     assert "--duration-seconds" in command
     assert "60.0" in command
     assert "--screenshot" not in command
-    assert "--auto-run-due" not in command
+    assert "--auto-run-due" in command
     assert result["output_path"].endswith(".ndjson")
 
 
@@ -1036,7 +1058,7 @@ def test_fanxiu_bt_watch_doctor_stops_when_ok_no_due(monkeypatch, tmp_path):
     assert event["due_task_count"] == 0
 
 
-def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_engineering_scheduler_active(monkeypatch, tmp_path):
+def test_fanxiu_bt_watch_doctor_dispatches_run_due_as_one_external_cell(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
     output_path = tmp_path / "watch-auto.ndjson"
@@ -1103,13 +1125,13 @@ def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_engineering_scheduler
         ],
     )
 
-    assert fanxiu_bt.main() == 1
+    assert fanxiu_bt.main() == 0
     event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert run_due_calls == []
-    assert event["severity"] == "attention"
+    assert len(run_due_calls) == 1
+    assert event["severity"] == "ok"
     assert event["auto_run_due_enabled"] is True
-    assert event["auto_run_due"].get("triggered") is not True
+    assert event["auto_run_due"].get("triggered") is True
 
 
 
@@ -1238,11 +1260,11 @@ def test_fanxiu_bt_watch_doctor_wakes_early_when_blocked_annotation_changes(monk
 
     assert len(events) == 2
     assert events[0]["severity"] == "blocked"
-    assert events[1]["severity"] == "attention"
-    assert events[1]["scheduler_next_action"] == "run_due"
-    assert events[1]["auto_run_due"] == {}
+    assert events[1]["severity"] == "ok"
+    assert events[1]["scheduler_next_action"] == "idle"
+    assert events[1]["auto_run_due"].get("triggered") is True
     assert sleep_calls == [2.0]
-    assert run_due_calls == []
+    assert len(run_due_calls) == 1
 
 
 def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_blocked(monkeypatch, tmp_path):

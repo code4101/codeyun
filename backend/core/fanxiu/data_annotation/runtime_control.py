@@ -4,9 +4,11 @@ import subprocess
 import sys
 import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from pyxllib.prog import (
     append_status_log,
@@ -200,11 +202,21 @@ def ensure_doctor_watch_background(
     include_screenshot: bool = True,
     screenshot_every: int = 10,
     stale_after_seconds: float = 180.0,
-    auto_run_due: bool = False,
+    auto_run_due: bool = True,
 ) -> dict[str, Any]:
     heartbeat = read_doctor_watch_heartbeat(stale_after_seconds=stale_after_seconds)
+    candidate_pid = int(heartbeat.get("pid") or 0)
+    process_active = False
+    if candidate_pid > 0:
+        try:
+            process = psutil.Process(candidate_pid)
+            command_line = " ".join(process.cmdline()).lower()
+            process_active = process.is_running() and "fanxiu_bt.py" in command_line and "watch-doctor" in command_line
+        except (psutil.Error, OSError, ValueError):
+            process_active = False
     capability_consistent = (not auto_run_due) or bool(heartbeat.get("auto_run_due_enabled"))
-    if bool(heartbeat.get("active")) and capability_consistent:
+    heartbeat_effectively_active = process_active if candidate_pid > 0 else bool(heartbeat.get("active"))
+    if heartbeat_effectively_active and capability_consistent:
         return {
             "ok": True,
             "started": False,
@@ -212,6 +224,18 @@ def ensure_doctor_watch_background(
             "heartbeat": heartbeat,
             "latest": read_doctor_watch_latest(),
         }
+
+    replaced_pid: int | None = None
+    if process_active and not capability_consistent:
+        try:
+            process = psutil.Process(candidate_pid)
+            command_line = " ".join(process.cmdline()).lower()
+            if "fanxiu_bt.py" in command_line and "watch-doctor" in command_line:
+                process.terminate()
+                process.wait(timeout=5.0)
+                replaced_pid = candidate_pid
+        except (psutil.Error, OSError, ValueError):
+            pass
 
     watch_dir = codeyun_temp_root("fanxiu-watch")
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +282,7 @@ def ensure_doctor_watch_background(
     return {
         "ok": True,
         "started": True,
+        "replaced_pid": replaced_pid,
         "pid": process.pid,
         "reason": "heartbeat_missing_or_stale",
         "previous_heartbeat": heartbeat,
@@ -906,6 +931,77 @@ def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
     return scheduled_task_payload_with_meta(task)
 
 
+def _run_scheduler_task_cell_and_record_terminal(
+    *,
+    entry: Any,
+    entry_id: str,
+    task: dict[str, Any],
+    scheduler_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Submit one ordinary task Cell and keep Scheduler state orthogonal and terminal."""
+    started = datetime.now()
+    started_text = started.strftime("%Y-%m-%d %H:%M:%S")
+    tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    state_task = next((item for item in tasks if item.get("id") == task.get("id")), None)
+    if state_task is None:
+        raise LookupError(f"Scheduler 任务不存在：{task.get('id') or ''}")
+    state_task["last_run_at"] = started_text
+    state_task["last_result"] = "running"
+    state_task["last_message"] = "已向 Fanxiu Kernel 提交普通 Cell"
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    record_scheduler_task_fact(state_task, "running", world_facts_path=world_facts_path)
+
+    try:
+        result = submit_runtime_task_cell(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=str(task.get("task_type") or ""),
+            payload=task_payload_with_meta(task),
+        )
+    except Exception as exc:
+        result = {"status": "error", "phase": "error", "message": str(exc), "error": str(exc)}
+
+    tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    state_task = next((item for item in tasks if item.get("id") == task.get("id")), None) or dict(task)
+    result_status = str(result.get("status") or "error")
+    if result_status == "success":
+        state_task["last_result"] = "success"
+        state_task["last_run_at"] = started_text
+        state_task["last_message"] = str(result.get("message") or "Cell 执行完成")
+        state_task["retry_after"] = None
+        next_time = str(state_task.get("next_time") or "")
+        try:
+            next_at = datetime.strptime(next_time, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            next_at = None
+        if next_at is None or next_at <= started:
+            state_task["next_time"] = next_scheduler_time(state_task, datetime.now())
+    else:
+        state_task["last_result"] = "error"
+        state_task["last_run_at"] = started_text
+        state_task["last_message"] = str(result.get("error") or result.get("message") or "Cell 执行失败")
+        cooldown = max(30, int(state_task.get("cooldown_seconds") or 300))
+        state_task["retry_after"] = (datetime.now() + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
+    replaced = False
+    for index, item in enumerate(tasks):
+        if item.get("id") == state_task.get("id"):
+            tasks[index] = state_task
+            replaced = True
+            break
+    if not replaced:
+        tasks.append(state_task)
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
+    return result
+
+
 def next_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
     return next_data_annotation_scheduler_time(task, now if now is not None else datetime.now())
 
@@ -921,6 +1017,21 @@ def prepare_runtime_for_scheduler_task(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any] | None:
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    kernel = fanxiu_kernel_manager_status()
+    if str(kernel.get("execution_state") or "") == "busy":
+        status = runtime_status(
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+        )
+        status.update({
+            "phase": "scheduler_wait_kernel_busy",
+            "message": f"Kernel 正在执行 Cell，{task.get('id') or task.get('label') or task.get('task_type')} 等待空闲",
+            "updated_at": time.time(),
+        })
+        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        return status
     status = fanxiu_runtime_runner_status()
     if not status.get("running"):
         return None
@@ -1103,11 +1214,12 @@ def run_due_scheduler_tasks(
     if blocked_status is not None:
         return blocked_status
     selected = due_tasks[0]
-    return submit_runtime_task_cell(
+    return _run_scheduler_task_cell_and_record_terminal(
         entry=entry,
         entry_id=entry_id,
-        task_type=str(selected.get("task_type") or ""),
-        payload=task_payload_with_meta(selected),
+        task=selected,
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
     )
 
 

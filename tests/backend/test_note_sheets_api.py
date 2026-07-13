@@ -6687,8 +6687,8 @@ def test_attendance_course_template_uses_column_binding_fallback(client, session
         rows = response.json()["sheet"]["document_json"]["rows"]
         assert rows[0][0:12] == [
             "禅宗二阶",
-            "禅宗9期二阶",
-            "20260503禅宗9期二阶",
+            "禅宗10期二阶",
+            "20260503禅宗10期二阶",
             "陈坤泽, 王颖",
             "",
             "周日开课",
