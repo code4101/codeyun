@@ -72,7 +72,6 @@ class FanxiuDataAnnotationDoctorWatchEnsureResponse(BaseModel):
 class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     ok: bool = True
     behavior_tree_enabled: bool = True
-    service_running: bool = False
     running: bool = False
     guard_group_enabled: bool = True
     guard_group_running: bool = False
@@ -94,13 +93,8 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     current_task_id: str = ""
     interruptible: bool = True
     last_guard_event: dict[str, Any] = Field(default_factory=dict)
-    kernel_status: dict[str, Any] = Field(default_factory=dict)
-    cell_status: dict[str, Any] = Field(default_factory=dict)
-    scheduler_status: dict[str, Any] = Field(default_factory=dict)
-    orchestration_status: dict[str, Any] = Field(default_factory=dict)
-    cell_tick: dict[str, Any] = Field(default_factory=dict)
+    kernel: dict[str, Any] = Field(default_factory=dict)
     kernel_restart: dict[str, Any] = Field(default_factory=dict)
-    isolation: dict[str, Any] = Field(default_factory=dict)
     started_at: float = 0
     updated_at: float = 0
     finished_at: float = 0
@@ -114,7 +108,6 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
 class FanxiuDataAnnotationRuntimeCodeCellRequest(BaseModel):
     entry_id: str
     code: str = Field(min_length=1)
-    mode: Literal["readonly", "act"] = "readonly"
     timeout_seconds: float = Field(120.0, ge=1.0, le=21600.0)
     max_output_chars: int = Field(4000, ge=200, le=20000)
 
@@ -124,16 +117,6 @@ class FanxiuDataAnnotationRuntimeTaskCellRequest(BaseModel):
     task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=21600.0)
-
-
-class FanxiuDataAnnotationRuntimeCellTickRequest(BaseModel):
-    entry_id: str
-    guard: bool = True
-    task_cell: bool = True
-    scheduled_job: bool = True
-    run_mode: Literal["tick_once", "until_idle", "current_job"] = "tick_once"
-    max_ticks: int = Field(10, ge=1, le=100)
-    timeout_seconds: float = Field(30.0, ge=0.1, le=300.0)
 
 
 class FanxiuDataAnnotationRuntimeKernelRestartRequest(BaseModel):

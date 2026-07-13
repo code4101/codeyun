@@ -19,7 +19,7 @@ from pathlib import Path
 from types import GeneratorType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta, select_due_scheduled_tasks
+from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta
 
 from backend.core.fanxiu.runtime.behavior_tree import (
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
@@ -29,9 +29,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_scheduler_settings_path as _core_data_annotation_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_data_annotation_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_data_annotation_world_facts_path,
-    fanxiu_runtime_runner_status,
-    fanxiu_runtime_task_label,
-    _fanxiu_process_matches_service_owner,
 )
 from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu.data_annotation.jobs import (
@@ -50,7 +47,6 @@ from backend.core.fanxiu.data_annotation.recognition_graph import (
     choose_scene_from_graph,
 )
 from backend.core.fanxiu.data_annotation.scheduler import (
-    data_annotation_world_facts_summary,
     preserve_data_annotation_scheduler_runtime_state,
     repair_data_annotation_scheduler_tasks,
 )
@@ -59,11 +55,9 @@ from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_e
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
-    data_annotation_runtime_owner_message,
     CLOSE_POPUPS_GUARD_CONFIG_VERSION,
     close_popups_guard_enabled_from_status,
     data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
-    data_annotation_task_due as _data_annotation_task_due,
     initial_data_annotation_runtime_status,
     next_data_annotation_scheduler_time as _core_next_data_annotation_scheduler_time,
     normalize_data_annotation_scheduler_settings,
@@ -2664,23 +2658,6 @@ class DataAnnotationRuntimeRunner(
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._service_thread: threading.Thread | None = None
-        self._service_control_thread: threading.Thread | None = None
-        self._service_stop_event: threading.Event | None = None
-        self._service_wake_event = threading.Event()
-        self._service_entry: Any | None = None
-        self._service_entry_id = ""
-        self._service_asset_tree_path: Path | None = None
-        self._service_runtime_state_path: Path | None = None
-        self._service_scheduler_state_path: Path | None = None
-        self._service_world_facts_path: Path | None = None
-        self._service_generation = 0
-        self._service_heartbeat_at = 0.0
-        self._service_step = ""
-        self._service_owner_token = ""
-        self._service_owner_path: Path | None = None
-        self._service_last_control_id = ""
-        self._local_run_token = ""
         self._stop_event: threading.Event | None = None
         self._guard_group_enabled = True
         self._guard_enabled = self.default_guard_enabled
@@ -2790,7 +2767,6 @@ class DataAnnotationRuntimeRunner(
             "guard_interval_seconds": self._guard_interval_seconds,
             "guard_items": json.loads(json.dumps(self._guard_items, ensure_ascii=False)),
             "last_guard_event": self._status.get("last_guard_event") if isinstance(self._status.get("last_guard_event"), dict) else {},
-            "service_running": bool(self._service_thread is not None and self._service_thread.is_alive()),
             "logs": current_logs[-500:],
             "cell_logs": current_cell_logs[:100],
         })
@@ -2799,7 +2775,6 @@ class DataAnnotationRuntimeRunner(
     def status(self, *, include_cell_logs: bool = True) -> dict[str, Any]:
         with self._lock:
             self._sync_guard_status_locked()
-            self._sync_service_status_locked()
             payload = self._status if include_cell_logs else {**self._status, "cell_logs": []}
             return json.loads(json.dumps(payload, ensure_ascii=False))
 
@@ -2808,7 +2783,6 @@ class DataAnnotationRuntimeRunner(
             self._status["logs"] = list(logs)
             self._status["updated_at"] = time.time()
             self._sync_guard_status_locked()
-            self._sync_service_status_locked()
             return json.loads(json.dumps(self._status, ensure_ascii=False))
 
     def wait_until_idle(self, timeout_seconds: float = 5.0) -> bool:
@@ -2824,9 +2798,8 @@ class DataAnnotationRuntimeRunner(
             return not bool(self._status.get("running"))
 
     def _sync_guard_status_locked(self) -> None:
-        service_running = self._service_thread is not None and self._service_thread.is_alive()
-        guard_group_running = bool(self._guard_group_enabled and service_running)
-        guard_running = bool(self._guard_group_enabled and self._guard_enabled and service_running)
+        guard_group_running = False
+        guard_running = False
         guard_items: dict[str, dict[str, Any]] = {}
         for guard_id, definition in self.guard_definitions.items():
             state = self._guard_items.get(guard_id)
@@ -2844,7 +2817,7 @@ class DataAnnotationRuntimeRunner(
                 if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
                     message = str(last_guard_event.get("title") or "")
             elif guard_id == "device_health":
-                running = bool(service_running and self._guard_group_enabled and enabled)
+                running = False
                 device_health = self._status.get("device_health")
                 if isinstance(device_health, dict):
                     state_text = str(device_health.get("status") or "")
@@ -2868,119 +2841,6 @@ class DataAnnotationRuntimeRunner(
             "guard_items": guard_items,
         })
 
-    def _sync_service_status_locked(self) -> None:
-        self._status["service_running"] = bool(self._service_thread is not None and self._service_thread.is_alive())
-
-    def _mark_service_heartbeat(self, step: str) -> None:
-        with self._lock:
-            self._service_heartbeat_at = time.time()
-            self._service_step = str(step or "")
-            token = self._service_owner_token
-            owner_path = self._service_owner_path
-            entry_id = self._service_entry_id
-            generation = self._service_generation
-        if token and owner_path is not None:
-            self._write_service_owner(owner_path, token, entry_id, generation, self._service_step)
-
-    def _service_owner_stale(self, owner: dict[str, Any]) -> bool:
-        updated_at = float(owner.get("updated_at") or 0.0)
-        if updated_at <= 0:
-            return True
-        return time.time() - updated_at > max(120.0, self._guard_interval_seconds * 30)
-
-    def _service_owner_payload(self, token: str, entry_id: str, generation: int, step: str) -> dict[str, Any]:
-        pid = os.getpid()
-        now = time.time()
-        return {
-            "resource": "fanxiu-behavior-tree-kernel",
-            "owner_kind": "process",
-            "owner_id": f"pid:{pid}",
-            "pid": pid,
-            "token": token,
-            "lease_token": token,
-            "entry_id": entry_id,
-            "generation": generation,
-            "step": step,
-            "heartbeat_at": now,
-            "updated_at": now,
-        }
-
-    def _write_service_owner(self, owner_path: Path, token: str, entry_id: str, generation: int, step: str) -> None:
-        try:
-            owner_path.parent.mkdir(parents=True, exist_ok=True)
-            owner_path.write_text(
-                json.dumps(self._service_owner_payload(token, entry_id, generation, step), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-    def _acquire_service_owner(self, entry_id: str, generation: int) -> tuple[bool, str]:
-        owner_path = _data_annotation_runtime_state_path().parent / "behavior_tree_service_owner.json"
-        token = uuid.uuid4().hex
-        try:
-            owner_path.parent.mkdir(parents=True, exist_ok=True)
-            if owner_path.exists():
-                try:
-                    owner = json.loads(owner_path.read_text(encoding="utf-8"))
-                except Exception:
-                    owner = {}
-                owner_pid = 0
-                if isinstance(owner, dict):
-                    try:
-                        owner_pid = int(owner.get("pid") or 0)
-                    except (TypeError, ValueError):
-                        owner_pid = 0
-                owner_alive = owner_pid == os.getpid() or _fanxiu_process_matches_service_owner(owner_pid)
-                if isinstance(owner, dict) and owner_alive and not self._service_owner_stale(owner):
-                    pid = owner.get("pid")
-                    step = owner.get("step") or "unknown"
-                    return False, data_annotation_runtime_owner_message(pid, step)
-                if not self._unlink_service_owner_path(owner_path):
-                    return False, "行为树执行器单例锁释放失败：owner 文件暂被占用，请稍后重试"
-            fd = os.open(str(owner_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
-                json.dump(self._service_owner_payload(token, entry_id, generation, "starting"), file, ensure_ascii=False, indent=2)
-            self._service_owner_token = token
-            self._service_owner_path = owner_path
-            return True, ""
-        except FileExistsError:
-            return False, "行为树执行器已由另一个后端实例抢先启动"
-        except Exception as exc:
-            return False, f"行为树执行器单例锁获取失败：{exc}"
-
-    def _unlink_service_owner_path(self, owner_path: Path) -> bool:
-        for attempt in range(5):
-            try:
-                owner_path.unlink()
-                return True
-            except FileNotFoundError:
-                return True
-            except PermissionError:
-                if attempt >= 4:
-                    return False
-                time.sleep(0.05)
-        return False
-
-    def _release_service_owner(self) -> None:
-        with self._lock:
-            owner_path = self._service_owner_path
-            token = self._service_owner_token
-            self._service_owner_path = None
-            self._service_owner_token = ""
-        if owner_path is None or not token:
-            return
-        try:
-            owner = json.loads(owner_path.read_text(encoding="utf-8"))
-        except Exception:
-            owner = {}
-        if isinstance(owner, dict) and str(owner.get("token") or "") == token:
-            self._unlink_service_owner_path(owner_path)
-
-    def _ensure_runtime_cell_idle_locked(self) -> None:
-        if self._status.get("running"):
-            raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
-
     def ensure_service(
         self,
         *,
@@ -2993,44 +2853,15 @@ class DataAnnotationRuntimeRunner(
         entry_id = str(getattr(entry, "entry_id", None) or entry_id)
         with self._lock:
             self._restore_persisted_config_locked()
-            self._service_entry = entry
-            self._service_entry_id = entry_id
-            self._service_asset_tree_path = asset_tree_path
-            self._service_runtime_state_path = _data_annotation_runtime_state_path()
-            self._service_scheduler_state_path = _data_annotation_scheduler_state_path()
-            self._service_world_facts_path = _data_annotation_world_facts_path()
             if self._guard_enabled:
                 self._guard_entry_id = entry_id
             if not self._status.get("entry_id"):
                 self._status["entry_id"] = entry_id
-            self._status["service_running"] = False
             self._set_status_locked("idle", "凡修框架已加载到 Jupyter Kernel", phase="idle")
         return self.status()
 
-    def stop_service(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
-        thread: threading.Thread | None = None
-        with self._lock:
-            stop_event = self._service_stop_event
-            thread = self._service_thread
-            if stop_event is not None:
-                stop_event.set()
-            self._service_wake_event.set()
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=max(0.1, float(timeout_seconds or 0.1)))
-        with self._lock:
-            self._sync_service_status_locked()
-            if self._service_thread is not None and not self._service_thread.is_alive():
-                self._service_thread = None
-                self._service_control_thread = None
-                self._service_stop_event = None
-                self._status["service_running"] = False
-                self._status["guard_running"] = False
-                self._status["updated_at"] = time.time()
-        self._persist_status()
-        return self.status()
-
     def _restore_persisted_config_locked(self) -> None:
-        if self._status.get("service_running") or self._status.get("running"):
+        if self._status.get("running"):
             return
         persisted = _read_data_annotation_runtime_status()
         if not persisted:
@@ -3063,370 +2894,6 @@ class DataAnnotationRuntimeRunner(
             "updated_at": time.time(),
         })
 
-    def _service_context(self) -> tuple[Any, str, Path] | None:
-        with self._lock:
-            entry = self._service_entry
-            entry_id = self._service_entry_id
-            asset_tree_path = self._service_asset_tree_path
-        if entry is None or not entry_id or asset_tree_path is None:
-            return None
-        return entry, entry_id, asset_tree_path
-
-    def _service_paths_still_current(self) -> bool:
-        with self._lock:
-            runtime_state_path = self._service_runtime_state_path
-            scheduler_state_path = self._service_scheduler_state_path
-            world_facts_path = self._service_world_facts_path
-        return (
-            runtime_state_path == _data_annotation_runtime_state_path()
-            and scheduler_state_path == _data_annotation_scheduler_state_path()
-            and world_facts_path == _data_annotation_world_facts_path()
-        )
-
-    def _run_service_control_loop(self, *, stop_event: threading.Event, generation: int) -> None:
-        while not stop_event.is_set():
-            with self._lock:
-                if generation != self._service_generation:
-                    break
-            try:
-                self._consume_service_control_request()
-            except Exception as exc:
-                with self._lock:
-                    self._log_locked("error", f"行为树控制请求处理失败：{exc}")
-                self._persist_status()
-            stop_event.wait(0.2)
-
-    def _consume_service_control_request(self) -> None:
-        control_path = _behavior_tree_control_path()
-        try:
-            request = json.loads(control_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return
-        except OSError:
-            return
-        except Exception:
-            request = {}
-        if not isinstance(request, dict):
-            return
-        request_id = str(request.get("id") or "")
-        if not request_id or request_id == self._service_last_control_id:
-            return
-        command = str(request.get("command") or "").strip()
-        if command == "wake_service":
-            self._service_last_control_id = request_id
-            self._service_wake_event.set()
-            with self._lock:
-                self._log_locked(
-                    "info",
-                    f"已处理本地控制请求：wake_service reason={request.get('reason') or ''}",
-                )
-            self._remove_service_control_request(control_path)
-            return
-        if command == "shutdown_service":
-            self._service_last_control_id = request_id
-            stop_event = self._service_stop_event
-            if stop_event is not None:
-                stop_event.set()
-            self._service_wake_event.set()
-            with self._lock:
-                self._log_locked(
-                    "stop",
-                    f"已处理本地控制请求：shutdown_service reason={request.get('reason') or ''}",
-                )
-            self._remove_service_control_request(control_path)
-            return
-        if command != "stop_current_task":
-            return
-        self._service_last_control_id = request_id
-        entry_id = str(request.get("entry_id") or "")
-        status = self.stop_current_task(entry_id)
-        with self._lock:
-            self._log_locked(
-                "stop",
-                f"已处理本地控制请求：stop_current_task reason={request.get('reason') or ''} status={status.get('status') or ''}",
-            )
-        self._remove_service_control_request(control_path)
-
-    def _remove_service_control_request(self, control_path: Path) -> None:
-        for _attempt in range(3):
-            try:
-                control_path.unlink()
-                return
-            except FileNotFoundError:
-                return
-            except OSError:
-                time.sleep(0.05)
-
-    def _run_service_loop(self, *, stop_event: threading.Event, tick_seconds: float, generation: int) -> None:
-        last_engineering_idle_guard_at = 0.0
-        engineering_idle_guard_fast_mode = False
-        while not stop_event.is_set():
-            with self._lock:
-                if generation != self._service_generation:
-                    break
-            self._mark_service_heartbeat("loop")
-            context = self._service_context()
-            if context is None or not self._service_paths_still_current():
-                self._mark_service_heartbeat("waiting_context")
-                self._service_wake_event.wait(max(0.2, float(tick_seconds or 1.0)))
-                self._service_wake_event.clear()
-                continue
-            entry, entry_id, asset_tree_path = context
-            try:
-                if not self.status().get("running"):
-                    if self._run_mumu_startup_gate_tick(entry_id, asset_tree_path):
-                        self._mark_service_heartbeat("mumu_startup_gate")
-                        self._service_wake_event.wait(max(0.5, min(2.0, float(tick_seconds or 1.0))))
-                        self._service_wake_event.clear()
-                        continue
-                    if self._job_group_isolated():
-                        self._mark_service_heartbeat("scheduler_isolated")
-                    else:
-                        self._mark_service_heartbeat("scheduler_poll")
-                        started_due = self._start_due_scheduler_tasks_if_idle(entry, entry_id, asset_tree_path)
-                        if started_due:
-                            self._mark_service_heartbeat("scheduler_started")
-                            self._service_wake_event.wait(0.1)
-                            self._service_wake_event.clear()
-                            continue
-                    now = time.time()
-                    engineering_idle_guard_due = now - last_engineering_idle_guard_at >= max(1.0, float(self.engineering_idle_guard_interval_seconds))
-                    if self._engineering_scheduler_enabled() and self._guard_group_enabled and (engineering_idle_guard_fast_mode or engineering_idle_guard_due):
-                        if not engineering_idle_guard_fast_mode:
-                            last_engineering_idle_guard_at = now
-                        self._mark_service_heartbeat("idle_guard")
-                        guard_handled = self._run_engineering_idle_guard_tick(
-                            entry,
-                            entry_id,
-                            asset_tree_path,
-                            stop_event=stop_event,
-                            include_device_health=not engineering_idle_guard_fast_mode,
-                        )
-                        self._mark_service_heartbeat("idle_guard_done")
-                        engineering_idle_guard_fast_mode = guard_handled
-                        if guard_handled:
-                            self._service_wake_event.wait(max(0.2, min(1.0, float(tick_seconds or 1.0))))
-                            self._service_wake_event.clear()
-                            continue
-            except Exception as exc:
-                with self._lock:
-                    self._log_locked("error", f"行为树 tick 失败：{exc}")
-                    self._status.update({"ok": False, "status": "error", "message": str(exc), "error": str(exc), "updated_at": time.time()})
-                self._persist_status()
-            self._service_wake_event.wait(max(0.2, float(tick_seconds or 1.0)))
-            self._service_wake_event.clear()
-        with self._lock:
-            self._sync_service_status_locked()
-            self._log_locked("stop", "行为树常驻服务已停止")
-        self._release_service_owner()
-        self._persist_status()
-
-    def run_service_tick_once(
-        self,
-        *,
-        guard: bool = True,
-        task_cell: bool = True,
-        scheduled_job: bool = True,
-    ) -> dict[str, Any]:
-        context = self._service_context()
-        if context is None or not self._service_paths_still_current():
-            self._mark_service_heartbeat("waiting_context")
-            status = self.status()
-            status["cell_tick"] = {
-                "ran": False,
-                "reason": "waiting_context",
-                "guard": bool(guard),
-                "task_cell": bool(task_cell),
-                "scheduled_job": bool(scheduled_job),
-            }
-            self._persist_status()
-            return status
-        entry, entry_id, asset_tree_path = context
-        action = "idle"
-        try:
-            if self._run_mumu_startup_gate_tick(entry_id, asset_tree_path):
-                action = "mumu_startup_gate"
-                status = self.status()
-                status["cell_tick"] = {
-                    "ran": True,
-                    "action": action,
-                    "guard": bool(guard),
-                    "task_cell": bool(task_cell),
-                    "scheduled_job": bool(scheduled_job),
-                }
-                self._persist_status()
-                return status
-            if guard:
-                self._run_device_health_guard_tick(entry_id)
-            if not self.status().get("running"):
-                guard_handled = False
-                guard_checked = False
-                if guard and self._guard_group_enabled and self._guard_enabled:
-                    self._mark_service_heartbeat("idle_guard")
-                    guard_handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
-                    self._mark_service_heartbeat("idle_guard_done")
-                    guard_checked = True
-                    if guard_handled:
-                        action = "guard_checked"
-                if not guard_handled and action == "idle" and scheduled_job:
-                    self._mark_service_heartbeat("scheduler_external")
-                    action = "scheduler_external"
-                if action == "idle" and guard_checked:
-                    action = "guard_checked"
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"行为树 tick 失败：{exc}")
-                self._status.update({"ok": False, "status": "error", "message": str(exc), "error": str(exc), "updated_at": time.time()})
-            self._persist_status()
-            raise
-        status = self.status()
-        status["cell_tick"] = {
-            "ran": True,
-            "action": action,
-            "guard": bool(guard),
-            "task_cell": bool(task_cell),
-            "scheduled_job": bool(scheduled_job),
-        }
-        self._persist_status()
-        return status
-
-    def run_service_ticks(
-        self,
-        *,
-        guard: bool = True,
-        task_cell: bool = True,
-        scheduled_job: bool = True,
-        run_mode: str = "tick_once",
-        max_ticks: int = 10,
-        timeout_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        mode = str(run_mode or "tick_once").strip() or "tick_once"
-        if mode not in {"tick_once", "until_idle", "current_job"}:
-            mode = "tick_once"
-        max_count = max(1, min(int(max_ticks or 1), 100))
-        deadline = time.time() + max(0.1, min(float(timeout_seconds or 30.0), 300.0))
-        statuses: list[dict[str, Any]] = []
-
-        if mode == "current_job" and self.status().get("running"):
-            completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
-            status = self.status()
-            status["cell_tick"] = {
-                "ran": False,
-                "reason": "current_job_done" if completed else "timeout",
-                "run_mode": mode,
-                "ticks": 0,
-                "guard": bool(guard),
-                "task_cell": bool(task_cell),
-                "scheduled_job": bool(scheduled_job),
-            }
-            self._persist_status()
-            return status
-
-        no_progress_actions = {"idle", "guard_checked", "scheduler_isolated"}
-        for index in range(max_count):
-            if time.time() >= deadline:
-                break
-            status = self.run_service_tick_once(
-                guard=guard,
-                task_cell=task_cell,
-                scheduled_job=scheduled_job,
-            )
-            statuses.append(status)
-            tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
-            action = str(tick.get("action") or "")
-            if mode == "tick_once":
-                break
-            if mode == "current_job":
-                if status.get("running"):
-                    completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
-                    status = self.status()
-                    tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
-                    status["cell_tick"] = {
-                        **tick,
-                        "ran": True,
-                        "action": action,
-                        "reason": "current_job_done" if completed else "timeout",
-                        "guard": bool(guard),
-                        "task_cell": bool(task_cell),
-                        "scheduled_job": bool(scheduled_job),
-                    }
-                    statuses[-1] = status
-                break
-            if action in no_progress_actions:
-                break
-
-        status = statuses[-1] if statuses else self.status()
-        tick = status.get("cell_tick") if isinstance(status.get("cell_tick"), dict) else {}
-        status["cell_tick"] = {
-            **tick,
-            "run_mode": mode,
-            "ticks": len(statuses),
-            "timeout": time.time() >= deadline and bool(statuses),
-            "guard": bool(guard),
-            "task_cell": bool(task_cell),
-            "scheduled_job": bool(scheduled_job),
-        }
-        self._persist_status()
-        return status
-
-    def _start_due_scheduler_tasks_if_idle(self, entry: Any, entry_id: str, asset_tree_path: Path) -> bool:
-        if self.status().get("running"):
-            return False
-        if self._job_group_isolated():
-            return False
-        if not bool(_read_data_annotation_scheduler_settings().get("job_group_enabled", True)):
-            self._mark_service_heartbeat("scheduler_job_group_disabled")
-            return False
-        tasks = _read_data_annotation_scheduler_tasks()
-        due_tasks = select_due_scheduled_tasks(
-            tasks,
-            task_due=_data_annotation_task_due,
-            task_supported=_data_annotation_task_supported,
-        )
-        if not due_tasks:
-            return False
-        due_task = due_tasks[0]
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "entry_id": entry_id,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            blocking_overlay = self._known_blocking_overlay_info(ctx)
-        except Exception:
-            blocking_overlay = None
-        if blocking_overlay and bool(blocking_overlay.get("blocking")):
-            blocking_message = str(blocking_overlay.get("message") or "")
-            self._mark_scheduler_tasks_blocked(tasks, due_tasks, blocking_message)
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({
-                    "entry_id": entry_id,
-                    "status": "idle",
-                    "phase": "scheduler_blocked",
-                    "message": blocking_message,
-                    "blocking_overlays": [blocking_overlay],
-                    "updated_at": time.time(),
-                })
-                if self._status.get("last_scheduler_block_message") != blocking_message:
-                    self._status["last_scheduler_block_message"] = blocking_message
-                    self._log_locked("warning", blocking_message, scope="job", item_id="scheduler")
-            self._persist_status()
-            return False
-        self.start_scheduler_tasks(
-            entry=entry,
-            entry_id=entry_id,
-            tasks=[due_task],
-            all_tasks=tasks,
-            asset_tree_path=asset_tree_path,
-            run_label="执行到期任务",
-        )
-        return True
-
-    def _run_mumu_startup_gate_tick(self, entry_id: str, asset_tree_path: Path) -> bool:
         grace = mumu_device_startup_grace_state()
         if not bool(grace.get("active")):
             return False
@@ -3488,49 +2955,6 @@ class DataAnnotationRuntimeRunner(
                 })
         self._persist_status()
         return True
-
-    def _scheduler_task_due_soon(self, *, within_seconds: float = 180.0) -> bool:
-        try:
-            tasks = _read_data_annotation_scheduler_tasks()
-        except Exception:
-            return False
-        now_ts = time.time()
-        threshold = max(0.0, float(within_seconds or 0.0))
-        for task in tasks:
-            if not bool(task.get("enabled")):
-                continue
-            if not _data_annotation_task_supported(task):
-                continue
-            if _data_annotation_task_due(task):
-                return True
-            for key in ("retry_after", "next_time"):
-                due_at = parse_data_annotation_task_time(task.get(key))
-                if due_at is not None and 0 <= due_at - now_ts <= threshold:
-                    return True
-        return False
-
-    def _engineering_scheduler_enabled(self) -> bool:
-        try:
-            settings = _read_data_annotation_scheduler_settings()
-        except Exception:
-            settings = {}
-        return bool(settings.get("job_group_enabled", True)) and not self._job_group_isolated()
-
-    def _run_engineering_idle_guard_tick(
-        self,
-        entry: Any,
-        entry_id: str,
-        asset_tree_path: Path,
-        *,
-        stop_event: threading.Event,
-        include_device_health: bool = True,
-    ) -> bool:
-        handled = False
-        if include_device_health:
-            handled = self._run_device_health_guard_tick(entry_id) or handled
-        if self._runtime_guard_enabled("close_popups"):
-            handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path, stop_event=stop_event) or handled
-        return handled
 
     def _run_idle_guard_tick(
         self,
@@ -3675,9 +3099,7 @@ class DataAnnotationRuntimeRunner(
                 return self.status()
             if not self._status.get("running"):
                 self._sync_guard_status_locked()
-                self._sync_service_status_locked()
-                service_running = bool(self._status.get("service_running"))
-                self._set_status_locked("idle", "当前没有正在运行的任务" if service_running else "行为树常驻服务未初始化")
+                self._set_status_locked("idle", "当前没有正在运行的 Cell")
                 return json.loads(json.dumps(self._status, ensure_ascii=False))
             if self._stop_event is not None:
                 self._stop_event.set()
@@ -3706,7 +3128,6 @@ class DataAnnotationRuntimeRunner(
             if guard_id != "close_popups":
                 self._set_status_locked(str(self._status.get("status") or "idle"), f"守护{'已开启' if enabled else '已关闭'}：{guard_id}")
                 self._sync_guard_status_locked()
-                self._sync_service_status_locked()
                 self._log_locked("info", self._status["message"], scope="guard", item_id=guard_id)
             else:
                 self._guard_enabled = bool(enabled)
@@ -3716,13 +3137,10 @@ class DataAnnotationRuntimeRunner(
                 if not enabled:
                     self._set_status_locked("idle" if not self._status.get("running") else str(self._status.get("status") or "running"), "守护已关闭")
                     self._sync_guard_status_locked()
-                    self._sync_service_status_locked()
                 else:
                     self._set_status_locked(str(self._status.get("status") or "idle"), "守护已开启")
                     self._sync_guard_status_locked()
-                    self._sync_service_status_locked()
         self.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-        self._service_wake_event.set()
         return self.status()
 
     def set_guard_group_enabled(
@@ -3741,150 +3159,8 @@ class DataAnnotationRuntimeRunner(
                 "守护组已开启" if enabled else "守护组已关闭",
             )
             self._sync_guard_status_locked()
-            self._sync_service_status_locked()
             self._log_locked("info", self._status["message"], scope="guard", item_id="guard_group")
         self.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-        self._service_wake_event.set()
-        return self.status()
-
-    def _run_registered_task_inline(
-        self,
-        *,
-        entry: Any,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        task_type = self._canonical_runtime_task_type(task_type)
-        payload = dict(payload or {})
-        ensure_fanxiu_runtime_jobs_registered()
-        definition = _data_annotation_task_cell_definition(task_type)
-        if definition is None:
-            raise FanxiuRuntimeError(f"暂不支持的任务类型：{task_type}", status_code=400)
-        if definition.normalize_payload is not None:
-            payload = definition.normalize_payload(payload)
-        return self._run_inline_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload=payload,
-            asset_tree_path=asset_tree_path,
-        )
-
-    def start_local_runtime_task(
-        self,
-        *,
-        entry: Any,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-        tick_seconds: float = 0.2,
-    ) -> dict[str, Any]:
-        task_type = self._canonical_runtime_task_type(task_type)
-        payload = dict(payload or {})
-        ensure_fanxiu_runtime_jobs_registered()
-        definition = _data_annotation_task_cell_definition(task_type)
-        if definition is None:
-            raise RuntimeError(f"暂不支持的任务类型：{task_type}")
-        if definition.normalize_payload is not None:
-            payload = definition.normalize_payload(payload)
-        return self._run_inline_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload={**payload, "__local_run": True, "__tick_seconds": max(0.1, float(tick_seconds or 0.2))},
-            asset_tree_path=asset_tree_path,
-        )
-
-    def _run_inline_runtime_task(
-        self,
-        *,
-        entry: Any,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        payload = dict(payload or {})
-        with self._lock:
-            self._ensure_runtime_cell_idle_locked()
-            stop_event = threading.Event()
-            self._stop_event = stop_event
-            now = time.time()
-            label = self._runtime_task_label(task_type, payload)
-            self._status = {
-                **self._status_base_preserving_guard_locked(),
-                "running": True,
-                "status": "running",
-                "entry_id": entry_id,
-                "task_type": task_type,
-                "current_task": label,
-                "phase": "local_run" if payload.get("__local_run") else "start",
-                "message": "本地任务已启动" if payload.get("__local_run") else "任务已启动",
-                "total": 1,
-                "current_task_id": str(payload.get("__scheduler_task_id") or ""),
-                "interruptible": bool(payload.get("__scheduler_interruptible", True)),
-                "started_at": now,
-                "updated_at": now,
-            }
-            prefix = "本地 " if payload.get("__local_run") else ""
-            self._log_locked("info", f"启动{prefix}Runtime 任务：{label}")
-        self._run_generic_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload=dict(payload),
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-        )
-        return self.status()
-
-    def start_scheduler_tasks(
-        self,
-        *,
-        entry: Any,
-        entry_id: str,
-        tasks: list[dict[str, Any]],
-        all_tasks: list[dict[str, Any]],
-        asset_tree_path: Path,
-        run_label: str = "执行全部到期任务",
-    ) -> dict[str, Any]:
-        if not tasks:
-            raise FanxiuRuntimeError("没有可执行的到期任务", status_code=400)
-        is_run_due = run_label in {"执行全部到期任务", "执行到期任务"}
-        with self._lock:
-                self._ensure_runtime_cell_idle_locked()
-                stop_event = threading.Event()
-                self._stop_event = stop_event
-                now = time.time()
-                self._status = {
-                    **self._status_base_preserving_guard_locked(),
-                    "running": True,
-                    "status": "running",
-                    "entry_id": entry_id,
-                    "task_type": "scheduler_run_due" if is_run_due else "scheduler_run_now",
-                    "current_task": run_label,
-                    "phase": "start",
-                    "message": f"Scheduler 已启动：{run_label}，共 {len(tasks)} 个任务",
-                    "total": len(tasks),
-                    "current_task_id": "scheduler_run_due" if is_run_due else str(tasks[0].get("id") or "scheduler_run_now"),
-                    "interruptible": all(bool(item.get("interruptible", True)) for item in tasks),
-                    "started_at": now,
-                    "updated_at": now,
-                }
-                self._log_locked("info", f"启动 Scheduler：{run_label}，共 {len(tasks)} 个")
-        self._persist_status()
-        self._run_scheduler_tasks(
-            entry=entry,
-            entry_id=entry_id,
-            tasks=[dict(item) for item in tasks],
-            all_tasks=[dict(item) for item in all_tasks],
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-            run_label=run_label,
-        )
         return self.status()
 
     def _set_status_locked(self, status: str, message: str = "", **extra: Any) -> None:
@@ -3981,17 +3257,13 @@ class DataAnnotationRuntimeRunner(
             "ts": str(item.get("ts") or ""),
         }
 
-    def _runtime_task_cell_source(self, task_type: str, payload: dict[str, Any], *, local_run: bool = False) -> str:
+    def _runtime_task_cell_source(self, task_type: str, payload: dict[str, Any]) -> str:
         clean_payload = {
             str(key): value
             for key, value in dict(payload or {}).items()
             if not str(key).startswith("__")
         }
-        prefix = "# 本地直接运行\n" if local_run else ""
-        return (
-            f"{prefix}task = 行为树.create_task({task_type!r}, {clean_payload!r})\n"
-            "行为树.step(task, 守护=True)"
-        )
+        return f"run_task_cell({task_type!r}, {clean_payload!r})"
 
     def _append_runtime_cell_log_locked(
         self,
@@ -4342,7 +3614,7 @@ class DataAnnotationRuntimeRunner(
             return BehaviorTreeStatus.SKIP
         if not allow_during_task:
             with self._lock:
-                if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"task_cell", "local_run"}:
+                if bool(self._status.get("running")):
                     return BehaviorTreeStatus.SKIP
         tick_started_at = time.monotonic()
         previous_log_context = self._set_log_context("guard", "close_popups")
@@ -4387,48 +3659,6 @@ class DataAnnotationRuntimeRunner(
                 tick_seconds=tick_seconds,
                 max_runtime_seconds=max_runtime_seconds,
             )
-
-    def _execute_registered_task_cell(
-        self,
-        *,
-        runtime_ctx: dict[str, Any],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-        task_type: str,
-        payload: dict[str, Any],
-        label: str,
-    ) -> tuple[str, str]:
-        """Route jobs through Jupyter when hosted by the resident kernel.
-
-        The direct branch is retained for isolated unit tests and explicit
-        in-process tooling that does not start the kernel service.
-        """
-        from backend.core.fanxiu.runtime.jupyter_kernel import (
-            execute_fanxiu_jupyter_task_cell,
-            fanxiu_jupyter_connection_path,
-        )
-
-        connection_path = fanxiu_jupyter_connection_path()
-        embedded = str(os.environ.get("CODEYUN_FANXIU_EMBEDDED_BEHAVIOR_TREE_SERVICE") or "").strip().lower()
-        if embedded in {"1", "true"} and connection_path.is_file():
-            response = execute_fanxiu_jupyter_task_cell(
-                task_type,
-                payload,
-                timeout_seconds=self._task_timeout_seconds(payload) + 30.0,
-            )
-            return str(response.get("result") or "success"), str(response.get("message") or "")
-
-        raw_result = self._run_runtime_behavior_tree(
-            runtime_ctx=runtime_ctx,
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-            action=lambda: self._execute_runtime_task(runtime_ctx, task_type, payload, stop_event),
-            label=label,
-            tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
-            max_runtime_seconds=self._task_timeout_seconds(payload),
-            guard_override=self._runtime_guard_override_from_payload(payload),
-        )
-        return self._normalize_runtime_task_result(raw_result)
 
     def _task_timeout_seconds(self, payload: dict[str, Any] | None = None) -> float:
         payload = payload if isinstance(payload, dict) else {}
@@ -4475,7 +3705,6 @@ class DataAnnotationRuntimeRunner(
                 status = next(result)
             except StopIteration as stop:
                 return stop.value
-            self._mark_service_heartbeat("task_running")
             if status == BehaviorTreeStatus.FAILURE:
                 raise RuntimeError("行为树节点失败")
             stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
@@ -4532,7 +3761,7 @@ class DataAnnotationRuntimeRunner(
                 self._log_locked("success" if task_result == "success" else "skip", self._status["message"])
                 self._append_runtime_cell_log_locked(
                     title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
-                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                    source=self._runtime_task_cell_source(task_type, payload),
                 )
         except InterruptedError:
             with self._lock:
@@ -4541,7 +3770,7 @@ class DataAnnotationRuntimeRunner(
                 self._log_locked("stop", "任务已停止")
                 self._append_runtime_cell_log_locked(
                     title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
-                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                    source=self._runtime_task_cell_source(task_type, payload),
                 )
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
@@ -4551,122 +3780,11 @@ class DataAnnotationRuntimeRunner(
                 self._log_locked("error", str(detail))
                 self._append_runtime_cell_log_locked(
                     title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
-                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                    source=self._runtime_task_cell_source(task_type, payload),
                 )
         finally:
             if previous_log_context is not None:
                 self._restore_log_context(previous_log_context)
-            self._mark_service_heartbeat("scheduler_poll")
-            self._persist_status()
-
-    def _run_scheduler_tasks(
-        self,
-        *,
-        entry: Any,
-        entry_id: str,
-        tasks: list[dict[str, Any]],
-        all_tasks: list[dict[str, Any]],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-        run_label: str = "执行全部到期任务",
-    ) -> None:
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            self._require_assets(ctx)
-            for index, task in enumerate(tasks):
-                self._raise_if_stopped(stop_event)
-                task_id = str(task.get("id") or "")
-                label = str(task.get("label") or task_id or task.get("task_type") or "未命名任务")
-                try:
-                    while self._run_direct_runtime_action(
-                        lambda: self._clear_known_blocking_overlay_if_possible(ctx, stop_event, label="Scheduler"),
-                        stop_event=stop_event,
-                        max_runtime_seconds=60.0,
-                    ):
-                        pass
-                except RuntimeError as exc:
-                    blocking_message = str(exc)
-                    self._mark_scheduler_tasks_blocked(all_tasks, tasks[index:], blocking_message)
-                    raise RuntimeError(blocking_message) from exc
-                previous_log_context = self._set_log_context("job", task_id) if task_id else None
-                try:
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"Scheduler 执行 {index + 1}/{len(tasks)}：{label}",
-                            current_index=index,
-                            current_task=label,
-                            task_type=str(task.get("task_type") or ""),
-                            phase="scheduler_task",
-                            current_task_id=task_id,
-                            interruptible=bool(task.get("interruptible", True)),
-                        )
-                        self._log_locked("action", f"开始到期任务：{label}")
-                    self._persist_status()
-                    self._mark_scheduler_task(all_tasks, task_id, "running")
-                    task_payload = _data_annotation_task_payload_with_meta(task)
-                    result, _result_message = self._execute_registered_task_cell(
-                        runtime_ctx=ctx,
-                        asset_tree_path=asset_tree_path,
-                        stop_event=stop_event,
-                        task_type=str(task.get("task_type") or ""),
-                        payload=task_payload,
-                        label=label,
-                    )
-                    self._mark_scheduler_task(all_tasks, task_id, result or "success")
-                    with self._lock:
-                        self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")
-                except InterruptedError:
-                    raise
-                except Exception:
-                    self._cleanup_failed_scheduler_task_to_world(
-                        ctx=ctx,
-                        asset_tree_path=asset_tree_path,
-                        task_label=label,
-                    )
-                    raise
-                finally:
-                    if previous_log_context is not None:
-                        self._restore_log_context(previous_log_context)
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({
-                    "status": "success",
-                    "phase": "done",
-                    "message": f"{run_label}完成",
-                    "finished_at": time.time(),
-                    "updated_at": time.time(),
-                    "current_index": len(tasks),
-                    "current_code": "",
-                })
-                self._log_locked("success", f"Scheduler {run_label}完成")
-        except InterruptedError:
-            current_task_id = ""
-            with self._lock:
-                current_task_id = str(self._status.get("current_task_id") or "")
-                self._clear_current_task_locked()
-                self._status.update({"status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", "Scheduler 任务已停止")
-            if current_task_id:
-                self._mark_scheduler_task(all_tasks, current_task_id, "stopped")
-        except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc)
-            current_task_id = ""
-            with self._lock:
-                current_task_id = str(self._status.get("current_task_id") or "")
-                self._clear_current_task_locked()
-                self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", str(detail), scope="job" if current_task_id else None, item_id=current_task_id or None)
-            if current_task_id:
-                self._mark_scheduler_task(all_tasks, current_task_id, "error")
-        finally:
-            self._mark_service_heartbeat("scheduler_poll")
             self._persist_status()
 
     def _cleanup_failed_scheduler_task_to_world(
@@ -4679,8 +3797,7 @@ class DataAnnotationRuntimeRunner(
         """Best-effort atomic cleanup after a Scheduler task fails.
 
         A fresh stop event is deliberate: a normal task exception should still
-        return the game to the stable world anchor, while an explicit user stop
-        bypasses this helper in ``_run_scheduler_tasks``.
+        return the game to the stable world anchor.
         """
         cleanup_stop_event = threading.Event()
         with self._lock:

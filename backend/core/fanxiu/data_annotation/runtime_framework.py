@@ -130,22 +130,6 @@ def set_guard_group_enabled(
     )
 
 
-def tick(
-    *,
-    entry: Any,
-    entry_id: str,
-    task_type: str | None = None,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Run one registered task through the same ordinary-cell path."""
-    return runtime_control.submit_tick_task(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=payload,
-    )
-
-
 def submit_task_cell(
     *,
     entry: Any,
@@ -189,34 +173,3 @@ def submit_code_cell(
         timeout_seconds=float(timeout_seconds or 120.0),
         max_output_chars=int(max_output_chars or 4000),
     ).run()
-
-
-def execute_tick(
-    *,
-    entry: Any,
-    entry_id: str,
-    guard: bool = True,
-    task_cell: bool = True,
-    scheduled_job: bool = True,
-    run_mode: str = "tick_once",
-    max_ticks: int = 10,
-    timeout_seconds: float = 30.0,
-    asset_tree_path: Path | None = None,
-    scheduler_settings_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
-) -> dict[str, Any]:
-    return runtime_control.execute_runtime_tick(
-        entry=entry,
-        entry_id=entry_id,
-        guard=guard,
-        task_cell=task_cell,
-        scheduled_job=scheduled_job,
-        run_mode=run_mode,
-        max_ticks=max_ticks,
-        timeout_seconds=timeout_seconds,
-        asset_tree_path=asset_tree_path,
-        scheduler_settings_path=scheduler_settings_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
-    )

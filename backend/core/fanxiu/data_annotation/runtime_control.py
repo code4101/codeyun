@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -12,9 +11,6 @@ from typing import Any
 from pyxllib.prog import (
     append_status_log,
     filter_status_logs,
-    job_payload_values,
-    remove_job_by_id,
-    repair_orphaned_scheduled_runs,
     scheduled_task_payload_with_meta,
     select_due_scheduled_tasks,
 )
@@ -28,10 +24,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path,
     fanxiu_runtime_guard_definitions,
-    get_fanxiu_runtime_runner,
-    fanxiu_runtime_runner_running,
     fanxiu_runtime_runner_status,
-    read_fanxiu_behavior_tree_service_owner,
     replace_fanxiu_runtime_logs,
     set_fanxiu_runtime_guard,
     set_fanxiu_runtime_guard_group_enabled,
@@ -56,7 +49,6 @@ from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_log_once,
-    data_annotation_runtime_owner_message,
     data_annotation_scheduler_task_state,
     data_annotation_task_due,
     is_data_annotation_runtime_live_empty,
@@ -75,7 +67,6 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.runtime.behavior_tree_service import stop_behavior_tree_service
 
 
 def _canonical_runtime_task_type(task_type: str) -> str:
@@ -430,7 +421,6 @@ def reset_scheduler_task_runs(
         "last_message",
         "retry_after",
         "checkpoint",
-        "queued_at",
         "started_at",
         "finished_at",
         "world_fact_synced_at",
@@ -594,61 +584,32 @@ def runtime_status(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    canonical_runtime_state_path = fanxiu_data_annotation_runtime_state_path().resolve(strict=False)
-    use_resident_owner = (
-        runtime_state_path is None
-        or Path(runtime_state_path).resolve(strict=False) == canonical_runtime_state_path
-    )
-    owner = read_fanxiu_behavior_tree_service_owner() if use_resident_owner else {}
-    owner_active_elsewhere = (
-        bool(owner.get("active"))
-        and not bool(owner.get("stale"))
-        and int(owner.get("pid") or 0) != os.getpid()
-    )
     persisted = read_runtime_status(runtime_state_path)
-    if owner_active_elsewhere and isinstance(persisted, dict) and persisted:
-        status = dict(persisted)
-        owner_step = str(owner.get("step") or "")
-        if bool(status.get("running")) and owner_step in {
-            "idle_guard",
-            "idle_guard_done",
-            "task_cell_poll",
-            "scheduler_poll",
-            "scheduler_isolated",
-            "waiting_context",
-        }:
-            status["running"] = False
-            status["status"] = "idle"
-            status["phase"] = owner_step
-            status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner_step)
-            status["current_task"] = ""
-            status["current_task_id"] = ""
-            status["task_type"] = ""
-            status["updated_at"] = time.time()
-    else:
-        status = fanxiu_runtime_runner_status()
-    if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
+    status = fanxiu_runtime_runner_status()
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    kernel_state = fanxiu_kernel_manager_status()
+    if persisted and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
-        status["running"] = False
-        status["guard_running"] = False
-        status["service_running"] = False
         status["updated_at"] = time.time()
-        if persisted.get("running"):
+        if persisted.get("running") and kernel_state.get("execution_state") != "busy":
+            status["running"] = False
+            status["guard_running"] = False
             status["status"] = "stopped"
             status["phase"] = "stopped"
             status["message"] = "后端已重载，运行状态已结束"
             status["finished_at"] = status.get("finished_at") or time.time()
             append_runtime_log_once(status, "stop", "后端已重载，运行状态已结束")
         elif persisted.get("guard_enabled") or persisted.get("guard_running"):
+            status["guard_running"] = False
             status["status"] = "idle"
             status["message"] = "后端已重载，行为树服务待恢复"
             append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
     status["behavior_tree_enabled"] = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
+    status["kernel"] = kernel_state
     normalize_runtime_guard_items(status)
     normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
-    if owner_active_elsewhere:
-        return status
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 
@@ -663,13 +624,17 @@ def ensure_runtime_service(
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
-    status = ensure_fanxiu_behavior_tree_service(
+    kernel_state = ensure_fanxiu_behavior_tree_service(
         entry,
         resolved_entry_id,
         asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
     )
-    status["behavior_tree_enabled"] = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
-    persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    status = runtime_status(
+        scheduler_settings_path=scheduler_settings_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    status["kernel"] = kernel_state
     return status
 
 
@@ -683,24 +648,16 @@ def restart_runtime_kernel(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    runner = get_fanxiu_runtime_runner()
-    stop_service = getattr(runner, "stop_service", None)
-    stopped_status: dict[str, Any] = {}
-    if callable(stop_service):
-        stopped_status = stop_service(timeout_seconds=max(0.1, float(timeout_seconds or 5.0)))
-    status = ensure_runtime_service(
-        entry=entry,
-        entry_id=entry_id,
-        asset_tree_path=asset_tree_path,
+    del entry, asset_tree_path
+    from backend.core.fanxiu.runtime.kernel import FanxiuKernel
+
+    result = FanxiuKernel(entry_id=str(entry_id)).restart(timeout_seconds=max(1.0, float(timeout_seconds or 5.0)))
+    status = runtime_status(
         scheduler_settings_path=scheduler_settings_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
-    status["kernel_restart"] = {
-        "ran": True,
-        "previous_service_running": bool(stopped_status.get("service_running")),
-        "service_running": bool(status.get("service_running")),
-    }
+    status["kernel_restart"] = result
     normalize_data_annotation_runtime_display(status)
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
@@ -759,78 +716,6 @@ def set_runtime_guard_group_enabled(
     )
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
-
-
-def submit_tick_task(
-    *,
-    entry: Any,
-    entry_id: str,
-    task_type: str | None = None,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    resolved_task_type = str(task_type or "detect_scene").strip() or "detect_scene"
-    if resolved_task_type == "manual_tick":
-        resolved_task_type = "detect_scene"
-    return submit_runtime_task_cell(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=resolved_task_type,
-        payload=payload,
-    )
-
-
-def execute_runtime_tick(
-    *,
-    entry: Any,
-    entry_id: str,
-    guard: bool = True,
-    task_cell: bool = True,
-    scheduled_job: bool = True,
-    run_mode: str = "tick_once",
-    max_ticks: int = 10,
-    timeout_seconds: float = 30.0,
-    asset_tree_path: Path | None = None,
-    scheduler_settings_path: Path | None = None,
-    runtime_state_path: Path | None = None,
-    world_facts_path: Path | None = None,
-) -> dict[str, Any]:
-    ensure_status = ensure_runtime_service(
-        entry=entry,
-        entry_id=entry_id,
-        asset_tree_path=asset_tree_path,
-        scheduler_settings_path=scheduler_settings_path,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
-    )
-    if not bool(ensure_status.get("behavior_tree_enabled", True)):
-        ensure_status["cell_tick"] = {
-            "ran": False,
-            "reason": "kernel_disabled",
-            "guard": bool(guard),
-            "task_cell": bool(task_cell),
-            "scheduled_job": bool(scheduled_job),
-            "run_mode": str(run_mode or "tick_once"),
-            "ticks": 0,
-        }
-        return finalize_runtime_status(
-            ensure_status,
-            runtime_state_path=runtime_state_path,
-            world_facts_path=world_facts_path,
-        )
-    status = get_fanxiu_runtime_runner().run_service_ticks(
-        guard=guard,
-        task_cell=bool(task_cell),
-        scheduled_job=scheduled_job,
-        run_mode=run_mode,
-        max_ticks=max_ticks,
-        timeout_seconds=timeout_seconds,
-    )
-    status["entry_id"] = str(entry_id or getattr(entry, "entry_id", None) or "")
-    return finalize_runtime_status(
-        status,
-        runtime_state_path=runtime_state_path,
-        world_facts_path=world_facts_path,
-    )
 
 
 def runtime_logs(
@@ -1025,11 +910,6 @@ def next_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> st
     return next_data_annotation_scheduler_time(task, now if now is not None else datetime.now())
 
 
-def scheduler_task_queue_timestamp(task: dict[str, Any]) -> float | None:
-    value = data_annotation_scheduler_time_order_key(task)[1]
-    return value if value != float("inf") else None
-
-
 def prepare_runtime_for_scheduler_task(
     task: dict[str, Any],
     tasks: list[dict[str, Any]],
@@ -1121,7 +1001,7 @@ def run_now_scheduler_task(
     if blocked_status is not None:
         return blocked_status
     state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state_task["last_result"] = "queued"
+    state_task["last_result"] = "running"
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
     return submit_runtime_task_cell(
         entry=entry,

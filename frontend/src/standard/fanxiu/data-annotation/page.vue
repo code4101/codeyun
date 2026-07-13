@@ -1390,7 +1390,6 @@ import {
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
   stopFanxiuDataAnnotationRuntimeCurrentTask,
-  tickFanxiuDataAnnotationRuntimeCell,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
@@ -7163,7 +7162,6 @@ const imageCompareCanvasStyleOf = (size: { width: number; height: number }) => (
 const imageCompareSavedCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareSavedCanvasSize.value));
 const imageCompareLiveCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareLiveCanvasSize.value));
 const runtimeRunning = ref(false);
-const runtimeStepping = ref(false);
 const runtimeStopRequested = ref(false);
 const runtimeRunStatus = ref('');
 const runtimeLogDialogVisible = ref(false);
@@ -11824,7 +11822,7 @@ const runRuntimeTaskDefinition = async (task: FanxiuDataAnnotationSchedulerTaskI
 };
 
 const runRuntimeSelectedTask = async () => {
-  if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
+  if (!selectedEntryId.value || runtimeRunning.value) return;
   await ensureRuntimeSchedulerTasks();
   const taskDefinition = selectedRuntimeTaskDefinition.value;
   if (!taskDefinition) return;
@@ -11832,7 +11830,7 @@ const runRuntimeSelectedTask = async () => {
 };
 
 const runRuntimeDueTasks = async () => {
-  if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
+  if (!selectedEntryId.value || runtimeRunning.value) return;
   await ensureRuntimeSchedulerTasks();
   runtimeRunning.value = true;
   runtimeStopRequested.value = false;
@@ -11848,28 +11846,6 @@ const runRuntimeDueTasks = async () => {
     runtimeStopRequested.value = false;
     setRuntimeRunStatus(getErrorMessage(error), 'error');
     ElMessage.error(runtimeRunStatus.value);
-  }
-};
-
-const runRuntimeSingleTick = async () => {
-  if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
-  await ensureRuntimeSchedulerTasks();
-  runtimeStepping.value = true;
-  try {
-    const status = await tickFanxiuDataAnnotationRuntimeCell(selectedEntryId.value, {
-      guard: true,
-      task_cell: true,
-      scheduled_job: false,
-      run_mode: 'tick_once',
-      max_ticks: 1,
-      timeout_seconds: 30,
-    });
-    applyRuntimeTaskStatus(status);
-  } catch (error) {
-    setRuntimeRunStatus(getErrorMessage(error), 'error');
-    ElMessage.error(runtimeRunStatus.value);
-  } finally {
-    runtimeStepping.value = false;
   }
 };
 

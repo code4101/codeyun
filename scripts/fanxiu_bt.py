@@ -26,22 +26,15 @@ if str(ROOT) not in sys.path:
 
 from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
-    FANXIU_EMBEDDED_SERVICE_ENV,
-    FanxiuLocalServiceRequest,
     clear_fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_task_cell_catalog,
     fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status,
-    fanxiu_data_annotation_dir,
     data_annotation_asset_tree_path,
-    read_fanxiu_behavior_tree_service_owner,
     resolve_fanxiu_entry,
-    run_fanxiu_local_service,
-    start_fanxiu_local_service,
-    stop_fanxiu_local_service,
 )
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
-from backend.core.fanxiu.runtime.jupyter_kernel import run_fanxiu_jupyter_kernel_service
+from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status, run_fanxiu_jupyter_kernel_service
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
 from backend.core.fanxiu.data_annotation.runtime_control import (
@@ -144,17 +137,15 @@ def _print_status(status: dict[str, Any]) -> None:
     _print_log_entries(logs[-12:])
 
 
-def _print_owner(owner: dict[str, Any]) -> None:
+def _print_kernel(kernel: dict[str, Any]) -> None:
     print(json.dumps(
         {
-            "active": bool(owner.get("active")),
-            "stale": bool(owner.get("stale")),
-            "pid": owner.get("pid"),
-            "entry_id": owner.get("entry_id"),
-            "step": owner.get("step"),
-            "age_seconds": owner.get("age_seconds"),
-            "path": owner.get("path"),
-            "error": owner.get("error") or "",
+            "alive": bool(kernel.get("alive")),
+            "manager_pid": kernel.get("manager_pid"),
+            "kernel_pid": kernel.get("kernel_pid"),
+            "execution_state": kernel.get("execution_state"),
+            "generation": kernel.get("generation"),
+            "error": kernel.get("error") or "",
         },
         ensure_ascii=False,
         indent=2,
@@ -177,7 +168,6 @@ def _print_job_catalog(items: list[dict[str, Any]]) -> None:
 
 def _runtime_status_summary(status: dict[str, Any]) -> dict[str, Any]:
     return {
-        "service_running": status.get("service_running"),
         "running": status.get("running"),
         "status": status.get("status"),
         "phase": status.get("phase"),
@@ -207,7 +197,7 @@ def _scheduler_task_summary(task: dict[str, Any]) -> dict[str, Any]:
 def _doctor_relevant_logs(limit: int) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
-    for scope in ("job", "manual_job", "guard", ""):
+    for scope in ("job", "guard", ""):
         for item in fanxiu_data_annotation_runtime_logs(limit=limit, scope=scope):
             if not isinstance(item, dict):
                 continue
@@ -588,7 +578,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif scheduler.get("next_action") == "job_group_disabled" and due_tasks:
         action_required.append("当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell")
     elif scheduler.get("next_action") == "run_due" and due_tasks:
-        action_required.append("当前有到期任务且未发现阻断，等待 resident service 执行或检查服务调度日志")
+        action_required.append("当前有到期任务且未发现阻断，请检查外部 Scheduler 提交记录")
     elif critical_failed_tasks:
         labels = "、".join(str(item.get("label") or item.get("id")) for item in critical_failed_tasks)
         action_required.append(f"关键作业今日失败或残留：{labels}；需要立即诊断日志、清理运行残留并按公开入口监督重跑或 observe-only 验证")
@@ -597,8 +587,8 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif not due_tasks:
         action_required.append("当前没有到期任务")
 
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
-    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
+    entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     annotation_targets = [
         target
         for target in (
@@ -664,37 +654,37 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _doctor_exit_code(report: dict[str, Any], *, strict: bool) -> int:
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
     due_task_count = int(maintenance.get("due_task_count") or 0)
+    severity = str(maintenance.get("severity") or "")
+    if strict and severity in {"blocked", "error"}:
+        return 2
+    if strict and severity == "attention":
+        return 1
     if str(runtime_status.get("status") or "") in {"error", "stopped"}:
         return 1
-    if due_task_count > 0 and not bool(owner.get("active")):
+    if due_task_count > 0 and not bool(kernel.get("alive")):
         return 1
     if not strict:
         return 0
-    severity = str(maintenance.get("severity") or "")
-    if severity in {"blocked", "error"}:
-        return 2
-    if severity == "attention":
-        return 1
     return 0
 
 
 def _print_doctor_summary(report: dict[str, Any]) -> None:
     maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
     lines = [
         f"checked_at: {report.get('checked_at') or ''}",
         f"severity: {maintenance.get('severity') or 'unknown'}",
         f"summary: {maintenance.get('summary') or ''}",
-        "owner: "
-        f"active={bool(owner.get('active'))} "
-        f"pid={owner.get('pid') or ''} "
-        f"step={owner.get('step') or ''}",
+        "kernel: "
+        f"alive={bool(kernel.get('alive'))} "
+        f"kernel_pid={kernel.get('kernel_pid') or ''} "
+        f"state={kernel.get('execution_state') or ''}",
         "runtime: "
         f"status={runtime_status.get('status') or ''} "
         f"phase={runtime_status.get('phase') or ''} "
@@ -743,7 +733,7 @@ def _print_doctor_summary(report: dict[str, Any]) -> None:
 
 def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, Any]:
     maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
     screenshot = report.get("screenshot") if isinstance(report.get("screenshot"), dict) else {}
@@ -752,9 +742,9 @@ def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, 
         "checked_at": report.get("checked_at"),
         "severity": maintenance.get("severity") or "unknown",
         "summary": maintenance.get("summary") or "",
-        "owner_active": bool(owner.get("active")),
-        "owner_pid": owner.get("pid"),
-        "owner_step": owner.get("step"),
+        "kernel_alive": bool(kernel.get("alive")),
+        "kernel_pid": kernel.get("kernel_pid"),
+        "kernel_state": kernel.get("execution_state"),
         "runtime_status": runtime_status.get("status"),
         "runtime_phase": runtime_status.get("phase"),
         "runtime_scene": runtime_status.get("current_scene"),
@@ -783,7 +773,7 @@ def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, 
 def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
     maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     next_action = str(scheduler.get("next_action") or "")
     if next_action in {"job_group_disabled", "run_due"}:
@@ -803,8 +793,8 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
 
 
 def _watch_auto_run_due(report: dict[str, Any], *, wait_timeout_seconds: float = 900.0) -> dict[str, Any]:
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
-    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
+    entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     status = run_due_scheduler_tasks(
         entry=resolve_fanxiu_entry(entry_id),
         entry_id=entry_id,
@@ -914,8 +904,8 @@ def _watch_sleep_until_next_check(report: dict[str, Any], *, interval_seconds: f
         time.sleep(interval)
         return
 
-    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
-    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
+    entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     start_signature = _asset_tree_signature_for_entry(entry_id)
     deadline = time.monotonic() + interval
     while True:
@@ -1196,9 +1186,9 @@ def _run_doctor_watch(
 
 
 def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[str, Any]:
-    owner = read_fanxiu_behavior_tree_service_owner()
+    kernel = fanxiu_kernel_manager_status()
     runtime_status = fanxiu_data_annotation_runtime_status()
-    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
     scheduler_plan = build_scheduler_plan(
         entry=resolve_fanxiu_entry(entry_id),
         entry_id=entry_id,
@@ -1211,7 +1201,7 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
     ]
     report: dict[str, Any] = {
         "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "owner": owner,
+        "kernel": kernel,
         "runtime": _runtime_status_summary(runtime_status),
         "scheduler": {
             "next_action": scheduler_plan.get("next_action"),
@@ -1238,32 +1228,16 @@ def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[st
 
 
 def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--run-mode",
-        choices=["auto", "direct"],
-        default=argparse.SUPPRESS,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--wait", action="store_true", default=argparse.SUPPRESS, help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=argparse.SUPPRESS)
-    parser.add_argument("--tick-seconds", type=float, default=0.2, help=argparse.SUPPRESS)
 
 
 def main() -> int:
     _configure_stdout()
-    parser = argparse.ArgumentParser(description="本地提交凡修行为树任务到 resident kernel。")
+    parser = argparse.ArgumentParser(description="向长期存活的凡修 Jupyter Kernel 提交普通 Cell。")
     parser.add_argument("--entry-id", default=os.environ.get("FANXIU_ENTRY_ID") or DEFAULT_FANXIU_ENTRY_ID)
-    parser.add_argument("--no-isolate-jobs", action="store_true", help="本次运行期间不隔离工程作业")
     parser.add_argument("--timeout-seconds", type=float, default=0)
     parser.add_argument("--payload", default="", help="附加 payload JSON")
-    parser.add_argument("--wait", action="store_true", help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=300.0)
-    parser.add_argument(
-        "--run-mode",
-        choices=["auto", "direct"],
-        default="auto",
-        help=argparse.SUPPRESS,
-    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     go_scene = subparsers.add_parser("go-scene", help="到达指定场景")
@@ -1282,53 +1256,23 @@ def main() -> int:
     task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     _add_task_run_options(task)
 
-    run_task = subparsers.add_parser("run", help="提交并等待一个 task cell 完成")
-    run_task.add_argument("task_type")
-    run_task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
-    run_task.add_argument("--wait-timeout-seconds", type=float, default=300.0)
-
-    code_cell = subparsers.add_parser("code-cell", help=argparse.SUPPRESS)
-    code_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
-    code_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    code_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
-    code_cell.add_argument("--max-output-chars", type=int, default=4000)
-    code_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
-    code_cell.add_argument("--wait", action="store_true", help="等待 code cell 完成")
-    code_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
-
     cell = subparsers.add_parser("cell", help="提交并等待一段 Python cell；凡修调试的默认入口")
     cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
     cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
     cell.add_argument("--max-output-chars", type=int, default=4000)
-    cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
     cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
-
-    py_cell = subparsers.add_parser("py", help=argparse.SUPPRESS)
-    py_cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
-    py_cell.add_argument("--file", default="", help="从文件读取 Python 代码")
-    py_cell.add_argument("--mode", choices=["readonly", "act"], default="readonly", help=argparse.SUPPRESS)
-    py_cell.add_argument("--max-output-chars", type=int, default=4000)
-    py_cell.add_argument("--isolation-ttl-seconds", type=float, default=300.0, help=argparse.SUPPRESS)
-    py_cell.add_argument("--wait-timeout-seconds", type=float, default=300.0)
 
     tasks = subparsers.add_parser("tasks", help="查看本地已注册作业类型")
     tasks.add_argument("--json", action="store_true", help="输出 JSON")
 
-    service = subparsers.add_parser("service", help="启动本地前台常驻行为树服务")
-    service.add_argument("--tick-seconds", type=float, default=1.0)
+    service = subparsers.add_parser("service", help="启动本地前台 Jupyter KernelManager")
     service.add_argument("--duration-seconds", type=float, default=0.0, help="默认一直运行，直到 Ctrl+C")
-
-    stop = subparsers.add_parser("stop", help="请求 resident service 停止当前任务")
-    stop.add_argument("--reason", default="local_cli")
 
     interrupt = subparsers.add_parser("interrupt", help="立即中断当前 Jupyter cell")
     interrupt.add_argument("--interrupt-timeout-seconds", type=float, default=3.0)
 
-    restart = subparsers.add_parser("restart", help="重启 resident Runtime/Jupyter 内核")
+    restart = subparsers.add_parser("restart", help="原生重启 Jupyter Kernel")
     restart.add_argument("--restart-timeout-seconds", type=float, default=15.0)
-    restart.add_argument("--tick-seconds", type=float, default=1.0)
-    restart.add_argument("--graceful", action="store_true", help="只请求优雅退出，不强制替换无响应内核")
 
     status_parser = subparsers.add_parser("status", help="查看本地 Runtime 状态")
     status_parser.add_argument("--raw", action="store_true", help="输出完整 JSON")
@@ -1339,7 +1283,7 @@ def main() -> int:
     logs_parser.add_argument("--item-id", default="")
     logs_parser.add_argument("--json", action="store_true", help="输出 JSON")
 
-    doctor = subparsers.add_parser("doctor", help="只读巡检 owner/runtime/task cell 队列/Scheduler/关键日志")
+    doctor = subparsers.add_parser("doctor", help="只读巡检 Kernel/Runtime/Scheduler/关键日志")
     doctor.add_argument("--log-limit", type=int, default=80)
     doctor.add_argument("--screenshot", action="store_true", help="额外保存一张真实 ADB 当前帧")
     doctor.add_argument("--json", action="store_true", help="输出完整 JSON")
@@ -1359,7 +1303,7 @@ def main() -> int:
     watch_doctor.add_argument("--stop-on-ok-no-due", action="store_true", help="severity=ok 且无到期任务时退出")
     watch_doctor.add_argument("--auto-run-due", action="store_true", help="无阻断且有到期任务时调用 Scheduler run-due")
     watch_doctor.add_argument("--auto-run-due-min-interval-seconds", type=float, default=300.0, help="同一批到期任务自动 run-due 的最小间隔")
-    watch_doctor.add_argument("--auto-run-due-wait-timeout-seconds", type=float, default=900.0, help="AI 保底提交 queued job 后等待真实执行完成的超时")
+    watch_doctor.add_argument("--auto-run-due-wait-timeout-seconds", type=float, default=900.0, help="AI 保底提交到期 Cell 后等待执行完成的超时")
 
     ensure_watch_doctor = subparsers.add_parser("ensure-watch-doctor", help="确保后台巡检进程存在，心跳过期则自动拉起")
     ensure_watch_doctor.add_argument("--interval-seconds", type=float, default=60.0)
@@ -1380,9 +1324,8 @@ def main() -> int:
     reset_scheduler_runs.add_argument("--force", action="store_true", help="确认执行重置")
     reset_scheduler_runs.add_argument("--json", action="store_true", help="输出 JSON")
 
-    owner_parser = subparsers.add_parser("owner", help="查看行为树全局单例 owner")
-    owner_parser.add_argument("--stale-after-seconds", type=float, default=120.0)
-    owner_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
+    kernel_parser = subparsers.add_parser("kernel", help="查看原生 Jupyter Kernel 状态")
+    kernel_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
 
     subparsers.add_parser("clear-logs", help="清空本地 Runtime 日志")
 
@@ -1415,15 +1358,13 @@ def main() -> int:
             print(json.dumps(
                 {
                     "checked_at": report.get("checked_at"),
-                    "owner": {
-                        "active": bool((report.get("owner") or {}).get("active")),
-                        "stale": bool((report.get("owner") or {}).get("stale")),
-                        "pid": (report.get("owner") or {}).get("pid"),
-                        "step": (report.get("owner") or {}).get("step"),
+                    "kernel": {
+                        "alive": bool((report.get("kernel") or {}).get("alive")),
+                        "manager_pid": (report.get("kernel") or {}).get("manager_pid"),
+                        "kernel_pid": (report.get("kernel") or {}).get("kernel_pid"),
+                        "execution_state": (report.get("kernel") or {}).get("execution_state"),
                     },
                     "runtime": report.get("runtime"),
-                    "task_cell_queue_size": len(report.get("task_cells") or []),
-                    "isolation_active": bool((report.get("isolation") or {}).get("active")),
                     "scheduler": report.get("scheduler"),
                     "screenshot": report.get("screenshot") or report.get("screenshot_error") or "",
                 },
@@ -1483,13 +1424,13 @@ def main() -> int:
             for task_id in result.get("reset_ids") or []:
                 print(f"- {task_id}")
         return 0
-    if args.command == "owner":
-        owner = read_fanxiu_behavior_tree_service_owner(stale_after_seconds=float(args.stale_after_seconds or 30.0))
+    if args.command == "kernel":
+        kernel = fanxiu_kernel_manager_status()
         if args.json:
-            print(json.dumps(owner, ensure_ascii=False, indent=2, default=str))
+            print(json.dumps(kernel, ensure_ascii=False, indent=2, default=str))
         else:
-            _print_owner(owner)
-        return 0 if bool(owner.get("active")) else 1
+            _print_kernel(kernel)
+        return 0 if bool(kernel.get("alive")) else 1
     if args.command == "tasks":
         items = fanxiu_data_annotation_task_cell_catalog()
         if args.json:
@@ -1497,7 +1438,7 @@ def main() -> int:
         else:
             _print_job_catalog(items)
         return 0
-    if args.command in {"stop", "interrupt"}:
+    if args.command == "interrupt":
         kernel = FanxiuKernel(entry_id=str(args.entry_id))
         result = kernel.interrupt(
             timeout_seconds=float(getattr(args, "interrupt_timeout_seconds", 3.0) or 3.0),
@@ -1511,7 +1452,7 @@ def main() -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0 if bool(result.get("ok")) else 1
-    if args.command in {"cell", "code-cell", "py"}:
+    if args.command == "cell":
         code = str(args.code or "")
         if args.file:
             code = Path(args.file).read_text(encoding="utf-8")
@@ -1536,16 +1477,11 @@ def main() -> int:
             raise SystemExit("Jupyter kernel service 不支持 --duration-seconds；请通过 stop/restart 控制生命周期")
         run_fanxiu_jupyter_kernel_service(
             entry_id=str(args.entry_id),
-            tick_seconds=float(args.tick_seconds or 1.0),
         )
         return 0
     task_type, payload = _payload_from_args(args)
     _apply_wait_timeout_as_runtime_budget(args, payload)
     kernel = FanxiuKernel(entry_id=str(args.entry_id))
-    if args.command == "run":
-        status = kernel.task(task_type, payload).run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
-        _print_status(status)
-        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     cell = kernel.task(task_type, payload)
     status = cell.run(timeout_seconds=float(args.wait_timeout_seconds or 300.0))
     _print_status(status)

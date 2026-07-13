@@ -375,11 +375,8 @@ def test_run_runtime_after_install_uses_auto_wait_xianfu_task_by_default(monkeyp
     assert result["stdout"]["compacted"] is False
     assert "--entry-id" in command
     assert command[command.index("--entry-id") + 1] == "entry-1"
-    assert "--run-mode" in command
-    assert command[command.index("--run-mode") + 1] == "auto"
     assert "--timeout-seconds" in command
     assert command[command.index("--timeout-seconds") + 1] == "123.0"
-    assert "--wait" in command
     assert "--wait-timeout-seconds" in command
     assert command[command.index("--wait-timeout-seconds") + 1] == "123.0"
     assert command[-2:] == ["task", "xianfu_visit_partner"]
@@ -423,10 +420,6 @@ def test_preflight_report_combines_audit_queue_and_wait_plan(monkeypatch, tmp_pa
         },
     )
     monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_task_cells",
-        lambda: [],
-    )
-    monkeypatch.setattr(
         "scripts.fanxiu_xianfu_capture_continue.read_scheduler_tasks",
         lambda: [{"id": "xianfu-visit-partner", "next_time": "2026-06-10 23:00:00"}],
     )
@@ -440,53 +433,6 @@ def test_preflight_report_combines_audit_queue_and_wait_plan(monkeypatch, tmp_pa
     assert report["ok"] is True
     assert report["asset_audit_ok"] is True
     assert report["image_175_present"] is False
-    assert report["task_cell_count"] == 0
     assert report["wait_plan"]["next_time"] == "2026-06-10 23:00:00"
     assert report["asset_audit_output"] == "audit.json"
-
-
-def test_preflight_report_not_ok_when_manual_queue_not_empty(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_capture_continue.audit_xianfu_assets",
-        lambda **_kwargs: {"ok": True, "rows": [], "output_json": "audit.json"},
-    )
-    monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_capture_continue.fanxiu_data_annotation_task_cells",
-        lambda: [{"id": "manual-1", "status": "pending", "task_type": "go_scene", "label": "go"}],
-    )
-    monkeypatch.setattr("scripts.fanxiu_xianfu_capture_continue.read_scheduler_tasks", lambda: [])
-
-    report = _preflight_report(
-        asset_tree=tmp_path / "tree.json",
-        screenshot_dir=tmp_path / "screenshots",
-    )
-
-    assert report["ok"] is False
-    assert report["task_cell_count"] == 1
-    assert report["task_cells"][0]["id"] == "manual-1"
-
-
-def test_run_runtime_after_install_direct_always_waits(monkeypatch):
-    calls: list[dict] = []
-
-    class Result:
-        returncode = 0
-        stdout = "done"
-        stderr = ""
-
-    def fake_run(command, **kwargs):
-        calls.append({"command": command, **kwargs})
-        return Result()
-
-    monkeypatch.setattr("scripts.fanxiu_xianfu_capture_continue.subprocess.run", fake_run)
-
-    result = _run_runtime_after_install(entry_id="entry-1", timeout_seconds=123, run_mode="direct", wait=False)
-
-    command = calls[0]["command"]
-    assert result["ok"] is True
-    assert command[command.index("--run-mode") + 1] == "direct"
-    assert "--wait" in command
-    assert "--wait-timeout-seconds" in command
-    assert command[command.index("--wait-timeout-seconds") + 1] == "123.0"
-    assert command[-2:] == ["task", "xianfu_visit_partner"]
 
