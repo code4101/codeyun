@@ -11,6 +11,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock, Timeout
 from urllib.parse import urlencode
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -776,18 +778,20 @@ def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
     kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     next_action = str(scheduler.get("next_action") or "")
-    if next_action in {"job_group_disabled", "run_due"}:
+    if next_action == "job_group_disabled":
         report["auto_run_due_blocked_reason"] = next_action
         return False
-    if next_action != "manual_ai_cell":
+    if next_action != "run_due":
         return False
     if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
         return False
-    if str(maintenance.get("severity") or "") in {"blocked", "error"}:
+    if str(maintenance.get("severity") or "") == "blocked":
         return False
     if not bool(maintenance.get("automation_safe")):
         return False
     if str(runtime_status.get("status") or "") == "running":
+        return False
+    if str(kernel.get("execution_state") or "") == "busy":
         return False
     return True
 
@@ -1118,6 +1122,12 @@ def _run_doctor_watch(
     auto_run_due_wait_timeout_seconds: float,
 ) -> int:
     path = output_path or _default_doctor_watch_path()
+    watch_lock = FileLock(str(path.parent / "doctor_watch_dispatch.lock"))
+    try:
+        watch_lock.acquire(timeout=0)
+    except Timeout:
+        print("external Scheduler 已有存活实例，本进程不重复启动", flush=True)
+        return 0
     latest_path = latest_json_path or path.with_suffix(".latest.json")
     stable_latest_path = _stable_doctor_watch_latest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1133,6 +1143,16 @@ def _run_doctor_watch(
         maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
         if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
             report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
+        preliminary_event = _doctor_watch_event(report, iteration=iteration)
+        preliminary_event["auto_run_due_enabled"] = bool(auto_run_due)
+        preliminary_event["dispatch_mode"] = "auto" if auto_run_due else "observe"
+        _write_doctor_watch_heartbeat(
+            output_path=path,
+            latest_path=latest_path,
+            stable_latest_path=stable_latest_path,
+            iteration=iteration,
+            event=preliminary_event,
+        )
         if auto_run_due and _watch_should_auto_run_due(report):
             report, last_auto_run_due_at, last_auto_run_due_key = _watch_auto_run_due_batch(
                 report,
@@ -1146,6 +1166,7 @@ def _run_doctor_watch(
             )
         event = _doctor_watch_event(report, iteration=iteration)
         event["auto_run_due_enabled"] = bool(auto_run_due)
+        event["dispatch_mode"] = "auto" if auto_run_due else "observe"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
         _write_doctor_watch_latest(latest_path, event)

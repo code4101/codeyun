@@ -192,11 +192,14 @@ const formatHeartbeatAge = (seconds: number) => {
 const doctorHeartbeatText = computed(() => {
   const heartbeat = doctorHeartbeat.value;
   if (!doctorWatchLatest.value?.exists) return '';
-  if (heartbeat.active) return '巡检进程 在线';
+  if (heartbeat.active && heartbeat.auto_run_due_enabled) return '外部 Scheduler 在线 · 自动派发开启';
+  if (heartbeat.active) return '巡检在线 · 自动派发关闭';
   const age = Number(heartbeat.age_seconds || 0);
-  return age > 0 ? `巡检进程 失联 ${formatHeartbeatAge(age)}` : '巡检进程 未确认';
+  return age > 0 ? `外部 Scheduler 失联 ${formatHeartbeatAge(age)}` : '外部 Scheduler 未确认';
 });
-const doctorHeartbeatClass = computed(() => (doctorHeartbeat.value.active ? 'is-ok' : 'is-error'));
+const doctorHeartbeatClass = computed(() => (
+  doctorHeartbeat.value.active && doctorHeartbeat.value.auto_run_due_enabled ? 'is-ok' : 'is-error'
+));
 const doctorStaleText = computed(() => {
   const due = Number(doctorSnapshot.value.due_task_count || 0);
   const stale = Number(doctorSnapshot.value.stale_due_count ?? doctorSnapshot.value.stale_due_success_count ?? 0);

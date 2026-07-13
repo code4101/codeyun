@@ -30,15 +30,22 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "6b5ff516022894ed440c22b48be041f8cdafeffc"
-last_audited_at: "2026-07-12T01:07:48.7046689+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-13-frontend-design-1608d81b/report.md"
-last_frontend_commit_summary: "完整审查 6b5ff516：炼丹/药材归纳表与洞天配置三视口无溢出；洞天把常驻数量框收敛为 1 个步进器 + 10 个按需开关；Vite 入口未预载重依赖。"
-audited_commit_count: 98
-pending_or_skipped_ranges:
-  - range: "6b5ff516022894ed440c22b48be041f8cdafeffc..1608d81b7751504afa74fde528a1db8d68ff6a22"
-    reason: "法宝阵图提交 00921bd9 的真实页面被当前账号权限路由到 /403，无法完成智能方案状态、候选入口密度与三视口交互审查；游标未推进。"
+last_audited_commit: "eca87774c84fb19d3ecfbb9171c552dce10cb03b"
+last_audited_at: "2026-07-14T01:10:13.8642345+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-14-frontend-design-eca87774/report.md"
+last_frontend_commit_summary: "完整关闭 6b5ff516..eca87774：法宝阵图权限阻塞已解除，3 个候选方案收在同一槽位模型；新计算器与 Runtime/Runtime 日志/标注页三视口无页面级溢出，Runtime 删除人工隔离、单步 tick 等专用概念。"
+audited_commit_count: 113
+pending_or_skipped_ranges: []
 ```
+
+### 2026-07-14 · `eca87774`
+
+- 完整范围：`6b5ff516022894ed440c22b48be041f8cdafeffc..eca87774c84fb19d3ecfbb9171c552dce10cb03b`；共 15 个提交，按从旧到新逐个归类。前端相关为 `8ecef5d4`、`00921bd9`、`1608d81b`、`994ecbba`、`b00f7ab7`、`88e96cff`、`eca87774`；其余 `e41f6933`、`45218a94`、`8415e397`、`f4052c7b`、`d2da5aa9`、`142fab11`、`2fc97379`、`436acc7d` 均未改变前端 UI 模型、路由、菜单或可视状态投影。
+- 入口与减法：洞天继续把独立方案页收回“配置 → 求解 → 种植策略 → 可选保存”，无保存数据时不再常驻空侧栏；法宝阵图的智能放置使用“一个计算状态 + 最多三个候选链接 + 原有 8 个槽位”，没有新增平行面板。`eca87774` 将 Runtime 从人工/AI/工程隔离、多层 status、单步 tick 收敛为唯一 Kernel Cell 入口和 AI/工程两种调度来源，前端相关变更为 20 行新增、166 行删除。
+- 新计算器：`/notes/eastmoney/calculator` 的核心模型为“标的 + 基准价 → 9 个价格点位 + 现价标记 → 该标的交易记录”；新建只使用一个按需弹窗，无重复汇总条、常驻解释面板或额外详情侧栏。路由、权限和左侧菜单已同步挂载。
+- 真实页面：复用本地 `5173/8000` 开发环境和 in-app Browser 已登录会话，覆盖计算器、法宝阵图、Runtime、数据标注和 Runtime 日志五个页面，每页均采集 `1600x1000`、`1366x900`、`820x1180`。全部 15 张证据的 `bodyOverflowX/rootOverflowX/mainOverflowX` 均为 `0`；法宝阵图已真实读取 77 个法宝、5 张阵图和最多 3 个候选方案，上轮 `/403` 阻塞已关闭。
+- 验证：`npm run typecheck --prefix frontend` 通过；`npm run build --prefix frontend` 通过（4256 modules，43.47s）。本轮无重依赖、Vite/Rollup、全局样式、worker/wasm 或公开匿名入口变更，不触发强制入口依赖污染检查；补充读取显示 `dist/index.html` 只预载基础 vendor，`main-C54Ja3TG.js` 顶层 import 未直接加载计算器、法宝阵图或 Runtime 页面 chunk。
+- 处理结果：未发现明确、低风险且需要自动修复的 UI 回退，未改前端源码，也未新增跨自动化交接。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-14-frontend-design-eca87774/`。
 
 ### 2026-07-13 · `1608d81b`（未闭环）
 

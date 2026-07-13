@@ -328,6 +328,9 @@ ATTENDANCE_FIELD_LEGACY_FALLBACKS: dict[str, int] = {
 ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
     r"(?:(?P<date>\d{8}|\d{6})\s*)?第(?P<edition>\d+)届(?P<course>\S+)",
 )
+ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE = re.compile(
+    r"(?P<prefix>禅宗|修道班)(?P<edition>\d+)期(?P<stage>[一二三四五六七八九十\d.点]+阶)",
+)
 ATTENDANCE_TEMPLATE_LEADING_DATE_RE = re.compile(r"^(?P<date>\d{8}|\d{6})(?P<body>.*)$")
 ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = get_attendance_project_root() / "courses"
 ATTENDANCE_COURSE_SCRIPT_DIR = Path(
@@ -11772,7 +11775,17 @@ def _increment_attendance_template_edition(text: str, course_type: str) -> str:
             return match.group(0)
         return f"第{int(match.group('edition')) + 1}届{matched_course}"
 
-    return ATTENDANCE_TEMPLATE_COURSE_TEXT_RE.sub(replace, text, count=1)
+    next_text = ATTENDANCE_TEMPLATE_COURSE_TEXT_RE.sub(replace, text, count=1)
+    if next_text != text or not _is_attendance_zen_course_type(course_type):
+        return next_text
+
+    def replace_zen_period(match: re.Match[str]) -> str:
+        stage = match.group("stage")
+        if stage not in _normalize_sheet_text(course_type):
+            return match.group(0)
+        return f"{match.group('prefix')}{int(match.group('edition')) + 1}期{stage}"
+
+    return ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE.sub(replace_zen_period, text, count=1)
 
 
 def _should_strip_attendance_template_date_prefix(course_type: str) -> bool:
@@ -13167,7 +13180,11 @@ def _maybe_materialize_zen_course_data_sheets(
     allow_header_link_fallback: bool = True,
 ) -> None:
     normalized_course_name = _normalize_sheet_text(course_name)
-    if "念住" not in normalized_course_name and "觉观" not in normalized_course_name:
+    is_zen_stage_course = "禅宗" in normalized_course_name or "修道班" in normalized_course_name
+    if not any(
+        keyword in normalized_course_name
+        for keyword in ("念住", "觉观", "禅宗", "修道班")
+    ):
         return
 
     from backend.core.attendance.nianzhu_course_sheets import (
@@ -13193,9 +13210,9 @@ def _maybe_materialize_zen_course_data_sheets(
         _normalize_sheet_text(row[2] if isinstance(row, list) and len(row) > 2 else "")
         for row in clockin_rows
     ))
-    if not has_video_source:
+    if not has_video_source and not is_zen_stage_course:
         return
-    if not has_clockin_source:
+    if not has_clockin_source and not is_zen_stage_course:
         return
 
     summary = materialize_nianzhu_course_sheets(
