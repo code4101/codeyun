@@ -6,13 +6,14 @@ import json
 import time
 import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field as PydanticField
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from backend.core.access.auth import get_current_active_user
 from backend.core.access.feature_access_guard import require_feature_access_dependency
@@ -92,12 +93,15 @@ from backend.core.stock.qlib_screening import (
 from backend.core.stock.market_data import (
     MARKET_DATA_PROVIDER_AKSHARE,
     MarketHistoryTarget,
+    MarketQuoteItem,
     connect_market_data_db,
+    market_quote_item_from_row,
     normalize_autype,
     normalize_ktype,
     normalize_market_code,
     upsert_intraday_rows,
     upsert_kline_rows,
+    upsert_quote_items,
 )
 from backend.core.stock.akshare_market import (
     AkshareEtfIntraday,
@@ -109,7 +113,7 @@ from backend.core.stock.akshare_market import (
 )
 from backend.core.stock.eastmoney_ocr import parse_mobile_trade_detail_from_ocr_document
 from backend.db import get_session
-from backend.models import AppSetting, User
+from backend.models import AppSetting, EastmoneyTradeRecord, User
 
 
 router = APIRouter(
@@ -235,6 +239,302 @@ class EastmoneySyncRequest(BaseModel):
 
 class EastmoneyTradeReportRequest(BaseModel):
     markdown: str = PydanticField(default="", max_length=200000)
+
+
+class EastmoneyCalculatorTradePayload(BaseModel):
+    id: str = PydanticField(min_length=1, max_length=120)
+    time: str = PydanticField(default="", max_length=40)
+    price: str = PydanticField(default="", max_length=40)
+    quantity: str = PydanticField(default="", max_length=40)
+    source_record_id: str = PydanticField(default="", max_length=120)
+
+
+class EastmoneyCalculatorPayload(BaseModel):
+    id: str = PydanticField(min_length=1, max_length=120)
+    market: str = PydanticField(min_length=1, max_length=20)
+    symbol: str = PydanticField(min_length=1, max_length=30)
+    name: str = PydanticField(min_length=1, max_length=80)
+    base_price: str = PydanticField(default="", max_length=40)
+    trades: list[EastmoneyCalculatorTradePayload] = PydanticField(default_factory=list, max_length=2000)
+
+
+class EastmoneyCalculatorWorkspaceRequest(BaseModel):
+    items: list[EastmoneyCalculatorPayload] = PydanticField(default_factory=list, max_length=200)
+
+
+EASTMONEY_CALCULATOR_TARGETS = (
+    {"market": "SH", "symbol": "562500", "name": "机器人ETF华夏"},
+    {"market": "SZ", "symbol": "159278", "name": "机器人PH"},
+    {"market": "HK", "symbol": "03896", "name": "金山云"},
+    {"market": "HK", "symbol": "01810", "name": "小米集团"},
+)
+
+EASTMONEY_QUOTE_FIELDS = "f43,f44,f45,f46,f47,f48,f57,f58,f60,f86"
+EASTMONEY_CALCULATOR_QUOTE_PROVIDER = "eastmoney"
+EASTMONEY_CALCULATOR_QUOTE_TTL_SECONDS = 60
+_calculator_quote_sync_lock = Lock()
+
+
+def _eastmoney_quote_secid(market: str, symbol: str) -> str:
+    market_id = {"SH": "1", "SZ": "0", "HK": "116"}.get(market.strip().upper())
+    if market_id is None:
+        raise ValueError(f"暂不支持的市场：{market}")
+    return f"{market_id}.{symbol.strip()}"
+
+
+def _fetch_eastmoney_calculator_quote(target: dict) -> MarketQuoteItem:
+    import requests
+
+    fetched_at = time.time()
+    market = str(target["market"])
+    symbol = str(target["symbol"])
+    base = {
+        "provider": EASTMONEY_CALCULATOR_QUOTE_PROVIDER,
+        "market": market,
+        "symbol": symbol,
+        "provider_code": symbol,
+        "name": str(target["name"]),
+        "price": None,
+        "open_price": None,
+        "high_price": None,
+        "low_price": None,
+        "prev_close_price": None,
+        "volume": None,
+        "turnover": None,
+        "update_time": "",
+        "fetched_at": fetched_at,
+    }
+    try:
+        response = requests.get(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            params={
+                "secid": _eastmoney_quote_secid(market, symbol),
+                "fields": EASTMONEY_QUOTE_FIELDS,
+                "fltt": 2,
+            },
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://quote.eastmoney.com/",
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+        if data.get("f43") is None:
+            raise RuntimeError("行情源未返回现价")
+        update_timestamp = data.get("f86")
+        update_time = ""
+        if isinstance(update_timestamp, (int, float)) and update_timestamp > 0:
+            update_time = dt.datetime.fromtimestamp(update_timestamp).astimezone().isoformat(timespec="seconds")
+        return MarketQuoteItem(**{
+            **base,
+            "name": str(data.get("f58") or target["name"]),
+            "price": data.get("f43"),
+            "open_price": data.get("f46"),
+            "high_price": data.get("f44"),
+            "low_price": data.get("f45"),
+            "prev_close_price": data.get("f60"),
+            "volume": data.get("f47"),
+            "turnover": data.get("f48"),
+            "update_time": update_time,
+            "raw_json": data,
+        })
+    except Exception as exc:
+        return MarketQuoteItem(**base, error=str(exc))
+
+
+def _calculator_quote_targets(session: Session, *, user_id: int) -> list[dict]:
+    workspace = _calculator_workspace_response(session, user_id=user_id)
+    allowed = {
+        f'{target["market"]}.{target["symbol"]}': target
+        for target in EASTMONEY_CALCULATOR_TARGETS
+    }
+    result: list[dict] = []
+    for item in workspace["items"]:
+        key = f'{str(item.get("market", "")).upper()}.{str(item.get("symbol", ""))}'
+        target = allowed.get(key)
+        if target is not None:
+            result.append(dict(target))
+    return result
+
+
+def _read_calculator_quote_rows(conn, targets: list[dict]) -> dict[str, MarketQuoteItem]:
+    result: dict[str, MarketQuoteItem] = {}
+    for target in targets:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM market_quote
+            WHERE provider = ? AND market = ? AND symbol = ?
+            LIMIT 1
+            """,
+            (
+                EASTMONEY_CALCULATOR_QUOTE_PROVIDER,
+                target["market"],
+                target["symbol"],
+            ),
+        ).fetchone()
+        if row is not None:
+            result[f'{target["market"]}.{target["symbol"]}'] = market_quote_item_from_row(row)
+    return result
+
+
+def _sync_eastmoney_calculator_quotes(targets: list[dict]) -> dict:
+    now = time.time()
+    with _calculator_quote_sync_lock, closing(connect_market_data_db()) as conn:
+        stored = _read_calculator_quote_rows(conn, targets)
+        stale_targets = []
+        for target in targets:
+            cached = stored.get(f'{target["market"]}.{target["symbol"]}')
+            if cached is None or now - cached.fetched_at >= EASTMONEY_CALCULATOR_QUOTE_TTL_SECONDS:
+                stale_targets.append(target)
+        downloaded: list[MarketQuoteItem] = []
+        if stale_targets:
+            with ThreadPoolExecutor(max_workers=min(4, len(stale_targets))) as executor:
+                downloaded = list(executor.map(_fetch_eastmoney_calculator_quote, stale_targets))
+            upsert_quote_items(conn, items=downloaded)
+            stored = _read_calculator_quote_rows(conn, targets)
+
+    items = [
+        stored[key]
+        for target in targets
+        if (key := f'{target["market"]}.{target["symbol"]}') in stored
+    ]
+    return {
+        "provider": EASTMONEY_CALCULATOR_QUOTE_PROVIDER,
+        "ttl_seconds": EASTMONEY_CALCULATOR_QUOTE_TTL_SECONDS,
+        "target_count": len(targets),
+        "cache_hit_count": len(targets) - len(stale_targets),
+        "downloaded_count": sum(item.price is not None and not item.error for item in downloaded),
+        "error_count": sum(bool(item.error) for item in downloaded),
+        "items": [serialize_quote_item(item) for item in items],
+    }
+
+
+def _calculator_workspace_setting_key(user_id: int) -> str:
+    return f"user:{user_id}:eastmoney.calculator_workspace"
+
+
+def _signed_trade_quantity(record: EastmoneyTradeRecord) -> str:
+    quantity = str(record.quantity or "").strip()
+    if not quantity:
+        return ""
+    magnitude = quantity.lstrip("+-")
+    return f"-{magnitude}" if "卖" in str(record.direction or "") else magnitude
+
+
+def _calculator_history_by_target(session: Session, *, user_id: int) -> dict[str, list[dict]]:
+    target_codes = {item["symbol"] for item in EASTMONEY_CALCULATOR_TARGETS}
+    records = session.exec(
+        select(EastmoneyTradeRecord)
+        .where(
+            EastmoneyTradeRecord.user_id == user_id,
+            EastmoneyTradeRecord.security_code.in_(target_codes),
+        )
+        .order_by(
+            EastmoneyTradeRecord.trade_date.desc(),
+            EastmoneyTradeRecord.trade_time.desc(),
+            EastmoneyTradeRecord.last_seen_at.desc(),
+        )
+    ).all()
+    target_by_symbol = {item["symbol"]: item for item in EASTMONEY_CALCULATOR_TARGETS}
+    result = {f'{item["market"]}.{item["symbol"]}': [] for item in EASTMONEY_CALCULATOR_TARGETS}
+    for record in records:
+        target = target_by_symbol.get(str(record.security_code or "").strip())
+        if target is None:
+            continue
+        key = f'{target["market"]}.{target["symbol"]}'
+        trade_date = str(record.trade_date or "").strip()
+        trade_time = str(record.trade_time or "").strip()
+        result[key].append({
+            "id": f"eastmoney:{record.id}",
+            "time": f"{trade_date}T{trade_time}" if trade_time else trade_date,
+            "price": str(record.price or "").strip(),
+            "quantity": _signed_trade_quantity(record),
+            "source_record_id": str(record.id),
+        })
+    return result
+
+
+def _calculator_workspace_response(session: Session, *, user_id: int) -> dict:
+    row = session.get(AppSetting, _calculator_workspace_setting_key(user_id))
+    value = row.value if row and isinstance(row.value, dict) else {}
+    items = value.get("items") if isinstance(value.get("items"), list) else []
+    return {
+        "items": items,
+        "targets": [dict(item) for item in EASTMONEY_CALCULATOR_TARGETS],
+        "history_by_target": _calculator_history_by_target(session, user_id=user_id),
+        "updated_at": row.updated_at if row else None,
+    }
+
+
+def _dedupe_calculator_item_trades(item: EastmoneyCalculatorPayload) -> dict:
+    data = item.model_dump()
+    sourced_values = {
+        (trade.time, trade.price, trade.quantity)
+        for trade in item.trades
+        if trade.source_record_id
+    }
+    data["trades"] = [
+        trade.model_dump()
+        for trade in item.trades
+        if trade.source_record_id or (trade.time, trade.price, trade.quantity) not in sourced_values
+    ]
+    return data
+
+
+@router.get("/calculator-workspace")
+def get_eastmoney_calculator_workspace(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return _calculator_workspace_response(session, user_id=int(current_user.id))
+
+
+@router.post("/calculator-market-quotes/sync")
+def sync_eastmoney_calculator_market_quotes(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    targets = _calculator_quote_targets(session, user_id=int(current_user.id))
+    if not targets:
+        return {
+            "provider": EASTMONEY_CALCULATOR_QUOTE_PROVIDER,
+            "ttl_seconds": EASTMONEY_CALCULATOR_QUOTE_TTL_SECONDS,
+            "target_count": 0,
+            "cache_hit_count": 0,
+            "downloaded_count": 0,
+            "error_count": 0,
+            "items": [],
+        }
+    return _sync_eastmoney_calculator_quotes(targets)
+
+
+@router.put("/calculator-workspace")
+def save_eastmoney_calculator_workspace(
+    payload: EastmoneyCalculatorWorkspaceRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    target_keys: set[str] = set()
+    for item in payload.items:
+        key = f"{item.market.strip().upper()}.{item.symbol.strip()}"
+        if key in target_keys:
+            raise HTTPException(status_code=400, detail=f"同一股票不能重复添加：{key}")
+        target_keys.add(key)
+
+    now = time.time()
+    setting_key = _calculator_workspace_setting_key(int(current_user.id))
+    row = session.get(AppSetting, setting_key)
+    value = {"items": [_dedupe_calculator_item_trades(item) for item in payload.items]}
+    if row is None:
+        row = AppSetting(key=setting_key, value=value, updated_at=now)
+    else:
+        row.value = value
+        row.updated_at = now
+    session.add(row)
+    session.commit()
+    return _calculator_workspace_response(session, user_id=int(current_user.id))
 
 
 def _trade_report_setting_key(user_id: int) -> str:

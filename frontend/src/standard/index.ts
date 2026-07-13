@@ -224,6 +224,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
+    routeName: 'EastmoneyCalculator',
+    canonicalPath: '/notes/eastmoney/calculator',
+    component: () => import('./notes/eastmoney/calculator/page.vue'),
+    permissionKey: 'notes.eastmoney',
+    requiresAuth: true,
+  },
+  {
     routeName: 'EastmoneyRobotHistory',
     canonicalPath: '/notes/eastmoney/robot-history',
     component: () => import('./notes/eastmoney/redirect.vue'),

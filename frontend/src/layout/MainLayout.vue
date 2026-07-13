@@ -121,6 +121,7 @@ const NOTES_TASK_SYSTEM_PATH = requirePageMenuPath('NotesTaskSystem');
 const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
 const EASTMONEY_TRADE_PATH = requirePageMenuPath('EastmoneyTrade');
+const EASTMONEY_CALCULATOR_PATH = requirePageMenuPath('EastmoneyCalculator');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const PDF_DOCUMENT_LIBRARY_PATH = requirePageMenuPath('PdfDocumentLibrary');
@@ -209,6 +210,7 @@ const NOTES_TASK_SYSTEM_TITLE = requirePermissionTitleByMenuPath(NOTES_TASK_SYST
 const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
 const EASTMONEY_TITLE = requirePermissionTitle('notes.eastmoney');
 const EASTMONEY_TRADE_TITLE = '股票操作建议';
+const EASTMONEY_CALCULATOR_TITLE = '计算器';
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const PDF_DOCUMENT_LIBRARY_TITLE = requirePermissionTitleByMenuPath(PDF_DOCUMENT_LIBRARY_PATH);
@@ -520,6 +522,7 @@ const noteToolsMenuVisible = computed(() =>
     NOTES_TASK_SYSTEM_PATH,
     NOTES_COMMON_SITES_PATH,
     EASTMONEY_TRADE_PATH,
+    EASTMONEY_CALCULATOR_PATH,
     FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
     PDF_DOCUMENT_LIBRARY_PATH,
@@ -544,7 +547,9 @@ const notesCenterMenuEntryPath = computed(() =>
 );
 
 const eastmoneyMenuEntryPath = computed(() =>
-  EASTMONEY_TRADE_PATH,
+  canAccessMenuPath(EASTMONEY_TRADE_PATH)
+    ? EASTMONEY_TRADE_PATH
+    : EASTMONEY_CALCULATOR_PATH,
 );
 
 const clusterFilesMenuVisible = computed(() =>
@@ -1042,7 +1047,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(PDF_DOCUMENT_LIBRARY_PATH)" :index="PDF_DOCUMENT_LIBRARY_PATH">{{ PDF_DOCUMENT_LIBRARY_TITLE }}</el-menu-item>
             <el-sub-menu
-              v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)"
+              v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH) || canAccessMenuPath(EASTMONEY_CALCULATOR_PATH)"
               :index="EASTMONEY_SUBMENU_INDEX"
             >
               <template #title>
@@ -1052,6 +1057,9 @@ watch(
               </template>
               <el-menu-item v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)" :index="EASTMONEY_TRADE_PATH">
                 {{ EASTMONEY_TRADE_TITLE }}
+              </el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_CALCULATOR_PATH)" :index="EASTMONEY_CALCULATOR_PATH">
+                {{ EASTMONEY_CALCULATOR_TITLE }}
               </el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>

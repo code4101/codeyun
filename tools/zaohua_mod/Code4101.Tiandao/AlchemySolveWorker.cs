@@ -14,6 +14,7 @@ namespace Code4101.Zaohua.Tiandao
         internal TbDrugRecipeCfg Recipe { get; set; }
         internal TbPackSto Furnace { get; set; }
         internal IReadOnlyList<SmartAlchemyUi.HerbStock> Herbs { get; set; }
+        internal IReadOnlyDictionary<int, long> Inventory { get; set; }
         internal int Limit { get; set; }
     }
 
@@ -42,9 +43,10 @@ namespace Code4101.Zaohua.Tiandao
             lock (_gate)
             {
                 if (!_solutions.TryGetValue(key, out var existing) ||
-                    solution.RuleOutcome.Score > existing.RuleOutcome.Score ||
-                    (solution.RuleOutcome.Score == existing.RuleOutcome.Score &&
-                     solution.GradeScore < existing.GradeScore))
+                    solution.SearchStage < existing.SearchStage ||
+                    (solution.SearchStage == existing.SearchStage && solution.QualityRank > existing.QualityRank) ||
+                    (solution.SearchStage == existing.SearchStage && solution.QualityRank == existing.QualityRank &&
+                     solution.PlantingDays < existing.PlantingDays))
                 {
                     _solutions[key] = solution;
                     _revision++;
@@ -77,13 +79,9 @@ namespace Code4101.Zaohua.Tiandao
                 var response = new AlchemySolveResponse { Request = request };
                 try
                 {
-                    response.Solutions = FiniteInventoryAlchemySolver.Solve(
-                        request.Recipe,
-                        request.Furnace,
-                        request.Herbs,
-                        request.Limit,
-                        cancellationToken,
-                        progress.Publish);
+                    response.Solutions = FiniteInventoryAlchemySolver.SolvePhased(
+                        request.Recipe, request.Furnace, request.Herbs, request.Inventory,
+                        request.Limit, cancellationToken, progress.Publish);
                 }
                 catch (OperationCanceledException)
                 {

@@ -682,8 +682,8 @@
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 35,
-      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/trade", "/notes/eastmoney/robot-history", "/notes/eastmoney/sync"],
-      "menu_paths": ["/notes/eastmoney/trade"],
+      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/trade", "/notes/eastmoney/calculator", "/notes/eastmoney/robot-history", "/notes/eastmoney/sync"],
+      "menu_paths": ["/notes/eastmoney/trade", "/notes/eastmoney/calculator"],
       "api_scopes": ["note-tools.eastmoney"],
       "default_anonymous_allow": false
     },

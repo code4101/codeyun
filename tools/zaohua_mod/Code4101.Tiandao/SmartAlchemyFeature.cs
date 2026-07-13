@@ -60,6 +60,8 @@ namespace Code4101.Zaohua.Tiandao
         private Task<AlchemySolveResponse> _solveTask;
         private string _activeSolveKey;
         private int _solveGeneration;
+        private bool _onlyAvailable;
+        private IReadOnlyDictionary<int, long> _inventory = new Dictionary<int, long>();
 
         internal TbPackSto Furnace { get; private set; }
         internal IReadOnlyList<HerbStock> Herbs { get; private set; } = new List<HerbStock>();
@@ -435,7 +437,14 @@ namespace Code4101.Zaohua.Tiandao
 
             _visibleSolutionCount = 5;
             var cacheKey = BuildSolutionCacheKey();
-            if (_solutionCache.TryGetValue(cacheKey, out _solutions))
+            if (!_solutionCache.ContainsKey(cacheKey) &&
+                AlchemySolutionCacheRepository.TryLoad(cacheKey, out var persistedSolutions))
+            {
+                _solutionCache[cacheKey] = persistedSolutions;
+            }
+            if (_solutionCache.TryGetValue(cacheKey, out _solutions) &&
+                (_solutions.Any(solution => solution.IsAvailable(_inventory)) ||
+                 _solutions.Any(solution => solution.SearchStage >= 3)))
             {
                 Debug.Log($"[Code4101 Tiandao] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
                 RenderSmartResults();
@@ -461,6 +470,7 @@ namespace Code4101.Zaohua.Tiandao
                 Recipe = _solvedRecipe,
                 Furnace = Furnace,
                 Herbs = Herbs.ToList(),
+                Inventory = new Dictionary<int, long>(_inventory),
                 Limit = 50,
             };
             SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
@@ -506,6 +516,7 @@ namespace Code4101.Zaohua.Tiandao
             }
             if (_solutionCache.Count >= 32) _solutionCache.Clear();
             _solutionCache[request.CacheKey] = result.Solutions;
+            AlchemySolutionCacheRepository.Save(request.CacheKey, result.Solutions);
             Debug.Log($"[Code4101 Tiandao] background solved recipe={request.Recipe.id}, " +
                       $"solutions={result.Solutions.Count}, elapsed={result.ElapsedMilliseconds}ms");
             if (!_smartPanel.activeSelf || _activeSolveKey != request.CacheKey) yield break;
@@ -516,10 +527,20 @@ namespace Code4101.Zaohua.Tiandao
 
         private string BuildSolutionCacheKey()
         {
-            return $"solver-v2|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
-                   $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}|" +
+            var data = Singleton<TbDataImpl>.Instance;
+            var furnaceCfg = data.GetCraftingItemCfg(Furnace.itemId.sedId);
+            var furnaceShape = furnaceCfg == null ? "" :
+                $"{furnaceCfg.yangGridSize.x}x{furnaceCfg.yangGridSize.y}:{furnaceCfg.yinGridSize.x}x{furnaceCfg.yinGridSize.y}";
+            return $"solver-v3|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
+                   $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}:{furnaceShape}|" +
                    string.Join(";", Herbs.OrderBy(stock => stock.ItemId.sedId)
-                       .Select(stock => $"{stock.ItemId.sedId}:{stock.Count}"));
+                       .Select(stock =>
+                       {
+                           var crafting = data.GetCraftingItemCfg(stock.ItemId.sedId);
+                           var attributes = crafting?.attrDic == null ? "" : string.Join(",",
+                               crafting.attrDic.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"));
+                           return $"{stock.ItemId.sedId}:{stock.ItemCfg.gradeId}:{crafting?.drawId}:{attributes}";
+                       }));
         }
 
         private void RenderSmartResults()
@@ -527,28 +548,69 @@ namespace Code4101.Zaohua.Tiandao
             ClearSmartResults();
             if (_solutions.Count == 0)
             {
-                SetMessage($"智能炼丹\n\n{_solvedRecipe.GetName}\n当前丹炉尺寸与背包药材无法组成该丹方");
+                SetMessage($"智能炼丹\n\n{_solvedRecipe.GetName}\n当前丹炉无法组成该丹方");
                 return;
             }
 
             _message.gameObject.SetActive(false);
-            var count = Mathf.Min(_visibleSolutionCount, _solutions.Count);
+            CreateOnlyAvailableToggle();
+            var visibleSolutions = _onlyAvailable
+                ? _solutions.Where(solution => solution.IsAvailable(_inventory)).ToList()
+                : _solutions;
+            if (visibleSolutions.Count == 0)
+            {
+                SetMessage($"智能炼丹\n\n{_solvedRecipe.GetName}\n当前没有背包可用方案");
+                LayoutRebuilder.ForceRebuildLayoutImmediate(_smartContent);
+                return;
+            }
+            var count = Mathf.Min(_visibleSolutionCount, visibleSolutions.Count);
             for (var index = 0; index < count; index++)
             {
                 var card = ABMgr.InstantiateObj(_cell.view.craftingLogInfoCellPrefab, _smartContent);
                 card.gameObject.name = $"Code4101SmartSolution_{index + 1}";
-                card.SetInfo(_solutions[index].ToTemplate(_solvedRecipe, index), false, false);
+                card.SetInfo(visibleSolutions[index].ToTemplate(_solvedRecipe, index), false, false);
                 NormalizeSmartSolutionCard(card);
                 _smartResultObjects.Add(card.gameObject);
             }
-            if (count < _solutions.Count)
+            if (count < visibleSolutions.Count)
             {
-                CreateLoadMoreButton(count);
+                CreateLoadMoreButton(count, visibleSolutions.Count);
             }
             LayoutRebuilder.ForceRebuildLayoutImmediate(_smartContent);
         }
 
-        private void CreateLoadMoreButton(int shownCount)
+        private void CreateOnlyAvailableToggle()
+        {
+            var toggleObject = new GameObject("Code4101OnlyAvailable", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
+            toggleObject.layer = _smartPanel.layer;
+            toggleObject.transform.SetParent(_smartContent, false);
+            var image = toggleObject.GetComponent<Image>();
+            image.color = new Color(0.18f, 0.16f, 0.13f, 0.72f);
+            var layout = toggleObject.GetComponent<LayoutElement>();
+            layout.preferredHeight = 64f;
+            layout.minHeight = 64f;
+            var labelObject = Instantiate(_cell.view.txtNoRecipeTip.gameObject, toggleObject.transform);
+            labelObject.SetActive(true);
+            foreach (var localization in labelObject.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
+            var rect = labelObject.transform as RectTransform;
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = new Vector2(18f, 0f);
+            rect.offsetMax = new Vector2(-18f, 0f);
+            var label = labelObject.GetComponent<TextPro>();
+            label.alignment = TMPro.TextAlignmentOptions.MidlineLeft;
+            label.fontSize = 25f;
+            label.text = (_onlyAvailable ? "✓ " : "□ ") + "仅看可用";
+            toggleObject.GetComponent<Button>().onClick.AddListener(() =>
+            {
+                _onlyAvailable = !_onlyAvailable;
+                _visibleSolutionCount = 5;
+                RenderSmartResults();
+            });
+            _smartResultObjects.Add(toggleObject);
+        }
+
+        private void CreateLoadMoreButton(int shownCount, int totalCount)
         {
             var buttonObject = new GameObject("Code4101LoadMore", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
             buttonObject.layer = _smartPanel.layer;
@@ -571,7 +633,7 @@ namespace Code4101.Zaohua.Tiandao
             rect.offsetMax = Vector2.zero;
             var label = labelObject.GetComponent<TextPro>();
             label.fontSize = 28f;
-            label.text = $"加载更多\n（已显示 {shownCount}/{_solutions.Count}）";
+            label.text = $"加载更多\n（已显示 {shownCount}/{totalCount}）";
             buttonObject.GetComponent<Button>().onClick.AddListener(() =>
             {
                 _visibleSolutionCount += 5;
@@ -686,6 +748,7 @@ namespace Code4101.Zaohua.Tiandao
             {
                 Furnace = null;
                 Herbs = new List<HerbStock>();
+                _inventory = new Dictionary<int, long>();
                 if (_message != null)
                 {
                     SetMessage("智能炼丹\n\n当前角色数据尚未就绪");
@@ -698,6 +761,7 @@ namespace Code4101.Zaohua.Tiandao
             if (Furnace == null)
             {
                 Herbs = new List<HerbStock>();
+                _inventory = new Dictionary<int, long>();
                 if (_message != null)
                 {
                     SetMessage("智能炼丹\n\n请先装备丹炉\n依赖丹炉的求解功能暂不可用");
@@ -718,12 +782,27 @@ namespace Code4101.Zaohua.Tiandao
                 .ThenBy(stock => stock.ItemCfg.id)
                 .ToList();
 
-            var totalCount = Herbs.Sum(stock => stock.Count);
+            _inventory = Herbs.ToDictionary(stock => stock.ItemId.sedId, stock => stock.Count);
+            Herbs = Singleton<TbDataImpl>.Instance.itemCfgList
+                .Where(item => Singleton<TbItemImpl>.Instance.GetParentByTypeId(item.typeId) == 10)
+                .Where(item => Singleton<TbDataImpl>.Instance.GetCraftingItemCfg(item.id) != null)
+                .GroupBy(item => item.id)
+                .Select(group =>
+                {
+                    var item = group.First();
+                    var count = _inventory.TryGetValue(item.id, out var owned) ? owned : 0;
+                    return new HerbStock(item.blendId, item, count);
+                })
+                .OrderBy(stock => stock.ItemCfg.gradeId)
+                .ThenBy(stock => stock.ItemCfg.id)
+                .ToList();
+
+            var totalCount = _inventory.Values.Sum();
             if (_message != null)
             {
                 SetMessage(
                     $"智能炼丹\n\n丹炉：{Furnace.name}\n" +
-                    $"背包药材：{Herbs.Count} 种，共 {totalCount} 份\n" +
+                    $"背包药材：{_inventory.Count} 种，共 {totalCount} 份\n" +
                     "丹炉与药材数据已就绪");
             }
         }
