@@ -35,6 +35,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     stop_fanxiu_behavior_tree_current_task,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
+    canonical_fanxiu_data_annotation_task_type,
     get_fanxiu_data_annotation_task_cell_definition,
     is_deprecated_data_annotation_job_type,
 )
@@ -74,10 +75,7 @@ from backend.core.temp_paths import codeyun_temp_root
 
 
 def _canonical_runtime_task_type(task_type: str) -> str:
-    task_type = str(task_type or "").strip()
-    if task_type == "mail_claim_check":
-        return "mail_cleanup"
-    return task_type
+    return canonical_fanxiu_data_annotation_task_type(task_type)
 
 
 def read_world_facts(path: Path | None = None) -> dict[str, Any]:

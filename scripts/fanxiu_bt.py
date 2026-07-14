@@ -45,6 +45,7 @@ from backend.core.fanxiu.data_annotation.runtime_control import (
     read_scheduler_tasks,
     reset_scheduler_task_runs,
     run_due_scheduler_tasks,
+    run_now_scheduler_task,
 )
 
 
@@ -85,11 +86,13 @@ def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
                 "max_actions": int(args.max_actions or 0),
             }
         )
-        return "mail_cleanup", payload
+        return "mail_selective_claim", payload
     if args.command in {"task", "run"}:
         if str(args.task_type) == "go_scene" and getattr(args, "target_scene_id", ""):
             payload["target_scene_id"] = parse_data_annotation_scene_id(args.target_scene_id)
         return str(args.task_type), payload
+    if args.command == "scheduler-task":
+        return str(args.task_id), payload
     raise SystemExit(f"未知命令：{args.command}")
 
 
@@ -508,7 +511,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     ]
     now_dt = datetime.now()
     critical_failed_tasks: list[dict[str, Any]] = []
-    critical_task_ids = {"mail-cleanup"}
+    critical_task_ids = {"mail-selective-claim"}
     for task_id in critical_task_ids:
         task = enabled_by_id.get(task_id)
         if not isinstance(task, dict):
@@ -1265,7 +1268,7 @@ def main() -> int:
     go_scene.add_argument("scene_id")
     _add_task_run_options(go_scene)
 
-    mail_check = subparsers.add_parser("mail-check", help="运行邮件_清理")
+    mail_check = subparsers.add_parser("mail-check", help="运行邮件_选择性领取")
     mail_check.add_argument("--observe-only", action="store_true")
     mail_check.add_argument("--scan-mode", default="incremental")
     mail_check.add_argument("--skip-capture", action="store_true")
@@ -1276,6 +1279,10 @@ def main() -> int:
     task.add_argument("task_type")
     task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     _add_task_run_options(task)
+
+    scheduler_task = subparsers.add_parser("scheduler-task", help="按 Scheduler task id 执行并回写运行结论")
+    scheduler_task.add_argument("task_id")
+    _add_task_run_options(scheduler_task)
 
     cell = subparsers.add_parser("cell", help="提交并等待一段 Python cell；凡修调试的默认入口")
     cell.add_argument("code", nargs="?", default="", help="要执行的 Python 代码；也可用 --file")
@@ -1459,6 +1466,17 @@ def main() -> int:
         else:
             _print_job_catalog(items)
         return 0
+    if args.command == "scheduler-task":
+        task_id, payload = _payload_from_args(args)
+        _apply_wait_timeout_as_runtime_budget(args, payload)
+        status = run_now_scheduler_task(
+            entry=resolve_fanxiu_entry(str(args.entry_id)),
+            entry_id=str(args.entry_id),
+            task_id=task_id,
+            payload_override=payload,
+        )
+        _print_status(status)
+        return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     if args.command == "interrupt":
         kernel = FanxiuKernel(entry_id=str(args.entry_id))
         result = kernel.interrupt(

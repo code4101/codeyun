@@ -21,6 +21,18 @@ _DEPRECATED_DATA_ANNOTATION_JOB_TYPES = {
     "daily_yihuo",
 }
 
+MAIL_SELECTIVE_CLAIM_TASK_TYPE = "mail_selective_claim"
+_LEGACY_DATA_ANNOTATION_JOB_TYPE_ALIASES = {
+    "mail_cleanup": MAIL_SELECTIVE_CLAIM_TASK_TYPE,
+    "mail_claim_check": MAIL_SELECTIVE_CLAIM_TASK_TYPE,
+}
+
+
+def canonical_fanxiu_data_annotation_task_type(task_type: str) -> str:
+    """Translate legacy task names at the boundary; new code only sees canonical names."""
+    normalized = str(task_type or "").strip()
+    return _LEGACY_DATA_ANNOTATION_JOB_TYPE_ALIASES.get(normalized, normalized)
+
 
 def is_deprecated_data_annotation_job_type(task_type: str) -> bool:
     return str(task_type or "").strip() in _DEPRECATED_DATA_ANNOTATION_JOB_TYPES
@@ -63,7 +75,7 @@ def register_fanxiu_data_annotation_task_cell(
 
 
 def get_fanxiu_data_annotation_task_cell_definition(task_type: str) -> DataAnnotationTaskCellDefinition | None:
-    normalized = str(task_type or "").strip()
+    normalized = canonical_fanxiu_data_annotation_task_type(task_type)
     if is_deprecated_data_annotation_job_type(normalized):
         return None
     return _DATA_ANNOTATION_TASK_CELL_REGISTRY.get(normalized)

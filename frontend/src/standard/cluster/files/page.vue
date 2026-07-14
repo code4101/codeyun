@@ -9,7 +9,12 @@
       </div>
     </section>
 
-    <section v-else class="browser-panel" v-loading="isLoadingListing">
+    <section
+      v-else
+      class="browser-panel"
+      :class="{ 'is-empty-directory': isEmptyDirectoryWorkspace }"
+      v-loading="isLoadingListing"
+    >
       <section
         v-if="shouldShowBrowserWorkspace"
         class="waterfall-media-section"
@@ -1199,6 +1204,15 @@ const mediaVisualHashHint = computed(() => {
 });
 const showMediaToolbar = computed(() => displayMediaItems.value.length > 0);
 const isBrowsingDeviceRoot = computed(() => isDeviceRootPath(normalizedPathInput.value));
+const isEmptyDirectoryWorkspace = computed(() => (
+  canBrowse.value
+  && !isBrowsingDeviceRoot.value
+  && !isLoadingListing.value
+  && !isLoadingMediaPage.value
+  && directoryEntries.value.length === 0
+  && fallbackFileEntries.value.length === 0
+  && mediaTotalCount.value === 0
+));
 const showDirectorySortTools = computed(() =>
   !isBrowsingDeviceRoot.value && (directoryEntries.value.length > 1 || showDirectorySortEditor.value)
 );
@@ -2465,6 +2479,15 @@ defineExpose({
   gap: 16px;
   min-height: 640px;
   flex: 1;
+}
+
+.browser-panel.is-empty-directory {
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.browser-panel.is-empty-directory :deep(.gallery-panel) {
+  display: none;
 }
 
 .browser-toolbar {

@@ -584,7 +584,10 @@ class XianfuTaskMixin:
         with self._lock:
             self._set_status_locked("running", "仙府_领悟绝技：免费领悟一次", phase="xianfu_skill_free_draw", current_scene=176)
             self._log_locked("action", "仙府_领悟绝技：点击 #176「领悟一次」")
-        learn_shape.click(runtime)
+        # The current tick has already OCR-confirmed the free-draw state.  Do not
+        # run an independent shape match here: it duplicates OCR work and can
+        # reject the same frame that produced the business decision above.
+        runtime.click_shape_center(view176, learn_shape)
         yield from self._handle_xianfu_learn_skill_result_popup(runtime)
 
         frame = runtime.cur_frame(update=True)

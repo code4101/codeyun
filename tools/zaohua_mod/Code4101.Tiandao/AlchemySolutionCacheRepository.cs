@@ -10,7 +10,7 @@ namespace Code4101.Zaohua.Tiandao
 {
     internal static class AlchemySolutionCacheRepository
     {
-        private const int SchemaVersion = 3;
+        private const int SchemaVersion = 4;
 
         [Serializable]
         private sealed class CacheDocument
@@ -25,6 +25,7 @@ namespace Code4101.Zaohua.Tiandao
         private sealed class SolutionDto
         {
             public int plantingDays;
+            public int basePillCount;
             public int searchStage;
             public int globalCountBonus;
             public int globalQualityBonus;
@@ -108,6 +109,7 @@ namespace Code4101.Zaohua.Tiandao
             var dto = new SolutionDto
             {
                 plantingDays = solution.PlantingDays,
+                basePillCount = solution.BasePillCount,
                 searchStage = solution.SearchStage,
                 globalCountBonus = solution.GlobalCountBonus,
                 globalQualityBonus = solution.GlobalQualityBonus,
@@ -140,6 +142,7 @@ namespace Code4101.Zaohua.Tiandao
             return new AlchemySolution
             {
                 PlantingDays = dto.plantingDays,
+                BasePillCount = dto.basePillCount,
                 SearchStage = dto.searchStage,
                 GlobalCountBonus = dto.globalCountBonus,
                 GlobalQualityBonus = dto.globalQualityBonus,

@@ -542,7 +542,7 @@ def go_fanxiu_scene(
     )
 
 
-def run_fanxiu_mail_cleanup(
+def run_fanxiu_mail_selective_claim(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
     observe_only: bool = False,
@@ -561,15 +561,21 @@ def run_fanxiu_mail_cleanup(
     if timeout_seconds:
         payload["timeout_seconds"] = float(timeout_seconds)
     return submit_fanxiu_task_cell(
-        "mail_cleanup",
+        "mail_selective_claim",
         payload,
         entry_id=entry_id,
         wait_timeout_seconds=wait_timeout_seconds,
     )
 
 
+def run_fanxiu_mail_cleanup(**kwargs: Any) -> dict[str, Any]:
+    """Legacy API alias; use ``run_fanxiu_mail_selective_claim``."""
+    return run_fanxiu_mail_selective_claim(**kwargs)
+
+
 def run_fanxiu_mail_claim_check(**kwargs: Any) -> dict[str, Any]:
-    return run_fanxiu_mail_cleanup(**kwargs)
+    """Legacy API alias; use ``run_fanxiu_mail_selective_claim``."""
+    return run_fanxiu_mail_selective_claim(**kwargs)
 
 
 def run_fanxiu_xianfu_visit_partner(

@@ -132,3 +132,9 @@ def test_codex_diary_hides_logistics_from_ai_without_removing_the_category():
     item = {"key": "custom_mmxbzxjy85x5", "label": "后勤", "color": "#D2B48C"}
 
     assert _is_codex_diary_hidden_ai_category_item(item) is True
+
+
+def test_codex_diary_hides_ai_concept_category_without_removing_it():
+    item = {"key": "custom_mmxdhqhnrgup", "label": "AI", "color": "#6F2DBD"}
+
+    assert _is_codex_diary_hidden_ai_category_item(item) is True

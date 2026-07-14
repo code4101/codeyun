@@ -24,6 +24,7 @@ DEFAULT_DEV_CORS_ORIGINS = (
     "http://127.0.0.1:4173",
 )
 DEFAULT_DEV_CORS_ORIGIN_REGEX = r"^https?://[^/]+:(5173|4173)$"
+DEFAULT_OCR_IDLE_TIMEOUT_SECONDS = 30 * 60
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -247,9 +248,11 @@ def load_settings() -> Settings:
     ocr_use_doc_unwarping = _env_flag("CODEYUN_OCR_USE_DOC_UNWARPING", False)
     ocr_use_textline_orientation = _env_flag("CODEYUN_OCR_USE_TEXTLINE_ORIENTATION", False)
     try:
-        ocr_idle_timeout_seconds = int(os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS") or 120)
+        ocr_idle_timeout_seconds = int(
+            os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS") or DEFAULT_OCR_IDLE_TIMEOUT_SECONDS
+        )
     except ValueError:
-        ocr_idle_timeout_seconds = 120
+        ocr_idle_timeout_seconds = DEFAULT_OCR_IDLE_TIMEOUT_SECONDS
     try:
         ocr_max_instances = int(os.getenv("CODEYUN_OCR_MAX_INSTANCES") or 1)
     except ValueError:

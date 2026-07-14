@@ -2986,6 +2986,13 @@ class DailyFoundationTaskMixin:
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
+            _scene_320, _score_320, frame_320 = runtime.current_scene([320], update=True)
+            text_320 = runtime.ocr_text(frame_320)
+            if self._daily_mojie_raid_attack_in_progress_text(text_320):
+                self._log("success", f"日常_奇袭魔界：检测到进攻倒计时，今日进攻已在进行，OCR={text_320[:120]}")
+                yield from runtime.wait_click(320, "返回")
+                yield from runtime.wait_click_then_view(319, "返回", 34)
+                return "success"
             scene_id = yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
         if scene_id == 321:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)
@@ -3005,6 +3012,10 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_click(320, "返回")
             yield from runtime.wait_click_then_view(319, "返回", 34)
         return "success"
+
+    def _daily_mojie_raid_attack_in_progress_text(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        return bool("进攻倒计时" in compact and re.search(r"\d{1,2}:\d{2}:\d{2}", compact))
 
     def _click_daily_mojie_raid_top_attack_target(
         self,
@@ -5331,6 +5342,17 @@ class DailyFoundationTaskMixin:
                 f"当前 {'#' + str(scene_next) if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:120]}",
             )
 
+        scene_transit, score_transit, frame_transit = runtime.current_scene([288, 85, 186], update=True)
+        text_transit = runtime.ocr_text(frame_transit)
+        if scene_transit != 288 and "聚灵位" in _sanitize_ocr_text(text_transit):
+            self._log(
+                "success",
+                f"{task_label}：确认后已进入灵脉区域，当前 #{scene_transit if scene_transit is not None else 'unknown'} "
+                f"{score_transit:.0f}%，点击 OCR「聚灵位」进入占领页",
+            )
+            self._click_daily_lingmai_slot_entry(runtime, frame_transit, task_label=task_label)
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_slot_entry_settle_seconds") or 2.0))
+
         yield from runtime.wait_view(
             288,
             timeout=float(payload.get("lingmai_after_confirm_timeout") or 90.0),
@@ -5366,6 +5388,32 @@ class DailyFoundationTaskMixin:
         click_y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
         self._log("action", f"{task_label}：点击 #286 OCR「前往灵脉」")
         runtime.click_frame_point(286, click_x, click_y)
+
+    def _click_daily_lingmai_slot_entry(
+        self,
+        runtime: FanxiuRuntime,
+        frame: str | None,
+        *,
+        task_label: str,
+    ) -> None:
+        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        target_box: dict[str, float] | None = None
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if "聚灵位" not in text:
+                continue
+            box = self._ocr_match_resolved_box(line, "聚灵位", "contains") or self._ocr_line_box(line)
+            if box is None:
+                continue
+            target_box = box
+            break
+        if target_box is None:
+            raise RuntimeError(f"{task_label}：已进入灵脉区域，但 OCR「聚灵位」缺少可点击坐标")
+        click_x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
+        click_y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
+        self._log("action", f"{task_label}：点击区域内部 OCR「聚灵位」")
+        runtime.click_frame_point(85, click_x, click_y)
 
     def _continue_daily_lingmai_from_final_occupy(
         self,

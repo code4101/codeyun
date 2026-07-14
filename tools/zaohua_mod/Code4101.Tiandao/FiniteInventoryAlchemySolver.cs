@@ -18,6 +18,7 @@ namespace Code4101.Zaohua.Tiandao
         internal List<AlchemyPlacement> Placements = new List<AlchemyPlacement>();
         internal Dictionary<int, int> ItemCounts = new Dictionary<int, int>();
         internal int PlantingDays;
+        internal int BasePillCount;
         internal int SearchStage;
         internal int GlobalCountBonus;
         internal int GlobalQualityBonus;
@@ -26,6 +27,8 @@ namespace Code4101.Zaohua.Tiandao
         internal int TotalCountBonus => GlobalCountBonus + RuleOutcome.CountBonus;
         internal int TotalQualityBonus => GlobalQualityBonus + RuleOutcome.QualityBonus;
         internal int QualityRank => Math.Max(1, Math.Min(3, 1 + TotalQualityBonus));
+        internal double PlantingDaysPerPill =>
+            (double)PlantingDays / Math.Max(1, BasePillCount + TotalCountBonus);
 
         internal bool IsAvailable(IReadOnlyDictionary<int, long> inventory)
         {
@@ -275,6 +278,7 @@ namespace Code4101.Zaohua.Tiandao
                             ItemCounts = chosen.GroupBy(c => c.Stock.ItemId.sedId)
                                 .ToDictionary(group => group.Key, group => group.Count()),
                             PlantingDays = chosen.Sum(c => c.PlantingDays),
+                            BasePillCount = recipe.count,
                             SearchStage = searchStage,
                             GlobalCountBonus = globalCountBonus,
                             GlobalQualityBonus = globalQualityBonus,
@@ -621,6 +625,7 @@ namespace Code4101.Zaohua.Tiandao
             var orderedSolutions = solutions
                 .OrderBy(solution => solution.SearchStage)
                 .ThenByDescending(solution => solution.QualityRank)
+                .ThenBy(solution => solution.PlantingDaysPerPill)
                 .ThenBy(solution => solution.PlantingDays)
                 .ThenBy(solution => solution.Placements.Count)
                 .ThenBy(solution => string.Join(",", solution.ItemCounts.Keys.OrderBy(id => id)))

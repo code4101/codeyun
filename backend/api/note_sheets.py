@@ -154,6 +154,26 @@ NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND = "#9DC3E6"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE = (
     "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
 )
+NOTE_SHEET_REGISTRATION_REFUNDED_NOTE = "仅看数据库已有情况，如果需要实时性需要用订单工具"
+NOTE_SHEET_REGISTRATION_BASE_COLUMN_WIDTHS = {
+    "分组": 88,
+    "序号": 88,
+    "备注": 177,
+    NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN: 88,
+    NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN: 138,
+    "姓名": 88,
+    "微信昵称": 109,
+    "手机号": 118,
+    "错误手机号": 99,
+    "微信支付订单号": 250,
+    "订单日期": 88,
+    "商户订单号": 181,
+    "订单金额": 88,
+    "用户ID": 105,
+    "匹配得分": 88,
+    "参考信息": 88,
+    NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN: 138,
+}
 NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN = "追踪分组"
 NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN = "追踪状态"
 NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN = "追踪截止日"
@@ -1140,6 +1160,194 @@ def _normalize_registration_sheet_header_document(document_json: dict[str, Any])
     next_document, order_visibility_changed = _apply_registration_standard_order_column_visibility(next_document)
     changed = changed or order_visibility_changed
     return next_document, changed
+
+
+def _rename_registration_group_column(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if NOTE_SHEET_REGISTRATION_GROUP_COLUMN in columns or "组号" not in columns:
+        return normalized, False
+
+    group_index = columns.index("组号")
+    next_columns = list(columns)
+    next_columns[group_index] = NOTE_SHEET_REGISTRATION_GROUP_COLUMN
+    next_document = dict(normalized)
+    next_document["columns"] = next_columns
+
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        next_grid_rows = [_normalize_sheet_row(row, len(columns)) for row in grid_rows]
+        field_row_index = int(normalized.get("field_row_index") or 0)
+        if 0 <= field_row_index < len(next_grid_rows):
+            next_grid_rows[field_row_index][group_index] = NOTE_SHEET_REGISTRATION_GROUP_COLUMN
+        next_document["grid_rows"] = next_grid_rows
+
+    configs = normalized.get("column_configs")
+    if isinstance(configs, dict):
+        next_configs = dict(configs)
+        source_config = next_configs.pop("组号", None)
+        if isinstance(source_config, dict) and NOTE_SHEET_REGISTRATION_GROUP_COLUMN not in next_configs:
+            next_configs[NOTE_SHEET_REGISTRATION_GROUP_COLUMN] = source_config
+        next_document["column_configs"] = next_configs
+    return next_document, True
+
+
+def _relocate_registration_refunded_column(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if "已返款" not in columns or columns[-1] == "已返款":
+        return normalized, False
+
+    refunded_index = columns.index("已返款")
+    refunded_values = [
+        _normalize_sheet_row(row, len(columns))[refunded_index]
+        for row in _extract_document_rows(normalized)
+    ]
+    refunded_config = None
+    configs = normalized.get("column_configs")
+    if isinstance(configs, dict) and isinstance(configs.get("已返款"), dict):
+        refunded_config = dict(configs["已返款"])
+
+    next_document = _delete_document_column(normalized, delete_index=refunded_index)
+    next_document = _insert_document_column(
+        next_document,
+        insert_index=len(_normalize_document_columns(next_document)),
+        header="已返款",
+        width=88,
+    )
+    next_columns = _normalize_document_columns(next_document)
+    next_rows = [_normalize_sheet_row(row, len(next_columns)) for row in _extract_document_rows(next_document)]
+    for row, value in zip(next_rows, refunded_values):
+        row[-1] = value
+    next_document = _replace_document_data_rows(next_document, next_rows)
+    next_configs = dict(next_document.get("column_configs")) if isinstance(next_document.get("column_configs"), dict) else {}
+    next_configs["已返款"] = refunded_config or {}
+    next_document["column_configs"] = next_configs
+    return next_document, True
+
+
+def _normalize_registration_sheet_protocol_document(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Upgrade legacy registration headers to the live CodeYun two-row protocol."""
+    normalized, changed = _rename_registration_group_column(document_json)
+    columns = _normalize_document_columns(normalized)
+    if not _is_registration_append_sheet(columns):
+        return normalized, changed
+
+    if NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN not in columns:
+        remark_index = _get_column_index(columns, "备注")
+        normalized = _insert_document_column(
+            normalized,
+            insert_index=(remark_index + 1) if remark_index >= 0 else min(2, len(columns)),
+            header=NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
+            width=88,
+        )
+        changed = True
+    normalized, _linked_index = _ensure_registration_linked_user_id_column(normalized)
+    normalized, refunded_changed = _relocate_registration_refunded_column(normalized)
+    changed = changed or refunded_changed
+
+    columns = _normalize_document_columns(normalized)
+    column_count = len(columns)
+    rows = [_normalize_sheet_row(row, column_count) for row in _extract_document_rows(normalized)]
+    source_grid_rows = _extract_document_grid_rows(normalized)
+    source_data_start = max(int(normalized.get("data_start_row") or 1), 1)
+    note_row = [""] * column_count
+    if source_data_start >= 2 and len(source_grid_rows) >= 2:
+        note_row = _normalize_sheet_row(source_grid_rows[1], column_count)
+
+    note_values = {
+        "备注": "导入excel",
+        "微信支付订单号": "更新订单匹配",
+        "已返款": NOTE_SHEET_REGISTRATION_REFUNDED_NOTE,
+        "用户ID": "更新用户匹配",
+        "参考信息": "其他备注",
+        NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN: NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE,
+    }
+    configs = dict(normalized.get("column_configs")) if isinstance(normalized.get("column_configs"), dict) else {}
+    amount_config = configs.get("订单金额")
+    if isinstance(amount_config, dict) and _normalize_sheet_text(amount_config.get("note")):
+        note_values["订单金额"] = _normalize_sheet_text(amount_config.get("note"))
+    for header, value in note_values.items():
+        if header in columns:
+            note_row[columns.index(header)] = value
+
+    next_document = dict(normalized)
+    next_document["data_start_row"] = 2
+    next_document["field_row_index"] = 0
+    next_document["grid_rows"] = [list(columns), note_row, *rows]
+    next_document["header_groups"] = []
+    next_document["merged_cells"] = []
+
+    source_meta = normalized.get("cell_meta")
+    next_meta: dict[str, Any] = {}
+    if isinstance(source_meta, dict):
+        for key, value in source_meta.items():
+            position = _parse_cell_meta_key(key)
+            if position is None:
+                next_meta[str(key)] = value
+                continue
+            row_index, column_index = position
+            if row_index == 0:
+                next_meta[f"0:{column_index}"] = value
+            elif row_index >= source_data_start:
+                next_meta[f"{row_index - source_data_start + 2}:{column_index}"] = value
+
+    action_map = {
+        "备注": (NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET, "导入excel"),
+        NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN: ("registration_add_student", "新增学员"),
+        "微信支付订单号": (NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH, "更新订单匹配"),
+        "用户ID": (NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH, "更新用户匹配"),
+        "匹配得分": (NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE, "综合更新"),
+    }
+    for header, (action_type, label) in action_map.items():
+        if header not in columns:
+            continue
+        key = f"1:{columns.index(header)}"
+        meta = dict(next_meta.get(key)) if isinstance(next_meta.get(key), dict) else {}
+        meta["action"] = {"type": action_type, "label": label}
+        next_meta[key] = meta
+    next_document["cell_meta"] = next_meta
+
+    primary_red_headers = {"备注", NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN, "姓名", "微信昵称", "手机号", "错误手机号", "微信支付订单号"}
+    for header in columns:
+        config = dict(configs.get(header)) if isinstance(configs.get(header), dict) else {}
+        if header in NOTE_SHEET_REGISTRATION_TEMPLATE_BASE_COLUMNS or header == "已返款":
+            config["header_background_color"] = NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND
+            if header in primary_red_headers:
+                config["header_text_color"] = "#FF0000"
+            else:
+                config.pop("header_text_color", None)
+        else:
+            config.setdefault("header_background_color", NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_BACKGROUND)
+            config.setdefault("header_text_color", NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_TEXT)
+        configs[header] = config
+    for header, note in note_values.items():
+        if header in configs:
+            configs[header]["note"] = note
+    if "已返款" in configs:
+        configs["已返款"]["hidden"] = True
+        configs["已返款"]["note"] = NOTE_SHEET_REGISTRATION_REFUNDED_NOTE
+    next_document["column_configs"] = configs
+    next_document["column_widths"] = [
+        NOTE_SHEET_REGISTRATION_BASE_COLUMN_WIDTHS.get(header, NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_WIDTH)
+        for header in columns
+    ]
+
+    view_settings = dict(normalized.get("view_settings")) if isinstance(normalized.get("view_settings"), dict) else {}
+    view_settings.update({
+        "show_row_numbers": True,
+        "row_marker_numbering": "global",
+        "row_marker_origin": "sheet",
+        "show_column_markers": True,
+        "column_marker_style": "letters",
+        "column_note_display": "row",
+        "height_mode": "fill",
+        "mobile_default_view": "sheet",
+        "frozen_column_count": 0,
+    })
+    view_settings["pagination"] = {"enabled": False, "page_size": 100}
+    next_document["view_settings"] = view_settings
+    return next_document, changed or next_document != document_json
 
 
 def _normalize_registration_sheet_header_persisted(
@@ -13550,6 +13758,13 @@ def _clone_attendance_course_template_workbook(
             cloned_document_json = _normalize_course_template_refund_header_styles(cloned_document_json)
             cloned_document_json = _normalize_attendance_feedback_link(cloned_document_json)
             cloned_document_json = _normalize_attendance_refund_faq_link(cloned_document_json)
+        elif _normalize_sheet_text(source_sheet.sheet_key) == "registration":
+            cloned_document_json, _registration_protocol_changed = _normalize_registration_sheet_protocol_document(
+                cloned_document_json,
+            )
+            cloned_document_json, _registration_header_changed = _normalize_registration_sheet_header_document(
+                cloned_document_json,
+            )
         document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
             id=document_identity.primary_id,

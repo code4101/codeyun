@@ -632,20 +632,27 @@ namespace Code4101.Zaohua.Tiandao
             TbDrugRecipeCfg recipe)
         {
             if (card?.txtAttrLimit == null || solution == null || recipe == null) return null;
-            var totalPillCount = recipe.count + solution.TotalCountBonus;
+            var totalPillCount = solution.BasePillCount + solution.TotalCountBonus;
             if (totalPillCount <= 0) return null;
 
-            var daysPerPill = (double)solution.PlantingDays / totalPillCount;
+            var daysPerPill = solution.PlantingDaysPerPill;
             var cost = daysPerPill > 300d
-                ? (daysPerPill / 360d).ToString("F2", CultureInfo.InvariantCulture) + "年"
-                : daysPerPill.ToString("F2", CultureInfo.InvariantCulture) + "天";
+                ? (daysPerPill / 360d).ToString("F2", CultureInfo.InvariantCulture) + " 年"
+                : daysPerPill.ToString("F2", CultureInfo.InvariantCulture) + " 天";
             var field = Instantiate(card.txtAttrLimit, card.txtAttrLimit.transform.parent);
             field.gameObject.name = "Code4101PlantingCost";
             foreach (var localization in field.GetComponentsInChildren<TextProLocalization>(true))
                 localization.enabled = false;
-            // 复用官方“灵草：值”这一整行结构；克隆项自身已经带有“灵草”标题，
-            // 这里只填写右侧值，避免出现“灵草：灵草/成本”的重复语义。
-            field.text = $"每丹种植时间{cost}";
+            // 克隆官方字段会同时克隆内部标题；标题和值必须分别修改，不能只覆盖值。
+            foreach (var nested in field.GetComponentsInChildren<TextPro>(true))
+            {
+                if (nested == field) continue;
+                if ((nested.text ?? string.Empty).Contains("灵草") ||
+                    nested.gameObject.name.IndexOf("title", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    nested.gameObject.name.IndexOf("label", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    nested.text = "成本：";
+            }
+            field.text = $"每丹种植时间 {cost}";
             field.raycastTarget = false;
             field.transform.SetSiblingIndex(card.txtAttrLimit.transform.GetSiblingIndex() + 1);
             return field;

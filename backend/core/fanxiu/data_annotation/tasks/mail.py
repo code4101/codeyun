@@ -175,7 +175,7 @@ class MailTaskMixin:
                     with self._lock:
                         self._log_locked("error", f"邮件_抓包：释放抓包服务失败：{exc}")
 
-    def _execute_mail_cleanup_task(
+    def _execute_mail_selective_claim_task(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
@@ -185,7 +185,7 @@ class MailTaskMixin:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少邮件_清理资产树路径，无法执行邮件作业")
+            raise RuntimeError("缺少邮件_选择性领取资产树路径，无法执行邮件作业")
         try:
             capture_status = ensure_fanxiu_capture_runtime_backstop(FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON)
             with self._lock:
@@ -208,8 +208,8 @@ class MailTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
         with self._lock:
-            self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
-        yield from self._open_mail_cleanup_entry(runtime)
+            self._set_status_locked("running", "邮件_选择性领取：进入邮件 #121", phase="mail_selective_claim_go_mail")
+        yield from self._open_mail_selective_claim_entry(runtime)
         scene_id, score, frame, text = self._fanxiu_runtime_scene_text(
             ctx,
             runtime,
@@ -218,48 +218,48 @@ class MailTaskMixin:
         )
         if scene_id == 227:
             with self._lock:
-                self._set_status_locked("running", "邮件_清理：关闭本轮奖励页", phase="mail_cleanup_close_reward_page", current_scene=227)
-                self._log_locked("action", "邮件_清理：点击 #227「继续」关闭本轮奖励页")
+                self._set_status_locked("running", "邮件_选择性领取：关闭本轮奖励页", phase="mail_selective_claim_close_reward_page", current_scene=227)
+                self._log_locked("action", "邮件_选择性领取：点击 #227「继续」关闭本轮奖励页")
             yield from runtime.wait_click(227, "继续", timeout=8.0)
-            reward_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：奖励页关闭后等待邮件或世界")
+            reward_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
             scene_id = reward_result_view.id if isinstance(reward_result_view, View) else None
             score = 100.0 if scene_id in {121, 34} else 0.0
             frame = runtime.cur_frame(update=True)
             text = self._ocr_text(self._ocr_lines(frame))
         if scene_id not in {121, 122, 123} and (
-            yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_清理")
+            yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_选择性领取")
         ):
             scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 227, 34, 35, 69], update=True)
         if scene_id == 121:
             with self._lock:
                 self._status.update({"current_scene": 121, "updated_at": time.time()})
-                self._log_locked("info", f"邮件_清理：当前已在邮件 #121 {score:.0f}%，先退出重进刷新邮件抓包")
+                self._log_locked("info", f"邮件_选择性领取：当前已在邮件 #121 {score:.0f}%，先退出重进刷新邮件抓包")
             image121_for_reset = ctx.get("images", {}).get(121) if isinstance(ctx.get("images"), dict) else None
             if isinstance(image121_for_reset, dict) and self._find_shape(image121_for_reset, "空白-返回") is not None:
-                yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_清理")
-                yield from self._open_mail_cleanup_entry(runtime)
+                yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_选择性领取")
+                yield from self._open_mail_selective_claim_entry(runtime)
             else:
-                self._log("error", "邮件_清理：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
+                self._log("error", "邮件_选择性领取：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
         elif scene_id in {122, 123}:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_清理：本轮入口异常落入详情页 #{scene_id}",
-                    phase="mail_cleanup_return_detail",
+                    f"邮件_选择性领取：本轮入口异常落入详情页 #{scene_id}",
+                    phase="mail_selective_claim_return_detail",
                     current_scene=scene_id,
                 )
                 self._log_locked(
                     "action",
-                    f"邮件_清理：本轮入口落入 #{scene_id}，缺少列表策略证据，只返回列表不领取/删除",
+                    f"邮件_选择性领取：本轮入口落入 #{scene_id}，缺少列表策略证据，只返回列表不领取/删除",
                 )
             detail_image = ctx.get("images", {}).get(scene_id) if isinstance(ctx.get("images"), dict) else None
             back_shape = View(detail_image).get_shape("空白-返回") if isinstance(detail_image, dict) else None
             if back_shape is None:
-                raise RuntimeError(f"邮件_清理：本轮入口位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
+                raise RuntimeError(f"邮件_选择性领取：本轮入口位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
             back_shape.click(runtime)
-            yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：详情页安全返回邮件 #121")
+            yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：详情页安全返回邮件 #121")
         else:
-            raise RuntimeError(f"邮件_清理：从稳定起点进入邮件后落点异常 #{scene_id or 'unknown'}")
+            raise RuntimeError(f"邮件_选择性领取：从稳定起点进入邮件后落点异常 #{scene_id or 'unknown'}")
         image121 = ctx.get("images", {}).get(121)
         if not isinstance(image121, dict):
             raise RuntimeError("缺少 #121 邮件帧标注，无法清理邮件")
@@ -278,7 +278,7 @@ class MailTaskMixin:
         first_scan_frame = frame if scene_id == 121 else None
         while (max_actions is None or processed_count < max_actions) and scroll_count < max_scrolls:
             self._raise_if_stopped(stop_event)
-            if first_scan_frame is None and (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")):
+            if first_scan_frame is None and (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_选择性领取")):
                 scanned_to_end = True
                 break
             if first_scan_frame is not None:
@@ -298,15 +298,15 @@ class MailTaskMixin:
                 )
             ):
                 scanned_to_end = True
-                self._log("success", "邮件_清理：连续两次滚动未出现新邮件行，确认已到底")
+                self._log("success", "邮件_选择性领取：连续两次滚动未出现新邮件行，确认已到底")
                 break
             if visible_row_keys:
                 last_semantic_observation_scroll = scroll_count
-            aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup", dry_run=True)
+            aligned_result = self._align_mail_records_from_visible_adjacency(rows, source="mail_selective_claim", dry_run=True)
             if aligned_result.get("updated"):
                 self._log(
                     "warning",
-                    "邮件_清理：可见相邻断层仅记录为诊断，不自动改为可领；"
+                    "邮件_选择性领取：可见相邻断层仅记录为诊断，不自动改为可领；"
                     f"候选 {aligned_result.get('updated')} 封，区间 {aligned_result.get('interval_count')}",
                 )
             action_row: _RuntimeMailRow | None = None
@@ -327,7 +327,7 @@ class MailTaskMixin:
                 if mail.raw.get("policy") in {"claim", "delete"}:
                     action_row = mail
                     break
-                if delete_probe_row is None and self._mail_cleanup_delete_probe_candidate(mail.raw):
+                if delete_probe_row is None and self._mail_selective_claim_delete_probe_candidate(mail.raw):
                     delete_probe_row = mail
                     continue
                 if (
@@ -345,18 +345,18 @@ class MailTaskMixin:
                     action_elapsed = time.monotonic() - action_started_at
                     self._log(
                         "warning",
-                        f"邮件_清理：打开/处理「{action_row.title}」超时 {action_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                        f"邮件_选择性领取：打开/处理「{action_row.title}」超时 {action_elapsed:.1f}s，跳过该行继续翻页；{exc}",
                     )
                 else:
                     action_elapsed = time.monotonic() - action_started_at
-                    self._log("detail", f"邮件_清理：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
+                    self._log("detail", f"邮件_选择性领取：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
                     self._update_packet_mail_action_for_row(
                         action_row.raw,
                         status=f"{actual_policy}_requested",
                         evidence={
                             "runtime_requested_action": actual_policy,
                             "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "runtime_action_source": "mail_cleanup",
+                            "runtime_action_source": "mail_selective_claim",
                         },
                     )
                     processed_count += 1
@@ -377,13 +377,13 @@ class MailTaskMixin:
                     probe_elapsed = time.monotonic() - probe_started_at
                     self._log(
                         "warning",
-                        f"邮件_清理：详情页探测「{detail_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                        f"邮件_选择性领取：详情页探测「{detail_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
                     )
                 else:
                     probe_elapsed = time.monotonic() - probe_started_at
                     self._log(
                         "detail",
-                        f"邮件_清理：详情页探测「{detail_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
+                        f"邮件_选择性领取：详情页探测「{detail_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
                     )
                     if status == "processed":
                         processed_count += 1
@@ -398,13 +398,13 @@ class MailTaskMixin:
                     probe_elapsed = time.monotonic() - probe_started_at
                     self._log(
                         "warning",
-                        f"邮件_清理：删除探测「{delete_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
+                        f"邮件_选择性领取：删除探测「{delete_probe_row.title}」超时 {probe_elapsed:.1f}s，跳过该行继续翻页；{exc}",
                     )
                 else:
                     probe_elapsed = time.monotonic() - probe_started_at
                     self._log(
                         "detail",
-                        f"邮件_清理：删除探测「{delete_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
+                        f"邮件_选择性领取：删除探测「{delete_probe_row.title}」耗时 {probe_elapsed:.1f}s，结果 {status}",
                     )
                     if status == "processed":
                         processed_count += 1
@@ -415,7 +415,7 @@ class MailTaskMixin:
                 counts_text = ",".join(f"{key}={value}" for key, value in sorted(page_packet_counts.items()))
                 self._log(
                     "detail",
-                    f"邮件_清理：当前页无可领取，packet {counts_text}；"
+                    f"邮件_选择性领取：当前页无可领取，packet {counts_text}；"
                     + "；".join(page_rows_summary),
                 )
 
@@ -427,7 +427,7 @@ class MailTaskMixin:
                 settle_seconds=2.0,
             )
             scroll_elapsed = time.monotonic() - scroll_started_at
-            self._log("detail", f"邮件_清理：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
+            self._log("detail", f"邮件_选择性领取：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
             if not runtime.attrs.get("load_new"):
                 scanned_to_end = True
                 break
@@ -436,72 +436,48 @@ class MailTaskMixin:
         action_limit_reached = max_actions is not None and processed_count >= max_actions
         reached_scroll_limit = not scanned_to_end and not action_limit_reached
         if reached_scroll_limit:
-            self._log("info", f"邮件_清理：达到 max_scrolls={max_scrolls} 仍未确认到底，继续一键删除已阅")
+            self._log("info", f"邮件_选择性领取：达到 max_scrolls={max_scrolls} 仍未确认到底，继续一键删除已阅")
 
         delete_result_scene: int | None = None
-        if (scanned_to_end or reached_scroll_limit) and (seen_count > 0 or processed_count > 0):
-            if (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")):
-                delete_result_scene = 34
-                self._log("info", "邮件_清理：当前已离开邮件页，跳过一键删除已阅")
-            scene_before_delete, _score_before_delete, _frame_before_delete, _text_before_delete = self._fanxiu_runtime_scene_text(
-                ctx,
-                runtime,
-                [121, 34, 20],
-                update=True,
-            )
-            if delete_result_scene is None and scene_before_delete != 121:
-                delete_result_scene = 34 if scene_before_delete == 34 else None
-                self._log("info", f"邮件_清理：当前不在 #121（#{scene_before_delete or 'unknown'}），跳过一键删除已阅")
-            delete_read_shape = view121.get_shape("一键删除")
-            if delete_result_scene is None and delete_read_shape is not None:
-                with self._lock:
-                    self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
-                    self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
-                delete_read_shape.click(runtime)
-                delete_result_view = yield from runtime.wait_view(348, 210, 278, 121, timeout=12.0, label="邮件_清理：一键删除后等待确认弹窗或邮件页")
-                delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
-                if delete_result_scene in {348, 210, 278}:
-                    with self._lock:
-                        self._set_status_locked("running", "邮件_清理：确认一键删除", phase="mail_cleanup_confirm_delete_read", current_scene=delete_result_scene)
-                        self._log_locked("action", f"邮件_清理：#{delete_result_scene} 一键删除确认弹窗，点击「确认」")
-                    self._click_confirmed_mail_delete_prompt(runtime, delete_result_scene)
-                    result_targets = (121,) if delete_result_scene == 348 else (121, 34)
-                    delete_result_view = yield from runtime.wait_view(*result_targets, timeout=12.0, label="邮件_清理：确认一键删除后等待邮件 #121")
-                    delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
-                    self._refresh_recent_mail_packets_for_runtime_log("一键删除已阅后同步", flush_capture=True)
-                elif delete_result_scene == 121:
-                    self._log("info", "邮件_清理：#121「一键删除」后未出现确认弹窗，按无可删已阅邮件继续")
-                else:
-                    raise RuntimeError("邮件_清理：#121「一键删除」后未进入确认弹窗，也未回到邮件页")
-            elif delete_result_scene is None:
-                self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
-        elif action_limit_reached:
-            self._log("info", f"邮件_清理：达到 max_actions={max_actions}，跳过一键删除已阅")
+        if (yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_选择性领取")):
+            delete_result_scene = 34
+            self._log("info", "邮件_选择性领取：当前已离开邮件页，跳过一键删除已阅")
+        scene_before_delete, _score_before_delete, _frame_before_delete, _text_before_delete = self._fanxiu_runtime_scene_text(
+            ctx,
+            runtime,
+            [121, 34, 20],
+            update=True,
+        )
+        if delete_result_scene is None and scene_before_delete == 121:
+            delete_result_scene = yield from self._delete_read_mail_once(runtime, view121, reason="任务收尾")
+        elif delete_result_scene is None:
+            delete_result_scene = 34 if scene_before_delete == 34 else None
+            self._log("info", f"邮件_选择性领取：当前不在 #121（#{scene_before_delete or 'unknown'}），跳过一键删除已阅")
 
         final_scene = 34 if delete_result_scene == 34 else 121
         image121 = ctx.get("images", {}).get(121) if isinstance(ctx.get("images"), dict) else None
         back_shape = self._find_shape(image121, "空白-返回") if isinstance(image121, dict) else None
         if final_scene == 34:
-            self._log("info", "邮件_清理：一键删除后已回到世界页")
+            self._log("info", "邮件_选择性领取：一键删除后已回到世界页")
         elif back_shape is not None:
-            yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_清理")
+            yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_选择性领取")
             final_scene = 34
         else:
-            self._log("info", "邮件_清理：缺少 #121「空白-返回」标注，结束后保留在邮件页")
+            self._log("info", "邮件_选择性领取：缺少 #121「空白-返回」标注，结束后保留在邮件页")
         if final_scene == 34:
-            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
-            yield from self._close_mail_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_清理")
-            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
+            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
+            yield from self._close_mail_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_选择性领取")
+            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
 
         if scanned_to_end and not reached_scroll_limit:
             marked_count = self._mark_pending_packet_mail_actions_not_visible(
-                reason=f"mail_cleanup_full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
+                reason=f"mail_selective_claim_full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
                 allowed_policies={"claim"},
             )
             if marked_count:
                 self._log(
                     "success",
-                    f"邮件_清理：完整扫到底未见 packet 待领取项，标记 {marked_count} 封为 missing_from_list",
+                    f"邮件_选择性领取：完整扫到底未见 packet 待领取项，标记 {marked_count} 封为 missing_from_list",
                 )
 
         result = "success"
@@ -509,24 +485,24 @@ class MailTaskMixin:
             result = "skipped"
             retry_after = (datetime.now() + timedelta(seconds=max(60, int(payload.get("retry_seconds") or 600)))).strftime("%Y-%m-%d %H:%M:%S")
             self._record_scheduler_task_discovered_retry_after(
-                str(payload.get("__scheduler_task_id") or "mail-cleanup"),
+                str(payload.get("__scheduler_task_id") or "mail-selective-claim"),
                 retry_after,
-                task_type="mail_cleanup",
-                label="邮件_清理",
+                task_type="mail_selective_claim",
+                label="邮件_选择性领取",
                 last_result="skipped",
             )
             message = (
-                f"邮件_清理：未确认到底，见到 {seen_count} 封，领取 {processed_count} 封，"
+                f"邮件_选择性领取：未确认到底，见到 {seen_count} 封，领取 {processed_count} 封，"
                 f"滚动 {scroll_count} 次，{retry_after} 重试"
             )
         else:
-            message = f"邮件_清理：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次"
+            message = f"邮件_选择性领取：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次"
 
         with self._lock:
             self._set_status_locked(
                 "running",
                 message,
-                phase="mail_cleanup_done",
+                phase="mail_selective_claim_done",
                 current_scene=final_scene,
             )
             self._log_locked("success" if result == "success" else "skip", self._status["message"])
@@ -545,7 +521,53 @@ class MailTaskMixin:
 
         runtime.click_shape(int(scene_id), "确认", frame_data_url=frame_data_url)
 
+    def _delete_read_mail_once(self, runtime: FanxiuRuntime, mail_view: View, *, reason: str):
+        """在已确认位于邮件列表时执行一次安全的一键删除闭环。"""
 
+        delete_read_shape = mail_view.get_shape("一键删除")
+        if delete_read_shape is None:
+            raise RuntimeError("缺少 #121「一键删除」标注，无法完成邮件删除闭环")
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"邮件_选择性领取：{reason}，一键删除已阅",
+                phase="mail_selective_claim_delete_read",
+                current_scene=121,
+            )
+            self._log_locked("action", f"邮件_选择性领取：{reason}，点击 #121「一键删除」")
+        delete_read_shape.click(runtime)
+        result_view = yield from runtime.wait_view(
+            348,
+            210,
+            278,
+            121,
+            timeout=12.0,
+            label="邮件_选择性领取：一键删除后等待确认弹窗或邮件页",
+        )
+        result_scene = result_view.id if isinstance(result_view, View) else None
+        if result_scene in {348, 210, 278}:
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    "邮件_选择性领取：确认一键删除",
+                    phase="mail_selective_claim_confirm_delete_read",
+                    current_scene=result_scene,
+                )
+                self._log_locked("action", f"邮件_选择性领取：#{result_scene} 点击「确认」")
+            self._click_confirmed_mail_delete_prompt(runtime, result_scene)
+            targets = (121,) if result_scene == 348 else (121, 34)
+            result_view = yield from runtime.wait_view(
+                *targets,
+                timeout=12.0,
+                label="邮件_选择性领取：确认一键删除后等待邮件页",
+            )
+            result_scene = result_view.id if isinstance(result_view, View) else None
+            self._refresh_recent_mail_packets_for_runtime_log("一键删除已阅后同步", flush_capture=True)
+        elif result_scene == 121:
+            self._log("info", "邮件_选择性领取：没有可删除邮件，继续当前流程")
+        else:
+            raise RuntimeError("邮件_选择性领取：一键删除后未进入确认弹窗，也未回到邮件页")
+        return result_scene
 
 
 
@@ -626,15 +648,17 @@ class MailTaskMixin:
 
 
 
-    def _open_mail_cleanup_entry(self, runtime: FanxiuRuntime):
+
+
+    def _open_mail_selective_claim_entry(self, runtime: FanxiuRuntime):
         """按清理邮件伪代码进入邮件页：#34 -> #68 或 #34 -> #35。"""
 
         asset_tree_path = runtime.asset_tree_path
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少邮件_清理资产树路径，无法进入邮件")
+            raise RuntimeError("缺少邮件_选择性领取资产树路径，无法进入邮件")
         ctx = runtime.ctx
         stop_event = runtime.stop_event or threading.Event()
-        recovered_green = yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_清理")
+        recovered_green = yield from self._leave_green_bottle_to_world_if_present(ctx, stop_event, runtime, label="邮件_选择性领取")
         if recovered_green:
             result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
             opened = (yield from result) if isinstance(result, GeneratorType) else result
@@ -646,12 +670,12 @@ class MailTaskMixin:
             return "success"
         if scene_id == 227:
             yield from runtime.wait_click(227, "继续", timeout=8.0)
-            view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：奖励页关闭后等待邮件或世界")
+            view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
             scene_id = view.id if isinstance(view, View) else None
             if scene_id == 121:
                 return "success"
         if scene_id not in {34, 35}:
-            yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_清理")
+            yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
         result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
         opened = (yield from result) if isinstance(result, GeneratorType) else result
         if opened == "blocked_reward_tip":
@@ -675,7 +699,7 @@ class MailTaskMixin:
         if not looks_green_bottle:
             return False
         with self._lock:
-            self._set_status_locked("running", f"{label}：从绿瓶页返回世界", phase="mail_cleanup_leave_green_bottle", current_scene=20)
+            self._set_status_locked("running", f"{label}：从绿瓶页返回世界", phase="mail_selective_claim_leave_green_bottle", current_scene=20)
             self._log_locked("action", f"{label}：点击 #20「世界」返回 #34")
         runtime.click_frame_point(20, 80, 1435)
         yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：绿瓶返回世界 #34")
@@ -733,7 +757,7 @@ class MailTaskMixin:
                     raise
                 self._log(
                     "warning",
-                    "邮件_清理：可见相邻断层校准遇到数据库锁，跳过本次校准写入",
+                    "邮件_选择性领取：可见相邻断层校准遇到数据库锁，跳过本次校准写入",
                 )
                 continue
             results.append(result)
@@ -803,13 +827,13 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理：打开「{mail.title}」",
-                phase="mail_cleanup_open_row",
+                f"邮件_选择性领取：打开「{mail.title}」",
+                phase="mail_selective_claim_open_row",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_清理：点击标题「{mail.title}」")
+            self._log_locked("action", f"邮件_选择性领取：点击标题「{mail.title}」")
         mail.title_shape.click(runtime)
-        detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_清理：等待「{mail.title}」详情")
+        detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_选择性领取：等待「{mail.title}」详情")
         if not isinstance(detail_view, View) or detail_view.id not in {122, 123}:
             return "claim"
         actual_policy = "claim" if detail_view.id == 122 else "delete"
@@ -822,25 +846,30 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理：{action_title}「{mail.title}」",
-                phase="mail_cleanup_claim",
+                f"邮件_选择性领取：{action_title}「{mail.title}」",
+                phase="mail_selective_claim_claim",
                 current_scene=detail_view.id,
             )
-            self._log_locked("action", f"邮件_清理：点击 #{detail_view.id}「{action_shape.title}」")
+            self._log_locked("action", f"邮件_选择性领取：点击 #{detail_view.id}「{action_shape.title}」")
         action_shape.click(runtime)
         wait_result = yield from self._wait_mail_list_or_reopen_from_world_after_action(
             runtime,
             detail_view,
             timeout=18.0,
-            label="邮件_清理：返回邮件 #121",
+            label="邮件_选择性领取：返回邮件 #121",
         )
+        if wait_result in {"list_after_reward", "reopened_after_reward"}:
+            image121 = (runtime.ctx.get("images") or {}).get(121)
+            if not isinstance(image121, dict):
+                raise RuntimeError("缺少 #121 邮件帧标注，无法在 #347 奖励后执行一键删除")
+            yield from self._delete_read_mail_once(runtime, View(image121), reason="#347 奖励后")
         if wait_result in {"timeout", "detail_still_open"}:
             back_shape = detail_view.get_shape("空白-返回")
             if back_shape is None:
-                raise RuntimeError("邮件_清理：领取后未回邮件列表，且缺少详情页「空白-返回」标注")
-            self._log("info", f"邮件_清理：{action_title}后未自动回列表，点击详情页返回")
+                raise RuntimeError("邮件_选择性领取：领取后未回邮件列表，且缺少详情页「空白-返回」标注")
+            self._log("info", f"邮件_选择性领取：{action_title}后未自动回列表，点击详情页返回")
             back_shape.click(runtime)
-            yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：详情页返回邮件 #121")
+            yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：详情页返回邮件 #121")
         return actual_policy
 
     def _wait_mail_list_after_detail_action(
@@ -862,7 +891,7 @@ class MailTaskMixin:
                 timeout=timeout,
                 label=label,
             )
-            if wait_result in {"list", "reopened"}:
+            if wait_result in {"list", "reopened", "list_after_reward", "reopened_after_reward"}:
                 return wait_result
             if wait_result in {"timeout", "detail_still_open"}:
                 back_shape = detail_view.get_shape("空白-返回")
@@ -897,24 +926,26 @@ class MailTaskMixin:
         last_marker_score = 0.0
         last_ocr_at = 0.0
         last_text = ""
+        saw_reward_transition = False
         while True:
             self._raise_if_stopped(stop_event)
             runtime.clear_frame() if hasattr(runtime, "clear_frame") else self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             elapsed = time.monotonic() - start
             detail_scene_id = detail_view.id if isinstance(detail_view.id, int) else None
-            candidates = [scene for scene in [121, 34, detail_scene_id] if isinstance(scene, int)]
+            candidates = [scene for scene in [121, 347, 34, detail_scene_id] if isinstance(scene, int)]
             scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, candidates, update=True)
             last_scene_id, last_score = scene_id, score
             marker_score = 0.0
             marker_matched = False
-            if self._mail_reward_transition_text_matches(text):
+            if scene_id == 347 or self._mail_reward_transition_text_matches(text):
+                saw_reward_transition = True
                 with self._lock:
                     self._status.update(
                         {
-                            "phase": "mail_cleanup_wait_reward_transition",
-                            "current_scene": scene_id,
-                            "message": f"{label}：检测到领取奖励过场，等待自动回到邮件 #121",
+                            "phase": "mail_selective_claim_wait_reward_transition",
+                            "current_scene": 347 if scene_id == 347 else scene_id,
+                            "message": f"{label}：检测到 #347 领取奖励过场，等待自动回到邮件 #121",
                             "updated_at": time.time(),
                         }
                     )
@@ -934,7 +965,7 @@ class MailTaskMixin:
                     with self._lock:
                         self._status.update({"current_scene": 121, "updated_at": time.time()})
                     self._log("success", f"{label}：已到达 #121 {score:.0f}%，邮件标识 {marker_score:.0f}%")
-                    return "list"
+                    return "list_after_reward" if saw_reward_transition else "list"
             if detail_scene_id is not None and scene_id == detail_scene_id and elapsed >= 5.0:
                 self._log("info", f"{label}：领取后仍停留 #{detail_scene_id} {score:.0f}%，提前走详情页返回")
                 return "detail_still_open"
@@ -950,7 +981,7 @@ class MailTaskMixin:
                 reopened = self._reopen_mail_from_current_world_like(runtime)
                 result = (yield from reopened) if isinstance(reopened, GeneratorType) else reopened
                 if result == "success":
-                    return "reopened"
+                    return "reopened_after_reward" if saw_reward_transition else "reopened"
                 self._log("info", f"{label}：从世界页重新打开邮件失败 result={result}，继续等待")
             if self._close_mail_wait_popup_once(ctx, frame):
                 runtime.clear_frame()
@@ -959,7 +990,7 @@ class MailTaskMixin:
             with self._lock:
                 self._status.update(
                     {
-                        "phase": "mail_cleanup_wait_list_or_world",
+                        "phase": "mail_selective_claim_wait_list_or_world",
                         "current_scene": scene_id,
                         "message": (
                             f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} "
@@ -1026,7 +1057,7 @@ class MailTaskMixin:
         return self._world_reward_tip_detected(ctx, frame, text, menu_ocr_lines=menu_ocr_lines)
 
     def _close_mail_world_reward_tip_if_present(self, ctx: dict[str, Any], runtime: FanxiuRuntime, frame: str, text: str) -> bool:
-        return self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label="邮件_清理")
+        return self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label="邮件_选择性领取")
 
     def _close_mail_world_reward_tip_stack_if_present(
         self,
@@ -1081,7 +1112,7 @@ class MailTaskMixin:
         try:
             pcap_paths: list[str] = []
             if flush_capture:
-                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-cleanup:{label}", restart=True)
+                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-selective-claim:{label}", restart=True)
                 pcap_path = str(flush.get("pcap_path") or "").strip() if isinstance(flush, dict) else ""
                 if pcap_path and bool(flush.get("flushed")):
                     pcap_paths.append(pcap_path)
@@ -2479,7 +2510,7 @@ class MailTaskMixin:
         )
         return "processed"
 
-    def _mail_cleanup_delete_probe_candidate(self, row: dict[str, Any]) -> bool:
+    def _mail_selective_claim_delete_probe_candidate(self, row: dict[str, Any]) -> bool:
         if self._mail_row_has_attachment_hint(row):
             return False
         title = str(row.get("title") or "").strip()

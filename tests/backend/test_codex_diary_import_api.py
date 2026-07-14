@@ -935,7 +935,7 @@ def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
                     "thread_title": "邮件清理链路收敛",
                     "project_label": "codeyun",
                     "user_request": "继续调试优化邮件清理功能。",
-                    "assistant_result": "在 mail.py 收敛邮件判定流程，复跑验证邮件_清理结果。",
+                    "assistant_result": "在 mail.py 收敛邮件判定流程，复跑验证邮件_选择性领取结果。",
                     "start_at": start_at + 10 * 60,
                     "end_at": start_at + 30 * 60,
                     "source_entry_id": entries[0].entry_id,
@@ -2165,7 +2165,7 @@ def test_codex_diary_fanxiu_context_overrides_generic_mail_title(
                 "project_label": "CodeYun",
                 "user_request": "修正日常_报备调度口径，排除0点误触发，并继续跑通邮件清理链路。",
                 "assistant_result": (
-                    "持续跑通邮件_清理，将“见到/领取/滚动”接入判断标准；"
+                    "持续跑通邮件_选择性领取，将“见到/领取/滚动”接入判断标准；"
                     "识别小助手链路仍有起点漂移，抓包巡检显示 daemon 与 pcap 进程仍在，"
                     "但 packet_worker 有 ok=false、has_unconfirmed_gap 异常。"
                 ),
@@ -2216,7 +2216,7 @@ def test_codex_diary_classification_ignores_agent_boilerplate_for_fanxiu_goal(
                     "哪怕实际跑成功了一轮，也要再跑，直到某一轮全部处理下来，都没有被清理的邮件。"
                     "</objective></codex_internal_context>"
                 ),
-                "assistant_result": "邮件_清理完成，见到 10 封，领取 0 封，滚动 1 次；doctor 显示 due_tasks=[]。",
+                "assistant_result": "邮件_选择性领取完成，见到 10 封，领取 0 封，滚动 1 次；doctor 显示 due_tasks=[]。",
                 "start_at": start_at,
                 "end_at": start_at + 20 * 60,
             }
@@ -2229,7 +2229,7 @@ def test_codex_diary_classification_ignores_agent_boilerplate_for_fanxiu_goal(
     assert blocks[0]["category_key"] == "legacy_color_67c23a"
 
 
-def test_codex_diary_mail_cleanup_runtime_context_is_fanxiu_without_fanxiu_title(
+def test_codex_diary_mail_selective_claim_runtime_context_is_fanxiu_without_fanxiu_title(
     session: Session,
     auth_user,
 ):
@@ -2252,14 +2252,14 @@ def test_codex_diary_mail_cleanup_runtime_context_is_fanxiu_without_fanxiu_title
         "timezone": ZoneInfo("Asia/Shanghai"),
         "turn_records": [
             {
-                "thread_id": "mail-cleanup:runtime",
+                "thread_id": "mail-selective-claim:runtime",
                 "thread_title": "邮件判定流程收敛",
                 "project_label": "codeyun",
                 "user_request": "收敛邮件判定流程，避免状态误标。",
                 "assistant_result": (
                     "在 mail.py 将“翻页到上限未确认到底”从 success 改为 skipped，"
                     "并写入 retry_after。复跑验证清理结果，输出见到 89 封/滚动 24 后，"
-                    "记录 mail-cleanup 为重试态，不推进到明日批次。"
+                    "记录 mail-selective-claim 为重试态，不推进到明日批次。"
                 ),
                 "start_at": start_at,
                 "end_at": start_at + 70 * 60,

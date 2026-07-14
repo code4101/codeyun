@@ -5092,11 +5092,11 @@ def test_daily_signup_scheduler_task_is_runtime_daily_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_mail_cleanup_is_daily_runtime_task():
-    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup")
+def test_mail_selective_claim_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "mail-selective-claim")
 
-    assert task["task_type"] == "mail_cleanup"
-    assert task["label"] == "邮件_清理"
+    assert task["task_type"] == "mail_selective_claim"
+    assert task["label"] == "邮件_选择性领取"
     assert task["schedule_kind"] == "daily"
     assert task["schedule_times"] == ["00:05"]
     assert task["enabled"] is True
@@ -5105,7 +5105,7 @@ def test_mail_cleanup_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_mail_cleanup_retry_near_daily_trigger_defers_to_next_daily_run():
+def test_legacy_mail_cleanup_retry_is_migrated_and_defers_to_next_daily_run():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -5131,12 +5131,12 @@ def test_mail_cleanup_retry_near_daily_trigger_defers_to_next_daily_run():
         task_supported=_data_annotation_task_supported,
         now=datetime(2026, 6, 14, 15, 30, 0),
     )
-    task = next(item for item in tasks if item["id"] == "mail-cleanup")
+    task = next(item for item in tasks if item["id"] == "mail-selective-claim")
 
     assert changed is True
     assert task["retry_after"] is None
     assert task["next_time"] == "2026-06-15 00:05:00"
-    assert task["checkpoint"] is None
+    assert "checkpoint" not in task
 
 
 def test_xianfu_visit_partner_is_dynamic_runtime_task():
@@ -7077,7 +7077,7 @@ def test_scene_number_does_not_prefetch_unrelated_ocr_identity(monkeypatch):
     assert ocr_calls == []
 
 
-def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monkeypatch):
+def test_mail_selective_claim_leaves_world_side_scene_before_opening_mail(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [])
     image86 = _image("离开场景", "0086.png", [
@@ -7139,11 +7139,11 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
     monkeypatch.setattr(runner, "_ocr_lines", fake_ocr_lines)
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
     monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_mail)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_mail)
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 1, "max_scrolls": 1}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 1, "max_scrolls": 1}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -7153,7 +7153,7 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
     assert opened_mail == [True]
 
 
-def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
+def test_mail_selective_claim_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [
         {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6},
@@ -7187,10 +7187,10 @@ def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
     )
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(
+        lambda: runner._execute_mail_selective_claim_task(
             ctx,
             FakeStopEvent(),
-            {"max_actions": 20, "max_scrolls": 1, "__scheduler_task_id": "mail-cleanup"},
+            {"max_actions": 20, "max_scrolls": 1, "__scheduler_task_id": "mail-selective-claim"},
         ),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
@@ -7198,11 +7198,11 @@ def test_mail_cleanup_scroll_limit_returns_skipped_retry(tmp_path, monkeypatch):
 
     assert result["result"] == "skipped"
     assert "未确认到底" in result["message"]
-    assert retries and retries[0][0] == "mail-cleanup"
+    assert retries and retries[0][0] == "mail-selective-claim"
     assert retries[0][2] == "skipped"
 
 
-def test_mail_cleanup_default_scroll_limit_supports_large_mailbox(tmp_path, monkeypatch):
+def test_mail_selective_claim_default_scroll_limit_supports_large_mailbox(tmp_path, monkeypatch):
     source = (Path(__file__).parents[1] / "core/fanxiu/data_annotation/tasks/mail.py").read_text(encoding="utf-8")
 
     assert 'payload.get("max_scrolls") or 150' in source
@@ -7234,7 +7234,7 @@ def test_xianfu_learn_skill_is_dynamic_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_legacy_mail_claim_check_scheduler_task_is_merged_into_mail_cleanup():
+def test_legacy_mail_claim_check_scheduler_task_is_migrated_to_mail_selective_claim():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -7246,7 +7246,7 @@ def test_legacy_mail_claim_check_scheduler_task_is_merged_into_mail_cleanup():
             "enabled": False,
             "payload": {"__scheduler_definition_task_type": "mail_claim_check"},
         },
-        next(item for item in defaults if item["id"] == "mail-cleanup"),
+        next(item for item in defaults if item["id"] == "mail-selective-claim"),
     ]
 
     tasks, changed = repair_data_annotation_scheduler_tasks(
@@ -7260,7 +7260,7 @@ def test_legacy_mail_claim_check_scheduler_task_is_merged_into_mail_cleanup():
 
     assert changed is True
     assert [(item["id"], item["task_type"], item["label"]) for item in mail_tasks] == [
-        ("mail-cleanup", "mail_cleanup", "邮件_清理")
+        ("mail-selective-claim", "mail_selective_claim", "邮件_选择性领取")
     ]
     assert mail_tasks[0]["payload"]["max_runtime_seconds"] == 3600
 
@@ -7690,13 +7690,14 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
     assert received == {"action_enabled": False}
 
 
-def test_mail_cleanup_observe_only_job_routes_to_legacy_scan():
+def test_legacy_mail_cleanup_alias_resolves_to_selective_claim_observe_only_job():
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
     from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
 
     register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("mail_cleanup")
     assert definition is not None
+    assert definition.task_type == "mail_selective_claim"
     calls: list[str] = []
 
     class FakeRunner:
@@ -7704,7 +7705,7 @@ def test_mail_cleanup_observe_only_job_routes_to_legacy_scan():
             calls.append("legacy")
             return "legacy-result"
 
-        def _execute_mail_cleanup_task(self, _ctx, _stop_event, _payload):
+        def _execute_mail_selective_claim_task(self, _ctx, _stop_event, _payload):
             calls.append("cleanup")
             return "cleanup-result"
 
@@ -7769,7 +7770,7 @@ def test_wait_task_cell_requires_terminal_log_when_removed_and_runtime_idle(monk
     assert result["result"] == "missing_completion_evidence"
 
 
-def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_path, monkeypatch):
+def test_mail_selective_claim_returns_from_detail_when_claim_does_not_auto_close(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     image122 = _image("邮件内容", "0122.png", [
@@ -7821,7 +7822,7 @@ def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_pat
     assert wait_calls == [(122, 123), (121,)]
 
 
-def test_mail_cleanup_reopens_mail_when_claim_returns_to_world(tmp_path, monkeypatch):
+def test_mail_selective_claim_runs_one_key_delete_after_reward_and_reopen(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
@@ -7841,6 +7842,7 @@ def test_mail_cleanup_reopens_mail_when_claim_returns_to_world(tmp_path, monkeyp
     mail = runtime_runner_core._RuntimeMailRow({"title": "测试邮件"}, title_shape)
     clicked: list[str] = []
     reopened: list[bool] = []
+    deleted: list[str] = []
 
     def fake_wait_view(*views, **_kwargs):
         view_ids = tuple(int(view) for view in views)
@@ -7854,11 +7856,18 @@ def test_mail_cleanup_reopens_mail_when_claim_returns_to_world(tmp_path, monkeyp
         reopened.append(True)
         if False:
             yield BehaviorTreeStatus.RUNNING
-        return "reopened"
+        return "reopened_after_reward"
+
+    def fake_delete_read(_runtime, _view, *, reason):
+        deleted.append(reason)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return 121
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
     monkeypatch.setattr(runner, "_wait_mail_list_or_reopen_from_world_after_action", fake_wait_mail_list_or_world)
+    monkeypatch.setattr(runner, "_delete_read_mail_once", fake_delete_read)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
 
     result = runner._run_direct_runtime_action(
@@ -7870,9 +7879,10 @@ def test_mail_cleanup_reopens_mail_when_claim_returns_to_world(tmp_path, monkeyp
     assert result == "claim"
     assert clicked == ["测试邮件", "领取"]
     assert reopened == [True]
+    assert deleted == ["#347 奖励后"]
 
 
-def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
+def test_mail_selective_claim_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
@@ -7902,7 +7912,7 @@ def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
             runtime,
             runtime_runner_core.View(image122),
             timeout=1.0,
-            label="邮件_清理：返回邮件 #121",
+            label="邮件_选择性领取：返回邮件 #121",
         ),
         stop_event=runtime.stop_event,
         tick_seconds=0.01,
@@ -7912,7 +7922,7 @@ def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
     assert events == ["settle", "reopen"]
 
 
-def test_mail_cleanup_wait_treats_reward_overlay_as_transition(tmp_path, monkeypatch):
+def test_mail_selective_claim_wait_treats_reward_overlay_as_transition(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
@@ -7920,10 +7930,11 @@ def test_mail_cleanup_wait_treats_reward_overlay_as_transition(tmp_path, monkeyp
         [{"id": "marker", "kind": "rect", "title": "邮件标识", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.06}],
     )
     image122 = _image("邮件内容", "0122.png", [])
-    ctx = {"images": {121: image121, 122: image122}}
+    image347 = _image("恭喜获得", "0347.png", [])
+    ctx = {"images": {121: image121, 122: image122, 347: image347}}
     runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
     scenes = [
-        (122, 100.0, "reward-frame", "恭喜获得 点击屏幕继续 2秒后自动关闭"),
+        (347, 100.0, "reward-frame", "恭喜获得 点击屏幕继续 2秒后自动关闭"),
         (121, 100.0, "list-frame", "邮件 资源领取通知"),
     ]
 
@@ -7938,17 +7949,65 @@ def test_mail_cleanup_wait_treats_reward_overlay_as_transition(tmp_path, monkeyp
             runtime,
             runtime_runner_core.View(image122),
             timeout=18.0,
-            label="邮件_清理：返回邮件 #121",
+            label="邮件_选择性领取：返回邮件 #121",
         ),
         stop_event=runtime.stop_event,
         tick_seconds=0.01,
     )
 
-    assert result == "list"
+    assert result == "list_after_reward"
     assert scenes == []
 
 
-def test_mail_cleanup_wait_returns_detail_still_open_after_short_delay(tmp_path, monkeypatch):
+def test_mail_selective_claim_deletes_read_and_confirms_348_after_reward(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image(
+        "邮件",
+        "0121.png",
+        [{"id": "delete", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.05}],
+    )
+    image348 = _image(
+        "一键删除确认",
+        "0348.png",
+        [{"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.65, "w": 0.15, "h": 0.05}],
+    )
+    ctx = {"images": {121: image121, 348: image348}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
+    actions: list[tuple] = []
+    waits = iter([runtime_runner_core.View(image348), runtime_runner_core.View(image121)])
+
+    def fake_wait_view(*view_ids, **_kwargs):
+        actions.append(("wait", tuple(view_ids)))
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return next(waits)
+
+    def fake_runtime_click_shape(target, shape, **_kwargs):
+        if isinstance(target, int):
+            actions.append(("confirm", target, shape))
+        else:
+            actions.append(("click", shape.title))
+
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runtime, "click_shape", fake_runtime_click_shape)
+    monkeypatch.setattr(runner, "_refresh_recent_mail_packets_for_runtime_log", lambda *_args, **_kwargs: None)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._delete_read_mail_once(runtime, runtime_runner_core.View(image121), reason="#347 奖励后"),
+        stop_event=runtime.stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == 121
+    assert actions == [
+        ("click", "一键删除"),
+        ("wait", (348, 210, 278, 121)),
+        ("confirm", 348, "确认"),
+        ("wait", (121,)),
+    ]
+
+
+def test_mail_selective_claim_wait_returns_detail_still_open_after_short_delay(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     image122 = _image("邮件内容", "0122.png", [])
@@ -7975,7 +8034,7 @@ def test_mail_cleanup_wait_returns_detail_still_open_after_short_delay(tmp_path,
             runtime,
             runtime_runner_core.View(image122),
             timeout=18.0,
-            label="邮件_清理：返回邮件 #121",
+            label="邮件_选择性领取：返回邮件 #121",
         ),
         stop_event=runtime.stop_event,
         tick_seconds=0.01,
@@ -8357,7 +8416,7 @@ def test_mail_stable_entry_returns_reward_tip_blocker_without_retry(monkeypatch,
     assert visible_calls == ["visible"]
 
 
-def test_mail_cleanup_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {34: _image("世界", "0034.png", [])}}
     stable_results = iter(["blocked_reward_tip"])
@@ -8389,7 +8448,7 @@ def test_mail_cleanup_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_reopen_mail_from_current_world_like", fake_reopen)
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_cleanup_entry(FakeRuntime()),
+        lambda: runner._open_mail_selective_claim_entry(FakeRuntime()),
         stop_event=threading.Event(),
         tick_seconds=0.01,
     )
@@ -8398,7 +8457,7 @@ def test_mail_cleanup_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_pa
     assert reopened == ["reopen"]
 
 
-def test_mail_cleanup_green_bottle_recovery_ignores_mail_page_danyao_text(monkeypatch):
+def test_mail_selective_claim_green_bottle_recovery_ignores_mail_page_danyao_text(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     clicked: list[tuple[int, float, float]] = []
 
@@ -8418,7 +8477,7 @@ def test_mail_cleanup_green_bottle_recovery_ignores_mail_page_danyao_text(monkey
     )
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._leave_green_bottle_to_world_if_present({}, threading.Event(), FakeRuntime(), label="邮件_清理"),
+        lambda: runner._leave_green_bottle_to_world_if_present({}, threading.Event(), FakeRuntime(), label="邮件_选择性领取"),
         stop_event=threading.Event(),
         tick_seconds=0.01,
     )
@@ -9534,7 +9593,7 @@ def test_align_mail_records_from_visible_adjacency_skips_sqlite_lock(monkeypatch
 
     monkeypatch.setattr(mail_tasks, "align_packet_mail_records_claimable_between_visible_neighbors", fake_align)
 
-    result = runner._align_mail_records_from_visible_adjacency(rows, source="mail_cleanup")
+    result = runner._align_mail_records_from_visible_adjacency(rows, source="mail_selective_claim")
 
     assert result["ok"] is True
     assert result["interval_count"] == 1
