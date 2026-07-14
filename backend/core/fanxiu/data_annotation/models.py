@@ -175,7 +175,11 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     retry_after: Optional[str] = None
     cooldown_seconds: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
-    checkpoint: Optional[dict[str, Any]] = None
+    scheduler_meta: Optional[dict[str, Any]] = None
+    attempt_id: Optional[str] = None
+    attempt_kernel_generation: Optional[int] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 class FanxiuDataAnnotationSchedulerTasksResponse(BaseModel):

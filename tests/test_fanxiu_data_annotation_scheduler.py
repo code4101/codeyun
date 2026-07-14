@@ -758,7 +758,7 @@ def test_data_annotation_scheduler_put_does_not_persist_supported_view_field(tmp
         "retry_after": None,
         "cooldown_seconds": 0,
         "payload": {"codes": []},
-        "checkpoint": None,
+        "scheduler_meta": None,
     })
 
     response = fanxiu.put_fanxiu_data_annotation_scheduler_tasks(
@@ -1477,7 +1477,7 @@ def test_data_annotation_scheduler_advance_next_marks_success_for_next_daily_cyc
     assert updated["last_run_at"] == "2026-06-30 23:58:00"
     assert updated["next_time"] == "2026-07-01 23:55:00"
     assert updated["retry_after"] is None
-    assert updated["checkpoint"]["manual_advance_next_at"] == "2026-06-30 23:58:00"
+    assert updated["scheduler_meta"]["manual_advance_next_at"] == "2026-06-30 23:58:00"
 
 
 def test_data_annotation_scheduler_advance_next_marks_success_for_next_weekly_cycle(tmp_path, monkeypatch):
@@ -2445,7 +2445,7 @@ def test_data_annotation_scheduler_restores_daily_runtime_fields_from_world_fact
     assert signup["last_result"] == "success"
     assert signup["last_run_at"] == "2026-06-06 18:51:41"
     assert signup["next_time"] == "2026-06-07 05:00:00"
-    assert signup["checkpoint"]["world_fact_synced_at"]
+    assert signup["scheduler_meta"]["world_fact_synced_at"]
 
 
 def test_data_annotation_task_due_respects_enabled_next_time_and_retry(monkeypatch):
@@ -2725,7 +2725,7 @@ def test_data_annotation_scheduler_plan_uses_world_facts_and_due_tasks(tmp_path,
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"codes": []},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
     fanxiu._record_data_annotation_scheduler_task_fact({"id": "due-gift", "task_type": "gift_code_redeem", "label": "礼包"}, "success")
@@ -2838,7 +2838,7 @@ def test_data_annotation_scheduler_plan_waits_for_non_interruptible_runtime(tmp_
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"codes": []},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
 
@@ -2874,7 +2874,7 @@ def test_data_annotation_scheduler_syncs_dynamic_next_time_from_world_facts(tmp_
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"legacy_name": "日常_首领"},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
     fanxiu._write_data_annotation_world_facts({
@@ -2899,7 +2899,7 @@ def test_data_annotation_scheduler_syncs_dynamic_next_time_from_world_facts(tmp_
     plan_item = next(item for item in plan["tasks"] if item["id"] == "daily-boss")
 
     assert target["next_time"] == "2026-06-02 13:00:00"
-    assert target["checkpoint"]["world_fact_updated_at"] == 123
+    assert target["scheduler_meta"]["world_fact_updated_at"] == 123
     assert target["enabled"] is True
     assert target["last_result"] == ""
     assert plan_item["supported"] is True
@@ -2927,7 +2927,7 @@ def test_data_annotation_scheduler_syncs_retry_after_from_world_facts(tmp_path, 
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"codes": []},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
     fanxiu._write_data_annotation_world_facts({
@@ -2950,7 +2950,7 @@ def test_data_annotation_scheduler_syncs_retry_after_from_world_facts(tmp_path, 
     target = next(item for item in tasks if item["id"] == "gift-code-weekly")
 
     assert target["retry_after"] == "2026-06-02 13:00:00"
-    assert target["checkpoint"]["world_fact_updated_at"] == 456
+    assert target["scheduler_meta"]["world_fact_updated_at"] == 456
 
 
 def test_data_annotation_scheduler_syncs_same_second_skipped_retry_from_world_facts(tmp_path, monkeypatch):
@@ -2975,7 +2975,7 @@ def test_data_annotation_scheduler_syncs_same_second_skipped_retry_from_world_fa
             "retry_after": None,
             "cooldown_seconds": 600,
             "payload": {"max_runtime_seconds": 1800},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
     fanxiu._write_data_annotation_world_facts({
@@ -3245,7 +3245,7 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
             "retry_after": None,
             "cooldown_seconds": 600,
             "payload": {"max_runtime_seconds": 7200},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
     runner = create_fanxiu_runtime_runner()
@@ -5648,6 +5648,8 @@ def test_data_annotation_scheduler_preserves_mojie_raid_week_complete_next_time(
 
     mojie = next(item for item in tasks if item["id"] == "legacy-daily-mojie-raid")
     assert mojie["next_time"] == "2026-07-06 13:00:00"
+    assert mojie["scheduler_meta"]["world_fact_updated_at"] == 1783155901.0
+    assert "checkpoint" not in mojie
 
 
 def test_fanxiu_runtime_wait_click_ocr_floating_child_uses_shape_center(monkeypatch):
@@ -10377,7 +10379,7 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
             "retry_after": None,
             "cooldown_seconds": 0,
                 "payload": {"legacy_name": "日常_灵泉"},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
     ])
 
@@ -10398,6 +10400,14 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
 
 def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    selected = {}
+
+    def fake_run_selected(**kwargs):
+        selected.update(kwargs["task"])
+        return {"running": False, "phase": "done", "status": "success", "message": "测试任务已执行"}
+
+    monkeypatch.setattr(runtime_control, "prepare_runtime_for_scheduler_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime_control, "_run_scheduler_task_cell_and_record_terminal", fake_run_selected)
     disabled_signup = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-signup").copy()
     disabled_signup["enabled"] = False
     disabled_mail = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup").copy()
@@ -10423,7 +10433,7 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"legacy_name": "日常_灵泉"},
-            "checkpoint": None,
+            "scheduler_meta": None,
         },
         {
             "id": "gift-code-weekly",
@@ -10443,7 +10453,7 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"codes": ["煮梅消夏"]},
-            "checkpoint": None,
+            "scheduler_meta": None,
         },
         disabled_signup,
         disabled_mail,
@@ -10456,12 +10466,20 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
     )
 
     assert response.running is False
-    assert response.phase == "scheduler_due_queued"
-    assert response.message == "已唤醒常驻行为树执行到期任务：日常_助手"
+    assert response.phase == "done"
+    assert selected["id"] == "legacy-daily-assistant"
 
 
 def test_data_annotation_run_due_endpoint_queues_synced_default_assistant_task(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    selected = {}
+
+    def fake_run_selected(**kwargs):
+        selected.update(kwargs["task"])
+        return {"running": False, "phase": "done", "status": "success", "message": "测试任务已执行"}
+
+    monkeypatch.setattr(runtime_control, "prepare_runtime_for_scheduler_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime_control, "_run_scheduler_task_cell_and_record_terminal", fake_run_selected)
     disabled_signup = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-signup").copy()
     disabled_signup["enabled"] = False
     disabled_mail = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup").copy()
@@ -10487,7 +10505,7 @@ def test_data_annotation_run_due_endpoint_queues_synced_default_assistant_task(t
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"legacy_name": "日常_灵泉"},
-            "checkpoint": None,
+            "scheduler_meta": None,
         },
         disabled_signup,
         disabled_mail,
@@ -10501,8 +10519,8 @@ def test_data_annotation_run_due_endpoint_queues_synced_default_assistant_task(t
     )
 
     assert response.running is False
-    assert response.phase == "scheduler_due_queued"
-    assert response.message == "已唤醒常驻行为树执行到期任务：日常_助手"
+    assert response.phase == "done"
+    assert selected["id"] == "legacy-daily-assistant"
 
 
 def test_data_annotation_guard_endpoint_persists_switch_state(tmp_path, monkeypatch):
@@ -10851,7 +10869,7 @@ def test_data_annotation_runtime_status_corrects_stale_running_after_backend_rel
     assert status["guard_running"] is False
     assert status["kernel"]["execution_state"] in {"idle", "busy", "dead"}
     assert status["status"] == "stopped"
-    assert status["message"] == "Kernel 已重载，先前业务任务已结束"
+    assert status["message"] == "执行进程已重载，先前业务任务已结束"
     assert any(item["message"] == "旧日志" for item in status["logs"])
     assert persisted["running"] is False
     assert persisted["guard_enabled"] is True
@@ -11801,10 +11819,13 @@ def test_mail_cleanup_detail_timeout_still_runs_delete_read_cleanup(tmp_path, mo
                 yield None
             return return_value
 
-        def scroll_shape_content(self, _shape):
+        def scroll_shape_content(self, _shape, **_kwargs):
             if False:
                 yield None
             return False
+
+        def observe_scroll_content(self, *_args, **_kwargs):
+            return True
 
     fake_runtime = FakeRuntime()
 
@@ -11812,6 +11833,7 @@ def test_mail_cleanup_detail_timeout_still_runs_delete_read_cleanup(tmp_path, mo
     monkeypatch.setattr(mail_tasks, "ensure_fanxiu_capture_runtime_backstop", lambda _reason: {"ensured": True, "status": {"state": "running"}})
     monkeypatch.setattr(runner, "_wait_mail_capture_runtime_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", lambda _runtime: (_ for _ in ()))
     monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件 一键删除"))
     monkeypatch.setattr(runner, "_refresh_recent_mail_packets_for_runtime_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_align_mail_records_from_visible_adjacency", lambda *_args, **_kwargs: {"updated": 0})
@@ -11897,10 +11919,13 @@ def test_mail_cleanup_read_mail_probes_detail_delete_before_bulk_cleanup(tmp_pat
                 yield None
             return return_value
 
-        def scroll_shape_content(self, _shape):
+        def scroll_shape_content(self, _shape, **_kwargs):
             if False:
                 yield None
             return False
+
+        def observe_scroll_content(self, *_args, **_kwargs):
+            return True
 
     fake_runtime = FakeRuntime()
 
@@ -11908,6 +11933,7 @@ def test_mail_cleanup_read_mail_probes_detail_delete_before_bulk_cleanup(tmp_pat
     monkeypatch.setattr(mail_tasks, "ensure_fanxiu_capture_runtime_backstop", lambda _reason: {"ensured": True, "status": {"state": "running"}})
     monkeypatch.setattr(runner, "_wait_mail_capture_runtime_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: fake_runtime)
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", lambda _runtime: (_ for _ in ()))
     monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件 一键删除"))
     monkeypatch.setattr(runner, "_refresh_recent_mail_packets_for_runtime_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_align_mail_records_from_visible_adjacency", lambda *_args, **_kwargs: {"updated": 0})
@@ -12107,7 +12133,7 @@ def test_data_annotation_mark_scheduler_task_skipped_retries_without_advancing_d
     assert task["retry_after"] == "2026-06-02 06:10:00"
 
 
-def test_generic_runtime_task_with_scheduler_id_marks_skipped_retry(tmp_path, monkeypatch):
+def test_generic_runtime_task_does_not_mutate_external_scheduler_state(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12154,10 +12180,10 @@ def test_generic_runtime_task_with_scheduler_id_marks_skipped_retry(tmp_path, mo
     )
 
     updated = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-xianshi")
-    assert updated["last_result"] == "skipped"
-    assert updated["last_run_at"] == "2026-06-02 06:00:00"
-    assert updated["next_time"] is None
-    assert updated["retry_after"] == "2026-06-02 06:10:00"
+    assert updated["last_result"] == "queued"
+    assert updated.get("last_run_at") is None
+    assert updated["next_time"] == "2026-06-02 05:00:00"
+    assert updated["retry_after"] is None
 
 
 def test_data_annotation_mark_scheduler_task_skipped_uses_discovered_recheck_time(tmp_path, monkeypatch):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import threading
+from types import GeneratorType
 from pathlib import Path
 
 from backend.core.fanxiu.data_annotation import runtime_framework
@@ -135,7 +137,7 @@ def test_scheduler_arbitration_stays_outside_kernel() -> None:
     assert "submit_runtime_task_cell" in scheduler_source
 
 
-def test_busy_kernel_preserves_persisted_business_running_state(monkeypatch) -> None:
+def test_busy_kernel_does_not_revive_persisted_business_attempt(monkeypatch) -> None:
     monkeypatch.setattr(runtime_control, "read_runtime_status", lambda path=None: {
         "running": True,
         "status": "running",
@@ -156,6 +158,55 @@ def test_busy_kernel_preserves_persisted_business_running_state(monkeypatch) -> 
 
     status = runtime_control.runtime_status()
 
-    assert status["running"] is True
+    assert status["running"] is False
+    assert status["status"] == "stopped"
+    assert status["message"] == "执行进程已重载，先前业务任务已结束"
     assert status["current_task"] == "demo"
     assert status["kernel"]["execution_state"] == "busy"
+
+
+def test_formal_task_resets_to_stable_anchor_before_business_steps() -> None:
+    from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
+    from backend.core.fanxiu.runtime.jupyter_kernel import FanxiuJupyterBinding
+
+    events = []
+
+    @register_fanxiu_data_annotation_task_cell("test_atomic_job", "测试原子作业", scheduler_supported=True)
+    def handler(_runner, _ctx, _payload, _stop_event):
+        events.append("business")
+        return "success"
+
+    class Runtime:
+        def goto_view(self, scene_id):
+            events.append(("reset", scene_id))
+            if False:
+                yield None
+
+    class Runner:
+        @staticmethod
+        def _task_timeout_seconds(_payload):
+            return 60.0
+
+        @staticmethod
+        def _runtime_guard_override_from_payload(_payload):
+            return None
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.runtime = Runtime()
+    binding.runtime_ctx = {}
+    binding.stop_event = threading.Event()
+
+    def drain(value, **_kwargs):
+        if not isinstance(value, GeneratorType):
+            return value
+        while True:
+            try:
+                next(value)
+            except StopIteration as stop:
+                return stop.value
+
+    binding.run = drain
+
+    assert binding.run_task("test_atomic_job", {}) == "success"
+    assert events == [("reset", 34), "business"]

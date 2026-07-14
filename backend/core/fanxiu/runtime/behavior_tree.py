@@ -334,17 +334,17 @@ def fanxiu_data_annotation_runtime_status(
     if persisted and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
         status["updated_at"] = time.time()
-        if persisted.get("running") and kernel_state.get("execution_state") != "busy":
+        if persisted.get("running"):
             status["running"] = False
             status["guard_running"] = False
             status["status"] = "stopped"
             status["phase"] = "stopped"
-            status["message"] = "Kernel 已重载，先前业务任务已结束"
+            status["message"] = "执行进程已重载，先前业务任务已结束"
             status["finished_at"] = status.get("finished_at") or time.time()
             append_data_annotation_runtime_log_once(
                 status,
                 "stop",
-                "Kernel 已重载，先前业务任务已结束",
+                "执行进程已重载，先前业务任务已结束",
                 time_text=datetime.now().strftime("%H:%M:%S"),
             )
     status["kernel"] = kernel_state

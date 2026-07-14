@@ -9,7 +9,9 @@ Runtime 是加载在凡修 Jupyter Kernel 中的业务框架，不是第二个�
 - 当前帧、OCR、shape、scene 与资产树访问；
 - 点击、长按、拖拽、输入和等待；
 - task、guard、generator 的推进；
-- 业务日志、最终结果和 Scheduler 事实回写。
+- 业务日志、本次业务结果和可供 Scheduler 消费的发现事实。
+
+Runtime 只返回本次业务结果并可发布业务发现事实；`last_result / retry_after / attempt` 的权威终态由 Kernel 外 Scheduler 写回，Runtime 不直接推进 Scheduler 状态机。
 
 正式任务和调试代码都通过普通 Cell 进入同一 Kernel。`/data-annotation/runtime/cells/task` 只把已注册任务构造成 Cell；`/data-annotation/runtime/cells/code` 直接提交 Python Cell。
 
@@ -21,9 +23,12 @@ Scheduler 位于 Kernel 外，持久化：
 - `enabled`、schedule kind、规则；
 - `next_time`、`retry_after`；
 - `last_run_at`、`last_result`、最终消息；
+- 当前执行尝试 id、Kernel generation、开始/结束时间；
 - 业务所需 payload。
 
-到期判断只读取这些事实。到期时 Scheduler 选择一个任务，构造 `run_task(...)` Cell，提交当前 Kernel并等待最终结果。下一次调度重新读取最新事实，不保存“上次做到第几步”的进程外 checkpoint。
+到期判断只读取这些事实。到期时 Scheduler 选择一个任务，构造 `run_task(...)` Cell，提交当前 Kernel并等待最终结果。下一次调度重新读取最新事实，不保存“上次做到第几步”的业务进度。
+
+`scheduler_meta` 只允许保存世界事实同步时间、阻断原因和人工调度备注等调度元数据；不得保存 scene、step、generator 或业务游标。
 
 工程、AI 和人工来源的优先级及模拟器独占仲裁属于 Scheduler / Dispatch Arbiter。Kernel 不保存来源锁，也不消费 Scheduler 队列。当前 Jupyter shell 自身按协议串行执行 Cell；来源仲裁不得被实现为 Kernel 内 JSON queue。
 
@@ -37,6 +42,8 @@ Scheduler 位于 Kernel 外，持久化：
 4. 只写最终结果、下次触发或重试时间。
 
 同一个 Cell 内的 generator 可以跨 tick 保留内存进度；Kernel restart、后端重载或下一次 Scheduler 触发不得恢复旧业务中间步骤。
+
+故障处理固定为：旧执行尝试作废 -> Scheduler 写失败和 `retry_after` -> 新 Cell 回稳定起点 -> 整单重跑。禁止把 Kernel 级故障降格为业务步骤级续跑。
 
 AI/人工逐步调试可以提交多段 Cell，因为上下文由当前会话持有；调试分段不得沉淀为工程作业的自动恢复状态机。
 

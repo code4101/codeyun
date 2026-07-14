@@ -108,7 +108,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
             value={
                 "items": [
                     {"key": "general", "label": "综合", "color": "#606266", "order": 0},
-                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 10},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "description": "CodeYun 本体的通用功能与工程事项。", "order": 10},
                     {"key": "bug", "label": "缺陷", "color": "#F56C6C", "order": 20},
                     {"key": "project", "label": "项目", "color": "#7B1FA2", "order": 30},
                     {"key": "module", "label": "模块", "color": "#BA68C8", "order": 40},
@@ -162,6 +162,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     assert kwargs["model"] == "deepseek-chat"
     assert "仅根据当前节点标题" in kwargs["system_prompt"]
     assert "修复登录代理地址" in kwargs["messages"][0]["content"]
+    assert "custom_codeyun_general | CodeYun/综合 | CodeYun 本体的通用功能与工程事项。" in kwargs["messages"][0]["content"]
     assert "本地回环地址" not in kwargs["messages"][0]["content"]
     assert "- 修复系统代理地址 | custom_codeyun_general(CodeYun/综合) | note(笔记) | doing(待办)" in kwargs["messages"][0]["content"]
     assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" not in kwargs["messages"][0]["content"]
@@ -211,6 +212,46 @@ def test_ai_categorize_note_forces_fanxiu_for_zhenxie_title(client, session, aut
     prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
     assert "命中领域专有词：镇邪、日常镇邪" in prompt
     assert "应归入 legacy_fanxiu(凡修)" in prompt
+
+
+def test_ai_categorize_note_forces_zaohua_domain_over_codeyun_note(client, session, auth_user):
+    note = _make_note(
+        "note-ai-categorize-zaohua",
+        auth_user.id,
+        "造化仙缘天道插件",
+        primary_category="custom_codeyun_note",
+        lifecycle_stage="done",
+    )
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 10},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
+                    {"key": "造化仙缘", "label": "造化仙缘", "color": "#9B2A20", "order": 30},
+                ]
+            },
+        )
+    )
+    session.add(note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"custom_codeyun_note","note_form":"note","lifecycle_stage":"done"}',
+        },
+    ):
+        response = client.post(
+            f"/api/notes/{note.numeric_id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["note"]["primary_category"] == "造化仙缘"
 
 
 def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, session, auth_user):

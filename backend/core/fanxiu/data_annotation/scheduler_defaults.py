@@ -39,7 +39,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": payload or {},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     def legacy_dynamic_task(task_id: str, legacy_name: str, *, fallback_minutes: int | None = None) -> dict[str, Any]:
@@ -61,7 +61,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": (fallback_minutes or 0) * 60,
             "payload": {"legacy_name": legacy_name, **({"fallback_minutes": fallback_minutes} if fallback_minutes else {})},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     def legacy_daily_task(
@@ -91,7 +91,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": payload,
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     def runtime_daily_task(
@@ -123,7 +123,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": cooldown_seconds,
             "payload": payload or {},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     def runtime_weekly_task(
@@ -157,7 +157,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": cooldown_seconds,
             "payload": payload or {},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     def runtime_dynamic_task(
@@ -188,7 +188,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": cooldown_seconds,
             "payload": payload or {},
-            "checkpoint": None,
+            "scheduler_meta": None,
         }
 
     return [
@@ -210,7 +210,7 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "retry_after": None,
             "cooldown_seconds": 0,
             "payload": {"codes": []},
-            "checkpoint": None,
+            "scheduler_meta": None,
         },
         manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
         manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗"),

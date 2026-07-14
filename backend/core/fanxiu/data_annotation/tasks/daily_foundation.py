@@ -1080,9 +1080,6 @@ class DailyFoundationTaskMixin:
             label="日常_灵祖",
             last_result="success",
         )
-        if scheduler_task_id:
-            tasks = _read_data_annotation_scheduler_tasks()
-            self._mark_scheduler_task(tasks, scheduler_task_id, "success")
         self._log("success", f"日常_灵祖：{message}，下次 {next_time}")
         return next_time
 
@@ -4815,8 +4812,8 @@ class DailyFoundationTaskMixin:
             self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
             return "manual_check_pending"
         yield from self._daily_dongtian_continue_enemy_occupation(runtime)
-        # TODO(fanxiu-dongtian-clear-incomplete): 下一次从 #346「继续」的真实落点继续。
-        self._log("warning", f"洞天_行动力：已走到敌对地点「{clicked_place}」的 #346「继续」，作业尚未闭环，后续状态待补")
+        # 本轮实现尚未闭环；下次调度必须从稳定起点整单重跑，不能从 #346 续接。
+        self._log("warning", f"洞天_行动力：本轮走到敌对地点「{clicked_place}」的 #346「继续」后停止；下次从稳定起点整单重跑")
         return "manual_check_pending"
 
     def _daily_dongtian_enemy_places_from_latest_packet(self, payload: dict[str, Any]) -> list[str]:

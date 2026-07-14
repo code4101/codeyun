@@ -436,6 +436,17 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
         return None
     if isinstance(item, dict) and item.get("last_message"):
         task["last_message"] = str(item["last_message"])
+    if isinstance(item, dict):
+        scheduler_meta = item.get("scheduler_meta")
+        if not isinstance(scheduler_meta, dict) and isinstance(item.get("checkpoint"), dict):
+            scheduler_meta = item.get("checkpoint")
+        if isinstance(scheduler_meta, dict):
+            task["scheduler_meta"] = dict(scheduler_meta)
+        else:
+            task.pop("scheduler_meta", None)
+        for key in ("attempt_id", "attempt_kernel_generation", "started_at", "finished_at"):
+            task[key] = item.get(key)
+    task.pop("checkpoint", None)
     template_id = str(task.get("template_id") or task.get("task_type") or "").strip()
     template_label = str(task.get("template_label") or task.get("label") or template_id).strip()
     source = str(task.get("source") or "").strip()

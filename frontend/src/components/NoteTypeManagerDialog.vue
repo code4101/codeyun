@@ -162,7 +162,7 @@ const sortedDraftItems = computed(() => [...draftItems.value].sort((left, right)
 }));
 
 const syncDraft = async () => {
-  await ensureNoteTypePaletteLoaded();
+  await ensureNoteTypePaletteLoaded(true);
   const items = getEditableNoteTypePaletteItems();
   draftItems.value = cloneItems(items);
   persistedKeys.value = items.map(item => item.key);

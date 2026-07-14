@@ -222,7 +222,15 @@ onMounted(() => {
 });
 
 watch(popoverVisible, value => {
-  if (!value) showAddOptions.value = false;
+  if (!value) {
+    showAddOptions.value = false;
+    return;
+  }
+  // The backend palette is authoritative. Refresh when the user opens the
+  // selector so every currently available category and its latest color show.
+  ensureNoteTypePaletteLoaded(true).catch(error => {
+    console.warn('Failed to refresh note category palette:', error);
+  });
 });
 
 const isSelected = (typeKey: string) => normalizedValue.value.some(item => item.key === typeKey);

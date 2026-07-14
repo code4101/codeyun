@@ -92,6 +92,10 @@ def test_scheduler_task_cell_records_terminal_success(monkeypatch):
         lambda **_kwargs: {"status": "success", "message": "done"},
     )
     monkeypatch.setattr(runtime_control, "next_scheduler_time", lambda task, now=None: "2026-07-14 12:30:00")
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "idle", "generation": 7},
+    )
 
     result = runtime_control._run_scheduler_task_cell_and_record_terminal(
         entry=object(),
@@ -104,6 +108,71 @@ def test_scheduler_task_cell_records_terminal_success(monkeypatch):
     assert state[0]["last_message"] == "done"
     assert state[0]["next_time"] == "2026-07-14 12:30:00"
     assert [item[0] for item in facts] == ["running", "success"]
+
+
+def test_scheduler_task_cell_preserves_business_terminal_result(monkeypatch):
+    state = [{
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "schedule_kind": "daily",
+        "next_time": "2026-07-13 12:30:00",
+        "last_result": "",
+        "cooldown_seconds": 60,
+    }]
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "idle", "generation": 7},
+    )
+    monkeypatch.setattr(
+        runtime_control,
+        "submit_runtime_task_cell",
+        lambda **_kwargs: {
+            "status": "success",
+            "message": "Jupyter cell 执行完成",
+            "result_text": "{'result': 'skipped', 'message': '稍后重试'}",
+        },
+    )
+
+    runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    assert state[0]["last_result"] == "skipped"
+    assert state[0]["last_message"] == "稍后重试"
+    assert state[0]["next_time"] is None
+    assert state[0]["retry_after"]
+    assert state[0]["attempt_id"] is None
+
+
+def test_scheduler_invalidates_orphaned_attempt_for_whole_job_retry(monkeypatch):
+    tasks = [{
+        "id": "daily-a",
+        "last_result": "running",
+        "attempt_id": "old-attempt",
+        "attempt_kernel_generation": 6,
+        "cooldown_seconds": 60,
+    }]
+    written = []
+    facts = []
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "busy", "generation": 7},
+    )
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda value, **_kwargs: written.append(deepcopy(value)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda task, result, **_kwargs: facts.append((task["id"], result)))
+
+    changed = runtime_control.reconcile_stale_scheduler_attempts(tasks)
+
+    assert changed is True
+    assert tasks[0]["last_result"] == "error"
+    assert tasks[0]["attempt_id"] is None
+    assert "整单重试" in tasks[0]["last_message"]
+    assert written and facts == [("daily-a", "error")]
 
 
 def test_prepare_scheduler_task_waits_when_kernel_busy(monkeypatch, tmp_path):

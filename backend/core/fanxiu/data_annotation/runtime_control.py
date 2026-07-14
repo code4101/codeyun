@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import time
+import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -445,7 +447,9 @@ def reset_scheduler_task_runs(
         "last_result",
         "last_message",
         "retry_after",
-        "checkpoint",
+        "scheduler_meta",
+        "attempt_id",
+        "attempt_kernel_generation",
         "started_at",
         "finished_at",
         "world_fact_synced_at",
@@ -617,14 +621,14 @@ def runtime_status(
     if persisted and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
         status["updated_at"] = time.time()
-        if persisted.get("running") and kernel_state.get("execution_state") != "busy":
+        if persisted.get("running"):
             status["running"] = False
             status["guard_running"] = False
             status["status"] = "stopped"
             status["phase"] = "stopped"
-            status["message"] = "后端已重载，运行状态已结束"
+            status["message"] = "执行进程已重载，先前业务任务已结束"
             status["finished_at"] = status.get("finished_at") or time.time()
-            append_runtime_log_once(status, "stop", "后端已重载，运行状态已结束")
+            append_runtime_log_once(status, "stop", "执行进程已重载，先前业务任务已结束")
         elif persisted.get("guard_enabled") or persisted.get("guard_running"):
             status["guard_running"] = False
             status["status"] = "idle"
@@ -837,11 +841,17 @@ def build_scheduler_plan(
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    reconcile_stale_scheduler_attempts(
+        tasks,
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
     plan = build_data_annotation_scheduler_plan(
-        read_scheduler_tasks(
-            scheduler_state_path=scheduler_state_path,
-            world_facts_path=world_facts_path,
-        ),
+        tasks,
         fanxiu_runtime_runner_status(),
         read_world_facts(world_facts_path),
         scheduler_state_path or fanxiu_data_annotation_scheduler_state_path(),
@@ -914,12 +924,12 @@ def mark_due_scheduler_tasks_blocked(
         if task_id not in due_ids:
             continue
         task["last_result"] = "blocked"
-        checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-        checkpoint = dict(checkpoint)
-        manual_note = checkpoint.pop("manual_inspection_note", None)
+        scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+        scheduler_meta = dict(scheduler_meta)
+        manual_note = scheduler_meta.pop("manual_inspection_note", None)
         if manual_note:
-            checkpoint["previous_manual_inspection_note"] = manual_note
-        task["checkpoint"] = {**checkpoint, "blocked_message": message, "blocked_at": now_ts}
+            scheduler_meta["previous_manual_inspection_note"] = manual_note
+        task["scheduler_meta"] = {**scheduler_meta, "blocked_message": message, "blocked_at": now_ts}
         task["retry_after"] = None
         changed = True
         record_scheduler_task_fact(task, "blocked", world_facts_path=world_facts_path)
@@ -929,6 +939,71 @@ def mark_due_scheduler_tasks_blocked(
 
 def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
     return scheduled_task_payload_with_meta(task)
+
+
+def _task_result_from_cell(result: dict[str, Any]) -> tuple[str, str]:
+    if str(result.get("status") or "error") != "success":
+        return "error", str(result.get("error") or result.get("message") or "Cell 执行失败")
+    raw = str(result.get("result_text") or "").strip()
+    if raw:
+        try:
+            payload = ast.literal_eval(raw)
+        except (SyntaxError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            task_result = str(payload.get("result") or "success").strip() or "success"
+            return task_result, str(payload.get("message") or result.get("message") or "").strip()
+    return "success", str(result.get("message") or "Cell 执行完成")
+
+
+def reconcile_stale_scheduler_attempts(
+    tasks: list[dict[str, Any]],
+    *,
+    scheduler_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> bool:
+    """Invalidate orphaned attempts; recovery is a later whole-job Scheduler retry."""
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    kernel = fanxiu_kernel_manager_status()
+    kernel_busy = str(kernel.get("execution_state") or "") == "busy"
+    kernel_generation = kernel.get("generation")
+    now = datetime.now()
+    changed = False
+    for task in tasks:
+        if str(task.get("last_result") or "") != "running":
+            continue
+        attempt_generation = task.get("attempt_kernel_generation")
+        generation_changed = (
+            attempt_generation is not None
+            and kernel_generation is not None
+            and attempt_generation != kernel_generation
+        )
+        same_live_generation = (
+            kernel_busy
+            and not generation_changed
+        )
+        if same_live_generation:
+            continue
+        started_at = task.get("started_at") or task.get("last_run_at")
+        try:
+            attempt_age = (now - datetime.strptime(str(started_at), "%Y-%m-%d %H:%M:%S")).total_seconds()
+        except (TypeError, ValueError):
+            attempt_age = None
+        if not generation_changed and attempt_age is not None and attempt_age < 15.0:
+            continue
+        cooldown = max(30, int(task.get("cooldown_seconds") or 300))
+        task["last_result"] = "error"
+        task["last_message"] = "先前 Cell/Kernel 执行尝试已作废；等待 Scheduler 整单重试"
+        task["finished_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        task["retry_after"] = (now + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
+        task["attempt_id"] = None
+        task["attempt_kernel_generation"] = None
+        record_scheduler_task_fact(task, "error", world_facts_path=world_facts_path)
+        changed = True
+    if changed:
+        write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    return changed
 
 
 def _run_scheduler_task_cell_and_record_terminal(
@@ -942,6 +1017,10 @@ def _run_scheduler_task_cell_and_record_terminal(
     """Submit one ordinary task Cell and keep Scheduler state orthogonal and terminal."""
     started = datetime.now()
     started_text = started.strftime("%Y-%m-%d %H:%M:%S")
+    from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
+
+    kernel_generation = fanxiu_kernel_manager_status().get("generation")
+    attempt_id = uuid.uuid4().hex
     tasks = read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
@@ -952,6 +1031,10 @@ def _run_scheduler_task_cell_and_record_terminal(
     state_task["last_run_at"] = started_text
     state_task["last_result"] = "running"
     state_task["last_message"] = "已向 Fanxiu Kernel 提交普通 Cell"
+    state_task["started_at"] = started_text
+    state_task["finished_at"] = None
+    state_task["attempt_id"] = attempt_id
+    state_task["attempt_kernel_generation"] = kernel_generation
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
     record_scheduler_task_fact(state_task, "running", world_facts_path=world_facts_path)
 
@@ -970,11 +1053,13 @@ def _run_scheduler_task_cell_and_record_terminal(
         world_facts_path=world_facts_path,
     )
     state_task = next((item for item in tasks if item.get("id") == task.get("id")), None) or dict(task)
-    result_status = str(result.get("status") or "error")
-    if result_status == "success":
+    if state_task.get("attempt_id") != attempt_id:
+        return result
+    task_result, task_message = _task_result_from_cell(result)
+    if task_result == "success":
         state_task["last_result"] = "success"
         state_task["last_run_at"] = started_text
-        state_task["last_message"] = str(result.get("message") or "Cell 执行完成")
+        state_task["last_message"] = task_message or "Cell 执行完成"
         state_task["retry_after"] = None
         next_time = str(state_task.get("next_time") or "")
         try:
@@ -983,12 +1068,22 @@ def _run_scheduler_task_cell_and_record_terminal(
             next_at = None
         if next_at is None or next_at <= started:
             state_task["next_time"] = next_scheduler_time(state_task, datetime.now())
-    else:
-        state_task["last_result"] = "error"
+    elif task_result == "manual_check_pending":
+        state_task["last_result"] = task_result
         state_task["last_run_at"] = started_text
-        state_task["last_message"] = str(result.get("error") or result.get("message") or "Cell 执行失败")
+        state_task["last_message"] = task_message or "作业等待人工确认"
+        state_task["next_time"] = None
+        state_task["retry_after"] = None
+    else:
+        state_task["last_result"] = task_result if task_result in {"error", "stopped", "skipped", "unsupported"} else "error"
+        state_task["last_run_at"] = started_text
+        state_task["last_message"] = task_message or "Cell 执行失败"
         cooldown = max(30, int(state_task.get("cooldown_seconds") or 300))
         state_task["retry_after"] = (datetime.now() + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
+        state_task["next_time"] = None
+    state_task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state_task["attempt_id"] = None
+    state_task["attempt_kernel_generation"] = None
     replaced = False
     for index, item in enumerate(tasks):
         if item.get("id") == state_task.get("id"):
@@ -999,7 +1094,13 @@ def _run_scheduler_task_cell_and_record_terminal(
         tasks.append(state_task)
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
     record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
-    return result
+    return {
+        **result,
+        "status": task_result,
+        "phase": "done" if task_result in {"success", "skipped", "unsupported", "manual_check_pending"} else task_result,
+        "message": task_message or str(result.get("message") or ""),
+        "task_result": task_result,
+    }
 
 
 def next_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
@@ -1094,6 +1195,11 @@ def run_now_scheduler_task(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
     )
+    reconcile_stale_scheduler_attempts(
+        tasks,
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
     state_task = next((item for item in tasks if item.get("id") == task_id), None)
     run_task = data_annotation_scheduler_run_now_task(tasks, task_id, payload_override)
     if state_task is None or run_task is None:
@@ -1111,14 +1217,12 @@ def run_now_scheduler_task(
     )
     if blocked_status is not None:
         return blocked_status
-    state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state_task["last_result"] = "running"
-    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-    return submit_runtime_task_cell(
+    return _run_scheduler_task_cell_and_record_terminal(
         entry=entry,
         entry_id=entry_id,
-        task_type=str(run_task.get("task_type") or ""),
-        payload=task_payload_with_meta(run_task),
+        task=run_task,
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
     )
 
 
@@ -1155,6 +1259,11 @@ def run_due_scheduler_tasks(
         persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         return status
     tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    reconcile_stale_scheduler_attempts(
+        tasks,
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
     )

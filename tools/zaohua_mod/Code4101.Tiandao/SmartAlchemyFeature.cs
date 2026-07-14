@@ -567,7 +567,7 @@ namespace Code4101.Zaohua.Tiandao
             var furnaceCfg = data.GetCraftingItemCfg(Furnace.itemId.sedId);
             var furnaceShape = furnaceCfg == null ? "" :
                 $"{furnaceCfg.yangGridSize.x}x{furnaceCfg.yangGridSize.y}:{furnaceCfg.yinGridSize.x}x{furnaceCfg.yinGridSize.y}";
-            return $"solver-v5|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
+            return $"solver-v6|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
                    $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}:{furnaceShape}:" +
                    $"count+{globalCountBonus}:quality+{globalQualityBonus}|" +
                    string.Join(";", Herbs.OrderBy(stock => stock.ItemId.sedId)
@@ -615,8 +615,8 @@ namespace Code4101.Zaohua.Tiandao
                 var card = ABMgr.InstantiateObj(_cell.view.craftingLogInfoCellPrefab, _smartContent);
                 card.gameObject.name = $"Code4101SmartSolution_{index + 1}";
                 card.SetInfo(solution.ToTemplate(_solvedRecipe, index), false, false);
-                AppendPlantingCost(card, solution, _solvedRecipe);
-                NormalizeSmartSolutionCard(card);
+                var plantingCost = CreatePlantingCostField(card, solution, _solvedRecipe);
+                NormalizeSmartSolutionCard(card, plantingCost);
                 _smartResultObjects.Add(card.gameObject);
             }
             if (count < visibleSolutions.Count)
@@ -626,21 +626,27 @@ namespace Code4101.Zaohua.Tiandao
             LayoutRebuilder.ForceRebuildLayoutImmediate(_smartContent);
         }
 
-        private static void AppendPlantingCost(
+        private static TextPro CreatePlantingCostField(
             CraftingLogInfoCell card,
             AlchemySolution solution,
             TbDrugRecipeCfg recipe)
         {
-            if (card?.txtAttrLimit == null || solution == null || recipe == null) return;
+            if (card?.txtAttrLimit == null || solution == null || recipe == null) return null;
             var totalPillCount = recipe.count + solution.TotalCountBonus;
-            if (totalPillCount <= 0) return;
+            if (totalPillCount <= 0) return null;
 
             var daysPerPill = (double)solution.PlantingDays / totalPillCount;
             var cost = daysPerPill > 300d
                 ? (daysPerPill / 360d).ToString("F2", CultureInfo.InvariantCulture) + "年"
                 : daysPerPill.ToString("F2", CultureInfo.InvariantCulture) + "天";
-            var prefix = string.IsNullOrWhiteSpace(card.txtAttrLimit.text) ? "" : "\n";
-            card.txtAttrLimit.text += prefix + $"每丹种植成本： {cost}";
+            var field = Instantiate(card.txtAttrLimit, card.txtAttrLimit.transform.parent);
+            field.gameObject.name = "Code4101PlantingCost";
+            foreach (var localization in field.GetComponentsInChildren<TextProLocalization>(true))
+                localization.enabled = false;
+            field.text = $"每丹种植成本： {cost}";
+            field.raycastTarget = false;
+            field.transform.SetSiblingIndex(card.txtAttrLimit.transform.GetSiblingIndex() + 1);
+            return field;
         }
 
         private void CreateOnlyAvailableToggle()
@@ -769,9 +775,10 @@ namespace Code4101.Zaohua.Tiandao
             layout.minHeight = sourceRect.rect.height;
         }
 
-        private void NormalizeSmartSolutionCard(CraftingLogInfoCell card)
+        private void NormalizeSmartSolutionCard(CraftingLogInfoCell card, TextPro plantingCost)
         {
             const float minimumCardHeight = 176f;
+            const float plantingCostGap = 6f;
             var cardRect = card.transform as RectTransform;
             if (cardRect == null) return;
             cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, minimumCardHeight);
@@ -786,9 +793,25 @@ namespace Code4101.Zaohua.Tiandao
                 }
             }
 
+            var plantingCostHeight = 0f;
+            var plantingCostRect = plantingCost?.transform as RectTransform;
+            if (attrRect != null && plantingCostRect != null)
+            {
+                plantingCostHeight = plantingCost.preferredHeight;
+                plantingCostRect.anchorMin = attrRect.anchorMin;
+                plantingCostRect.anchorMax = attrRect.anchorMax;
+                plantingCostRect.pivot = new Vector2(attrRect.pivot.x, 1f);
+                plantingCostRect.sizeDelta = new Vector2(attrRect.sizeDelta.x, plantingCostHeight);
+                var attrBottom = attrRect.anchoredPosition.y - attrRect.rect.height * attrRect.pivot.y;
+                plantingCostRect.anchoredPosition = new Vector2(
+                    attrRect.anchoredPosition.x,
+                    attrBottom - plantingCostGap);
+            }
+
             var textHeight = card.txtEffect.preferredHeight +
                              card.txtName.preferredHeight +
-                             card.txtAttrLimit.preferredHeight + 44f;
+                             card.txtAttrLimit.preferredHeight +
+                             plantingCostHeight + plantingCostGap + 44f;
             var height = Mathf.Max(minimumCardHeight, textHeight);
             cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, height);
             var cardLayout = card.GetComponent<LayoutElement>() ?? card.gameObject.AddComponent<LayoutElement>();
