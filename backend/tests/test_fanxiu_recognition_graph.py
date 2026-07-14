@@ -48,14 +48,13 @@ def test_choose_scene_from_graph_falls_back_to_similarity_for_tie():
     assert result.unresolved_candidates == (47, 28)
 
 
-def test_choose_scene_from_graph_returns_unknown_below_similarity_floor():
+def test_choose_scene_from_graph_never_promotes_below_threshold_similarity():
     result = choose_scene_from_graph(
         [
             SceneGraphCandidate(scene_id=34, score=4.9, matched=False),
             SceneGraphCandidate(scene_id=266, score=3.0, matched=False),
         ],
         [],
-        unknown_similarity_threshold=5.0,
     )
 
     assert result.scene_id is None

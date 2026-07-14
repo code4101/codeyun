@@ -36,11 +36,11 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
-from backend.core.fanxiu.data_annotation.recognition_tree import (
-    build_recognition_tree_nodes,
+from backend.core.fanxiu.data_annotation.recognition_catalog import (
+    build_recognition_graph_nodes,
+    expand_graph_candidate_ids,
+    global_recognition_candidate_ids,
     is_explicit_local_identity_only_scene,
-    layer0_recognition_candidate_ids,
-    runtime_root_scene_candidate_ids,
 )
 from backend.core.fanxiu.data_annotation.recognition_graph import (
     SceneGraphCandidate,
@@ -108,7 +108,6 @@ from backend.core.temp_paths import codeyun_temp_root
 from pyxllib.autogui import (
     ActionPlanner,
     SceneNavigator,
-    SceneRecognizer,
     SceneScorer,
     Runtime,
     Shape,
@@ -5449,24 +5448,34 @@ class DataAnnotationRuntimeRunner(
         return SceneNavigator([]).serialize_scene_jump_entries(entries)
 
     def _increment_scene_jump_target(self, shape: dict[str, Any], target_scene_id: int) -> bool:
-        return SceneNavigator([]).increment_scene_jump_target(shape, target_scene_id)
+        """Record one real landing in the shape's shared jump history.
 
-    def _increment_observed_landing(self, shape: dict[str, Any], target_scene_id: int) -> bool:
-        entries = self._parse_scene_jump_entries(shape.get("observedLanding"))
+        ``sceneJumpTarget`` is an observed-destination frequency table used as
+        routing prior, *not* an allow-list.  Therefore a newly recognized,
+        already-annotated scene must be appended here.  Do not simplify this
+        back to ``SceneNavigator.increment_scene_jump_target``: that helper only
+        increments labels already present and would silently discard new D
+        landings.  Do not split new values into ``observedLanding`` either.
+        """
+        navigator = SceneNavigator([])
+        current_text = navigator.jump_target_text(shape)
+        if current_text in {"-1", "0"}:
+            return False
+        entries = navigator.parse_scene_jump_entries(current_text)
         target_label = str(int(target_scene_id))
         for entry in entries:
-            if str(entry.get("label") or "") == target_label:
+            if navigator.scene_jump_label_number(entry.get("label")) == int(target_scene_id):
                 entry["count"] = int(entry.get("count") or 0) + 1
                 break
         else:
             entries.append({"label": target_label, "count": 1})
-        serialized = self._serialize_scene_jump_entries(entries)
-        if str(shape.get("observedLanding") or "") == serialized:
+        serialized = navigator.serialize_scene_jump_entries(entries)
+        if serialized == current_text:
             return False
-        shape["observedLanding"] = serialized
+        shape["sceneJumpTarget"] = serialized
         return True
 
-    def _record_observed_landing(
+    def _record_scene_jump_landing(
         self,
         ctx: dict[str, Any],
         asset_tree_path: Path,
@@ -5476,33 +5485,13 @@ class DataAnnotationRuntimeRunner(
         *,
         reason: str,
     ) -> None:
-        if self._increment_observed_landing(shape, target_scene_id):
+        if self._increment_scene_jump_target(shape, target_scene_id):
             self._write_asset_tree(asset_tree_path, tree)
             ctx["images"] = self._index_images(tree)
             self._log(
                 "detail",
-                f"场景跳转观察：记录「{shape.get('title') or '未命名'}」意外落点 #{target_scene_id}（{reason}）",
+                f"场景跳转历史：记录「{shape.get('title') or '未命名'}」落点 #{target_scene_id}（{reason}）",
             )
-
-    def _record_unexpected_landing(
-        self,
-        ctx: dict[str, Any],
-        asset_tree_path: Path,
-        tree: list[dict[str, Any]],
-        shape: dict[str, Any],
-        landing_scene_id: int | None,
-        *,
-        source_scene_id: int | None = None,
-        reason: str,
-    ) -> None:
-        if landing_scene_id is None:
-            return
-        landing_scene_id = int(landing_scene_id)
-        if source_scene_id is not None and landing_scene_id == int(source_scene_id):
-            return
-        if landing_scene_id in self._scene_jump_target_ids(tree, shape):
-            return
-        self._record_observed_landing(ctx, asset_tree_path, tree, shape, landing_scene_id, reason=reason)
 
     def _scene_jump_label_number(self, label: Any) -> int | None:
         return SceneNavigator([]).scene_jump_label_number(label)
@@ -5563,7 +5552,7 @@ class DataAnnotationRuntimeRunner(
         return float(self.scene_thresholds.get(key, self.scene_threshold))
 
     def _scene_matches_id(self, scene_id: int, score: float) -> bool:
-        return self._scene_recognizer().scene_matches_id(scene_id, score)
+        return float(score) >= self._scene_match_threshold(scene_id)
 
     def _scene_match_cache_dir(self) -> Path:
         return codeyun_temp_root("fanxiu-scene-match")
@@ -5734,23 +5723,13 @@ class DataAnnotationRuntimeRunner(
             cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
-    def _runtime_graph_scene_candidate_ids(self, ctx: dict[str, Any], *, max_layer: int) -> list[int]:
+    def _runtime_graph_scene_candidate_ids(self, ctx: dict[str, Any]) -> list[int]:
         images = ctx.get("images") or {}
         if not isinstance(images, dict):
             return []
         tree = ctx.get("asset_tree")
         if isinstance(tree, list):
-            result: list[int] = []
-            for node in build_recognition_tree_nodes(tree, images):
-                if not node.is_root:
-                    continue
-                if int(node.layer) > int(max_layer):
-                    continue
-                if int(max_layer) <= 2 and is_explicit_local_identity_only_scene(node.image):
-                    continue
-                if node.scene_id not in result:
-                    result.append(node.scene_id)
-            return result
+            return global_recognition_candidate_ids(tree, images)
         runtime_ids = [
             int(scene_id)
             for scene_id in self._runtime_scene_candidate_ids(ctx)
@@ -5758,13 +5737,11 @@ class DataAnnotationRuntimeRunner(
         ]
         if runtime_ids:
             return runtime_ids
-        if max_layer >= 3:
-            return [int(scene_id) for scene_id, image in images.items() if isinstance(image, dict)]
         return [
             int(scene_id)
             for scene_id, image in images.items()
             if isinstance(image, dict)
-            and int(View(image).layer) <= int(max_layer)
+            and int(View(image).layer) <= 2
             and not is_explicit_local_identity_only_scene(image)
         ]
 
@@ -5775,7 +5752,7 @@ class DataAnnotationRuntimeRunner(
             return []
         candidate_set = {int(scene_id) for scene_id in scene_ids}
         edges: list[dict[str, Any]] = []
-        for node in build_recognition_tree_nodes(tree, images):
+        for node in build_recognition_graph_nodes(tree, images):
             if node.scene_id not in candidate_set:
                 continue
             for parent_id in node.parent_scene_ids:
@@ -5823,14 +5800,11 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(images, dict) or not images:
             return None, 0.0, "unavailable"
-        if preferred_scene_ids is None and not isinstance(ctx.get("asset_tree"), list):
-            return None, 0.0, "unavailable"
-
         if preferred_scene_ids is not None:
             candidate_ids = [int(scene_id) for scene_id in preferred_scene_ids if int(scene_id) in images]
             tree = ctx.get("asset_tree")
             if isinstance(tree, list):
-                candidate_ids = layer0_recognition_candidate_ids(tree, images, candidate_ids) or candidate_ids
+                candidate_ids = expand_graph_candidate_ids(tree, images, candidate_ids) or candidate_ids
             return self._identify_scene_number_in_graph_candidates(
                 ctx,
                 frame_data_url,
@@ -5839,21 +5813,13 @@ class DataAnnotationRuntimeRunner(
                 trace=trace,
             )
 
-        for layer in (1, 2, 3):
-            candidate_ids = self._runtime_graph_scene_candidate_ids(ctx, max_layer=layer)
-            scene_id, score, status = self._identify_scene_number_in_graph_candidates(
-                ctx,
-                frame_data_url,
-                candidate_ids,
-                layer_label=f"layer{layer}",
-                trace=trace,
-                allow_similarity_fallback=layer == 3,
-            )
-            if status in {"matched", "graph_specific", "similarity_tiebreak", "similarity_fallback", "unknown"}:
-                return scene_id, score, status
-            if status == "ambiguous" and layer == 3:
-                return scene_id, score, status
-        return None, 0.0, "unavailable"
+        return self._identify_scene_number_in_graph_candidates(
+            ctx,
+            frame_data_url,
+            self._runtime_graph_scene_candidate_ids(ctx),
+            layer_label="global",
+            trace=trace,
+        )
 
     def _identify_scene_number_in_graph_candidates(
         self,
@@ -5863,7 +5829,6 @@ class DataAnnotationRuntimeRunner(
         *,
         layer_label: str,
         trace: list[dict[str, Any]] | None = None,
-        allow_similarity_fallback: bool = True,
     ) -> tuple[int | None, float, str]:
         if not candidate_scene_ids:
             return None, 0.0, "no_candidates"
@@ -5881,14 +5846,41 @@ class DataAnnotationRuntimeRunner(
             if not isinstance(image, dict):
                 continue
             score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
-            candidates.append(SceneGraphCandidate(scene_id=scene_id, score=score, matched=score >= self._scene_match_threshold(scene_id)))
+            matched = score >= self._scene_match_threshold(scene_id)
+            if (
+                matched
+                and isinstance(ctx.get("asset_tree"), list)
+                and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score)
+            ):
+                matched = False
+                if trace is not None:
+                    trace.append({
+                        "event": "candidate_rejected",
+                        "model": "graph",
+                        "layer": layer_label,
+                        "scene_id": scene_id,
+                        "score": round(score, 3),
+                        "reason": "ocr_confirm_failed",
+                    })
+            candidates.append(SceneGraphCandidate(scene_id=scene_id, score=score, matched=matched))
 
         matched_ids = [item.scene_id for item in candidates if item.matched]
         edges = self._recognition_parent_match_edges_for_candidates(ctx, matched_ids)
         if len(matched_ids) > 1:
             edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids, trace=trace))
+            strong_ocr_scene_id = self._strong_ocr_scene_number(ctx, frame_data_url)
+            if strong_ocr_scene_id in matched_ids:
+                score = self._scene_match_threshold(int(strong_ocr_scene_id))
+                if trace is not None:
+                    trace.append({
+                        "event": "graph_strong_ocr",
+                        "layer": layer_label,
+                        "scene_id": int(strong_ocr_scene_id),
+                        "score": score,
+                    })
+                return int(strong_ocr_scene_id), score, "graph_strong_ocr"
         result = choose_scene_from_graph(candidates, edges)
-        if not allow_similarity_fallback and result.status in {"similarity_fallback", "unknown"}:
+        if result.status == "unknown":
             if trace is not None:
                 trace.append({
                     "event": "graph_layer_miss",
@@ -5908,21 +5900,6 @@ class DataAnnotationRuntimeRunner(
                     "best_score": round(float(result.best_similarity_score), 3),
             })
             return None, float(result.score), "ambiguous"
-        if (
-            result.scene_id is not None
-            and isinstance(ctx.get("asset_tree"), list)
-            and not self._scene_number_ocr_confirmed(ctx, frame_data_url, int(result.scene_id), float(result.score))
-        ):
-            if trace is not None:
-                trace.append({
-                    "event": "final_rejected",
-                    "model": "graph",
-                    "layer": layer_label,
-                    "scene_id": int(result.scene_id),
-                    "score": round(float(result.score), 3),
-                    "reason": "ocr_confirm_failed",
-                })
-            return None, float(result.score), "ocr_confirm_failed"
         if trace is not None:
             trace.append({
                 "event": "graph_result",
@@ -5980,16 +5957,6 @@ class DataAnnotationRuntimeRunner(
             "world",
         ]
 
-    def _scene_recognizer(self) -> SceneRecognizer:
-        return SceneRecognizer(
-            score_image=self._scene_score,
-            threshold_for_scene_id=self._scene_match_threshold,
-            image_for_key=self._image,
-            threshold_for_key=lambda key: float(self.scene_thresholds.get(key, self.scene_threshold)),
-            max_parallel_workers=1,
-            max_candidate_batch_size=8,
-        )
-
     def _identify_scene_number(
         self,
         ctx: dict[str, Any],
@@ -5997,157 +5964,13 @@ class DataAnnotationRuntimeRunner(
         preferred_scene_ids: list[int] | None = None,
         trace: list[dict[str, Any]] | None = None,
     ) -> tuple[int | None, float]:
-        graph_scene_id, graph_score, graph_status = self._identify_scene_number_by_graph(
+        graph_scene_id, graph_score, _graph_status = self._identify_scene_number_by_graph(
             ctx,
             frame_data_url,
             preferred_scene_ids,
             trace=trace,
         )
-        if graph_status in {"matched", "graph_specific", "similarity_tiebreak"}:
-            return graph_scene_id, graph_score
-        if trace is not None:
-            trace.append({"event": "graph_fallback_legacy_tree", "status": graph_status})
-
-        candidate_scene_ids = preferred_scene_ids
-        if candidate_scene_ids is None:
-            if 86 in self._runtime_scene_candidate_ids(ctx):
-                text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
-                if self._leave_scene_confirm_text(text):
-                    if trace is not None:
-                        trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
-                    return 86, 100.0
-            recognizer = self._scene_recognizer()
-            root_candidate_ids = self._runtime_scene_candidate_ids(ctx)
-            allowed_scene_ids = set(root_candidate_ids)
-            tree = ctx.get("asset_tree")
-            images = ctx.get("images")
-            if isinstance(tree, list) and isinstance(images, dict) and root_candidate_ids:
-                allowed_scene_ids.update(layer0_recognition_candidate_ids(tree, images, root_candidate_ids))
-            if trace is None:
-                tree_preferred_scene_ids = root_candidate_ids if len(root_candidate_ids) == 1 else None
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=tree_preferred_scene_ids)
-            else:
-                tree_preferred_scene_ids = root_candidate_ids if len(root_candidate_ids) == 1 else None
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=tree_preferred_scene_ids, trace=trace)
-            if scene_id is not None and self._is_explicit_local_scene_result(ctx, int(scene_id), root_candidate_ids):
-                if trace is not None:
-                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "local_identity_without_layer0_context"})
-                retry_scene_id, retry_score = self._identify_root_scene_number_from_candidates(ctx, frame_data_url, root_candidate_ids, trace=trace)
-                if retry_scene_id is not None:
-                    return retry_scene_id, retry_score
-                return None, score
-            if scene_id is not None and allowed_scene_ids and int(scene_id) not in allowed_scene_ids:
-                if trace is not None:
-                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "outside_runtime_root_candidates"})
-                retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, root_candidate_ids, trace=trace)
-                if retry_scene_id is not None:
-                    return retry_scene_id, retry_score
-                return None, score
-            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
-                if trace is not None:
-                    trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
-                retry_ids = [int(item) for item in self._runtime_scene_candidate_ids(ctx) if int(item) != int(scene_id)]
-                if retry_ids and len(retry_ids) < len(self._runtime_scene_candidate_ids(ctx)):
-                    retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
-                    if retry_scene_id is not None:
-                        return retry_scene_id, retry_score
-                return None, score
-            return scene_id, score
-        if preferred_scene_ids is not None:
-            if 86 in preferred_scene_ids:
-                text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
-                if self._leave_scene_confirm_text(text):
-                    if trace is not None:
-                        trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
-                    return 86, 100.0
-            recognizer = self._scene_recognizer()
-            if trace is None:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
-            else:
-                scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
-            if scene_id is None:
-                if trace is None:
-                    scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids)
-                else:
-                    scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=preferred_scene_ids, trace=trace)
-            if scene_id is not None and self._is_explicit_local_scene_result(ctx, int(scene_id), preferred_scene_ids):
-                if trace is not None:
-                    trace.append({"event": "candidate_rejected", "scene_id": int(scene_id), "reason": "local_identity_without_explicit_candidate"})
-                retry_scene_id, retry_score = self._identify_root_scene_number_from_candidates(ctx, frame_data_url, preferred_scene_ids, trace=trace)
-                if retry_scene_id is not None:
-                    return retry_scene_id, retry_score
-                return None, score
-            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
-                if trace is not None:
-                    trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
-                retry_ids = [int(item) for item in preferred_scene_ids if int(item) != int(scene_id)]
-                if retry_ids and len(retry_ids) < len(preferred_scene_ids):
-                    retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
-                    if retry_scene_id is not None:
-                        return retry_scene_id, retry_score
-                return None, score
-            return scene_id, score
-
-        return self._identify_scene_number_from_candidates(
-            ctx,
-            frame_data_url,
-            candidate_scene_ids,
-            trace=trace,
-        )
-
-    def _is_explicit_local_scene_result(self, ctx: dict[str, Any], scene_id: int, root_candidate_ids: list[int]) -> bool:
-        if int(scene_id) in {int(item) for item in root_candidate_ids}:
-            return False
-        images = ctx.get("images") or {}
-        image = images.get(int(scene_id)) if isinstance(images, dict) else None
-        return isinstance(image, dict) and is_explicit_local_identity_only_scene(image)
-
-    def _identify_root_scene_number_from_candidates(
-        self,
-        ctx: dict[str, Any],
-        frame_data_url: str,
-        candidate_scene_ids: list[int],
-        trace: list[dict[str, Any]] | None = None,
-    ) -> tuple[int | None, float]:
-        recognizer = self._scene_recognizer()
-        if trace is None:
-            scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None)
-        else:
-            scene_id, score = recognizer.identify_scene_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None, trace=trace)
-        if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
-            if trace is not None:
-                trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
-            return None, score
-        return scene_id, score
-
-    def _identify_scene_number_from_candidates(
-        self,
-        ctx: dict[str, Any],
-        frame_data_url: str,
-        candidate_scene_ids: list[int],
-        trace: list[dict[str, Any]] | None = None,
-    ) -> tuple[int | None, float]:
-        if 86 in candidate_scene_ids:
-            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
-            if self._leave_scene_confirm_text(text):
-                if trace is not None:
-                    trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr"})
-                return 86, 100.0
-        recognizer = self._scene_recognizer()
-        if trace is None:
-            scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None)
-        else:
-            scene_id, score = recognizer.identify_scene_tree_number(ctx, frame_data_url, preferred_scene_ids=candidate_scene_ids or None, trace=trace)
-        if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
-            if trace is not None:
-                trace.append({"event": "final_rejected", "scene_id": int(scene_id), "score": round(float(score), 3), "reason": "ocr_confirm_failed"})
-            retry_ids = [int(item) for item in candidate_scene_ids if int(item) != int(scene_id)]
-            if retry_ids and len(retry_ids) < len(candidate_scene_ids):
-                retry_scene_id, retry_score = self._identify_scene_number_from_candidates(ctx, frame_data_url, retry_ids, trace=trace)
-                if retry_scene_id is not None:
-                    return retry_scene_id, retry_score
-            return None, score
-        return scene_id, score
+        return graph_scene_id, graph_score
 
     def _scene_number_ocr_confirmed(
         self,
@@ -6278,9 +6101,13 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(images, dict):
             return []
-        tree_candidates = self._runtime_tree_scene_candidate_ids(ctx, include_popups=include_popups)
-        if isinstance(ctx.get("asset_tree"), list):
-            return tree_candidates
+        tree = ctx.get("asset_tree")
+        if isinstance(tree, list):
+            return global_recognition_candidate_ids(
+                tree,
+                images,
+                include_popups=include_popups,
+            )
         if include_popups is True:
             return []
         return [
@@ -6290,18 +6117,6 @@ class DataAnnotationRuntimeRunner(
             and isinstance(images.get(int(scene_id)), dict)
             and not is_explicit_local_identity_only_scene(images[int(scene_id)])
         ]
-
-    def _runtime_tree_scene_candidate_ids(self, ctx: dict[str, Any], *, include_popups: bool | None) -> list[int]:
-        tree = ctx.get("asset_tree")
-        images = ctx.get("images") or {}
-        if not isinstance(tree, list) or not isinstance(images, dict):
-            return []
-        candidates = runtime_root_scene_candidate_ids(tree, images, include_popups=include_popups)
-        if include_popups is None:
-            for node in build_recognition_tree_nodes(tree, images):
-                if node.scene_id not in candidates and node.is_root and node.layer in {2, 3}:
-                    candidates.append(node.scene_id)
-        return candidates
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         edges = SceneNavigator(tree).scene_jump_edges()
@@ -7782,15 +7597,21 @@ class DataAnnotationRuntimeRunner(
         return sum(scores[: min(3, len(scores))]) / min(3, len(scores))
 
     def _identify_scene(self, ctx: dict[str, Any], frame_data_url: str, keys: list[str] | None = None) -> tuple[str, float]:
-        recognizer = self._scene_recognizer()
-        return recognizer.identify_scene_key(
+        candidate_ids = [
+            int(self.scene_ids[key])
+            for key in (keys or self._scene_key_order())
+            if key in self.scene_ids and self._image(ctx, key) is not None
+        ]
+        scene_id, score = self._identify_scene_number(
             ctx,
             frame_data_url,
-            keys=keys or self._scene_key_order(),
+            preferred_scene_ids=candidate_ids,
         )
+        return (self._scene_id_key(scene_id), score) if scene_id is not None else ("", score)
 
     def _scene_matches(self, key: str, score: float) -> bool:
-        return self._scene_recognizer().scene_matches_key(key, score)
+        scene_id = self.scene_ids.get(key)
+        return scene_id is not None and self._scene_matches_id(int(scene_id), score)
 
     def _click_shape(
         self,
@@ -8811,77 +8632,6 @@ class DataAnnotationRuntimeRunner(
         has_skip = any(str(shape.get("title") or "") == "跳过" for shape in shapes if isinstance(shape, dict))
         return has_skip and "过场" in title
 
-    def _is_xianfu_entry_recoverable_landing(
-        self,
-        *,
-        source_scene_id: int,
-        target_scene_id: int,
-        expected_ids: list[int],
-        scene_id: int | None,
-        shape: dict[str, Any],
-    ) -> bool:
-        title = str(shape.get("title") or "")
-        return (
-            source_scene_id == 34
-            and scene_id == 197
-            and (target_scene_id == 171 or 171 in expected_ids)
-            and "仙府" in title
-        )
-
-    def _observed_landing_scene_ids(self, tree: list[dict[str, Any]], shape: dict[str, Any]) -> set[int]:
-        scene_ids: set[int] = set()
-        for entry in self._parse_scene_jump_entries(shape.get("observedLanding")):
-            for scene_id in self._resolve_scene_jump_label(tree, entry.get("label")):
-                scene_ids.add(int(scene_id))
-        return scene_ids
-
-    def _is_scene_jump_recoverable_interruption(
-        self,
-        ctx: dict[str, Any],
-        tree: list[dict[str, Any]],
-        *,
-        source_scene_id: int,
-        target_scene_id: int,
-        scene_id: int,
-        shape: dict[str, Any],
-    ) -> bool:
-        if int(scene_id) in {int(source_scene_id), int(target_scene_id)}:
-            return False
-        if self._find_scene_route(tree, int(scene_id), int(target_scene_id)) is None:
-            return False
-        if int(scene_id) in self._observed_landing_scene_ids(tree, shape):
-            return True
-        clicked_title = str(shape.get("title") or shape.get("id") or "").strip()
-        if clicked_title in {"返回", "退出", "离开", "关闭", "空白", "回到世界"}:
-            return True
-        image = (ctx.get("images") or {}).get(int(scene_id)) if isinstance(ctx.get("images"), dict) else None
-        if not isinstance(image, dict):
-            return False
-        image_title = str(image.get("title") or "")
-        if not any(marker in image_title for marker in ("奖励", "提示")):
-            return False
-        safe_titles = {"领取", "确定", "确认", "关闭", "返回", "退出", "空白"}
-        return any(
-            str(shape.get("title") or shape.get("id") or "").strip() in safe_titles
-            and bool(str(shape.get("sceneJumpTarget") or "").strip())
-            for shape in self._flatten_shapes(image.get("shapes"))
-        )
-
-    def _is_xianfu_cutscene_landing_target(
-        self,
-        *,
-        source_scene_id: int,
-        target_scene_id: int,
-        scene_id: int | None,
-        shape: dict[str, Any],
-    ) -> bool:
-        return (
-            source_scene_id == 185
-            and target_scene_id == 171
-            and scene_id == 171
-            and str(shape.get("title") or "") == "跳过"
-        )
-
     def _scene_jump_source_stall_timeout(
         self,
         *,
@@ -9051,91 +8801,36 @@ class DataAnnotationRuntimeRunner(
                         "updated_at": time.time(),
                     })
                 continue
-            if scene_id == target_scene_id and scene_id != source_scene_id:
-                if scene_id in expected_ids:
-                    left_source = True
-                    history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% global-target left={left_source}")
-                    if not edge.get("_runtime_confirm_edge") and self._increment_scene_jump_target(shape, scene_id):
-                        self._write_asset_tree(asset_tree_path, tree)
-                    ctx["images"] = self._index_images(tree)
-                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，全局识别命中目标")
-                    return scene_id
-                if self._is_xianfu_cutscene_landing_target(
-                    source_scene_id=source_scene_id,
-                    target_scene_id=target_scene_id,
-                    scene_id=scene_id,
-                    shape=shape,
-                ):
-                    left_source = True
-                    history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% xianfu-cutscene-target left={left_source}")
-                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，仙府过场跳过后到达主页")
-                    return scene_id
-                if dynamic_landing:
-                    self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，由上层重新规划")
-                    return scene_id
-                self._record_unexpected_landing(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    shape,
-                    scene_id,
-                    source_scene_id=source_scene_id,
-                    reason="未声明目标落点",
-                )
-                raise RuntimeError(
-                    f"场景跳转实际到达 #{scene_id}，但这是「{shape.get('title') or '未命名'}」的未声明落点，"
-                    "不在 sceneJumpTarget 中；"
-                    "Runtime 已中断，请人工确认并修正标注后重试"
-                )
-            if (
-                scene_id is not None
-                and scene_id != source_scene_id
-                and self._find_scene_route(tree, scene_id, target_scene_id) is not None
-            ):
-                if self._is_xianfu_entry_recoverable_landing(
-                    source_scene_id=source_scene_id,
-                    target_scene_id=target_scene_id,
-                    expected_ids=expected_ids,
-                    scene_id=scene_id,
-                    shape=shape,
-                ):
+            # A/B/C in sceneJumpTarget are historical observations, not a
+            # whitelist.  A reliably recognized new D is equally valid: record
+            # it in the same frequency table and let the outer goto planner
+            # continue from D.  Only true unknown/recovery exhaustion is fatal.
+            if scene_id is not None and scene_id != source_scene_id and scene_id != 47:
+                left_source = True
+                history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% observed-landing left={left_source}")
+                if not dynamic_landing:
+                    self._record_scene_jump_landing(
+                        ctx,
+                        asset_tree_path,
+                        tree,
+                        shape,
+                        int(scene_id),
+                        reason="实际识别落点",
+                    )
+                route_exists = self._find_scene_route(tree, int(scene_id), target_scene_id) is not None
+                if scene_id == target_scene_id:
+                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，到达目标")
+                elif route_exists:
+                    self._log(
+                        "info",
+                        f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，记录落点并重新规划到 #{target_scene_id}",
+                    )
+                else:
                     self._log(
                         "warning",
-                        f"场景跳转：#{source_scene_id} 点击仙府实际到达 #{scene_id}，"
-                        f"沿用已标注路径重新规划到 #{target_scene_id}",
+                        f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，已记录新落点；上层将尝试通用恢复",
                     )
-                    return scene_id
-                if self._is_scene_jump_recoverable_interruption(
-                    ctx,
-                    tree,
-                    source_scene_id=source_scene_id,
-                    target_scene_id=target_scene_id,
-                    scene_id=scene_id,
-                    shape=shape,
-                ):
-                    self._log(
-                        "warning",
-                        f"场景跳转：#{source_scene_id} 点击「{shape.get('title') or '未命名'}」"
-                        f"实际到达可恢复中间场景 #{scene_id}，沿用已标注路径重新规划到 #{target_scene_id}",
-                    )
-                    return scene_id
-                if dynamic_landing:
-                    self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，重新规划到 #{target_scene_id}")
-                    return scene_id
-                self._record_unexpected_landing(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    shape,
-                    scene_id,
-                    source_scene_id=source_scene_id,
-                    reason=f"未声明可恢复中间场景，目标 #{target_scene_id}",
-                )
-                raise RuntimeError(
-                    f"场景跳转实际到达 #{scene_id}，可继续规划到 #{target_scene_id}，"
-                    f"但这是「{shape.get('title') or '未命名'}」的未声明落点，不在 sceneJumpTarget 中；"
-                    "Runtime 已中断，请人工确认并修正标注后重试"
-                )
+                return int(scene_id)
             if scene_id is not None and scene_id != source_scene_id:
                 left_source = True
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
@@ -9286,19 +8981,20 @@ class DataAnnotationRuntimeRunner(
                     history=history,
                 )
 
-            self._record_unexpected_landing(
-                ctx,
-                asset_tree_path,
-                tree,
-                shape,
-                last_scene_id,
-                source_scene_id=source_scene_id,
-                reason="超时稳定未声明落点",
+            if not dynamic_landing:
+                self._record_scene_jump_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    int(last_scene_id),
+                    reason="超时前稳定识别落点",
+                )
+            self._log(
+                "warning",
+                f"场景跳转：#{source_scene_id} -> #{last_scene_id}，超时前稳定识别；记录落点并交由上层重新规划",
             )
-            raise RuntimeError(
-                f"场景跳转实际到达 #{last_scene_id}，但该落点不在「{shape.get('title') or '未命名'}」的 sceneJumpTarget 中；"
-                "Runtime 已中断，请人工确认并修正标注后重试"
-            )
+            return int(last_scene_id)
 
     def _go_scene_task(
         self,
@@ -9580,16 +9276,6 @@ class DataAnnotationRuntimeRunner(
                         continue
                 if last_failed_edge is not None:
                     failed_shape = last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None
-                    if isinstance(failed_shape, dict):
-                        self._record_unexpected_landing(
-                            ctx,
-                            asset_tree_path,
-                            tree,
-                            failed_shape,
-                            current_scene_id,
-                            source_scene_id=target_scene_id,
-                            reason=f"点击后到达无路由场景，目标 #{target_scene_id}",
-                        )
                     return self._save_unknown_scene_frame(
                         ctx,
                         asset_tree_path,
@@ -9650,17 +9336,6 @@ class DataAnnotationRuntimeRunner(
                 )
                 yield BehaviorTreeStatus.RUNNING
                 continue
-            if int(actual_scene_id) not in self._scene_jump_target_ids(tree, shape):
-                self._record_unexpected_landing(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    shape,
-                    actual_scene_id,
-                    source_scene_id=current_scene_id,
-                    reason=f"重规划前未声明落点，目标 #{target_scene_id}",
-                )
-                last_failed_edge = edge
             self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
             yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
 

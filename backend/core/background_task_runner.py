@@ -415,6 +415,8 @@ def _run_media_sync_home_discovery_job() -> None:
         f"success={result.get('success_count', 0)} "
         f"failed={len(result.get('failures') or {})}"
     )
+    if result.get("failures"):
+        raise RuntimeError(f"媒体候选补齐未完成：{result['failures']}")
 
 
 def _enqueue_media_sync_home_discovery() -> str | None:
@@ -631,11 +633,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
         title="媒体候选补齐",
         category="图片",
-        description="每天检查两个候选池的本地存量，低于目标数量时分别补齐；两个候选池互不占用同一个运行锁。",
+        description="每天先补齐两个候选池的 URL 缓存，再依次下载图片；实际落盘不足目标时继续采集并补足。两个候选池互不占用同一个运行锁。",
         schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_media_sync_home_discovery,
-        manual_warning=f"会使用媒体同步插件和浏览器登录态访问外部推荐流，并把每个候选池分别补齐到 {MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT} 张。",
+        manual_warning=f"会使用媒体同步插件和浏览器登录态访问外部推荐流，先补 URL 缓存，再把每个候选池的实际图片分别补齐到 {MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT} 张。",
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,

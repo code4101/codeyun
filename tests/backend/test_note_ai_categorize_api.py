@@ -171,6 +171,48 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     assert "task | 任务" not in kwargs["messages"][0]["content"]
 
 
+def test_ai_categorize_note_forces_fanxiu_for_zhenxie_title(client, session, auth_user):
+    note = _make_note(
+        "note-ai-categorize-zhenxie",
+        auth_user.id,
+        "日常镇邪任务模型",
+        primary_category="custom_pyxllib",
+        lifecycle_stage="done",
+    )
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "legacy_fanxiu", "label": "凡修", "color": "#67C23A", "order": 10},
+                    {"key": "custom_pyxllib", "label": "pyxllib", "color": "#2C9BA7", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add(note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"custom_pyxllib","note_form":"note","lifecycle_stage":"done"}',
+        },
+    ) as mock_chat:
+        response = client.post(
+            f"/api/notes/{note.numeric_id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["note"]["primary_category"] == "legacy_fanxiu"
+    prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
+    assert "命中领域专有词：镇邪、日常镇邪" in prompt
+    assert "应归入 legacy_fanxiu(凡修)" in prompt
+
+
 def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, session, auth_user):
     note = _make_note(
         "note-ai-categorize-balanced",

@@ -87,10 +87,12 @@ def graph_specific_scene_ids(candidate_ids: Iterable[int], match_edges: Iterable
 def choose_scene_from_graph(
     candidates: Iterable[SceneGraphCandidate],
     match_edges: Iterable[Mapping[str, Any] | tuple[int, int]],
-    *,
-    unknown_similarity_threshold: float = 5.0,
 ) -> SceneGraphRecognitionResult:
-    """Choose a scene by the layer match -> graph disambiguation -> similarity flow."""
+    """Choose a scene from valid matches and graph relations.
+
+    Similarity below a scene's match threshold is diagnostic evidence only; it
+    must never be promoted into a scene result.
+    """
 
     candidate_tuple = tuple(candidates)
     matched = tuple(item for item in candidate_tuple if item.matched)
@@ -157,20 +159,10 @@ def choose_scene_from_graph(
         )
 
     best = max(candidate_tuple, key=lambda item: item.score)
-    if float(best.score) < float(unknown_similarity_threshold):
-        return SceneGraphRecognitionResult(
-            scene_id=None,
-            score=best.score,
-            status="unknown",
-            matched_candidates=(),
-            unresolved_candidates=(),
-            best_similarity_scene_id=best.scene_id,
-            best_similarity_score=best.score,
-        )
     return SceneGraphRecognitionResult(
-        scene_id=best.scene_id,
+        scene_id=None,
         score=best.score,
-        status="similarity_fallback",
+        status="unknown",
         matched_candidates=(),
         unresolved_candidates=(),
         best_similarity_scene_id=best.scene_id,

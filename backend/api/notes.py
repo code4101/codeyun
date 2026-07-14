@@ -204,7 +204,7 @@ CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 300.0
 CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
-CODEX_DIARY_PROMPT_VERSION = "2026-06-28.category-bucket-diary-v5"
+CODEX_DIARY_PROMPT_VERSION = "2026-07-14.clean-source-category-bucket-v6"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
 CODEX_DIARY_AUTO_IMPORT_CRON = "0 1 * * *"
 CODEX_DIARY_AUTO_IMPORT_TASK_NAME = "codex_diary_yesterday_import"
@@ -554,6 +554,11 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "洞天",
             "福地",
             "洞天福地",
+            "镇邪",
+            "宗门镇邪",
+            "日常镇邪",
+            "魔祖",
+            "宗门灵泉",
             "尊主",
             "侍从",
             "灵脉",
@@ -833,6 +838,11 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "daily_vip",
     "日常_vip",
     "每日限购",
+    "镇邪",
+    "宗门镇邪",
+    "日常镇邪",
+    "魔祖",
+    "宗门灵泉",
     "#291",
     "#292",
     "#34",
@@ -854,6 +864,34 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "翠剑",
     "衣橱",
     "抽卡",
+)
+
+NOTE_AI_TITLE_DOMAIN_FORCE_TERMS = (
+    (
+        ("凡修", "fanxiu"),
+        (
+            "凡修",
+            "fanxiu",
+            "镇邪",
+            "宗门镇邪",
+            "日常镇邪",
+            "日常_vip",
+            "daily_vip",
+            "洞天福地",
+            "魔祖",
+            "宗门灵泉",
+        ),
+    ),
+    (
+        ("考勤", "attendance", "kq"),
+        (
+            "考勤",
+            "考勤调度",
+            "问卷星",
+            "返款",
+            "clockin",
+        ),
+    ),
 )
 CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
     "日常_报备",
@@ -1540,6 +1578,15 @@ def _clean_codex_diary_classification_text(value: Any) -> str:
     return NOTE_AI_WHITESPACE_RE.sub(" ", " ".join([*objective_parts, cleaned])).strip()
 
 
+def _is_codex_diary_synthetic_turn(record: dict[str, Any]) -> bool:
+    """Return whether a collected turn is injected runtime context, not user work."""
+    request = str(record.get("user_request") or "").lstrip()
+    if not request:
+        return False
+    lowered = request.lower()
+    return lowered.startswith("<recommended_plugins>") or lowered.startswith("<codex_internal_context")
+
+
 def _score_codex_diary_category_texts(
     values: list[Any],
     *,
@@ -2170,6 +2217,9 @@ def _build_codex_diary_classification_system_prompt() -> str:
             "只能从该 record 的 candidate_categories 中选择 category_key，不得自造分类，不得返回多个分类。",
             "优先根据 user_request 和 assistant_result 的实际工作对象判断；thread_title、project_label 只作为上下文提示。",
             "分类说明比分类名称更重要；遇到多个相关分类时，选择最能代表这组问答主要价值归属的一个。",
+            "同一 thread_id 内围绕同一业务主题的连续记录必须保持分类一致；不要因某一轮只提到实现细节、文件路径、工具名或部署动作就拆到另一个分类。",
+            "最终会按日期和分类合并节点，因此分类表示整组工作的业务归属，不表示某一条消息里偶然出现的技术词。",
+            "先识别实际业务对象，再识别实现工具；镇邪、宗门镇邪、魔祖、宗门灵泉等凡修手游专有概念必须归凡修，不能因代码位于 codeyun 仓库、使用 Python/pyxllib 或涉及 Runtime 而改判。",
             "pyxllib 只在 record 直接维护、设计、修复或讲解 pyxllib Python 通用库本身时才可选；依赖、工具、统计口径、技能提示、自动化提示词或测试日志里出现 pyxllib 都是噪声。",
             "CodeYun 自动化、前端/UI、提示词本地化、开源项目核验、页面性能、星图笔记和仓库治理默认按对应 CodeYun 分类判断，不要因工具库名改判为 pyxllib。",
             "如果确实信息不足，选择候选里的 general。",
@@ -2199,6 +2249,7 @@ def _build_codex_diary_classification_user_prompt(
         payload_records.append(
             {
                 "record_key": record.get("codex_diary_record_key"),
+                "thread_id": record.get("thread_id"),
                 "time_range": record.get("time_range"),
                 "thread_title": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("thread_title")), 120, suffix=""),
                 "project_label": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("project_label")), 80, suffix=""),
@@ -2212,6 +2263,7 @@ def _build_codex_diary_classification_user_prompt(
         {
             "rules": {
                 "one_category_per_record": True,
+                "same_thread_same_topic_category_consistency": True,
                 "category_key_must_be_in_candidate_categories": True,
                 "confidence_range": "0..1",
             },
@@ -3342,7 +3394,12 @@ def _build_codex_diary_blocks(
         if str(item.get("key") or "").strip()
     }
     records: list[dict[str, Any]] = []
-    for index, raw_record in enumerate(sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or "")))):
+    source_records = [
+        raw_record
+        for raw_record in source.get("turn_records") or []
+        if not _is_codex_diary_synthetic_turn(raw_record)
+    ]
+    for index, raw_record in enumerate(sorted(source_records, key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or "")))):
         record = dict(raw_record)
         record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
         record["codex_diary_record_key"] = hashlib.sha1(
@@ -4666,6 +4723,45 @@ def _collect_note_ai_reference_lines(
     return selected
 
 
+def _resolve_note_ai_forced_title_category(
+    title: Any,
+    *,
+    palette_items: list[dict[str, Any]],
+) -> tuple[str | None, list[str]]:
+    normalized_title = _normalize_project_palette_token(_normalize_note_ai_title(title, limit=200))
+    if not normalized_title:
+        return None, []
+
+    palette_lookup: dict[str, dict[str, Any]] = {}
+    for item in palette_items:
+        for value in (
+            item.get("key"),
+            item.get("label"),
+            str(item.get("key") or "").removeprefix("custom_"),
+        ):
+            token = _normalize_project_palette_token(value)
+            if token and token not in palette_lookup:
+                palette_lookup[token] = item
+
+    matches: dict[str, list[str]] = {}
+    for domain_markers, terms in NOTE_AI_TITLE_DOMAIN_FORCE_TERMS:
+        category_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, domain_markers)
+        if not category_key:
+            continue
+        matched_terms = [
+            term
+            for term in terms
+            if _normalize_project_palette_token(term) in normalized_title
+        ]
+        if matched_terms:
+            matches.setdefault(category_key, []).extend(matched_terms)
+
+    if len(matches) != 1:
+        return None, []
+    category_key, matched_terms = next(iter(matches.items()))
+    return category_key, list(dict.fromkeys(matched_terms))
+
+
 def _build_note_ai_prompt(
     note: NoteNode,
     *,
@@ -4700,6 +4796,21 @@ def _build_note_ai_prompt(
     reference_text = "\n".join(_collect_note_ai_reference_lines(note, palette_items=palette_items, session=session))
     if not reference_text:
         reference_text = "(无可用参考样本)"
+    forced_category_key, matched_domain_terms = _resolve_note_ai_forced_title_category(
+        plain_title,
+        palette_items=palette_items,
+    )
+    category_label_map = {
+        str(item.get("key") or "").strip(): str(item.get("label") or "").strip()
+        for item in palette_items
+        if str(item.get("key") or "").strip()
+    }
+    domain_hint_text = (
+        f"命中领域专有词：{'、'.join(matched_domain_terms)}；"
+        f"应归入 {forced_category_key}({category_label_map.get(forced_category_key, forced_category_key)})。"
+        if forced_category_key
+        else "(未命中唯一的高置信领域专有词)"
+    )
 
     system_prompt = (
         "你是 CodeYun 星图笔记里的“笔记分类”应用。"
@@ -4708,6 +4819,9 @@ def _build_note_ai_prompt(
         "正文不会提供，也不要尝试根据正文推断。"
         "必须严格从候选项中各选 1 个，不得自造值。"
         "优先根据标题语义和已有标注习惯判断分类，根据标题体现的内容载体判断形态，根据推进状态词判断阶段。"
+        "分类先判断实际业务对象，再判断实现工具：游戏任务名、课程业务名等领域专有词优先于仓库名、Python 库名和通用技术词。"
+        "pyxllib 只有在标题直接表达 pyxllib 通用库本身的设计、实现、修复或讲解时才可选择；它作为依赖或实现工具时不能决定分类。"
+        "如果标题领域提示命中唯一的高置信分类，primary_category 必须采用该提示。"
         f"信息不足时，优先使用保守默认值：primary_category={NOTE_CATEGORY_DEFAULT}，note_form={NOTE_FORM_DEFAULT}，lifecycle_stage={NOTE_LIFECYCLE_STAGE_DEFAULT}。"
         "只返回 JSON 对象，不要 Markdown，不要额外解释。"
     )
@@ -4720,6 +4834,8 @@ def _build_note_ai_prompt(
         f"{stages_text}\n\n"
         "节点标题:\n"
         f"{plain_title or '(空)'}\n\n"
+        "标题领域提示:\n"
+        f"{domain_hint_text}\n\n"
         "已有条目标注样本（仅标题和元数据，格式：标题 | 分类 | 形态 | 阶段）:\n"
         f"{reference_text}\n\n"
         "请优先参考与当前标题更接近的样本，但不要机械照抄；如果信息不足，就回退到默认值。\n"
@@ -6190,11 +6306,16 @@ def ai_categorize_note(
     allowed_form_keys = {item["key"] for item in NOTE_AI_FORM_OPTIONS}
     allowed_stage_keys = {item["key"] for item in NOTE_AI_LIFECYCLE_OPTIONS}
 
-    primary_category = _normalize_note_ai_choice(
+    ai_primary_category = _normalize_note_ai_choice(
         parsed.get("primary_category"),
         field_label="分类",
         allowed_keys=allowed_category_keys,
     )
+    forced_primary_category, _matched_domain_terms = _resolve_note_ai_forced_title_category(
+        note.title,
+        palette_items=category_items,
+    )
+    primary_category = forced_primary_category or ai_primary_category
     note_form = _normalize_note_ai_choice(
         parsed.get("note_form"),
         field_label="形态",

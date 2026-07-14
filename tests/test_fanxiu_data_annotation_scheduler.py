@@ -5735,11 +5735,11 @@ def test_goto_view_route_from_green_bottle_rank_prefers_exit_when_returning_worl
             "id": 282,
             "title": "掌天瓶",
             "shapes": [
-                {"id": "rank", "title": "境界排行", "sceneJumpTarget": "197(20)", "isSceneIdentity": True},
+                {"id": "rank", "title": "境界排行", "sceneJumpTarget": "283(1)", "isSceneIdentity": True},
                 {"id": "back", "title": "返回", "sceneJumpTarget": "20(1)"},
             ],
         },
-        {"type": "image", "id": 197, "title": "仙缘列表", "shapes": [{"id": "back", "title": "返回", "sceneJumpTarget": "34(6),69(2)"}]},
+        {"type": "image", "id": 283, "title": "天道魁首", "shapes": [{"id": "back", "title": "返回", "sceneJumpTarget": "282(1)"}]},
         {"type": "image", "id": 20, "title": "绿瓶", "shapes": [{"id": "world", "title": "回到世界", "sceneJumpTarget": "34(44)"}]},
         {"type": "image", "id": 34, "title": "世界", "shapes": []},
     ]
@@ -5748,9 +5748,14 @@ def test_goto_view_route_from_green_bottle_rank_prefers_exit_when_returning_worl
     assert edge_to_world is not None
     assert edge_to_world["edge"]["shape"]["title"] == "返回"
 
-    edge_to_rank = runner._select_scene_next_edge(tree, 282, 197)
+    edge_to_rank = runner._select_scene_next_edge(tree, 282, 283)
     assert edge_to_rank is not None
     assert edge_to_rank["edge"]["shape"]["title"] == "境界排行"
+
+    edge_from_baiye = runner._select_scene_next_edge(tree, 283, 34)
+    assert edge_from_baiye is not None
+    assert edge_from_baiye["edge"]["shape"]["title"] == "返回"
+    assert edge_from_baiye["edge"]["target_ids"] == [282]
 
 
 def test_xianfu_home_text_rejects_world_chrome_with_xianfu_buttons():
@@ -11223,7 +11228,7 @@ def test_xianfu_cutscene_skip_accepts_home_even_if_shape_targets_world(monkeypat
     assert any("仙府过场跳过后到达主页" in str(item) for item in calls)
 
 
-def test_scene_jump_still_rejects_other_undeclared_route_landing(monkeypatch, tmp_path):
+def test_scene_jump_records_new_route_landing_and_replans(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     ctx = {"entry": object(), "images": {}}
     shape = {"title": "普通入口", "sceneJumpTarget": "171"}
@@ -11231,6 +11236,7 @@ def test_scene_jump_still_rejects_other_undeclared_route_landing(monkeypatch, tm
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_clear_tick_frame", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_write_asset_tree", lambda *_args: None)
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, preferred_scene_ids=None: (None, 0.0) if preferred_scene_ids else (197, 100.0))
     monkeypatch.setattr(runner, "_find_scene_route", lambda _tree, start, target: [{"source_id": start, "target_id": target}] if (start, target) == (197, 171) else None)
 
@@ -11242,11 +11248,16 @@ def test_scene_jump_still_rejects_other_undeclared_route_landing(monkeypatch, tm
         target_scene_id=171,
         edge=edge,
         stop_event=fanxiu.threading.Event(),
+        layer0_wait_seconds=0.0,
     )
 
     assert next(iterator) == fanxiu.BehaviorTreeStatus.RUNNING
-    with pytest.raises(RuntimeError, match="未声明落点"):
+    with pytest.raises(StopIteration) as exc_info:
         next(iterator)
+
+    assert exc_info.value.value == 197
+    assert shape["sceneJumpTarget"] == "197(1),171"
+    assert "observedLanding" not in shape
 
 
 def test_scene_jump_wait_allows_dynamic_minus_one_landing_to_replan(monkeypatch, tmp_path):
@@ -11939,19 +11950,17 @@ def test_mail_cleanup_read_mail_probes_detail_delete_before_bulk_cleanup(tmp_pat
     assert clicks == ["一键删除", "确认"]
 
 
-def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(monkeypatch):
+def test_data_annotation_identify_scene_number_uses_graph_preferred_candidates(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {34: {"title": "#34"}, 66: {"title": "#66"}}}
     calls = []
 
-    class FakeSceneRecognizer:
-        def identify_scene_tree_number(self, recog_ctx, frame_data_url, preferred_scene_ids=None):
-            legacy_filter_present = any(str(key).endswith("scope_filter") for key in recog_ctx)
-            calls.append((frame_data_url, tuple(preferred_scene_ids or ()), legacy_filter_present))
-            return 34, 90.0
+    def identify(recog_ctx, frame_data_url, preferred_scene_ids=None, trace=None):
+        legacy_filter_present = any(str(key).endswith("scope_filter") for key in recog_ctx)
+        calls.append((frame_data_url, tuple(preferred_scene_ids or ()), legacy_filter_present))
+        return 34, 90.0, "matched"
 
-    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeSceneRecognizer())
-    monkeypatch.setattr(runner, "_scene_number_ocr_confirmed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(runner, "_identify_scene_number_by_graph", identify)
 
     assert runner._identify_scene_number(ctx, "frame", [66, 34]) == (34, 90.0)
     assert calls == [("frame", (66, 34), False)]

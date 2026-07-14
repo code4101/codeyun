@@ -52,7 +52,8 @@ Guard 配置可以持久化，但其执行只能发生在一个正在执行的 C
 - 资产树读取统一走 data-annotation storage。
 - 场景身份用 `isSceneIdentity / sceneIdentityRole`。
 - 点击和长按使用已命名 shape。
-- 跳转使用 `sceneJumpTarget` 和通用场景规划。
+- 跳转使用 `sceneJumpTarget` 和通用场景规划；该字段记录真实落点及频次，是规划先验而不是白名单。
+- 可靠识别到新的实际落点时，将它追加到 `sceneJumpTarget` 并从该场景重新规划；不因“此前未声明”而中断，也不另建 `observedLanding` 双轨字段。
 - 缺标、错标或 unknown 超出有界恢复范围时停止并交给人工，不猜坐标。
 
 设备与资产事实见 [凡修 data-annotation 运行设备约定](./凡修data-annotation运行设备约定.md)。

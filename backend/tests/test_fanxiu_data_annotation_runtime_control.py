@@ -125,3 +125,16 @@ def test_prepare_scheduler_task_waits_when_kernel_busy(monkeypatch, tmp_path):
     assert blocked["phase"] == "scheduler_wait_kernel_busy"
     assert "Kernel 正在执行 Cell" in blocked["message"]
     assert persisted[-1]["phase"] == "scheduler_wait_kernel_busy"
+
+
+def test_scheduler_task_normalization_preserves_terminal_message():
+    from backend.core.fanxiu.data_annotation.state import normalize_data_annotation_scheduler_task
+
+    task = normalize_data_annotation_scheduler_task({
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "last_result": "blocked",
+        "last_message": "需要业务确认",
+    })
+
+    assert task["last_message"] == "需要业务确认"

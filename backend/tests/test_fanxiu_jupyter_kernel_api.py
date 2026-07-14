@@ -96,6 +96,15 @@ def test_interrupt_and_restart_are_distinct_native_commands(monkeypatch) -> None
     assert calls == ["interrupt", "restart", "shutdown"]
 
 
+def test_windows_interrupt_uses_jupyter_control_channel() -> None:
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "backend/core/fanxiu/runtime/jupyter_kernel.py").read_text(encoding="utf-8")
+
+    assert 'client.session.msg("interrupt_request"' in source
+    assert "client.control_channel.send(message)" in source
+    assert "_interrupt_kernel_over_control_channel(connection_path" in source
+
+
 def test_restart_replaces_kernel_and_old_cell_cannot_rebind_to_new_connection() -> None:
     root = Path(__file__).resolve().parents[2]
     source = (root / "backend/core/fanxiu/runtime/jupyter_kernel.py").read_text(encoding="utf-8")
