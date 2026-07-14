@@ -331,6 +331,14 @@ ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
 ATTENDANCE_TEMPLATE_ZEN_PERIOD_RE = re.compile(
     r"(?P<prefix>禅宗|修道班)(?P<edition>\d+)期(?P<stage>[一二三四五六七八九十\d.点]+阶)",
 )
+COURSE_WORKBOOK_SHEET_ORDER = {
+    "attendance": 10,
+    "registration": 20,
+    "video_config": 30,
+    "video_data": 40,
+    "clockin_config": 50,
+    "clockin_data": 60,
+}
 ATTENDANCE_TEMPLATE_LEADING_DATE_RE = re.compile(r"^(?P<date>\d{8}|\d{6})(?P<body>.*)$")
 ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = get_attendance_project_root() / "courses"
 ATTENDANCE_COURSE_SCRIPT_DIR = Path(
@@ -4098,6 +4106,10 @@ def _extract_cell_value(value: Any) -> Any:
 def _normalize_sheet_text(value: Any) -> str:
     value = _extract_cell_value(value)
     return "" if value is None else str(value).strip()
+
+
+def _course_workbook_sheet_order(sheet_key: Any, fallback: int) -> int:
+    return COURSE_WORKBOOK_SHEET_ORDER.get(_normalize_sheet_text(sheet_key), int(fallback))
 
 
 def _normalize_excel_import_cell(value: Any) -> str:
@@ -13572,7 +13584,7 @@ def _clone_attendance_course_template_workbook(
             WorkbookSheetLink(
                 workbook_id=_workbook_link_ref(workbook),
                 sheet_id=_sheet_link_ref(document),
-                order_index=link.order_index,
+                order_index=_course_workbook_sheet_order(source_sheet.sheet_key, link.order_index),
                 created_at=now,
             )
         )

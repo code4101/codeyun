@@ -422,10 +422,10 @@ namespace Code4101.Zaohua.Tiandao
 
             // 当前方案的低频管理动作集中放在标题右侧；下拉列表只负责选择方案。
             _loadoutRenameButton = CreateLoadoutActionButton(controlParent, triggerRect,
-                "Code4101LoadoutRename", "改名", 116f, new Color(0.08f, 0.08f, 0.08f, 0.68f));
+                "Code4101LoadoutRename", "改名", 114f, false);
             _loadoutRenameButton.onClick.AddListener(BeginActiveLoadoutRename);
             _loadoutDeleteButton = CreateLoadoutActionButton(controlParent, triggerRect,
-                "Code4101LoadoutDelete", "删除", 184f, new Color(0.25f, 0.08f, 0.06f, 0.72f));
+                "Code4101LoadoutDelete", "删除", 178f, true);
             _loadoutDeleteLabel = _loadoutDeleteButton.GetComponentInChildren<TextPro>();
             _loadoutDeleteButton.onClick.AddListener(DeleteActiveLoadout);
             Debug.Log($"[Code4101 Tiandao][LoadoutUI] management-actions-created " +
@@ -507,20 +507,51 @@ namespace Code4101.Zaohua.Tiandao
         }
 
         private Button CreateLoadoutActionButton(Transform parent, RectTransform triggerRect,
-            string name, string label, float xOffset, Color background)
+            string name, string label, float xOffset, bool destructive)
         {
-            var button = CreateButton(parent, name, label, new Vector2(62f, 40f));
-            button.GetComponent<Image>().color = background;
+            var button = CreateButton(parent, name, label, new Vector2(56f, 36f));
             var text = button.GetComponentInChildren<TextPro>();
-            if (text != null) text.fontSize = 18f;
+            if (text != null)
+            {
+                text.fontSize = 17f;
+                text.color = destructive
+                    ? new Color(0.92f, 0.72f, 0.65f, 1f)
+                    : new Color(0.94f, 0.92f, 0.86f, 1f);
+            }
+            SetLoadoutActionStyle(button, false);
             var rect = (RectTransform)button.transform;
             rect.anchorMin = triggerRect.anchorMin;
             rect.anchorMax = triggerRect.anchorMax;
             rect.pivot = new Vector2(0.5f, 0.5f);
             rect.localPosition = triggerRect.localPosition + new Vector3(xOffset, 0f, 0f);
-            rect.sizeDelta = new Vector2(62f, 40f);
+            rect.sizeDelta = new Vector2(56f, 36f);
             button.transform.SetAsLastSibling();
             return button;
+        }
+
+        private static void SetLoadoutActionStyle(Button button, bool confirmingDelete)
+        {
+            if (button == null) return;
+            var normal = confirmingDelete
+                ? new Color(0.46f, 0.09f, 0.045f, 0.90f)
+                : new Color(0.055f, 0.045f, 0.035f, 0.34f);
+            var highlighted = confirmingDelete
+                ? new Color(0.58f, 0.11f, 0.055f, 0.96f)
+                : new Color(0.12f, 0.095f, 0.065f, 0.62f);
+            var pressed = confirmingDelete
+                ? new Color(0.36f, 0.055f, 0.03f, 0.98f)
+                : new Color(0.035f, 0.028f, 0.022f, 0.72f);
+            var colors = button.colors;
+            colors.normalColor = normal;
+            colors.highlightedColor = highlighted;
+            colors.selectedColor = highlighted;
+            colors.pressedColor = pressed;
+            colors.disabledColor = new Color(normal.r, normal.g, normal.b, 0.16f);
+            colors.colorMultiplier = 1f;
+            colors.fadeDuration = 0.08f;
+            button.colors = colors;
+            var image = button.GetComponent<Image>();
+            if (image != null) image.color = normal;
         }
 
         private void CloseLoadoutPopup()
@@ -805,7 +836,7 @@ namespace Code4101.Zaohua.Tiandao
             {
                 _deleteConfirmationUntil = Time.unscaledTime + 3f;
                 if (_loadoutDeleteLabel != null) _loadoutDeleteLabel.text = "确认";
-                _loadoutDeleteButton.GetComponent<Image>().color = new Color(0.48f, 0.08f, 0.04f, 0.92f);
+                SetLoadoutActionStyle(_loadoutDeleteButton, true);
                 return;
             }
 
@@ -831,8 +862,7 @@ namespace Code4101.Zaohua.Tiandao
         {
             _deleteConfirmationUntil = 0f;
             if (_loadoutDeleteLabel != null) _loadoutDeleteLabel.text = "删除";
-            if (_loadoutDeleteButton != null)
-                _loadoutDeleteButton.GetComponent<Image>().color = new Color(0.25f, 0.08f, 0.06f, 0.72f);
+            SetLoadoutActionStyle(_loadoutDeleteButton, false);
         }
 
         private static IEnumerator FocusRenameInput(TMPro.TMP_InputField input)

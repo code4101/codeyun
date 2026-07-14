@@ -4,7 +4,9 @@ from pathlib import Path
 from backend.api.notes import (
     _annotate_codex_diary_record_category,
     _inherit_codex_diary_thread_domain_categories,
+    _is_codex_diary_hidden_ai_category_item,
     _normalize_project_palette_token,
+    _resolve_codex_diary_category,
     _resolve_codex_diary_group_categories,
 )
 from backend.core.notes.semantics import derive_primary_category
@@ -85,3 +87,48 @@ def test_codex_diary_inherits_unique_strong_domain_anchor_within_thread():
     _inherit_codex_diary_thread_domain_categories(records, palette_lookup=palette_lookup)
 
     assert [record["codex_diary_category_key"] for record in records] == ["造化仙缘", "造化仙缘"]
+
+
+def test_codex_diary_does_not_inherit_when_thread_has_multiple_strong_domains():
+    palette_lookup = _palette_lookup()
+    records = [
+        {
+            "thread_id": "mixed-domain-thread",
+            "thread_title": "连续处理两个游戏",
+            "user_request": "修复造化仙缘天道插件的装备方案",
+            "assistant_result": "已更新 Code4101.Tiandao。",
+        },
+        {
+            "thread_id": "mixed-domain-thread",
+            "thread_title": "连续处理两个游戏",
+            "user_request": "继续凡修宗门镇邪与魔祖行为树",
+            "assistant_result": "已完成镇邪场景校验。",
+        },
+    ]
+    for record in records:
+        _annotate_codex_diary_record_category(record, palette_lookup=palette_lookup, title_hints={})
+
+    _inherit_codex_diary_thread_domain_categories(records, palette_lookup=palette_lookup)
+
+    assert [record["codex_diary_category_key"] for record in records] == ["造化仙缘", "legacy_color_67c23a"]
+
+
+def test_codex_diary_uses_codeyun_general_instead_of_builtin_general_for_unknown_work():
+    category = _resolve_codex_diary_category(
+        {
+            "thread_title": "零散问答",
+            "project_label": "",
+            "user_request": "idea 的复数形式是什么？",
+            "assistant_result": "ideas。",
+        },
+        palette_lookup=_palette_lookup(),
+        title_hints={},
+    )
+
+    assert category["key"] == "custom_mmxdcghtzcw7"
+
+
+def test_codex_diary_hides_logistics_from_ai_without_removing_the_category():
+    item = {"key": "custom_mmxbzxjy85x5", "label": "后勤", "color": "#D2B48C"}
+
+    assert _is_codex_diary_hidden_ai_category_item(item) is True

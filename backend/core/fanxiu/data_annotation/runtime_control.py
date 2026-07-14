@@ -631,9 +631,14 @@ def runtime_status(
             append_runtime_log_once(status, "stop", "执行进程已重载，先前业务任务已结束")
         elif persisted.get("guard_enabled") or persisted.get("guard_running"):
             status["guard_running"] = False
-            status["status"] = "idle"
-            status["message"] = "后端已重载，行为树服务待恢复"
-            append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
+            terminal = (
+                str(status.get("phase") or "") in {"done", "error", "stopped"}
+                or str(status.get("status") or "") in {"success", "error", "stopped", "skipped", "unsupported"}
+            )
+            if not terminal:
+                status["status"] = "idle"
+                status["message"] = "后端已重载，行为树服务待恢复"
+                append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
     status["behavior_tree_enabled"] = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
     status["kernel"] = kernel_state
     normalize_runtime_guard_items(status)
@@ -934,7 +939,7 @@ def mark_due_scheduler_tasks_blocked(
         changed = True
         record_scheduler_task_fact(task, "blocked", world_facts_path=world_facts_path)
     if changed:
-        write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+        write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
 
 
 def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
@@ -966,10 +971,12 @@ def reconcile_stale_scheduler_attempts(
     from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
 
     kernel = fanxiu_kernel_manager_status()
+    kernel_alive = bool(kernel.get("alive", True))
     kernel_busy = str(kernel.get("execution_state") or "") == "busy"
     kernel_generation = kernel.get("generation")
     now = datetime.now()
     changed = False
+    dirty = False
     for task in tasks:
         if str(task.get("last_result") or "") != "running":
             continue
@@ -984,14 +991,23 @@ def reconcile_stale_scheduler_attempts(
             and not generation_changed
         )
         if same_live_generation:
+            if task.pop("attempt_kernel_idle_since", None) is not None:
+                dirty = True
             continue
-        started_at = task.get("started_at") or task.get("last_run_at")
-        try:
-            attempt_age = (now - datetime.strptime(str(started_at), "%Y-%m-%d %H:%M:%S")).total_seconds()
-        except (TypeError, ValueError):
-            attempt_age = None
-        if not generation_changed and attempt_age is not None and attempt_age < 15.0:
-            continue
+        if kernel_alive and not generation_changed:
+            idle_since = task.get("attempt_kernel_idle_since")
+            if not idle_since:
+                task["attempt_kernel_idle_since"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                dirty = True
+                continue
+            try:
+                idle_age = (now - datetime.strptime(str(idle_since), "%Y-%m-%d %H:%M:%S")).total_seconds()
+            except (TypeError, ValueError):
+                idle_age = 0.0
+            # Cell 已结束与外部 Scheduler 写回终态之间存在极短竞态窗口。
+            # 先给终态记录器一个租约宽限期；持续 idle 才视为外部调用已丢失。
+            if idle_age < 30.0:
+                continue
         cooldown = max(30, int(task.get("cooldown_seconds") or 300))
         task["last_result"] = "error"
         task["last_message"] = "先前 Cell/Kernel 执行尝试已作废；等待 Scheduler 整单重试"
@@ -999,10 +1015,12 @@ def reconcile_stale_scheduler_attempts(
         task["retry_after"] = (now + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
         task["attempt_id"] = None
         task["attempt_kernel_generation"] = None
+        task["attempt_kernel_idle_since"] = None
         record_scheduler_task_fact(task, "error", world_facts_path=world_facts_path)
         changed = True
-    if changed:
-        write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+        dirty = True
+    if dirty:
+        write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
     return changed
 
 
@@ -1035,7 +1053,8 @@ def _run_scheduler_task_cell_and_record_terminal(
     state_task["finished_at"] = None
     state_task["attempt_id"] = attempt_id
     state_task["attempt_kernel_generation"] = kernel_generation
-    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    state_task["attempt_kernel_idle_since"] = None
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
     record_scheduler_task_fact(state_task, "running", world_facts_path=world_facts_path)
 
     try:
@@ -1084,6 +1103,7 @@ def _run_scheduler_task_cell_and_record_terminal(
     state_task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     state_task["attempt_id"] = None
     state_task["attempt_kernel_generation"] = None
+    state_task["attempt_kernel_idle_since"] = None
     replaced = False
     for index, item in enumerate(tasks):
         if item.get("id") == state_task.get("id"):
@@ -1092,7 +1112,7 @@ def _run_scheduler_task_cell_and_record_terminal(
             break
     if not replaced:
         tasks.append(state_task)
-    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
     record_scheduler_task_fact(state_task, str(state_task.get("last_result") or "error"), world_facts_path=world_facts_path)
     return {
         **result,

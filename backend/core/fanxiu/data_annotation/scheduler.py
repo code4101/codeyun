@@ -82,6 +82,7 @@ _SCHEDULER_RUNTIME_STATE_FIELDS = (
     "scheduler_meta",
     "attempt_id",
     "attempt_kernel_generation",
+    "attempt_kernel_idle_since",
     "queued_at",
     "started_at",
     "finished_at",

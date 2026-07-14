@@ -501,7 +501,6 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "局域网",
             "OCR 集中",
             "OCR集中",
-            "PaddleOCR",
             "CodeYun OCR",
         ),
     ),
@@ -682,7 +681,6 @@ CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS = (
     "CodeYun OCR",
     "OCR 集中",
     "OCR集中",
-    "PaddleOCR",
 )
 CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS = (
     "多机器",
@@ -699,9 +697,23 @@ CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS = (
     "OCR 集中",
     "OCR集中",
     "CodeYun OCR",
-    "PaddleOCR",
 )
 CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
+    "Skill审计",
+    "Skill 审计",
+    "skills 正交化",
+    "skills正交化",
+    "技能治理",
+    "线程样本抽检",
+    "GitHub 项目自动提交巡检",
+    "GitHub自动提交巡检",
+    "GitHub 巡检",
+    "GitHub巡检",
+    "auto_git_commit",
+    "自动提交巡检",
+    "仓库巡检",
+    "仓库集合",
+    "变更阈值",
     "daily-thread",
     "automation-daily-thread",
     "codex-automation-management",
@@ -782,6 +794,39 @@ CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "页面候选池",
     "数据库状态",
     "状态同步",
+    "PaddleOCR版本",
+    "PaddleOCR 最新版本",
+    "OCR 模型版本",
+    "OCR模型版本",
+    "推理能力研究",
+    "新模型接入评估",
+    "表格性能根因",
+    "30秒核心原因",
+    "工作簿序列化",
+    "页面稳定时间",
+    "Handsontable",
+    "iPad 访问",
+    "iPad访问",
+    "开发服务",
+    "dev.py",
+    "Vite",
+    "动态模块加载",
+    "模块加载失败",
+    "单实例锁",
+    "健康探针",
+    "懒加载失败",
+    "重新加载入口",
+    "正在连接",
+)
+CODEX_DIARY_CODEYUN_GENERAL_ABSOLUTE_TERMS = (
+    "GitHub 项目自动提交巡检",
+    "GitHub自动提交巡检",
+    "GitHub 自动提交巡检",
+    "Git 自动提交",
+    "Git自动提交",
+    "auto_git_commit",
+    "自动提交巡检",
+    "提交阈值巡检",
 )
 CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
     "修复",
@@ -835,8 +880,44 @@ CODEX_DIARY_PROJECT_VALUE_FORCE_TERMS = (
     "审计",
     "治理",
 )
+CODEX_DIARY_PYXLLIB_CODE_PATH_MARKERS = (
+    "/slns/pyxllib",
+    "pyxllib/src/pyxllib",
+    "src/pyxllib/",
+)
+CODEX_DIARY_PYXLLIB_CODE_CHANGE_TERMS = (
+    "修改",
+    "修复",
+    "新增",
+    "重构",
+    "实现",
+    "更新",
+    "迁移",
+    "删除",
+    "调整",
+    "补充",
+    "改为",
+    "落地",
+    "提交",
+)
 CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "凡修",
+    "奇袭魔界",
+    "daily_mojie_raid",
+    "submit_fanxiu_task",
+    "backend/core/fanxiu",
+    "fanxiu/data-annotation",
+    "/runtime/cells/task",
+    "/runtime/cells/code",
+    "/runtime/cell/tick",
+    "#320",
+    "#321",
+    "MuMu",
+    "MuMu模拟器",
+    "MuMu 模拟器",
+    "日常_周本",
+    "仙市_每周资源",
+    "reset-scheduler-runs",
     "prayer_cycle",
     "祈愿",
     "炼丹",
@@ -876,6 +957,29 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "衣橱",
     "抽卡",
 )
+CODEX_DIARY_FANXIU_ABSOLUTE_TERMS = (
+    "奇袭魔界",
+    "daily_mojie_raid",
+    "submit_fanxiu_task",
+    "backend/core/fanxiu",
+    "#320",
+    "#321",
+    "/runtime/cells/task",
+    "/runtime/cells/code",
+    "/runtime/cell/tick",
+    "task cell",
+    "code cell",
+    "cell tick",
+    "registered task cell",
+    "dynamic code cell",
+    "Kernel 顺序执行",
+    "MuMu",
+    "MuMu模拟器",
+    "MuMu 模拟器",
+    "日常_周本",
+    "仙市_每周资源",
+    "reset-scheduler-runs",
+)
 CODEX_DIARY_ZAOHUA_FORCE_TERMS = (
     "造化仙缘",
     "GodWorld",
@@ -883,8 +987,36 @@ CODEX_DIARY_ZAOHUA_FORCE_TERMS = (
     "天道插件",
     "天道试炼",
     "code4101.zaohua",
+    "丹炉获取渠道",
+    "低品质丹炉",
+    "装备方案存档",
+    "UpMultiplier",
+    "GetEquipEffectStr",
+    "UnsnatchEquip",
+    "EquipItem",
+    "blendType",
 )
 CODEX_DIARY_ZAOHUA_CONTEXT_TERMS = (
+    "/zaohua/alchemy",
+    "炼化规律",
+    "炼化规律表",
+    "灵材铺",
+    "阳阴顺序",
+    "异灵根",
+    "丹药逆向",
+    "耐药上限",
+    "天命淬星炉",
+    "炼丹价值模型",
+    "投入产出价值评估模型",
+    "丹药",
+    "丹炉",
+    "丹炉获取渠道",
+    "低品质丹炉",
+    "药材",
+    "游戏颜色系统",
+    "inspector",
+    "3×3种植",
+    "3x3种植",
     "背包方案",
     "装备方案",
     "装载方案",
@@ -896,6 +1028,18 @@ CODEX_DIARY_ZAOHUA_CONTEXT_TERMS = (
     "品阶",
 )
 CODEX_DIARY_ZAOHUA_CONTEXT_ANCHORS = (
+    "/zaohua/alchemy",
+    "炼化规律",
+    "灵材铺",
+    "丹药逆向",
+    "天命淬星炉",
+    "炼丹价值模型",
+    "投入产出价值评估模型",
+    "丹药",
+    "丹炉",
+    "丹炉获取渠道",
+    "低品质丹炉",
+    "游戏颜色系统",
     "背包方案",
     "装备方案",
     "装载方案",
@@ -942,6 +1086,30 @@ NOTE_AI_TITLE_DOMAIN_FORCE_TERMS = (
     ),
 )
 CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
+    "layer0",
+    "#191",
+    "task_cell_poll",
+    "owner generation",
+    "owner token",
+    "owner_generation",
+    "owner_token",
+    "stop_event",
+    "单 Kernel",
+    "单Kernel",
+    "Cell 接力",
+    "Cell接力",
+    "外层调度接力",
+    "旧提交即失效",
+    "黑屏",
+    "公告关闭",
+    "关闭按钮边界",
+    "图像轮廓",
+    "轮廓定位",
+    "标注修正",
+    "标注数据",
+    "抖动容忍",
+    "误识别",
+    "误点击",
     "日常_报备",
     "日常报备",
     "日常_报名",
@@ -989,6 +1157,18 @@ CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
     "kdocs",
     "step3",
     "step4",
+)
+CODEX_DIARY_ATTENDANCE_ABSOLUTE_TERMS = (
+    "lesson_id",
+    "video_data",
+    "next_update",
+    "AT:BN",
+    "旧课程列",
+    "课程列",
+    "课程时间",
+    "源配置",
+    "报名/返款",
+    "报名 / 返款",
 )
 CODEX_DIARY_ATTENDANCE_FORCE_CONTEXT_TERMS = (
     "652",
@@ -1547,12 +1727,23 @@ def _iter_unique_codex_diary_palette_items(palette_lookup: dict[str, dict[str, A
     return list(items_by_key.values())
 
 
+def _codex_diary_default_category_key(palette_lookup: dict[str, dict[str, Any]]) -> str:
+    """Use the user's CodeYun default bucket instead of auto-generating builtin general."""
+    codeyun_general_key = _find_codex_diary_category_key_by_domain_marker(
+        palette_lookup,
+        ("codeyun综合", "codeyun/general"),
+    )
+    return str(codeyun_general_key or NOTE_CATEGORY_DEFAULT)
+
+
 def _codex_diary_category_result(
     category_key: str,
     *,
     palette_lookup: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     key = str(category_key or "").strip() or NOTE_CATEGORY_DEFAULT
+    if key == NOTE_CATEGORY_DEFAULT:
+        key = _codex_diary_default_category_key(palette_lookup)
     for item in _iter_unique_codex_diary_palette_items(palette_lookup):
         if str(item.get("key") or "").strip() == key:
             return {
@@ -1766,6 +1957,23 @@ def _select_best_codex_diary_category_key(
     )[0][0]
 
 
+def _has_codex_diary_pyxllib_code_change_evidence(turn: dict[str, Any]) -> bool:
+    """Require an actual pyxllib repository code change, not a tool mention."""
+    source_root = str(turn.get("source_root_dir") or "").strip().replace("\\", "/").lower().rstrip("/")
+    assistant_result = _clean_codex_diary_classification_text(turn.get("assistant_result"))
+    normalized_result = assistant_result.replace("\\", "/").lower()
+    path_text = f"{source_root} {normalized_result}"
+    has_repository_path = source_root.endswith("/pyxllib") or any(
+        marker.lower() in path_text
+        for marker in CODEX_DIARY_PYXLLIB_CODE_PATH_MARKERS
+    )
+    has_code_change = bool(assistant_result) and any(
+        term in assistant_result
+        for term in CODEX_DIARY_PYXLLIB_CODE_CHANGE_TERMS
+    )
+    return has_repository_path and has_code_change
+
+
 def _build_codex_diary_category_scores(
     turn: dict[str, Any],
     *,
@@ -1820,6 +2028,20 @@ def _build_codex_diary_category_scores(
             and any(marker in content_text for marker in ("数据", "截图", "核对", "恢复", "记录"))
         ):
             _add_codex_diary_category_score(combined_scores, attendance_key, 260)
+        attendance_absolute_hits = _count_codex_diary_term_hits(
+            content_text,
+            CODEX_DIARY_ATTENDANCE_ABSOLUTE_TERMS,
+        )
+        attendance_business_named = any(
+            _normalize_project_palette_token(term) in content_text
+            for term in ("考勤", "返款", "clockin")
+        )
+        if category_design_hits < 1 and attendance_absolute_hits and (
+            attendance_business_named or attendance_absolute_hits >= 2
+        ):
+            # Course-column and lesson scheduling fields identify the
+            # attendance business even when sheet/note vocabulary dominates.
+            _add_codex_diary_category_score(combined_scores, attendance_key, 10_000)
 
     fanxiu_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("凡修", "fanxiu"))
     thread_has_fanxiu_context = bool(fanxiu_key and _normalize_project_palette_token("凡修") in _normalize_project_palette_token(cleaned_thread_title))
@@ -1828,6 +2050,12 @@ def _build_codex_diary_category_scores(
     fanxiu_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_FANXIU_FORCE_TERMS)
     if fanxiu_key and fanxiu_hits:
         _add_codex_diary_category_score(combined_scores, fanxiu_key, 300 + fanxiu_hits * 36)
+    fanxiu_absolute_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_FANXIU_ABSOLUTE_TERMS)
+    if fanxiu_key and fanxiu_absolute_hits:
+        # MuMu and the current weekly-job identifiers are exclusive Fanxiu
+        # infrastructure.  UI, scheduler, resource, or CodeYun implementation
+        # details in the same record must not steal the business ownership.
+        _add_codex_diary_category_score(combined_scores, fanxiu_key, 10_000)
     fanxiu_context_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS)
     if fanxiu_key and (fanxiu_context_hits >= 2 or (thread_has_fanxiu_context and fanxiu_context_hits >= 1)):
         _add_codex_diary_category_score(combined_scores, fanxiu_key, 420 + min(fanxiu_context_hits, 8) * 48)
@@ -1838,7 +2066,10 @@ def _build_codex_diary_category_scores(
     )
     zaohua_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_ZAOHUA_FORCE_TERMS)
     if zaohua_key and zaohua_hits:
-        _add_codex_diary_category_score(combined_scores, zaohua_key, 520 + min(zaohua_hits, 6) * 48)
+        # Explicit game identity and distinctive game-business anchors own the
+        # record even when copied logs, search output, or repository paths add
+        # many unrelated palette/title-hint tokens.
+        _add_codex_diary_category_score(combined_scores, zaohua_key, 10_000)
     zaohua_context_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_ZAOHUA_CONTEXT_TERMS)
     zaohua_has_context_anchor = any(
         _normalize_project_palette_token(term) in content_text
@@ -1881,6 +2112,14 @@ def _build_codex_diary_category_scores(
     codeyun_general_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS)
     if codeyun_general_key and codeyun_general_hits:
         _add_codex_diary_category_score(combined_scores, codeyun_general_key, 360 + min(codeyun_general_hits, 8) * 36)
+    codeyun_general_absolute_hits = _count_codex_diary_term_hits(
+        body_text,
+        CODEX_DIARY_CODEYUN_GENERAL_ABSOLUTE_TERMS,
+    )
+    if codeyun_general_key and codeyun_general_absolute_hits:
+        # Git auto-commit is a CodeYun governance workflow.  Companion repo,
+        # deployment, server, or cluster words must never override its owner.
+        _add_codex_diary_category_score(combined_scores, codeyun_general_key, 10_000)
 
     engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
     has_explicit_domain_hit = any(
@@ -1900,6 +2139,12 @@ def _build_codex_diary_category_scores(
         project_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("工作", "项目", "work", "project"))
         if project_key:
             _add_codex_diary_category_score(combined_scores, project_key, 320 + min(project_hits, 5) * 20)
+    pyxllib_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("pyxllib",))
+    if pyxllib_key:
+        if _has_codex_diary_pyxllib_code_change_evidence(turn):
+            _add_codex_diary_category_score(combined_scores, pyxllib_key, 10_000)
+        else:
+            combined_scores.pop(pyxllib_key, None)
     return combined_scores
 
 
@@ -1973,7 +2218,7 @@ def _resolve_codex_diary_weighted_categories(
         if score > 0
     ]
     if not candidates:
-        return [{"key": NOTE_CATEGORY_DEFAULT, "weight": 100}]
+        return [{"key": _codex_diary_default_category_key(palette_lookup), "weight": 100}]
 
     candidates.sort(key=lambda item: (-item[1], item[0]))
     top_score = candidates[0][1]
@@ -1992,11 +2237,14 @@ def _enforce_codex_diary_primary_category(
     note_categories: list[dict[str, int | str]],
     primary_category_key: str,
     *,
+    palette_lookup: dict[str, dict[str, Any]],
     min_primary_weight: int = 60,
 ) -> list[dict[str, int | str]]:
     primary_key = str(primary_category_key or "").strip() or NOTE_CATEGORY_DEFAULT
+    if primary_key == NOTE_CATEGORY_DEFAULT:
+        primary_key = _codex_diary_default_category_key(palette_lookup)
     if not _is_specific_codex_diary_category_key(primary_key):
-        return [{"key": NOTE_CATEGORY_DEFAULT, "weight": 100}]
+        return [{"key": primary_key, "weight": 100}]
     return [{"key": primary_key, "weight": 100}]
 
 
@@ -2268,7 +2516,11 @@ def _resolve_codex_diary_group_categories(
     )
     note_categories = _resolve_codex_diary_weighted_categories(scores, palette_lookup=palette_lookup)
     primary_key = primary_category_key or derive_primary_category(note_categories, fallback_category=NOTE_CATEGORY_DEFAULT)
-    return _enforce_codex_diary_primary_category(note_categories, primary_key)
+    return _enforce_codex_diary_primary_category(
+        note_categories,
+        primary_key,
+        palette_lookup=palette_lookup,
+    )
 
 
 def _annotate_codex_diary_record_category(
@@ -2286,6 +2538,7 @@ def _annotate_codex_diary_record_category(
     primary_category = derive_primary_category(note_categories, fallback_category=NOTE_CATEGORY_DEFAULT)
     category = _codex_diary_category_result(primary_category, palette_lookup=palette_lookup)
     record["codex_diary_category_scores"] = scores
+    record["codex_diary_pyxllib_code_change_evidence"] = _has_codex_diary_pyxllib_code_change_evidence(record)
     record["codex_diary_category_key"] = primary_category
     record["codex_diary_category"] = category
 
@@ -2344,10 +2597,12 @@ def _build_codex_diary_record_category_candidates(
     palette_lookup: dict[str, dict[str, Any]],
 ) -> list[str]:
     scores = record.get("codex_diary_category_scores") or {}
+    default_key = _codex_diary_default_category_key(palette_lookup)
     allowed_keys = {
         str(item.get("key") or "").strip()
         for item in _iter_unique_codex_diary_palette_items(palette_lookup)
         if str(item.get("key") or "").strip()
+        and (default_key == NOTE_CATEGORY_DEFAULT or str(item.get("key") or "").strip() != NOTE_CATEGORY_DEFAULT)
     }
     ranked = [
         key
@@ -2368,12 +2623,12 @@ def _build_codex_diary_record_category_candidates(
         if _is_specific_codex_diary_category_key(primary_key) and primary_score >= 240 and primary_score >= max(1, second_score) * 1.35:
             return [primary_key]
     candidates: list[str] = []
-    for key in [primary_key, *ranked, NOTE_CATEGORY_DEFAULT]:
+    for key in [primary_key, *ranked, default_key]:
         if key in allowed_keys and key not in candidates:
             candidates.append(key)
         if len(candidates) >= CODEX_DIARY_CATEGORY_CANDIDATE_LIMIT:
             break
-    return candidates or [NOTE_CATEGORY_DEFAULT]
+    return candidates or [default_key]
 
 
 def _build_codex_diary_classification_system_prompt() -> str:
@@ -2388,12 +2643,28 @@ def _build_codex_diary_classification_system_prompt() -> str:
             "最终会按日期和分类合并节点，因此分类表示整组工作的业务归属，不表示某一条消息里偶然出现的技术词。",
             "先识别实际业务对象，再识别实现工具；镇邪、宗门镇邪、魔祖、宗门灵泉等凡修手游专有概念必须归凡修，不能因代码位于 codeyun 仓库、使用 Python/pyxllib 或涉及 Runtime 而改判。",
             "造化仙缘、GodWorld、天道插件及 code4101.zaohua 属于造化仙缘业务；候选中存在造化仙缘时必须选它。",
+            "/zaohua/alchemy、炼化规律表、阳阴顺序、异灵根和灵材铺属于造化仙缘炼化系统；规则表、数据视图等呈现形式不能把它改判为 CodeYun/资源。",
+            "丹药逆向、耐药上限与天命淬星炉属于造化仙缘丹药系统；同一总结中夹带 Agent 调度、服务器证书等实现或运维工作时，仍按主要业务对象归造化仙缘。",
+            "炼丹价值模型、投入产出价值评估模型、丹药/丹炉/药材三页、游戏颜色品阶、inspector 与 3×3 种植排布共同指向造化仙缘；不能仅凭炼丹、灵田、灵泉等通用仙侠词改判为凡修。",
+            "低品质丹炉获取渠道、商店/行商/黑市/随机奖励池等丹炉来源讨论属于造化仙缘游戏攻略，不得归 pyxllib 或 CodeYun/资源。",
+            "装备方案存档兼容、UpMultiplier、GetEquipEffectStr、UnsnatchEquip、EquipItem 与 blendType 属于造化仙缘装备插件链路，属于绝对业务锚点。",
             "造化仙缘线程中的背包方案、装备方案、装载方案、blendType+itemId、EquipItem/UnsnatchEquip 等后续实现轮次仍归造化仙缘；不得因后续省略游戏名而改成 CodeYun/笔记。",
-            "CodeYun/笔记只用于星图笔记、PDF、阅读器、文档视图等笔记体系；CodeYun/资源只用于资源管理，CodeYun/集群只用于集群体系。",
+            "CodeYun/笔记只用于星图笔记、PDF、阅读器、文档视图等笔记体系；CodeYun/资源特指工作簿、PDF、文件资源、资源管理与资源同步体系，普通的版本资源、标注资源或游戏资产不能据此归资源；CodeYun/集群只用于集群体系。",
+            "PaddleOCR、OCR 模型版本或推理能力研究本身不属于 CodeYun/集群；只有明确涉及多设备 OCR 服务、CodeYun OCR 集中化、服务管理或 token 运维时才归集群，否则按实际业务或 CodeYun/综合处理。",
+            "考勤小表、报名/返款链路、考勤课程列、lesson_id、video_data、next_update、start_date 与课程时间源属于考勤业务；sheet、工作簿、表头、列位迁移或性能排查只是载体和实现，不能改判为 CodeYun/笔记或资源。",
+            "iPad、手机或浏览器只是访问终端；围绕 CodeYun 开发服务、dev.py、Vite/Vue 进程、动态模块加载、单实例锁、健康探针、懒加载失败恢复和重新加载入口的工作归 CodeYun/综合，与 CodeYun/笔记无关。",
+            "凡修黑屏处理、公告关闭、图像轮廓定位、标注修正、抖动容忍及误识别/误点击治理属于凡修标注与 Runtime 链路，必须归凡修。",
+            "MuMu、MuMu 模拟器、模拟器启动/窗口检测/ADB 状态链路当前只服务凡修，采用绝对归属规则；同段出现 Scheduler、守护、日历页面、CodeYun 实现细节或性能优化也不能改判。日常_周本、仙市_每周资源和 reset-scheduler-runs 同样属于凡修周常调度。",
+            "奇袭魔界、daily_mojie_raid、#320/#321、submit_fanxiu_task、backend/core/fanxiu 与 fanxiu/data-annotation 是凡修绝对业务锚点；围绕它们进行 Runtime、Kernel、task cell、code cell、cell tick、Scheduler 或接口收敛仍归凡修。",
+            "当前 task cell、code cell、cell tick、registered task cell、dynamic code cell 与 Kernel 顺序执行协议只用于凡修；即使某轮省略凡修或奇袭魔界名称，也必须继承凡修归属，不得归 pyxllib、CodeYun/笔记或集群。",
+            "layer0、#191、task_cell_poll、owner generation/token、stale、interrupt、stop_event、单 Kernel 与 Cell 接力属于凡修 Runtime/调度框架；resident、kernel、Jupyter 或调度等基础设施词不能把它改判为 CodeYun/集群。",
             "与 CodeYun 有关但不属于上述专门体系、也没有更明确业务分类的工作，默认归 CodeYun/综合。",
             "pyxllib 只在 record 直接维护、设计、修复或讲解 pyxllib Python 通用库本身时才可选；依赖、工具、统计口径、技能提示、自动化提示词或测试日志里出现 pyxllib 都是噪声。",
+            "pyxllib 是独立底层通用工具库，只有 record 明确显示实际修改 pyxllib 仓库代码时才可选；仅讨论、使用、引用、测试 pyxllib，或在 CodeYun 中做表格/性能工作都不得归 pyxllib。输入中的 pyxllib_code_change_evidence=false 时严禁选择 pyxllib。",
+            "Git/GitHub 自动提交、自动提交巡检、auto_git_commit 与提交阈值巡检一律归 CodeYun/综合；这是绝对优先规则，被巡检仓库名以及同段出现的服务器、Nginx、证书、集群内容都不能改变分类。",
+            "Skill 审计、skills 正交化、技能治理和线程样本抽检属于 CodeYun/综合；不能因出现线程、样本、文档等词改判为 CodeYun/笔记。",
             "CodeYun 自动化、前端/UI、提示词本地化、开源项目核验、页面性能、星图笔记和仓库治理默认按对应 CodeYun 分类判断，不要因工具库名改判为 pyxllib。",
-            "如果确实信息不足，选择候选里的 general。",
+            "自动日记禁止选择内置 general/综合；如果确实信息不足，选择 CodeYun/综合。",
             "只返回 JSON 对象，不要 Markdown，不要解释。",
         ]
     )
@@ -2426,6 +2697,7 @@ def _build_codex_diary_classification_user_prompt(
                 "project_label": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("project_label")), 80, suffix=""),
                 "user_request": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("user_request")), 280, suffix=""),
                 "assistant_result": _truncate_codex_diary_text(_clean_codex_diary_classification_text(record.get("assistant_result")), 520, suffix=""),
+                "pyxllib_code_change_evidence": bool(record.get("codex_diary_pyxllib_code_change_evidence")),
                 "rule_default_category_key": record.get("codex_diary_category_key"),
                 "candidate_categories": candidate_categories,
             }
@@ -2829,6 +3101,7 @@ def _merge_codex_diary_blocks_for_target_duration(
         note_categories = _enforce_codex_diary_primary_category(
             normalize_note_categories(current[0].get("note_categories"), fallback_category=category_key),
             category_key,
+            palette_lookup=palette_lookup,
         )
         category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
         category_labels = _codex_diary_category_labels_for_weights(note_categories, palette_lookup=palette_lookup)
@@ -3564,6 +3837,9 @@ def _build_codex_diary_blocks(
         for item in _iter_unique_codex_diary_palette_items(palette_lookup)
         if str(item.get("key") or "").strip()
     }
+    default_category_key = _codex_diary_default_category_key(palette_lookup)
+    if default_category_key != NOTE_CATEGORY_DEFAULT:
+        allowed_category_keys.discard(NOTE_CATEGORY_DEFAULT)
     records: list[dict[str, Any]] = []
     source_records = [
         raw_record

@@ -68,7 +68,8 @@ namespace Code4101.Zaohua.Tiandao
         private const int QuantityNodeLimit = 240000;
         private const int QuantityNodesPerForm = 5000;
         private const int PackingNodeLimit = 30000;
-        private const int QuantityCandidatesPerForm = 24;
+        private const int QuantityCandidatesPerForm = 8;
+        private const int RepresentativesPerRuleTier = 3;
         private static readonly int[] PlantingDaysByGrade =
             { 10, 20, 30, 360, 720, 1080, 3600, 7200, 10800, 36000, 72000, 108000 };
 
@@ -106,6 +107,18 @@ namespace Code4101.Zaohua.Tiandao
             internal ulong LowMask;
             internal ulong HighMask;
             internal int RuleHint;
+        }
+
+        private sealed class QuantityProfile
+        {
+            internal int[] Counts;
+            internal string ExactKey;
+            internal string RuleTierKey;
+            internal int RuleTierScore;
+            internal int PlantingDays;
+            internal int YangCells;
+            internal int YinCells;
+            internal int PieceCount;
         }
 
         internal static List<AlchemySolution> SolvePhased(
@@ -213,6 +226,9 @@ namespace Code4101.Zaohua.Tiandao
             var quantityNodes = 0;
             var solvedForms = 0;
             var packingAttempts = 0;
+            var balancedQuantityVectors = 0;
+            var quantityRuleTiers = 0;
+            var quantityRepresentatives = 0;
             var largestFormSizeSearched = 0;
             long packingMilliseconds = 0;
             var maxPieces = Math.Min(
@@ -232,8 +248,12 @@ namespace Code4101.Zaohua.Tiandao
 
                 solvedForms++;
                 var quantityCandidates = SolveQuantitiesForForm(
-                    form, target, allKeys, furnaceCfg, cancellationToken,
-                    ref quantityNodes, QuantityNodeLimit, QuantityCandidatesPerForm);
+                    form, target, allKeys, furnaceCfg, recipe, cancellationToken,
+                    ref quantityNodes, QuantityNodeLimit, QuantityCandidatesPerForm,
+                    out var balancedCount, out var ruleTierCount);
+                balancedQuantityVectors += balancedCount;
+                quantityRuleTiers += ruleTierCount;
+                quantityRepresentatives += quantityCandidates.Count;
                 foreach (var counts in quantityCandidates)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -310,6 +330,9 @@ namespace Code4101.Zaohua.Tiandao
                                   $"largestForm={largestFormSizeSearched}/{maxFormSize}, " +
                                   $"formLimitReached={formNodes >= FormNodeLimit}, " +
                                   $"quantityNodes={quantityNodes}, " +
+                                  $"balancedQuantities={balancedQuantityVectors}, " +
+                                  $"quantityTiers={quantityRuleTiers}, " +
+                                  $"quantityRepresentatives={quantityRepresentatives}, " +
                                   $"packingAttempts={packingAttempts}, solutions={solutions.Count}, " +
                                   $"candidateMs={candidateStopwatch.ElapsedMilliseconds}, " +
                                   $"algebraMs={Math.Max(0, stageStopwatch.ElapsedMilliseconds - candidateStopwatch.ElapsedMilliseconds - packingMilliseconds)}, " +
@@ -340,10 +363,13 @@ namespace Code4101.Zaohua.Tiandao
             IReadOnlyDictionary<string, int> target,
             IReadOnlyCollection<string> allKeys,
             TbCraftingItemCfg furnace,
+            TbDrugRecipeCfg recipe,
             CancellationToken cancellationToken,
             ref int totalNodes,
             int nodeLimit,
-            int resultLimit)
+            int resultLimit,
+            out int balancedCount,
+            out int ruleTierCount)
         {
             var keys = allKeys.OrderBy(key => key).ToList();
             var pivotIndex = Enumerable.Range(0, form.Count)
@@ -357,14 +383,10 @@ namespace Code4101.Zaohua.Tiandao
             var yangCells = furnace.yangGridSize.x * furnace.yangGridSize.y;
             var yinCells = furnace.yinGridSize.x * furnace.yinGridSize.y;
             var results = new List<int[]>();
-            var searchResultLimit = resultLimit;
             var startNodes = totalNodes;
             var localNodes = totalNodes;
-
-            int PlantingCost(IReadOnlyList<int> countSet)
-            {
-                return form.Select((candidate, index) => candidate.PlantingDays * countSet[index]).Sum();
-            }
+            balancedCount = 0;
+            ruleTierCount = 0;
 
             void SearchCount(int depth, int usedYang, int usedYin)
             {
@@ -393,11 +415,6 @@ namespace Code4101.Zaohua.Tiandao
                     var finalYin = usedYin + (pivot.Side == 2 ? pivot.CellCount * pivotCount.Value : 0);
                     if (finalYang > yangCells || finalYin > yinCells) return;
                     results.Add((int[])counts.Clone());
-                    if (results.Count > searchResultLimit)
-                    {
-                        var worst = results.OrderBy(PlantingCost).ThenBy(countSet => countSet.Sum()).Last();
-                        results.Remove(worst);
-                    }
                     return;
                 }
 
@@ -419,11 +436,160 @@ namespace Code4101.Zaohua.Tiandao
 
             SearchCount(0, 0, 0);
             totalNodes = localNodes;
-            return results
-                .OrderBy(PlantingCost)
-                .ThenBy(countSet => countSet.Sum())
-                .Take(resultLimit)
+            balancedCount = results.Count;
+            var representatives = SelectQuantityRepresentatives(form, results, recipe, resultLimit);
+            ruleTierCount = representatives.Select(profile => profile.RuleTierKey).Distinct().Count();
+            return representatives.Select(profile => profile.Counts).ToList();
+        }
+
+        private static List<QuantityProfile> SelectQuantityRepresentatives(
+            IReadOnlyList<HerbCandidate> form,
+            IEnumerable<int[]> quantityVectors,
+            TbDrugRecipeCfg recipe,
+            int limit)
+        {
+            var profiles = quantityVectors
+                .Select(counts => BuildQuantityProfile(form, counts, recipe))
+                .GroupBy(profile => profile.ExactKey)
+                .Select(group => group.First())
                 .ToList();
+            if (profiles.Count == 0) return profiles;
+
+            var frontiers = new List<QuantityProfile>();
+            foreach (var tier in profiles.GroupBy(profile => profile.RuleTierKey))
+            {
+                var candidates = tier
+                    .OrderBy(profile => profile.PlantingDays)
+                    .ThenBy(profile => profile.YangCells + profile.YinCells)
+                    .ThenBy(profile => profile.PieceCount)
+                    .ToList();
+                var frontier = candidates
+                    .Where(candidate => !candidates.Any(other =>
+                        !ReferenceEquals(other, candidate) && Dominates(other, candidate)))
+                    .Take(RepresentativesPerRuleTier)
+                    .ToList();
+                frontiers.AddRange(frontier);
+            }
+
+            // 最省种植时间的代表无条件保留；其余优先保留能跨越更多丹方规则阈值、
+            // 且在阴阳占格上不被支配的代表。数量仅 +/-1 但仍处于同一阈值区间时，
+            // 不再各自触发一次几何装箱。
+            var selected = new List<QuantityProfile>();
+            var cheapest = profiles.OrderBy(profile => profile.PlantingDays)
+                .ThenBy(profile => profile.YangCells + profile.YinCells)
+                .ThenBy(profile => profile.PieceCount)
+                .First();
+            selected.Add(cheapest);
+            selected.AddRange(frontiers
+                .Where(profile => profile.ExactKey != cheapest.ExactKey)
+                .OrderByDescending(profile => profile.RuleTierScore)
+                .ThenBy(profile => profile.PlantingDays)
+                .ThenBy(profile => profile.YangCells + profile.YinCells)
+                .ThenBy(profile => profile.PieceCount));
+            return selected.GroupBy(profile => profile.ExactKey)
+                .Select(group => group.First())
+                .Take(limit)
+                .ToList();
+        }
+
+        private static QuantityProfile BuildQuantityProfile(
+            IReadOnlyList<HerbCandidate> form,
+            int[] counts,
+            TbDrugRecipeCfg recipe)
+        {
+            var tierParts = new List<string>();
+            var tierScore = 0;
+            foreach (var stateId in recipe?.StateIds ?? new List<int>())
+            {
+                var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
+                if (state == null) continue;
+                var first = 0;
+                var second = 0;
+                var usesSecondTarget = state.relation >= 10 && state.relation <= 16;
+                for (var index = 0; index < form.Count; index++)
+                {
+                    var candidate = form[index];
+                    if (state.poolType != 0 && state.poolType != candidate.Side) continue;
+                    var units = state.stateType == 0
+                        ? candidate.CellCount * counts[index]
+                        : counts[index];
+                    if (TargetMayMatch(candidate.Stock.ItemCfg, state.target1))
+                    {
+                        if (state.relation == 0 && state.stateType >= 11 && state.stateType <= 18)
+                        {
+                            var keys = new[]
+                                { "gold", "water", "wood", "fire", "soil", "ice", "wind", "thunder" };
+                            var key = keys[state.stateType - 11];
+                            if (candidate.Crafting.attrDic.TryGetValue(key, out var contribution))
+                                first += contribution * (candidate.Side == 1 ? 1 : -1) * counts[index];
+                        }
+                        else
+                        {
+                            first += units;
+                        }
+                    }
+                    if (usesSecondTarget && TargetMayMatch(candidate.Stock.ItemCfg, state.target2))
+                        second += units;
+                }
+                var firstTier = QuantityRuleTier(first, state.calculateType);
+                var secondTier = usesSecondTarget
+                    ? QuantityRuleTier(second, state.calculateType)
+                    : 0;
+                tierParts.Add(usesSecondTarget
+                    ? $"{stateId}:{firstTier}:{secondTier}"
+                    : $"{stateId}:{firstTier}");
+                tierScore += Math.Max(0, firstTier) + Math.Max(0, secondTier);
+            }
+
+            return new QuantityProfile
+            {
+                Counts = (int[])counts.Clone(),
+                ExactKey = string.Join(",", counts),
+                RuleTierKey = tierParts.Count == 0 ? "base" : string.Join(";", tierParts),
+                RuleTierScore = tierScore,
+                PlantingDays = form.Select((candidate, index) =>
+                    candidate.PlantingDays * counts[index]).Sum(),
+                YangCells = form.Select((candidate, index) => candidate.Side == 1
+                    ? candidate.CellCount * counts[index]
+                    : 0).Sum(),
+                YinCells = form.Select((candidate, index) => candidate.Side == 2
+                    ? candidate.CellCount * counts[index]
+                    : 0).Sum(),
+                PieceCount = counts.Sum(),
+            };
+        }
+
+        private static int QuantityRuleTier(int value, string expression)
+        {
+            if (string.IsNullOrEmpty(expression)) return 0;
+            var parts = expression.Split('#');
+            if (!int.TryParse(parts[0], out var operation)) return 0;
+            var threshold = parts.Length > 1 && int.TryParse(parts[1], out var parsed)
+                ? parsed
+                : 0;
+            return operation switch
+            {
+                0 => value == threshold ? 1 : 0,
+                1 => value > threshold ? 1 : 0,
+                2 => value >= threshold ? 1 : 0,
+                3 => value < threshold ? 1 : 0,
+                4 => value <= threshold ? 1 : 0,
+                5 => threshold == 0 ? 0 : value / threshold,
+                _ => 0,
+            };
+        }
+
+        private static bool Dominates(QuantityProfile left, QuantityProfile right)
+        {
+            var noWorse = left.PlantingDays <= right.PlantingDays &&
+                          left.YangCells <= right.YangCells &&
+                          left.YinCells <= right.YinCells &&
+                          left.PieceCount <= right.PieceCount;
+            var strictlyBetter = left.PlantingDays < right.PlantingDays ||
+                                 left.YangCells < right.YangCells ||
+                                 left.YinCells < right.YinCells ||
+                                 left.PieceCount < right.PieceCount;
+            return noWorse && strictlyBetter;
         }
 
         private static int MaximumCount(HerbCandidate candidate, TbCraftingItemCfg furnace)

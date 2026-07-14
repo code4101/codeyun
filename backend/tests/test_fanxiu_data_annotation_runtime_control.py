@@ -175,6 +175,30 @@ def test_scheduler_invalidates_orphaned_attempt_for_whole_job_retry(monkeypatch)
     assert written and facts == [("daily-a", "error")]
 
 
+def test_scheduler_gives_idle_cell_terminal_writer_a_grace_period(monkeypatch):
+    tasks = [{
+        "id": "daily-a",
+        "last_result": "running",
+        "attempt_id": "live-attempt",
+        "attempt_kernel_generation": 7,
+        "started_at": "2026-07-14 16:00:00",
+    }]
+    written = []
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "idle", "generation": 7},
+    )
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda value, **_kwargs: written.append(deepcopy(value)))
+
+    changed = runtime_control.reconcile_stale_scheduler_attempts(tasks)
+
+    assert changed is False
+    assert tasks[0]["last_result"] == "running"
+    assert tasks[0]["attempt_id"] == "live-attempt"
+    assert tasks[0]["attempt_kernel_idle_since"]
+    assert written
+
+
 def test_prepare_scheduler_task_waits_when_kernel_busy(monkeypatch, tmp_path):
     persisted = []
     monkeypatch.setattr(
@@ -207,3 +231,35 @@ def test_scheduler_task_normalization_preserves_terminal_message():
     })
 
     assert task["last_message"] == "需要业务确认"
+
+
+def test_runtime_reload_preserves_completed_business_result(monkeypatch):
+    persisted = {
+        "running": False,
+        "guard_enabled": True,
+        "guard_running": True,
+        "status": "success",
+        "phase": "done",
+        "message": "日常_助手执行完成",
+        "logs": [],
+    }
+    monkeypatch.setattr(runtime_control, "read_runtime_status", lambda _path=None: deepcopy(persisted))
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", lambda: {
+        "running": False,
+        "status": "idle",
+        "logs": [],
+        "guard_items": {},
+    })
+    monkeypatch.setattr(runtime_control, "is_data_annotation_runtime_live_empty", lambda _status: True)
+    monkeypatch.setattr(runtime_control, "persist_runtime_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "idle"},
+    )
+
+    status = runtime_control.runtime_status()
+
+    assert status["guard_running"] is False
+    assert status["status"] == "success"
+    assert status["phase"] == "done"
+    assert status["message"] == "日常_助手执行完成"

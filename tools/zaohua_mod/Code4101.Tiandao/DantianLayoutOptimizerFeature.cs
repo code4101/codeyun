@@ -31,11 +31,23 @@ namespace Code4101.Zaohua.Tiandao
         internal double Balance;
         internal int Total;
         internal int RuleCount;
+        internal int Potential;
         internal List<int> Multipliers = new List<int>();
+        internal List<string> RuleDetails = new List<string>();
 
-        internal double Fitness => Balance + Total * 0.000001d;
+        // Potential 只负责引导搜索跨越“每 N 个才 +1”的同分平台；精确倍率始终是主目标。
+        internal double Fitness => Balance + Total * 0.000001d + Potential * 0.0001d;
 
         internal bool BetterThan(DantianLayoutScore other)
+        {
+            if (other == null) return true;
+            if (Balance > other.Balance + 0.0000001d) return true;
+            if (Math.Abs(Balance - other.Balance) > 0.0000001d) return false;
+            if (Total != other.Total) return Total > other.Total;
+            return Potential > other.Potential;
+        }
+
+        internal bool ExactBetterThan(DantianLayoutScore other)
         {
             if (other == null) return true;
             if (Balance > other.Balance + 0.0000001d) return true;
@@ -47,7 +59,8 @@ namespace Code4101.Zaohua.Tiandao
             var geometric = RuleCount == 0
                 ? 0d
                 : Math.Exp(Balance / RuleCount) - 1d;
-            return $"balanced={geometric:F3}, total={Total}, rules=[{string.Join(",", Multipliers)}]";
+            return $"balanced={geometric:F3}, total={Total}, potential={Potential}, " +
+                   $"rules=[{string.Join(",", Multipliers)}]";
         }
     }
 
@@ -193,8 +206,9 @@ namespace Code4101.Zaohua.Tiandao
                     var source = piece.Placements[placementIndices[pieceIndex]].CellIndices
                         .Select(index => layout[index])
                         .ToList();
-                    foreach (var rule in piece.Rules)
+                    for (var ruleIndex = 0; ruleIndex < piece.Rules.Count; ruleIndex++)
                     {
+                        var rule = piece.Rules[ruleIndex];
                         var targets = controller.GetVaildArtMagicIdList(source, layout, rule.targetEff);
                         var hasTarget = targets != null && targets.Any(cell => cell.artMagicId.sedId != 0);
                         var multiplier = hasTarget && GetUpMultiplierMethod != null
@@ -204,10 +218,22 @@ namespace Code4101.Zaohua.Tiandao
                             })
                             : 0;
                         multiplier = Math.Max(0, multiplier);
+                        var progressTargets = controller.GetVaildArtMagicIdList(
+                            source, layout, rule.upMulEff);
+                        var potential = progressTargets == null
+                            ? 0
+                            : progressTargets
+                                .Where(cell => cell.artMagicId.sedId != 0)
+                                .Select(cell => cell.artMagicId)
+                                .Distinct()
+                                .Count();
                         score.RuleCount++;
                         score.Total += multiplier;
+                        score.Potential += potential;
                         score.Balance += Math.Log(1d + multiplier);
                         score.Multipliers.Add(multiplier);
+                        score.RuleDetails.Add(
+                            $"{piece.Name}#{ruleIndex + 1}=x{multiplier}/progress{potential}");
                     }
                 }
             }
@@ -432,8 +458,10 @@ namespace Code4101.Zaohua.Tiandao
 
     internal sealed class DantianOptimizerUi : MonoBehaviour
     {
-        private const int MaxIterations = 18000;
-        private const int MaxMilliseconds = 1600;
+        private const int MaxIterations = 120000;
+        private const int MaxMilliseconds = 7000;
+        private const int GreedyMilliseconds = 2400;
+        private const int KickInterval = 1800;
         private DantianPanel _panel;
         private Button _button;
         private TextPro _label;
@@ -447,29 +475,54 @@ namespace Code4101.Zaohua.Tiandao
             var view = Traverse.Create(panel).Field<DantianPanelView>("view").Value;
             if (view == null) return;
             var reset = view.DantianOperationArea.btnResetDantian;
-            if (reset == null) return;
-            _button = Instantiate(reset, reset.transform.parent);
+            var combination = view.DantianOperationArea.togSelectCombination;
+            if (reset == null || combination == null) return;
+
+            // “清空 / 重塑 / 扩排”是原生专属动作组，不能再向其 LayoutGroup 插入四字按钮。
+            // 优化作用于当前组合方案，因此以方案选择框为锚点，横向放在它的正上方。
+            var controlParent = combination.transform.parent;
+            _button = Instantiate(reset, controlParent);
             _button.gameObject.name = "Code4101DantianOptimize";
             _button.onClick.RemoveAllListeners();
             foreach (var localization in _button.GetComponentsInChildren<TextProLocalization>(true))
                 localization.enabled = false;
             var labels = _button.GetComponentsInChildren<TextPro>(true);
             _label = labels.FirstOrDefault();
-            if (_label != null) _label.text = "优化排布";
+            if (_label != null)
+            {
+                _label.text = "优化排布";
+                _label.alignment = TMPro.TextAlignmentOptions.Center;
+                _label.enableWordWrapping = false;
+                _label.enableAutoSizing = true;
+                _label.fontSizeMin = 18f;
+                _label.fontSizeMax = 30f;
+                var labelRect = (RectTransform)_label.transform;
+                labelRect.anchorMin = Vector2.zero;
+                labelRect.anchorMax = Vector2.one;
+                labelRect.pivot = new Vector2(0.5f, 0.5f);
+                labelRect.offsetMin = new Vector2(8f, 3f);
+                labelRect.offsetMax = new Vector2(-8f, -3f);
+            }
             for (var i = 1; i < labels.Length; i++) labels[i].text = string.Empty;
 
-            var resetRect = (RectTransform)reset.transform;
             var rect = (RectTransform)_button.transform;
-            rect.anchorMin = resetRect.anchorMin;
-            rect.anchorMax = resetRect.anchorMax;
-            rect.pivot = resetRect.pivot;
-            rect.sizeDelta = resetRect.sizeDelta;
-            var parentLayout = reset.transform.parent.GetComponent<LayoutGroup>();
-            if (parentLayout != null)
-                _button.transform.SetSiblingIndex(reset.transform.GetSiblingIndex() + 1);
-            else
-                rect.localPosition = resetRect.localPosition +
-                                     new Vector3(resetRect.rect.width + 10f, 0f, 0f);
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.sizeDelta = new Vector2(180f, 50f);
+            var combinationBounds = RectTransformUtility.CalculateRelativeRectTransformBounds(
+                controlParent, combination.transform);
+            rect.localPosition = new Vector3(
+                combinationBounds.center.x,
+                combinationBounds.max.y + rect.sizeDelta.y * 0.5f + 8f,
+                combination.transform.localPosition.z);
+            var layoutElement = _button.GetComponent<LayoutElement>() ??
+                                _button.gameObject.AddComponent<LayoutElement>();
+            layoutElement.ignoreLayout = true;
+            _button.transform.SetAsLastSibling();
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:UI] " +
+                                  $"parent={controlParent.name} position={rect.localPosition} " +
+                                  $"size={rect.sizeDelta} anchor=combination");
             _button.onClick.AddListener(StartOptimization);
         }
 
@@ -509,16 +562,104 @@ namespace Code4101.Zaohua.Tiandao
             var totalWatch = Stopwatch.StartNew();
             var sliceWatch = Stopwatch.StartNew();
             var accepted = 0;
+            var kicks = 0;
+            var evaluated = 0;
 
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
                                   $"placements={candidates} current={currentScore} " +
+                                  $"currentRules=[{string.Join(", ", currentScore.RuleDetails)}] " +
+                                  $"ruleDefinitions=[{DescribeRules(problem)}] " +
                                   $"runtime=[{DescribeRuntimeBonuses()}]");
+
+            // 先做确定性的单件全候选爬山。它能快速吃掉明显可提升的摆法，且不对
+            // “上方/下方”等区域关系附加任何几何假设，候选一律交给原生规则评分。
+            for (var pass = 0; pass < 2 && totalWatch.ElapsedMilliseconds < GreedyMilliseconds; pass++)
+            {
+                var improved = false;
+                foreach (var pieceIndex in Enumerable.Range(0, problem.Pieces.Count)
+                             .OrderBy(_ => random.Next()))
+                {
+                    var piece = problem.Pieces[pieceIndex];
+                    var oldPlacementIndex = working[pieceIndex];
+                    foreach (var cell in piece.Placements[oldPlacementIndex].CellIndices)
+                        occupancy[cell]--;
+
+                    var chosenPlacementIndex = oldPlacementIndex;
+                    var chosenScore = workingScore;
+                    foreach (var candidateIndex in Enumerable.Range(0, piece.Placements.Count)
+                                 .OrderBy(_ => random.Next()))
+                    {
+                        if (totalWatch.ElapsedMilliseconds >= GreedyMilliseconds) break;
+                        var candidate = piece.Placements[candidateIndex];
+                        if (candidate.CellIndices.Any(cell => occupancy[cell] > 0)) continue;
+                        working[pieceIndex] = candidateIndex;
+                        if (!DantianLayoutOptimizer.TryEvaluate(problem, working, out var candidateScore,
+                                out scoreError))
+                        {
+                            UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                                       $"greedy-score-failed {scoreError}");
+                            continue;
+                        }
+                        evaluated++;
+                        if (candidateScore.BetterThan(chosenScore))
+                        {
+                            chosenPlacementIndex = candidateIndex;
+                            chosenScore = candidateScore;
+                        }
+                        if (sliceWatch.ElapsedMilliseconds < 5) continue;
+                        SetLabel("优化中…");
+                        sliceWatch.Restart();
+                        yield return null;
+                        if (_panel == null || !_panel.gameObject.activeInHierarchy) yield break;
+                    }
+
+                    working[pieceIndex] = chosenPlacementIndex;
+                    foreach (var cell in piece.Placements[chosenPlacementIndex].CellIndices)
+                        occupancy[cell]++;
+                    if (chosenScore.BetterThan(workingScore)) improved = true;
+                    workingScore = chosenScore;
+                    if (chosenScore.BetterThan(bestScore))
+                    {
+                        best = working.ToArray();
+                        bestScore = chosenScore;
+                    }
+                }
+                if (!improved) break;
+            }
 
             for (var iteration = 0;
                  iteration < MaxIterations && totalWatch.ElapsedMilliseconds < MaxMilliseconds;
                  iteration++)
             {
+                // 阈值类规则（例如每 10 个才 +1）存在大片同分平台。周期性从当前最好解
+                // 连续搬动多件物品，允许跨过必须协同移动才能越过的局部最优。
+                if (iteration > 0 && iteration % KickInterval == 0)
+                {
+                    working = best.ToArray();
+                    occupancy = BuildOccupancy(problem, working);
+                    var moved = ApplyKick(problem, working, occupancy, random,
+                        3 + random.Next(Math.Min(6, Math.Max(1, problem.Pieces.Count))));
+                    if (moved > 0 && DantianLayoutOptimizer.TryEvaluate(problem, working,
+                            out var kickedScore, out scoreError))
+                    {
+                        workingScore = kickedScore;
+                        evaluated++;
+                        kicks++;
+                        if (kickedScore.BetterThan(bestScore))
+                        {
+                            best = working.ToArray();
+                            bestScore = kickedScore;
+                        }
+                    }
+                    else
+                    {
+                        working = best.ToArray();
+                        occupancy = BuildOccupancy(problem, working);
+                        workingScore = bestScore;
+                    }
+                }
+
                 var pieceIndex = random.Next(problem.Pieces.Count);
                 var piece = problem.Pieces[pieceIndex];
                 var oldPlacementIndex = working[pieceIndex];
@@ -542,6 +683,7 @@ namespace Code4101.Zaohua.Tiandao
                                                    $"candidate-score-failed {scoreError}");
                         break;
                     }
+                    evaluated++;
                     var progress = (double)iteration / MaxIterations;
                     var temperature = 0.22d * (1d - progress) + 0.012d;
                     var delta = nextScore.Fitness - workingScore.Fitness;
@@ -573,9 +715,11 @@ namespace Code4101.Zaohua.Tiandao
             }
 
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] searched " +
-                                  $"elapsedMs={totalWatch.ElapsedMilliseconds} accepted={accepted} " +
-                                  $"best={bestScore} solution=[{DescribeSolution(problem, best)}]");
-            if (!bestScore.BetterThan(currentScore))
+                                  $"elapsedMs={totalWatch.ElapsedMilliseconds} evaluated={evaluated} " +
+                                  $"accepted={accepted} kicks={kicks} best={bestScore} " +
+                                  $"bestRules=[{string.Join(", ", bestScore.RuleDetails)}] " +
+                                  $"solution=[{DescribeSolution(problem, best)}]");
+            if (!bestScore.ExactBetterThan(currentScore))
             {
                 yield return ShowTemporary("暂未找到更优");
                 yield break;
@@ -593,7 +737,8 @@ namespace Code4101.Zaohua.Tiandao
                 DantianLayoutOptimizer.TryEvaluate(actualProblem, actualProblem.CurrentPlacements,
                     out actual, out _);
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] applied " +
-                                  $"before={currentScore} predicted={bestScore} actual={actual}");
+                                  $"before={currentScore} predicted={bestScore} actual={actual} " +
+                                  $"actualRules=[{string.Join(", ", actual?.RuleDetails ?? new List<string>())}]");
             Traverse.Create(_panel).Method("InitPanel").GetValue();
             yield return ShowTemporary($"总增幅 {currentScore.Total}→{bestScore.Total}");
         }
@@ -610,26 +755,54 @@ namespace Code4101.Zaohua.Tiandao
         private static int PickPlacement(DantianLayoutProblem problem, DantianLayoutPiece piece,
             int[] occupancy, System.Random random)
         {
-            var fallback = -1;
             for (var attempt = 0; attempt < 72; attempt++)
             {
                 var index = random.Next(piece.Placements.Count);
                 var placement = piece.Placements[index];
                 if (placement.CellIndices.Any(cell => occupancy[cell] > 0)) continue;
-                fallback = index;
-                if (random.NextDouble() > 0.18d && !Touches(problem, placement, occupancy)) continue;
                 return index;
             }
-            return fallback;
+
+            // 随机试探没撞到空位时，从随机起点完整扫描，避免候选很多时误判无处可放。
+            var start = random.Next(piece.Placements.Count);
+            for (var offset = 0; offset < piece.Placements.Count; offset++)
+            {
+                var index = (start + offset) % piece.Placements.Count;
+                if (!piece.Placements[index].CellIndices.Any(cell => occupancy[cell] > 0))
+                    return index;
+            }
+            return -1;
         }
 
-        private static bool Touches(DantianLayoutProblem problem,
-            DantianLayoutPlacement placement, int[] occupancy)
+        private static int ApplyKick(DantianLayoutProblem problem, int[] working,
+            int[] occupancy, System.Random random, int moveCount)
         {
-            foreach (var cell in placement.CellIndices)
-                if (problem.NeighborIndices[cell].Any(neighbor => occupancy[neighbor] > 0))
-                    return true;
-            return false;
+            var moved = 0;
+            foreach (var pieceIndex in Enumerable.Range(0, problem.Pieces.Count)
+                         .OrderBy(_ => random.Next()).Take(moveCount))
+            {
+                var piece = problem.Pieces[pieceIndex];
+                var oldPlacementIndex = working[pieceIndex];
+                foreach (var cell in piece.Placements[oldPlacementIndex].CellIndices)
+                    occupancy[cell]--;
+                var newPlacementIndex = PickPlacement(problem, piece, occupancy, random);
+                if (newPlacementIndex < 0)
+                    newPlacementIndex = oldPlacementIndex;
+                else if (newPlacementIndex != oldPlacementIndex)
+                    moved++;
+                working[pieceIndex] = newPlacementIndex;
+                foreach (var cell in piece.Placements[newPlacementIndex].CellIndices)
+                    occupancy[cell]++;
+            }
+            return moved;
+        }
+
+        private static string DescribeRules(DantianLayoutProblem problem)
+        {
+            return string.Join("; ", problem.Pieces.SelectMany(piece =>
+                piece.Rules.Select((rule, index) =>
+                    $"{piece.Name}#{index + 1}:target={rule.targetEff}," +
+                    $"up={rule.upMulEff},type={rule.upMulType},max={rule.maxUpMul}")));
         }
 
         private static string DescribeSolution(DantianLayoutProblem problem, int[] placements)

@@ -275,10 +275,10 @@ class PopupGuardMixin:
         event: dict[str, Any],
         *,
         allow_confirm_actions: bool = True,
-    ) -> bool:
+    ) -> bool | None:
         child_view, child_score = self._best_popup_47_child(runtime, popup_view)
         if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
-            return False
+            return None
         if child_view.id == 84:
             return self._handle_auto_close_popup_47_child_84(
                 runtime,
@@ -328,7 +328,9 @@ class PopupGuardMixin:
             return self._close_popup_view_without_confirm(runtime, popup_view, event)
         action_shape = self._auto_close_guard_action_shape(child_view.raw)
         if not self._auto_close_guard_action_allowed(action_shape):
-            return True
+            # 已识别到业务子弹窗但守护无权点击时，必须放行主行为树。
+            # True 会让 WithServices 持续抢占主任务，形成守护饥饿。
+            return False
         try:
             child_view.close(runtime)
         except RuntimeError:
@@ -338,7 +340,7 @@ class PopupGuardMixin:
                 child_event,
                 "missing_action",
             )
-            return True
+            return False
         action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
         self._record_popup_guard_click(
             child_view.id,
@@ -781,13 +783,15 @@ class PopupGuardMixin:
                     self._log("detail", f"守护跳过 #47：日常_周本业务弹窗由业务流程处理，phase={phase}")
                     return False
 
-            if view.id == 47 and self._handle_auto_close_popup_47_child(
-                runtime,
-                view,
-                event,
-                allow_confirm_actions=allow_confirm_actions,
-            ):
-                return True
+            if view.id == 47:
+                child_result = self._handle_auto_close_popup_47_child(
+                    runtime,
+                    view,
+                    event,
+                    allow_confirm_actions=allow_confirm_actions,
+                )
+                if child_result is not None:
+                    return child_result
             if view.id == 47 and self._handle_auto_close_popup_47_leave_confirm_ocr(runtime, view, event):
                 return True
             if view.id == 47 and self._handle_auto_close_popup_47_world_guide_bubble(runtime, event):

@@ -766,6 +766,13 @@ def test_note_sheet_workbook_reorders_sheets(client, session):
         _clear_user_override()
 
 
+def test_course_workbook_sheet_order_places_attendance_before_registration() -> None:
+    assert note_sheets_api._course_workbook_sheet_order("attendance", 99) == 10
+    assert note_sheets_api._course_workbook_sheet_order("registration", 1) == 20
+    assert note_sheets_api._course_workbook_sheet_order("video_config", 1) == 30
+    assert note_sheets_api._course_workbook_sheet_order("unknown", 77) == 77
+
+
 def test_note_sheet_defined_names_check_sheet_versions(client, session):
     user = _create_user(session, username="note-sheet-defined-name-version-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

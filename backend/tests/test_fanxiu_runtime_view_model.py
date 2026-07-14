@@ -908,7 +908,7 @@ def test_mail_entry_wait_click_prefers_ocr_before_image(monkeypatch):
     assert clicked[0][2]["ocr_text"] == "邮"
 
 
-def test_shape_match_uses_full_frame_ocr_overlap_after_crop_ocr_miss(monkeypatch):
+def test_shape_match_uses_shared_full_frame_ocr_spatial_index(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image35 = {
         "type": "image",
@@ -933,14 +933,7 @@ def test_shape_match_uses_full_frame_ocr_overlap_after_crop_ocr_miss(monkeypatch
     }
     ctx = {"entry": type("Entry", (), {"mode": "local"})()}
 
-    def run_match(_ctx, _image, _shape, _frame, *, scan=False, match_strategy="auto", ocr_enabled=False):
-        return {
-            "similarity": 0,
-            "matches": [],
-            "fixed_box": {"name": "邮件", "x": 449, "y": 1453, "w": 90, "h": 111},
-        }
-
-    monkeypatch.setattr(runner, "_run_match", run_match)
+    monkeypatch.setattr(runner, "_run_match", lambda *_args, **_kwargs: pytest.fail("shape OCR should reuse the full-frame spatial index"))
     monkeypatch.setattr(
         runner,
         "_ocr_lines",
@@ -950,8 +943,8 @@ def test_shape_match_uses_full_frame_ocr_overlap_after_crop_ocr_miss(monkeypatch
     result = runner._match_shape(ctx, image35, shape, "frame", condition="ocr")
 
     assert result["matched"] is True
-    assert result["resolved_box"] == {"name": "邮件", "x": 449, "y": 1453, "w": 90, "h": 111}
-    assert result["ocr_text"] == "止清羊驼仙缘邮件设置"
+    assert result["resolved_box"] == {"name": "邮件", "x": 449.1, "y": 1452.8, "w": 90.0, "h": 110.4}
+    assert "邮" in result["ocr_text"]
 
 
 def test_shape_match_accepts_ocr_contains_even_when_similarity_is_low(monkeypatch):
@@ -980,21 +973,20 @@ def test_shape_match_accepts_ocr_contains_even_when_similarity_is_low(monkeypatc
     }
     ctx = {"entry": type("Entry", (), {"mode": "local"})()}
 
-    def run_match(_ctx, _image, _shape, _frame, *, scan=False, match_strategy="auto", ocr_enabled=False):
-        assert ocr_enabled is True
+    def ocr_frame(_frame, *, options=None):
+        assert options == {"return_word_box": True}
         return {
-            "similarity": 63,
-            "matches": [{"text": "邮传", "x": 459, "y": 1527, "w": 57, "h": 30}],
-            "fixed_box": {"name": "ocr", "x": 459, "y": 1527, "w": 57, "h": 30},
+            "lines": [{"text": "邮传", "x": 459, "y": 1527, "w": 57, "h": 30}],
+            "words": [],
         }
 
-    monkeypatch.setattr(runner, "_run_match", run_match)
+    monkeypatch.setattr(runner, "_ocr_frame", ocr_frame)
 
     result = runner._match_shape(ctx, image35, shape, "frame", condition="ocr")
 
     assert result["matched"] is True
     assert result["ocr_text"] == "邮传"
-    assert result["resolved_box"] == {"name": "ocr", "x": 459, "y": 1527, "w": 57, "h": 30}
+    assert result["resolved_box"] == {"name": "邮件", "x": 449.1, "y": 1452.8, "w": 90.0, "h": 110.4}
 
 
 def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):

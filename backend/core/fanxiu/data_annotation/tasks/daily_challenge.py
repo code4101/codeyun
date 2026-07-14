@@ -1842,7 +1842,7 @@ class DailyChallengeTaskMixin:
         execution_evidence = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = runtime.current_scene([276, 204, 69, 34], update=True)
+            scene_id, score, frame = runtime.current_scene([276, 277, 275, 237, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             if scene_id in {69, 34}:
                 raise RuntimeError(
@@ -1866,6 +1866,9 @@ class DailyChallengeTaskMixin:
                 break
             if scene_id == 277 or self._daily_assistant_text_is_one_key_progress(text):
                 execution_evidence = "progress"
+                break
+            if scene_id in {275, 237} or self._daily_assistant_text_is_one_key_result(text):
+                execution_evidence = "result"
                 break
             if time.monotonic() - start >= confirm_timeout:
                 if self._daily_assistant_scene_or_text_is_list(scene_id, text):
