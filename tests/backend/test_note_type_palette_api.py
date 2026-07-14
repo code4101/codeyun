@@ -42,6 +42,7 @@ def test_note_type_palette_discovers_legacy_colors_and_persists_rename(client, s
                     "key": "legacy_color_67c23a",
                     "label": "考勤",
                     "color": "#67C23A",
+                    "description": "考勤课程、问卷打卡与学员服务相关业务。",
                     "order": 2000,
                     "builtin": False,
                     "source": "legacy",
@@ -53,11 +54,13 @@ def test_note_type_palette_discovers_legacy_colors_and_persists_rename(client, s
     assert update_response.status_code == 200
     updated_item = next(item for item in update_response.json()["items"] if item["key"] == "legacy_color_67c23a")
     assert updated_item["label"] == "考勤"
+    assert updated_item["description"] == "考勤课程、问卷打卡与学员服务相关业务。"
 
     reload_response = client.get("/api/notes/category-palette")
     assert reload_response.status_code == 200
     reloaded_item = next(item for item in reload_response.json()["items"] if item["key"] == "legacy_color_67c23a")
     assert reloaded_item["label"] == "考勤"
+    assert reloaded_item["description"] == "考勤课程、问卷打卡与学员服务相关业务。"
 
 
 def test_note_type_palette_usage_count_respects_type_weights(client, session, auth_user):

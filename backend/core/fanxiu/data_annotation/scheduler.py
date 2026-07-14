@@ -79,13 +79,25 @@ _SCHEDULER_RUNTIME_STATE_FIELDS = (
     "last_message",
     "next_time",
     "retry_after",
-    "checkpoint",
+    "scheduler_meta",
+    "attempt_id",
+    "attempt_kernel_generation",
     "queued_at",
     "started_at",
     "finished_at",
     "world_fact_synced_at",
     "world_fact_updated_at",
 )
+
+
+def _migrate_scheduler_meta(task: dict[str, Any]) -> bool:
+    """Move legacy/generic scheduling metadata out of the checkpoint-shaped field."""
+    legacy = task.pop("checkpoint", None)
+    if not isinstance(legacy, dict):
+        return legacy is not None
+    current = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+    task["scheduler_meta"] = {**legacy, **current}
+    return True
 
 
 def _xianfu_initial_check_time(current_time: datetime) -> str:
@@ -251,8 +263,8 @@ def _daily_task_success_today(task: dict[str, Any], current_time: datetime) -> b
 
 
 def _task_has_synced_world_fact_next_time(task: dict[str, Any]) -> bool:
-    checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-    return bool(task.get("next_time") and checkpoint.get("world_fact_synced_at") and checkpoint.get("world_fact_updated_at"))
+    scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+    return bool(task.get("next_time") and scheduler_meta.get("world_fact_synced_at") and scheduler_meta.get("world_fact_updated_at"))
 
 
 def _daily_audit_row_is_valid_completed(row: dict[str, Any]) -> bool:
@@ -388,10 +400,10 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             task["last_run_at"] = str(fact.get("last_run_at") or fact_time.strftime("%Y-%m-%d %H:%M:%S"))
             task["retry_after"] = None
             task["next_time"] = next_time or None
-            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-            checkpoint["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
-            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
-            task["checkpoint"] = checkpoint
+            scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+            scheduler_meta["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_meta["world_fact_updated_at"] = fact.get("updated_at")
+            task["scheduler_meta"] = scheduler_meta
             audit_completed_changed = True
             continue
         if (
@@ -421,10 +433,10 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             task["last_run_at"] = str(fact.get("last_run_at") or datetime.fromtimestamp(fact_last_run_at).strftime("%Y-%m-%d %H:%M:%S"))
             task["next_time"] = None
             task["retry_after"] = fact_retry_after
-            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-            checkpoint["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
-            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
-            task["checkpoint"] = checkpoint
+            scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+            scheduler_meta["world_fact_synced_at"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_meta["world_fact_updated_at"] = fact.get("updated_at")
+            task["scheduler_meta"] = scheduler_meta
             audit_completed_changed = True
             continue
         fact_has_success_next_time = (
@@ -459,7 +471,10 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         fact_updated_at_key="world_fact_updated_at",
         synced_at_text=sync_time,
     )
-    return bool(synced or audit_completed_changed or task_facts_changed)
+    metadata_migrated = False
+    for task in tasks:
+        metadata_migrated = _migrate_scheduler_meta(task) or metadata_migrated
+    return bool(synced or metadata_migrated or audit_completed_changed or task_facts_changed)
 
 
 def merge_data_annotation_scheduler_task_updates(
@@ -844,7 +859,7 @@ def repair_data_annotation_scheduler_tasks(
                 continue
             if existing.get("enabled") is False and task.get("enabled"):
                 existing["enabled"] = True
-            for key in ("last_run_at", "last_result", "retry_after", "checkpoint"):
+            for key in ("last_run_at", "last_result", "retry_after", "scheduler_meta"):
                 if not existing.get(key) and task.get(key):
                     existing[key] = task.get(key)
         tasks = list(deduped.values())
@@ -890,12 +905,12 @@ def repair_data_annotation_scheduler_tasks(
             if deferred_next_time:
                 task["next_time"] = deferred_next_time
                 task["retry_after"] = None
-                checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-                checkpoint.pop("manual_inspection_note", None)
-                if checkpoint:
-                    task["checkpoint"] = checkpoint
+                scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+                scheduler_meta.pop("manual_inspection_note", None)
+                if scheduler_meta:
+                    task["scheduler_meta"] = scheduler_meta
                 else:
-                    task["checkpoint"] = None
+                    task["scheduler_meta"] = None
                 daily_retry_deferred = True
                 changed = True
         if (

@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from backend.api import device_entries as device_entries_api
 from backend.core.devices import codex_summary as codex_device_summary
 from backend.core.notes.semantics import build_note_category_palette_setting_key
+from backend.core.notes.progress import get_completion_progress_expr
 from backend.api.notes import (
     CODEX_DIARY_STALE_HEARTBEAT_SECONDS,
     _build_codex_diary_body_html,
@@ -19,7 +20,9 @@ from backend.api.notes import (
     _create_codex_diary_import_run_record,
     _draft_codex_diary_blocks_in_batches,
     _extract_codex_diary_ai_json,
+    _find_active_codex_diary_category_note_ids,
     _is_codex_diary_synthetic_turn,
+    _normalize_codex_diary_day_progress,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
@@ -821,6 +824,11 @@ def test_codex_diary_import_duplicate_requires_confirmation(
     assert confirmed_completed["created_note_count"] == 1
     assert confirmed_completed["created_note_ids"] != first_completed["created_note_ids"]
     assert confirmed_completed["duplicate_note_ids"] == first_completed["created_note_ids"]
+    session.expire_all()
+    first_notes = _notes_by_public_ids(session, first_completed["created_note_ids"])
+    confirmed_notes = _notes_by_public_ids(session, confirmed_completed["created_note_ids"])
+    assert len(first_notes) == 1 and first_notes[0].deleted_at
+    assert len(confirmed_notes) == 1 and not confirmed_notes[0].deleted_at
 
 
 def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
@@ -1385,6 +1393,54 @@ def test_codex_diary_blocks_ignore_injected_runtime_context(
     assert len(blocks) == 1
     assert len(blocks[0]["records"]) == 1
     assert blocks[0]["records"][0]["user_request"] == "继续运行日常镇邪。"
+
+
+def test_codex_diary_day_category_is_global_and_progress_uses_day_maximum(
+    session: Session,
+    auth_user,
+):
+    def add_note(note_id: str, category: str, minutes: int) -> NoteNode:
+        note = NoteNode(
+            id=note_id,
+            user_id=auth_user.id,
+            title=note_id,
+            primary_category=category,
+            note_categories=[{"key": category, "weight": 100}],
+            custom_fields=[
+                ["__codex_diary_date", "string", "2026-07-12"],
+                ["__codex_diary_scope_key", "string", f"scope:{note_id}"],
+                ["__codex_diary_worklog", "json", {"duration_seconds": minutes * 60}],
+            ],
+        )
+        session.add(note)
+        return note
+
+    fanxiu_a = add_note("fanxiu-a", "fanxiu", 120)
+    fanxiu_b = add_note("fanxiu-b", "fanxiu", 60)
+    attendance = add_note("attendance", "attendance", 180)
+    session.commit()
+
+    assert _find_active_codex_diary_category_note_ids(
+        session,
+        user_id=auth_user.id,
+        diary_date="2026-07-12",
+        category_key="fanxiu",
+    ) == ["fanxiu-a", "fanxiu-b"]
+
+    denominator = _normalize_codex_diary_day_progress(
+        session,
+        user_id=auth_user.id,
+        diary_date="2026-07-12",
+    )
+    session.commit()
+    session.refresh(fanxiu_a)
+    session.refresh(fanxiu_b)
+    session.refresh(attendance)
+
+    assert denominator == 180
+    assert get_completion_progress_expr(fanxiu_a.custom_fields) == "120/180"
+    assert get_completion_progress_expr(fanxiu_b.custom_fields) == "60/180"
+    assert get_completion_progress_expr(attendance.custom_fields) == "180/180"
 
 
 def test_codex_diary_blocks_keep_short_categories_separate(

@@ -147,7 +147,7 @@ class MailTaskMixin:
                     self._set_status_locked(
                         "running",
                         f"邮件_历史扫描：当前已在邮件 #121 {score:.0f}%",
-                        phase="mail_claim_resume_mail_scene",
+                        phase="mail_claim_scan_current_mail_scene",
                         current_scene=121,
                     )
                     self._log_locked("info", f"邮件_历史扫描：当前已在邮件 #121 {score:.0f}%，直接扫描")
@@ -207,38 +207,19 @@ class MailTaskMixin:
         max_scrolls = max(1, int(payload.get("max_scrolls") or 150))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
-        frame = runtime.cur_frame(update=True)
-        startup_frame = frame
-        pending_scene_id, pending_score = self._identify_scene_number(ctx, frame, [348, 278])
-        if pending_scene_id in {348, 278}:
-            startup_frame = None
-            with self._lock:
-                self._set_status_locked("running", "邮件_清理：处理遗留一键删除确认", phase="mail_cleanup_resume_confirm_delete_read", current_scene=pending_scene_id)
-                self._log_locked("action", f"邮件_清理：启动时检测到 #{pending_scene_id} 一键删除确认 {pending_score:.0f}%，点击「确认」")
-            self._click_confirmed_mail_delete_prompt(runtime, pending_scene_id, frame_data_url=frame)
-            resumed_targets = (121,) if pending_scene_id == 348 else (121, 34)
-            resumed_view = yield from runtime.wait_view(*resumed_targets, timeout=12.0, label="邮件_清理：遗留确认后等待邮件页")
-            resumed_scene_id = resumed_view.id if isinstance(resumed_view, View) else None
-            if resumed_scene_id == 34:
-                with self._lock:
-                    self._log_locked("info", "邮件_清理：遗留一键删除确认后回到世界页，继续进入邮件")
-            elif resumed_scene_id == 121:
-                with self._lock:
-                    self._log_locked("info", "邮件_清理：遗留一键删除确认后回到邮件页，继续扫描")
-
         with self._lock:
             self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
+        yield from self._open_mail_cleanup_entry(runtime)
         scene_id, score, frame, text = self._fanxiu_runtime_scene_text(
             ctx,
             runtime,
             [121, 122, 123, 227, 34, 35, 69],
-            frame=startup_frame,
             update=True,
         )
         if scene_id == 227:
             with self._lock:
-                self._set_status_locked("running", "邮件_清理：关闭遗留奖励页", phase="mail_cleanup_close_reward_page", current_scene=227)
-                self._log_locked("action", "邮件_清理：点击 #227「继续」关闭遗留奖励页")
+                self._set_status_locked("running", "邮件_清理：关闭本轮奖励页", phase="mail_cleanup_close_reward_page", current_scene=227)
+                self._log_locked("action", "邮件_清理：点击 #227「继续」关闭本轮奖励页")
             yield from runtime.wait_click(227, "继续", timeout=8.0)
             reward_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：奖励页关闭后等待邮件或世界")
             scene_id = reward_result_view.id if isinstance(reward_result_view, View) else None
@@ -263,25 +244,22 @@ class MailTaskMixin:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_清理：恢复遗留详情页 #{scene_id}",
-                    phase="mail_cleanup_resume_detail",
+                    f"邮件_清理：本轮入口异常落入详情页 #{scene_id}",
+                    phase="mail_cleanup_return_detail",
                     current_scene=scene_id,
                 )
                 self._log_locked(
                     "action",
-                    f"邮件_清理：启动时位于 #{scene_id}，缺少本轮列表策略证据，只返回列表不领取/删除",
+                    f"邮件_清理：本轮入口落入 #{scene_id}，缺少列表策略证据，只返回列表不领取/删除",
                 )
             detail_image = ctx.get("images", {}).get(scene_id) if isinstance(ctx.get("images"), dict) else None
             back_shape = View(detail_image).get_shape("空白-返回") if isinstance(detail_image, dict) else None
             if back_shape is None:
-                raise RuntimeError(f"邮件_清理：启动时位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
+                raise RuntimeError(f"邮件_清理：本轮入口位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
             back_shape.click(runtime)
-            yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：遗留详情页安全返回邮件 #121")
+            yield from runtime.wait_view(121, timeout=12.0, label="邮件_清理：详情页安全返回邮件 #121")
         else:
-            with self._lock:
-                self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
-            yield from self._open_mail_cleanup_entry(runtime)
-            scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 227, 34, 35, 69], update=True)
+            raise RuntimeError(f"邮件_清理：从稳定起点进入邮件后落点异常 #{scene_id or 'unknown'}")
         image121 = ctx.get("images", {}).get(121)
         if not isinstance(image121, dict):
             raise RuntimeError("缺少 #121 邮件帧标注，无法清理邮件")

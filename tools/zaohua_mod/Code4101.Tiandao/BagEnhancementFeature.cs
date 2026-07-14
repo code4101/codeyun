@@ -428,6 +428,10 @@ namespace Code4101.Zaohua.Tiandao
                 "Code4101LoadoutDelete", "删除", 184f, new Color(0.25f, 0.08f, 0.06f, 0.72f));
             _loadoutDeleteLabel = _loadoutDeleteButton.GetComponentInChildren<TextPro>();
             _loadoutDeleteButton.onClick.AddListener(DeleteActiveLoadout);
+            Debug.Log($"[Code4101 Tiandao][LoadoutUI] management-actions-created " +
+                      $"parent={controlParent.name} trigger={triggerRect.localPosition} " +
+                      $"rename={((RectTransform)_loadoutRenameButton.transform).localPosition} " +
+                      $"delete={((RectTransform)_loadoutDeleteButton.transform).localPosition}");
 
             _loadoutTrigger.onClick.AddListener(() =>
             {
@@ -861,9 +865,17 @@ namespace Code4101.Zaohua.Tiandao
             var active = EquipmentLoadoutRepository.GetActiveLoadout(state);
             if (_loadoutTriggerLabel != null) _loadoutTriggerLabel.text = active?.name ?? "方案1";
             var controlsEnabled = active != null && _loadoutTrigger != null && _loadoutTrigger.interactable;
-            if (_loadoutRenameButton != null) _loadoutRenameButton.gameObject.SetActive(controlsEnabled);
+            if (_loadoutRenameButton != null)
+            {
+                _loadoutRenameButton.gameObject.SetActive(controlsEnabled);
+                if (controlsEnabled) _loadoutRenameButton.transform.SetAsLastSibling();
+            }
             if (_loadoutDeleteButton != null)
-                _loadoutDeleteButton.gameObject.SetActive(controlsEnabled && state.loadouts.Count > 1);
+            {
+                var canDelete = controlsEnabled && state?.loadouts != null && state.loadouts.Count > 1;
+                _loadoutDeleteButton.gameObject.SetActive(canDelete);
+                if (canDelete) _loadoutDeleteButton.transform.SetAsLastSibling();
+            }
         }
 
         private Button CreateButton(Transform parent, string name, string label, Vector2 size)

@@ -180,8 +180,10 @@ namespace Code4101.Zaohua.Tiandao
             var candidateStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var candidates = BuildCandidates(stocks, recipe)
                 .Where(candidate => searchStage == 3 || candidate.ExtraKeys.Count <= searchStage - 1)
-                .OrderBy(candidate => candidate.PlantingDays)
-                .ThenByDescending(candidate => candidate.HeuristicScore)
+                // 先找到能覆盖目标属性的可行形式，再在成品解上比较种植成本。
+                // 若先按种植天数深搜，大量低阶组合会在节点上限前饿死后面的高阶精确药材。
+                .OrderByDescending(candidate => candidate.HeuristicScore)
+                .ThenBy(candidate => candidate.PlantingDays)
                 .ThenBy(candidate => candidate.CellCount)
                 .ThenBy(candidate => candidate.GradeWeight)
                 .ThenBy(candidate => candidate.Stock.ItemId.sedId)
@@ -211,6 +213,7 @@ namespace Code4101.Zaohua.Tiandao
             var quantityNodes = 0;
             var solvedForms = 0;
             var packingAttempts = 0;
+            var largestFormSizeSearched = 0;
             long packingMilliseconds = 0;
             var maxPieces = Math.Min(
                 (furnaceCfg.yangGridSize.x * furnaceCfg.yangGridSize.y) +
@@ -263,18 +266,22 @@ namespace Code4101.Zaohua.Tiandao
                 }
             }
 
-            void SearchForms(int startIndex)
+            void SearchForms(int startIndex, int targetFormSize)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (formNodes++ >= FormNodeLimit || quantityNodes >= QuantityNodeLimit) return;
 
-                if (form.Count > 0) EvaluateForm();
-                if (form.Count >= maxFormSize) return;
+                if (form.Count == targetFormSize)
+                {
+                    EvaluateForm();
+                    return;
+                }
 
                 var extraKeys = new HashSet<string>(form.SelectMany(candidate => candidate.ExtraKeys));
                 if (searchStage < 3 && extraKeys.Count > searchStage - 1) return;
 
-                for (var index = startIndex; index < candidates.Count; index++)
+                var remaining = targetFormSize - form.Count;
+                for (var index = startIndex; index <= candidates.Count - remaining; index++)
                 {
                     var candidate = candidates[index];
                     if (form.Any(existing => existing.Stock.ItemId.sedId == candidate.Stock.ItemId.sedId &&
@@ -282,15 +289,26 @@ namespace Code4101.Zaohua.Tiandao
                     if (searchStage < 3 && extraKeys.Union(candidate.ExtraKeys).Distinct().Count() > searchStage - 1)
                         continue;
                     form.Add(candidate);
-                    SearchForms(index + 1);
+                    SearchForms(index + 1, targetFormSize);
                     form.RemoveAt(form.Count - 1);
+                    if (formNodes >= FormNodeLimit || quantityNodes >= QuantityNodeLimit) return;
                 }
             }
 
-            SearchForms(0);
+            // 迭代加深保证先完整覆盖单药、双药等简单形式，避免传统深搜把节点
+            // 全耗在“第一个候选 + 大量复杂组合”上，导致明显的两味药解也被漏掉。
+            for (var formSize = 1;
+                 formSize <= maxFormSize && formNodes < FormNodeLimit && quantityNodes < QuantityNodeLimit;
+                 formSize++)
+            {
+                largestFormSizeSearched = formSize;
+                SearchForms(0, formSize);
+            }
             stageStopwatch.Stop();
             UnityEngine.Debug.Log($"[Code4101 Tiandao] alchemy stage={searchStage}, " +
                                   $"candidates={candidates.Count}, forms={formNodes}, solvedForms={solvedForms}, " +
+                                  $"largestForm={largestFormSizeSearched}/{maxFormSize}, " +
+                                  $"formLimitReached={formNodes >= FormNodeLimit}, " +
                                   $"quantityNodes={quantityNodes}, " +
                                   $"packingAttempts={packingAttempts}, solutions={solutions.Count}, " +
                                   $"candidateMs={candidateStopwatch.ElapsedMilliseconds}, " +

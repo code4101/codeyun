@@ -577,6 +577,17 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
         ),
     ),
     (
+        ("造化仙缘", "zaohua", "godworld"),
+        (
+            "造化仙缘",
+            "GodWorld",
+            "zaohua",
+            "天道插件",
+            "天道试炼",
+            "code4101.zaohua",
+        ),
+    ),
+    (
         ("AI", "人工智能"),
         (
             "人工智能",
@@ -865,8 +876,45 @@ CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "衣橱",
     "抽卡",
 )
+CODEX_DIARY_ZAOHUA_FORCE_TERMS = (
+    "造化仙缘",
+    "GodWorld",
+    "zaohua",
+    "天道插件",
+    "天道试炼",
+    "code4101.zaohua",
+)
+CODEX_DIARY_ZAOHUA_CONTEXT_TERMS = (
+    "背包方案",
+    "装备方案",
+    "装载方案",
+    "blendType",
+    "itemId",
+    "UnsnatchEquip",
+    "EquipItem",
+    "丹方",
+    "品阶",
+)
+CODEX_DIARY_ZAOHUA_CONTEXT_ANCHORS = (
+    "背包方案",
+    "装备方案",
+    "装载方案",
+    "blendType",
+    "UnsnatchEquip",
+    "EquipItem",
+)
 
 NOTE_AI_TITLE_DOMAIN_FORCE_TERMS = (
+    (
+        ("造化仙缘", "zaohua", "godworld"),
+        (
+            "造化仙缘",
+            "GodWorld",
+            "天道插件",
+            "天道试炼",
+            "code4101.zaohua",
+        ),
+    ),
     (
         ("凡修", "fanxiu"),
         (
@@ -1185,6 +1233,65 @@ def _soft_delete_codex_diary_notes(
             )
         )
     return len(notes)
+
+
+def _find_active_codex_diary_category_note_ids(
+    session: Session,
+    *,
+    user_id: int,
+    diary_date: str,
+    category_key: str,
+) -> list[str]:
+    """Find active diary notes for the globally unique (date, category) key."""
+    notes = session.exec(
+        select(NoteNode)
+        .where(NoteNode.user_id == user_id)
+        .where(_active_note_condition())
+        .order_by(NoteNode.created_at, NoteNode.id)
+    ).all()
+    return [
+        _note_public_id(note)
+        for note in notes
+        if _get_custom_field_value(note.custom_fields, CODEX_DIARY_DATE_FIELD) == diary_date
+        and str(note.primary_category or NOTE_CATEGORY_DEFAULT) == str(category_key or NOTE_CATEGORY_DEFAULT)
+    ]
+
+
+def _normalize_codex_diary_day_progress(
+    session: Session,
+    *,
+    user_id: int,
+    diary_date: str,
+) -> int:
+    """Use the day's largest category duration as every diary note's denominator."""
+    notes = session.exec(
+        select(NoteNode)
+        .where(NoteNode.user_id == user_id)
+        .where(_active_note_condition())
+        .order_by(NoteNode.created_at, NoteNode.id)
+    ).all()
+    diary_notes: list[tuple[NoteNode, int]] = []
+    for note in notes:
+        if _get_custom_field_value(note.custom_fields, CODEX_DIARY_DATE_FIELD) != diary_date:
+            continue
+        worklog = _get_custom_field_value(note.custom_fields, CODEX_DIARY_WORKLOG_FIELD)
+        if not isinstance(worklog, dict):
+            continue
+        minutes = _codex_diary_duration_minutes(worklog.get("duration_seconds"))
+        diary_notes.append((note, minutes))
+    if not diary_notes:
+        return 0
+
+    denominator = max(minutes for _note, minutes in diary_notes)
+    for note, minutes in diary_notes:
+        expected_expr = f"{minutes}/{denominator}"
+        if get_completion_progress_expr(note.custom_fields) == expected_expr:
+            continue
+        note.custom_fields = set_completion_progress_expr(note.custom_fields, expected_expr)
+        note.updated_at = time.time()
+        note.version = max(int(note.version or 1), 1) + 1
+        session.add(note)
+    return denominator
 
 
 def _codex_diary_public_note_ids(
@@ -1725,6 +1832,25 @@ def _build_codex_diary_category_scores(
     if fanxiu_key and (fanxiu_context_hits >= 2 or (thread_has_fanxiu_context and fanxiu_context_hits >= 1)):
         _add_codex_diary_category_score(combined_scores, fanxiu_key, 420 + min(fanxiu_context_hits, 8) * 48)
 
+    zaohua_key = _find_codex_diary_category_key_by_domain_marker(
+        palette_lookup,
+        ("造化仙缘", "zaohua", "godworld"),
+    )
+    zaohua_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_ZAOHUA_FORCE_TERMS)
+    if zaohua_key and zaohua_hits:
+        _add_codex_diary_category_score(combined_scores, zaohua_key, 520 + min(zaohua_hits, 6) * 48)
+    zaohua_context_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_ZAOHUA_CONTEXT_TERMS)
+    zaohua_has_context_anchor = any(
+        _normalize_project_palette_token(term) in content_text
+        for term in CODEX_DIARY_ZAOHUA_CONTEXT_ANCHORS
+    )
+    if zaohua_key and zaohua_has_context_anchor and zaohua_context_hits >= 2:
+        _add_codex_diary_category_score(
+            combined_scores,
+            zaohua_key,
+            460 + min(zaohua_context_hits, 8) * 36,
+        )
+
     input_method_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_INPUT_METHOD_FORCE_TERMS)
     if input_method_hits:
         input_method_key = (
@@ -1759,7 +1885,7 @@ def _build_codex_diary_category_scores(
     engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
     has_explicit_domain_hit = any(
         bool(key) and int(combined_scores.get(key, 0)) >= 180
-        for key in (attendance_key, fanxiu_key, input_method_key if input_method_hits else None, codeyun_note_key, codeyun_cluster_key, codeyun_general_key)
+        for key in (attendance_key, fanxiu_key, zaohua_key, input_method_key if input_method_hits else None, codeyun_note_key, codeyun_cluster_key, codeyun_general_key)
     )
     if engineering_hits and not has_explicit_domain_hit:
         engineering_key = (
@@ -2164,6 +2290,47 @@ def _annotate_codex_diary_record_category(
     record["codex_diary_category"] = category
 
 
+def _inherit_codex_diary_thread_domain_categories(
+    records: list[dict[str, Any]],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+) -> None:
+    """Carry one unambiguous strong domain anchor across weak turns in a thread."""
+    records_by_thread: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        thread_id = str(record.get("thread_id") or "").strip()
+        if thread_id:
+            records_by_thread.setdefault(thread_id, []).append(record)
+
+    for thread_records in records_by_thread.values():
+        anchored_keys: set[str] = set()
+        for record in thread_records:
+            scores = record.get("codex_diary_category_scores") or {}
+            for key, raw_score in scores.items():
+                score = int(raw_score or 0)
+                if score >= 420 and _is_specific_codex_diary_category_key(key):
+                    anchored_keys.add(str(key))
+        if len(anchored_keys) != 1:
+            continue
+
+        anchor_key = next(iter(anchored_keys))
+        for record in thread_records:
+            scores = record.get("codex_diary_category_scores") or {}
+            current_key = str(record.get("codex_diary_category_key") or NOTE_CATEGORY_DEFAULT)
+            current_score = int(scores.get(current_key) or 0)
+            if current_key == anchor_key:
+                continue
+            if _is_specific_codex_diary_category_key(current_key) and current_score >= 240:
+                continue
+            _add_codex_diary_category_score(scores, anchor_key, 480)
+            record["codex_diary_category_scores"] = scores
+            record["codex_diary_category_key"] = anchor_key
+            record["codex_diary_category"] = _codex_diary_category_result(
+                anchor_key,
+                palette_lookup=palette_lookup,
+            )
+
+
 def _codex_diary_category_description(item: dict[str, Any] | None) -> str:
     if not isinstance(item, dict):
         return ""
@@ -2220,6 +2387,10 @@ def _build_codex_diary_classification_system_prompt() -> str:
             "同一 thread_id 内围绕同一业务主题的连续记录必须保持分类一致；不要因某一轮只提到实现细节、文件路径、工具名或部署动作就拆到另一个分类。",
             "最终会按日期和分类合并节点，因此分类表示整组工作的业务归属，不表示某一条消息里偶然出现的技术词。",
             "先识别实际业务对象，再识别实现工具；镇邪、宗门镇邪、魔祖、宗门灵泉等凡修手游专有概念必须归凡修，不能因代码位于 codeyun 仓库、使用 Python/pyxllib 或涉及 Runtime 而改判。",
+            "造化仙缘、GodWorld、天道插件及 code4101.zaohua 属于造化仙缘业务；候选中存在造化仙缘时必须选它。",
+            "造化仙缘线程中的背包方案、装备方案、装载方案、blendType+itemId、EquipItem/UnsnatchEquip 等后续实现轮次仍归造化仙缘；不得因后续省略游戏名而改成 CodeYun/笔记。",
+            "CodeYun/笔记只用于星图笔记、PDF、阅读器、文档视图等笔记体系；CodeYun/资源只用于资源管理，CodeYun/集群只用于集群体系。",
+            "与 CodeYun 有关但不属于上述专门体系、也没有更明确业务分类的工作，默认归 CodeYun/综合。",
             "pyxllib 只在 record 直接维护、设计、修复或讲解 pyxllib Python 通用库本身时才可选；依赖、工具、统计口径、技能提示、自动化提示词或测试日志里出现 pyxllib 都是噪声。",
             "CodeYun 自动化、前端/UI、提示词本地化、开源项目核验、页面性能、星图笔记和仓库治理默认按对应 CodeYun 分类判断，不要因工具库名改判为 pyxllib。",
             "如果确实信息不足，选择候选里的 general。",
@@ -3431,6 +3602,13 @@ def _build_codex_diary_blocks(
             palette_lookup=palette_lookup,
             title_hints=title_hints,
         )
+
+    _inherit_codex_diary_thread_domain_categories(
+        records,
+        palette_lookup=palette_lookup,
+    )
+
+    for record in records:
         category_key = str(record.get("codex_diary_category_key") or NOTE_CATEGORY_DEFAULT)
         category = _codex_diary_category_result(category_key, palette_lookup=palette_lookup)
         record["codex_diary_category"] = category
@@ -3773,6 +3951,9 @@ def _run_codex_diary_import_worker(
             _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 AI 生成日记草案")
             blocks = _draft_codex_diary_blocks_in_batches(source, blocks, current_user=user, session=session, run=run)
 
+            session.refresh(run)
+            if run.status != "running":
+                return
             _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
             created_note_ids: list[str] = list(run.created_note_ids or [])
             draft_fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
@@ -3807,7 +3988,29 @@ def _run_codex_diary_import_worker(
 
             total_blocks = len(blocks)
             for index, block in enumerate(blocks, start=1):
+                session.refresh(run)
+                if run.status != "running":
+                    return
+                category_key = str(block.get("category_key") or NOTE_CATEGORY_DEFAULT)
+                existing_category_note_ids = _find_active_codex_diary_category_note_ids(
+                    session,
+                    user_id=user.id,
+                    diary_date=run.diary_date,
+                    category_key=category_key,
+                )
+                if existing_category_note_ids:
+                    _soft_delete_codex_diary_notes(
+                        session,
+                        user_id=user.id,
+                        note_ids=existing_category_note_ids,
+                    )
                 note = _create_codex_diary_note(session, current_user=user, run=run, block=block)
+                session.flush()
+                progress_denominator = _normalize_codex_diary_day_progress(
+                    session,
+                    user_id=user.id,
+                    diary_date=run.diary_date,
+                )
                 note_id = _note_public_id(note)
                 created_note_ids = [*created_note_ids, note_id]
                 now = time.time()
@@ -3816,6 +4019,11 @@ def _run_codex_diary_import_worker(
                 run.stage_label = f"写入星图笔记 {index}/{total_blocks}"
                 run.updated_at = now
                 run.heartbeat_at = now
+                run.result_json = {
+                    **(run.result_json or {}),
+                    "progress_denominator_minutes": progress_denominator,
+                }
+                flag_modified(run, "result_json")
                 session.add(run)
                 session.commit()
                 session.refresh(note)

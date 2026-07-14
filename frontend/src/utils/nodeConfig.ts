@@ -181,12 +181,14 @@ const toPaletteItem = (
   const label = String(value.label || '').trim() || (isLegacyColorTypeKey(key) ? `旧色${(getLegacyColorFromTypeKey(key) || '#606266').slice(1)}` : getBuiltinType(key)?.label || key);
   const source = builtin ? 'builtin' : isLegacyColorTypeKey(key) ? 'legacy' : (value.source ?? 'custom');
   const generatedFromColor = normalizeNodeColor(value.generatedFromColor) ?? (source === 'legacy' ? getLegacyColorFromTypeKey(key) : null);
+  const description = String(value.description ?? '').trim();
   const numericOrder = Number.isFinite(Number(value.order)) ? Math.trunc(Number(value.order)) : fallbackOrder;
   const usageCount = Number.isFinite(Number((value as any).usageCount)) ? Math.max(0, Number((value as any).usageCount)) : 0;
   return {
     key,
     label,
     color,
+    description,
     order: numericOrder,
     builtin,
     source,
@@ -260,15 +262,19 @@ const writeCachedPaletteItems = (items: NoteTypePaletteItem[]) => {
 
 export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
   const paletteLoadPromise = getNoteTypePaletteLoadPromiseState() as Promise<NoteTypePaletteItem[]> | null;
+  // Share the in-flight request even for forced refreshes. A palette is global
+  // page state, so parallel selectors should not issue duplicate requests.
+  if (paletteLoadPromise) return paletteLoadPromise;
   if (!force && paletteLoaded.value) return Object.values(paletteItems.value);
   if (!force) {
     const cachedItems = readCachedPaletteItems();
     if (cachedItems) {
+      // The cache only accelerates first paint. Continue to revalidate against
+      // the backend so newly added/renamed/recolored categories converge now,
+      // instead of remaining incomplete for the full cache TTL.
       applyPaletteItems(cachedItems);
-      return cachedItems;
     }
   }
-  if (!force && paletteLoadPromise) return paletteLoadPromise;
   const nextLoadPromise = fetchNoteCategoryPalette()
     .then(response => {
       const normalized = normalizeNoteTypePaletteItems(response.items.map(item => ({
@@ -664,6 +670,7 @@ export const getEditableNoteTypePaletteItems = () => {
     key: type.id,
     label: type.label,
     color: type.baseColor,
+    description: type.description,
     order: Number.isFinite(type.order) ? Number(type.order) : 1000,
     builtin: Boolean(type.builtin),
     source: type.source ?? (type.builtin ? 'builtin' : 'custom'),
@@ -680,6 +687,7 @@ export const createCustomNoteType = (label: string = '新类型') => {
     key,
     label,
     color: '#409EFF',
+    description: '',
     order: highestOrder + 10,
     builtin: false,
     source: 'custom' as const,

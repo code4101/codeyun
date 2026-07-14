@@ -155,6 +155,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         "go_scene",
         "到场景",
         scheduler_supported=True,
+        stable_start_scene_id=None,
         normalize_payload=normalize_data_annotation_go_scene_payload,
     )
     def _run_data_annotation_go_scene_task_cell(
@@ -180,7 +181,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             layer0_wait_seconds=payload.get("layer0_wait_seconds"),
         )
 
-    @register_fanxiu_data_annotation_task_cell("hide_floating_window", "隐藏浮动窗", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell(
+        "hide_floating_window",
+        "隐藏浮动窗",
+        scheduler_supported=True,
+        stable_start_scene_id=None,
+    )
     def _run_data_annotation_hide_floating_window_task_cell(
         runner: Any,
         ctx: dict[str, Any],

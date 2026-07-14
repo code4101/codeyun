@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 from backend.api.notes import (
+    _annotate_codex_diary_record_category,
+    _inherit_codex_diary_thread_domain_categories,
     _normalize_project_palette_token,
     _resolve_codex_diary_group_categories,
 )
@@ -30,6 +32,7 @@ def _palette_lookup() -> dict[str, dict]:
         {"key": "custom_mmx3qpfhinvh", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
         {"key": "custom_mmxc75t01g04", "label": "CodeYun/集群", "color": "#0067A5", "order": 40},
         {"key": "custom_mmxdcghtzcw7", "label": "CodeYun/综合", "color": "#00BFFF", "order": 50},
+        {"key": "造化仙缘", "label": "造化仙缘", "color": "#9B2A20", "order": 55},
         {"key": "custom_mmxdyjjkxrsr", "label": "pyxllib", "color": "#2f9fa8", "order": 60},
         {"key": "custom_mmxbzxjy85x5", "label": "后勤", "color": "#E6A23C", "order": 70},
     ]
@@ -56,3 +59,29 @@ def test_codex_diary_category_regression_cases():
         primary_category = derive_primary_category(note_categories)
 
         assert primary_category == case["expected_category_key"], case["id"]
+
+
+def test_codex_diary_inherits_unique_strong_domain_anchor_within_thread():
+    palette_lookup = _palette_lookup()
+    records = [
+        {
+            "thread_id": "zaohua-equipment-thread",
+            "thread_title": "游戏背包和多套装备",
+            "project_label": "codeyun",
+            "user_request": "为《造化仙缘》增加装备方案",
+            "assistant_result": "已在 Code4101.Tiandao 中接入游戏原生换装接口。",
+        },
+        {
+            "thread_id": "zaohua-equipment-thread",
+            "thread_title": "游戏背包和多套装备",
+            "project_label": "codeyun",
+            "user_request": "继续修正方案切换失败回滚",
+            "assistant_result": "按 blendType+itemId 匹配，保留原方案并补充日志。",
+        },
+    ]
+    for record in records:
+        _annotate_codex_diary_record_category(record, palette_lookup=palette_lookup, title_hints={})
+
+    _inherit_codex_diary_thread_domain_categories(records, palette_lookup=palette_lookup)
+
+    assert [record["codex_diary_category_key"] for record in records] == ["造化仙缘", "造化仙缘"]

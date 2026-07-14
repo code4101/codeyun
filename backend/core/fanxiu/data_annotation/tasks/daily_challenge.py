@@ -2124,49 +2124,9 @@ class DailyChallengeTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_助手资产树路径，无法执行作业")
-        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
-
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([275, 204, 237, 123, 122, 121, 86, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([34], update=True)
         text = runtime.ocr_text(frame)
-        image275 = images.get(275)
-        image275_exit = self._find_shape(image275, "退出") if isinstance(image275, dict) else None
-        image275_exit_score = (
-            float(self._shape_score(ctx, image275, image275_exit, frame) or 0.0)
-            if isinstance(image275, dict) and isinstance(image275_exit, dict)
-            else 0.0
-        )
-        if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text) or image275_exit_score >= 80.0:
-            yield from self._return_after_daily_assistant_one_key(ctx, stop_event, payload, runtime, current_scene=204)
-            self._log("success", "日常_助手：启动时关闭遗留一键执行结果页")
-            return "success"
-        if scene_id == 237:
-            yield from self._daily_assistant_close_youli_result(runtime, payload)
-            scene_id, _score, frame = runtime.current_scene([204, 69, 34], update=True)
-            text = runtime.ocr_text(frame)
-        if scene_id == 86 or self._leave_scene_confirm_text(text):
-            image86 = images.get(86)
-            confirm_shape = self._find_shape(image86, "确认") if isinstance(image86, dict) else None
-            if not isinstance(image86, dict) or confirm_shape is None:
-                raise RuntimeError("日常_助手：当前在 #86 离开确认弹窗，但缺少 #86「确认」标注，无法恢复起点")
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    "日常_助手：启动时确认离开当前场景",
-                    phase="daily_assistant_start_confirm_leave",
-                    current_scene=86,
-                )
-                self._log_locked("action", "日常_助手：启动时点击 #86「确认」离开场景")
-            yield from runtime.wait_click(86, "确认")
-            yield from runtime.wait_action_settle(float(payload.get("leave_confirm_settle_seconds") or 2.0))
-            scene_id, _score, frame = runtime.current_scene([204, 123, 122, 121, 69, 34], update=True)
-            text = runtime.ocr_text(frame)
-        if scene_id in {121, 122, 123}:
-            yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, scene_id, label="日常_助手")
-            scene_id, _score, frame = runtime.current_scene([204, 69, 34], update=True)
-            text = runtime.ocr_text(frame)
-        if self._daily_assistant_scene_or_text_is_list(scene_id, text):
-            return (yield from self._run_daily_assistant_from_list(ctx, stop_event, payload))
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_助手")):
                 scene_id, _score, frame = runtime.current_scene([69, 34], update=True)

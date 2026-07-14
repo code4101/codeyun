@@ -11,10 +11,12 @@ class DataAnnotationTaskCellDefinition:
     handler: Callable[[Any, dict[str, Any], dict[str, Any], threading.Event], Any]
     scheduler_supported: bool = False
     interruptible: bool = True
+    stable_start_scene_id: int | None = None
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 _DATA_ANNOTATION_TASK_CELL_REGISTRY: dict[str, DataAnnotationTaskCellDefinition] = {}
+_DEFAULT_STABLE_START_SCENE = object()
 _DEPRECATED_DATA_ANNOTATION_JOB_TYPES = {
     "daily_yihuo",
 }
@@ -30,6 +32,7 @@ def register_fanxiu_data_annotation_task_cell(
     *,
     scheduler_supported: bool = False,
     interruptible: bool = True,
+    stable_start_scene_id: int | None | object = _DEFAULT_STABLE_START_SCENE,
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ):
     """Register a task callable by ``run_task`` inside the Jupyter kernel."""
@@ -46,6 +49,12 @@ def register_fanxiu_data_annotation_task_cell(
             handler=handler,
             scheduler_supported=bool(scheduler_supported),
             interruptible=bool(interruptible),
+            stable_start_scene_id=(
+                34 if stable_start_scene_id is _DEFAULT_STABLE_START_SCENE and scheduler_supported
+                else None if stable_start_scene_id is _DEFAULT_STABLE_START_SCENE
+                else int(stable_start_scene_id) if stable_start_scene_id is not None
+                else None
+            ),
             normalize_payload=normalize_payload,
         )
         return handler

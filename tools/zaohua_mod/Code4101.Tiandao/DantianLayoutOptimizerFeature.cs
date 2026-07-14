@@ -218,6 +218,24 @@ namespace Code4101.Zaohua.Tiandao
             return score;
         }
 
+        internal static bool TryEvaluate(DantianLayoutProblem problem, int[] placementIndices,
+            out DantianLayoutScore score, out string error)
+        {
+            try
+            {
+                score = Evaluate(problem, placementIndices);
+                error = null;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                DantianSyntheticLayoutContext.Current = null;
+                score = null;
+                error = $"{exception.GetType().Name}: {exception.Message}";
+                return false;
+            }
+        }
+
         internal static bool Apply(DantianLayoutProblem problem, int[] placementIndices,
             out string error)
         {
@@ -229,13 +247,27 @@ namespace Code4101.Zaohua.Tiandao
                 return false;
             }
             var original = problem.CurrentPlacements.ToArray();
-            if (TryApply(controller, problem, placementIndices, out error)) return true;
+            try
+            {
+                if (TryApply(controller, problem, placementIndices, out error)) return true;
+            }
+            catch (Exception exception)
+            {
+                error = $"{exception.GetType().Name}: {exception.Message}";
+            }
 
             var applyError = error;
-            if (!TryApply(controller, problem, original, out var rollbackError))
-                error = $"{applyError}；恢复原布局也失败：{rollbackError}";
-            else
-                error = $"{applyError}；已恢复原布局";
+            try
+            {
+                if (!TryApply(controller, problem, original, out var rollbackError))
+                    error = $"{applyError}；恢复原布局也失败：{rollbackError}";
+                else
+                    error = $"{applyError}；已恢复原布局";
+            }
+            catch (Exception rollbackException)
+            {
+                error = $"{applyError}；恢复原布局异常：{rollbackException.Message}";
+            }
             return false;
         }
 
@@ -257,7 +289,22 @@ namespace Code4101.Zaohua.Tiandao
                 error = $"放置失败：{piece.Name} @({placement.X},{placement.Y})/{placement.Rotation}";
                 return false;
             }
+            if (!MatchesCurrentLayout(controller, problem, placements))
+            {
+                error = "宿主返回放置成功，但最终丹田格位与目标解不一致";
+                return false;
+            }
             return true;
+        }
+
+        private static bool MatchesCurrentLayout(DantianController controller,
+            DantianLayoutProblem problem, int[] placements)
+        {
+            var expected = problem.Materialize(placements)
+                .ToDictionary(cell => cell.id, cell => cell.artMagicId);
+            var actual = controller.GetDantianStoList();
+            return actual != null && actual.Count == expected.Count && actual.All(cell =>
+                expected.TryGetValue(cell.id, out var expectedId) && Same(cell.artMagicId, expectedId));
         }
 
         private static bool TryCreatePiece(TbActor actor, BlendId id,
@@ -446,7 +493,13 @@ namespace Code4101.Zaohua.Tiandao
             var rules = problem.Pieces.Sum(piece => piece.Rules.Count);
             var candidates = problem.Pieces.Sum(piece => piece.Placements.Count);
             var current = problem.CurrentPlacements.ToArray();
-            var currentScore = DantianLayoutOptimizer.Evaluate(problem, current);
+            if (!DantianLayoutOptimizer.TryEvaluate(problem, current, out var currentScore,
+                    out var scoreError))
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] score-failed {scoreError}");
+                yield return ShowTemporary("评分失败");
+                yield break;
+            }
             var best = current.ToArray();
             var bestScore = currentScore;
             var working = current.ToArray();
@@ -459,7 +512,8 @@ namespace Code4101.Zaohua.Tiandao
 
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
-                                  $"placements={candidates} current={currentScore}");
+                                  $"placements={candidates} current={currentScore} " +
+                                  $"runtime=[{DescribeRuntimeBonuses()}]");
 
             for (var iteration = 0;
                  iteration < MaxIterations && totalWatch.ElapsedMilliseconds < MaxMilliseconds;
@@ -479,7 +533,15 @@ namespace Code4101.Zaohua.Tiandao
                 else
                 {
                     working[pieceIndex] = newPlacementIndex;
-                    var nextScore = DantianLayoutOptimizer.Evaluate(problem, working);
+                    if (!DantianLayoutOptimizer.TryEvaluate(problem, working, out var nextScore,
+                            out scoreError))
+                    {
+                        working[pieceIndex] = oldPlacementIndex;
+                        foreach (var cell in oldPlacement.CellIndices) occupancy[cell]++;
+                        UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                                   $"candidate-score-failed {scoreError}");
+                        break;
+                    }
                     var progress = (double)iteration / MaxIterations;
                     var temperature = 0.22d * (1d - progress) + 0.012d;
                     var delta = nextScore.Fitness - workingScore.Fitness;
@@ -504,7 +566,7 @@ namespace Code4101.Zaohua.Tiandao
                 }
 
                 if (sliceWatch.ElapsedMilliseconds < 5) continue;
-                SetLabel($"优化中 {iteration * 100 / MaxIterations}%");
+                SetLabel("优化中…");
                 sliceWatch.Restart();
                 yield return null;
                 if (_panel == null || !_panel.gameObject.activeInHierarchy) yield break;
@@ -512,10 +574,10 @@ namespace Code4101.Zaohua.Tiandao
 
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] searched " +
                                   $"elapsedMs={totalWatch.ElapsedMilliseconds} accepted={accepted} " +
-                                  $"best={bestScore}");
+                                  $"best={bestScore} solution=[{DescribeSolution(problem, best)}]");
             if (!bestScore.BetterThan(currentScore))
             {
-                yield return ShowTemporary("当前已最优");
+                yield return ShowTemporary("暂未找到更优");
                 yield break;
             }
 
@@ -526,9 +588,10 @@ namespace Code4101.Zaohua.Tiandao
                 yield return ShowTemporary("应用失败");
                 yield break;
             }
-            var actual = DantianLayoutOptimizer.TryCapture(out var actualProblem, out _)
-                ? DantianLayoutOptimizer.Evaluate(actualProblem, actualProblem.CurrentPlacements)
-                : null;
+            DantianLayoutScore actual = null;
+            if (DantianLayoutOptimizer.TryCapture(out var actualProblem, out _))
+                DantianLayoutOptimizer.TryEvaluate(actualProblem, actualProblem.CurrentPlacements,
+                    out actual, out _);
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] applied " +
                                   $"before={currentScore} predicted={bestScore} actual={actual}");
             Traverse.Create(_panel).Method("InitPanel").GetValue();
@@ -567,6 +630,24 @@ namespace Code4101.Zaohua.Tiandao
                 if (problem.NeighborIndices[cell].Any(neighbor => occupancy[neighbor] > 0))
                     return true;
             return false;
+        }
+
+        private static string DescribeSolution(DantianLayoutProblem problem, int[] placements)
+        {
+            return string.Join("; ", problem.Pieces.Select((piece, index) =>
+            {
+                var placement = piece.Placements[placements[index]];
+                return $"{piece.Name}=({placement.X},{placement.Y})/r{placement.Rotation}";
+            }));
+        }
+
+        private static string DescribeRuntimeBonuses()
+        {
+            var records = BsSaveDataImpl.nowActor?.dantianUpStoList ?? new List<TbDantianUpSto>();
+            return string.Join(", ", records
+                .Where(record => record != null && record.npcStoId == 10000)
+                .GroupBy(record => $"{(int)record.fromUpdate.blendEnum}:{record.fromUpdate.sedId}:{record.drawStateId}")
+                .Select(group => $"{group.Key}=x{group.Max(record => record.UpMultiplier)}"));
         }
 
         private IEnumerator ShowTemporary(string message)

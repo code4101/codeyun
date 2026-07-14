@@ -3741,11 +3741,6 @@ class DataAnnotationRuntimeRunner(
                 guard_override=self._runtime_guard_override_from_payload(payload),
             )
             task_result, task_message = self._normalize_runtime_task_result(raw_task_result)
-            if task_id:
-                tasks = _read_data_annotation_scheduler_tasks()
-                self._mark_scheduler_task(tasks, task_id, task_result)
-            elif task_result == "success":
-                self._mark_matching_scheduler_tasks_for_task_cell_success(task_type, payload)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({
@@ -4083,12 +4078,12 @@ class DataAnnotationRuntimeRunner(
             if str(item.get("id") or "") not in due_ids:
                 continue
             item["last_result"] = "blocked"
-            checkpoint = item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else {}
-            checkpoint = dict(checkpoint)
-            manual_note = checkpoint.pop("manual_inspection_note", None)
+            scheduler_meta = item.get("scheduler_meta") if isinstance(item.get("scheduler_meta"), dict) else {}
+            scheduler_meta = dict(scheduler_meta)
+            manual_note = scheduler_meta.pop("manual_inspection_note", None)
             if manual_note:
-                checkpoint["previous_manual_inspection_note"] = manual_note
-            item["checkpoint"] = {**checkpoint, "blocked_message": message, "blocked_at": now_ts}
+                scheduler_meta["previous_manual_inspection_note"] = manual_note
+            item["scheduler_meta"] = {**scheduler_meta, "blocked_message": message, "blocked_at": now_ts}
             item["retry_after"] = None
             _record_data_annotation_scheduler_task_fact(item, "blocked")
             changed = True

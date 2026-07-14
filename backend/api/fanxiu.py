@@ -6540,10 +6540,10 @@ def _advance_data_annotation_scheduler_task_to_next_trigger(task_id: str) -> lis
         item["last_result"] = "success"
         item["retry_after"] = None
         item["next_time"] = next_time
-        checkpoint = item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else {}
-        checkpoint = dict(checkpoint)
-        checkpoint["manual_advance_next_at"] = now_text
-        item["checkpoint"] = checkpoint
+        scheduler_meta = item.get("scheduler_meta") if isinstance(item.get("scheduler_meta"), dict) else {}
+        scheduler_meta = dict(scheduler_meta)
+        scheduler_meta["manual_advance_next_at"] = now_text
+        item["scheduler_meta"] = scheduler_meta
         _record_data_annotation_scheduler_task_fact(item, "success")
         changed = True
         break

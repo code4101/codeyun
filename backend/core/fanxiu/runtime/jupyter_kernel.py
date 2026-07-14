@@ -185,12 +185,27 @@ class FanxiuJupyterBinding:
         normalized = dict(payload or {})
         if callable(definition.normalize_payload):
             normalized = definition.normalize_payload(normalized)
-        value = definition.handler(
-            self.runner,
-            self.runtime_ctx,
-            normalized,
-            self.stop_event,
-        )
+        def execute_atomic_task():
+            yield from self.runtime.goto_view(definition.stable_start_scene_id)
+            value = definition.handler(
+                self.runner,
+                self.runtime_ctx,
+                normalized,
+                self.stop_event,
+            )
+            if isinstance(value, GeneratorType):
+                return (yield from value)
+            return value
+
+        if definition.stable_start_scene_id is None:
+            value = definition.handler(
+                self.runner,
+                self.runtime_ctx,
+                normalized,
+                self.stop_event,
+            )
+        else:
+            value = execute_atomic_task()
         return self.run(
             value,
             label=definition.label,
