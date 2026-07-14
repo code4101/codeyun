@@ -444,7 +444,7 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
             task["scheduler_meta"] = dict(scheduler_meta)
         else:
             task.pop("scheduler_meta", None)
-        for key in ("attempt_id", "attempt_kernel_generation", "started_at", "finished_at"):
+        for key in ("attempt_id", "attempt_kernel_generation", "attempt_kernel_idle_since", "started_at", "finished_at"):
             task[key] = item.get(key)
     task.pop("checkpoint", None)
     template_id = str(task.get("template_id") or task.get("task_type") or "").strip()

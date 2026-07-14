@@ -53,6 +53,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
 from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _reference_frame_similarity
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
+from backend.core.fanxiu.data_annotation.ocr_spatial import query_spatial_ocr, union_fragment_box
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
     CLOSE_POPUPS_GUARD_CONFIG_VERSION,
@@ -2669,6 +2670,7 @@ class DataAnnotationRuntimeRunner(
         self._log_scope = ""
         self._log_item_id = ""
         self._cell_execution_lock = threading.RLock()
+        self._shared_ocr_lock = threading.RLock()
         self._status: dict[str, Any] = self._initial_status()
 
     def _wait_runtime_action_settle(self, ctx: dict[str, Any], stop_event: threading.Event, seconds: float = 2.0):
@@ -7161,14 +7163,11 @@ class DataAnnotationRuntimeRunner(
             ocr_enabled = False
         if image_role == "off" and not ocr_enabled:
             return {"ok": False, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image), "reason": "match_disabled", "flags": flags}
-        if ocr_enabled and (
-            self._has_cached_ocr_lines(ctx, frame_data_url)
-            or (image_role != "off" and not str(image.get("filename") or "").strip())
-        ):
-            self._cached_ocr_lines(ctx, frame_data_url)
+        if ocr_enabled:
+            self._shared_spatial_ocr_result(ctx, frame_data_url)
             result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
             result["flags"] = flags
-            if result.get("matched") or image_role == "off":
+            if condition == "ocr" or result.get("matched") or ocr_role == "required" or image_role == "off":
                 return result
         try:
             result = self._run_match(
@@ -7259,27 +7258,29 @@ class DataAnnotationRuntimeRunner(
             return result
         mode = str(shape.get("ocrMatchMode") or "contains")
         cache = ctx.get("_ocr_lines_cache")
-        lines = cache.get("lines") if isinstance(cache, dict) and cache.get("frame") == frame_data_url else []
-        if not isinstance(lines, list):
+        if not isinstance(cache, dict) or cache.get("frame") != frame_data_url:
             return result
+        lines = cache.get("lines") if isinstance(cache.get("lines"), list) else []
+        words = cache.get("words") if isinstance(cache.get("words"), list) else []
         box = self._box(shape, image)
-        for line in lines:
-            if not isinstance(line, dict):
-                continue
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text or not self._ocr_text_matches(text, target, mode):
-                continue
-            if not self._ocr_line_overlaps_box(line, box):
-                continue
+        spatial = query_spatial_ocr(lines, words, box)
+        text = _sanitize_ocr_text(spatial.get("text"))
+        fragments = spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
+        result["ocr_text"] = text
+        result["ocr_spatial_ambiguous"] = bool(spatial.get("ambiguous"))
+        result["matches"] = fragments
+        if text and self._ocr_text_matches(text, target, mode):
             result["matched"] = True
             result["similarity"] = 100
-            result["ocr_text"] = text
-            result["matches"] = [line]
-            fixed_box = self._ocr_line_box(line)
-            if fixed_box is not None:
-                result["fixed_box"] = fixed_box
-                result["resolved_box"] = self._ocr_match_resolved_box(line, target, mode) or fixed_box
-            return result
+            ocr_box = union_fragment_box(fragments)
+            result["fixed_box"] = box
+            result["resolved_box"] = box
+            if ocr_box is not None:
+                result["ocr_box"] = self._ocr_match_resolved_box(
+                    {"text": text, **ocr_box},
+                    target,
+                    mode,
+                ) or ocr_box
         return result
 
     def _ocr_options_cache_key(self, options: dict[str, Any] | None = None) -> str:
@@ -7315,6 +7316,13 @@ class DataAnnotationRuntimeRunner(
         cache = {"frame": frame_data_url, "options_key": options_key, "lines": lines, "words": words}
         ctx["_ocr_lines_cache"] = cache
         return cache
+
+    def _shared_spatial_ocr_result(self, ctx: dict[str, Any], frame_data_url: str) -> dict[str, Any]:
+        with self._shared_ocr_lock:
+            cache = ctx.get("_ocr_lines_cache")
+            if isinstance(cache, dict) and cache.get("frame") == frame_data_url and isinstance(cache.get("lines"), list):
+                return cache
+            return self._cached_ocr_result(ctx, frame_data_url, options={"return_word_box": True})
 
     def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
         result = self._cached_ocr_result(ctx, frame_data_url)

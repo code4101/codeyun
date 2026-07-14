@@ -567,7 +567,7 @@ namespace Code4101.Zaohua.Tiandao
             var furnaceCfg = data.GetCraftingItemCfg(Furnace.itemId.sedId);
             var furnaceShape = furnaceCfg == null ? "" :
                 $"{furnaceCfg.yangGridSize.x}x{furnaceCfg.yangGridSize.y}:{furnaceCfg.yinGridSize.x}x{furnaceCfg.yinGridSize.y}";
-            return $"solver-v6|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
+            return $"solver-v7|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
                    $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}:{furnaceShape}:" +
                    $"count+{globalCountBonus}:quality+{globalQualityBonus}|" +
                    string.Join(";", Herbs.OrderBy(stock => stock.ItemId.sedId)
@@ -643,7 +643,9 @@ namespace Code4101.Zaohua.Tiandao
             field.gameObject.name = "Code4101PlantingCost";
             foreach (var localization in field.GetComponentsInChildren<TextProLocalization>(true))
                 localization.enabled = false;
-            field.text = $"每丹种植成本： {cost}";
+            // 复用官方“灵草：值”这一整行结构；克隆项自身已经带有“灵草”标题，
+            // 这里只填写右侧值，避免出现“灵草：灵草/成本”的重复语义。
+            field.text = $"每丹种植时间{cost}";
             field.raycastTarget = false;
             field.transform.SetSiblingIndex(card.txtAttrLimit.transform.GetSiblingIndex() + 1);
             return field;

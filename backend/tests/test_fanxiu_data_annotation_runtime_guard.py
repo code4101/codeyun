@@ -1905,14 +1905,13 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
         "h": 0.06,
     }
     ctx = {"entry": type("Entry", (), {"mode": "local"})()}
-    calls: list[dict] = []
     clicked: list[dict] = []
 
-    def fake_match(*_args, **kwargs):
-        calls.append(kwargs)
-        return {"similarity": 100, "matches": [{"ocr_text": "邮件"}], "fixed_box": {"x": 100, "y": 200, "w": 80, "h": 40}}
-
-    monkeypatch.setattr(runner, "_run_match", fake_match)
+    monkeypatch.setattr(
+        runner,
+        "_ocr_frame",
+        lambda _frame, **_kwargs: {"lines": [{"text": "邮件", "x": 450, "y": 1440, "w": 90, "h": 96}], "words": []},
+    )
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.runtime_runner._click_game_window2_service",
         lambda payload: clicked.append(payload) or {"ok": True},
@@ -1920,7 +1919,6 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
 
     runner._click_shape(ctx, image, shape, "frame")
 
-    assert calls == [{"scan": False, "match_strategy": "anchor_pixel", "ocr_enabled": True}]
     assert clicked[0]["x"] == 495.0
     assert clicked[0]["y"] == 1488.0
     assert clicked[0]["input_backend"] == "adb"
@@ -1996,7 +1994,7 @@ def test_shape_ocr_cache_miss_does_not_repeat_ocr(monkeypatch):
     assert result["reason"] == "cached_frame_ocr"
 
 
-def test_shape_ocr_cache_miss_falls_back_to_crop_match_when_image_role_enabled(monkeypatch):
+def test_shape_ocr_cache_miss_is_decisive_without_repeating_crop_ocr(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image = _image("某区域内部", "0085.png")
     shape = {
@@ -2034,9 +2032,9 @@ def test_shape_ocr_cache_miss_falls_back_to_crop_match_when_image_role_enabled(m
 
     result = runner._match_shape(ctx, image, shape, "frame", condition="ocr")
 
-    assert calls == [{"scan": False, "match_strategy": "auto", "ocr_enabled": True}]
-    assert result["matched"] is True
-    assert result["ocr_text"] == "+离开"
+    assert calls == []
+    assert result["matched"] is False
+    assert result["ocr_text"] == ""
 
 
 def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypatch):
@@ -2738,12 +2736,17 @@ def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold
     def fake_run_match(_ctx, _image, _shape, _frame, **kwargs):
         ocr_enabled = bool(kwargs.get("ocr_enabled"))
         calls.append(ocr_enabled)
-        return {"similarity": 100 if ocr_enabled else 57}
+        return {"similarity": 57}
 
     monkeypatch.setattr(runner, "_run_match", fake_run_match)
+    monkeypatch.setattr(
+        runner,
+        "_ocr_frame",
+        lambda _frame, **_kwargs: {"lines": [{"text": "离开", "x": 720, "y": 800, "w": 90, "h": 80}], "words": []},
+    )
 
     assert runner._shape_score({"entry": object()}, image, shape, "frame") == 100
-    assert calls == [False, True]
+    assert calls == []
 
 
 def test_shape_score_caches_missing_reference_image(monkeypatch):
@@ -2821,9 +2824,10 @@ def test_scene_score_enforces_required_ocr_role(monkeypatch):
         return {"similarity": 0 if ocr_enabled else 99}
 
     monkeypatch.setattr(runner, "_run_match", fake_run_match)
+    monkeypatch.setattr(runner, "_ocr_frame", lambda _frame, **_kwargs: {"lines": [], "words": []})
 
     assert runner._scene_score({"entry": object()}, image, "frame") == 0
-    assert calls == [True]
+    assert calls == []
 
 
 def test_scene_jump_intermediate_confirm_shape_is_limited_to_leave_popup():
@@ -3423,7 +3427,7 @@ def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, m
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "同游传道确认提示"} else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
-    assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    assert not runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == []
 
 
@@ -3889,7 +3893,7 @@ def test_popup_guard_parallel_scoring_caps_worker_count(monkeypatch):
     assert scores == [0] * 39 + [70]
 
 
-def test_popup_guard_parallel_scoring_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
+def test_popup_guard_parallel_scoring_reuses_one_full_frame_ocr(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     candidates = [
         {
@@ -3940,8 +3944,8 @@ def test_popup_guard_parallel_scoring_uses_shape_ocr_without_full_frame_prefetch
     scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
 
     assert scores == [0.0, 0.0, 100.0]
-    assert ocr_calls == []
-    assert sorted(run_match_calls) == [("图0", True), ("图1", True), ("图2", True)]
+    assert ocr_calls == ["frame"]
+    assert run_match_calls == []
 
 
 def test_popup_guard_first_match_scores_candidates_once(monkeypatch):
@@ -3962,7 +3966,7 @@ def test_popup_guard_first_match_scores_candidates_once(monkeypatch):
     assert calls == [3]
 
 
-def test_scene_number_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
+def test_scene_number_reuses_one_full_frame_ocr_across_candidates(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image(
         "世界",
@@ -4033,8 +4037,8 @@ def test_scene_number_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
     scene_id, score = runner._identify_scene_number(ctx, "frame")
 
     assert (scene_id, score) == (34, 100)
-    assert ocr_calls == []
-    assert run_match_calls == [("世界", True), ("菜单", True)]
+    assert ocr_calls == ["frame"]
+    assert run_match_calls == []
 
 
 def test_popup_guard_parallel_scoring_is_faster_than_serial_for_independent_candidates(tmp_path, monkeypatch):

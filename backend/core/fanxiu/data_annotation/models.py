@@ -178,6 +178,7 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     scheduler_meta: Optional[dict[str, Any]] = None
     attempt_id: Optional[str] = None
     attempt_kernel_generation: Optional[int] = None
+    attempt_kernel_idle_since: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 

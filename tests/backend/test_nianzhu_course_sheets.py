@@ -184,6 +184,91 @@ def test_zen_stage_attendance_schema_adds_50_video_columns_and_caps_refund_formu
     assert stable_document == next_document
 
 
+def test_zen_stage_header_layout_repairs_fixed_groups_and_prefixed_course_names() -> None:
+    columns = [
+        "分组", "学号", "姓名", "昵称",
+        "考试资格", "视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款",
+        "共学打卡", "共修打卡-随念门", "共修打卡-忏悔门", "共修打卡-崇拜祈祝",
+        "佛教概观4", "崇拜祈祝门", "礼仪文化1",
+    ]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [
+            ["用户信息", "", "", "", "返款总计（视频729元 + 打卡210元）", "", "", "", "", "", "", "打卡数据（满210元）", "", "", "", "第3周", "", ""],
+            columns,
+            [
+                "",
+                {"value": "考勤返款常见问题解答", "link": {"url": "https://kdocs.cn/l/cmMznDf1i3ye"}},
+                "", "", "", "", "",
+                {"value": "反馈问题", "link": {"url": "/attendance-feedback"}},
+                *([""] * (len(columns) - 8)),
+            ],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "header_groups": [[{"label": "返款总计（视频702元 + 打卡210元）", "colspan": 32}]],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 4},
+            {"row": 0, "col": 4, "rowspan": 1, "colspan": 7},
+        ],
+        "cell_meta": {},
+    }
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {
+                "lesson_id": 1,
+                "lesson_id2": "https://example.test/overview",
+                "lesson_name": "d260712禅宗13期一阶-第3周=佛教概观4",
+            }),
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {
+                "lesson_id": 2,
+                "lesson_id2": "https://example.test/practice",
+                "lesson_name": "d260712禅宗13期一阶-第3周=法门通论-崇拜祈祝门",
+            }),
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {
+                "lesson_id": 3,
+                "lesson_id2": "https://example.test/ritual",
+                "lesson_name": "d260712禅宗13期一阶-第3周=礼仪文化1",
+            }),
+        ],
+    )
+    video_config_document["source_meta"] = {"course_name": "修道班13期1阶"}
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+    video_column_indexes = nianzhu_course_sheets._video_column_indexes_from_columns(video_config, columns)
+
+    next_document, repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        document,
+        video_config,
+        video_column_indexes,
+    )
+
+    assert repaired > 0
+    assert video_column_indexes["2"] == 16
+    assert {"row": 0, "col": 11, "rowspan": 1, "colspan": 4} in next_document["merged_cells"]
+    assert {"row": 0, "col": 15, "rowspan": 1, "colspan": 3} in next_document["merged_cells"]
+    assert next_document["cell_meta"]["0:11"]["style"]["background_color"] == "#C55A9B"
+    assert next_document["cell_meta"]["1:14"]["style"]["background_color"] == "#E4B7D9"
+    assert next_document["cell_meta"]["2:14"]["style"]["background_color"] == "#D8D8D8"
+    assert next_document["cell_meta"]["2:1"]["style"] == nianzhu_course_sheets.ZEN_STAGE_FAQ_LINK_STYLE
+    assert next_document["cell_meta"]["2:7"]["style"] == nianzhu_course_sheets.ZEN_STAGE_FEEDBACK_LINK_STYLE
+    assert next_document["cell_meta"]["1:16"]["style"]["background_color"] == "#CCC0DA"
+    assert next_document["cell_meta"]["0:11"]["style"] != next_document["cell_meta"]["0:15"]["style"]
+    assert next_document["cell_meta"]["1:14"]["style"] != next_document["cell_meta"]["1:15"]["style"]
+    assert next_document["grid_rows"][1][16]["link"]["url"] == "https://example.test/practice"
+    assert next_document["header_groups"][0][4]["label"] == "返款总计（视频729元 + 打卡210元）"
+
+    stable_document, stable_repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        next_document,
+        video_config,
+        video_column_indexes,
+    )
+    assert stable_repaired == 0
+    assert stable_document == next_document
+
+
 def _create_nianzhu_workbook(session: Session) -> None:
     workbook = WorkbookDocument(
         id="7",

@@ -101,6 +101,36 @@ ZEN_STAGE_WEEK_HEADER_STYLE_PALETTE = [
     ),
 ]
 ZEN_STAGE_NOTE_ROW_STYLE = {"background_color": "#D8D8D8", "text_color": "#000000"}
+ZEN_STAGE_FIXED_NOTE_ROW_STYLE = {"background_color": "#D8D8D8"}
+ZEN_STAGE_CLOCKIN_GROUP_STYLE = {"background_color": "#C55A9B", "text_color": "#000000"}
+ZEN_STAGE_CLOCKIN_FIELD_STYLE = {"background_color": "#E4B7D9", "text_color": "#0000FF"}
+ZEN_STAGE_FAQ_LINK_STYLE = {
+    "background_color": "#D9D9D9",
+    "text_color": "#FF0000",
+    "font_size": 20,
+    "text_align": "center",
+    "vertical_align": "middle",
+    "underline": True,
+}
+ZEN_STAGE_FEEDBACK_LINK_STYLE = {
+    "background_color": "#D8D8D8",
+    "text_color": "#0000FF",
+    "underline": True,
+}
+ZEN_STAGE_FIXED_HEADER_GROUPS = (
+    (
+        ("分组", "学号", "姓名", "昵称"),
+        "用户信息",
+        {"background_color": "#5B8FC9", "text_color": "#000000"},
+        {"background_color": "#D9EAF7", "text_color": "#000000"},
+    ),
+    (
+        ("考试资格", "视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款"),
+        "",
+        {"background_color": "#ED7D31", "text_color": "#000000"},
+        {"background_color": "#F4B183", "text_color": "#000000"},
+    ),
+)
 
 VIDEO_CONFIG_COLUMNS = [
     "lesson_id",
@@ -1234,11 +1264,160 @@ def _set_cell_style(cell_meta: dict[str, Any], row_index: int, column_index: int
     return True
 
 
+def _merge_cell_style(cell_meta: dict[str, Any], row_index: int, column_index: int, style: dict[str, Any]) -> bool:
+    target_key = f"{row_index}:{column_index}"
+    previous_meta = cell_meta.get(target_key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    previous_style = dict(next_meta.get("style")) if isinstance(next_meta.get("style"), dict) else {}
+    next_style = {**previous_style, **style}
+    if previous_style == next_style:
+        return False
+    next_meta["style"] = next_style
+    cell_meta[target_key] = next_meta
+    return True
+
+
+def _sync_zen_stage_fixed_header_layout(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """修复 B 类考勤表的用户、返款和打卡固定表头。"""
+    columns = _normalize_document_columns(document)
+    if not columns:
+        return document, 0
+
+    try:
+        field_row_index = max(int(document.get("field_row_index") or 0), 0)
+    except (TypeError, ValueError):
+        field_row_index = 0
+    week_row_index = max(field_row_index - 1, 0)
+    note_row_index = field_row_index + 1
+
+    source_grid_rows = document.get("grid_rows")
+    grid_rows = [
+        note_sheet_inline_links.normalize_row(row, len(columns))
+        for row in source_grid_rows
+    ] if isinstance(source_grid_rows, list) else []
+    while len(grid_rows) <= note_row_index:
+        grid_rows.append([""] * len(columns))
+
+    groups: list[tuple[list[int], str, dict[str, Any], dict[str, Any]]] = []
+    for headers, default_label, group_style, field_style in ZEN_STAGE_FIXED_HEADER_GROUPS:
+        indexes = [_find_column_index(columns, header) for header in headers]
+        if any(index is None for index in indexes):
+            continue
+        normalized_indexes = [int(index) for index in indexes if index is not None]
+        if normalized_indexes != list(range(normalized_indexes[0], normalized_indexes[-1] + 1)):
+            continue
+        groups.append((normalized_indexes, default_label, group_style, field_style))
+
+    clockin_indexes = [
+        index for index, header in enumerate(columns)
+        if header == "共学打卡" or header.startswith("共修打卡-")
+    ]
+    if clockin_indexes and clockin_indexes == list(range(clockin_indexes[0], clockin_indexes[-1] + 1)):
+        groups.append((
+            clockin_indexes,
+            "打卡数据（满210元）",
+            ZEN_STAGE_CLOCKIN_GROUP_STYLE,
+            ZEN_STAGE_CLOCKIN_FIELD_STYLE,
+        ))
+
+    if not groups:
+        return document, 0
+
+    changed = 0
+    cell_meta = dict(document.get("cell_meta")) if isinstance(document.get("cell_meta"), dict) else {}
+    for indexes, default_label, group_style, field_style in groups:
+        start_column = indexes[0]
+        if default_label and not _normalize_text(grid_rows[week_row_index][start_column]):
+            grid_rows[week_row_index][start_column] = default_label
+            changed += 1
+        for column_index in indexes:
+            if column_index != start_column and grid_rows[week_row_index][column_index] != "":
+                grid_rows[week_row_index][column_index] = ""
+                changed += 1
+            if _set_cell_style(cell_meta, week_row_index, column_index, group_style):
+                changed += 1
+            if _set_cell_style(cell_meta, field_row_index, column_index, field_style):
+                changed += 1
+            if _merge_cell_style(cell_meta, note_row_index, column_index, ZEN_STAGE_FIXED_NOTE_ROW_STYLE):
+                changed += 1
+
+    faq_column = _find_column_index(columns, "学号")
+    if faq_column is not None:
+        faq_value = grid_rows[note_row_index][faq_column]
+        if (
+            _normalize_text(note_sheet_inline_links.extract_inline_cell_value(faq_value))
+            in {"考勤返款常见问题解答", "考勤常见问题解答"}
+            and note_sheet_inline_links.inline_cell_link_url(faq_value)
+            and _set_cell_style(cell_meta, note_row_index, faq_column, ZEN_STAGE_FAQ_LINK_STYLE)
+        ):
+            changed += 1
+
+    feedback_column = _find_column_index(columns, "总应返款")
+    if feedback_column is not None:
+        feedback_value = grid_rows[note_row_index][feedback_column]
+        if (
+            _normalize_text(note_sheet_inline_links.extract_inline_cell_value(feedback_value)) == "反馈问题"
+            and note_sheet_inline_links.inline_cell_link_url(feedback_value)
+            and _set_cell_style(cell_meta, note_row_index, feedback_column, ZEN_STAGE_FEEDBACK_LINK_STYLE)
+        ):
+            changed += 1
+
+    source_merged_cells = list(document.get("merged_cells") or [])
+    group_ranges = [(indexes[0], indexes[-1]) for indexes, *_rest in groups]
+    merged_cells = [
+        cell for cell in source_merged_cells
+        if not (
+            isinstance(cell, dict)
+            and int(cell.get("row") or 0) == week_row_index
+            and any(
+                int(cell.get("col") or 0) <= end
+                and int(cell.get("col") or 0) + max(int(cell.get("colspan") or 1), 1) > start
+                for start, end in group_ranges
+            )
+        )
+    ]
+    merged_cells.extend({
+        "row": week_row_index,
+        "col": indexes[0],
+        "rowspan": 1,
+        "colspan": len(indexes),
+    } for indexes, *_rest in groups)
+    if merged_cells != source_merged_cells:
+        changed += 1
+
+    next_document = dict(document)
+    next_document["grid_rows"] = grid_rows
+    next_document["cell_meta"] = cell_meta
+    next_document["merged_cells"] = merged_cells
+    return next_document, changed
+
+
+def _video_column_indexes_from_columns(
+    video_config: list[VideoConfigItem],
+    columns: list[str],
+) -> dict[str, int | None]:
+    progress_column_by_key: dict[str, int] = {}
+    for column_index, column_name in enumerate(columns):
+        key = _course_item_key(column_name)
+        if key and key not in progress_column_by_key:
+            progress_column_by_key[key] = column_index
+    return {
+        item.lesson_id: (
+            progress_column_by_key.get(item.course_key)
+            if progress_column_by_key.get(item.course_key) is not None
+            else progress_column_by_key.get(_course_item_key(_lesson_header_from_video_item(item)))
+        )
+        for item in video_config
+    }
+
+
 def _sync_zen_stage_video_header_layout(
     document: dict[str, Any],
     video_config: list[VideoConfigItem],
     video_column_indexes: dict[str, int | None],
 ) -> tuple[dict[str, Any], int]:
+    source_document = document
+    document, fixed_header_changed = _sync_zen_stage_fixed_header_layout(document)
     zen_items = [
         item for item in video_config
         if item.participates_refund
@@ -1267,7 +1446,7 @@ def _sync_zen_stage_video_header_layout(
     while len(grid_rows) <= note_row_index:
         grid_rows.append([""] * len(columns))
 
-    changed = 0
+    changed = fixed_header_changed
     cell_meta = dict(document.get("cell_meta")) if isinstance(document.get("cell_meta"), dict) else {}
     column_configs = dict(document.get("column_configs")) if isinstance(document.get("column_configs"), dict) else {}
 
@@ -1354,6 +1533,17 @@ def _sync_zen_stage_video_header_layout(
     next_document["cell_meta"] = cell_meta
     next_document["column_configs"] = column_configs
     next_document["merged_cells"] = next_merged_cells
+    source_header_groups = list(document.get("header_groups") or [])
+    next_header_group_row = [
+        {"label": _normalize_text(value), "colspan": 1}
+        for value in grid_rows[week_row_index]
+    ]
+    next_header_groups = [next_header_group_row, *source_header_groups[1:]]
+    if source_header_groups != next_header_groups:
+        changed += 1
+    next_document["header_groups"] = next_header_groups
+    if next_document == source_document:
+        return source_document, 0
     return next_document, changed
 
 
@@ -4215,16 +4405,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         attendance=attendance,
         default_owner_key=NIANZHU_OWNER_KEY,
     )
-    video_course_keys = {item.course_key for item in video_config if item.course_key}
-    progress_column_by_key: dict[str, int] = {}
-    for column_index, column_name in enumerate(columns):
-        key = _course_item_key(column_name)
-        if key and key in video_course_keys and key not in progress_column_by_key:
-            progress_column_by_key[key] = column_index
-    video_column_indexes = {
-        item.lesson_id: progress_column_by_key.get(item.course_key)
-        for item in video_config
-    }
+    video_column_indexes = _video_column_indexes_from_columns(video_config, columns)
     current_document, header_layout_repaired_cells = _sync_zen_stage_video_header_layout(
         current_document,
         video_config,
