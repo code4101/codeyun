@@ -5644,7 +5644,7 @@ class DailyFoundationTaskMixin:
             self._set_status_locked("running", "日常_绿瓶拜谒：点击 #283「拜谒」", phase="daily_green_bottle_baiye_click_baiye", current_scene=baiye_scene_id)
             self._log_locked("success", f"日常_绿瓶拜谒：已点击 #{rank_scene_id}「境界排行」")
             self._log_locked("action", "日常_绿瓶拜谒：确认天道魁首拜谒状态")
-        worship_scene_id, _worship_score, worship_frame = runtime.current_scene([197, baiye_scene_id], update=True)
+        worship_scene_id, _worship_score, worship_frame = runtime.current_scene([baiye_scene_id], update=True)
         worship_text = runtime.ocr_text(worship_frame)
         if self._baiye_text_is_completed(worship_text):
             with self._lock:
@@ -5669,18 +5669,10 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"日常_绿瓶拜谒：未能判断拜谒状态，scene={worship_scene_id} OCR={worship_text[:120]}")
         with self._lock:
             self._log_locked("success", "日常_绿瓶拜谒：今日拜谒已确认完成")
-            self._log_locked("action", "日常_绿瓶拜谒：点击 #283「返回」退出天道魁首页")
-        runtime.click_shape_center(baiye_scene_id, "返回")
-        yield from runtime.wait_action_settle(float(payload.get("green_bottle_baiye_back_settle_seconds") or 2.0))
-        cleanup_scene_id, _cleanup_score, _cleanup_frame = runtime.current_scene([282, 236, 20, 34], update=True)
-        if cleanup_scene_id == 282:
-            with self._lock:
-                self._log_locked("action", "日常_绿瓶拜谒：#283 返回后到达 #282，点击 #282「返回」")
-            yield from runtime.wait_click(282, "返回")
-            yield from runtime.wait_action_settle(float(payload.get("green_bottle_rank_back_settle_seconds") or 2.0))
-        with self._lock:
             self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
-            self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动回到 #34")
+            self._log_locked("action", "日常_绿瓶拜谒：从当前场景调用通用场景移动回到 #34")
+        # 不在业务作业里手写 #283 -> #282 -> #20 -> #34。这里必须交给
+        # 通用 goto；sceneJumpTarget 是可增量学习的历史落点频次，不是硬规则。
         yield from runtime.goto_view(34)
         final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
         if final_scene_id != 34:

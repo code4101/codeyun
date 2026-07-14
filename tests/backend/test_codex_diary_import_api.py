@@ -19,6 +19,7 @@ from backend.api.notes import (
     _create_codex_diary_import_run_record,
     _draft_codex_diary_blocks_in_batches,
     _extract_codex_diary_ai_json,
+    _is_codex_diary_synthetic_turn,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
@@ -1339,6 +1340,51 @@ def test_codex_diary_blocks_merge_same_category_details_without_time_split(
     assert round(blocks[0]["duration_seconds"] / 60) == 305
     assert blocks[0]["category_key"] == "custom_codeyun_note"
     assert len(blocks[0]["records"]) == 2
+
+
+def test_codex_diary_blocks_ignore_injected_runtime_context(
+    session: Session,
+    auth_user,
+):
+    start_at = _ts(2026, 7, 12, 9, 0)
+    source = {
+        "date": "2026-07-12",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "fanxiu:zhenxie",
+                "thread_title": "日常镇邪",
+                "user_request": "<recommended_plugins>injected plugin catalog</recommended_plugins>",
+                "assistant_result": "",
+                "start_at": start_at,
+                "end_at": start_at,
+            },
+            {
+                "thread_id": "fanxiu:zhenxie",
+                "thread_title": "日常镇邪",
+                "user_request": '<codex_internal_context source="goal"><objective>继续镇邪</objective></codex_internal_context>',
+                "assistant_result": "",
+                "start_at": start_at + 60,
+                "end_at": start_at + 60,
+            },
+            {
+                "thread_id": "fanxiu:zhenxie",
+                "thread_title": "日常镇邪",
+                "user_request": "继续运行日常镇邪。",
+                "assistant_result": "已验证 #271[参加]。",
+                "start_at": start_at + 120,
+                "end_at": start_at + 180,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert _is_codex_diary_synthetic_turn(source["turn_records"][0])
+    assert _is_codex_diary_synthetic_turn(source["turn_records"][1])
+    assert len(blocks) == 1
+    assert len(blocks[0]["records"]) == 1
+    assert blocks[0]["records"][0]["user_request"] == "继续运行日常镇邪。"
 
 
 def test_codex_diary_blocks_keep_short_categories_separate(

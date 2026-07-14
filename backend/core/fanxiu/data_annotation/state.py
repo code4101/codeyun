@@ -434,6 +434,8 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
     task = normalize_scheduled_task_record(item, default_source="data_annotation_runtime", default_schedule_kind="manual")
     if task is None:
         return None
+    if isinstance(item, dict) and item.get("last_message"):
+        task["last_message"] = str(item["last_message"])
     template_id = str(task.get("template_id") or task.get("task_type") or "").strip()
     template_label = str(task.get("template_label") or task.get("label") or template_id).strip()
     source = str(task.get("source") or "").strip()

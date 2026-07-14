@@ -11,6 +11,8 @@ from pathlib import Path
 from types import GeneratorType
 from typing import Any
 
+import psutil
+
 
 FANXIU_KERNEL_MANAGER_ADDRESS = ("127.0.0.1", 48731)
 FANXIU_KERNEL_MANAGER_AUTHKEY = b"codeyun-fanxiu-kernel-v1"
@@ -272,6 +274,29 @@ def fanxiu_kernel_manager_status(*, timeout_seconds: float = 1.0) -> dict[str, A
         }
 
 
+def _interrupt_kernel_over_control_channel(connection_path: Path, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    """Use Jupyter's control channel so Windows launcher processes cannot swallow SIGINT."""
+    from jupyter_client import BlockingKernelClient
+
+    client = BlockingKernelClient(connection_file=str(connection_path))
+    client.load_connection_file()
+    client.start_channels()
+    try:
+        message = client.session.msg("interrupt_request", content={})
+        message_id = str(message.get("header", {}).get("msg_id") or "")
+        client.control_channel.send(message)
+        deadline = time.time() + max(0.5, float(timeout_seconds or 5.0))
+        while time.time() < deadline:
+            reply = client.get_control_msg(timeout=max(0.1, deadline - time.time()))
+            if str(reply.get("parent_header", {}).get("msg_id") or "") != message_id:
+                continue
+            content = reply.get("content") if isinstance(reply.get("content"), dict) else {}
+            return {"ok": str(content.get("status") or "ok") == "ok", "content": content}
+        raise TimeoutError("Jupyter interrupt_request 超时")
+    finally:
+        client.stop_channels()
+
+
 def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.0) -> None:
     """Own one native Jupyter KernelManager and its replaceable kernel child."""
     del tick_seconds  # Scheduling is external; the kernel has no resident polling loop.
@@ -288,7 +313,22 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     def kernel_pid(km: KernelManager | None) -> int | None:
         provisioner = getattr(km, "provisioner", None) if km is not None else None
         process = getattr(provisioner, "process", None)
-        return int(process.pid) if process is not None else None
+        if process is None:
+            return None
+        launcher_pid = int(process.pid)
+        try:
+            launcher = psutil.Process(launcher_pid)
+            candidates = [launcher, *launcher.children(recursive=True)]
+            ipykernels = [
+                candidate
+                for candidate in candidates
+                if "ipykernel_launcher" in " ".join(candidate.cmdline())
+            ]
+            if ipykernels:
+                return int(max(ipykernels, key=lambda candidate: candidate.memory_info().rss).pid)
+        except (psutil.Error, OSError, ValueError):
+            pass
+        return launcher_pid
 
     def stop_monitor() -> None:
         nonlocal monitor_stop, monitor_client
@@ -367,7 +407,18 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                 command = str(request.get("command") or "status") if isinstance(request, dict) else "status"
                 timeout = float(request.get("timeout_seconds") or 15.0) if isinstance(request, dict) else 15.0
                 if command == "interrupt":
-                    manager.interrupt_kernel()
+                    try:
+                        _interrupt_kernel_over_control_channel(connection_path, timeout_seconds=timeout)
+                    except Exception:
+                        # KernelManager remains the native fallback for kernels whose
+                        # control channel does not implement interrupt_request.
+                        manager.interrupt_kernel()
+                    deadline = time.time() + max(0.5, timeout)
+                    while time.time() < deadline:
+                        with state_lock:
+                            if state.get("execution_state") != "busy":
+                                break
+                        time.sleep(0.05)
                 elif command == "restart":
                     stop_monitor()
                     manager.shutdown_kernel(now=True)

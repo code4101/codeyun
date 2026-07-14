@@ -554,29 +554,14 @@ def test_runtime_runner_default_close_popups_guard_is_on():
     assert status["guard_items"]["close_popups"]["enabled"] is True
 
 
-def test_runtime_scene_rejects_out_of_candidate_ocr_failure_without_recursion(monkeypatch):
+def test_runtime_scene_does_not_fallback_when_graph_returns_unknown(monkeypatch):
     runner = bt.create_fanxiu_runtime_runner()
-    calls = []
-
-    class FakeRecognizer:
-        def identify_scene_tree_number(self, *_args, **_kwargs):
-            calls.append("tree")
-            return 180, 100.0
-
-        def identify_scene_number(self, *_args, **_kwargs):
-            calls.append("flat")
-            return 180, 100.0
-
-    monkeypatch.setattr(runner, "_identify_scene_number_by_graph", lambda *_args, **_kwargs: (None, 0.0, "unknown"))
-    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
-    monkeypatch.setattr(runner, "_scene_number_ocr_confirmed", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda _ctx: [326, 327])
+    monkeypatch.setattr(runner, "_identify_scene_number_by_graph", lambda *_args, **_kwargs: (None, 37.0, "unknown"))
 
     scene_id, score = runner._identify_scene_number({}, "frame", [327, 326])
 
     assert scene_id is None
-    assert score == 100.0
-    assert calls == ["tree"]
+    assert score == 37.0
 
 
 

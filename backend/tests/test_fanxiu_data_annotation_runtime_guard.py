@@ -193,72 +193,34 @@ def test_go_scene_default_layer0_wait_seconds_is_high_confidence_window():
     assert runtime_runner_core.DEFAULT_LAYER0_WAIT_SECONDS == 30.0
 
 
-def test_current_scene_rejects_local_only_sub_scene_without_layer0(monkeypatch):
-    root = _scene_image(
-        "仙府",
-        "0171.png",
-        [{"title": "仙府标识", "isSceneIdentity": True}],
-        layer=1,
-    )
-    local_child = _scene_image(
-        "小助手进度",
-        "0277.png",
-        [{"title": "进度", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
-        layer=2,
-    )
-    root["children"] = [local_child]
-    ctx = {"asset_tree": [root], "images": {171: root, 277: local_child}}
+def test_identify_scene_number_returns_graph_ambiguity_without_legacy_fallback(monkeypatch):
     runner = create_fanxiu_runtime_runner()
-
-    class FakeRecognizer:
-        def identify_scene_tree_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
-            assert preferred_scene_ids == [171]
-            return 277, 100.0
-
-        def identify_scene_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
-            assert preferred_scene_ids == [171]
-            return 171, 100.0
-
-    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number_by_graph",
+        lambda *_args, **_kwargs: (None, 100.0, "ambiguous"),
+    )
 
     trace: list[dict] = []
-    scene_id, score = runner._identify_scene_number(ctx, _png_data_url(), trace=trace)
+    scene_id, score = runner._identify_scene_number({}, _png_data_url(), trace=trace)
 
-    assert (scene_id, score) == (171, 100.0)
-    assert any(item.get("reason") == "local_identity_without_layer0_context" for item in trace)
+    assert (scene_id, score) == (None, 100.0)
+    assert not any("tree" in str(item).lower() or "fallback" in str(item).lower() for item in trace)
 
 
-def test_candidate_scene_rejects_local_only_sub_scene_unless_explicit(monkeypatch):
-    root = _scene_image(
-        "仙府",
-        "0171.png",
-        [{"title": "仙府标识", "isSceneIdentity": True}],
-        layer=1,
-    )
-    local_child = _scene_image(
-        "小助手进度",
-        "0277.png",
-        [{"title": "进度", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
-        layer=2,
-    )
-    root["children"] = [local_child]
-    ctx = {"asset_tree": [root], "images": {171: root, 277: local_child}}
+def test_identify_scene_number_returns_graph_match_directly(monkeypatch):
     runner = create_fanxiu_runtime_runner()
+    calls: list[list[int] | None] = []
 
-    class FakeRecognizer:
-        def identify_scene_tree_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
-            return 277, 100.0
+    def identify(_ctx, _frame, preferred_scene_ids=None, trace=None):
+        calls.append(preferred_scene_ids)
+        return 276, 100.0, "graph_specific"
 
-        def identify_scene_number(self, _ctx, _frame, preferred_scene_ids=None, trace=None):
-            return 171, 100.0
+    monkeypatch.setattr(runner, "_identify_scene_number_by_graph", identify)
+    scene_id, score = runner._identify_scene_number({}, _png_data_url(), [276])
 
-    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
-
-    trace: list[dict] = []
-    scene_id, score = runner._identify_scene_number(ctx, _png_data_url(), [171], trace=trace)
-
-    assert (scene_id, score) == (171, 100.0)
-    assert any(item.get("reason") == "local_identity_without_explicit_candidate" for item in trace)
+    assert (scene_id, score) == (276, 100.0)
+    assert calls == [[276]]
 
 
 def test_runtime_goto_view_forwards_layer0_wait_seconds(tmp_path, monkeypatch):
@@ -624,13 +586,13 @@ def test_runtime_wait_click_then_view_records_landing_frequency(monkeypatch, tmp
     assert writes == [tree]
 
 
-def test_runtime_observed_landing_counts_are_sorted_descending():
+def test_runtime_scene_jump_target_adds_new_landing_and_sorts_counts_descending():
     runner = create_fanxiu_runtime_runner()
-    shape = {"title": "随机跳", "observedLanding": "277(3),85(2),186(5)"}
+    shape = {"title": "随机跳", "sceneJumpTarget": "277(3),85(2),186(5)"}
 
-    assert runner._increment_observed_landing(shape, 1) is True
+    assert runner._increment_scene_jump_target(shape, 1) is True
 
-    assert shape["observedLanding"] == "186(5),277(3),85(2),1(1)"
+    assert shape["sceneJumpTarget"] == "186(5),277(3),85(2),1(1)"
 
 
 def test_runtime_wait_click_then_view_accepts_target_list(monkeypatch):
@@ -4442,8 +4404,8 @@ def test_runtime_match_scene_matrix_uses_scene_score_without_inferred_title_ocr(
 def test_runtime_scene_identification_prefers_graph_specific_candidate(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     images = {
-        34: _scene_image("世界", "0034.png", layer=2),
-        266: _scene_image("法则详情", "0266.png", layer=2),
+        34: _scene_image("世界", "0034.png", [{"id": "world", "isSceneIdentity": True}], layer=2),
+        266: _scene_image("法则详情", "0266.png", [{"id": "detail", "isSceneIdentity": True}], layer=2),
     }
     ctx = {"asset_tree": [images[34], images[266]], "images": images}
 
@@ -4656,7 +4618,7 @@ def test_runtime_scene_terms_are_documented():
 
 
 
-def test_runtime_scene_candidates_use_layer_queue_roots_without_context():
+def test_runtime_scene_candidates_use_all_global_graph_nodes_without_context():
     runner = create_fanxiu_runtime_runner()
     image20 = _image("绿瓶", "0020.png", [
         {"id": "green-bottle-id", "kind": "rect", "title": "绿瓶", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
@@ -4698,11 +4660,11 @@ def test_runtime_scene_candidates_use_layer_queue_roots_without_context():
     image47["children"] = [image278]
     ctx = {"asset_tree": tree, "images": {20: image20, 34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 199: image199, 204: image204, 278: image278}}
 
-    assert runner._runtime_scene_candidate_ids(ctx) == [20, 34, 47, 86, 204, 198, 199]
+    assert runner._runtime_scene_candidate_ids(ctx) == [20, 34, 35, 47, 86, 198, 204, 199]
     assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
 
 
-def test_identify_scene_number_without_context_checks_popup_root_but_not_nested_children(monkeypatch):
+def test_identify_scene_number_without_context_checks_all_global_graph_candidates(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
@@ -4720,27 +4682,20 @@ def test_identify_scene_number_without_context_checks_popup_root_but_not_nested_
         {"type": "folder", "title": "日常", "children": [image204]},
     ]
     ctx = {"asset_tree": tree, "images": {34: image34, 47: image47, 204: image204}}
-    scanned: list[list[int] | None] = []
+    scanned: list[int] = []
 
-    class FakeRecognizer:
-        def identify_scene_number(self, _ctx, _frame, *, preferred_scene_ids=None):
-            scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
-            if preferred_scene_ids == [47]:
-                return 47, 92.0
-            return None, 0.0
+    def score(_ctx, image, _frame):
+        scene_id = runner._image_number(image)
+        scanned.append(scene_id)
+        return 92.0 if scene_id == 47 else 0.0
 
-        def identify_scene_tree_number(self, _ctx, _frame, *, preferred_scene_ids=None):
-            scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
-            if preferred_scene_ids is None or 47 in preferred_scene_ids:
-                return 47, 92.0
-            return None, 0.0
-
-    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+    monkeypatch.setattr(runner, "_scene_score", score)
 
     assert runner._identify_scene_number(ctx, "frame") == (47, 92.0)
-    assert scanned == [None]
+    assert scanned == [34, 47, 204]
+    scanned.clear()
     assert runner._identify_scene_number(ctx, "frame", [47]) == (47, 92.0)
-    assert scanned == [None, [47]]
+    assert scanned == [47]
 
 
 def test_identify_scene_number_directly_checks_explicit_nested_candidate(monkeypatch):
@@ -4761,7 +4716,7 @@ def test_identify_scene_number_directly_checks_explicit_nested_candidate(monkeyp
         lambda _ctx, image, _frame: 100.0 if runner._image_number(image) == 278 else 40.0,
     )
 
-    assert runner._identify_scene_number(ctx, "frame") == (None, 40.0)
+    assert runner._identify_scene_number(ctx, "frame") == (278, 100.0)
     assert runner._identify_scene_number(ctx, "frame", [278]) == (278, 100.0)
 
 
@@ -4778,6 +4733,8 @@ def test_identify_scene_number_refines_preferred_parent_to_child(monkeypatch):
     ])
     image299["children"] = [image297, image298]
     image299["layer"] = 1
+    image297["recognitionParentId"] = 299
+    image298["recognitionParentId"] = 299
     tree = [{"type": "folder", "title": "日常", "children": [image299]}]
     ctx = {"asset_tree": tree, "images": {297: image297, 298: image298, 299: image299}}
 
@@ -4803,6 +4760,7 @@ def test_identify_scene_number_continues_after_rejected_world_match(monkeypatch)
     image34["layer"] = 1
     image299["layer"] = 1
     image299["children"] = [image297]
+    image297["recognitionParentId"] = 299
     tree = [{"type": "folder", "title": "世界", "children": [image34]}, {"type": "folder", "title": "日常", "children": [image299]}]
     ctx = {"asset_tree": tree, "images": {34: image34, 297: image297, 299: image299}}
 
@@ -5012,12 +4970,12 @@ def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkey
     assert any("奖励/提示页打断" in log["message"] for log in runner.status()["logs"])
 
 
-def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatch):
+def test_go_scene_records_new_landing_and_replans_to_target(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
         _scene_image("一", "0001.jpg", [first_shape], layer=1),
-        _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+        _scene_image("二", "0002.jpg", [{"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}], layer=1),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
@@ -5046,25 +5004,22 @@ def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, frame: 80 if str(runner._image_number(image)) in str(frame) else 0)
     monkeypatch.setattr(runner, "_click_shape", click_shape)
 
-    try:
-        runner._run_runtime_behavior_tree(
-            runtime_ctx=ctx,
-            asset_tree_path=path,
-            stop_event=FakeStopEvent(),
-            action=lambda: runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 3}, FakeStopEvent()),
-            label="到场景",
-        )
-    except RuntimeError as exc:
-        assert "未声明落点" in str(exc) or "不在" in str(exc) or "缺少可靠标注" in str(exc)
-    else:
-        raise AssertionError("go_scene should stop when actual result is not declared in sceneJumpTarget")
+    result = runner._run_runtime_behavior_tree(
+        runtime_ctx=ctx,
+        asset_tree_path=path,
+        stop_event=FakeStopEvent(),
+        action=lambda: runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 3}, FakeStopEvent()),
+        label="到场景",
+    )
 
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "3"
-    assert saved[0]["shapes"][0]["observedLanding"] == "2(1)"
+    assert result == "success"
+    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "2(1),3"
+    assert "observedLanding" not in saved[0]["shapes"][0]
+    assert saved[1]["shapes"][0]["sceneJumpTarget"] == "3(1)"
 
 
-def test_go_scene_replans_through_observed_reachable_landing(tmp_path, monkeypatch):
+def test_go_scene_replans_through_historical_reachable_landing(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     first_shape = {
         "id": "jump12",
@@ -5074,8 +5029,7 @@ def test_go_scene_replans_through_observed_reachable_landing(tmp_path, monkeypat
         "y": 0.1,
         "w": 0.2,
         "h": 0.1,
-        "sceneJumpTarget": "3",
-        "observedLanding": "2(1)",
+        "sceneJumpTarget": "2(1),3",
     }
     second_shape = {"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
@@ -5117,8 +5071,8 @@ def test_go_scene_replans_through_observed_reachable_landing(tmp_path, monkeypat
     assert result == "success"
     assert scene_state["value"] == 3
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "3"
-    assert saved[0]["shapes"][0]["observedLanding"] == "2(2)"
+    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "2(2),3"
+    assert "observedLanding" not in saved[0]["shapes"][0]
     assert saved[1]["shapes"][0]["sceneJumpTarget"] == "3(1)"
 
 

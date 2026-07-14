@@ -1551,6 +1551,9 @@ const gridTemplateRows = computed(() => {
     const effectiveCount = isCurrentWeekRow(week) ? Math.max(weekNoteCount, maxWeekNoteCount) : weekNoteCount;
     const level = getWeekLevelFromCount(effectiveCount);
     const weight = Number((WEEK_BASE_WEIGHT + level).toFixed(3));
+    if (currentNoteId.value) {
+      return `minmax(0, ${weight}fr)`;
+    }
     const height = Math.min(
       MONTH_WEEK_ROW_MAX_HEIGHT,
       Math.max(MONTH_WEEK_ROW_MIN_HEIGHT, Math.round(weight * MONTH_WEEK_ROW_UNIT_HEIGHT))
@@ -3444,6 +3447,15 @@ watch(isActive, (active) => {
 .calendar-workspace:not(.calendar-workspace--calendar-only) .era-container {
   height: 100%;
   overflow: auto;
+}
+
+.calendar-workspace:not(.calendar-workspace--calendar-only) .calendar-container {
+  overflow: hidden;
+}
+
+.calendar-workspace:not(.calendar-workspace--calendar-only) .days-grid {
+  flex: 1;
+  min-height: 0;
 }
 
 .year-container,

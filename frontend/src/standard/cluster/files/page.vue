@@ -1203,9 +1203,11 @@ const showDirectorySortTools = computed(() =>
   !isBrowsingDeviceRoot.value && (directoryEntries.value.length > 1 || showDirectorySortEditor.value)
 );
 const shouldUseGalleryWorkspace = computed(() =>
-  displayMediaItems.value.length > 0 || showDirectorySortTools.value
+  displayMediaItems.value.length > 0
+  || showDirectorySortTools.value
+  || (canBrowse.value && !isBrowsingDeviceRoot.value)
 );
-const showWorkspaceChrome = computed(() => showDirectorySortTools.value || showMediaToolbar.value);
+const showWorkspaceChrome = computed(() => shouldUseGalleryWorkspace.value);
 const showSidebarPanel = computed(() => showWorkspaceChrome.value && showSidebar.value);
 const showDirectoryPanel = computed(() => showWorkspaceChrome.value ? showSidebar.value : true);
 const directorySortSummary = computed(() => formatDirectorySortProgramSummary(directorySortProgram.value));
