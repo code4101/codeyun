@@ -418,7 +418,7 @@ def test_fanxiu_runtime_find_view_empty_group_uses_top_level_identity_only(monke
     assert runtime.find_view("").raw is image35
 
 
-def test_mail_cleanup_entry_prefers_view68_mail(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_prefers_view68_mail(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -462,7 +462,7 @@ def test_mail_cleanup_entry_prefers_view68_mail(monkeypatch, tmp_path):
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_cleanup_entry(runtime),
+        lambda: runner._open_mail_selective_claim_entry(runtime),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -471,7 +471,7 @@ def test_mail_cleanup_entry_prefers_view68_mail(monkeypatch, tmp_path):
     assert clicked == [("世界-下方动态", "邮件")]
 
 
-def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -544,7 +544,7 @@ def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_cleanup_entry(runtime),
+        lambda: runner._open_mail_selective_claim_entry(runtime),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -553,7 +553,7 @@ def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
     assert clicked == [("世界下方菜单", "邮件")]
 
 
-def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_refreshes_frame_after_opening_world_menu(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -635,7 +635,7 @@ def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_cleanup_entry(runtime),
+        lambda: runner._open_mail_selective_claim_entry(runtime),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -644,7 +644,7 @@ def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch
     assert any(title == "邮件" and frame != "frame0" for title, frame, _condition in frames)
 
 
-def test_mail_cleanup_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -723,7 +723,7 @@ def test_mail_cleanup_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_cleanup_entry(runtime),
+        lambda: runner._open_mail_selective_claim_entry(runtime),
         stop_event=FakeStopEvent(),
         max_runtime_seconds=15,
         tick_seconds=0.01,
@@ -989,7 +989,7 @@ def test_shape_match_accepts_ocr_contains_even_when_similarity_is_low(monkeypatc
     assert result["resolved_box"] == {"name": "邮件", "x": 449.1, "y": 1452.8, "w": 90.0, "h": 110.4}
 
 
-def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
+def test_mail_selective_claim_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -1024,7 +1024,7 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
             yield None
         return "success"
 
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
 
     def identify_scene_number(_ctx, _frame, keys=None, *_args, **_kwargs):
@@ -1053,7 +1053,7 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 1}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 1}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1063,7 +1063,7 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     assert updates == [("潜修心得", "claim_requested")]
 
 
-def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_path):
+def test_mail_selective_claim_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -1099,7 +1099,7 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
             yield None
         return "success"
 
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
@@ -1138,7 +1138,7 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 5}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1146,13 +1146,13 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
     assert result == "success"
     assert actions == [
         ("click", "邮件", "一键删除"),
-        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_选择性领取：一键删除后等待确认弹窗"}),
         ("click_shape", 210, "确认", {"frame_data_url": None}),
-        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_选择性领取：确认一键删除后等待邮件页或世界页"}),
     ]
 
 
-def test_mail_cleanup_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
+def test_mail_selective_claim_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -1209,7 +1209,7 @@ def test_mail_cleanup_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
         actions.append(("click_shape", view_id, shape_title, kwargs))
         return "success"
 
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
@@ -1227,7 +1227,7 @@ def test_mail_cleanup_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 5}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1235,13 +1235,13 @@ def test_mail_cleanup_confirms_one_key_delete_prompt(monkeypatch, tmp_path):
     assert result == "success"
     assert actions == [
         ("click", "邮件", "一键删除"),
-        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_选择性领取：一键删除后等待确认弹窗"}),
         ("click_shape", 278, "确认", {"frame_data_url": None}),
-        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_选择性领取：确认一键删除后等待邮件页或世界页"}),
     ]
 
 
-def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_path):
+def test_mail_selective_claim_uses_runtime_default_scroll_parameters(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -1282,7 +1282,7 @@ def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_pa
             yield None
         return False
 
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
@@ -1317,7 +1317,7 @@ def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_pa
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 5}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1327,7 +1327,7 @@ def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_pa
     assert scroll_calls[0][1] == {}
 
 
-def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
+def test_mail_selective_claim_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -1363,7 +1363,7 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
             yield None
         return "success"
 
-    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
@@ -1403,7 +1403,7 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5, "max_scrolls": 1}),
+        lambda: runner._execute_mail_selective_claim_task(ctx, FakeStopEvent(), {"max_actions": 5, "max_scrolls": 1}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1411,14 +1411,14 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     assert result["result"] == "skipped"
     assert actions == [
         ("click", "邮件", "一键删除"),
-        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_清理：一键删除后等待确认弹窗"}),
+        ("wait_view", (210, 278, 121), {"timeout": 12.0, "label": "邮件_选择性领取：一键删除后等待确认弹窗"}),
         ("click_shape", 210, "确认", {"frame_data_url": None}),
-        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_清理：确认一键删除后等待邮件页或世界页"}),
+        ("wait_view", (121, 34), {"timeout": 12.0, "label": "邮件_选择性领取：确认一键删除后等待邮件页或世界页"}),
     ]
     assert any("仍未确认到底，继续一键删除已阅" in log["message"] for log in runner.status()["logs"])
 
 
-def test_legacy_mail_claim_check_task_type_runs_mail_cleanup(monkeypatch, tmp_path):
+def test_legacy_mail_claim_check_task_type_runs_mail_selective_claim(monkeypatch, tmp_path):
     ensure_fanxiu_runtime_jobs_registered()
     runner = create_fanxiu_runtime_runner()
     image121 = {
@@ -1437,7 +1437,7 @@ def test_legacy_mail_claim_check_task_type_runs_mail_cleanup(monkeypatch, tmp_pa
     called = []
 
     monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
-    monkeypatch.setattr(runner, "_execute_mail_cleanup_task", lambda *_args, **_kwargs: called.append("cleanup") or "success")
+    monkeypatch.setattr(runner, "_execute_mail_selective_claim_task", lambda *_args, **_kwargs: called.append("cleanup") or "success")
 
     result = runner._execute_runtime_task(ctx, "mail_claim_check", {}, threading.Event())
 

@@ -30,13 +30,23 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "eca87774c84fb19d3ecfbb9171c552dce10cb03b"
-last_audited_at: "2026-07-14T01:10:13.8642345+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-14-frontend-design-eca87774/report.md"
-last_frontend_commit_summary: "完整关闭 6b5ff516..eca87774：法宝阵图权限阻塞已解除，3 个候选方案收在同一槽位模型；新计算器与 Runtime/Runtime 日志/标注页三视口无页面级溢出，Runtime 删除人工隔离、单步 tick 等专用概念。"
-audited_commit_count: 113
+last_audited_commit: "c580233e4070c23c653955d382eb1f3cb12b7613"
+last_audited_at: "2026-07-15T01:13:18.2424236+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-15-frontend-design-c580233e/report.md"
+last_frontend_commit_summary: "完整关闭 eca87774..c580233e：Runtime、日历详情、笔记类型与修道班考勤表保持既有基础模型；空文件目录删除重复无媒体空壳，保留唯一目录工作区。"
+audited_commit_count: 117
 pending_or_skipped_ranges: []
 ```
+
+### 2026-07-15 · `c580233e`
+
+- 完整范围：`eca87774c84fb19d3ecfbb9171c552dce10cb03b..c580233e4070c23c653955d382eb1f3cb12b7613`；共 4 个提交，按从旧到新逐个归类。`97ecbc28`、`5dc77e3d`、`80a43a74` 直接修改前端；`c580233e` 虽未改前端文件，但改变笔记分类 palette/default 与 B 类考勤工作簿的可见投影，因此按前端相关处理。
+- 入口与模型：Runtime 仍分别展示外部 Scheduler、Kernel 和 Runtime 事实，`外部 Scheduler 在线 · 自动派发开启` 只出现一次；日历详情继续使用“月历 + 同页选中详情”，周行收在现有高度内；笔记类型 selector/manager 共享后端权威 palette，17 个类型继续使用同一“名称 + 颜色 + 描述 + 顺序”实体；修道班 13 期 1 阶考勤表把用户、返款、打卡、周次放在既有 Handsontable 表头层级中。
+- 入口牵引到旧问题：`5dc77e3d` 为了让空子目录继续保留目录导航，把 Gallery 工作区扩展到无媒体状态；真实页面因此同时出现“当前目录下没有子目录”和独立的“当前筛选条件下没有可显示的媒体”大空壳，且 `browser-panel` 固定至少 640px。两者表达同一空目录事实，属于本轮文件工作区入口直接放大的旧壳层问题。
+- 本轮减法：在真正的空子目录状态下保留唯一目录工作区、设备/路径/上一级/递归检索能力，隐藏无媒体的第二空面板并取消 640px 强制高度；没有新增控件、字段、状态或入口。非空目录复验仍显示 48 个媒体卡片，Gallery 主面板正常。
+- 真实页面：Runtime、文件空目录、日历选中笔记详情、`/workbook/16?sheet=60370` 均覆盖 `1600x1000`、`1366x900`、`820x1180`；笔记分类 selector/manager 另有桌面截图。全部目标页面 `body/root` 横向溢出为 0；工作簿横向滚动只归 Handsontable，日历的页面壳未新增滚动层。空目录修复后可见空状态从两块收敛为一块，宽屏卡片高度由原强制壳层收回到 424px。
+- 验证：`npm run typecheck --prefix frontend` 通过；`npm run build --prefix frontend` 通过（4256 modules，1m44s）。本轮没有重依赖、Vite/Rollup、自动导入、全局样式、worker/wasm、解析器/预览器/编辑器/图表库或公开匿名入口改动，不触发强制入口依赖污染检查。
+- 剩余风险：Runtime 当前真实业务状态存在一次 `go_scene #34` 的 unknown 阻塞，这是现有游戏/标注运行事实，不是本轮 UI 投影回退；本轮只验证页面状态边界与布局，没有执行新的游戏业务 Cell。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-15-frontend-design-c580233e/`。
 
 ### 2026-07-14 · `eca87774`
 

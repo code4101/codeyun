@@ -50,7 +50,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_dungeon",
     "daily_assistant",
     "daily_audit",
-    "mail_cleanup",
+    "mail_selective_claim",
     "xianfu_visit_partner",
     "xianfu_learn_skill",
 )
@@ -520,8 +520,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_audit_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_task_cell("mail_cleanup", "邮件_清理", scheduler_supported=True)
-    def _run_data_annotation_mail_cleanup_task_cell(
+    @register_fanxiu_data_annotation_task_cell("mail_selective_claim", "邮件_选择性领取", scheduler_supported=True)
+    def _run_data_annotation_mail_selective_claim_task_cell(
         runner: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],
@@ -529,7 +529,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         if payload.get("observe_only") or payload.get("scan_only") or payload.get("full_scan") or str(payload.get("scan_mode") or "").strip().lower() in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}:
             return runner._execute_mail_legacy_scan_task(ctx, stop_event, payload)
-        return runner._execute_mail_cleanup_task(ctx, stop_event, payload)
+        return runner._execute_mail_selective_claim_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("xianfu_visit_partner", "仙府_寻访仙侣", scheduler_supported=True)
     def _run_data_annotation_xianfu_visit_partner_task_cell(

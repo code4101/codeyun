@@ -49,7 +49,7 @@ namespace Code4101.Zaohua.Tiandao
                     solution.SearchStage < existing.SearchStage ||
                     (solution.SearchStage == existing.SearchStage && solution.QualityRank > existing.QualityRank) ||
                     (solution.SearchStage == existing.SearchStage && solution.QualityRank == existing.QualityRank &&
-                     solution.PlantingDays < existing.PlantingDays))
+                     solution.PlantingDaysPerPill < existing.PlantingDaysPerPill))
                 {
                     _solutions[key] = solution;
                     _revision++;

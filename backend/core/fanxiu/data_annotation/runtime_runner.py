@@ -32,6 +32,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
 )
 from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu.data_annotation.jobs import (
+    canonical_fanxiu_data_annotation_task_type,
     get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
@@ -2516,9 +2517,7 @@ def _next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | N
 
 def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
     register_fanxiu_data_annotation_default_runtime_jobs()
-    task_type = str(task.get("task_type") or "")
-    if task_type == "mail_claim_check":
-        task_type = "mail_cleanup"
+    task_type = canonical_fanxiu_data_annotation_task_type(str(task.get("task_type") or ""))
     definition = _data_annotation_task_cell_definition(task_type)
     return bool(definition and definition.scheduler_supported)
 
@@ -3179,10 +3178,7 @@ class DataAnnotationRuntimeRunner(
         })
 
     def _canonical_runtime_task_type(self, task_type: str) -> str:
-        task_type = str(task_type or "").strip()
-        if task_type == "mail_claim_check":
-            return "mail_cleanup"
-        return task_type
+        return canonical_fanxiu_data_annotation_task_type(task_type)
 
     def _set_log_context(self, scope: str, item_id: str) -> tuple[str, str]:
         with self._lock:
@@ -3426,8 +3422,8 @@ class DataAnnotationRuntimeRunner(
             target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
             if target:
                 label = f"到场景 #{target}"
-        if task_type == "mail_cleanup" and (payload or {}).get("observe_only"):
-            label = "邮件_清理"
+        if task_type == "mail_selective_claim" and (payload or {}).get("observe_only"):
+            label = "邮件_选择性领取"
         return label
 
     def _fanxiu_runtime(
@@ -9018,6 +9014,7 @@ class DataAnnotationRuntimeRunner(
         recovered_unknown_side_leave = False
         recovered_no_route_scene_ids: set[int] = set()
         failed_edge_keys: set[tuple[Any, ...]] = set()
+        stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         last_failed_edge: dict[str, Any] | None = None
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
@@ -9330,8 +9327,19 @@ class DataAnnotationRuntimeRunner(
                 self._log("success", f"到达目标场景 #{target_scene_id}")
                 return "success"
             if actual_scene_id == current_scene_id:
-                failed_edge_keys.add(self._scene_jump_edge_key(edge))
+                edge_key = self._scene_jump_edge_key(edge)
+                attempts = stalled_edge_attempts.get(edge_key, 0) + 1
+                stalled_edge_attempts[edge_key] = attempts
                 last_failed_edge = edge
+                if attempts < 2:
+                    self._log(
+                        "warning",
+                        f"场景移动：点击 {shape_title} 后仍在 #{current_scene_id}，"
+                        "低风险导航边再尝试一次",
+                    )
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.0)
+                    continue
+                failed_edge_keys.add(edge_key)
                 self._log(
                     "warning",
                     f"场景移动：点击 {shape_title} 后仍在 #{current_scene_id}，"

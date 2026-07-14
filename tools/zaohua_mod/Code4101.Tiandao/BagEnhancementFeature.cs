@@ -516,7 +516,7 @@ namespace Code4101.Zaohua.Tiandao
                 text.fontSize = 17f;
                 text.color = destructive
                     ? new Color(0.92f, 0.72f, 0.65f, 1f)
-                    : new Color(0.94f, 0.92f, 0.86f, 1f);
+                    : new Color(0.96f, 0.82f, 0.54f, 1f);
             }
             SetLoadoutActionStyle(button, false);
             var rect = (RectTransform)button.transform;

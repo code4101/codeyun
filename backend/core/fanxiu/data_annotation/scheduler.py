@@ -48,7 +48,7 @@ _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "legacy-daily-dongtian-clear",
     "legacy-daily-lingmai-clear",
 }
-_MAIL_CLEANUP_DONE_PREFIX = "邮件_清理：完成"
+_MAIL_SELECTIVE_CLAIM_DONE_PREFIXES = ("邮件_选择性领取：完成", "邮件_清理：完成")
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-dungeon",
     "legacy-daily-lingta",
@@ -109,11 +109,11 @@ def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | No
     return first_valid_schedule_time_text(fact, *keys)
 
 
-def _mail_cleanup_running_fact_is_completed(task: dict[str, Any], fact: dict[str, Any]) -> bool:
+def _mail_selective_claim_running_fact_is_completed(task: dict[str, Any], fact: dict[str, Any]) -> bool:
     return (
-        str(task.get("task_type") or "") == "mail_cleanup"
+        str(task.get("task_type") or "") == "mail_selective_claim"
         and str(fact.get("last_result") or "") == "running"
-        and str(fact.get("last_message") or "").startswith(_MAIL_CLEANUP_DONE_PREFIX)
+        and str(fact.get("last_message") or "").startswith(_MAIL_SELECTIVE_CLAIM_DONE_PREFIXES)
     )
 
 
@@ -291,6 +291,20 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
     discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
     task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
     filtered_task_facts = dict(task_facts) if isinstance(task_facts, dict) else {}
+    legacy_mail_facts = [
+        filtered_task_facts.pop(legacy_id)
+        for legacy_id in ("mail-cleanup", "mail-claim-check")
+        if legacy_id in filtered_task_facts
+    ]
+    if "mail-selective-claim" not in filtered_task_facts:
+        legacy_fact = next((fact for fact in legacy_mail_facts if isinstance(fact, dict)), None)
+        if legacy_fact is not None:
+            filtered_task_facts["mail-selective-claim"] = {
+                **legacy_fact,
+                "id": "mail-selective-claim",
+                "task_type": "mail_selective_claim",
+                "label": "邮件_选择性领取",
+            }
     current_time = now or datetime.now()
     daily_audit = discoveries.get("daily_audit") if isinstance(discoveries.get("daily_audit"), dict) else {}
     audit_updated_at = float(daily_audit.get("updated_at") or 0) if isinstance(daily_audit, dict) else 0.0
@@ -377,7 +391,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             fact.pop("discovered_next_time", None)
             fact.pop("next_time", None)
             filtered_task_facts[task_id] = fact
-        if _mail_cleanup_running_fact_is_completed(task, fact):
+        if _mail_selective_claim_running_fact_is_completed(task, fact):
             fact = dict(fact)
             fact["last_result"] = "success"
             fact.pop("discovered_retry_after", None)
@@ -523,7 +537,7 @@ def repair_data_annotation_scheduler_tasks(
     tasks = [task for item in source if (task := normalize_data_annotation_scheduler_task(item))]
     if not tasks:
         tasks = default_tasks
-    legacy_mail_cleanup_task: dict[str, Any] | None = None
+    legacy_mail_selective_claim_task: dict[str, Any] | None = None
     legacy_daily_boss_task: dict[str, Any] | None = None
     legacy_xianfu_visit_task: dict[str, Any] | None = None
     legacy_xianfu_skill_task: dict[str, Any] | None = None
@@ -541,24 +555,24 @@ def repair_data_annotation_scheduler_tasks(
     legacy_daily_mozu_task: dict[str, Any] | None = None
     legacy_daily_zhenxie_task: dict[str, Any] | None = None
     for task in tasks:
-        if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
-            legacy_mail_cleanup_task = task
-            task["id"] = "mail-cleanup"
-            task["task_type"] = "mail_cleanup"
-            task["label"] = "邮件_清理"
+        if str(task.get("id") or "") in {"mail-claim-check", "mail-cleanup"} or str(task.get("task_type") or "") in {"mail_claim_check", "mail_cleanup"}:
+            legacy_mail_selective_claim_task = task
+            task["id"] = "mail-selective-claim"
+            task["task_type"] = "mail_selective_claim"
+            task["label"] = "邮件_选择性领取"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-            payload["__scheduler_definition_task_type"] = "mail_cleanup"
+            payload["__scheduler_definition_task_type"] = "mail_selective_claim"
             payload.setdefault("max_runtime_seconds", 3600)
             task["payload"] = payload
-        elif str(task.get("id") or "") == "mail-cleanup" and str(task.get("task_type") or "") == "mail_cleanup":
+        elif str(task.get("id") or "") == "mail-selective-claim" and str(task.get("task_type") or "") == "mail_selective_claim":
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             if payload.get("max_runtime_seconds") != 3600:
                 payload["max_runtime_seconds"] = 3600
                 task["payload"] = payload
-                legacy_mail_cleanup_task = task
-            if str(task.get("label") or "") != "邮件_清理":
-                task["label"] = "邮件_清理"
-                legacy_mail_cleanup_task = task
+                legacy_mail_selective_claim_task = task
+            if str(task.get("label") or "") != "邮件_选择性领取":
+                task["label"] = "邮件_选择性领取"
+                legacy_mail_selective_claim_task = task
         elif str(task.get("id") or "") == "legacy-dynamic-daily-boss":
             legacy_daily_boss_task = task
             task["id"] = "daily-boss"
@@ -756,7 +770,7 @@ def repair_data_annotation_scheduler_tasks(
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
     changed = len(tasks) != before_cleanup_count
-    if legacy_mail_cleanup_task is not None:
+    if legacy_mail_selective_claim_task is not None:
         changed = True
     if legacy_daily_boss_task is not None:
         changed = True

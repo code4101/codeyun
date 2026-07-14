@@ -215,9 +215,9 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
         manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗"),
         runtime_daily_task(
-            "mail-cleanup",
-            "mail_cleanup",
-            "邮件_清理",
+            "mail-selective-claim",
+            "mail_selective_claim",
+            "邮件_选择性领取",
             "00:05",
             cooldown_seconds=600,
             payload={"max_runtime_seconds": 3600},

@@ -149,9 +149,48 @@ def test_registration_sheet_header_normalizer_clears_merged_header_state() -> No
     assert changed is True
     assert normalized["header_groups"] == []
     assert normalized["merged_cells"] == []
-    assert normalized["grid_rows"][0] == document_json["columns"]
+    assert normalized["grid_rows"][0] == normalized["columns"]
+    assert normalized["columns"][:5] == ["分组", "序号", "备注", "海外", "提交时间"]
+    assert normalized["grid_rows"][1][normalized["columns"].index("备注")] == "导入excel"
     assert normalized["data_start_row"] == 2
     assert normalized["field_row_index"] == 0
+
+
+def test_registration_sheet_header_normalizer_upgrades_legacy_one_row_protocol() -> None:
+    columns = [
+        "组号", "序号", "备注", "提交时间", "姓名", "微信昵称", "手机号", "错误手机号",
+        "微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款", "用户ID", "匹配得分", "参考信息",
+    ]
+    document_json = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [["1组", "1_01", "", "2026/07/01", "甲", "甲甲", "13800000000", "", "420001", "202607", "", "939", "0", "u1", "90", ""]],
+        "grid_rows": [columns, ["1组", "1_01", "", "2026/07/01", "甲", "甲甲", "13800000000", "", "420001", "202607", "", "939", "0", "u1", "90", ""]],
+        "data_start_row": 1,
+        "field_row_index": 0,
+        "cell_meta": {},
+        "column_configs": {"手机号": {"text_rule": "phone"}},
+        "view_settings": {"column_note_display": "hover", "row_marker_origin": "data"},
+    }
+
+    normalized, changed = note_sheets_api._normalize_registration_sheet_protocol_document(document_json)
+
+    assert changed is True
+    assert normalized["data_start_row"] == 2
+    assert normalized["columns"][:5] == ["分组", "序号", "备注", "海外", "提交时间"]
+    assert normalized["columns"].index("关联用户ID") == normalized["columns"].index("参考信息") + 1
+    assert normalized["columns"][-1] == "已返款"
+    assert normalized["rows"][0][normalized["columns"].index("姓名")] == "甲"
+    assert normalized["rows"][0][-1] == "0"
+    assert normalized["grid_rows"][1][normalized["columns"].index("参考信息")] == "其他备注"
+    assert normalized["cell_meta"][f'1:{normalized["columns"].index("微信支付订单号")}']["action"]["type"] == "registration_order_match"
+    assert normalized["column_configs"]["已返款"]["hidden"] is True
+    assert normalized["view_settings"]["column_note_display"] == "row"
+    assert normalized["view_settings"]["row_marker_origin"] == "sheet"
+
+    stable, stable_changed = note_sheets_api._normalize_registration_sheet_protocol_document(normalized)
+    assert stable_changed is False
+    assert stable == normalized
 
 
 def test_normalize_attendance_refund_note_removes_duplicate_period_label() -> None:

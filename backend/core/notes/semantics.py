@@ -21,7 +21,9 @@ NOTE_CATEGORY_PALETTE_SETTING_KEY_PREFIX = "note.category_palette.user"
 NOTE_TYPE_PALETTE_SETTING_KEY_PREFIX = "note.type_palette.user"
 NOTE_TYPE_LEGACY_COLOR_PREFIX = "legacy_color_"
 NOTE_AUTO_CLASSIFICATION_BLOCKED_CATEGORY_KEYS = frozenset({"project", "module", "task", "bug"})
-NOTE_AUTO_CLASSIFICATION_BLOCKED_CATEGORY_LABELS = frozenset({"项目", "模块", "任务", "重点", "缺陷", "后勤"})
+NOTE_AUTO_CLASSIFICATION_BLOCKED_CATEGORY_LABELS = frozenset(
+    {"项目", "模块", "任务", "重点", "缺陷", "后勤", "AI", "人工智能"}
+)
 NOTE_FORM_DEFAULT = "note"
 NOTE_FORM_DOCUMENT = "document"
 NOTE_FORM_MEMO = "memo"

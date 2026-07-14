@@ -332,6 +332,7 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
                         {"key": "bug", "label": "缺陷", "color": "#F56C6C", "order": 20},
                         {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#00BFFF", "order": 30},
                         {"key": "custom_logistics", "label": "后勤", "color": "#D2B48C", "order": 40},
+                        {"key": "custom_ai", "label": "AI", "color": "#6F2DBD", "order": 50},
                 ]
             },
         )
@@ -357,6 +358,7 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
     assert "general | 综合" in prompt
     assert "bug | 缺陷" not in prompt
     assert "custom_logistics | 后勤" not in prompt
+    assert "custom_ai | AI" not in prompt
     assert "custom_codeyun_general | CodeYun/综合" in prompt
 
 

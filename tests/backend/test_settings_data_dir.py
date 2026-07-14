@@ -45,3 +45,29 @@ def test_explicit_data_dir_is_still_respected(monkeypatch, tmp_path):
         assert settings.data_dir == custom_dir.resolve()
     finally:
         settings_module.get_settings.cache_clear()
+
+
+def test_ocr_model_stays_warm_long_enough_for_scheduled_work(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS", raising=False)
+    settings_module.get_settings.cache_clear()
+
+    try:
+        settings = settings_module.get_settings()
+        assert settings.ocr_idle_timeout_seconds == 30 * 60
+    finally:
+        settings_module.get_settings.cache_clear()
+
+
+def test_ocr_idle_timeout_remains_configurable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS", "600")
+    settings_module.get_settings.cache_clear()
+
+    try:
+        settings = settings_module.get_settings()
+        assert settings.ocr_idle_timeout_seconds == 600
+    finally:
+        settings_module.get_settings.cache_clear()

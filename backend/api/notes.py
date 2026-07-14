@@ -698,6 +698,12 @@ CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS = (
     "OCR集中",
     "CodeYun OCR",
 )
+CODEX_DIARY_CODEYUN_CLUSTER_ABSOLUTE_TERMS = (
+    "/cluster/runtime",
+    "cluster/runtime",
+    "cluster/tasks/page.vue",
+    "资源监控→服务→作业",
+)
 CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "Skill审计",
     "Skill 审计",
@@ -794,6 +800,13 @@ CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "页面候选池",
     "数据库状态",
     "状态同步",
+    "仓库与服务巡检",
+    "运维巡检",
+    "进程控制台治理",
+    "watchdog",
+    "固定终端承载",
+    "sync-conflict",
+    "工作区合并",
     "PaddleOCR版本",
     "PaddleOCR 最新版本",
     "OCR 模型版本",
@@ -819,6 +832,13 @@ CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS = (
     "正在连接",
 )
 CODEX_DIARY_CODEYUN_GENERAL_ABSOLUTE_TERMS = (
+    "codex-cli",
+    "Codex CLI",
+    "backend/core/ai/chat.py",
+    "供应商接入",
+    "provider 接入",
+    "默认模型",
+    "设备代理模型映射",
     "GitHub 项目自动提交巡检",
     "GitHub自动提交巡检",
     "GitHub 自动提交巡检",
@@ -1118,8 +1138,11 @@ CODEX_DIARY_FANXIU_CONTEXT_FORCE_TERMS = (
     "daily_foundation",
     "洞天福地",
     "邮件_清理",
+    "邮件_选择性领取",
     "邮件清理",
     "mail.py",
+    "mail_selective_claim",
+    "mail-selective-claim",
     "mail-cleanup",
     "retry_after",
     "未确认到底",
@@ -2107,6 +2130,12 @@ def _build_codex_diary_category_scores(
         cluster_operation_hits = _count_codex_diary_term_hits(content_text, CODEX_DIARY_CODEYUN_CLUSTER_OPERATION_TERMS)
         if category_design_hits < 1 or cluster_operation_hits >= 2:
             _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 300 + codeyun_cluster_hits * 36)
+    codeyun_cluster_absolute_hits = _count_codex_diary_term_hits(
+        body_text,
+        CODEX_DIARY_CODEYUN_CLUSTER_ABSOLUTE_TERMS,
+    )
+    if codeyun_cluster_key and codeyun_cluster_absolute_hits:
+        _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 10_000)
 
     codeyun_general_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun综合", "codeyun/general"))
     codeyun_general_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_GENERAL_FORCE_TERMS)
@@ -2145,6 +2174,9 @@ def _build_codex_diary_category_scores(
             _add_codex_diary_category_score(combined_scores, pyxllib_key, 10_000)
         else:
             combined_scores.pop(pyxllib_key, None)
+    for item in _iter_unique_codex_diary_palette_items(palette_lookup):
+        if _is_codex_diary_hidden_ai_category_item(item):
+            combined_scores.pop(str(item.get("key") or "").strip(), None)
     return combined_scores
 
 
