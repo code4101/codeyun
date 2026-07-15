@@ -14,7 +14,7 @@ import requests
 from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_public_id
 from backend.core.notes.semantics import (

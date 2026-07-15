@@ -13,7 +13,10 @@ from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 def test_task_is_only_an_ordinary_cell_constructor() -> None:
     cell = FanxiuKernel(entry_id="entry").task("detect_scene", {"probe": True})
 
-    assert cell.code == "run_task_cell('detect_scene', {'probe': True})"
+    assert cell.code == (
+        "# fanxiu:managed-task-cell\n"
+        "run_task_cell('detect_scene', {'probe': True})"
+    )
     assert not hasattr(cell, "submit")
 
 
@@ -184,6 +187,10 @@ def test_formal_task_resets_to_stable_anchor_before_business_steps() -> None:
 
     class Runner:
         @staticmethod
+        def _normalize_runtime_task_result(value):
+            return str(value), ""
+
+        @staticmethod
         def _task_timeout_seconds(_payload):
             return 60.0
 
@@ -209,4 +216,62 @@ def test_formal_task_resets_to_stable_anchor_before_business_steps() -> None:
     binding.run = drain
 
     assert binding.run_task("test_atomic_job", {}) == "success"
+    assert events == [("reset", 34), "business", ("reset", 34)]
+
+
+def test_manual_check_task_keeps_human_inspection_scene() -> None:
+    from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
+    from backend.core.fanxiu.runtime.jupyter_kernel import FanxiuJupyterBinding
+
+    events = []
+
+    @register_fanxiu_data_annotation_task_cell(
+        "test_manual_check_job",
+        "测试人工检查作业",
+        scheduler_supported=True,
+    )
+    def handler(_runner, _ctx, _payload, _stop_event):
+        events.append("business")
+        return {"result": "manual_check_pending", "message": "请人工检查"}
+
+    class Runtime:
+        def goto_view(self, scene_id):
+            events.append(("reset", scene_id))
+            if False:
+                yield None
+
+    class Runner:
+        @staticmethod
+        def _normalize_runtime_task_result(value):
+            return str(value["result"]), str(value["message"])
+
+        @staticmethod
+        def _task_timeout_seconds(_payload):
+            return 60.0
+
+        @staticmethod
+        def _runtime_guard_override_from_payload(_payload):
+            return None
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.runtime = Runtime()
+    binding.runtime_ctx = {}
+    binding.stop_event = threading.Event()
+
+    def drain(value, **_kwargs):
+        if not isinstance(value, GeneratorType):
+            return value
+        while True:
+            try:
+                next(value)
+            except StopIteration as stop:
+                return stop.value
+
+    binding.run = drain
+
+    assert binding.run_task("test_manual_check_job", {}) == {
+        "result": "manual_check_pending",
+        "message": "请人工检查",
+    }
     assert events == [("reset", 34), "business"]

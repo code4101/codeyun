@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.models import SheetDocument
 
 

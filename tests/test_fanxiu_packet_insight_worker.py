@@ -346,7 +346,9 @@ def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monke
     assert result["ok"] is True
     assert result["mode"] == "packet_facts_catch_up"
     assert result["flush"]["flushed"] is True
-    assert sync_calls == [([str(pcap)], {"data_dir": tmp_path, "max_streams": 3})]
+    assert sync_calls == [
+        ([str(pcap)], {"data_dir": tmp_path, "max_streams": 3, "scan_existing_decoded": False})
+    ]
     assert result["sync"]["decoded_count"] == 1
     assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 2}
 

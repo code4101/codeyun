@@ -22,7 +22,7 @@ from pyxllib.prog import (
 )
 
 from backend.core.runtime.ocr_service import get_ocr_service_base_url, get_ocr_service_status, start_ocr_service
-from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.services.launcher import popen_python_script_service
 from backend.core.access.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
 

@@ -21,7 +21,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 
 
 INTERESTING_PROCESS_NAMES = {

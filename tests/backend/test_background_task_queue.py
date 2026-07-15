@@ -1,7 +1,7 @@
 import threading
 import time
 
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 
 
 def test_background_task_queue_runs_tasks_serially():

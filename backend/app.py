@@ -7,10 +7,6 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.core.runtime.process_launcher import install_child_process_no_window_default
-
-install_child_process_no_window_default()
-
 from backend.api.admin_feature_access import router as admin_feature_access_router
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
@@ -26,7 +22,8 @@ from backend.api.task_manager import (
 from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.access.auth import verify_api_token
-from backend.core.runtime.background_task_runner import init_background_task_runner, shutdown_background_task_runner
+from backend.core.jobs.scheduler import init_background_task_runner, shutdown_background_task_runner
+from backend.core.services.monitor import init_service_monitor, shutdown_service_monitor
 from backend.core.access.service_tokens import ensure_legacy_service_tokens
 from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
 from backend.core.runtime.management import (
@@ -88,6 +85,8 @@ async def lifespan(app: FastAPI):
         start_system_metrics_monitor()
     init_background_task_runner()
     if not settings.is_test:
+        init_service_monitor()
+    if not settings.is_test:
         local_service_results = ensure_local_builtin_services_on_startup()
         for service_key, result in local_service_results.items():
             if isinstance(result, dict) and result.get("status") == "error":
@@ -110,6 +109,7 @@ async def lifespan(app: FastAPI):
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
+    shutdown_service_monitor()
     shutdown_background_task_runner()
     await stop_task_manager_services()
 

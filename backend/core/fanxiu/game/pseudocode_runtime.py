@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.core.ai.chat import OllamaClientError, chat_with_provider
 from backend.core.fanxiu.runtime.mumu_control import get_fanxiu_mainwin_root
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 
 
 PSEUDOCODE_DIRNAME = "伪代码"

@@ -70,7 +70,7 @@ from backend.core.fanxiu.data_annotation.state import (
     write_data_annotation_json,
     write_data_annotation_world_facts,
 )
-from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.services.launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
 
 
@@ -1069,11 +1069,32 @@ def _run_scheduler_task_cell_and_record_terminal(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,
     )
+    finished = datetime.now()
+    # The task Cell publishes dynamic next/retry times to world facts while it
+    # runs.  Pull those facts into the freshly-read Scheduler state before the
+    # terminal write, otherwise a business-specific retry (for example a boss
+    # refresh CD) is silently replaced by the generic cooldown below.
+    sync_scheduler_tasks_from_world_facts(
+        tasks,
+        world_facts_path=world_facts_path,
+        now=finished,
+    )
     state_task = next((item for item in tasks if item.get("id") == task.get("id")), None) or dict(task)
     if state_task.get("attempt_id") != attempt_id:
         return result
     task_result, task_message = _task_result_from_cell(result)
-    finished = datetime.now()
+    synced_result = str(state_task.get("last_result") or "")
+    if (
+        task_result == "success"
+        and not str(result.get("result_text") or "").strip()
+        and synced_result in {"error", "stopped", "skipped", "unsupported"}
+        and state_task.get("retry_after")
+    ):
+        # A disconnected/reloaded HTTP caller can lose the execute_result while
+        # the task's runtime discovery has already been persisted.  Do not turn
+        # that authoritative retry fact into a generic Cell success.
+        task_result = synced_result
+        task_message = "Runtime 已记录业务重试时间"
     if task_result == "success":
         state_task["last_result"] = "success"
         state_task["last_run_at"] = started_text

@@ -13,7 +13,7 @@ import psutil
 from pyxllib.prog import process_runtime
 
 from backend.core.proxy_traffic_audit import get_proxy_traffic_audit_db_path, summarize_proxy_traffic
-from backend.core.runtime.process_launcher import popen_service
+from backend.core.services.launcher import popen_service
 from backend.core.settings import ROOT_DIR, get_settings
 
 

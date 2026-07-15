@@ -9,7 +9,7 @@ import traceback
 import uuid
 from typing import Any, Callable
 
-from backend.core.runtime.units import DEFAULT_JOB_RESOURCE_LOCK
+DEFAULT_JOB_RESOURCE_LOCK = "resource:job-default"
 
 
 @dataclass

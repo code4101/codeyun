@@ -21,7 +21,7 @@ from pyxllib.file.packetstream import (
 from backend.core.fanxiu_item_catalog import load_fanxiu_item_runtime_index
 from backend.core.fanxiu_lua_config import load_fanxiu_lang_map, parse_fanxiu_generated_lua_config
 from backend.core.fanxiu_resources import FanxiuResourceError, resolve_fanxiu_export_root
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 from backend.core.fanxiu_wiki import strip_fanxiu_rich_text
 
 

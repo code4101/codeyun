@@ -13,7 +13,7 @@ from sqlmodel import Session
 from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, IdleUntilNextWake, MemorySelector, NextWake, Root, Sequence, Status
 from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.attendance.course_completion import (
     COURSE_COMPLETION_RUN_TIME,
     COURSE_COMPLETION_TASK_KEY,
@@ -27,51 +27,17 @@ from backend.core.attendance.fanbei_schedule import (
     enqueue_fanbei_attendance_evening_steps,
     enqueue_fanbei_attendance_morning_steps,
 )
-from backend.core.fanxiu.runtime.slimming import (
-    FANXIU_SLIMMING_RUN_TIME,
-    FANXIU_SLIMMING_TASK_KEY,
-    enqueue_fanxiu_slimming,
-    is_fanxiu_slimming_allowed_host,
-)
-from backend.core.fanxiu_tianjige_crawler import (
-    FANXIU_TIANJIGE_QUIZ_RUN_TIME,
-    FANXIU_TIANJIGE_QUIZ_TASK_KEY,
-    FANXIU_TIANJIGE_QUIZ_WEEKDAYS,
-    enqueue_fanxiu_tianjige_quiz,
-    is_fanxiu_tianjige_quiz_allowed_host,
-)
-from backend.core.fanxiu_wechat_reminder import (
-    FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME,
-    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
-    FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
-    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
-    FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS,
-    enqueue_fanxiu_wechat_boss_reminder,
-    enqueue_fanxiu_wechat_shengzu_reminder,
-    is_fanxiu_wechat_reminder_allowed_host,
-)
-from backend.core.runtime.public_frontend_deploy import (
-    PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
-    run_public_frontend_deploy_check,
-)
-from backend.core.maintenance.idle_maintenance import (
-    IDLE_MAINTENANCE_INTERVAL_MINUTES,
-    IDLE_MAINTENANCE_TASK_KEY,
-    enqueue_idle_maintenance,
-)
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
 
 
 TaskAction = Callable[[], Any]
-AUTO_GIT_COMMIT_RUN_TIME = "00:15"
 CODEX_DIARY_RUN_TIME = "00:10"
 ATTENDANCE_SUMMARY_RUN_TIME = "00:00"
 MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
 MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
 MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT = 200
-METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
 MARKET_INTRADAY_PERSIST_TASK_KEY = "market_intraday_persist"
@@ -79,15 +45,11 @@ MARKET_INTRADAY_PERSIST_RUN_TIME = "16:30"
 HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
 HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
-CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY = "critical_command_services_check"
 NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 9
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 10
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
-    "auto_git_commit",
-    IDLE_MAINTENANCE_TASK_KEY,
-    "note_metadata_feedback_optimization",
     "codex_diary_yesterday_import",
     RUANYF_WEEKLY_TASK_NAME,
     "attendance_summary_monthly_templates",
@@ -99,10 +61,6 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
-    FANXIU_SLIMMING_TASK_KEY,
-    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
-    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
-    CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
 }
 
 
@@ -119,14 +77,7 @@ class BackgroundTaskSpec:
     default_visible: bool = True
 
 
-DEFAULT_ENABLED_TASK_KEYS: set[str] = {
-    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
-    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
-}
-FANXIU_WECHAT_REMINDER_TASK_KEYS = {
-    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
-    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
-}
+DEFAULT_ENABLED_TASK_KEYS: set[str] = set()
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -206,15 +157,6 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
-    if task_key == "auto_git_commit":
-        return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=30)
-    if task_key == IDLE_MAINTENANCE_TASK_KEY:
-        return _job_schedule_policy(
-            {"type": "interval", "minutes": IDLE_MAINTENANCE_INTERVAL_MINUTES, "anchor": "last_finish"},
-            retry_minutes=10,
-        )
-    if task_key == "note_metadata_feedback_optimization":
-        return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
         return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
     if task_key == RUANYF_WEEKLY_TASK_NAME:
@@ -232,8 +174,6 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_EVENING_RUN_TIME})
     if task_key == FANBEI_ATTENDANCE_MORNING_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_MORNING_RUN_TIME})
-    if task_key == "rime_config_sync":
-        return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"}, retry_minutes=10)
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
     if task_key == MARKET_INTRADAY_PERSIST_TASK_KEY:
@@ -242,32 +182,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
-    if task_key == CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY:
-        return _job_schedule_policy({"type": "interval", "minutes": 5, "anchor": "last_finish"}, retry_minutes=1)
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
-    if task_key == FANXIU_SLIMMING_TASK_KEY:
-        return _job_schedule_policy({"type": "daily", "time": FANXIU_SLIMMING_RUN_TIME}, retry_minutes=10)
-    if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY:
-        return _job_schedule_policy(
-            {
-                "type": "weekly",
-                "weekdays": list(FANXIU_TIANJIGE_QUIZ_WEEKDAYS),
-                "time": FANXIU_TIANJIGE_QUIZ_RUN_TIME,
-            },
-            retry_minutes=10,
-        )
-    if task_key == FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY:
-        return _job_schedule_policy({"type": "daily", "time": FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}, retry_minutes=10)
-    if task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY:
-        return _job_schedule_policy(
-            {
-                "type": "weekly",
-                "weekdays": list(FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS),
-                "time": FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
-            },
-            retry_minutes=10,
-        )
     return None
 
 
@@ -340,19 +256,7 @@ def _is_task_enabled(task_key: str) -> bool:
             return False
         row = session.get(AppSetting, _setting_key(task_key))
         if row and isinstance(row.value, dict):
-            if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
-                return False
-            if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
-                return False
-            if task_key in FANXIU_WECHAT_REMINDER_TASK_KEYS and not is_fanxiu_wechat_reminder_allowed_host():
-                return False
             return bool(row.value.get("enabled", False))
-        if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
-            return False
-        if task_key == FANXIU_TIANJIGE_QUIZ_TASK_KEY and not is_fanxiu_tianjige_quiz_allowed_host():
-            return False
-        if task_key in FANXIU_WECHAT_REMINDER_TASK_KEYS and not is_fanxiu_wechat_reminder_allowed_host():
-            return False
         if task_key in DEFAULT_ENABLED_TASK_KEYS:
             return True
         if task_key == "storage_analysis":
@@ -415,23 +319,6 @@ def _enqueue_attendance_summary() -> str:
     return task_id
 
 
-def _enqueue_note_metadata_feedback() -> str | None:
-    current_time = dt.datetime.now().time()
-    if not (dt.time(0, 0) <= current_time <= dt.time(5, 59, 59)):
-        return None
-    from backend.core.notes.metadata_feedback import create_note_metadata_feedback_optimization_run
-    from backend.db import engine
-
-    with Session(engine) as session:
-        run = create_note_metadata_feedback_optimization_run(
-            session,
-            trigger_reason="auto_threshold",
-            enqueue=True,
-            require_auto_conditions=True,
-        )
-        return run.queue_task_id if run is not None else None
-
-
 def _enqueue_codex_diary() -> str | None:
     from backend.api.notes import maybe_enqueue_codex_diary_yesterday_import
 
@@ -440,20 +327,6 @@ def _enqueue_codex_diary() -> str | None:
 
 def _enqueue_ruanyf_weekly_note() -> str | None:
     return enqueue_ruanyf_weekly_note_job()
-
-
-def _enqueue_auto_git() -> str | None:
-    from backend.core.ai.auto_git_commit import create_auto_git_commit_run, mark_stale_auto_git_commit_runs
-    from backend.db import engine
-    from backend.models import AutoGitCommitRun
-    from sqlmodel import select
-
-    with Session(engine) as session:
-        mark_stale_auto_git_commit_runs(session, queue_snapshot=background_task_queue.snapshot())
-        if session.exec(select(AutoGitCommitRun.id).where(AutoGitCommitRun.status.in_(["pending", "running"])).limit(1)).first():
-            return None
-        run = create_auto_git_commit_run(session, trigger_reason="scheduled", enqueue=True)
-        return run.queue_task_id
 
 
 def _run_media_sync_home_discovery_job() -> None:
@@ -477,23 +350,6 @@ def _run_media_sync_home_discovery_job() -> None:
 
 def _enqueue_media_sync_home_discovery() -> str | None:
     task_id, _ = background_task_queue.enqueue_once(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _run_media_sync_home_discovery_job)
-    return task_id
-
-
-def _run_rime_config_sync_job() -> None:
-    from scripts.sync_rime_config import sync_rime_config_to_target
-
-    result = sync_rime_config_to_target(skip_unavailable=True)
-    if result.get("skipped"):
-        print(f"Rime config sync skipped: {result.get('message')}")
-        return
-    sync_result = result.get("sync") if isinstance(result.get("sync"), dict) else {}
-    changed = ", ".join(sync_result.get("changed") or []) or "无"
-    print(f"Rime config sync completed: target={result.get('target')} changed={changed} deploy={result.get('deploy')}")
-
-
-def _enqueue_rime_config_sync() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once("rime_config_sync", _run_rime_config_sync_job)
     return task_id
 
 
@@ -580,11 +436,6 @@ def _enqueue_hk_connect_momentum_review() -> str | None:
     return task_id
 
 
-def _enqueue_public_frontend_deploy() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(PUBLIC_FRONTEND_DEPLOY_TASK_KEY, run_public_frontend_deploy_check)
-    return task_id
-
-
 def _enqueue_wechat_archive_incremental_sync() -> str | None:
     from backend.api.wechat_archive import _enqueue_wechat_db_live_sync
 
@@ -625,86 +476,7 @@ def _enqueue_note_sheet_page_snapshot_backfill() -> str | None:
     return task_id
 
 
-def _run_critical_command_services_check_job() -> dict[str, Any]:
-    from backend.core.runtime.management import ensure_local_critical_command_services
-
-    result = ensure_local_critical_command_services()
-    started_names = [str(item.get("name") or item.get("id")) for item in result.get("started") or [] if isinstance(item, dict)]
-    running_names = [
-        str(item.get("name") or item.get("id"))
-        for item in result.get("already_running") or []
-        if isinstance(item, dict)
-    ]
-    error_names = [str(item.get("name") or item.get("id")) for item in result.get("errors") or [] if isinstance(item, dict)]
-    print(
-        "Critical command services check completed: "
-        f"status={result.get('status')} "
-        f"started={started_names or 'none'} "
-        f"running={running_names or 'none'} "
-        f"errors={error_names or 'none'}"
-    )
-    return result
-
-
-def _enqueue_critical_command_services_check() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
-        _run_critical_command_services_check_job,
-    )
-    return task_id
-
-
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
-    BackgroundTaskSpec(
-        key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
-        title="公网前端发布",
-        category="部署",
-        description="每半小时检查前端源文件指纹，有变化才构建 dist；只有构建、上传和 yun 软链接切换全部成功后，公网才更新到新版本。",
-        schedule_label="未配置自动触发",
-        retry_label="失败后 10 分钟重试",
-        action=_enqueue_public_frontend_deploy,
-        manual_warning="会执行前端生产构建，并在成功后把 dist 上传到 yun 的静态站点目录；失败不会影响当前公网版本。",
-    ),
-    BackgroundTaskSpec(
-        key="auto_git_commit",
-        title="GitHub 项目自动提交",
-        category="Git",
-        description="凌晨检查已配置的 GitHub 项目仓库；当前默认覆盖 pyxllib、xlproject、codeyun。默认使用 DeepSeek v4-flash 生成提交信息，codeyun 只用轻量状态摘要，大变更自动 checkpoint。",
-        schedule_label=f"每天 {AUTO_GIT_COMMIT_RUN_TIME}",
-        retry_label="失败后 30 分钟重试",
-        action=_enqueue_auto_git,
-        manual_warning="会使用 DeepSeek v4-flash 生成提交信息，并提交已配置 GitHub 项目仓库的当前工作区变更；codeyun 超过阈值会直接 checkpoint。",
-    ),
-    BackgroundTaskSpec(
-        key=IDLE_MAINTENANCE_TASK_KEY,
-        title="空闲维护任务执行器",
-        category="AI",
-        description="每 5 分钟检测后台队列和仓库状态，空闲时从维护任务池挑选一个低风险、可验证、可独立执行的任务；当前支持 GitHub 项目自动提交委托、文档对齐扫描和代码瘦身候选扫描。",
-        schedule_label=f"每 {IDLE_MAINTENANCE_INTERVAL_MINUTES} 分钟检查",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_idle_maintenance,
-        manual_warning="默认任务较保守：扫描类任务只读生成报告；自动提交任务复用现有 GitHub 项目自动提交预检和提交逻辑。",
-    ),
-    BackgroundTaskSpec(
-        key=CRITICAL_COMMAND_SERVICES_CHECK_TASK_KEY,
-        title="常驻服务自检",
-        category="运维",
-        description="每 5 分钟检查本机 sync、frpc、nginx 等白名单常驻命令服务；发现关闭会按统一隐藏进程启动方式拉起，不会处理 capture 等非白名单任务。",
-        schedule_label="每 5 分钟检查",
-        retry_label="失败后 1 分钟重试",
-        action=_enqueue_critical_command_services_check,
-        manual_warning="会启动本机白名单常驻服务：sync/syncthing、frpc、nginx；不会停止用户应用，也不会重启 CodeYun。",
-    ),
-    BackgroundTaskSpec(
-        key="note_metadata_feedback_optimization",
-        title="元数据反馈优化",
-        category="AI",
-        description="凌晨窗口消费节点元数据修正样本，调用 Codex CLI 优化标题和元标签生成规则。",
-        schedule_label=f"每天 {METADATA_FEEDBACK_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
-        action=_enqueue_note_metadata_feedback,
-        manual_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
-    ),
     BackgroundTaskSpec(
         key="codex_diary_yesterday_import",
         title="Codex 星图日记",
@@ -776,16 +548,6 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="当前仅执行课程数据 step4-step6 空框架，不会修改考勤数据。",
     ),
     BackgroundTaskSpec(
-        key="rime_config_sync",
-        title="小狼毫自动同步",
-        category="输入法",
-        description="每小时拉取辅助设备输入历史，刷新主设备预测索引，并把主设备小狼毫共享配置增量同步到辅助设备。",
-        schedule_label="每小时检查",
-        retry_label="失败后 10 分钟重试",
-        action=_enqueue_rime_config_sync,
-        manual_warning="会刷新主设备小狼毫预测索引，并把共享配置写入默认辅助设备；有变化时会触发辅助设备重新部署小狼毫。",
-    ),
-    BackgroundTaskSpec(
         key=MARKET_QUOTE_REFRESH_TASK_KEY,
         title="持仓行情刷新",
         category="股票",
@@ -847,47 +609,6 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         action=_enqueue_note_sheet_page_snapshot_backfill,
         manual_warning="会读取历史普通分页表并写入 sheetpagesnapshot 缓存；跳过考勤表，不改原始表格数据。",
         default_visible=False,
-    ),
-    BackgroundTaskSpec(
-        key=FANXIU_SLIMMING_TASK_KEY,
-        title="凡修减肥巡检",
-        category="凡修",
-        description="每天在 mf 检查凡修同步数据目录和 fx 源码目录，调用 Codex CLI 安全清理 24 小时前的明确日志、缓存和生成物，并输出源码功能减肥候选报告。",
-        schedule_label=f"每天 {FANXIU_SLIMMING_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_fanxiu_slimming,
-        manual_warning="会调用 Codex CLI；只允许在 mf 执行。自动清理限 24 小时前的低风险日志/临时/生成物，源码功能只报告候选，不自动删除业务代码。",
-    ),
-    BackgroundTaskSpec(
-        key=FANXIU_TIANJIGE_QUIZ_TASK_KEY,
-        title="凡修天机阁抢答爬虫",
-        category="凡修",
-        description="在天机阁有奖竞答窗口调用 xlproject 的凡修爬虫脚本自动抢答；默认只允许在 mi15 执行。",
-        schedule_label="每周二/三/四 17:59:50",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_fanxiu_tianjige_quiz,
-        manual_warning="会调用 xlproject 虚拟环境执行凡修天机阁抢答爬虫；默认只允许在 mi15 执行。",
-        default_visible=False,
-    ),
-    BackgroundTaskSpec(
-        key=FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
-        title="凡修微信群 Boss 提醒",
-        category="凡修",
-        description="调用 xlproject 的凡修微信群提醒函数，只向三清道宗发送“@所有人 准备打魔狱封阵”。",
-        schedule_label=f"每天 {FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_fanxiu_wechat_boss_reminder,
-        manual_warning="会操作本机微信向三清道宗发送凡修提醒；默认只允许在 mi15 执行。",
-    ),
-    BackgroundTaskSpec(
-        key=FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
-        title="凡修微信群圣祖提醒",
-        category="凡修",
-        description="调用 xlproject 的凡修微信群提醒函数，只向三清道宗发送“打圣祖”。",
-        schedule_label=f"每周日 {FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_fanxiu_wechat_shengzu_reminder,
-        manual_warning="会操作本机微信向三清道宗发送凡修提醒；默认只允许在 mi15 执行。",
     ),
 )
 
@@ -970,7 +691,13 @@ class BackgroundTaskRunner:
         if blackboard.get("schedule_version") == BACKGROUND_TASK_SCHEDULE_STATE_VERSION:
             return
         nodes = runner.state.setdefault("nodes", {})
+        active_task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
         for path, state in list(nodes.items()):
+            if path.startswith("Root/MemorySelector/") and not any(
+                _path_matches_task(path, task_key) for task_key in active_task_keys
+            ):
+                nodes.pop(path, None)
+                continue
             if not isinstance(state, dict) or "next_run_at" not in state:
                 continue
             if any(_path_matches_task(path, task_key) for task_key in SCHEDULE_VERSIONED_TASK_KEYS):

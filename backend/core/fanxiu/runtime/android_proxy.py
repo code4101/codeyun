@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 
 
 DEFAULT_ADB_CANDIDATES = (

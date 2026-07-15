@@ -3,10 +3,9 @@ import time
 from backend.app import app
 from backend.core.auth import get_current_active_superuser
 from backend.core.attendance.course_completion import COURSE_COMPLETION_TASK_KEY
-from backend.core.background_task_queue import background_task_queue
-from backend.core.background_task_runner import set_background_task_deleted
-from backend.core.runtime.background_task_runner import NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
-from backend.core.fanxiu_tianjige_crawler import FANXIU_TIANJIGE_QUIZ_TASK_KEY
+from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.scheduler import set_background_task_deleted
+from backend.core.jobs.scheduler import NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
 from backend.models import User
 
 
@@ -31,36 +30,18 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
     payload = response.json()
     task_keys = {item["key"] for item in payload["tasks"]}
     assert {
-        "auto_git_commit",
-        "note_metadata_feedback_optimization",
         "codex_diary_yesterday_import",
         "ruanyf_weekly_note",
         "attendance_summary_monthly_templates",
         "media_sync_home_discovery",
         "attendance_fanbei_evening_steps",
         "attendance_fanbei_morning_steps",
-        "rime_config_sync",
         "market_quote_refresh",
         "storage_analysis",
-        "fanxiu_slimming",
     }.issubset(task_keys)
+    assert "auto_git_commit" not in task_keys
+    assert "rime_config_sync" not in task_keys
     assert "queue" in payload
-
-
-def test_admin_background_task_catalog_includes_optional_fanxiu_crawler(client):
-    app.dependency_overrides[get_current_active_superuser] = _admin_user
-    try:
-        response = client.get("/api/admin/background-tasks/catalog")
-    finally:
-        app.dependency_overrides.pop(get_current_active_superuser, None)
-
-    assert response.status_code == 200
-    payload = response.json()
-    items_by_key = {item["key"]: item for item in payload["items"]}
-    crawler_item = items_by_key[FANXIU_TIANJIGE_QUIZ_TASK_KEY]
-    assert crawler_item["title"] == "凡修天机阁抢答爬虫"
-    assert crawler_item["schedule_label"] == "每周二/三/四 17:59:50"
-    assert crawler_item["added"] is False
 
 
 def test_admin_background_task_catalog_includes_optional_attendance_course_completion(client):

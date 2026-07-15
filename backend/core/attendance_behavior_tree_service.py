@@ -13,7 +13,7 @@ from typing import Any
 import psutil
 
 from backend.core.device import process_candidates_by_name
-from backend.core.runtime.process_launcher import popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet
 from backend.core.settings import ROOT_DIR
 
 

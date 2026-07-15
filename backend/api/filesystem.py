@@ -46,7 +46,7 @@ from backend.core.ocr.preview import (
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.process_launcher import popen_service, python_service_command, run_quiet
+from backend.core.services.launcher import popen_service, python_service_command, run_quiet
 from backend.core.runtime.long_tasks import (
     LongTaskContext,
     LongTaskManager,

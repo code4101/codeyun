@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.subprocess_utils import (
+from backend.core.services._subprocess import (
     apply_node_windows_hide_env,
     apply_python_no_window_env,
     background_popen_kwargs,

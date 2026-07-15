@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -20,7 +21,7 @@ from backend.core.fanxiu.runtime.capture_runtime import (
     FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
     fanxiu_capture_runtime_service,
 )
-from backend.core.runtime.process_launcher import popen_python_module_service
+from backend.core.services.launcher import popen_python_module_service
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -28,6 +29,7 @@ FANXIU_PACKET_SERVICE_MODULE = "backend.services.fanxiu_packet_daemon"
 FANXIU_PACKET_SERVICE_TITLE = "凡修抓包"
 FANXIU_PACKET_SERVICE_COMMAND_SCHEMA_VERSION = 1
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
+_PACKET_SERVICE_COMMAND_ACTION_LOCK = threading.Lock()
 
 
 class FanxiuPacketServiceError(RuntimeError):
@@ -382,13 +384,23 @@ def _iter_pending_packet_service_commands() -> list[Path]:
 
 
 def _run_packet_service_command_action(action: str, *, reason: str) -> dict[str, Any]:
-    if action == "packet_facts_catch_up":
-        result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
-    elif action == "maintenance":
-        result = fanxiu_packet_insight_worker.maintenance_once()
-    else:
-        raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
-    return result if isinstance(result, dict) else {"ok": True}
+    if not _PACKET_SERVICE_COMMAND_ACTION_LOCK.acquire(blocking=False):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "packet_service_command_already_running",
+            "message": "抓包服务已有命令仍在执行，本次不再启动重复线程。",
+        }
+    try:
+        if action == "packet_facts_catch_up":
+            result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
+        elif action == "maintenance":
+            result = fanxiu_packet_insight_worker.maintenance_once()
+        else:
+            raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
+        return result if isinstance(result, dict) else {"ok": True}
+    finally:
+        _PACKET_SERVICE_COMMAND_ACTION_LOCK.release()
 
 
 def _process_packet_service_command(path: Path) -> dict[str, Any] | None:

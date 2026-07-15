@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from backend.core.runtime.process_launcher import install_child_process_no_window_default
+from backend.core.services.launcher import install_child_process_no_window_default
 from backend.core.runtime.proxy_traffic_audit import (
     DEFAULT_MIHOMO_PIPE,
     ProxyTrafficAuditCollector,

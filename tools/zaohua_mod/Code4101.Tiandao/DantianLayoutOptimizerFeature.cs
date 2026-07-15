@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using HarmonyLib;
@@ -78,6 +77,12 @@ namespace Code4101.Zaohua.Tiandao
     {
         internal BlendId Id;
         internal string Name;
+        internal bool IsArt;
+        internal bool IsMagic;
+        internal int Attribute = -1;
+        internal int Type;
+        internal bool IsAttackMagic;
+        internal bool IsDefenceMagic;
         internal int QuickKey;
         internal int CurrentOriginId;
         internal int CurrentRotation;
@@ -334,6 +339,12 @@ namespace Code4101.Zaohua.Tiandao
                 expected.TryGetValue(cell.id, out var expectedId) && Same(cell.artMagicId, expectedId));
         }
 
+        internal static bool MatchesCurrentLayout(DantianLayoutProblem problem, int[] placements)
+        {
+            var controller = Singleton<DantianController>.Instance;
+            return controller != null && MatchesCurrentLayout(controller, problem, placements);
+        }
+
         private static bool TryCreatePiece(TbActor actor, BlendId id,
             out DantianLayoutPiece piece)
         {
@@ -344,6 +355,12 @@ namespace Code4101.Zaohua.Tiandao
             var quickKey = 0;
             var originId = 0;
             var rotation = 0;
+            var isArt = false;
+            var isMagic = false;
+            var attribute = -1;
+            var type = 0;
+            var isAttackMagic = false;
+            var isDefenceMagic = false;
 
             if (TbArtImpl.IsArt(id))
             {
@@ -356,6 +373,9 @@ namespace Code4101.Zaohua.Tiandao
                 quickKey = sto.flag;
                 originId = sto.dantianStoId;
                 rotation = sto.rotate;
+                isArt = true;
+                attribute = cfg.attribute;
+                type = cfg.type;
             }
             else if (TbMagicImpl.IsMagic(id))
             {
@@ -368,6 +388,14 @@ namespace Code4101.Zaohua.Tiandao
                 quickKey = sto.flag;
                 originId = sto.dantianStoId;
                 rotation = sto.rotate;
+                isMagic = true;
+                attribute = cfg.attribute;
+                type = cfg.type;
+                var effectTypes = cfg.GetEffType;
+                isAttackMagic = effectTypes != null && effectTypes.Any(value =>
+                    string.Equals(value.ToString(), "Attack", StringComparison.Ordinal));
+                isDefenceMagic = effectTypes != null && effectTypes.Any(value =>
+                    string.Equals(value.ToString(), "Defence", StringComparison.Ordinal));
             }
             else if (TbSkillImpl.IsSkill(id))
             {
@@ -392,6 +420,12 @@ namespace Code4101.Zaohua.Tiandao
             {
                 Id = id,
                 Name = name,
+                IsArt = isArt,
+                IsMagic = isMagic,
+                Attribute = attribute,
+                Type = type,
+                IsAttackMagic = isAttackMagic,
+                IsDefenceMagic = isDefenceMagic,
                 QuickKey = quickKey,
                 CurrentOriginId = originId,
                 CurrentRotation = rotation,
@@ -556,26 +590,52 @@ namespace Code4101.Zaohua.Tiandao
                 yield break;
             }
             var seed = unchecked(BsSaveDataImpl.nowActor.randomSeed + runId * 7919);
-            var buildWatch = Stopwatch.StartNew();
-            if (!DantianCpSatBridge.TryBuildRequest(problem, currentScore, MaxMilliseconds, seed,
-                    out var request, out var modelError))
+            _solveCancellation?.Cancel();
+            _solveCancellation?.Dispose();
+            _solveCancellation = new CancellationTokenSource();
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-model " +
+                                  $"board={problem.Board.Count} pieces={problem.Pieces.Count} " +
+                                  $"rules={rules} placements={candidates}");
+            var buildTask = DantianCpSatBridge.BuildAsync(problem, currentScore,
+                MaxMilliseconds, seed, _solveCancellation.Token);
+            while (!buildTask.IsCompleted)
             {
+                yield return null;
+                if (_panel != null && _panel.gameObject.activeInHierarchy) continue;
+                _solveCancellation.Cancel();
+                yield break;
+            }
+            if (buildTask.IsCanceled)
+            {
+                yield return ShowTemporary("求解已取消");
+                yield break;
+            }
+            if (buildTask.IsFaulted)
+            {
+                var buildException = buildTask.Exception?.GetBaseException();
                 UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
-                                           $"model-failed {modelError}");
+                                           $"model-failed {buildException?.GetType().Name}: " +
+                                           $"{buildException?.Message}");
                 yield return ShowTemporary("规则建模失败");
                 yield break;
             }
+            var buildResult = buildTask.Result;
+            if (buildResult.Request == null)
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                           $"model-failed {buildResult.Error}");
+                yield return ShowTemporary("规则建模失败");
+                yield break;
+            }
+            var request = buildResult.Request;
             var jsonBytes = JsonUtility.ToJson(request).Length;
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-cpsat " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
-                                  $"placements={candidates} modelMs={buildWatch.ElapsedMilliseconds} " +
+                                  $"placements={candidates} modelMs={buildResult.ElapsedMilliseconds} " +
                                   $"jsonChars={jsonBytes} current={currentScore} " +
                                   $"currentRules=[{string.Join(", ", currentScore.RuleDetails)}] " +
                                   $"ruleDefinitions=[{DescribeRules(problem)}]");
 
-            _solveCancellation?.Cancel();
-            _solveCancellation?.Dispose();
-            _solveCancellation = new CancellationTokenSource();
             SetLabel("求解中…");
             var solveTask = DantianCpSatBridge.RunAsync(request, _solveCancellation.Token);
             while (!solveTask.IsCompleted)
@@ -625,6 +685,17 @@ namespace Code4101.Zaohua.Tiandao
             if (!bestScore.ExactBetterThan(currentScore))
             {
                 yield return ShowTemporary("暂未找到更优");
+                yield break;
+            }
+
+            // Modeling and solving are intentionally asynchronous.  Do not overwrite a layout
+            // the player changed while the worker was running; only the short native apply step
+            // is allowed to be atomic on the Unity main thread.
+            if (!DantianLayoutOptimizer.MatchesCurrentLayout(problem, current))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             "stale-solution current-layout-changed");
+                yield return ShowTemporary("布局已变化，请重试");
                 yield break;
             }
 

@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 from backend.core.settings import ROOT_DIR, get_settings
 
 

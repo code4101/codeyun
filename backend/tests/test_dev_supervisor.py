@@ -5,7 +5,6 @@ import os
 import pytest
 
 import dev
-from backend.core.runtime import uvicorn_hidden
 
 
 def test_dev_supervisor_defaults_to_outer_backend_reload(monkeypatch):
@@ -22,11 +21,6 @@ def test_dev_supervisor_rejects_uvicorn_reload_mode(monkeypatch):
 
     with pytest.raises(SystemExit):
         dev.parse_args(["--backend-reload-mode", "uvicorn"])
-
-
-def test_uvicorn_hidden_rejects_reload_arguments():
-    with pytest.raises(SystemExit):
-        uvicorn_hidden._parse_args(["--reload"])
 
 
 def test_windows_python_dev_runner_is_console_host(monkeypatch):

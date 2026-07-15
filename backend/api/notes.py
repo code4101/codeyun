@@ -59,7 +59,7 @@ from backend.core.ai.app_config import (
     AiAppConfigError,
     resolve_ai_app_runtime_config,
 )
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     list_user_ai_chat_custom_provider_configs,

@@ -22,7 +22,7 @@ from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.catalog.lua_config import load_fanxiu_lang_map, parse_fanxiu_generated_lua_config
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root
 from backend.core.fanxiu.catalog.wiki import strip_fanxiu_rich_text
-from backend.core.runtime.process_launcher import check_output_quiet
+from backend.core.services.launcher import check_output_quiet
 
 
 DOUPOTD_CATALOG_SCHEMA_VERSION = 2

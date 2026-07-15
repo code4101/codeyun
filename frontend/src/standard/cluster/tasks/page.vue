@@ -70,8 +70,7 @@ const getDeviceEntryMeta = (device: Device) => {
   }
 };
 const getLegacyCommandRuntimeKind = (task: Task): RuntimeKind => {
-  if (task.runtime_kind === 'job' || task.runtime_kind === 'service') return task.runtime_kind;
-  return task.schedule || task.schedule_policy ? 'job' : 'service';
+  return 'service';
 };
 const isLoopbackHost = (host: string) => {
   const normalized = host.trim().toLowerCase();
@@ -1305,11 +1304,6 @@ const handleAddBuiltinJobType = async (item: RuntimeJobCatalogItem) => {
     }
 };
 
-const openCustomJobDialog = () => {
-    jobCatalogDialogVisible.value = false;
-    openCreateDialog('job');
-};
-
 const openEditDialog = (item: RuntimeItem) => {
     if (item.source !== 'command') return;
 
@@ -2239,7 +2233,6 @@ onUnmounted(() => {
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="jobCatalogDialogVisible = false">关闭</el-button>
-          <el-button @click="openCustomJobDialog">自定义命令</el-button>
         </span>
       </template>
     </el-dialog>

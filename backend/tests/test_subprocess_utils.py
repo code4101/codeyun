@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 
-from backend.core.runtime import subprocess_utils
+from backend.core.services import _subprocess as subprocess_utils
 
 
 def test_hidden_subprocess_kwargs_hide_windows_console(monkeypatch):
@@ -210,7 +210,7 @@ def test_popen_background_defaults_to_devnull_and_hidden(monkeypatch):
 
 
 def test_apply_python_no_window_env_prepends_sitecustomize(monkeypatch, tmp_path):
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
     existing_path = str(tmp_path / "existing")
@@ -228,7 +228,7 @@ def test_apply_python_no_window_env_prepends_sitecustomize(monkeypatch, tmp_path
 
 
 def test_apply_python_no_window_env_is_idempotent(monkeypatch, tmp_path):
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
     env = {"PYTHONPATH": str(sitecustomize_dir)}
@@ -242,7 +242,7 @@ def test_apply_python_no_window_env_is_idempotent(monkeypatch, tmp_path):
 
 def test_popen_python_script_background_injects_python_env(monkeypatch, tmp_path):
     calls = []
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
 
@@ -263,7 +263,7 @@ def test_popen_python_script_background_injects_python_env(monkeypatch, tmp_path
 
 def test_popen_background_injects_python_env_for_python_command(monkeypatch, tmp_path):
     calls = []
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
     pythonw = tmp_path / "pythonw.exe"
@@ -286,7 +286,7 @@ def test_popen_background_injects_python_env_for_python_command(monkeypatch, tmp
 
 def test_popen_background_injects_managed_env_for_non_python_command(monkeypatch, tmp_path):
     calls = []
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
     preload = tmp_path / "scripts" / "node_windows_hide_child_processes.cjs"
@@ -311,7 +311,7 @@ def test_popen_background_injects_managed_env_for_non_python_command(monkeypatch
 
 def test_run_hidden_injects_python_env_for_python_command(monkeypatch, tmp_path):
     calls = []
-    sitecustomize_dir = tmp_path / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    sitecustomize_dir = tmp_path / "backend" / "core" / "services" / "no_window_sitecustomize"
     sitecustomize_dir.mkdir(parents=True)
     (sitecustomize_dir / "sitecustomize.py").write_text("", encoding="utf-8")
     python = tmp_path / "python.exe"

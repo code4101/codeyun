@@ -13,7 +13,7 @@ from typing import Any
 from pyxllib.file.game_assets import extract_wwise_wem_entries, parse_wwise_bnk_chunks, parse_wwise_didx_entries
 
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root, resolve_fanxiu_resource_root
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 
 
 FANXIU_VGMSTREAM_CLI_ENV = "FANXIU_VGMSTREAM_CLI"

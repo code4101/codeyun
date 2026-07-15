@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if os.fspath(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, os.fspath(PROJECT_ROOT))
 
-from backend.core.runtime.process_launcher import popen_service, resolve_pythonw
+from backend.core.services.launcher import popen_service, resolve_pythonw
 
 try:
     import psutil
@@ -162,7 +162,7 @@ def _matches_codeyun_dev(proc: Any) -> bool:
         return True
     if name in {"uv.exe", "uv"} and "run" in cmdline and "dev.py" in cmdline:
         return True
-    if "uvicorn" in cmdline and ("backend.app:app" in cmdline or "backend.core.runtime.uvicorn_hidden" in cmdline):
+    if "uvicorn" in cmdline and "backend.app:app" in cmdline:
         return True
     if name in {"node.exe", "node"} and "vite" in cmdline and " build" not in cmdline:
         return True
@@ -282,7 +282,7 @@ def _dev_process_role(item: dict[str, Any]) -> str:
     cmdline = str(item.get("cmdline") or "").lower()
     if "dev.py" in cmdline:
         return "dev_runner"
-    if "uvicorn" in cmdline or "backend.core.runtime.uvicorn_hidden" in cmdline or "backend.app:app" in cmdline:
+    if "uvicorn" in cmdline or "backend.app:app" in cmdline:
         return "backend"
     if name in {"node.exe", "node"} and "vite" in cmdline and " build" not in cmdline:
         return "frontend"

@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.process_launcher import apply_background_node_env, node_script_command, run_quiet
+from backend.core.services.launcher import apply_background_node_env, node_script_command, run_quiet
 from backend.core.settings import ROOT_DIR, get_settings
 
 

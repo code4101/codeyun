@@ -366,7 +366,7 @@ def run_fanxiu_slimming_worker(
 
 
 def enqueue_fanxiu_slimming() -> str | None:
-    from backend.core.runtime.background_task_queue import background_task_queue
+    from backend.core.jobs.executor import background_task_queue
 
     task_id, _ = background_task_queue.enqueue_once(FANXIU_SLIMMING_TASK_KEY, run_fanxiu_slimming_worker)
     return task_id

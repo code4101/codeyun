@@ -422,10 +422,10 @@ namespace Code4101.Zaohua.Tiandao
 
             // 当前方案的低频管理动作集中放在标题右侧；下拉列表只负责选择方案。
             _loadoutRenameButton = CreateLoadoutActionButton(controlParent, triggerRect,
-                "Code4101LoadoutRename", "改名", 114f, false);
+                "Code4101LoadoutRename", "改名", 94f, false);
             _loadoutRenameButton.onClick.AddListener(BeginActiveLoadoutRename);
             _loadoutDeleteButton = CreateLoadoutActionButton(controlParent, triggerRect,
-                "Code4101LoadoutDelete", "删除", 178f, true);
+                "Code4101LoadoutDelete", "删除", 154f, true);
             _loadoutDeleteLabel = _loadoutDeleteButton.GetComponentInChildren<TextPro>();
             _loadoutDeleteButton.onClick.AddListener(DeleteActiveLoadout);
             Debug.Log($"[Code4101 Tiandao][LoadoutUI] management-actions-created " +
