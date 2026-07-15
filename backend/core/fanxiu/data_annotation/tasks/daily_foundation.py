@@ -4616,12 +4616,12 @@ class DailyFoundationTaskMixin:
         payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_灵脉资产树路径，无法执行作业")
+            raise RuntimeError("缺少灵脉_座位资产树路径，无法执行作业")
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         if not isinstance(images.get(285), dict):
-            raise RuntimeError("日常_灵脉：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
+            raise RuntimeError("灵脉_座位：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
 
-        task_label = "日常_灵脉"
+        task_label = "灵脉_座位"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, score, frame = runtime.current_scene([318, 305, 288, 286, 285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
@@ -4687,9 +4687,16 @@ class DailyFoundationTaskMixin:
         #285 进入探索并一次性选择最大体力，后者寻找空位并占领聚灵位。二者
         只复用 ``#34 -> #69 -> #285`` 的进入能力，进入 #285 后必须分流。
 
-        当前已知流程实现到 ``#314[确定]``。该点击后的真实落点和最终完成证据
-        尚未由游戏验证，因此本阶段返回 ``manual_check_pending``，不能写成
-        工程作业成功。
+        ``#314[确定]`` 后可能短暂出现有时效性的 #315「继续」，也可能因为
+        自动消失或识别时机而直接回到 #285。#315 不是必经锚点：检测到就尝试
+        点击，未检测到或点击前已消失则等待 #285。业务回到 #285 后返回成功，
+        正式 task cell 再由通用稳定锚点收尾回到 #34。
+
+        截至 2026-07-15，这条路径已按真实现场逐步确认并完成代码/单元测试闭环，
+        但尚未经过一次由 Scheduler 从 #34 发起、最终回到 #34 的无人值守实战。
+        2026-07-16 21:30 的首次工程运行属于验收轮：若失败，应保留 Runtime
+        日志与真实画面作为修正证据；下一次执行仍从稳定起点整单重跑，不承接
+        #313/#314/#315 等中间状态。
         """
         payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
         outside_window_next_time = self._runtime_daily_window_next_time(
@@ -4715,8 +4722,10 @@ class DailyFoundationTaskMixin:
 
         task_label = "灵脉_清体力"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([314, 313, 312, 285, 69, 34], update=True)
+        scene_id, score, frame = runtime.current_scene([315, 314, 313, 312, 285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 315:
+            return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
         if scene_id == 314:
             return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
         if scene_id == 313:
@@ -4799,9 +4808,45 @@ class DailyFoundationTaskMixin:
         self._log("action", f"{task_label}：点击 #314「滚动条」右端点选择最大体力")
         runtime.click_frame_point(314, right_x, center_y)
         yield from runtime.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
-        yield from runtime.wait_click(314, "确定")
-        self._log("warning", f"{task_label}：已点击 #314「确定」，最终落点与完成证据仍待真实游戏补充")
-        return "manual_check_pending"
+        landing = yield from runtime.wait_click_then_view(
+            314,
+            "确定",
+            [315, 285],
+            timeout=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
+            label=f"{task_label}：等待 #314 确定后的 #315 或 #285",
+        )
+        if int(getattr(landing, "id", landing) or 0) == 315:
+            return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
+        self._log("success", f"{task_label}：#315 未出现或已自动消失，已回到 #285 造化灵脉")
+        return "success"
+
+    def _continue_daily_lingmai_clear_from_transient(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        """尽快消费有时效性的 #315；错过它时仍以回到 #285 为完成。"""
+        self._log("action", f"{task_label}：检测到有时效性的 #315，尝试点击「继续」")
+        try:
+            yield from runtime.wait_click_then_view(
+                315,
+                "继续",
+                285,
+                settle_seconds=0.2,
+                timeout=float(payload.get("lingmai_transient_click_timeout_seconds") or 2.0),
+                label=f"{task_label}：点击 #315 继续后等待 #285",
+            )
+        except TimeoutError:
+            self._log("detail", f"{task_label}：#315 可能已自动消失，直接确认是否回到 #285")
+            yield from runtime.wait_view(
+                285,
+                timeout=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
+                label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #285",
+            )
+        self._log("success", f"{task_label}：体力已清理并回到 #285 造化灵脉")
+        return "success"
 
     def _execute_daily_dongtian_clear_task(
         self,
@@ -5302,10 +5347,10 @@ class DailyFoundationTaskMixin:
             str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai"),
             retry_after,
             task_type="daily_lingmai",
-            label="日常_灵脉",
+            label="灵脉_座位",
             last_result="skipped",
         )
-        self._log("skip", f"日常_灵脉：{message}，{retry_after} 重试")
+        self._log("skip", f"灵脉_座位：{message}，{retry_after} 重试")
         return retry_after
 
     def _daily_lingmai_slot_candidates(self, lines: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -480,7 +480,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_dongtian_clear_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_task_cell("daily_lingmai", "日常_灵脉", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell("daily_lingmai", "灵脉_座位", scheduler_supported=True)
     def _run_data_annotation_daily_lingmai_task_cell(
         runner: Any,
         ctx: dict[str, Any],

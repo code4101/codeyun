@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\DantianPriorityOrder.cs" Link="DantianPriorityOrder.cs" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <Reference Include="UnityEngine"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>

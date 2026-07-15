@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using Google.OrTools.Sat;
 using Newtonsoft.Json;
+using Code4101.Dantian.Common;
 
 namespace Code4101.DantianSolver
 {
@@ -19,6 +20,7 @@ namespace Code4101.DantianSolver
         public int[] cellY = Array.Empty<int>();
         public int[] currentPlacements = Array.Empty<int>();
         public int[] expectedCurrentMultipliers = Array.Empty<int>();
+        public int[] priorityOrder = Array.Empty<int>();
         public Piece[] pieces = Array.Empty<Piece>();
         public Rule[] rules = Array.Empty<Rule>();
     }
@@ -36,6 +38,7 @@ namespace Code4101.DantianSolver
 
     internal sealed class Rule
     {
+        public string key = null;
         public string name = null;
         public int sourcePiece = 0;
         public int maxMultiplier = 0;
@@ -73,6 +76,7 @@ namespace Code4101.DantianSolver
         public string error;
         public int[] placements;
         public int[] multipliers;
+        public int[] targetCounts;
         public long product;
         public int total;
         public double objective;
@@ -80,14 +84,22 @@ namespace Code4101.DantianSolver
         public double elapsedSeconds;
         public double modelBuildSeconds;
         public double totalSeconds;
+        public string phaseOneStatus;
+        public double phaseOneSeconds;
+        public string exactStatus;
+        public double exactSeconds;
+        public string resultSource;
+        public int encodedPriorityCount;
     }
 
     internal static class Program
     {
-        private static int Main()
+        private static int Main(string[] args)
         {
             Console.InputEncoding = Encoding.UTF8;
             Console.OutputEncoding = Encoding.UTF8;
+            if (args.Length == 1 && args[0] == "--self-test-priority-order")
+                return SelfTestPriorityOrder();
             try
             {
                 var json = Console.In.ReadToEnd();
@@ -118,6 +130,23 @@ namespace Code4101.DantianSolver
             }
         }
 
+        private static int SelfTestPriorityOrder()
+        {
+            var saved = new[] { "a", "b", "c" };
+            var available = DantianPriorityOrder.ForAvailable(saved, new[] { "c", "a", "d" });
+            if (!available.SequenceEqual(new[] { "a", "c", "d" }))
+                return WriteError("priority available merge failed");
+            var persisted = DantianPriorityOrder.ForSave(saved, new[] { "c", "a", "d" });
+            if (!persisted.SequenceEqual(new[] { "c", "a", "d", "b" }))
+                return WriteError("priority save merge failed");
+            var reloaded = DantianPriorityOrder.ForAvailable(persisted,
+                new[] { "a", "c", "d", "e" });
+            if (!reloaded.SequenceEqual(new[] { "c", "a", "d", "e" }))
+                return WriteError("priority reload/new append failed");
+            Console.Out.Write("priority order self-test passed");
+            return 0;
+        }
+
         private static int WriteError(string error)
         {
             Console.Out.Write(JsonConvert.SerializeObject(new Response
@@ -146,6 +175,7 @@ namespace Code4101.DantianSolver
         {
             internal int[] Placements;
             internal int[] Multipliers;
+            internal int[] TargetCounts;
             internal int Active;
             internal double Balance;
             internal int Total;
@@ -154,8 +184,16 @@ namespace Code4101.DantianSolver
         private static Response SolveShapeModel(Request request)
         {
             var watch = Stopwatch.StartNew();
-            var heuristic = ImprovePlacementHint(request,
-                Math.Min(1500, Math.Max(300, request.timeLimitMs / 10)));
+            var placementCount = request.pieces.Sum(piece => piece.placements.Length);
+            var isLargeLayout = request.pieces.Length >= 20 || placementCount >= 5000;
+            // 实盘大模型中 CP-SAT 在数十秒内通常仍为 UNKNOWN；可行解和质量提升
+            // 实际来自结构化邻域搜索。因此把主要预算交给能持续产出改进的启发式，
+            // 只保留一个短 CP 增益窗口。小模型仍让 CP-SAT 获取主要预算，以便
+            // 快速求得并证明最优解。
+            var heuristicMilliseconds = isLargeLayout
+                ? Math.Max(300, request.timeLimitMs - 900)
+                : Math.Min(1500, Math.Max(300, request.timeLimitMs / 10));
+            var heuristic = ImprovePlacementHint(request, heuristicMilliseconds);
             request.currentPlacements = heuristic.Placements.ToArray();
             var model = new CpModel();
             var shapes = new ShapeVars[request.pieces.Length];
@@ -202,9 +240,13 @@ namespace Code4101.DantianSolver
 
             var hitCache = new Dictionary<string, BoolVar>();
             var multipliers = new List<IntVar>();
+            var targetCounts = new List<IntVar>();
+            var benefitScores = new List<IntVar>();
+            var benefitTotals = new List<IntVar>();
             var balancedScores = new List<IntVar>();
             var activeRules = new List<BoolVar>();
             var currentMultipliers = new List<int>();
+            var currentTargetCounts = new List<int>();
             var totalUpper = 0;
             for (var ruleIndex = 0; ruleIndex < request.rules.Length; ruleIndex++)
             {
@@ -235,6 +277,7 @@ namespace Code4101.DantianSolver
                 model.AddHint(raw, currentRaw);
                 BoolVar gate;
                 var currentGate = rule.gateSelf;
+                var gateHitVariables = new List<BoolVar>();
                 if (rule.gateSelf)
                 {
                     gate = model.NewBoolVar($"r{ruleIndex}_gate_self");
@@ -251,11 +294,26 @@ namespace Code4101.DantianSolver
                             rule.gateGeometry);
                         model.AddHint(hit, currentHit ? 1 : 0);
                         currentGate |= currentHit;
+                        gateHitVariables.Add(hit);
                         gateHits.Add(hit);
                     }
                     gate = Or(model, gateHits, $"r{ruleIndex}_gate");
                 }
                 model.AddHint(gate, currentGate ? 1 : 0);
+                var targetUpper = rule.gateSelf
+                    ? 1
+                    : (rule.gateTargetPieces ?? Array.Empty<int>()).Length;
+                var targetCount = model.NewIntVar(0, targetUpper,
+                    $"r{ruleIndex}_target_count");
+                if (rule.gateSelf) model.Add(targetCount == 1);
+                else model.Add(targetCount == LinearExpr.Sum(gateHitVariables));
+                var currentTargetCount = rule.gateSelf
+                    ? 1
+                    : (rule.gateTargetPieces ?? Array.Empty<int>()).Count(target =>
+                        CurrentShapeHit(request, rule.sourcePiece, target, rule.gateGeometry));
+                model.AddHint(targetCount, currentTargetCount);
+                targetCounts.Add(targetCount);
+                currentTargetCounts.Add(currentTargetCount);
                 var multiplier = model.NewIntVar(0, rule.maxMultiplier, $"r{ruleIndex}_mul");
                 model.Add(multiplier <= raw);
                 model.Add(multiplier <= rule.maxMultiplier * gate);
@@ -276,105 +334,134 @@ namespace Code4101.DantianSolver
                 model.AddElement(multiplier, scoreTable, balancedScore);
                 model.AddHint(balancedScore, scoreTable[currentMultiplier]);
                 balancedScores.Add(balancedScore);
-                totalUpper += rule.maxMultiplier;
+                var benefitScore = model.NewIntVar(0, scoreTable.Last() * targetUpper,
+                    $"r{ruleIndex}_benefit_score");
+                model.AddMultiplicationEquality(benefitScore,
+                    new IntVar[] { balancedScore, targetCount });
+                model.AddHint(benefitScore, scoreTable[currentMultiplier] * currentTargetCount);
+                benefitScores.Add(benefitScore);
+                var benefitTotal = model.NewIntVar(0, rule.maxMultiplier * targetUpper,
+                    $"r{ruleIndex}_benefit_total");
+                model.AddMultiplicationEquality(benefitTotal,
+                    new IntVar[] { multiplier, targetCount });
+                model.AddHint(benefitTotal, currentMultiplier * currentTargetCount);
+                benefitTotals.Add(benefitTotal);
+                totalUpper += rule.maxMultiplier * targetUpper;
             }
 
             var total = model.NewIntVar(0, totalUpper, "total");
-            model.Add(total == LinearExpr.Sum(multipliers));
-            model.AddHint(total, currentMultipliers.Sum());
-            // 精确目标与游戏侧的比较口径保持一致：先最大化各规则 (倍率+1) 的乘积
-            // （用对数和表示），再比较总倍率。激活规则数只用于打破完全同分，不能反过来
-            // 强迫布局追求“亮灯数量”。
-            var activeTieWeight = request.rules.Length + 1L;
-            var balanceWeight = (totalUpper + 1L) * activeTieWeight;
-            var exactObjective = LinearExpr.Sum(balancedScores) * balanceWeight +
-                                 total * activeTieWeight + LinearExpr.Sum(activeRules);
-
-            // 第一阶段只负责开路：激活更多规则能显著减少 CP-SAT 在全零平台上的盲搜。
-            // 第二阶段会换回 exactObjective，因此这不是最终目标约束。
-            var phaseOneTieWeight = totalUpper + 1L;
-            var maximumBalancedScore = request.rules.Sum(rule =>
-                (long)Math.Round(Math.Log(1d + rule.maxMultiplier) * 1000000d));
-            var phaseOneActiveWeight = (maximumBalancedScore + 1L) * phaseOneTieWeight;
-            model.Maximize(LinearExpr.Sum(activeRules) * phaseOneActiveWeight +
-                           LinearExpr.Sum(balancedScores) * phaseOneTieWeight + total);
+            model.Add(total == LinearExpr.Sum(benefitTotals));
+            model.AddHint(total, currentMultipliers.Zip(currentTargetCounts,
+                (multiplier, targets) => multiplier * targets).Sum());
+            // 用户只提供规则顺序；模型根据每条规则的严格上界生成混合进制系数。
+            // 因而前一条提高 1，必然胜过后续所有规则与最终总收益的总和。
+            var priorityOrder = NormalizePriorityOrder(request);
+            var encodedPriorityCount = 0;
+            var encodedRange = 1L;
+            for (var position = 0; position < priorityOrder.Length; position++)
+            {
+                var ruleIndex = priorityOrder[position];
+                var rule = request.rules[ruleIndex];
+                var targetUpper = rule.gateSelf
+                    ? 1L
+                    : (rule.gateTargetPieces ?? Array.Empty<int>()).LongLength;
+                var upper = checked((long)rule.maxMultiplier * targetUpper);
+                if (encodedRange > long.MaxValue / (upper + 1L)) break;
+                encodedRange *= upper + 1L;
+                encodedPriorityCount++;
+            }
+            // CP-SAT 使用可安全编码的最高优先级前缀。完整顺序仍由启发式与最终
+            // BetterExact 比较，因此尾部不会反向覆盖任何更高优先级结果。
+            LinearExpr exactObjective = total * 0L;
+            var scale = 1L;
+            for (var position = encodedPriorityCount - 1; position >= 0; position--)
+            {
+                var ruleIndex = priorityOrder[position];
+                exactObjective += benefitTotals[ruleIndex] * scale;
+                var rule = request.rules[ruleIndex];
+                var targetUpper = rule.gateSelf
+                    ? 1L
+                    : (rule.gateTargetPieces ?? Array.Empty<int>()).LongLength;
+                var upper = checked((long)rule.maxMultiplier * targetUpper);
+                scale *= upper + 1L;
+            }
+            model.Maximize(exactObjective);
 
             var modelBuildSeconds = watch.Elapsed.TotalSeconds;
             var remainingSeconds = Math.Max(0.1,
                 request.timeLimitMs / 1000d - modelBuildSeconds);
-            var phaseOneSeconds = remainingSeconds <= 14d
-                ? remainingSeconds
-                : Math.Min(12d, remainingSeconds * 0.7d);
+            var phaseOneSeconds = remainingSeconds;
             var phaseOneSolver = new CpSolver
             {
                 StringParameters =
                     $"max_time_in_seconds:{phaseOneSeconds:0.###} " +
-                    $"random_seed:{request.seed} num_search_workers:8 log_search_progress:false",
+                    $"random_seed:{request.seed} num_search_workers:8 " +
+                    "search_branching:HINT_SEARCH log_search_progress:false",
             };
             var phaseOneStatus = phaseOneSolver.Solve(model);
             var phaseOneFeasible = phaseOneStatus == CpSolverStatus.Feasible ||
                                    phaseOneStatus == CpSolverStatus.Optimal;
-            var phaseOnePlacements = phaseOneFeasible
-                ? shapes.Select(shape => (int)phaseOneSolver.Value(shape.Placement)).ToArray()
-                : heuristic.Placements;
-            var phaseOneMultipliers = phaseOneFeasible
-                ? multipliers.Select(variable => (int)phaseOneSolver.Value(variable)).ToArray()
-                : heuristic.Multipliers;
-
-            CpSolver exactSolver = null;
-            var exactStatus = CpSolverStatus.Unknown;
-            var exactSeconds = Math.Max(0d, remainingSeconds - phaseOneSolver.WallTime());
-            if (exactSeconds >= 0.5d)
+            var phaseOnePlacements = heuristic.Placements;
+            var phaseOneMultipliers = heuristic.Multipliers;
+            var phaseOneTargetCounts = heuristic.TargetCounts;
+            var phaseOneImproved = false;
+            if (phaseOneFeasible)
             {
-                model.Maximize(exactObjective);
-                model.ClearHints();
-                for (var piece = 0; piece < shapes.Length; piece++)
-                    model.AddHint(shapes[piece].Placement, phaseOnePlacements[piece]);
-                exactSolver = new CpSolver
-                {
-                    StringParameters =
-                        $"max_time_in_seconds:{exactSeconds:0.###} " +
-                        $"random_seed:{request.seed + 1} num_search_workers:8 log_search_progress:false",
-                };
-                exactStatus = exactSolver.Solve(model);
-            }
-            var exactFeasible = exactStatus == CpSolverStatus.Feasible ||
-                                exactStatus == CpSolverStatus.Optimal;
-            var chosenPlacements = phaseOnePlacements;
-            var chosenMultipliers = phaseOneMultipliers;
-            if (exactFeasible)
-            {
+                var candidatePlacements = shapes
+                    .Select(shape => (int)phaseOneSolver.Value(shape.Placement)).ToArray();
                 var candidateMultipliers = multipliers
-                    .Select(variable => (int)exactSolver.Value(variable)).ToArray();
-                if (BetterExact(candidateMultipliers, chosenMultipliers))
+                    .Select(variable => (int)phaseOneSolver.Value(variable)).ToArray();
+                var candidateTargets = targetCounts
+                    .Select(variable => (int)phaseOneSolver.Value(variable)).ToArray();
+                if (BetterExact(request, candidateMultipliers, candidateTargets,
+                        phaseOneMultipliers, phaseOneTargetCounts))
                 {
-                    chosenPlacements = shapes
-                        .Select(shape => (int)exactSolver.Value(shape.Placement)).ToArray();
-                    chosenMultipliers = candidateMultipliers;
+                    phaseOnePlacements = candidatePlacements;
+                    phaseOneMultipliers = candidateMultipliers;
+                    phaseOneTargetCounts = candidateTargets;
+                    phaseOneImproved = true;
                 }
             }
+
+            var chosenPlacements = phaseOnePlacements;
+            var chosenMultipliers = phaseOneMultipliers;
+            var chosenTargetCounts = phaseOneTargetCounts;
+            var resultSource = phaseOneImproved ? "phase-one" : "heuristic";
             var response = new Response
             {
-                status = exactStatus == CpSolverStatus.Optimal ? "OPTIMAL" : "FEASIBLE",
-                objective = exactFeasible ? exactSolver.ObjectiveValue : 0d,
-                bestBound = exactSolver?.BestObjectiveBound ?? 0d,
-                elapsedSeconds = phaseOneSolver.WallTime() + (exactSolver?.WallTime() ?? 0d),
+                status = phaseOneStatus == CpSolverStatus.Optimal ? "OPTIMAL" : "FEASIBLE",
+                objective = phaseOneFeasible ? phaseOneSolver.ObjectiveValue : 0d,
+                bestBound = phaseOneFeasible ? phaseOneSolver.BestObjectiveBound : 0d,
+                elapsedSeconds = phaseOneSolver.WallTime(),
                 modelBuildSeconds = modelBuildSeconds,
                 totalSeconds = watch.Elapsed.TotalSeconds,
+                phaseOneStatus = phaseOneStatus.ToString().ToUpperInvariant(),
+                phaseOneSeconds = phaseOneSolver.WallTime(),
+                exactStatus = "NOT_RUN",
+                exactSeconds = 0d,
+                resultSource = resultSource,
+                encodedPriorityCount = encodedPriorityCount,
                 placements = chosenPlacements,
                 multipliers = chosenMultipliers,
-                product = Product(chosenMultipliers),
-                total = chosenMultipliers.Sum(),
+                targetCounts = chosenTargetCounts,
+                product = BenefitProduct(chosenMultipliers, chosenTargetCounts),
+                total = chosenMultipliers.Zip(chosenTargetCounts,
+                    (multiplier, targets) => multiplier * targets).Sum(),
             };
             return response;
         }
 
-        private static bool BetterExact(int[] left, int[] right)
+        private static bool BetterExact(Request request, int[] left, int[] leftTargets,
+            int[] right, int[] rightTargets)
         {
-            var leftProduct = Product(left);
-            var rightProduct = Product(right);
-            if (leftProduct != rightProduct) return leftProduct > rightProduct;
-            return left.Sum() > right.Sum();
+            foreach (var ruleIndex in NormalizePriorityOrder(request))
+            {
+                var leftBenefit = left[ruleIndex] * leftTargets[ruleIndex];
+                var rightBenefit = right[ruleIndex] * rightTargets[ruleIndex];
+                if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
+            }
+            return left.Zip(leftTargets, (value, targets) => value * targets).Sum() >
+                   right.Zip(rightTargets, (value, targets) => value * targets).Sum();
         }
 
         private static HeuristicSolution ImprovePlacementHint(Request request, int milliseconds)
@@ -499,12 +586,12 @@ namespace Code4101.DantianSolver
                     (watch.ElapsedMilliseconds % restartMilliseconds) /
                     (double)restartMilliseconds);
                 var temperature = Math.Max(0.02d, 1.5d * (1d - progress));
-                var delta = HeuristicValue(next) - HeuristicValue(current);
+                var delta = HeuristicValue(request, next) - HeuristicValue(request, current);
                 var accept = delta >= 0d || random.NextDouble() < Math.Exp(delta / temperature);
                 if (accept)
                 {
                     current = next;
-                    if (BetterHeuristic(next, best))
+                    if (BetterHeuristic(request, next, best))
                     {
                         best = next;
                         bestPlacements = working.ToArray();
@@ -530,26 +617,34 @@ namespace Code4101.DantianSolver
         private static HeuristicSolution EvaluateHeuristic(Request request, int[] placements)
         {
             var multipliers = new int[request.rules.Length];
+            var targetCounts = new int[request.rules.Length];
             for (var ruleIndex = 0; ruleIndex < request.rules.Length; ruleIndex++)
             {
                 var rule = request.rules[ruleIndex];
                 var count = rule.countSelf ? 1 : (rule.countTargetPieces ?? Array.Empty<int>())
                     .Count(target => ShapeHit(request, placements, rule.sourcePiece,
                         target, rule.countGeometry));
-                var gate = rule.gateSelf || (rule.gateTargetPieces ?? Array.Empty<int>())
-                    .Any(target => ShapeHit(request, placements, rule.sourcePiece,
-                        target, rule.gateGeometry));
+                var targetCount = rule.gateSelf ? 1 :
+                    (rule.gateTargetPieces ?? Array.Empty<int>()).Count(target =>
+                        ShapeHit(request, placements, rule.sourcePiece,
+                            target, rule.gateGeometry));
+                var gate = targetCount > 0;
                 multipliers[ruleIndex] = gate
                     ? rule.multiplierByCount[Math.Min(count, rule.multiplierByCount.Length - 1)]
                     : 0;
+                targetCounts[ruleIndex] = targetCount;
             }
             return new HeuristicSolution
             {
                 Placements = placements.ToArray(),
                 Multipliers = multipliers,
-                Active = multipliers.Count(value => value > 0),
-                Balance = multipliers.Sum(value => Math.Log(1d + value)),
-                Total = multipliers.Sum(),
+                TargetCounts = targetCounts,
+                Active = multipliers.Zip(targetCounts,
+                    (value, targets) => value > 0 ? targets : 0).Sum(),
+                Balance = multipliers.Zip(targetCounts,
+                    (value, targets) => Math.Log(1d + value) * targets).Sum(),
+                Total = multipliers.Zip(targetCounts,
+                    (value, targets) => value * targets).Sum(),
             };
         }
 
@@ -563,15 +658,33 @@ namespace Code4101.DantianSolver
                     MatchesRelation(request, source, target, code))));
         }
 
-        private static double HeuristicValue(HeuristicSolution solution)
+        private static double HeuristicValue(Request request, HeuristicSolution solution)
         {
             // 激活数只塑造搜索地形，帮助越过大量零倍率平台；权重小于一次真正的
             // 0→1 倍率收益，因此不会取代实际的均衡度目标。
-            return solution.Balance + solution.Active * 5d + solution.Total * 0.0001d;
+            // double 只用于退火接受概率；最终优劣仍由 BetterHeuristic 的逐项比较决定。
+            var value = 0d;
+            foreach (var ruleIndex in NormalizePriorityOrder(request))
+            {
+                var rule = request.rules[ruleIndex];
+                var upper = rule.maxMultiplier * (rule.gateSelf
+                    ? 1
+                    : (rule.gateTargetPieces ?? Array.Empty<int>()).Length);
+                value = value * (upper + 1d) +
+                        solution.Multipliers[ruleIndex] * solution.TargetCounts[ruleIndex];
+            }
+            return value;
         }
 
-        private static bool BetterHeuristic(HeuristicSolution left, HeuristicSolution right)
+        private static bool BetterHeuristic(Request request, HeuristicSolution left,
+            HeuristicSolution right)
         {
+            foreach (var ruleIndex in NormalizePriorityOrder(request))
+            {
+                var leftBenefit = left.Multipliers[ruleIndex] * left.TargetCounts[ruleIndex];
+                var rightBenefit = right.Multipliers[ruleIndex] * right.TargetCounts[ruleIndex];
+                if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
+            }
             if (Math.Abs(left.Balance - right.Balance) > 0.0000001d)
                 return left.Balance > right.Balance;
             if (left.Total != right.Total) return left.Total > right.Total;
@@ -588,6 +701,30 @@ namespace Code4101.DantianSolver
                 product *= multiplier + 1L;
             }
             return product;
+        }
+
+        private static long BenefitProduct(int[] multipliers, int[] targetCounts)
+        {
+            long product = 1;
+            for (var index = 0; index < multipliers.Length; index++)
+            for (var target = 0; target < targetCounts[index]; target++)
+            {
+                if (product > long.MaxValue / (multipliers[index] + 1L))
+                    return long.MaxValue;
+                product *= multipliers[index] + 1L;
+            }
+            return product;
+        }
+
+        private static int[] NormalizePriorityOrder(Request request)
+        {
+            var result = new List<int>();
+            foreach (var index in request.priorityOrder ?? Array.Empty<int>())
+                if (index >= 0 && index < request.rules.Length && !result.Contains(index))
+                    result.Add(index);
+            for (var index = 0; index < request.rules.Length; index++)
+                if (!result.Contains(index)) result.Add(index);
+            return result.ToArray();
         }
 
         private static bool CurrentShapeHit(Request request, int sourcePiece,

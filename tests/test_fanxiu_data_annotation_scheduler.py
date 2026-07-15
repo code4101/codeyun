@@ -3319,7 +3319,7 @@ def test_daily_lingmai_clear_outside_window_records_next_window(tmp_path, monkey
         {
             "id": "legacy-daily-lingmai-clear",
             "task_type": "daily_lingmai_clear",
-            "label": "日常_灵脉_清体力",
+            "label": "灵脉_清体力",
             "source": "data_annotation_runtime",
             "schedule_kind": "daily",
             "enabled": True,
@@ -3435,7 +3435,7 @@ def test_daily_lingmai_clear_inside_window_continues_runtime_flow(tmp_path, monk
         {
             "id": "legacy-daily-lingmai-clear",
             "task_type": "daily_lingmai_clear",
-            "label": "日常_灵脉_清体力",
+            "label": "灵脉_清体力",
             "source": "data_annotation_runtime",
             "schedule_kind": "daily",
             "enabled": True,
