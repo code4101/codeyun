@@ -4681,6 +4681,16 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
+        """进入造化灵脉并执行一键探索清体力流程。
+
+        ``daily_lingmai_clear`` 与普通 ``daily_lingmai`` 是两种业务：前者从
+        #285 进入探索并一次性选择最大体力，后者寻找空位并占领聚灵位。二者
+        只复用 ``#34 -> #69 -> #285`` 的进入能力，进入 #285 后必须分流。
+
+        当前已知流程实现到 ``#314[确定]``。该点击后的真实落点和最终完成证据
+        尚未由游戏验证，因此本阶段返回 ``manual_check_pending``，不能写成
+        工程作业成功。
+        """
         payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
         outside_window_next_time = self._runtime_daily_window_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai-clear"),
@@ -4705,11 +4715,19 @@ class DailyFoundationTaskMixin:
 
         task_label = "灵脉_清体力"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
+        scene_id, score, frame = runtime.current_scene([314, 313, 312, 285, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 314:
+            return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
+        if scene_id == 313:
+            return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+        if scene_id == 312:
+            yield from runtime.wait_click_then_view(312, "确认", 285)
+            frame = runtime.cur_frame(update=True)
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
         if scene_id == 285:
             self._log("success", f"{task_label}：已在 #285 造化灵脉，继续清理体力，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
         scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
             ctx,
             stop_event,
@@ -4721,8 +4739,69 @@ class DailyFoundationTaskMixin:
             task_label=task_label,
         )
         if scene_after == 285:
-            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
         return "skipped"
+
+    def _continue_daily_lingmai_clear_from_zaohua(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        yield from runtime.wait_click_then_view(285, "探索", 313)
+        return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+
+    def _continue_daily_lingmai_clear_from_explore(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        """在 #313 勾选一键探索，再进入 #314 选择消耗体力。"""
+        frame = runtime.cur_frame(update=True)
+        unchecked_score = runtime.shape_score(313, "一键探索", frame_data_url=frame)
+        # #313「一键探索」参考图表示未勾选状态。真实调试中未勾选为 100，
+        # 勾选后仍可能因大部分背景相同而达到 81；因此这里使用独立的严格
+        # 状态阈值，而不能沿用普通 overlay_threshold=55。
+        unchecked_threshold = float(payload.get("lingmai_one_click_unchecked_threshold") or 95.0)
+        self._log(
+            "detail",
+            f"{task_label}：#313「一键探索」未勾选图像 score={unchecked_score:.0f}% threshold={unchecked_threshold:.0f}%",
+        )
+        if unchecked_score >= unchecked_threshold:
+            yield from runtime.wait_click(313, "一键探索")
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_one_click_settle_seconds") or 1.0))
+        yield from runtime.wait_click_then_view(313, "确定", 314)
+        return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
+
+    def _continue_daily_lingmai_clear_from_amount(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        """在 #314 把体力选择滚动条设到最右端并确认。
+
+        点击点从正式「滚动条」标注框动态计算，不保存设备固定坐标。右端点
+        使用标注框右边界与纵向中心；以后调整标注，点击位置会自动同步。
+        """
+        scrollbar = runtime.shape(314, "滚动条")
+        if scrollbar is None:
+            raise RuntimeError(f"{task_label}：缺少 #314「滚动条」标注，无法选择最大体力")
+        box = scrollbar.box()
+        right_x = float(box.get("x") or 0) + float(box.get("w") or 0)
+        center_y = float(box.get("y") or 0) + float(box.get("h") or 0) * 0.5
+        if right_x <= 0 or center_y <= 0:
+            raise RuntimeError(f"{task_label}：#314「滚动条」标注坐标无效，box={box}")
+        self._log("action", f"{task_label}：点击 #314「滚动条」右端点选择最大体力")
+        runtime.click_frame_point(314, right_x, center_y)
+        yield from runtime.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
+        yield from runtime.wait_click(314, "确定")
+        self._log("warning", f"{task_label}：已点击 #314「确定」，最终落点与完成证据仍待真实游戏补充")
+        return "manual_check_pending"
 
     def _execute_daily_dongtian_clear_task(
         self,
@@ -4730,9 +4809,18 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        # TODO(fanxiu-dongtian-clear-incomplete): 本作业尚未完整闭环。当前只验证/实现到
-        # #346「继续」；点击后的场景、结算证据、是否继续消耗行动力与最终返回 #34
-        # 均待真实游戏补充。在补齐前不得把 manual_check_pending 当作业完成。
+        """执行“洞天_行动力”的业务部分。
+
+        完整工程作业由 ``run_task('daily_dongtian_clear')`` 组织成原子闭环：
+        外层先用通用 ``goto_view(34)`` 归一到世界，本函数从 #34 进入日常和
+        洞天并清理行动力；本函数返回 ``success`` 后，外层再用同一个通用
+        ``goto_view(34)`` 按 ``#341 -> #279 -> #34`` 等真实落点动态收尾。
+        因而这里不应复制一条洞天专用返回链。
+
+        内层也允许从 #279 洞天主页或 #341 地点详情直接开始，供同一 Cell 内
+        的连续流程和 AI 开发调试复用；这不代表工程 Scheduler 可以跨 Cell
+        恢复业务进度。新一轮正式作业仍必须从稳定起点 #34 整单执行。
+        """
         payload = {"max_scrolls": 24, "reverse_scrolls": 6, **dict(payload or {})}
         if not bool(payload.get("ignore_schedule_window")):
             outside_window_next_time = self._runtime_daily_window_next_time(
@@ -4758,8 +4846,10 @@ class DailyFoundationTaskMixin:
 
         task_label = "洞天_行动力"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
+        scene_id, _score, frame = runtime.current_scene([341, 279, 69, 34, 47], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 341:
+            return (yield from self._daily_dongtian_clear_action_power_loop(runtime, stop_event, payload))
         if scene_id == 279 or self._daily_dongtian_text_is_home(text):
             return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
 
@@ -4806,26 +4896,80 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
-        enemy_places = [str(item).strip() for item in payload.get("enemy_places") or [] if str(item).strip()]
-        if not enemy_places:
-            enemy_places = self._daily_dongtian_enemy_places_from_latest_packet(payload)
-        if not enemy_places:
-            raise RuntimeError("洞天_行动力：最新洞天抓包未解析出敌对地点")
+        return (yield from self._daily_dongtian_clear_action_power_loop(runtime, stop_event, payload))
 
-        clicked_place = yield from self._daily_dongtian_click_first_enemy_place(
-            runtime,
-            stop_event,
-            enemy_places,
-            max_scrolls=max(0, int(payload.get("place_max_scrolls") or 12)),
-            click_offset_y=float(payload.get("place_click_offset_y") or 122.0),
+    def _daily_dongtian_action_power(self, runtime: Any) -> tuple[int, str]:
+        """读取当前洞天 HUD 的行动力，并返回数值和 OCR 原文。
+
+        #279 与 #341 使用同一套固定 HUD。标注只在 #279 保存一份，本函数把
+        #279「行动力」的区域投影到当前真实帧上识别，避免为每个洞天子场景
+        重复标注同一控件；标注位置调整后，两处识别会同时生效。
+        """
+        frame = runtime.cur_frame(update=True)
+        numbers, text = runtime.ocr_numbers_in_shapes(
+            279,
+            ("行动力",),
+            padding=6,
+            frame_data_url=frame,
         )
-        if bool(payload.get("pause_after_enemy_place_click")):
-            self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
-            return "manual_check_pending"
-        yield from self._daily_dongtian_continue_enemy_occupation(runtime)
-        # 本轮实现尚未闭环；下次调度必须从稳定起点整单重跑，不能从 #346 续接。
-        self._log("warning", f"洞天_行动力：本轮走到敌对地点「{clicked_place}」的 #346「继续」后停止；下次从稳定起点整单重跑")
-        return "manual_check_pending"
+        if not numbers:
+            raise RuntimeError(f"洞天_行动力：行动力区域未识别到数字，OCR={text!r}")
+        return int(numbers[0]), str(text or "")
+
+    def _daily_dongtian_clear_action_power_loop(
+        self,
+        runtime: Any,
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+    ):
+        """持续执行“洞天挑战一次”，直到行动力不足 100。
+
+        一轮挑战不以胜负作为完成条件：挑战失败通常消耗 100 点并回到 #341，
+        挑战成功通常消耗 20 点并可能回到 #279。两种结果都达成“消耗行动力”
+        的业务目标，因此每轮只重新识别真实落点和 HUD 行动力：
+
+        - 落在 #341 且行动力仍不少于 100：直接挑战当前地点下一次；
+        - 落在 #279 且行动力仍不少于 100：重新从最新抓包选择敌对地点；
+        - 任一场景识别到行动力小于 100：清理完成，返回 ``success``；
+        - 其它落点、OCR 无数字或超过安全轮数：失败并保留明确证据。
+
+        ``max_action_power_rounds`` 只是防止识别异常导致无限循环的安全上限，
+        不是业务次数；业务终止条件始终是行动力 ``< 100``。
+        """
+        rounds = 0
+        max_rounds = max(1, int(payload.get("max_action_power_rounds") or 100))
+        while rounds < max_rounds:
+            scene_id, score, _frame = runtime.current_scene([341, 279], update=True)
+            if scene_id not in {341, 279}:
+                raise RuntimeError(f"洞天_行动力：循环只接受 #341/#279，当前 #{scene_id} {score:.0f}%")
+
+            action_power, ocr_text = self._daily_dongtian_action_power(runtime)
+            self._log("detail", f"洞天_行动力：当前 #{scene_id} 行动力={action_power}，OCR={ocr_text!r}")
+            if action_power < 100:
+                self._log("success", f"洞天_行动力：行动力已低于 100（当前 {action_power}），共挑战 {rounds} 次")
+                return "success"
+
+            if scene_id == 279:
+                enemy_places = [str(item).strip() for item in payload.get("enemy_places") or [] if str(item).strip()]
+                if not enemy_places:
+                    enemy_places = self._daily_dongtian_enemy_places_from_latest_packet(payload)
+                if not enemy_places:
+                    raise RuntimeError("洞天_行动力：最新洞天抓包未解析出敌对地点")
+                clicked_place = yield from self._daily_dongtian_click_first_enemy_place(
+                    runtime,
+                    stop_event,
+                    enemy_places,
+                    max_scrolls=max(0, int(payload.get("place_max_scrolls") or 12)),
+                )
+                yield from self._daily_dongtian_validate_enemy_detail(runtime, clicked_place, payload)
+                if bool(payload.get("pause_after_enemy_place_click")):
+                    self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
+                    return "manual_check_pending"
+
+            yield from self._daily_dongtian_continue_enemy_occupation(runtime)
+            rounds += 1
+
+        raise RuntimeError(f"洞天_行动力：挑战达到安全上限 {max_rounds} 次，行动力仍未低于 100")
 
     def _daily_dongtian_enemy_places_from_latest_packet(self, payload: dict[str, Any]) -> list[str]:
         own_union_id = int(payload.get("own_union_id") or 0)
@@ -4852,9 +4996,22 @@ class DailyFoundationTaskMixin:
         if not records:
             raise RuntimeError("洞天_行动力：进入 #279 后未获得最近 5 分钟的 SM_XianLvMineEnterSync 抓包")
 
-        packet = records[0] if isinstance(records[0], dict) else {}
-        parsed = (((packet.get("payload") or {}).get("parsed") or {}) if isinstance(packet.get("payload"), dict) else {})
-        mines = ((parsed.get("mines") or {}).get("items") or []) if isinstance(parsed, dict) else []
+        parsed: dict[str, Any] = {}
+        mines: list[Any] = []
+        # 同一次进入洞天可能解码出时间戳相同的空壳记录和完整记录。记录按新到旧
+        # 返回，不能让排在首位的空 mines 遮住同批后续完整事实。
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            candidate_payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            candidate_parsed = (candidate_payload.get("parsed") or {}) if isinstance(candidate_payload, dict) else {}
+            candidate_mines = ((candidate_parsed.get("mines") or {}).get("items") or []) if isinstance(candidate_parsed, dict) else []
+            if candidate_mines:
+                parsed = candidate_parsed
+                mines = candidate_mines
+                break
+        if not mines:
+            raise RuntimeError("洞天_行动力：最近抓包记录均未包含有效 mines，拒绝把空壳记录当作无敌方地点")
         place_by_id = {index + 1: name for index, name in enumerate(_DONGTIAN_PLACE_ANCHORS)}
         enemies: list[str] = []
         union_summary: list[tuple[int, str, str]] = []
@@ -4880,12 +5037,61 @@ class DailyFoundationTaskMixin:
         )
         return enemies
 
+    def _daily_dongtian_validate_enemy_detail(
+        self,
+        runtime: Any,
+        clicked_place: str,
+        payload: dict[str, Any],
+    ):
+        yield from runtime.wait_view(341, label=f"洞天_行动力：核对地点「{clicked_place}」详情")
+        detail_text = _sanitize_ocr_text(runtime.ocr_text(update=True))
+        expected_place = re.sub(r"^\[(?:洞天|福地)\]", "", str(clicked_place)).strip()
+        own_union_name = _sanitize_ocr_text(payload.get("own_union_name"))
+        wrong_place = bool(expected_place and expected_place not in detail_text)
+        own_place = bool(own_union_name and own_union_name in detail_text)
+        if not wrong_place and not own_place:
+            return detail_text
+
+        reason = "地点不一致" if wrong_place else f"占领方仍是我方「{own_union_name}」"
+        self._log("warning", f"洞天_行动力：点击后安全核验失败（{reason}），立即返回 #279；OCR={detail_text!r}")
+        yield from runtime.wait_click_then_view(341, "返回", 279)
+        raise RuntimeError(f"洞天_行动力：敌方地点安全核验失败（{reason}），已返回洞天主页")
+
     def _daily_dongtian_continue_enemy_occupation(self, runtime: Any):
         yield from runtime.wait_click_then_view(341, "位置1", 342)
         yield from runtime.wait_click_then_view(342, "占领", 343)
         yield from runtime.wait_click_then_view(343, "占领", 344)
-        yield from runtime.wait_click_then_view(344, "战斗", 346)
-        yield from runtime.wait_click(346, "继续")
+        yield from runtime.wait_click(344, "战斗")
+        yield from self._daily_dongtian_finish_battle(runtime)
+
+    def _daily_dongtian_finish_battle(
+        self,
+        runtime: Any,
+        *,
+        tick_seconds: float = 1.0,
+        max_ticks: int = 180,
+    ):
+        """等待洞天战斗结束，并消费可选的跳过页和最终继续页。
+
+        #345 是可能不出现的中间态；#346 才是战斗结束的必要终态。循环按
+        固定 tick 观察真实画面，避免把“没有出现跳过”误判为流程失败。
+        """
+        skip_clicked = False
+        for _tick in range(max(1, int(max_ticks))):
+            yield from runtime.wait_action_settle(max(0.1, float(tick_seconds)))
+            scene_id, _score, _frame = runtime.current_scene([345, 346], update=True)
+            if scene_id == 345:
+                if not skip_clicked:
+                    yield from runtime.wait_click(345, "跳过")
+                    skip_clicked = True
+                continue
+            if scene_id == 346:
+                yield from runtime.wait_click(346, "继续")
+                # 继续后通常回到当前地点详情 #341，也可能直接回洞天主页 #279；
+                # 两者都表示本轮战斗闭环完成，不把其中一个误设成唯一成功终点。
+                yield from runtime.wait_view(341, 279, label="洞天_行动力：确认战斗后的正常落点")
+                return
+        raise RuntimeError("洞天_行动力：战斗等待超时，未出现最终场景 #346「继续」")
 
     def _daily_dongtian_click_first_enemy_place(
         self,
@@ -4894,12 +5100,23 @@ class DailyFoundationTaskMixin:
         enemy_places: list[str],
         *,
         max_scrolls: int,
-        click_offset_y: float,
     ):
         view279 = runtime.view(279)
         window_shape = runtime.shape(279, "窗口")
         if window_shape is None:
             raise RuntimeError("洞天_行动力：缺少 #279「窗口」标注，无法查找敌对地点")
+
+        roster_shape = runtime.shape(279, "我的编队")
+        if roster_shape is None:
+            raise RuntimeError("洞天_行动力：缺少 #279「我的编队」禁点区标注，拒绝点击地点")
+        roster_box = roster_shape.box()
+
+        click_offset_x, click_offset_y = self._daily_dongtian_place_icon_offset(runtime)
+
+        def point_in_box(x: float, y: float, box: dict[str, Any]) -> bool:
+            left = float(box.get("x") or 0)
+            top = float(box.get("y") or 0)
+            return left <= x <= left + float(box.get("w") or 0) and top <= y <= top + float(box.get("h") or 0)
 
         normalized_targets = {re.sub(r"^\[(?:洞天|福地)\]", "", item).strip(): item for item in enemy_places}
         for scroll_index in range(max_scrolls + 1):
@@ -4907,22 +5124,28 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_view(279, label="洞天_行动力：等待 #279 洞天福地")
             frame = runtime.cur_frame(update=True)
             lines = runtime.ocr_lines_in_shapes(279, ["窗口"], frame_data_url=frame)
-            matches: list[tuple[float, float, str, dict[str, Any]]] = []
+            matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
             for line in lines:
                 text = _sanitize_ocr_text(line.get("text"))
+                location_text = re.sub(r"^\[(?:洞天|福地)\]", "", text).strip()
+                line_center_x = float(line.get("x") or 0) + float(line.get("w") or 0) * 0.5
+                line_center_y = float(line.get("y") or 0) + float(line.get("h") or 0) * 0.5
+                click_x = line_center_x + click_offset_x
+                click_y = line_center_y + click_offset_y
+                # 「我的编队」既不能提供地点 OCR 候选，也绝不允许成为最终点击落点。
+                if point_in_box(line_center_x, line_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
+                    continue
                 for normalized, original in normalized_targets.items():
-                    if normalized and normalized in text:
-                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line))
+                    if normalized and location_text == normalized:
+                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y))
                         break
             if matches:
-                _y, _x, place, line = min(matches, key=lambda item: (item[0], item[1]))
-                click_x = float(line.get("x") or 0) + float(line.get("w") or 0) * 0.5
-                click_y = float(line.get("y") or 0) + float(line.get("h") or 0) * 0.5 - click_offset_y
+                _y, _x, place, line, click_x, click_y = min(matches, key=lambda item: (item[0], item[1]))
                 if click_x <= 0 or click_y <= 0:
                     raise RuntimeError(f"洞天_行动力：地点「{place}」 OCR 坐标无效，line={line}")
                 self._log(
                     "click",
-                    f"洞天_行动力：命中敌对地点「{place}」，地名中心=({click_x:.0f},{click_y + click_offset_y:.0f})，点击地图主体=({click_x:.0f},{click_y:.0f})",
+                    f"洞天_行动力：命中敌对地点「{place}」，按地点模板动态偏移=({click_offset_x:.0f},{click_offset_y:.0f})，点击地图主体=({click_x:.0f},{click_y:.0f})",
                 )
                 runtime.click_frame_point(279, click_x, click_y)
                 yield from runtime.wait_action_settle(float(runtime.payload.get("place_click_settle_seconds") or 2.0))
@@ -4934,6 +5157,27 @@ class DailyFoundationTaskMixin:
             if not changed:
                 break
         raise RuntimeError(f"洞天_行动力：#279 窗口未找到敌对地点，candidates={enemy_places}")
+
+    def _daily_dongtian_place_icon_offset(self, runtime: Any) -> tuple[float, float]:
+        """动态计算地点文字中心到可点击图标中心的像素位移。
+
+        #279 的 OCR 返回「地点名称」文字框，但真正需要点击的是同一地点上方的
+        「地点图标」。资产树的「模板」内同时标注了这两个子区域，因此每次加载
+        #279 数据时都用 `图标中心 - 名称中心` 计算 (dx, dy)。调整任一标注后，
+        点击位置会随之更新；缺少标注时直接失败，禁止用历史固定像素值猜测。
+        """
+        name_shape = runtime.shape(279, "地点名称")
+        icon_shape = runtime.shape(279, "地点图标")
+        if name_shape is None or icon_shape is None:
+            raise RuntimeError("洞天_行动力：缺少 #279「地点名称」或「地点图标」模板标注，拒绝猜测点击偏移")
+        name_box = name_shape.box()
+        icon_box = icon_shape.box()
+
+        name_center_x = float(name_box.get("x") or 0) + float(name_box.get("w") or 0) * 0.5
+        name_center_y = float(name_box.get("y") or 0) + float(name_box.get("h") or 0) * 0.5
+        icon_center_x = float(icon_box.get("x") or 0) + float(icon_box.get("w") or 0) * 0.5
+        icon_center_y = float(icon_box.get("y") or 0) + float(icon_box.get("h") or 0) * 0.5
+        return icon_center_x - name_center_x, icon_center_y - name_center_y
 
     def _runtime_daily_window_next_time(self, task_id: str, task_type: str, now: datetime | None = None) -> str | None:
         now = now or _runtime_runner._now()

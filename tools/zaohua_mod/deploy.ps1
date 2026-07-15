@@ -32,6 +32,11 @@ foreach ($plugin in $plugins) {
     New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
     Copy-Item -LiteralPath $source -Destination $pluginDir -Force
     if ($plugin.Directory -eq "Code4101.Zaohua.Tiandao") {
+        $jsonSource = Join-Path $PSScriptRoot "Code4101.Tiandao\bin\Release\Newtonsoft.Json.dll"
+        if (-not (Test-Path -LiteralPath $jsonSource)) {
+            throw "Plugin JSON dependency has not been built: $jsonSource"
+        }
+        Copy-Item -LiteralPath $jsonSource -Destination $pluginDir -Force
         $solverSource = Join-Path $PSScriptRoot "Code4101.DantianSolver\bin\Release"
         $solverDir = Join-Path $pluginDir "solver"
         if (-not (Test-Path -LiteralPath (Join-Path $solverSource "Code4101.DantianSolver.exe"))) {

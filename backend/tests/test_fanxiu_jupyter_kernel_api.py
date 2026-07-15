@@ -275,3 +275,93 @@ def test_manual_check_task_keeps_human_inspection_scene() -> None:
         "message": "请人工检查",
     }
     assert events == [("reset", 34), "business"]
+
+
+def test_jupyter_binding_end_cell_tolerates_missing_pre_run_cell() -> None:
+    from backend.core.fanxiu.runtime.jupyter_kernel import FanxiuJupyterBinding
+
+    class Runner:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._stop_event = None
+            self._status = {}
+
+        def _clear_current_task_locked(self):
+            return None
+
+        def _persist_status(self):
+            return None
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.stop_event = threading.Event()
+    binding.execution_lock = threading.RLock()
+    binding._cell_lock_acquired = False
+    binding._managed_task_cell = False
+    result = type("Result", (), {"error_in_exec": None, "error_before_exec": None})()
+
+    binding.end_cell(result)
+
+    assert binding.runner._status["status"] == "success"
+
+
+def test_jupyter_binding_end_cell_releases_acquired_lock_once() -> None:
+    from backend.core.fanxiu.runtime.jupyter_kernel import FanxiuJupyterBinding
+
+    class Lock:
+        def __init__(self):
+            self.releases = 0
+
+        def release(self):
+            self.releases += 1
+
+    class Runner:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._stop_event = None
+            self._status = {}
+
+        def _clear_current_task_locked(self):
+            return None
+
+        def _persist_status(self):
+            return None
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.stop_event = threading.Event()
+    binding.execution_lock = Lock()
+    binding._cell_lock_acquired = True
+    binding._managed_task_cell = False
+    result = type("Result", (), {"error_in_exec": None, "error_before_exec": None})()
+
+    binding.end_cell(result)
+    binding.end_cell(result)
+
+    assert binding.execution_lock.releases == 1
+
+
+def test_submit_code_cell_records_log_without_removed_mode_field(monkeypatch) -> None:
+    from backend.api import fanxiu
+    from backend.core.fanxiu.data_annotation.models import FanxiuDataAnnotationRuntimeCodeCellRequest
+
+    observed = {}
+    monkeypatch.setattr(fanxiu, "_sync_data_annotation_runtime_runner_to_core", lambda: None)
+    monkeypatch.setattr(fanxiu, "_runtime_log_items_for_cell", lambda: [])
+    monkeypatch.setattr(
+        fanxiu._runtime_framework,
+        "submit_code_cell",
+        lambda **_kwargs: {"status": "success"},
+    )
+
+    def record(status, *, title, source, before_keys):
+        observed.update(title=title, source=source, before_keys=before_keys)
+        return status
+
+    monkeypatch.setattr(fanxiu, "_record_runtime_cell_log", record)
+    request = FanxiuDataAnnotationRuntimeCodeCellRequest(entry_id="entry-1", code="1 + 1")
+
+    result = fanxiu._submit_data_annotation_code_cell(object(), "entry-1", request)
+
+    assert result == {"status": "success"}
+    assert observed["title"] == "代码 cell"

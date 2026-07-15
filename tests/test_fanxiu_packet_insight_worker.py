@@ -74,7 +74,10 @@ def test_live_capture_backlog_skips_already_decoded_digest(tmp_path, monkeypatch
 
     record_dir = tmp_path / "fanxiu" / "tcp-flow" / "record"
     record_dir.mkdir(parents=True)
-    (record_dir / "meta.json").write_text(json.dumps({"capture_sha256": "digest-1"}), encoding="utf-8")
+    (record_dir / "meta.json").write_text(
+        json.dumps({"capture_sha256": "digest-1", "decoder_version": worker.FANXIU_TCP_DECODE_SCHEMA_VERSION}),
+        encoding="utf-8",
+    )
 
     calls = []
     monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda *args, **kwargs: calls.append(args))
@@ -104,6 +107,7 @@ def test_live_capture_backlog_backfills_business_for_already_decoded_digest(tmp_
             {
                 "record_id": "record",
                 "capture_sha256": "digest-1",
+                "decoder_version": worker.FANXIU_TCP_DECODE_SCHEMA_VERSION,
                 "decoded_path": str(decoded_path),
                 "pcap_name": "capture.pcap",
                 "stream": 0,
@@ -239,6 +243,77 @@ def test_live_capture_backlog_keeps_confirmed_cursor_before_failed_gap_but_decod
     assert states["0002-later.pcap"] == "decoded"
 
 
+def test_newest_first_scan_does_not_advance_confirmed_cursor_across_older_gap(tmp_path, monkeypatch):
+    live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
+    live_dir.mkdir(parents=True)
+    older = live_dir / "0001-broken.pcap"
+    newer = live_dir / "0002-good.pcap"
+    older.write_bytes(b"broken" * 16)
+    newer.write_bytes(b"good" * 16)
+    now = time.time()
+    os.utime(older, (now - 120, now - 120))
+    os.utime(newer, (now - 60, now - 60))
+    monkeypatch.setattr(worker, "_sha256_file", lambda path: f"digest-{path.name}")
+
+    def fake_decode(path, **_kwargs):
+        if path == older:
+            raise RuntimeError("broken")
+        return {"decoded_count": 1, "runtime_protocol_count": 1}
+
+    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", fake_decode)
+    result = worker.sync_fanxiu_live_capture_backlog(
+        data_dir=tmp_path,
+        stable_seconds=1,
+        newest_first=True,
+        limit=2,
+    )
+
+    assert result["latest_scanned_pcap"].endswith("0002-good.pcap")
+    assert result["confirmed_cursor_pcap"] == ""
+    assert result["has_unconfirmed_gap"] is True
+
+
+def test_business_rule_version_change_resets_historical_cursor():
+    state = {
+        "business_rule_version": worker.PACKET_BUSINESS_RULE_VERSION - 1,
+        "historical_cursor_source_key": "old-cursor",
+        "recent_processed_source_keys": ["old-source"],
+    }
+
+    normalized, reset = worker._business_backlog_state_for_current_rule(state)
+
+    assert normalized == {}
+    assert reset is True
+
+
+def test_old_decoder_version_is_not_treated_as_completed_decode(tmp_path):
+    record_dir = tmp_path / "fanxiu" / "tcp-flow" / "record-old"
+    record_dir.mkdir(parents=True)
+    stored_pcap = record_dir / "old.pcap"
+    stored_pcap.write_bytes(b"pcap" * 16)
+    (record_dir / "decoded.json").write_text("{}", encoding="utf-8")
+    (record_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "capture_sha256": "old-digest",
+                "decoder_version": worker.FANXIU_TCP_DECODE_SCHEMA_VERSION - 1,
+                "stream": 1,
+                "decoded_path": str(record_dir / "decoded.json"),
+                "stored_pcap": str(stored_pcap),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert "old-digest" not in worker._decoded_capture_digests(tmp_path)
+    assert "old-digest" not in worker._decoded_capture_streams_by_digest(tmp_path)
+    assert "old-digest" not in worker._decoded_capture_sources_by_digest(tmp_path)
+    selected, stale_count, missing_count = worker._stale_decoder_evidence_pcaps(tmp_path, limit=1)
+    assert selected == [stored_pcap]
+    assert stale_count == 1
+    assert missing_count == 0
+
+
 def test_live_capture_backlog_newest_failures_do_not_starve_decodable_pcaps(tmp_path, monkeypatch):
     live_dir = tmp_path / "fanxiu" / "tcp-flow" / "live-captures"
     live_dir.mkdir(parents=True)
@@ -339,7 +414,11 @@ def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monke
         return {"ok": True, "decoded_count": 1, "new_decode_count": 1, "business_backfill_count": 0}
 
     monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", fake_sync)
-    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 2})
+    monkeypatch.setattr(
+        worker,
+        "_prune_decoded_record_db_cache",
+        lambda: (_ for _ in ()).throw(AssertionError("realtime catch-up must not prune historical records")),
+    )
 
     result = worker.catch_up_fanxiu_packet_facts(reason="test", data_dir=tmp_path, max_streams=3)
 
@@ -350,7 +429,11 @@ def test_packet_facts_catch_up_flushes_current_capture_and_syncs(tmp_path, monke
         ([str(pcap)], {"data_dir": tmp_path, "max_streams": 3, "scan_existing_decoded": False})
     ]
     assert result["sync"]["decoded_count"] == 1
-    assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 2}
+    assert result["decoded_record_db_prune"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "realtime_catch_up_does_not_run_maintenance_prune",
+    }
 
 
 def test_packet_facts_catch_up_skips_when_no_capture_flushed(monkeypatch):
@@ -369,17 +452,25 @@ def test_packet_facts_catch_up_skips_when_no_capture_flushed(monkeypatch):
         "sync_fanxiu_capture_paths",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not sync without pcap")),
     )
-    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 0})
+    monkeypatch.setattr(
+        worker,
+        "_prune_decoded_record_db_cache",
+        lambda: (_ for _ in ()).throw(AssertionError("realtime catch-up must not prune historical records")),
+    )
 
     result = worker.catch_up_fanxiu_packet_facts(reason="test")
 
     assert result["ok"] is True
     assert result["sync"]["skipped"] is True
     assert result["sync"]["reason"] == "no_flushed_capture"
-    assert result["decoded_record_db_prune"] == {"ok": True, "deleted": 0}
+    assert result["decoded_record_db_prune"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "realtime_catch_up_does_not_run_maintenance_prune",
+    }
 
 
-def test_packet_facts_catch_up_keeps_ok_when_decoded_db_prune_fails(tmp_path, monkeypatch):
+def test_packet_facts_catch_up_does_not_run_decoded_db_prune(tmp_path, monkeypatch):
     pcap = tmp_path / "current.pcap"
     pcap.write_bytes(b"pcap" * 16)
     monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", lambda **_kwargs: {"ok": True})
@@ -393,12 +484,20 @@ def test_packet_facts_catch_up_keeps_ok_when_decoded_db_prune_fails(tmp_path, mo
         FakeCaptureRuntime(),
     )
     monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", lambda *_args, **_kwargs: {"ok": True, "decoded_count": 1})
-    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": False, "error": "db busy"})
+    monkeypatch.setattr(
+        worker,
+        "_prune_decoded_record_db_cache",
+        lambda: (_ for _ in ()).throw(AssertionError("realtime catch-up must not prune historical records")),
+    )
 
     result = worker.catch_up_fanxiu_packet_facts(reason="test", data_dir=tmp_path)
 
     assert result["ok"] is True
-    assert result["decoded_record_db_prune"] == {"ok": False, "error": "db busy"}
+    assert result["decoded_record_db_prune"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "realtime_catch_up_does_not_run_maintenance_prune",
+    }
 
 
 def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, monkeypatch):
@@ -415,6 +514,7 @@ def test_maintenance_backlog_ignores_realtime_cursor_and_age_window(tmp_path, mo
             {
                 "record_id": "record",
                 "capture_sha256": "historical-digest",
+                "decoder_version": worker.FANXIU_TCP_DECODE_SCHEMA_VERSION,
                 "decoded_path": str(decoded_path),
                 "pcap_name": "historical.pcap",
                 "stream": 0,
@@ -498,6 +598,20 @@ def test_maintenance_backlog_does_not_overwrite_realtime_worker_state(tmp_path, 
     assert realtime_state["has_unconfirmed_gap"] is False
     assert maintenance_state["mode"] == "maintenance"
     assert maintenance_state["decoded_count"] == 1
+
+
+def test_maintenance_reports_stale_decoder_records_with_missing_raw_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(worker, "_stale_decoder_evidence_pcaps", lambda *_args, **_kwargs: ([], 2, 2))
+    monkeypatch.setattr(worker, "_sync_historical_business_backlog", lambda **_kwargs: ({"ok": True}, {"ok": True}))
+    monkeypatch.setattr(worker, "sync_fanxiu_mail_business_backlog", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(worker, "_prune_decoded_record_db_cache", lambda: {"ok": True, "deleted": 0})
+
+    result = worker.sync_fanxiu_capture_maintenance_backlog(data_dir=tmp_path)
+
+    assert result["ok"] is False
+    assert result["parser_version_backfill"]["reason"] == "stale_decoder_evidence_missing"
+    assert result["parser_version_backfill"]["missing_evidence_count"] == 2
 
 
 def test_packet_worker_status_separates_realtime_and_maintenance(monkeypatch):

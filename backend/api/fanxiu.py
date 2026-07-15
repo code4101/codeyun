@@ -4423,7 +4423,7 @@ def _submit_data_annotation_code_cell(
         log_source["source"] = source
     return _record_runtime_cell_log(
         status,
-        title=f"代码 cell：{req.mode}",
+        title="代码 cell",
         source=log_source,
         before_keys=before_keys,
     )

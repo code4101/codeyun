@@ -83,7 +83,18 @@ def _extract_ocr_line_entries(preview_document: dict[str, Any]) -> list[list[dic
             current_y = entry["y"]
             continue
 
-        if abs(entry["y"] - current_y) <= tolerance:
+        # PaddleOCR already returns separate text boxes. Rebuild a logical line
+        # only when boxes are close both vertically and horizontally. Checking
+        # Y alone incorrectly joins independent controls on the same row (for
+        # example the left and right buttons of a confirmation dialog).
+        current_right = max(item["x2"] for item in current_group)
+        horizontal_gap = max(0.0, entry["x"] - current_right)
+        local_height = max(
+            entry["height"],
+            sum(item["height"] for item in current_group) / len(current_group),
+        )
+        horizontal_tolerance = local_height * 2.5
+        if abs(entry["y"] - current_y) <= tolerance and horizontal_gap <= horizontal_tolerance:
             current_group.append(entry)
             current_y = sum(item["y"] for item in current_group) / len(current_group)
             continue

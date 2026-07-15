@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using HarmonyLib;
+using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -34,6 +35,7 @@ namespace Code4101.Zaohua.Tiandao
         internal int Potential;
         internal List<int> Multipliers = new List<int>();
         internal List<string> RuleDetails = new List<string>();
+        internal List<string> RuleEvidence = new List<string>();
 
         // Potential 只负责引导搜索跨越“每 N 个才 +1”的同分平台；精确倍率始终是主目标。
         internal double Fitness => Balance + Total * 0.000001d + Potential * 0.0001d;
@@ -216,7 +218,13 @@ namespace Code4101.Zaohua.Tiandao
                     {
                         var rule = piece.Rules[ruleIndex];
                         var targets = controller.GetVaildArtMagicIdList(source, layout, rule.targetEff);
-                        var hasTarget = targets != null && targets.Any(cell => cell.artMagicId.sedId != 0);
+                        var targetCells = targets ?? new List<TbDantianSto>();
+                        var targetObjects = targetCells
+                            .Where(cell => cell.artMagicId.sedId != 0)
+                            .Select(cell => cell.artMagicId)
+                            .Distinct()
+                            .ToList();
+                        var hasTarget = targetObjects.Count != 0;
                         var multiplier = hasTarget && GetUpMultiplierMethod != null
                             ? (int)GetUpMultiplierMethod.Invoke(controller, new object[]
                             {
@@ -226,13 +234,13 @@ namespace Code4101.Zaohua.Tiandao
                         multiplier = Math.Max(0, multiplier);
                         var progressTargets = controller.GetVaildArtMagicIdList(
                             source, layout, rule.upMulEff);
-                        var potential = progressTargets == null
-                            ? 0
-                            : progressTargets
-                                .Where(cell => cell.artMagicId.sedId != 0)
-                                .Select(cell => cell.artMagicId)
-                                .Distinct()
-                                .Count();
+                        var upCells = progressTargets ?? new List<TbDantianSto>();
+                        var upObjects = upCells
+                            .Where(cell => cell.artMagicId.sedId != 0)
+                            .Select(cell => cell.artMagicId)
+                            .Distinct()
+                            .ToList();
+                        var potential = upObjects.Count;
                         score.RuleCount++;
                         score.Total += multiplier;
                         score.Potential += potential;
@@ -240,6 +248,16 @@ namespace Code4101.Zaohua.Tiandao
                         score.Multipliers.Add(multiplier);
                         score.RuleDetails.Add(
                             $"{piece.Name}#{ruleIndex + 1}=x{multiplier}/progress{potential}");
+                        score.RuleEvidence.Add(
+                            $"{piece.Name}#{ruleIndex + 1} " +
+                            $"targetEff='{rule.targetEff}' targetCells={targetCells.Count} " +
+                            $"targetObjects={targetObjects.Count}[{string.Join(",", targetObjects.Select(BlendKey))}] " +
+                            $"upEff='{rule.upMulEff}' upType='{rule.upMulType}' max={rule.maxUpMul} " +
+                            $"upCells={upCells.Count} upObjects={upObjects.Count}" +
+                            $"[{string.Join(",", upObjects.Select(BlendKey))}] " +
+                            $"upRows={upCells.Select(cell => cell.y).Distinct().Count()} " +
+                            $"upCols={upCells.Select(cell => cell.x).Distinct().Count()} " +
+                            $"nativeMultiplier={multiplier}");
                     }
                 }
             }
@@ -494,7 +512,7 @@ namespace Code4101.Zaohua.Tiandao
     internal sealed class DantianOptimizerUi : MonoBehaviour
     {
         private const int MaxIterations = 120000;
-        private const int MaxMilliseconds = 7000;
+        private const int MaxMilliseconds = 20000;
         private const int GreedyMilliseconds = 2400;
         private const int KickInterval = 1800;
         private DantianPanel _panel;
@@ -595,12 +613,27 @@ namespace Code4101.Zaohua.Tiandao
             _solveCancellation = new CancellationTokenSource();
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-model " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} " +
-                                  $"rules={rules} placements={candidates}");
+                                  $"rules={rules} placements={candidates} " +
+                                  $"ruleDefinitions=[{DescribeRules(problem)}]");
+            foreach (var evidence in currentScore.RuleEvidence)
+                UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                      $"native-oracle {evidence}");
+            var buildProgress = new DantianSolverBuildProgress
+            {
+                TotalOptions = rules,
+            };
             var buildTask = DantianCpSatBridge.BuildAsync(problem, currentScore,
-                MaxMilliseconds, seed, _solveCancellation.Token);
+                MaxMilliseconds, seed, buildProgress, _solveCancellation.Token);
+            var displayedProgress = -1;
             while (!buildTask.IsCompleted)
             {
                 yield return null;
+                var completed = Volatile.Read(ref buildProgress.CompletedOptions);
+                if (completed != displayedProgress)
+                {
+                    displayedProgress = completed;
+                    SetLabel($"校验规则 {completed}/{buildProgress.TotalOptions}…");
+                }
                 if (_panel != null && _panel.gameObject.activeInHierarchy) continue;
                 _solveCancellation.Cancel();
                 yield break;
@@ -628,7 +661,7 @@ namespace Code4101.Zaohua.Tiandao
                 yield break;
             }
             var request = buildResult.Request;
-            var jsonBytes = JsonUtility.ToJson(request).Length;
+            var jsonBytes = JsonConvert.SerializeObject(request).Length;
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-cpsat " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
                                   $"placements={candidates} modelMs={buildResult.ElapsedMilliseconds} " +
@@ -646,6 +679,9 @@ namespace Code4101.Zaohua.Tiandao
                 yield break;
             }
             var runResult = solveTask.Result;
+            if (!string.IsNullOrEmpty(runResult.SnapshotPath))
+                UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                      $"snapshot={runResult.SnapshotPath}");
             if (!string.IsNullOrEmpty(runResult.Error))
             {
                 UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
@@ -657,8 +693,13 @@ namespace Code4101.Zaohua.Tiandao
             if (response == null || (response.status != "OPTIMAL" && response.status != "FEASIBLE"))
             {
                 UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
-                                             $"solver-status={response?.status ?? "null"}");
-                yield return ShowTemporary("暂未找到解");
+                                             $"solver-status={response?.status ?? "null"} " +
+                                             $"workerModel={response?.modelBuildSeconds:F3}s " +
+                                             $"solve={response?.elapsedSeconds:F3}s " +
+                                             $"total={response?.totalSeconds:F3}s");
+                yield return ShowTemporary(response?.status == "UNKNOWN"
+                    ? "求解超时，保留原布局"
+                    : "模型未返回可行解");
                 yield break;
             }
             var best = response.placements;
@@ -677,7 +718,8 @@ namespace Code4101.Zaohua.Tiandao
                 yield break;
             }
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] solved-cpsat " +
-                                  $"status={response.status} elapsed={response.elapsedSeconds:F3}s " +
+                                  $"status={response.status} workerModel={response.modelBuildSeconds:F3}s " +
+                                  $"solve={response.elapsedSeconds:F3}s total={response.totalSeconds:F3}s " +
                                   $"objective={response.objective:F0} bound={response.bestBound:F0} " +
                                   $"solverProduct={response.product} solverTotal={response.total} " +
                                   $"nativeBest={bestScore} nativeRules=[{string.Join(", ", bestScore.RuleDetails)}] " +
@@ -713,7 +755,15 @@ namespace Code4101.Zaohua.Tiandao
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] applied " +
                                   $"before={currentScore} predicted={bestScore} actual={actual} " +
                                   $"actualRules=[{string.Join(", ", actual?.RuleDetails ?? new List<string>())}]");
-            Traverse.Create(_panel).Method("InitPanel").GetValue();
+            try
+            {
+                _panel?.InitPanel();
+            }
+            catch (Exception refreshException)
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"panel-refresh-failed {refreshException.Message}");
+            }
             yield return ShowTemporary($"总增幅 {currentScore.Total}→{bestScore.Total}");
         }
 

@@ -22,6 +22,7 @@ from backend.core.fanxiu.packet.insights import (
 from backend.core.fanxiu.packet.decoded_store import prune_fanxiu_packet_decoded_records, sync_fanxiu_decoded_record_backlog
 from backend.core.fanxiu.packet.tcp_flow import (
     DEFAULT_FANXIU_SERVER_HOST,
+    FANXIU_TCP_DECODE_SCHEMA_VERSION,
     _iter_fanxiu_tcp_decoded_sources,
     list_tcp_streams_with_tshark,
     resolve_fanxiu_tcp_live_capture_dir,
@@ -37,8 +38,6 @@ from backend.core.fanxiu.runtime.capture_runtime import (
 DEFAULT_SCAN_INTERVAL_SECONDS = 15.0
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 30 * 60.0
 DEFAULT_STABLE_SECONDS = 8.0
-DEFAULT_AUTO_MAINTENANCE_LAG_SECONDS = 180.0
-DEFAULT_AUTO_MAINTENANCE_COOLDOWN_SECONDS = 10 * 60.0
 DEFAULT_FAILED_RETRY_SECONDS = 600.0
 DEFAULT_LIVE_CAPTURE_MAX_AGE_SECONDS = 24 * 60 * 60
 DEFAULT_MAINTENANCE_DECODE_LIMIT = 32
@@ -48,6 +47,8 @@ DEFAULT_DECODE_TIMEOUT_SECONDS = 30.0
 DEFAULT_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS = 5 * 60.0
 MIN_PCAP_BYTES = 24
 PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
+# Bump when decoded facts must be replayed through changed reducers/upserts.
+PACKET_BUSINESS_RULE_VERSION = 1
 PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV = "CODEYUN_PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE"
 PACKET_DECODE_COMMIT_PRESSURE_PERCENT = 90.0
 PACKET_DECODE_COMMIT_PRESSURE_AVAILABLE_MB = 8 * 1024
@@ -163,6 +164,7 @@ def _compact_worker_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "historical_runtime_business_sync",
         "historical_mail_packet_sync",
         "bounded_mail_packet_sync",
+        "parser_version_backfill",
         "capture_runtime_backstop",
         "host_commit_pressure",
         "mail_packet_sync",
@@ -298,6 +300,15 @@ def _decoded_source_key(source: dict[str, Any]) -> str:
     )
 
 
+def _decoded_meta_uses_current_decoder(meta: Any) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    try:
+        return int(meta.get("decoder_version") or 0) == FANXIU_TCP_DECODE_SCHEMA_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
 def _decoded_capture_digests(data_dir: str | Path | None = None) -> set[str]:
     root = resolve_fanxiu_tcp_store_root(data_dir)
     digests: set[str] = set()
@@ -305,7 +316,7 @@ def _decoded_capture_digests(data_dir: str | Path | None = None) -> set[str]:
         return digests
     for meta_path in root.glob("*/meta.json"):
         meta = _load_json(meta_path, {})
-        if isinstance(meta, dict) and meta.get("capture_sha256"):
+        if _decoded_meta_uses_current_decoder(meta) and meta.get("capture_sha256"):
             digests.add(str(meta["capture_sha256"]))
     return digests
 
@@ -318,6 +329,8 @@ def _decoded_capture_streams_by_digest(data_dir: str | Path | None = None) -> di
     for meta_path in root.glob("*/meta.json"):
         meta = _load_json(meta_path, {})
         if not isinstance(meta, dict):
+            continue
+        if not _decoded_meta_uses_current_decoder(meta):
             continue
         digest = str(meta.get("capture_sha256") or "").strip()
         if not digest:
@@ -342,6 +355,8 @@ def _decoded_capture_sources_by_digest(data_dir: str | Path | None = None) -> di
         meta = _load_json(meta_path, {})
         if not isinstance(meta, dict):
             continue
+        if not _decoded_meta_uses_current_decoder(meta):
+            continue
         digest = str(meta.get("capture_sha256") or "").strip()
         if not digest:
             continue
@@ -362,6 +377,43 @@ def _decoded_capture_sources_by_digest(data_dir: str | Path | None = None) -> di
             }
         )
     return sources_by_digest
+
+
+def _stale_decoder_evidence_pcaps(
+    data_dir: str | Path | None = None,
+    *,
+    limit: int,
+) -> tuple[list[Path], int, int]:
+    """Select bounded preserved pcaps whose decoded meta uses an old decoder."""
+    root = resolve_fanxiu_tcp_store_root(data_dir)
+    candidates: dict[str, tuple[float, Path]] = {}
+    stale_count = 0
+    missing_evidence_count = 0
+    if not root.is_dir():
+        return [], 0, 0
+    for meta_path in root.glob("*/meta.json"):
+        meta = _load_json(meta_path, {})
+        if not isinstance(meta, dict) or _decoded_meta_uses_current_decoder(meta):
+            continue
+        stale_count += 1
+        raw_path = str(meta.get("stored_pcap") or meta.get("source_pcap") or "").strip()
+        if not raw_path:
+            missing_evidence_count += 1
+            continue
+        path = Path(raw_path).expanduser().resolve(strict=False)
+        if not path.is_file():
+            missing_evidence_count += 1
+            continue
+        digest = str(meta.get("capture_sha256") or path)
+        try:
+            mtime = float(path.stat().st_mtime)
+        except OSError:
+            continue
+        previous = candidates.get(digest)
+        if previous is None or mtime > previous[0]:
+            candidates[digest] = (mtime, path)
+    selected = [item[1] for item in sorted(candidates.values(), key=lambda item: item[0], reverse=True)]
+    return selected[: max(0, int(limit))], stale_count, missing_evidence_count
 
 
 def _target_stream_ids_for_pcap(path: Path, *, max_streams: int, server_host: str = DEFAULT_FANXIU_SERVER_HOST) -> list[int]:
@@ -637,6 +689,39 @@ def _merge_pcap_states(previous_state: Any, updates: list[dict[str, Any]], *, li
     return sorted(states.values(), key=lambda item: float(item.get("mtime") or 0), reverse=True)[:limit]
 
 
+def _confirmed_cursor_from_contiguous_states(
+    paths: list[Path],
+    states: list[dict[str, Any]],
+    *,
+    previous_mtime: float,
+    previous_pcap: str,
+) -> tuple[float, str]:
+    """Advance only across a chronological, fully confirmed prefix."""
+    by_path = {str(item.get("path") or ""): item for item in states if isinstance(item, dict)}
+    confirmed_mtime = float(previous_mtime)
+    confirmed_pcap = str(previous_pcap or "")
+    confirmed_statuses = {"decoded", "already_decoded"}
+    for path in sorted(paths, key=lambda item: item.stat().st_mtime):
+        item = by_path.get(str(path))
+        is_confirmed = bool(
+            item
+            and (
+                str(item.get("status") or "") in confirmed_statuses
+                or (
+                    str(item.get("status") or "") == "skipped"
+                    and str(item.get("reason") or "") == "no_target_stream"
+                )
+            )
+        )
+        if not is_confirmed:
+            break
+        path_mtime = float(item.get("mtime") or 0)
+        if path_mtime >= confirmed_mtime:
+            confirmed_mtime = path_mtime
+            confirmed_pcap = str(path)
+    return confirmed_mtime, confirmed_pcap
+
+
 def _sync_business_after_decoded(
     decoded: list[dict[str, Any]],
     *,
@@ -909,6 +994,17 @@ def _select_backlog_sources(
     return latest_sources, historical_sources
 
 
+def _business_backlog_state_for_current_rule(state: Any) -> tuple[dict[str, Any], bool]:
+    """Reset only maintenance cursors when idempotent business rules change."""
+    if not isinstance(state, dict):
+        return {}, False
+    try:
+        current = int(state.get("business_rule_version") or 0) == PACKET_BUSINESS_RULE_VERSION
+    except (TypeError, ValueError):
+        current = False
+    return (state, False) if current else ({}, bool(state))
+
+
 def sync_fanxiu_decoded_business_backlog(
     *,
     data_dir: str | Path | None = None,
@@ -918,9 +1014,7 @@ def sync_fanxiu_decoded_business_backlog(
     """Incrementally backfill decoded business facts through the primary ingestor."""
     sources = _iter_fanxiu_tcp_decoded_sources(data_dir)
     state_path = _decoded_business_backlog_state_path(data_dir)
-    state = _load_json(state_path, {})
-    if not isinstance(state, dict):
-        state = {}
+    state, rule_version_reset = _business_backlog_state_for_current_rule(_load_json(state_path, {}))
     latest_sources, historical_sources = _select_backlog_sources(
         sources,
         state,
@@ -962,6 +1056,8 @@ def sync_fanxiu_decoded_business_backlog(
     historical_cursor = _decoded_source_key(historical_sources[-1]) if historical_sources else str(state.get("historical_cursor_source_key") or "")
     payload = {
         "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "business_rule_version": PACKET_BUSINESS_RULE_VERSION,
+        "rule_version_reset": rule_version_reset,
         "ok": not errors,
         "updated_at": _now_text(),
         "source_count": len(sources),
@@ -990,9 +1086,7 @@ def sync_fanxiu_mail_business_backlog(
     """Incrementally backfill decoded mail facts without rescanning every decoded JSON."""
     sources = _iter_fanxiu_tcp_decoded_sources(data_dir)
     state_path = _mail_business_backlog_state_path(data_dir)
-    state = _load_json(state_path, {})
-    if not isinstance(state, dict):
-        state = {}
+    state, rule_version_reset = _business_backlog_state_for_current_rule(_load_json(state_path, {}))
     latest_sources, historical_sources = _select_backlog_sources(
         sources,
         state,
@@ -1011,6 +1105,9 @@ def sync_fanxiu_mail_business_backlog(
 
     if not selected:
         payload = {
+            "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+            "business_rule_version": PACKET_BUSINESS_RULE_VERSION,
+            "rule_version_reset": rule_version_reset,
             "ok": True,
             "mode": "mail_business_backlog",
             "source_count": len(sources),
@@ -1052,6 +1149,9 @@ def sync_fanxiu_mail_business_backlog(
     ]
     recent_processed = list(dict.fromkeys([*[_decoded_source_key(source) for source in latest_sources], *previous_recent]))[:2000]
     payload = {
+        "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "business_rule_version": PACKET_BUSINESS_RULE_VERSION,
+        "rule_version_reset": rule_version_reset,
         "ok": bool(mail_sync.get("ok", True)),
         "mode": "mail_business_backlog",
         "source_count": len(sources),
@@ -1241,8 +1341,12 @@ def catch_up_fanxiu_packet_facts(
         flush_result = {"ok": False, "flushed": False, "error": str(exc)}
 
     pcap_path = str(flush_result.get("pcap_path") or "").strip() if isinstance(flush_result, dict) else ""
+    decoded_record_db_prune = {
+        "ok": True,
+        "skipped": True,
+        "reason": "realtime_catch_up_does_not_run_maintenance_prune",
+    }
     if not pcap_path:
-        decoded_record_db_prune = _prune_decoded_record_db_cache()
         return {
             "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
             "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True)),
@@ -1269,7 +1373,6 @@ def catch_up_fanxiu_packet_facts(
         max_streams=max(1, int(max_streams)),
         scan_existing_decoded=False,
     )
-    decoded_record_db_prune = _prune_decoded_record_db_cache()
     return {
         "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
         "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True) and sync_result.get("ok", True)),
@@ -1388,8 +1491,9 @@ def sync_fanxiu_live_capture_backlog(
         scanned += 1
         try:
             path_mtime = float(path.stat().st_mtime)
-            latest_scanned_mtime = max(path_mtime, latest_scanned_mtime)
-            latest_scanned_pcap = str(path)
+            if path_mtime >= latest_scanned_mtime:
+                latest_scanned_mtime = path_mtime
+                latest_scanned_pcap = str(path)
         except OSError:
             path_mtime = 0.0
         try:
@@ -1567,6 +1671,14 @@ def sync_fanxiu_live_capture_backlog(
         digest = str(error.get("digest") or "").strip()
         if digest:
             merged_errors[digest] = error
+    merged_pcap_states = _merge_pcap_states(previous_state, pcap_state_updates)
+    if use_cursor:
+        confirmed_cursor_mtime, confirmed_cursor_pcap = _confirmed_cursor_from_contiguous_states(
+            stable_paths,
+            merged_pcap_states,
+            previous_mtime=previous_cursor_mtime,
+            previous_pcap=str(previous_state.get("confirmed_cursor_pcap") or previous_state.get("cursor_pcap") or ""),
+        )
     payload = {
         "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
         "ok": not errors,
@@ -1590,7 +1702,7 @@ def sync_fanxiu_live_capture_backlog(
         "decoded": decoded,
         "skipped": skipped[-20:],
         "errors": list(merged_errors.values())[-20:],
-        "pcap_states": _merge_pcap_states(previous_state, pcap_state_updates),
+        "pcap_states": merged_pcap_states,
     }
     _write_json(worker_state_path, _compact_worker_state_payload(payload))
     return payload
@@ -1641,7 +1753,38 @@ def sync_fanxiu_capture_maintenance_backlog(
         newest_first=True,
         limit=limit,
     )
-    emit_progress("decoded_record_backlog", live_capture_backlog=result)
+    stale_pcaps, stale_decoder_record_count, missing_decoder_evidence_count = _stale_decoder_evidence_pcaps(
+        data_dir,
+        limit=max(1, min(int(limit), 8)),
+    )
+    if stale_pcaps:
+        parser_version_backfill = sync_fanxiu_capture_paths(
+            stale_pcaps,
+            data_dir=data_dir,
+            max_streams=max_streams,
+            scan_existing_decoded=False,
+        )
+    else:
+        parser_version_backfill = {
+            "ok": stale_decoder_record_count == 0,
+            "skipped": True,
+            "reason": (
+                "no_stale_decoder_evidence"
+                if stale_decoder_record_count == 0
+                else "stale_decoder_evidence_missing"
+            ),
+        }
+    parser_version_backfill["stale_decoder_record_count"] = stale_decoder_record_count
+    parser_version_backfill["selected_pcap_count"] = len(stale_pcaps)
+    parser_version_backfill["missing_evidence_count"] = missing_decoder_evidence_count
+    if missing_decoder_evidence_count:
+        parser_version_backfill["ok"] = False
+        parser_version_backfill["error"] = "部分旧版 decoded 记录的原始 pcap 证据已缺失，无法重解码"
+    emit_progress(
+        "decoded_record_backlog",
+        live_capture_backlog=result,
+        parser_version_backfill=parser_version_backfill,
+    )
     if include_decoded_record_backlog:
         decoded_record_sync = sync_fanxiu_decoded_record_backlog(data_dir=data_dir, limit=max(64, int(limit) * 4))
     else:
@@ -1699,10 +1842,12 @@ def sync_fanxiu_capture_maintenance_backlog(
     decoded_record_db_prune = _prune_decoded_record_db_cache()
     payload = {
         **result,
+        "ok": bool(result.get("ok", True) and parser_version_backfill.get("ok", True)),
         "mode": "maintenance",
         "updated_at": _now_text(),
         "decoded_record_db_sync": decoded_record_sync,
         "decoded_record_db_prune": decoded_record_db_prune,
+        "parser_version_backfill": parser_version_backfill,
         "activity_packet_sync": activity_sync,
         "historical_runtime_business_sync": historical_runtime_sync,
         "historical_mail_packet_sync": historical_mail_sync,
@@ -1732,7 +1877,6 @@ class FanxiuPacketInsightWorker:
         self._last_maintenance_result: dict[str, Any] = {}
         self._realtime_cycle_started_at: float | None = None
         self._maintenance_cycle_started_at: float | None = None
-        self._last_auto_maintenance_at: float | None = None
 
     def _mark_realtime_heartbeat(self, **extra: Any) -> None:
         with self._lock:
@@ -1856,7 +2000,10 @@ class FanxiuPacketInsightWorker:
             "skipped": True,
             "reason": "realtime_scan_only_handles_recent_live_capture",
         }
-        result["auto_maintenance"] = self._maybe_run_auto_maintenance(result)
+        result["maintenance_handoff"] = {
+            "triggered": False,
+            "reason": "maintenance_runs_on_independent_scheduler",
+        }
         with self._lock:
             self._last_realtime_result = result
         return result
@@ -1928,68 +2075,5 @@ class FanxiuPacketInsightWorker:
                 with self._lock:
                     self._maintenance_cycle_started_at = None
             self._maintenance_stop_event.wait(self.maintenance_interval_seconds)
-
-    def _auto_maintenance_lag_threshold_seconds(self) -> float:
-        return max(
-            DEFAULT_AUTO_MAINTENANCE_LAG_SECONDS,
-            self.scan_interval_seconds * 8.0,
-            self.stable_seconds * 8.0,
-        )
-
-    def _auto_maintenance_cooldown_seconds(self) -> float:
-        return min(
-            DEFAULT_AUTO_MAINTENANCE_COOLDOWN_SECONDS,
-            max(180.0, self.maintenance_interval_seconds / 3.0),
-        )
-
-    def _maybe_run_auto_maintenance(self, realtime_result: dict[str, Any]) -> dict[str, Any]:
-        if not bool(realtime_result.get("has_unconfirmed_gap")):
-            return {"triggered": False, "reason": "no_unconfirmed_gap"}
-        latest_scanned_mtime = realtime_result.get("latest_scanned_mtime")
-        if not isinstance(latest_scanned_mtime, (int, float)) or latest_scanned_mtime <= 0:
-            return {"triggered": False, "reason": "missing_latest_scanned_mtime"}
-        latest_live = latest_fanxiu_live_capture_summary()
-        latest_live_mtime = latest_live.get("latest_mtime") if isinstance(latest_live, dict) else None
-        if not isinstance(latest_live_mtime, (int, float)) or latest_live_mtime <= 0:
-            return {"triggered": False, "reason": "missing_latest_live_capture"}
-        lag_seconds = max(0.0, float(latest_live_mtime) - float(latest_scanned_mtime))
-        threshold_seconds = self._auto_maintenance_lag_threshold_seconds()
-        if lag_seconds <= threshold_seconds:
-            return {
-                "triggered": False,
-                "reason": "lag_below_threshold",
-                "lag_seconds": lag_seconds,
-                "threshold_seconds": threshold_seconds,
-            }
-        with self._lock:
-            if self._maintenance_cycle_started_at is not None:
-                return {
-                    "triggered": False,
-                    "reason": "maintenance_already_running",
-                    "lag_seconds": lag_seconds,
-                    "threshold_seconds": threshold_seconds,
-                }
-            cooldown_seconds = self._auto_maintenance_cooldown_seconds()
-            if (
-                self._last_auto_maintenance_at is not None
-                and (time.time() - self._last_auto_maintenance_at) < cooldown_seconds
-            ):
-                return {
-                    "triggered": False,
-                    "reason": "cooldown_active",
-                    "lag_seconds": lag_seconds,
-                    "threshold_seconds": threshold_seconds,
-                    "cooldown_seconds": cooldown_seconds,
-                }
-            self._last_auto_maintenance_at = time.time()
-        maintenance_result = self.maintenance_once()
-        return {
-            "triggered": True,
-            "reason": "realtime_cursor_lagging",
-            "lag_seconds": lag_seconds,
-            "threshold_seconds": threshold_seconds,
-            "maintenance_result": _compact_worker_state_payload(maintenance_result),
-        }
-
 
 fanxiu_packet_insight_worker = FanxiuPacketInsightWorker()
