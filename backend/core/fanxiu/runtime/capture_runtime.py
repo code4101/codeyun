@@ -14,7 +14,7 @@ import psutil
 
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
-from backend.core.runtime.process_launcher import popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"

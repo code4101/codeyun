@@ -17,7 +17,7 @@ import uuid
 import jieba
 from pypinyin import Style, lazy_pinyin
 
-from backend.core.runtime.process_launcher import popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet
 
 
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"

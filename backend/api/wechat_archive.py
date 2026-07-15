@@ -21,7 +21,7 @@ from sqlalchemy.orm import object_session
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
 from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES

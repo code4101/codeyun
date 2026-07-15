@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from backend.core.runtime import process_launcher
+from backend.core.services import launcher as process_launcher
 
 
 def test_run_quiet_delegates_to_hidden_runner(monkeypatch):

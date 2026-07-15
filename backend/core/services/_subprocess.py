@@ -211,7 +211,7 @@ def apply_node_windows_hide_env(env: dict[str, str], *, root_dir: str | Path | N
 
 def python_no_window_sitecustomize_dir(*, root_dir: str | Path | None = None) -> Path:
     root = Path(root_dir).resolve(strict=False) if root_dir is not None else _repo_root_from_runtime()
-    return root / "backend" / "core" / "runtime" / "no_window_sitecustomize"
+    return root / "backend" / "core" / "services" / "no_window_sitecustomize"
 
 
 def apply_python_no_window_env(env: dict[str, str], *, root_dir: str | Path | None = None) -> dict[str, str]:

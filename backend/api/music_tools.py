@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 from backend.core.freebill.open_score_library import MidiParseError, get_open_score_work, list_open_score_works
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root

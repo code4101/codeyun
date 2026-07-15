@@ -31,7 +31,7 @@ from backend.core.fanxiu.data_annotation.runner import (
     get_fanxiu_runtime_runner_class,
     register_fanxiu_runtime_runner_class,
 )
-from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.services.launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.storage import (
     DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID,

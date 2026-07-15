@@ -55,8 +55,8 @@ def test_codeyun_dev_runner_event_is_counted():
         "class": "PseudoConsoleWindow",
         "chain": [
             {
-                "name": "pythonw.exe",
-                "cmdline": ["D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe", "dev.py"],
+                "name": "python.exe",
+                "cmdline": ["D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe", "dev.py"],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
             }
         ],
@@ -78,9 +78,9 @@ def test_codeyun_nearby_process_evidence_is_counted():
         ],
         "nearby_processes": [
             {
-                "name": "pythonw.exe",
+                "name": "python.exe",
                 "cmdline": [
-                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe",
+                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe",
                     "D:\\home\\chenkunze\\slns\\codeyun\\dev.py",
                 ],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
@@ -132,11 +132,11 @@ def test_external_git_in_codeyun_cwd_is_not_counted_by_cwd_only():
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
             },
             {
-                "name": "pythonw.exe",
+                "name": "python.exe",
                 "cmdline": [
-                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe",
+                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe",
                     "-m",
-                    "backend.core.runtime.uvicorn_hidden",
+                    "backend.app:app",
                 ],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
             },
@@ -164,9 +164,9 @@ def test_git_window_with_codeyun_parent_marker_is_counted():
                 "cmdline": ["git.exe", "status", "--porcelain"],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
                 "parent": {
-                    "name": "pythonw.exe",
+                    "name": "python.exe",
                     "cmdline": [
-                        "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe",
+                        "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe",
                         "dev.py",
                     ],
                     "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
@@ -206,11 +206,11 @@ def test_generic_terminal_prefers_external_codex_evidence_over_nearby_codeyun_se
                 },
             },
             {
-                "name": "pythonw.exe",
+                "name": "python.exe",
                 "cmdline": [
-                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe",
+                    "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe",
                     "-m",
-                    "backend.core.runtime.uvicorn_hidden",
+                    "backend.app:app",
                 ],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
             },
@@ -249,20 +249,20 @@ def test_external_codex_terminal_with_uvicorn_worker_nearby_is_workspace_event()
                 },
             },
             {
-                "name": "pythonw.exe",
+                "name": "python.exe",
                 "cmdline": [
-                    "C:\\Users\\kzche\\AppData\\Roaming\\uv\\python\\cpython-3.13.11-windows-x86_64-none\\pythonw.exe",
+                    "C:\\Users\\kzche\\AppData\\Roaming\\uv\\python\\cpython-3.13.11-windows-x86_64-none\\python.exe",
                     "-c",
                     "from multiprocessing.spawn import spawn_main; spawn_main(parent_pid=52512, pipe_handle=1924)",
                     "--multiprocessing-fork",
                 ],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
                 "parent": {
-                    "name": "pythonw.exe",
+                    "name": "python.exe",
                     "cmdline": [
-                        "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\pythonw.exe",
+                        "D:\\home\\chenkunze\\slns\\codeyun\\.venv\\Scripts\\python.exe",
                         "-m",
-                        "backend.core.runtime.uvicorn_hidden",
+                        "backend.app:app",
                     ],
                     "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
                 },

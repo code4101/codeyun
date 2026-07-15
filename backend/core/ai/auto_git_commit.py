@@ -15,7 +15,7 @@ from backend.core.ai.chat import AiProviderConfig
 from backend.core.ai.git_commit import AiGitCommitError, resolve_ai_git_commit_runtime_config as resolve_ai_runtime_config
 from backend.core.ai.git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.ai.git_repos import list_user_ai_git_repos
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.ai.git_tools import GitToolError, create_git_commit, inspect_git_repository
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import AppSetting, AutoGitCommitRun, User

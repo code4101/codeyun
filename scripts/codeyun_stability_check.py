@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if os.fspath(ROOT_DIR) not in sys.path:
     sys.path.insert(0, os.fspath(ROOT_DIR))
 
-from backend.core.runtime.process_launcher import python_script_service_command, run_quiet
+from backend.core.services.launcher import python_script_service_command, run_quiet
 from scripts import codeyun_popup_audit
 from scripts import codeyun_watchdog
 

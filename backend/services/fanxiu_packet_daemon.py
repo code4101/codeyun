@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from backend.core.runtime.process_launcher import install_child_process_no_window_default
+from backend.core.services.launcher import install_child_process_no_window_default
 
 install_child_process_no_window_default()
 

@@ -15,14 +15,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from backend.core.runtime.process_launcher import (
+from backend.core.services.launcher import (
     apply_background_node_env,
     background_popen_kwargs,
     check_call_quiet,
     node_npm_command,
     popen_service,
     resolve_npm_executable,
-    resolve_pythonw,
     run_quiet,
 )
 
@@ -854,28 +853,19 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
     else:
         log("Launching backend with uvicorn (reload disabled) ...")
 
-    if os.name == "nt":
-        cmd = [
-            resolve_pythonw(root_dir, python_executable),
-            "-m",
-            "backend.core.runtime.uvicorn_hidden",
-            "--host",
-            backend_host,
-            "--port",
-            str(backend_port),
-        ]
-    else:
-        cmd = [
-            python_executable,
-            "-m",
-            "uvicorn",
-            "backend.app:app",
-            "--host",
-            backend_host,
-            "--port",
-            str(backend_port),
-        ]
-    return popen_service(cmd, cwd=root_dir, env=env)
+    cmd = [
+        python_executable,
+        "-m",
+        "uvicorn",
+        "backend.app:app",
+        "--host",
+        backend_host,
+        "--port",
+        str(backend_port),
+    ]
+    # The backend is part of the visible CodeYun console host.  It inherits the
+    # existing console and therefore cannot create a second flashing window.
+    return subprocess.Popen(cmd, cwd=root_dir, env=env)
 
 
 def ensure_frontend_deps(frontend_dir, env, npm_exec):

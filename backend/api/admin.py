@@ -16,7 +16,7 @@ from backend.core.ai.auto_git_commit import (
     create_auto_git_commit_run,
     get_auto_git_commit_status,
 )
-from backend.core.runtime.background_task_runner import (
+from backend.core.jobs.scheduler import (
     BACKGROUND_TASK_SPECS,
     get_background_task_runner_snapshot,
     get_background_task_spec,
@@ -29,7 +29,7 @@ from backend.core.runtime.background_task_runner import (
     set_background_task_deleted,
     set_background_task_enabled,
 )
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.devices.device import get_device_id
 from backend.core.resources.attachments import index_attachment_file_resource
 from backend.core.notes.metadata_feedback import (

@@ -22,7 +22,7 @@ from pyxllib.prog import process_runtime
 import uuid
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.process_launcher import background_popen_kwargs, popen_service, resolve_python, resolve_pythonw, run_quiet
+from backend.core.services.launcher import background_popen_kwargs, popen_service, resolve_python, resolve_pythonw, run_quiet
 
 # --- Shared Constants (Consider moving to a config file) ---
 settings = get_settings()
@@ -70,7 +70,7 @@ def _is_live_process(proc: psutil.Process) -> bool:
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
-    from backend.core.runtime.process_launcher import background_popen_kwargs
+    from backend.core.services.launcher import background_popen_kwargs
 
     return background_popen_kwargs(independent=independent)
 

@@ -185,6 +185,7 @@ class FanxiuJupyterBinding:
         normalized = dict(payload or {})
         if callable(definition.normalize_payload):
             normalized = definition.normalize_payload(normalized)
+
         def execute_atomic_task():
             yield from self.runtime.goto_view(definition.stable_start_scene_id)
             value = definition.handler(
@@ -194,7 +195,10 @@ class FanxiuJupyterBinding:
                 self.stop_event,
             )
             if isinstance(value, GeneratorType):
-                return (yield from value)
+                value = yield from value
+            result_name, _message = self.runner._normalize_runtime_task_result(value)
+            if result_name != "manual_check_pending":
+                yield from self.runtime.goto_view(definition.stable_start_scene_id)
             return value
 
         if definition.stable_start_scene_id is None:

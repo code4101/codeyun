@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 from backend.core.settings import get_settings
 from backend.models import AppSetting
 
@@ -278,7 +278,7 @@ def run_fanxiu_tianjige_quiz_worker(
 
 
 def enqueue_fanxiu_tianjige_quiz() -> str | None:
-    from backend.core.background_task_queue import background_task_queue
+    from backend.core.jobs.executor import background_task_queue
 
     task_id, _ = background_task_queue.enqueue_once(
         FANXIU_TIANJIGE_QUIZ_TASK_KEY,

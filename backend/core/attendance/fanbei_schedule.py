@@ -23,7 +23,7 @@ from backend.core.attendance.service import (
     get_or_create_attendance_service_config,
     serialize_user_device,
 )
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.devices.device import get_device_id
 from backend.core.attendance.fanbei_course_sheets import (
     FANBEI_ATTENDANCE_SHEET_NUMERIC_ID,

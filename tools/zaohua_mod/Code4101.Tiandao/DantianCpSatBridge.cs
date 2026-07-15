@@ -87,52 +87,66 @@ namespace Code4101.Zaohua.Tiandao
         internal string StandardError;
     }
 
+    internal sealed class DantianSolverBuildResult
+    {
+        internal DantianSolverRequest Request;
+        internal string Error;
+        internal long ElapsedMilliseconds;
+    }
+
     internal static class DantianCpSatBridge
     {
         private const int ProtocolVersion = 1;
 
-        internal static bool TryBuildRequest(DantianLayoutProblem problem,
+        internal static Task<DantianSolverBuildResult> BuildAsync(DantianLayoutProblem problem,
             DantianLayoutScore currentScore, int timeLimitMs, int seed,
+            CancellationToken cancellationToken)
+        {
+            return Task.Run(() =>
+            {
+                var watch = Stopwatch.StartNew();
+                var succeeded = TryBuildRequest(problem, currentScore, timeLimitMs, seed,
+                    cancellationToken, out var request, out var error);
+                return new DantianSolverBuildResult
+                {
+                    Request = succeeded ? request : null,
+                    Error = error,
+                    ElapsedMilliseconds = watch.ElapsedMilliseconds,
+                };
+            }, cancellationToken);
+        }
+
+        private static bool TryBuildRequest(DantianLayoutProblem problem,
+            DantianLayoutScore currentScore, int timeLimitMs, int seed,
+            CancellationToken cancellationToken,
             out DantianSolverRequest request, out string error)
         {
             request = null;
             error = null;
             try
             {
-                var controller = Singleton<DantianController>.Instance;
-                if (controller == null)
-                {
-                    error = "丹田控制器不可用";
-                    return false;
-                }
-
-                var targetLayouts = problem.Pieces.Select(piece =>
-                    problem.Board.Select(cell => new TbDantianSto
-                    {
-                        id = cell.id,
-                        npcStoId = cell.npcStoId,
-                        x = cell.x,
-                        y = cell.y,
-                        artMagicId = piece.Id,
-                    }).ToList()).ToArray();
                 var maskCache = new Dictionary<string, HashSet<int>>();
                 var rules = new List<DantianSolverRule>();
                 var currentMultiplierIndex = 0;
                 for (var sourcePieceIndex = 0;
                      sourcePieceIndex < problem.Pieces.Count;
-                     sourcePieceIndex++)
+                    sourcePieceIndex++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var sourcePiece = problem.Pieces[sourcePieceIndex];
                     for (var ruleIndex = 0; ruleIndex < sourcePiece.Rules.Count; ruleIndex++)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var cfg = sourcePiece.Rules[ruleIndex];
                         var parsed = ParseMultiplier(cfg.upMulType, cfg.maxUpMul);
+                        var unconditionalGate = IsUnconditionalTargetEffect(cfg.targetEff);
                         var options = new DantianSolverSourceOption[sourcePiece.Placements.Count];
                         var maximumCount = 0;
                         for (var sourcePlacementIndex = 0;
                              sourcePlacementIndex < sourcePiece.Placements.Count;
                              sourcePlacementIndex++)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             var upMasks = new HashSet<int>[problem.Pieces.Count];
                             var gateMasks = new HashSet<int>[problem.Pieces.Count];
                             for (var targetPieceIndex = 0;
@@ -145,15 +159,14 @@ namespace Code4101.Zaohua.Tiandao
                                     gateMasks[targetPieceIndex] = new HashSet<int>();
                                     continue;
                                 }
-                                var layout = targetLayouts[targetPieceIndex];
-                                var source = sourcePiece.Placements[sourcePlacementIndex].CellIndices
-                                    .Select(index => layout[index]).ToList();
-                                upMasks[targetPieceIndex] = GetCachedMask(maskCache, controller,
-                                    source, layout, cfg.upMulEff, problem, sourcePieceIndex,
-                                    sourcePlacementIndex, targetPieceIndex);
-                                gateMasks[targetPieceIndex] = GetCachedMask(maskCache, controller,
-                                    source, layout, cfg.targetEff, problem, sourcePieceIndex,
-                                    sourcePlacementIndex, targetPieceIndex);
+                                upMasks[targetPieceIndex] = GetCachedMask(maskCache,
+                                    cfg.upMulEff, problem, sourcePieceIndex,
+                                    sourcePlacementIndex, targetPieceIndex, cancellationToken);
+                                gateMasks[targetPieceIndex] = unconditionalGate
+                                    ? new HashSet<int>()
+                                    : GetCachedMask(maskCache, cfg.targetEff, problem,
+                                        sourcePieceIndex, sourcePlacementIndex, targetPieceIndex,
+                                        cancellationToken);
                             }
 
                             var features = BuildCountFeatures(problem, parsed, upMasks,
@@ -162,7 +175,14 @@ namespace Code4101.Zaohua.Tiandao
                             options[sourcePlacementIndex] = new DantianSolverSourceOption
                             {
                                 countFeatures = features.ToArray(),
-                                gateFeature = BuildGateFeature(problem, gateMasks, sourcePieceIndex),
+                                // targetEff=0 means the rule has no separate target gate.  The
+                                // native evaluator treats the source piece itself as a valid
+                                // target, so requiring another piece here incorrectly forces the
+                                // multiplier to zero (for example, 涌泉化春霖 x5 -> x0).
+                                gateFeature = unconditionalGate
+                                    ? BuildAlwaysFeature(sourcePieceIndex,
+                                        sourcePiece.Placements.Count)
+                                    : BuildGateFeature(problem, gateMasks, sourcePieceIndex),
                             };
                         }
 
@@ -210,6 +230,11 @@ namespace Code4101.Zaohua.Tiandao
                     rules = rules.ToArray(),
                 };
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                error = "求解已取消";
+                return false;
             }
             catch (Exception exception)
             {
@@ -330,25 +355,160 @@ namespace Code4101.Zaohua.Tiandao
             return candidates.FirstOrDefault(File.Exists);
         }
 
-        private static HashSet<int> GetMask(DantianController controller,
-            List<TbDantianSto> source, List<TbDantianSto> layout, string effect,
-            DantianLayoutProblem problem)
+        private static HashSet<int> GetMask(string effect,
+            DantianLayoutProblem problem, int sourcePieceIndex, int sourcePlacementIndex,
+            int targetPieceIndex, CancellationToken cancellationToken)
         {
-            var valid = controller.GetVaildArtMagicIdList(source, layout, effect);
-            return new HashSet<int>((valid ?? new List<TbDantianSto>())
-                .Where(cell => cell != null && !source.Contains(cell))
-                .Select(cell => problem.CellIndexById.TryGetValue(cell.id, out var index) ? index : -1)
-                .Where(index => index >= 0));
+            var sourcePiece = problem.Pieces[sourcePieceIndex];
+            var targetPiece = problem.Pieces[targetPieceIndex];
+            var sourceCells = new HashSet<int>(
+                sourcePiece.Placements[sourcePlacementIndex].CellIndices);
+            var distances = GetDistances(problem, sourceCells);
+            var mask = new HashSet<int>();
+            for (var candidateCell = 0; candidateCell < problem.Board.Count; candidateCell++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (sourceCells.Contains(candidateCell)) continue;
+                if (MatchesEffect(effect, problem, sourceCells, distances,
+                        candidateCell, targetPiece))
+                    mask.Add(candidateCell);
+            }
+            return mask;
+        }
+
+        private static int[] GetDistances(DantianLayoutProblem problem, HashSet<int> sourceCells)
+        {
+            var distances = Enumerable.Repeat(-1, problem.Board.Count).ToArray();
+            var queue = new Queue<int>();
+            foreach (var sourceCell in sourceCells)
+            {
+                distances[sourceCell] = 0;
+                queue.Enqueue(sourceCell);
+            }
+            while (queue.Count > 0)
+            {
+                var cell = queue.Dequeue();
+                foreach (var neighbor in problem.NeighborIndices[cell])
+                {
+                    if (distances[neighbor] >= 0) continue;
+                    distances[neighbor] = distances[cell] + 1;
+                    queue.Enqueue(neighbor);
+                }
+            }
+            return distances;
+        }
+
+        private static bool MatchesEffect(string effect, DantianLayoutProblem problem,
+            HashSet<int> sourceCells, int[] distances, int candidateCell,
+            DantianLayoutPiece targetPiece)
+        {
+            // Native GetVaildArtMagicIdList returns the source cells for an empty/0
+            // expression. A mask describes other target pieces, so none can match.
+            if (string.IsNullOrWhiteSpace(effect) || effect.Trim() == "0") return false;
+            return effect.Split('&').All(group => group.Split('|').Any(raw =>
+                MatchesEffectToken(raw, problem, sourceCells, distances,
+                    candidateCell, targetPiece)));
+        }
+
+        private static bool MatchesEffectToken(string raw, DantianLayoutProblem problem,
+            HashSet<int> sourceCells, int[] distances, int candidateCell,
+            DantianLayoutPiece targetPiece)
+        {
+            var parts = (raw ?? string.Empty).Split('#');
+            if (!int.TryParse(parts[0], out var signedCode)) return true;
+            var negate = signedCode < 0;
+            var code = Math.Abs(signedCode);
+            var index = 0;
+            if (parts.Length > 1) int.TryParse(parts[1], out index);
+            var candidate = problem.Board[candidateCell];
+            var matched = false;
+            switch (code)
+            {
+                case 1:
+                    matched = sourceCells.Any(cell => problem.Board[cell].x == candidate.x &&
+                        problem.Board[cell].y < candidate.y);
+                    break;
+                case 2:
+                    matched = sourceCells.Any(cell => problem.Board[cell].x == candidate.x &&
+                        problem.Board[cell].y > candidate.y);
+                    break;
+                case 3:
+                    matched = sourceCells.Any(cell => problem.Board[cell].y == candidate.y &&
+                        problem.Board[cell].x > candidate.x);
+                    break;
+                case 4:
+                    matched = sourceCells.Any(cell => problem.Board[cell].y == candidate.y &&
+                        problem.Board[cell].x < candidate.x);
+                    break;
+                case 5:
+                    matched = sourceCells.Any(cell => problem.Board[cell].x - candidate.x ==
+                        problem.Board[cell].y - candidate.y);
+                    break;
+                case 6:
+                    matched = sourceCells.Any(cell => problem.Board[cell].x - candidate.x ==
+                        candidate.y - problem.Board[cell].y);
+                    break;
+                case 7:
+                    matched = true;
+                    break;
+                case 10:
+                    matched = distances[candidateCell] == 1;
+                    break;
+                case 11:
+                    matched = distances[candidateCell] != 1;
+                    break;
+                case 12:
+                    matched = distances[candidateCell] > 0;
+                    break;
+                case 13:
+                    matched = distances[candidateCell] == 1 &&
+                        (targetPiece.IsArt || targetPiece.IsMagic);
+                    break;
+                case 50:
+                    matched = targetPiece.IsMagic && targetPiece.IsAttackMagic;
+                    break;
+                case 51:
+                    matched = targetPiece.IsMagic && targetPiece.IsDefenceMagic;
+                    break;
+                case 102:
+                    matched = false;
+                    break;
+                case 100:
+                    matched = targetPiece.IsArt;
+                    break;
+                case 101:
+                    matched = targetPiece.IsMagic;
+                    break;
+                case 200:
+                    matched = targetPiece.IsArt && targetPiece.Id.sedId == index;
+                    break;
+                case 201:
+                    matched = targetPiece.IsMagic && targetPiece.Id.sedId == index;
+                    break;
+                default:
+                    if (code >= 20 && code <= 28)
+                        matched = targetPiece.Attribute + 20 == code;
+                    else if (code >= 40 && code <= 45)
+                        matched = (targetPiece.IsMagic && targetPiece.Type - 221 == code - 40) ||
+                                  (targetPiece.IsArt && targetPiece.Type - 201 == code - 40);
+                    else if (code >= 61 && code <= 69)
+                        matched = distances[candidateCell] == code - 60;
+                    else
+                        matched = true;
+                    break;
+            }
+            return negate ? !matched : matched;
         }
 
         private static HashSet<int> GetCachedMask(Dictionary<string, HashSet<int>> cache,
-            DantianController controller, List<TbDantianSto> source, List<TbDantianSto> layout,
-            string effect, DantianLayoutProblem problem, int sourcePiece, int sourcePlacement,
-            int targetPiece)
+            string effect, DantianLayoutProblem problem,
+            int sourcePiece, int sourcePlacement, int targetPiece,
+            CancellationToken cancellationToken)
         {
             var key = $"{sourcePiece}:{sourcePlacement}:{targetPiece}:{effect ?? string.Empty}";
             if (cache.TryGetValue(key, out var mask)) return mask;
-            mask = GetMask(controller, source, layout, effect, problem);
+            mask = GetMask(effect, problem, sourcePiece, sourcePlacement,
+                targetPiece, cancellationToken);
             cache[key] = mask;
             return mask;
         }
@@ -439,6 +599,31 @@ namespace Code4101.Zaohua.Tiandao
             return new DantianSolverFeature { terms = terms.ToArray() };
         }
 
+        private static bool IsUnconditionalTargetEffect(string effect)
+        {
+            return string.Equals((effect ?? string.Empty).Trim(), "0",
+                StringComparison.Ordinal);
+        }
+
+        private static DantianSolverFeature BuildAlwaysFeature(int sourcePieceIndex,
+            int placementCount)
+        {
+            var flags = new byte[(placementCount + 7) / 8];
+            for (var placement = 0; placement < placementCount; placement++)
+                flags[placement >> 3] |= (byte)(1 << (placement & 7));
+            return new DantianSolverFeature
+            {
+                terms = new[]
+                {
+                    new DantianSolverTerm
+                    {
+                        piece = sourcePieceIndex,
+                        placementFlags = Convert.ToBase64String(flags),
+                    },
+                },
+            };
+        }
+
         private static byte[] PlacementFlags(DantianLayoutPiece piece, HashSet<int> mask,
             Func<int, bool> predicate)
         {
@@ -456,10 +641,10 @@ namespace Code4101.Zaohua.Tiandao
 
         private static bool MatchesCountKind(DantianLayoutPiece piece, ParsedMultiplier parsed)
         {
-            if (parsed.CountKind == 4) return TbArtImpl.IsArt(piece.Id);
-            if (parsed.CountKind == 5) return TbMagicImpl.IsMagic(piece.Id);
-            if (parsed.CountKind == 6) return TbArtImpl.IsArt(piece.Id) && piece.Id.sedId == parsed.Index;
-            if (parsed.CountKind == 7) return TbMagicImpl.IsMagic(piece.Id) && piece.Id.sedId == parsed.Index;
+            if (parsed.CountKind == 4) return piece.IsArt;
+            if (parsed.CountKind == 5) return piece.IsMagic;
+            if (parsed.CountKind == 6) return piece.IsArt && piece.Id.sedId == parsed.Index;
+            if (parsed.CountKind == 7) return piece.IsMagic && piece.Id.sedId == parsed.Index;
             return true;
         }
 

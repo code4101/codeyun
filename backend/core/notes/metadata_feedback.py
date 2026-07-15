@@ -23,8 +23,8 @@ from backend.core.ai.chat import (
     OllamaClientError,
     chat_with_provider,
 )
-from backend.core.runtime.background_task_queue import background_task_queue
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.jobs.executor import background_task_queue
+from backend.core.services.launcher import run_quiet
 from backend.core.notes.progress import get_completion_progress_expr, is_note_system_custom_field_key
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import (

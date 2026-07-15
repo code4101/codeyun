@@ -15,7 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if os.fspath(ROOT_DIR) not in sys.path:
     sys.path.insert(0, os.fspath(ROOT_DIR))
 
-from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.services.launcher import popen_python_script_service
 
 MONITOR_DIR = Path(tempfile.gettempdir()) / "codeyun" / "visible-console-monitor"
 EVENTS_PATH = MONITOR_DIR / "events_24h.jsonl"
@@ -212,7 +212,6 @@ def _has_codeyun_marker(text: str) -> bool:
     markers = (
         "dev.py",
         "backend.app:app",
-        "backend.core.runtime.uvicorn_hidden",
         "backend.services.ocr_daemon",
         "backend.services.game_window_daemon",
         "frontend/node_modules/vite/bin/vite.js",
@@ -284,7 +283,7 @@ def _has_external_codex_console_evidence(event: dict[str, Any]) -> bool:
 
 
 def _is_uvicorn_multiprocessing_worker_text(text: str) -> bool:
-    return "from multiprocessing.spawn import spawn_main" in text and "backend.core.runtime.uvicorn_hidden" in text
+    return "from multiprocessing.spawn import spawn_main" in text and "backend.app:app" in text
 
 
 def _has_uvicorn_multiprocessing_worker_evidence(event: dict[str, Any]) -> bool:

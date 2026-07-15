@@ -2537,6 +2537,8 @@ def test_wait_scene_jump_treats_layer3_child_landing_as_source_stall(monkeypatch
     daily["layer"] = 1
     parent["children"] = [weak_child]
     tree = [parent, daily]
+    path = tmp_path / "asset-tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
     ctx = {"asset_tree": tree, "images": {34: parent, 68: weak_child, 69: daily}}
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
@@ -2553,7 +2555,7 @@ def test_wait_scene_jump_treats_layer3_child_landing_as_source_stall(monkeypatch
     result = runner._run_direct_runtime_action(
         lambda: runner._wait_scene_jump_result(
             ctx,
-            tmp_path / "asset-tree.json",
+            path,
             tree,
             source_scene_id=34,
             target_scene_id=69,
@@ -2566,6 +2568,35 @@ def test_wait_scene_jump_treats_layer3_child_landing_as_source_stall(monkeypatch
     )
 
     assert result == 34
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["shapes"][1]["sceneJumpTarget"] == "34(1),69"
+
+
+def test_go_scene_next_edge_treats_self_landing_frequency_as_soft_non_progress_evidence():
+    runner = create_fanxiu_runtime_runner()
+    mostly_self_shape = {
+        "id": "mostly-self",
+        "kind": "rect",
+        "title": "返回",
+        "sceneJumpTarget": "1(90),2(10)",
+    }
+    reliable_shape = {
+        "id": "reliable",
+        "kind": "rect",
+        "title": "返回",
+        "sceneJumpTarget": "4(5)",
+    }
+    tree = [
+        _scene_image("起点", "0001.png", [mostly_self_shape, reliable_shape]),
+        _scene_image("落点甲", "0002.png", [{"id": "to-target-a", "kind": "rect", "title": "返回", "sceneJumpTarget": "3"}]),
+        _scene_image("目标", "0003.png", []),
+        _scene_image("落点乙", "0004.png", [{"id": "to-target-b", "kind": "rect", "title": "返回", "sceneJumpTarget": "3"}]),
+    ]
+
+    decision = runner._select_scene_next_edge(tree, 1, 3)
+
+    assert decision is not None
+    assert decision["edge"]["shape"] is reliable_shape
+    assert "自身落点" not in decision["reason"]
 
 
 def test_identify_scene_number_for_route_uses_ordered_detect_candidates(monkeypatch):
@@ -5021,6 +5052,80 @@ def test_go_scene_records_new_landing_and_replans_to_target(tmp_path, monkeypatc
     assert saved[0]["shapes"][0]["sceneJumpTarget"] == "2(1),3"
     assert "observedLanding" not in saved[0]["shapes"][0]
     assert saved[1]["shapes"][0]["sceneJumpTarget"] == "3(1)"
+
+
+def test_go_scene_explores_empty_confirm_landing_then_replans_to_world(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    confirm_shape = {
+        "id": "confirm",
+        "kind": "rect",
+        "title": "确定",
+        "x": 0.4,
+        "y": 0.7,
+        "w": 0.2,
+        "h": 0.1,
+        "sceneJumpTarget": "",
+    }
+    back_shape = {
+        "id": "back",
+        "kind": "rect",
+        "title": "返回",
+        "x": 0.05,
+        "y": 0.9,
+        "w": 0.1,
+        "h": 0.08,
+        "sceneJumpTarget": "34(30)",
+    }
+    tree = [
+        _scene_image("进攻记录", "0330.jpg", [confirm_shape], layer=1),
+        _scene_image("奇袭魔界", "0319.jpg", [back_shape], layer=1),
+        _scene_image(
+            "世界",
+            "0034.jpg",
+            [{"id": "world", "kind": "rect", "title": "世界标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}],
+            layer=1,
+        ),
+    ]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": runner._index_images(tree)}
+    scene_state = {"value": 330}
+    clicked: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def click_shape(_ctx, image, shape, _frame=None):
+        clicked.append(str(shape.get("title") or ""))
+        image_id = runner._image_number(image)
+        if image_id == 330:
+            scene_state["value"] = 319
+        elif image_id == 319:
+            scene_state["value"] = 34
+        runner._clear_tick_frame(_ctx)
+
+    monkeypatch.setattr(runner, "_capture_frame", lambda _ctx: f"scene{scene_state['value']}")
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, frame: 80 if str(runner._image_number(image)) in str(frame) else 0)
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+
+    result = runner._run_runtime_behavior_tree(
+        runtime_ctx=ctx,
+        asset_tree_path=path,
+        stop_event=FakeStopEvent(),
+        action=lambda: runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 34}, FakeStopEvent()),
+        label="回到世界",
+    )
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert result == "success"
+    assert clicked == ["确定", "返回"]
+    assert saved[0]["shapes"][0]["sceneJumpTarget"] == "319(1)"
+    assert saved[1]["shapes"][0]["sceneJumpTarget"] == "34(31)"
+    assert any("静态无路，动态尝试已标注导航动作" in log["message"] for log in runner.status()["logs"])
 
 
 def test_go_scene_replans_through_historical_reachable_landing(tmp_path, monkeypatch):

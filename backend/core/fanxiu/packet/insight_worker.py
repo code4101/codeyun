@@ -1074,6 +1074,7 @@ def sync_fanxiu_capture_paths(
     *,
     data_dir: str | Path | None = None,
     max_streams: int = DEFAULT_DECODE_MAX_STREAMS,
+    scan_existing_decoded: bool = True,
 ) -> dict[str, Any]:
     """Decode specific sealed pcaps and update business facts once.
 
@@ -1106,9 +1107,12 @@ def sync_fanxiu_capture_paths(
             "host_commit_pressure": pressure,
         }
 
-    decoded_digests = _decoded_capture_digests(data_dir)
-    decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir)
-    decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
+    # On-demand gameplay catch-up always receives a newly sealed pcap. Avoid
+    # walking every historical decoded directory before that time-sensitive
+    # capture can be decoded and queried.
+    decoded_digests = _decoded_capture_digests(data_dir) if scan_existing_decoded else set()
+    decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir) if scan_existing_decoded else {}
+    decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir) if scan_existing_decoded else {}
     decoded: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -1263,6 +1267,7 @@ def catch_up_fanxiu_packet_facts(
         [pcap_path],
         data_dir=data_dir,
         max_streams=max(1, int(max_streams)),
+        scan_existing_decoded=False,
     )
     decoded_record_db_prune = _prune_decoded_record_db_cache()
     return {

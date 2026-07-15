@@ -6284,7 +6284,10 @@ class DataAnnotationRuntimeRunner(
                 first_route_edge = route[0] if route else None
                 if isinstance(first_route_edge, dict) and int(first_route_edge.get("source_id") or 0) == landing_id:
                     next_ids = {int(item) for item in first_route_edge.get("target_ids") or []}
-                    if source_id in next_ids:
+                    # A stochastic edge may include both the source scene and
+                    # another useful landing.  Reject it only when every known
+                    # outcome loops straight back to the source.
+                    if next_ids and next_ids <= {source_id}:
                         continue
                 reachable_landings.append((landing_id, len(route)))
         if not reachable_landings:
@@ -6294,6 +6297,13 @@ class DataAnnotationRuntimeRunner(
         best_landing_id, downstream_len = min(reachable_landings, key=lambda item: item[1])
         best_count = max((target_counts.get(landing_id, 0) for landing_id, _ in reachable_landings), default=0)
         reachable_landing_ids = {int(landing_id) for landing_id, _ in reachable_landings}
+        observed_total = sum(target_counts.values())
+        progressing_count = sum(target_counts.get(landing_id, 0) for landing_id in reachable_landing_ids)
+        # A self landing is a valid observation, but it is evidence that this
+        # action may not advance the planner.  Use the complete empirical
+        # distribution as a soft prior; never turn it into a hard threshold.
+        progress_rate = int(1000 * progressing_count / observed_total) if observed_total else 500
+        self_count = target_counts.get(source_id, 0)
         wrong_target_count = max(
             (
                 count
@@ -6311,9 +6321,11 @@ class DataAnnotationRuntimeRunner(
         exit_score = self._scene_navigation_shape_exit_score(shape) if not direct else 0
         score = (
             1 if direct else 0,
+            int(progress_rate),
             int(direct_target_count),
             int(exit_score),
             int(best_count),
+            -int(self_count),
             -int(wrong_target_count),
             -int(total_path_len),
             -int(navigation_risk),
@@ -6324,6 +6336,8 @@ class DataAnnotationRuntimeRunner(
         reason = "直达目标" if direct else f"落到 #{best_landing_id} 后还需 {downstream_len} 步"
         if best_count:
             reason += f"，历史命中 {best_count} 次"
+        if self_count:
+            reason += f"，自身落点 {self_count} 次"
         if exit_score:
             reason += "，低风险退出"
         if ambiguity > 1:
@@ -6354,6 +6368,94 @@ class DataAnnotationRuntimeRunner(
             ranked = self._rank_scene_next_edge(tree, edge, int(target_scene_id), order=order)
             if ranked is not None:
                 candidates.append(ranked)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        return candidates[0]
+
+    def _scene_navigation_exploration_priority(self, shape: dict[str, Any]) -> int:
+        """Rank bounded navigation actions when the static graph has no route.
+
+        This is deliberately narrower than "click any shape".  go_scene may
+        explore only annotated controls whose UI semantics normally move or
+        dismiss the current view.  The real landing is then recognized,
+        recorded in sceneJumpTarget and fed back into the next planning step.
+        """
+        if self._scene_navigation_shape_risk(shape) >= 100:
+            return 0
+        title = _sanitize_ocr_text(shape.get("title"))
+        priorities = {
+            "回到世界": 500,
+            "返回": 480,
+            "离开": 460,
+            "退出": 440,
+            "关闭下方菜单": 430,
+            "关闭": 420,
+            "空白": 380,
+            "取消": 340,
+            # Confirmation is intentionally last: it is useful for known
+            # prompt/result scenes such as #330, but less universally safe
+            # than an explicit return/close control.
+            "确定": 200,
+            "确认": 200,
+        }
+        return priorities.get(title, 0)
+
+    def _select_scene_exploration_edge(
+        self,
+        tree: list[dict[str, Any]],
+        image: dict[str, Any],
+        current_scene_id: int,
+        target_scene_id: int,
+        *,
+        failed_edge_keys: set[tuple[Any, ...]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Choose one safe, evidence-ranked action without requiring a route."""
+        failed_edge_keys = failed_edge_keys or set()
+        candidates: list[dict[str, Any]] = []
+        for order, shape in enumerate(self._flatten_shapes(image.get("shapes"))):
+            if self._scene_identity_scope(shape) != "none":
+                continue
+            priority = self._scene_navigation_exploration_priority(shape)
+            if priority <= 0:
+                continue
+            target_ids = self._scene_jump_target_ids(tree, shape)
+            edge = {
+                "source_id": int(current_scene_id),
+                "image": image,
+                "shape": shape,
+                "target_ids": target_ids,
+                "_dynamic_exploration": True,
+            }
+            if self._scene_jump_edge_key(edge) in failed_edge_keys:
+                continue
+            counts = self._scene_jump_target_counts(tree, shape)
+            total_count = sum(counts.values())
+            self_count = counts.get(int(current_scene_id), 0)
+            progressing_count = total_count - self_count
+            progress_rate = int(1000 * progressing_count / total_count) if total_count else 500
+            candidates.append({
+                "edge": edge,
+                "score": (
+                    int(priority),
+                    int(progress_rate),
+                    int(progressing_count),
+                    -int(self_count),
+                    int(total_count),
+                    -len(target_ids),
+                    -int(order),
+                ),
+                "reason": (
+                    f"静态无路，动态尝试已标注导航动作"
+                    + (
+                        f"，历史前进 {progressing_count}/{total_count} 次、自身落点 {self_count} 次"
+                        if total_count
+                        else "，暂无落点历史"
+                    )
+                ),
+                "landing_id": None,
+                "downstream_len": None,
+            })
         if not candidates:
             return None
         candidates.sort(key=lambda item: item["score"], reverse=True)
@@ -8918,6 +9020,14 @@ class DataAnnotationRuntimeRunner(
                 })
 
             if not left_source and last_scene_id == source_scene_id and not allows_self and elapsed >= source_stall_timeout:
+                self._record_scene_jump_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    source_scene_id,
+                    reason="点击后稳定识别仍在源场景",
+                )
                 if return_source_on_stall:
                     self._log(
                         "warning",
@@ -8941,9 +9051,14 @@ class DataAnnotationRuntimeRunner(
                 continue
 
             if allows_self and last_scene_id == source_scene_id:
-                if self._increment_scene_jump_target(shape, source_scene_id):
-                    self._write_asset_tree(asset_tree_path, tree)
-                    ctx["images"] = self._index_images(tree)
+                self._record_scene_jump_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    source_scene_id,
+                    reason="声明自环并稳定识别源场景",
+                )
                 self._log("info", f"场景跳转：#{source_scene_id} -> #{source_scene_id}，30s 保底确认自身")
                 return source_scene_id
 
@@ -8961,6 +9076,14 @@ class DataAnnotationRuntimeRunner(
                 )
 
             if not left_source and last_scene_id == source_scene_id and not allows_self:
+                self._record_scene_jump_landing(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    shape,
+                    source_scene_id,
+                    reason="点击后超时仍稳定识别源场景",
+                )
                 if return_source_on_stall:
                     self._log(
                         "warning",
@@ -9012,7 +9135,6 @@ class DataAnnotationRuntimeRunner(
 
         recovered_unknown_start = False
         recovered_unknown_side_leave = False
-        recovered_no_route_scene_ids: set[int] = set()
         failed_edge_keys: set[tuple[Any, ...]] = set()
         stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         last_failed_edge: dict[str, Any] | None = None
@@ -9025,14 +9147,19 @@ class DataAnnotationRuntimeRunner(
             else:
                 current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
-                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                current_scene_id, score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
+                strong_ocr_scene_id = self._strong_ocr_scene_number(ctx, frame)
+                if strong_ocr_scene_id is not None:
+                    current_scene_id, score = int(strong_ocr_scene_id), float(self.scene_threshold)
+                    self._log("detail", f"场景移动：场景强 OCR 命中 #{current_scene_id}")
+                else:
+                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                    current_scene_id, score = self._identify_scene_number_for_route(
+                        ctx,
+                        frame,
+                        tree,
+                        target_scene_id,
+                        route_candidate_ids,
+                    )
             if current_scene_id is None:
                 if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
                     recovered_unknown_start = True
@@ -9193,7 +9320,7 @@ class DataAnnotationRuntimeRunner(
                             direct_failed_targets.add(int(item))
                         except (TypeError, ValueError):
                             continue
-                if last_failed_edge is not None and last_failed_source_id == int(current_scene_id) and int(target_scene_id) in direct_failed_targets:
+                if last_failed_source_id == int(current_scene_id) and int(target_scene_id) in direct_failed_targets:
                     return self._save_unknown_scene_frame(
                         ctx,
                         asset_tree_path,
@@ -9207,60 +9334,16 @@ class DataAnnotationRuntimeRunner(
                             f"#{current_scene_id} 直达入口点击后仍停在源场景，疑似被弹窗/遮挡吃掉或入口标注失效；不执行泛化恢复动作"
                         ],
                     )
-                if current_scene_id not in recovered_no_route_scene_ids:
-                    current_image = (ctx.get("images") or {}).get(int(current_scene_id)) if isinstance(ctx.get("images"), dict) else None
-                    safe_exit_shape = None
-                    if isinstance(current_image, dict):
-                        for shape in self._flatten_shapes(current_image.get("shapes")):
-                            title = str(shape.get("title") or shape.get("id") or "").strip()
-                            if self._scene_identity_scope(shape) != "none":
-                                continue
-                            if title in {"返回", "退出", "离开", "关闭", "空白", "回到世界"} and self._scene_navigation_shape_risk(shape) < 100:
-                                safe_exit_shape = shape
-                                break
-                    if isinstance(current_image, dict) and isinstance(safe_exit_shape, dict):
-                        recovered_no_route_scene_ids.add(int(current_scene_id))
-                        title = str(safe_exit_shape.get("title") or safe_exit_shape.get("id") or "返回")
-                        self._log(
-                            "warning",
-                            f"场景移动：#{current_scene_id} 无到 #{target_scene_id} 的路径，先点击低风险「{title}」恢复",
-                        )
-                        edge = {
-                            "source_id": int(current_scene_id),
-                            "image": current_image,
-                            "shape": safe_exit_shape,
-                            "target_ids": self._scene_jump_target_ids(tree, safe_exit_shape),
-                        }
-                        self._click_scene_route_shape(ctx, current_image, safe_exit_shape, frame)
-                        actual_scene_id = yield from self._wait_scene_jump_result(
-                            ctx,
-                            asset_tree_path,
-                            tree,
-                            source_scene_id=current_scene_id,
-                            target_scene_id=target_scene_id,
-                            edge=edge,
-                            stop_event=stop_event,
-                            return_source_on_stall=True,
-                            layer0_wait_seconds=layer0_wait_seconds,
-                        )
-                        if actual_scene_id == target_scene_id:
-                            with self._lock:
-                                self._status.update({
-                                    "current_scene": target_scene_id,
-                                    "updated_at": time.time(),
-                                })
-                            self._log("success", f"到达目标场景 #{target_scene_id}")
-                            return "success"
-                        if actual_scene_id == current_scene_id:
-                            self._log(
-                                "warning",
-                                f"场景移动：低风险「{title}」恢复后仍停在 #{current_scene_id}，继续尝试其它恢复动作",
-                            )
-                            yield BehaviorTreeStatus.RUNNING
-                            continue
-                        self._log("detail", f"场景移动：低风险「{title}」实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
-                        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
-                        continue
+                current_image = (ctx.get("images") or {}).get(int(current_scene_id)) if isinstance(ctx.get("images"), dict) else None
+                if isinstance(current_image, dict):
+                    decision = self._select_scene_exploration_edge(
+                        tree,
+                        current_image,
+                        current_scene_id,
+                        target_scene_id,
+                        failed_edge_keys=failed_edge_keys,
+                    )
+            if decision is None:
                 if not recovered_unknown_side_leave:
                     text = self._ocr_text(self._cached_ocr_lines(ctx, frame))
                     if (yield from self._leave_world_side_scene_if_present(
@@ -9327,6 +9410,21 @@ class DataAnnotationRuntimeRunner(
                 self._log("success", f"到达目标场景 #{target_scene_id}")
                 return "success"
             if actual_scene_id == current_scene_id:
+                direct_target_ids = {int(item) for item in edge.get("target_ids") or []}
+                if int(target_scene_id) in direct_target_ids:
+                    return self._save_unknown_scene_frame(
+                        ctx,
+                        asset_tree_path,
+                        tree,
+                        frame,
+                        target_scene_id=target_scene_id,
+                        current_scene_id=current_scene_id,
+                        action_shape=shape,
+                        elapsed_seconds=0.0,
+                        history=[
+                            f"#{current_scene_id} 直达入口点击后仍停在源场景，疑似被弹窗/遮挡吃掉或入口标注失效；不执行泛化恢复动作"
+                        ],
+                    )
                 edge_key = self._scene_jump_edge_key(edge)
                 attempts = stalled_edge_attempts.get(edge_key, 0) + 1
                 stalled_edge_attempts[edge_key] = attempts

@@ -14,7 +14,7 @@ from typing import Any
 from threading import Lock
 from types import MethodType
 
-from backend.core.runtime.process_launcher import run_quiet
+from backend.core.services.launcher import run_quiet
 
 _TTL_CACHE: dict[str, tuple[float, Any]] = {}
 _TTL_CACHE_LOCK = Lock()

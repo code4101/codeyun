@@ -58,7 +58,7 @@ from backend.core.attendance.progress_style import (
     parse_compact_refund_rules,
     parse_threshold_refund_rules,
 )
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.core.notes import sheet_inline_links as note_sheet_inline_links

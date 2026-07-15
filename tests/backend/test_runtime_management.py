@@ -162,34 +162,25 @@ def test_remote_entry_with_local_device_id_runtime_status_uses_local_engine(
     assert payload["items"][0]["title"] == "server"
 
 
-def test_trigger_command_job_runtime_item_queues(client, session, test_device, monkeypatch):
+def test_trigger_command_job_runtime_item_is_rejected(client, session, test_device, monkeypatch):
     task = Task(
         id="job-command",
         name="weekly",
         command="python weekly.py",
         device_id=test_device["id"],
+        runtime_kind="job",
         created_at=time.time(),
     )
     session.add(task)
     session.commit()
-
-    captured = {}
-
-    def fake_enqueue(task_id: str, *, trigger_reason: str):
-        captured["task_id"] = task_id
-        captured["trigger_reason"] = trigger_reason
-        return {"task_key": task_id, "queued": True, "queue_task_id": "queue-1"}
-
-    monkeypatch.setattr(runtime_core.task_manager, "enqueue_task_run", fake_enqueue)
 
     response = client.post(
         "/api/runtime/items/command/job-command/trigger",
         headers=_headers(test_device),
     )
 
-    assert response.status_code == 200
-    assert response.json()["queue_task_id"] == "queue-1"
-    assert captured == {"task_id": "job-command", "trigger_reason": "manual_runtime"}
+    assert response.status_code == 400
+    assert "命令作业已移除" in response.json()["detail"]
 
 
 def test_trigger_command_service_runtime_item_starts_service(client, session, test_device, monkeypatch):
@@ -303,27 +294,18 @@ def test_local_device_entry_runtime_item_trigger_uses_same_runtime_kernel(
         name="weekly",
         command="python weekly.py",
         device_id=test_device["id"],
+        runtime_kind="job",
         created_at=time.time(),
     )
     session.add(task)
     session.commit()
 
-    monkeypatch.setattr(
-        runtime_core.task_manager,
-        "enqueue_task_run",
-        lambda task_id, *, trigger_reason: {
-            "task_key": task_id,
-            "queued": True,
-            "queue_task_id": "entry-queue-1",
-        },
-    )
-
     response = client.post(
         f"/api/device-entries/{entry_id}/runtime/items/command/entry-job-command/trigger"
     )
 
-    assert response.status_code == 200
-    assert response.json()["queue_task_id"] == "entry-queue-1"
+    assert response.status_code == 400
+    assert "命令作业已移除" in response.json()["detail"]
 
 
 def test_local_device_entry_runtime_item_action_uses_same_runtime_kernel(
@@ -434,9 +416,8 @@ def test_runtime_queue_uses_runtime_titles_and_preserves_duplicate_records(sessi
     payload = runtime_core.build_runtime_status(session, test_device["id"])
 
     recent = payload["queue"]["recent"]
-    assert [item["id"] for item in recent] == ["q-command", "q-rime-22", "q-rime-21"]
+    assert [item["id"] for item in recent] == ["q-rime-22", "q-rime-21"]
     assert [item["metadata"]["title"] for item in recent] == [
-        "小狼毫到mi15",
         "小狼毫自动同步",
         "小狼毫自动同步",
     ]

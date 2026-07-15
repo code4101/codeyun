@@ -12,7 +12,7 @@ from typing import Any
 
 import psutil
 
-from backend.core.runtime.process_launcher import popen_python_script_service, python_script_service_command, run_quiet
+from backend.core.services.launcher import popen_python_script_service, python_script_service_command, run_quiet
 from backend.core.settings import ROOT_DIR, get_settings
 
 

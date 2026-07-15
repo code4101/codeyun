@@ -54,7 +54,10 @@ class FanxiuKernel:
         """Compile a registered task call into an ordinary Python cell."""
         data = dict(payload or {})
         data.update(payload_fields)
-        source = f"run_task_cell({str(task_type or '')!r}, {data!r})"
+        source = (
+            "# fanxiu:managed-task-cell\n"
+            f"run_task_cell({str(task_type or '')!r}, {data!r})"
+        )
         return self.cell(source, timeout_seconds=timeout_seconds, max_output_chars=20000)
 
     def execute(

@@ -11,12 +11,11 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
-from pyxllib.prog import process_runtime
 from pyxllib.prog.schedule_policy import schedule_policy_label
 
 from backend.api.task_manager import task_manager
 from backend.db import engine
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.devices.device import TaskStatus, device_manager, get_device_id
 from backend.core.runtime.codeyun_watchdog import (
     CODEYUN_WATCHDOG_SERVICE_KEY,
@@ -83,21 +82,18 @@ from backend.core.fanxiu.runtime.behavior_tree import (
 from backend.core.fanxiu.runtime.jupyter_kernel import fanxiu_kernel_manager_status
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
 from backend.core.fanxiu.data_annotation.runtime_control import ensure_doctor_watch_background, read_doctor_watch_latest
-from backend.core.runtime.units import (
-    command_runtime_group,
-    command_runtime_queue_name,
-    infer_command_runtime_kind,
-    is_legacy_codeyun_command_task,
-    resolve_builtin_job_runtime_policy,
-    resolve_command_runtime_policy,
-    runtime_policy_payload,
+from backend.core.jobs.models import job_policy_payload
+from backend.core.services.policy import (
+    command_service_group,
+    is_legacy_codeyun_service,
+    resolve_service_policy,
+    service_policy_payload,
 )
 from backend.core.settings import get_settings
 from backend.models import Task as TaskModel, UserDevice
 
 BUILTIN_OCR_SERVICE_KEY = "ocr"
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
-CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
 _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 10.0
 _builtin_services_status_cache: tuple[float, tuple[bool, bool, bool, bool], dict[str, Any]] | None = None
 _BUILTIN_JOBS_STATUS_CACHE_TTL_SECONDS = 5.0
@@ -189,14 +185,6 @@ def _model_dump(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _is_command_job(task: TaskModel) -> bool:
-    return infer_command_runtime_kind(task) == "job"
-
-
-def _command_group_for(task: TaskModel, kind: str) -> tuple[str, str]:
-    return command_runtime_group(task, "job" if kind == "job" else "service")
-
-
 def _runtime_group(kind: str, group_id: str, title: str) -> dict[str, Any]:
     return {
         "id": group_id,
@@ -221,28 +209,8 @@ def _command_next_run_at(task: TaskModel) -> str | None:
     return job.next_run_time.isoformat()
 
 
-def _extract_command_option(command: str, option: str) -> str:
-    pattern = rf'(?:^|\s){re.escape(option)}(?:=|\s+)("[^"]+"|\'[^\']+\'|\S+)'
-    match = re.search(pattern, command)
-    if not match:
-        return ""
-    return match.group(1).strip().strip('"\'')
-
-
-def _short_device_name(value: str) -> str:
-    name = value.strip()
-    return name.removeprefix("codepc_") or name
-
-
 def _command_runtime_title(task: TaskModel) -> str:
-    title = task.name or task.id
-    command = task.command or ""
-    if "sync_rime_config.py" in command and (title == "小狼毫配置同步" or title.startswith("rime_")):
-        target_name = _extract_command_option(command, "--target-name")
-        target_entry_id = _extract_command_option(command, "--target-entry-id")
-        target = _short_device_name(target_name or target_entry_id)
-        return f"小狼毫到{target}" if target else "小狼毫命令同步"
-    return title
+    return task.name or task.id
 
 
 def _find_queue_snapshot(queue: dict[str, Any] | None, task_name: str) -> dict[str, Any] | None:
@@ -261,8 +229,6 @@ def _runtime_queue_name_for_item(item: dict[str, Any]) -> str:
     source = str(item.get("source") or "")
     kind = str(item.get("kind") or "")
     key = str(item.get("key") or "")
-    if source == "command" and kind == "job" and key:
-        return command_runtime_queue_name(key)
     if source == "builtin" and key:
         return key
     return ""
@@ -290,10 +256,14 @@ def _enrich_runtime_queue(queue: dict[str, Any] | None, items: list[dict[str, An
             result["display_name"] = title
         return result
 
+    def active_job_record(item: Any) -> bool:
+        return not isinstance(item, dict) or not str(item.get("name") or "").startswith("command:")
+
     result = dict(queue)
-    result["running"] = enrich_item(queue.get("running"))
-    result["pending"] = [enrich_item(item) for item in queue.get("pending") or []]
-    result["recent"] = [enrich_item(item) for item in queue.get("recent") or []]
+    running = queue.get("running")
+    result["running"] = enrich_item(running) if active_job_record(running) else None
+    result["pending"] = [enrich_item(item) for item in queue.get("pending") or [] if active_job_record(item)]
+    result["recent"] = [enrich_item(item) for item in queue.get("recent") or [] if active_job_record(item)]
     return result
 
 
@@ -933,6 +903,8 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
             results[FANXIU_CAPTURE_RUNTIME_SERVICE_KEY] = {"status": "error", "error": str(exc)}
 
     if _local_builtin_service_autostart_enabled("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART"):
+        from backend.core.services.monitor import ensure_local_critical_command_services
+
         results["critical-command-services"] = ensure_local_critical_command_services()
 
     return results
@@ -960,93 +932,6 @@ def warm_runtime_status_caches_on_startup() -> dict[str, Any]:
         results["builtin_services"] = {"status": "error", "error": str(exc)}
 
     return results
-
-
-def ensure_local_critical_command_services() -> dict[str, Any]:
-    """Keep local always-on command services alive.
-
-    These are user-configured command rows, not built-in services.  We guard only
-    the small network/sync allowlist because other command services may be
-    intentionally stopped.
-    """
-
-    local_device_id = get_device_id()
-    started: list[dict[str, Any]] = []
-    already_running: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-
-    task_manager.scan_running_tasks()
-    with Session(engine) as session:
-        stmt = (
-            select(TaskModel)
-            .where(TaskModel.device_id == local_device_id)
-            .order_by(TaskModel.order, TaskModel.created_at)
-        )
-        tasks = [
-            task
-            for task in session.exec(stmt).all()
-            if str(task.name or "").strip().lower() in CRITICAL_LOCAL_COMMAND_SERVICE_NAMES
-            and infer_command_runtime_kind(task) == "service"
-            and not is_legacy_codeyun_command_task(task)
-        ]
-
-    for task in tasks:
-        status = task_manager.get_task_status(task.id)
-        item = {"id": task.id, "name": task.name, "pid": status.pid}
-        if status.running:
-            already_running.append(item)
-            continue
-
-        executable_match = _find_running_process_by_command_executable(task.command)
-        if executable_match:
-            device = device_manager.get_device(local_device_id)
-            if device is not None:
-                try:
-                    device.associate_process(task.id, int(executable_match["pid"]))
-                except Exception:
-                    pass
-            already_running.append({**item, **executable_match})
-            continue
-
-        try:
-            result = task_manager.start_task(
-                task.id,
-                replace_running=False,
-                trigger_reason="critical_command_service_guard",
-            )
-            started.append({"id": task.id, "name": task.name, "result": result})
-        except Exception as exc:
-            errors.append({"id": task.id, "name": task.name, "error": str(exc)})
-
-    return {
-        "status": "error" if errors else ("started" if started else "ok"),
-        "started": started,
-        "already_running": already_running,
-        "errors": errors,
-    }
-
-
-def _find_running_process_by_command_executable(command: str) -> dict[str, Any] | None:
-    try:
-        args = process_runtime.parse_cmdline(command)
-    except Exception:
-        args = []
-    if not args:
-        return None
-
-    executable = Path(str(args[0]).strip('"')).expanduser()
-    if not executable.is_absolute():
-        return None
-
-    executable_key = os.path.normcase(os.path.abspath(os.fspath(executable)))
-    for proc in process_runtime.process_candidates_by_name({executable.name}):
-        try:
-            proc_exe = proc.exe()
-        except Exception:
-            continue
-        if os.path.normcase(os.path.abspath(proc_exe)) == executable_key:
-            return {"pid": proc.pid, "matched_by": "executable", "exe": proc_exe}
-    return None
 
 
 def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:
@@ -1531,23 +1416,16 @@ def _serialize_command_runtime_item(
     *,
     status: TaskStatus | None = None,
 ) -> dict[str, Any]:
-    kind = "job" if _is_command_job(task) else "service"
-    group_id, group_title = _command_group_for(task, kind)
-    policy = resolve_command_runtime_policy(task)
+    kind = "service"
+    group_id, group_title = command_service_group(task)
+    policy = resolve_service_policy(task)
     runtime_status = status or task_manager.get_task_status(task.id)
     status_payload = _model_dump(runtime_status)
     active = bool(status_payload.get("running"))
     next_run_at = _command_next_run_at(task)
     if next_run_at:
         status_payload["next_run_at"] = next_run_at
-    queue_name = command_runtime_queue_name(task.id) if kind == "job" else ""
-    queue_snapshot = _find_queue_snapshot(queue, queue_name)
-    if queue_snapshot:
-        status_payload["queued"] = True
-        status_payload["queue_status"] = queue_snapshot.get("status")
-        status_payload["queue_task_id"] = queue_snapshot.get("id")
-    else:
-        status_payload["queued"] = False
+    status_payload["queued"] = False
 
     return {
         "id": f"command:{task.id}",
@@ -1570,20 +1448,15 @@ def _serialize_command_runtime_item(
         "order": task.order or 0,
         "active": active,
         "status": status_payload,
-        "actions": (
-            ["trigger", "stop", "logs", "delete"]
-            if kind == "job"
-            else ["start", "stop", "logs", "delete", "reorder"]
-        ),
+        "actions": ["start", "stop", "logs", "delete", "reorder"],
         "raw": task.model_dump(),
-        **runtime_policy_payload(policy),
+        **service_policy_payload(policy),
     }
 
 
 def _serialize_builtin_job_item(item: dict[str, Any]) -> dict[str, Any]:
     category = str(item.get("category") or "默认")
     group_id = f"job:{category}"
-    policy = resolve_builtin_job_runtime_policy()
     return {
         "id": f"builtin:{item.get('key')}",
         "key": item.get("key"),
@@ -1614,7 +1487,7 @@ def _serialize_builtin_job_item(item: dict[str, Any]) -> dict[str, Any]:
         },
         "actions": ["trigger", "toggle", "delete", "reset_schedule"],
         "raw": item,
-        **runtime_policy_payload(policy),
+        **job_policy_payload(),
     }
 
 
@@ -1734,7 +1607,8 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
             status=runtime_device.get_task_status(task.id) if runtime_device else None,
         )
         for task in session.exec(stmt).all()
-        if not (target_device_id == local_device_id and is_legacy_codeyun_command_task(task))
+        if str(task.runtime_kind or "service").strip().lower() == "service"
+        and not (target_device_id == local_device_id and is_legacy_codeyun_service(task))
     ]
 
     items = [
@@ -1962,11 +1836,11 @@ def trigger_command_runtime_item(task_key: str, session: Session) -> dict[str, A
     task = session.get(TaskModel, task_key)
     if task is None:
         raise HTTPException(status_code=404, detail="运行单元不存在")
-    if task.device_id == get_device_id() and is_legacy_codeyun_command_task(task):
+    if task.device_id == get_device_id() and is_legacy_codeyun_service(task):
         raise HTTPException(status_code=404, detail="旧 CodeYun 命令任务已停用，请使用命令行 uv run dev.py 启动主程序")
-    policy = resolve_command_runtime_policy(task)
-    if policy.kind == "job":
-        return task_manager.enqueue_task_run(task_key, trigger_reason="manual_runtime")
+    if str(task.runtime_kind or "service").strip().lower() != "service":
+        raise HTTPException(status_code=400, detail="命令作业已移除；请注册进程内 JobDefinition")
+    policy = resolve_service_policy(task)
     return task_manager.start_task(
         task_key,
         replace_running=policy.overlap_policy == "replace",
@@ -1978,8 +1852,10 @@ def stop_command_runtime_item(task_key: str, session: Session) -> dict[str, Any]
     task = session.get(TaskModel, task_key)
     if task is None:
         raise HTTPException(status_code=404, detail="运行单元不存在")
-    if task.device_id == get_device_id() and is_legacy_codeyun_command_task(task):
+    if task.device_id == get_device_id() and is_legacy_codeyun_service(task):
         raise HTTPException(status_code=404, detail="旧 CodeYun 命令任务已停用，请使用运行页的 CodeYun 本机守护项管理兜底守护")
+    if str(task.runtime_kind or "service").strip().lower() != "service":
+        raise HTTPException(status_code=400, detail="命令作业已移除；请注册进程内 JobDefinition")
     return task_manager.stop_task(task_key)
 
 

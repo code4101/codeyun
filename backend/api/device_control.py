@@ -21,7 +21,7 @@ from backend.core.devices.device import (
     get_device_id,
     match_cmdline,
 )
-from backend.core.runtime.process_launcher import popen_service
+from backend.core.services.launcher import popen_service
 from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
 from backend.core.devices.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
 from backend.core.attendance.clockin_link_detector import (

@@ -28,7 +28,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.process_launcher import popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet
 from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview

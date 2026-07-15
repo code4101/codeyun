@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable
 
 from backend.core.ai.auto_git_commit import AUTO_GIT_COMMIT_MIN_CHANGED_LINES
 from backend.core.ai.git_tools import GitToolError, inspect_git_repository
-from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.jobs.executor import background_task_queue
 from backend.core.settings import ROOT_DIR, get_settings
 
 

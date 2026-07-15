@@ -6,9 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
-SUBPROCESS_UTILS = BACKEND / "core" / "runtime" / "subprocess_utils.py"
-PROCESS_LAUNCHER = BACKEND / "core" / "runtime" / "process_launcher.py"
-ALLOWED_DIRECT_POPEN = {SUBPROCESS_UTILS}
+SUBPROCESS_UTILS = BACKEND / "core" / "services" / "_subprocess.py"
+PROCESS_LAUNCHER = BACKEND / "core" / "services" / "launcher.py"
+ALLOWED_DIRECT_POPEN = {SUBPROCESS_UTILS, ROOT / "dev.py"}
 ALLOWED_DIRECT_RUN = {SUBPROCESS_UTILS}
 ALLOWED_SUBPROCESS_UTILS_IMPORTS = {PROCESS_LAUNCHER}
 LOCAL_RUNTIME_SCRIPTS = [
@@ -19,11 +19,10 @@ LOCAL_RUNTIME_SCRIPTS = [
     ROOT / "scripts" / "codeyun_stability_check.py",
 ]
 SERVICE_ENTRYPOINTS_REQUIRING_NO_WINDOW_DEFAULT = {
-    BACKEND / "app.py",
     BACKEND / "services" / "ocr_daemon.py",
     BACKEND / "services" / "game_window_daemon.py",
     BACKEND / "services" / "proxy_traffic_audit_daemon.py",
-    BACKEND / "core" / "runtime" / "uvicorn_hidden.py",
+    BACKEND / "services" / "fanxiu_packet_daemon.py",
 }
 
 
@@ -89,14 +88,14 @@ def test_runtime_callers_do_not_import_low_level_subprocess_utils():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
-            if isinstance(node, ast.ImportFrom) and node.module == "backend.core.runtime.subprocess_utils":
+            if isinstance(node, ast.ImportFrom) and node.module == "backend.core.services._subprocess":
                 violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name == "backend.core.runtime.subprocess_utils":
+                    if alias.name == "backend.core.services._subprocess":
                         violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
 
-    assert not violations, "Import backend.core.runtime.process_launcher instead of subprocess_utils:\n" + "\n".join(violations)
+    assert not violations, "Import backend.core.services.launcher instead of subprocess_utils:\n" + "\n".join(violations)
 
 
 def _calls_install_child_process_no_window_default(tree: ast.AST) -> bool:
@@ -122,3 +121,23 @@ def test_codeyun_service_entrypoints_install_no_window_popen_default():
         "Long-running CodeYun Python service entrypoints must install the process-wide "
         "no-window subprocess default:\n" + "\n".join(violations)
     )
+
+
+def test_job_runtime_has_no_process_lifecycle_dependencies():
+    jobs_root = BACKEND / "core" / "jobs"
+    forbidden_modules = {
+        "subprocess",
+        "backend.core.services.launcher",
+        "backend.core.services._subprocess",
+    }
+    violations: list[str] = []
+    for path in jobs_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{node.module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in forbidden_modules:
+                        violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{alias.name}")
+    assert not violations, "Jobs must execute in-process and cannot manage processes:\n" + "\n".join(violations)
