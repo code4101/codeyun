@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.UI;
@@ -466,6 +467,7 @@ namespace Code4101.Zaohua.Tiandao
         private Button _button;
         private TextPro _label;
         private Coroutine _running;
+        private CancellationTokenSource _solveCancellation;
         private int _runId;
 
         internal void Initialize(DantianPanel panel)
@@ -553,171 +555,72 @@ namespace Code4101.Zaohua.Tiandao
                 yield return ShowTemporary("评分失败");
                 yield break;
             }
-            var best = current.ToArray();
-            var bestScore = currentScore;
-            var working = current.ToArray();
-            var workingScore = currentScore;
-            var occupancy = BuildOccupancy(problem, working);
-            var random = new System.Random(unchecked(BsSaveDataImpl.nowActor.randomSeed + runId * 7919));
-            var totalWatch = Stopwatch.StartNew();
-            var sliceWatch = Stopwatch.StartNew();
-            var accepted = 0;
-            var kicks = 0;
-            var evaluated = 0;
-
-            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin " +
+            var seed = unchecked(BsSaveDataImpl.nowActor.randomSeed + runId * 7919);
+            var buildWatch = Stopwatch.StartNew();
+            if (!DantianCpSatBridge.TryBuildRequest(problem, currentScore, MaxMilliseconds, seed,
+                    out var request, out var modelError))
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                           $"model-failed {modelError}");
+                yield return ShowTemporary("规则建模失败");
+                yield break;
+            }
+            var jsonBytes = JsonUtility.ToJson(request).Length;
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-cpsat " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
-                                  $"placements={candidates} current={currentScore} " +
+                                  $"placements={candidates} modelMs={buildWatch.ElapsedMilliseconds} " +
+                                  $"jsonChars={jsonBytes} current={currentScore} " +
                                   $"currentRules=[{string.Join(", ", currentScore.RuleDetails)}] " +
-                                  $"ruleDefinitions=[{DescribeRules(problem)}] " +
-                                  $"runtime=[{DescribeRuntimeBonuses()}]");
+                                  $"ruleDefinitions=[{DescribeRules(problem)}]");
 
-            // 先做确定性的单件全候选爬山。它能快速吃掉明显可提升的摆法，且不对
-            // “上方/下方”等区域关系附加任何几何假设，候选一律交给原生规则评分。
-            for (var pass = 0; pass < 2 && totalWatch.ElapsedMilliseconds < GreedyMilliseconds; pass++)
+            _solveCancellation?.Cancel();
+            _solveCancellation?.Dispose();
+            _solveCancellation = new CancellationTokenSource();
+            SetLabel("求解中…");
+            var solveTask = DantianCpSatBridge.RunAsync(request, _solveCancellation.Token);
+            while (!solveTask.IsCompleted)
             {
-                var improved = false;
-                foreach (var pieceIndex in Enumerable.Range(0, problem.Pieces.Count)
-                             .OrderBy(_ => random.Next()))
-                {
-                    var piece = problem.Pieces[pieceIndex];
-                    var oldPlacementIndex = working[pieceIndex];
-                    foreach (var cell in piece.Placements[oldPlacementIndex].CellIndices)
-                        occupancy[cell]--;
-
-                    var chosenPlacementIndex = oldPlacementIndex;
-                    var chosenScore = workingScore;
-                    foreach (var candidateIndex in Enumerable.Range(0, piece.Placements.Count)
-                                 .OrderBy(_ => random.Next()))
-                    {
-                        if (totalWatch.ElapsedMilliseconds >= GreedyMilliseconds) break;
-                        var candidate = piece.Placements[candidateIndex];
-                        if (candidate.CellIndices.Any(cell => occupancy[cell] > 0)) continue;
-                        working[pieceIndex] = candidateIndex;
-                        if (!DantianLayoutOptimizer.TryEvaluate(problem, working, out var candidateScore,
-                                out scoreError))
-                        {
-                            UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
-                                                       $"greedy-score-failed {scoreError}");
-                            continue;
-                        }
-                        evaluated++;
-                        if (candidateScore.BetterThan(chosenScore))
-                        {
-                            chosenPlacementIndex = candidateIndex;
-                            chosenScore = candidateScore;
-                        }
-                        if (sliceWatch.ElapsedMilliseconds < 5) continue;
-                        SetLabel("优化中…");
-                        sliceWatch.Restart();
-                        yield return null;
-                        if (_panel == null || !_panel.gameObject.activeInHierarchy) yield break;
-                    }
-
-                    working[pieceIndex] = chosenPlacementIndex;
-                    foreach (var cell in piece.Placements[chosenPlacementIndex].CellIndices)
-                        occupancy[cell]++;
-                    if (chosenScore.BetterThan(workingScore)) improved = true;
-                    workingScore = chosenScore;
-                    if (chosenScore.BetterThan(bestScore))
-                    {
-                        best = working.ToArray();
-                        bestScore = chosenScore;
-                    }
-                }
-                if (!improved) break;
-            }
-
-            for (var iteration = 0;
-                 iteration < MaxIterations && totalWatch.ElapsedMilliseconds < MaxMilliseconds;
-                 iteration++)
-            {
-                // 阈值类规则（例如每 10 个才 +1）存在大片同分平台。周期性从当前最好解
-                // 连续搬动多件物品，允许跨过必须协同移动才能越过的局部最优。
-                if (iteration > 0 && iteration % KickInterval == 0)
-                {
-                    working = best.ToArray();
-                    occupancy = BuildOccupancy(problem, working);
-                    var moved = ApplyKick(problem, working, occupancy, random,
-                        3 + random.Next(Math.Min(6, Math.Max(1, problem.Pieces.Count))));
-                    if (moved > 0 && DantianLayoutOptimizer.TryEvaluate(problem, working,
-                            out var kickedScore, out scoreError))
-                    {
-                        workingScore = kickedScore;
-                        evaluated++;
-                        kicks++;
-                        if (kickedScore.BetterThan(bestScore))
-                        {
-                            best = working.ToArray();
-                            bestScore = kickedScore;
-                        }
-                    }
-                    else
-                    {
-                        working = best.ToArray();
-                        occupancy = BuildOccupancy(problem, working);
-                        workingScore = bestScore;
-                    }
-                }
-
-                var pieceIndex = random.Next(problem.Pieces.Count);
-                var piece = problem.Pieces[pieceIndex];
-                var oldPlacementIndex = working[pieceIndex];
-                var oldPlacement = piece.Placements[oldPlacementIndex];
-                foreach (var cell in oldPlacement.CellIndices) occupancy[cell]--;
-
-                var newPlacementIndex = PickPlacement(problem, piece, occupancy, random);
-                if (newPlacementIndex < 0 || newPlacementIndex == oldPlacementIndex)
-                {
-                    foreach (var cell in oldPlacement.CellIndices) occupancy[cell]++;
-                }
-                else
-                {
-                    working[pieceIndex] = newPlacementIndex;
-                    if (!DantianLayoutOptimizer.TryEvaluate(problem, working, out var nextScore,
-                            out scoreError))
-                    {
-                        working[pieceIndex] = oldPlacementIndex;
-                        foreach (var cell in oldPlacement.CellIndices) occupancy[cell]++;
-                        UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
-                                                   $"candidate-score-failed {scoreError}");
-                        break;
-                    }
-                    evaluated++;
-                    var progress = (double)iteration / MaxIterations;
-                    var temperature = 0.22d * (1d - progress) + 0.012d;
-                    var delta = nextScore.Fitness - workingScore.Fitness;
-                    var accept = delta >= 0d || random.NextDouble() < Math.Exp(delta / temperature);
-                    if (accept)
-                    {
-                        foreach (var cell in piece.Placements[newPlacementIndex].CellIndices)
-                            occupancy[cell]++;
-                        workingScore = nextScore;
-                        accepted++;
-                        if (nextScore.BetterThan(bestScore))
-                        {
-                            best = working.ToArray();
-                            bestScore = nextScore;
-                        }
-                    }
-                    else
-                    {
-                        working[pieceIndex] = oldPlacementIndex;
-                        foreach (var cell in oldPlacement.CellIndices) occupancy[cell]++;
-                    }
-                }
-
-                if (sliceWatch.ElapsedMilliseconds < 5) continue;
-                SetLabel("优化中…");
-                sliceWatch.Restart();
                 yield return null;
-                if (_panel == null || !_panel.gameObject.activeInHierarchy) yield break;
+                if (_panel != null && _panel.gameObject.activeInHierarchy) continue;
+                _solveCancellation.Cancel();
+                yield break;
             }
-
-            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] searched " +
-                                  $"elapsedMs={totalWatch.ElapsedMilliseconds} evaluated={evaluated} " +
-                                  $"accepted={accepted} kicks={kicks} best={bestScore} " +
-                                  $"bestRules=[{string.Join(", ", bestScore.RuleDetails)}] " +
+            var runResult = solveTask.Result;
+            if (!string.IsNullOrEmpty(runResult.Error))
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                           $"solver-failed {runResult.Error} stderr={runResult.StandardError}");
+                yield return ShowTemporary("求解器失败");
+                yield break;
+            }
+            var response = runResult.Response;
+            if (response == null || (response.status != "OPTIMAL" && response.status != "FEASIBLE"))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"solver-status={response?.status ?? "null"}");
+                yield return ShowTemporary("暂未找到解");
+                yield break;
+            }
+            var best = response.placements;
+            if (!DantianCpSatBridge.ValidateSolution(problem, best, out var validationError))
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                           $"invalid-solution {validationError}");
+                yield return ShowTemporary("求解结果无效");
+                yield break;
+            }
+            if (!DantianLayoutOptimizer.TryEvaluate(problem, best, out var bestScore, out scoreError))
+            {
+                UnityEngine.Debug.LogError($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                           $"native-verify-failed {scoreError}");
+                yield return ShowTemporary("原生复核失败");
+                yield break;
+            }
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] solved-cpsat " +
+                                  $"status={response.status} elapsed={response.elapsedSeconds:F3}s " +
+                                  $"objective={response.objective:F0} bound={response.bestBound:F0} " +
+                                  $"solverProduct={response.product} solverTotal={response.total} " +
+                                  $"nativeBest={bestScore} nativeRules=[{string.Join(", ", bestScore.RuleDetails)}] " +
                                   $"solution=[{DescribeSolution(problem, best)}]");
             if (!bestScore.ExactBetterThan(currentScore))
             {
@@ -840,6 +743,9 @@ namespace Code4101.Zaohua.Tiandao
         private void OnDisable()
         {
             DantianSyntheticLayoutContext.Current = null;
+            _solveCancellation?.Cancel();
+            _solveCancellation?.Dispose();
+            _solveCancellation = null;
             if (_running != null) StopCoroutine(_running);
             _running = null;
             if (_button != null) _button.interactable = true;

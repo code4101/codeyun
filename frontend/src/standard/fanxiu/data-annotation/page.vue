@@ -560,7 +560,9 @@
                           'is-group': data.kind === 'group',
                           'is-selected': isShapeSelected(data.id),
                           'is-scene-identity': data.kind !== 'group' && isSceneIdentityShape(data),
+                          'is-ocr-suggested': data.kind !== 'group' && isShapeOcrSuggested(data),
                         }"
+                        :title="shapeOcrSuggestionTitle(data)"
                       >
                         {{ data.title || 'shape' }}
                       </span>
@@ -9297,6 +9299,62 @@ const flattenShapes = (shapes: DataAnnotationShape[]): DataAnnotationShape[] => 
   shape,
   ...flattenShapes(shape.children ?? []),
 ]);
+const selectedImageOcrCandidates = ref<FanxiuDataAnnotationOcrFrameLine[]>([]);
+const selectedImageOcrCandidateImageId = ref('');
+const imageOcrCandidateCache = new Map<string, Promise<FanxiuDataAnnotationOcrFrameLine[]>>();
+let selectedImageOcrProbeSeq = 0;
+
+const shapeHasOcrRule = (shape: DataAnnotationShape) => (
+  normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off') !== 'off'
+);
+
+const ocrCandidateOverlapsShape = (
+  shape: DataAnnotationShape,
+  candidate: FanxiuDataAnnotationOcrFrameLine,
+  imageWidth: number,
+  imageHeight: number,
+) => {
+  const shapeLeft = shape.x * imageWidth;
+  const shapeTop = shape.y * imageHeight;
+  const shapeRight = (shape.x + shape.w) * imageWidth;
+  const shapeBottom = (shape.y + shape.h) * imageHeight;
+  const candidateRight = candidate.x + candidate.w;
+  const candidateBottom = candidate.y + candidate.h;
+  const intersectionWidth = Math.max(0, Math.min(shapeRight, candidateRight) - Math.max(shapeLeft, candidate.x));
+  const intersectionHeight = Math.max(0, Math.min(shapeBottom, candidateBottom) - Math.max(shapeTop, candidate.y));
+  const intersectionArea = intersectionWidth * intersectionHeight;
+  const candidateArea = Math.max(1, candidate.w * candidate.h);
+  const candidateCenterX = candidate.x + candidate.w / 2;
+  const candidateCenterY = candidate.y + candidate.h / 2;
+  return (
+    candidateCenterX >= shapeLeft
+    && candidateCenterX <= shapeRight
+    && candidateCenterY >= shapeTop
+    && candidateCenterY <= shapeBottom
+  ) || intersectionArea / candidateArea >= 0.35;
+};
+
+const shapeOcrSuggestionTexts = (shape: DataAnnotationShape) => {
+  if (!isDrawableShape(shape) || shapeHasOcrRule(shape)) return [];
+  if (selectedImageOcrCandidateImageId.value !== selectedImageNode.value?.id) return [];
+  const imageWidth = selectedImageNode.value?.width || naturalWidth.value || 0;
+  const imageHeight = selectedImageNode.value?.height || naturalHeight.value || 0;
+  if (!imageWidth || !imageHeight) return [];
+  return Array.from(new Set(
+    selectedImageOcrCandidates.value
+      .filter((candidate) => candidate.text.trim() && ocrCandidateOverlapsShape(shape, candidate, imageWidth, imageHeight))
+      .map((candidate) => candidate.text.trim()),
+  ));
+};
+
+const isShapeOcrSuggested = (shape: DataAnnotationShape) => shapeOcrSuggestionTexts(shape).length > 0;
+const shapeOcrSuggestionTitle = (shape: DataAnnotationShape) => {
+  const texts = shapeOcrSuggestionTexts(shape);
+  return texts.length ? `OCR 可识别：${texts.join(' / ')}` : '';
+};
+const selectedImageNeedsOcrSuggestions = computed(() => (
+  flattenShapes(selectedImageShapes.value).some((shape) => isDrawableShape(shape) && !shapeHasOcrRule(shape))
+));
 const isOcclusionAssetGroup = (node: DataAnnotationAssetNode) => (
   node.type === 'folder' && node.title.trim() === OCCLUSION_ASSET_GROUP_TITLE
 );
@@ -10429,6 +10487,9 @@ watch(selectedRuntimeTaskType, (value) => {
 
 watch(selectedImageNode, (node, previousNode) => {
   const imageChanged = node?.id !== previousNode?.id;
+  selectedImageOcrProbeSeq += 1;
+  selectedImageOcrCandidates.value = [];
+  selectedImageOcrCandidateImageId.value = '';
   const firstShape = node ? flattenShapes(node.shapes ?? [])[0] ?? null : null;
   selectedShapeId.value = node && selectedShapeId.value && findShapeById(node.shapes ?? [], selectedShapeId.value)
     ? selectedShapeId.value
@@ -10629,6 +10690,53 @@ const ensureSelectedImagePreview = async () => {
     // Preview loading is opportunistic; matching can still use the saved filename.
   }
 };
+
+const imageSourceToDataUrl = async (source: string) => {
+  if (source.startsWith('data:')) return source;
+  const response = await fetch(source);
+  if (!response.ok) throw new Error('读取标注图片失败');
+  return blobToDataUrl(await response.blob());
+};
+
+const refreshSelectedImageOcrSuggestions = async () => {
+  const image = selectedImageNode.value;
+  const seq = ++selectedImageOcrProbeSeq;
+  if (!image || !selectedImageNeedsOcrSuggestions.value) {
+    selectedImageOcrCandidates.value = [];
+    selectedImageOcrCandidateImageId.value = '';
+    return;
+  }
+  try {
+    const source = await getAssetImageDataUrl(image);
+    if (!source) return;
+    const cacheKey = `${selectedEntryId.value}:${image.id}:${image.filename || ''}:${source}`;
+    let pending = imageOcrCandidateCache.get(cacheKey);
+    if (!pending) {
+      pending = imageSourceToDataUrl(source)
+        .then(recognizeFanxiuDataAnnotationOcrFrame)
+        .then((response) => response.words?.length ? response.words : response.lines)
+        .catch((error) => {
+          imageOcrCandidateCache.delete(cacheKey);
+          throw error;
+        });
+      imageOcrCandidateCache.set(cacheKey, pending);
+    }
+    const candidates = await pending;
+    if (seq !== selectedImageOcrProbeSeq || selectedImageNode.value?.id !== image.id) return;
+    selectedImageOcrCandidates.value = candidates;
+    selectedImageOcrCandidateImageId.value = image.id;
+  } catch {
+    if (seq !== selectedImageOcrProbeSeq || selectedImageNode.value?.id !== image.id) return;
+    selectedImageOcrCandidates.value = [];
+    selectedImageOcrCandidateImageId.value = '';
+  }
+};
+
+watch(
+  [selectedImageNode, selectedImageNeedsOcrSuggestions],
+  () => { void refreshSelectedImageOcrSuggestions(); },
+  { immediate: true },
+);
 
 const loadImageCompareElement = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
   const image = new Image();
@@ -16433,6 +16541,12 @@ const finishShapeDrag = () => {
 
 .shape-tree-node.is-scene-identity {
   color: #d93026;
+}
+
+.shape-tree-node.is-ocr-suggested {
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 
 .shape-fields {

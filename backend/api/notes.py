@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select, func, or_
+from sqlalchemy import text
 from sqlalchemy.orm import load_only
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
@@ -4588,6 +4589,9 @@ def _is_note_type_in_use(user_id: int, type_key: str, session: Session) -> bool:
 
 
 def _collect_note_type_usage(user_id: int, session: Session) -> dict[str, float]:
+    if session.get_bind().dialect.name == "sqlite":
+        return _collect_note_type_usage_sqlite(user_id, session)
+
     usage_hundredths: dict[str, int] = {}
     seen_keys: set[str] = set()
     rows = session.exec(
@@ -4626,6 +4630,95 @@ def _collect_note_type_usage(user_id: int, session: Session) -> dict[str, float]
     return {
         key: usage_hundredths.get(key, 0) / 100
         for key in seen_keys
+    }
+
+
+def _collect_note_type_usage_sqlite(user_id: int, session: Session) -> dict[str, float]:
+    normalized_key_sql = """
+        CASE trim(json_extract(category.value, '$.key'))
+            WHEN 'note' THEN 'general'
+            WHEN 'doc' THEN 'general'
+            WHEN 'memo' THEN 'general'
+            ELSE trim(json_extract(category.value, '$.key'))
+        END
+    """
+    usage_rows = session.exec(
+        text(f"""
+            WITH user_notes AS MATERIALIZED (
+                SELECT id, note_categories
+                FROM notenode
+                WHERE user_id = :user_id
+            ), normalized AS (
+                SELECT
+                    note.id AS note_id,
+                    {normalized_key_sql} AS category_key,
+                    CASE
+                        WHEN json_type(category.value, '$.weight') IN ('integer', 'real')
+                            THEN min(100, max(0, CAST(json_extract(category.value, '$.weight') AS INTEGER)))
+                        ELSE 100
+                    END AS weight
+                FROM user_notes AS note, json_each(note.note_categories) AS category
+                WHERE json_type(category.value) = 'object'
+                  AND json_type(category.value, '$.key') = 'text'
+                  AND trim(json_extract(category.value, '$.key')) <> ''
+            ), per_note AS (
+                SELECT note_id, category_key, min(100, sum(weight)) AS weight
+                FROM normalized
+                GROUP BY note_id, category_key
+            )
+            SELECT 'usage' AS row_kind, category_key, sum(weight) AS usage_hundredths
+            FROM per_note
+            GROUP BY category_key
+            UNION ALL
+            SELECT 'fallback' AS row_kind, CAST(id AS TEXT) AS category_key, 0 AS usage_hundredths
+            FROM user_notes
+            WHERE coalesce(json_array_length(note_categories), 0) = 0
+        """),
+        params={"user_id": int(user_id)},
+    ).all()
+    usage_hundredths = {
+        str(category_key): int(total_weight or 0)
+        for row_kind, category_key, total_weight in usage_rows
+        if row_kind == "usage" and str(category_key or "").strip()
+    }
+    fallback_ids = [
+        str(category_key)
+        for row_kind, category_key, _ in usage_rows
+        if row_kind == "fallback"
+    ]
+    if fallback_ids:
+        rows = session.exec(
+            select(
+                NoteNode.note_categories,
+                NoteNode.primary_category,
+                NoteNode.note_types,
+                NoteNode.node_type,
+                NoteNode.note_kind,
+                NoteNode.node_status,
+                NoteNode.color,
+            ).where(
+                NoteNode.user_id == user_id,
+                NoteNode.id.in_(fallback_ids),
+            )
+        ).all()
+        for note_categories, primary_category, note_types, node_type, note_kind, node_status, color in rows:
+            for item in _resolve_effective_note_categories_payload(
+                note_categories,
+                primary_category,
+                note_types,
+                node_type,
+                note_kind,
+                node_status,
+                color,
+            ):
+                key = str(item.get("key") or "").strip()
+                if not key:
+                    continue
+                usage_hundredths[key] = usage_hundredths.get(key, 0) + int(item.get("weight", 0))
+
+    return {
+        key: total_weight / 100
+        for key, total_weight in usage_hundredths.items()
     }
 
 
