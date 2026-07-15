@@ -828,8 +828,13 @@ export interface FanxiuDataAnnotationOcrFrameLine {
   h: number;
 }
 
+export interface FanxiuDataAnnotationOcrFrameWord extends FanxiuDataAnnotationOcrFrameLine {
+  line_index?: number | null;
+}
+
 export interface FanxiuDataAnnotationOcrFrameResponse {
   lines: FanxiuDataAnnotationOcrFrameLine[];
+  words: FanxiuDataAnnotationOcrFrameWord[];
 }
 
 export interface FanxiuDataAnnotationRemoveBackgroundPayload {

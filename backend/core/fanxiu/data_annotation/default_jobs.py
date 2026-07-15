@@ -326,7 +326,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_yaozu_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_task_cell("daily_xianyuan", "日常_挑战仙缘", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell(
+        "daily_xianyuan",
+        "日常_挑战仙缘",
+        scheduler_supported=True,
+        stable_start_scene_id=None,
+    )
     def _run_data_annotation_daily_xianyuan_task_cell(
         runner: Any,
         ctx: dict[str, Any],

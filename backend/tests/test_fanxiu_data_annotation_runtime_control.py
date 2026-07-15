@@ -1,6 +1,7 @@
 import json
 import time
 from copy import deepcopy
+from datetime import datetime as real_datetime
 
 from backend.core.fanxiu.data_annotation import runtime_control
 
@@ -110,6 +111,48 @@ def test_scheduler_task_cell_records_terminal_success(monkeypatch):
     assert [item[0] for item in facts] == ["running", "success"]
 
 
+def test_scheduler_success_advances_schedule_crossed_while_cell_was_running(monkeypatch):
+    state = [{
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "schedule_kind": "daily",
+        "next_time": "2026-07-15 12:00:00",
+        "last_result": "",
+    }]
+    now_values = iter((
+        real_datetime(2026, 7, 15, 11, 57, 0),
+        real_datetime(2026, 7, 15, 12, 4, 0),
+    ))
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = next(now_values)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(runtime_control, "datetime", FakeDateTime)
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_control, "task_payload_with_meta", lambda task: {})
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda **_kwargs: {"status": "success"})
+    monkeypatch.setattr(runtime_control, "next_scheduler_time", lambda task, now=None: "2026-07-15 18:00:00")
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "idle", "generation": 7},
+    )
+
+    runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    assert state[0]["last_result"] == "success"
+    assert state[0]["next_time"] == "2026-07-15 18:00:00"
+    assert state[0]["finished_at"] == "2026-07-15 12:04:00"
+
+
 def test_scheduler_task_cell_preserves_business_terminal_result(monkeypatch):
     state = [{
         "id": "daily-a",
@@ -147,6 +190,49 @@ def test_scheduler_task_cell_preserves_business_terminal_result(monkeypatch):
     assert state[0]["next_time"] is None
     assert state[0]["retry_after"]
     assert state[0]["attempt_id"] is None
+
+
+def test_scheduler_skipped_preserves_runtime_discovered_retry_after(monkeypatch):
+    state = [{
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "schedule_kind": "daily",
+        "next_time": "2026-07-15 05:00:00",
+        "last_result": "",
+        "cooldown_seconds": 60,
+    }]
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = real_datetime(2026, 7, 15, 12, 10, 0)
+            return value if tz is None else value.astimezone(tz)
+
+    def submit_with_discovered_retry(**_kwargs):
+        state[0]["retry_after"] = "2026-07-15 12:42:00"
+        return {
+            "status": "success",
+            "result_text": "{'result': 'skipped', 'message': '首领冷却'}",
+        }
+
+    monkeypatch.setattr(runtime_control, "datetime", FakeDateTime)
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", submit_with_discovered_retry)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "idle", "generation": 7},
+    )
+
+    runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    assert state[0]["last_result"] == "skipped"
+    assert state[0]["retry_after"] == "2026-07-15 12:42:00"
 
 
 def test_scheduler_invalidates_orphaned_attempt_for_whole_job_retry(monkeypatch):

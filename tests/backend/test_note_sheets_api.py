@@ -4176,6 +4176,8 @@ def test_note_sheet_registration_attendance_sync_skips_refunded_rows():
         "rows": [
             ["1_01", "", "2026/5/21 09:46:30", "正常学员", "正常", "M20260521", "u_active"],
             ["1_02", "已退费", "2026/5/22 09:46:30", "退费学员", "退费", "M20260522", "u_refunded"],
+            ["1_03", "退课（7月19前退费）", "2026/5/23 09:46:30", "待退费学员", "待退", "M20260523", "u_pending_refund"],
+            ["1_04", "复学+退课（无促学金）", "2026/5/24 09:46:30", "无促学金学员", "无促学金", "", "u_no_deposit"],
         ],
     }
     attendance_doc = {
@@ -4191,9 +4193,63 @@ def test_note_sheet_registration_attendance_sync_skips_refunded_rows():
     next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
 
     assert summary["inserted_count"] == 1
-    assert summary["skipped_count"] == 1
+    assert summary["skipped_count"] == 3
     assert next_doc["rows"] == [["2026-05-21 09:46", "1_01", "正常学员", "正常", "M20260521", "u_active"]]
     assert next_doc["column_configs"]["学号"] == {"header_background_color": "#D9E1F2"}
+
+
+def test_note_sheet_registration_attendance_sync_removes_existing_withdrawn_rows():
+    registration_columns = ["分组", "序号", "备注", "提交时间", "姓名", "微信昵称", "商户订单号", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "当前应返款"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [
+            ["1组", "1_01", "", "2026/5/21 09:46:30", "正常学员", "正常", "M1", "u_active"],
+            ["1组", "1_02", "退课（7月19前退费）", "2026/5/22 09:46:30", "待退费学员", "待退", "M2", "u_withdrawn"],
+        ],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 1,
+        "formula_reference_origin": "sheet_v2",
+        "rows": [
+            ["1组", "1_01", "正常学员", "正常", "0"],
+            ["1组", "1_02", "待退费学员", "待退", "0"],
+            ["9组", "9_99", "模板遗留学员", "遗留", "0"],
+        ],
+        "grid_rows": [attendance_columns],
+        "cell_meta": {"1:0": {"style": {"background_color": "#DDEBF7"}}, "2:0": {"style": {"background_color": "#FCE4D6"}}},
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert next_doc["rows"] == [["1组", "1_01", "正常学员", "正常", "0"]]
+    assert summary["repaired_count"] >= 2
+    assert "2:0" not in next_doc["cell_meta"]
+
+
+def test_note_sheet_registration_attendance_sync_keeps_early_signup_in_fixed_course():
+    registration_columns = ["分组", "序号", "备注", "提交时间", "姓名", "微信昵称", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "考试资格"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [["1组", "1_01", "", "2026/1/1 09:00:00", "早报名学员", "早报名", "u_early"]],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 1,
+        "rows": [],
+        "grid_rows": [attendance_columns],
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert summary["inserted_count"] == 1
+    assert next_doc["rows"][0][:4] == ["1组", "1_01", "早报名学员", "早报名"]
 
 
 def test_note_sheet_registration_attendance_sync_inserts_identified_row_without_user_id():
@@ -4252,6 +4308,38 @@ def test_note_sheet_registration_attendance_sync_styles_identity_columns_by_grou
     assert next_doc["cell_meta"]["4:0"]["style"]["background_color"] == "#FCE4D6"
     assert next_doc["cell_meta"]["4:6"]["style"]["background_color"] == "#FCE4D6"
     assert "3:7" not in next_doc["cell_meta"]
+
+
+def test_note_sheet_registration_attendance_sync_styles_basic_identity_columns_by_group():
+    registration_columns = ["分组", "序号", "备注", "姓名", "微信昵称", "用户ID"]
+    attendance_columns = ["分组", "学号", "姓名", "昵称", "考试资格", "视频应返款"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [
+            ["1组", "1_01", "", "甲", "甲昵称", "u1"],
+            ["2组", "2_01", "", "乙", "乙昵称", "u2"],
+        ],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 3,
+        "rows": [],
+        "grid_rows": [
+            ["用户信息", "", "", "", "退款总计", ""],
+            attendance_columns,
+            ["说明", "", "", "", "", ""],
+        ],
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert summary["inserted_count"] == 2
+    for column_index in range(4):
+        assert next_doc["cell_meta"][f"3:{column_index}"]["style"]["background_color"] == "#DDEBF7"
+        assert next_doc["cell_meta"][f"4:{column_index}"]["style"]["background_color"] == "#FCE4D6"
+    assert "3:4" not in next_doc["cell_meta"]
 
 
 def test_note_sheet_registration_attendance_sync_derives_order_amount_without_attendance_order_column():

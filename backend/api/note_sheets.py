@@ -294,6 +294,7 @@ NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_END_COLUMNS = (
     "优秀学员评分",
     "用户ID",
     "商户订单号",
+    "昵称",
 )
 NOTE_SHEET_ATTENDANCE_TRAILING_META_COLUMNS = {
     "规则版本",
@@ -5619,6 +5620,8 @@ def _format_registration_composite_update_message(
 def _registration_attendance_row_identity(row: list[Any], columns: list[str]) -> tuple[str, str, str]:
     user_id_index = _get_column_index(columns, "用户ID")
     student_id_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    if student_id_index < 0:
+        student_id_index = _get_column_index(columns, "学号")
     merchant_order_index = _get_column_index(columns, "商户订单号")
     user_id = _normalize_sheet_text(row[user_id_index]) if user_id_index >= 0 else ""
     student_id = _normalize_sheet_text(row[student_id_index]) if student_id_index >= 0 else ""
@@ -7446,7 +7449,110 @@ def _is_refunded_registration_row(row: list[Any], columns: list[str]) -> bool:
     remark = _normalize_sheet_text(row[remark_index])
     if not remark:
         return False
-    return bool(re.search(r"(?:已\s*退\s*(?:费|款|课)|退款\s*成功|退费\s*完成|退款\s*完成)", remark))
+    return bool(
+        re.search(
+            r"(?:退\s*课|已\s*退\s*(?:费|款)|退款\s*成功|退费\s*完成|退款\s*完成)",
+            remark,
+        )
+    )
+
+
+def _remove_withdrawn_registration_rows_from_attendance(
+    registration_rows: list[list[Any]],
+    registration_columns: list[str],
+    attendance_document: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    excluded_user_ids: set[str] = set()
+    excluded_student_ids: set[str] = set()
+    excluded_merchant_order_ids: set[str] = set()
+    active_user_ids: set[str] = set()
+    active_student_ids: set[str] = set()
+    active_merchant_order_ids: set[str] = set()
+    for row in registration_rows:
+        user_id, student_id, merchant_order_id = _registration_attendance_row_identity(row, registration_columns)
+        if _is_refunded_registration_row(row, registration_columns):
+            if user_id:
+                excluded_user_ids.add(user_id)
+            if student_id:
+                excluded_student_ids.add(student_id)
+            if merchant_order_id:
+                excluded_merchant_order_ids.add(merchant_order_id)
+        else:
+            if user_id:
+                active_user_ids.add(user_id)
+            if student_id:
+                active_student_ids.add(student_id)
+            if merchant_order_id:
+                active_merchant_order_ids.add(merchant_order_id)
+
+    columns = _normalize_document_columns(attendance_document)
+    reconcile_fixed_course_roster = (
+        not _is_attendance_tracking_sheet(columns)
+        and _get_column_index(columns, "分组") >= 0
+        and _get_column_index(columns, "学号") >= 0
+    )
+    if (
+        not reconcile_fixed_course_roster
+        and not excluded_user_ids
+        and not excluded_student_ids
+        and not excluded_merchant_order_ids
+    ):
+        return attendance_document, 0
+
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(attendance_document)
+    ]
+    deleted_indexes: set[int] = set()
+    for row_index, row in enumerate(rows):
+        user_id, student_id, merchant_order_id = _registration_attendance_row_identity(row, columns)
+        is_withdrawn = (
+            (user_id and user_id in excluded_user_ids)
+            or (student_id and student_id in excluded_student_ids)
+            or (merchant_order_id and merchant_order_id in excluded_merchant_order_ids)
+        )
+        is_current_registration = (
+            (user_id and user_id in active_user_ids)
+            or (student_id and student_id in active_student_ids)
+            or (merchant_order_id and merchant_order_id in active_merchant_order_ids)
+        )
+        if is_withdrawn or (reconcile_fixed_course_roster and not is_current_registration):
+            deleted_indexes.add(row_index)
+
+    if not deleted_indexes:
+        return attendance_document, 0
+
+    next_document = _replace_document_data_rows(
+        attendance_document,
+        [row for row_index, row in enumerate(rows) if row_index not in deleted_indexes],
+    )
+    data_start_row = _normalize_document_data_start_row(attendance_document)
+    next_cell_meta = attendance_document.get("cell_meta")
+    next_merged_cells = attendance_document.get("merged_cells")
+    for row_index in sorted(deleted_indexes, reverse=True):
+        if isinstance(next_cell_meta, dict):
+            next_cell_meta = _shift_cell_meta_rows_for_delete(
+                next_cell_meta,
+                row_index,
+                row_offset=data_start_row,
+            )
+        if isinstance(next_merged_cells, list):
+            next_merged_cells = _shift_merged_cell_rows_for_delete(
+                next_merged_cells,
+                row_index,
+                row_offset=data_start_row,
+            )
+    if isinstance(next_cell_meta, dict):
+        next_document["cell_meta"] = next_cell_meta
+    if isinstance(next_merged_cells, list):
+        next_document["merged_cells"] = next_merged_cells
+    row_ids = attendance_document.get("row_ids")
+    if isinstance(row_ids, list):
+        next_document["row_ids"] = [
+            row_id for row_index, row_id in enumerate(row_ids) if row_index not in deleted_indexes
+        ]
+    next_document = _delete_document_entity_data_rows(next_document, deleted_indexes)
+    return next_document, len(deleted_indexes)
 
 
 def _get_attendance_append_insert_index(rows: list[list[Any]], columns: list[str]) -> int:
@@ -9015,6 +9121,11 @@ def _sync_registration_rows_to_attendance_document(
         _normalize_sheet_row(row, len(registration_columns))
         for row in _extract_document_rows(registration_document)
     ]
+    attendance_document, withdrawn_attendance_rows_removed = _remove_withdrawn_registration_rows_from_attendance(
+        registration_rows,
+        registration_columns,
+        attendance_document,
+    )
     attendance_rows = [
         _normalize_sheet_row(row, len(attendance_columns))
         for row in _extract_document_rows(attendance_document)
@@ -9050,17 +9161,18 @@ def _sync_registration_rows_to_attendance_document(
     existing_merchant_order_ids = set(existing_merchant_order_id_rows)
 
     skipped_count = 0
-    repaired_count = empty_attendance_rows_removed
+    repaired_count = empty_attendance_rows_removed + withdrawn_attendance_rows_removed
     repair_meta_targets: list[tuple[int, int | None]] = []
     pending_registration_rows: list[list[Any]] = []
     cell_meta_row_offset = _normalize_document_data_start_row(attendance_document) if _extract_document_grid_rows(attendance_document) else 0
     cell_meta_column_limit = _attendance_cell_meta_template_column_limit(attendance_columns)
     progress_style_start_column, progress_style_end_column = _attendance_progress_style_column_range(attendance_columns)
+    attendance_uses_dynamic_expiration = _is_attendance_tracking_sheet(attendance_columns)
     for row in registration_rows:
         if not _registration_row_has_identity_payload(row, registration_columns):
             skipped_count += 1
             continue
-        if _is_archived_registration_row(row, registration_columns):
+        if attendance_uses_dynamic_expiration and _is_archived_registration_row(row, registration_columns):
             skipped_count += 1
             continue
         if _is_refunded_registration_row(row, registration_columns):

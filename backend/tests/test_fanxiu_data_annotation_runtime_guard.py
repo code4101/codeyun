@@ -5863,6 +5863,17 @@ def test_daily_xianyuan_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
+def test_daily_xianyuan_uses_its_own_layer0_scope_instead_of_forcing_world_start():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition("daily_xianyuan")
+
+    assert definition is not None
+    assert definition.stable_start_scene_id is None
+
+
 def test_daily_assistant_is_daily_runtime_task():
     task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-assistant")
 

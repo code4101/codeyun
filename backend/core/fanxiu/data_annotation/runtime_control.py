@@ -1073,6 +1073,7 @@ def _run_scheduler_task_cell_and_record_terminal(
     if state_task.get("attempt_id") != attempt_id:
         return result
     task_result, task_message = _task_result_from_cell(result)
+    finished = datetime.now()
     if task_result == "success":
         state_task["last_result"] = "success"
         state_task["last_run_at"] = started_text
@@ -1083,8 +1084,8 @@ def _run_scheduler_task_cell_and_record_terminal(
             next_at = datetime.strptime(next_time, "%Y-%m-%d %H:%M:%S")
         except (TypeError, ValueError):
             next_at = None
-        if next_at is None or next_at <= started:
-            state_task["next_time"] = next_scheduler_time(state_task, datetime.now())
+        if next_at is None or next_at <= finished:
+            state_task["next_time"] = next_scheduler_time(state_task, finished)
     elif task_result == "manual_check_pending":
         state_task["last_result"] = task_result
         state_task["last_run_at"] = started_text
@@ -1096,9 +1097,18 @@ def _run_scheduler_task_cell_and_record_terminal(
         state_task["last_run_at"] = started_text
         state_task["last_message"] = task_message or "Cell 执行失败"
         cooldown = max(30, int(state_task.get("cooldown_seconds") or 300))
-        state_task["retry_after"] = (datetime.now() + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
+        discovered_retry_after = str(state_task.get("retry_after") or "").strip() if task_result == "skipped" else ""
+        try:
+            discovered_retry_at = datetime.strptime(discovered_retry_after, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            discovered_retry_at = None
+        state_task["retry_after"] = (
+            discovered_retry_after
+            if discovered_retry_at is not None and discovered_retry_at > finished
+            else (finished + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
+        )
         state_task["next_time"] = None
-    state_task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state_task["finished_at"] = finished.strftime("%Y-%m-%d %H:%M:%S")
     state_task["attempt_id"] = None
     state_task["attempt_kernel_generation"] = None
     state_task["attempt_kernel_idle_since"] = None

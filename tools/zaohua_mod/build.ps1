@@ -4,6 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projects = @(
+    "Code4101.DantianSolver\Code4101.DantianSolver.csproj",
     "Code4101.Tiandao\Code4101.Tiandao.csproj"
 )
 
