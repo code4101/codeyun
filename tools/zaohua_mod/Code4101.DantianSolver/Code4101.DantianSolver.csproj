@@ -12,6 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\DantianPriorityOrder.cs" Link="DantianPriorityOrder.cs" />
     <PackageReference Include="Google.OrTools" Version="9.15.6755" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />

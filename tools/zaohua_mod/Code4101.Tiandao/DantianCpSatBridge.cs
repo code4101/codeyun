@@ -23,6 +23,7 @@ namespace Code4101.Zaohua.Tiandao
         public int[] cellY;
         public int[] currentPlacements;
         public int[] expectedCurrentMultipliers;
+        public int[] priorityOrder;
         public DantianSolverPiece[] pieces;
         public DantianSolverRule[] rules;
     }
@@ -43,6 +44,7 @@ namespace Code4101.Zaohua.Tiandao
     [Serializable]
     internal sealed class DantianSolverRule
     {
+        public string key;
         public string name;
         public int sourcePiece;
         public int maxMultiplier;
@@ -84,6 +86,7 @@ namespace Code4101.Zaohua.Tiandao
         public string error = null;
         public int[] placements = null;
         public int[] multipliers = null;
+        public int[] targetCounts = null;
         public long product = 0;
         public int total = 0;
         public double objective = 0;
@@ -91,6 +94,12 @@ namespace Code4101.Zaohua.Tiandao
         public double elapsedSeconds = 0;
         public double modelBuildSeconds = 0;
         public double totalSeconds = 0;
+        public string phaseOneStatus = null;
+        public double phaseOneSeconds = 0;
+        public string exactStatus = null;
+        public double exactSeconds = 0;
+        public string resultSource = null;
+        public int encodedPriorityCount = 0;
     }
 
     internal sealed class DantianSolverRunResult
@@ -178,8 +187,10 @@ namespace Code4101.Zaohua.Tiandao
                         var count = countEffect.Self
                             ? 1
                             : CountCurrentHits(problem, sourcePiece, countEffect);
-                        var gate = gateEffect.Self ||
-                                   CountCurrentHits(problem, sourcePiece, gateEffect) > 0;
+                        var targetCount = gateEffect.Self
+                            ? 1
+                            : CountCurrentHits(problem, sourcePiece, gateEffect);
+                        var gate = targetCount > 0;
                         var modeled = gate ? parsed.GetMultiplier(count) : 0;
                         var native = nativeIndex < currentScore.Multipliers.Count
                             ? currentScore.Multipliers[nativeIndex]
@@ -193,6 +204,15 @@ namespace Code4101.Zaohua.Tiandao
                                     $"原生x{native}，count={count}，gate={gate}；{evidence}";
                             return false;
                         }
+                        var nativeTargets = nativeIndex < currentScore.TargetCounts.Count
+                            ? currentScore.TargetCounts[nativeIndex]
+                            : -1;
+                        if (targetCount != nativeTargets)
+                        {
+                            error = $"紧凑目标校验失败：{progress.CurrentRule}，" +
+                                    $"模型targets={targetCount}，原生targets={nativeTargets}";
+                            return false;
+                        }
                         var maximumCount = countEffect.Self
                             ? 1
                             : countEffect.TargetPieces.Length;
@@ -200,6 +220,7 @@ namespace Code4101.Zaohua.Tiandao
                             .Select(parsed.GetMultiplier).ToArray();
                         rules.Add(new DantianSolverRule
                         {
+                            key = DantianRuleKey(piece, cfg),
                             name = progress.CurrentRule,
                             sourcePiece = sourcePiece,
                             maxMultiplier = table.Max(),
@@ -215,6 +236,9 @@ namespace Code4101.Zaohua.Tiandao
                         Interlocked.Increment(ref progress.CompletedOptions);
                     }
                 }
+                var orderedKeys = DantianOptimizationPriorityState.Order(rules.Select(rule => rule.key));
+                var ruleIndexByKey = rules.Select((rule, index) => new { rule.key, index })
+                    .ToDictionary(item => item.key, item => item.index);
                 request = new DantianSolverRequest
                 {
                     version = ProtocolVersion,
@@ -225,6 +249,7 @@ namespace Code4101.Zaohua.Tiandao
                     cellY = problem.Board.Select(cell => cell.y).ToArray(),
                     currentPlacements = problem.CurrentPlacements.ToArray(),
                     expectedCurrentMultipliers = currentScore.Multipliers.ToArray(),
+                    priorityOrder = orderedKeys.Select(key => ruleIndexByKey[key]).ToArray(),
                     pieces = problem.Pieces.Select(piece => new DantianSolverPiece
                     {
                         name = piece.Name,
@@ -245,6 +270,11 @@ namespace Code4101.Zaohua.Tiandao
                 error = exception.GetType().Name + ": " + exception.Message;
                 return false;
             }
+        }
+
+        internal static string DantianRuleKey(DantianLayoutPiece piece, TbDrawStateCfg rule)
+        {
+            return $"{(int)piece.Id.blendEnum}:{piece.Id.sedId}:{rule.id}";
         }
 
         private static bool TryCompileCompactEffect(DantianLayoutProblem problem,

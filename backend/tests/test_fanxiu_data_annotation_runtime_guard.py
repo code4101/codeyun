@@ -5293,7 +5293,7 @@ def test_daily_lingmai_is_registered_without_default_scheduler_task():
 
     assert "legacy-daily-lingmai" not in tasks
     assert definition is not None
-    assert definition.label == "日常_灵脉"
+    assert definition.label == "灵脉_座位"
     assert definition.scheduler_supported is True
 
 
@@ -5337,7 +5337,7 @@ def test_daily_lingmai_gather_confirm_uses_scene_305():
             return "success"
 
     runtime = FakeRuntime()
-    result = _drain_generator(runner._confirm_daily_lingmai_gather(runtime, {}, task_label="日常_灵脉"))
+    result = _drain_generator(runner._confirm_daily_lingmai_gather(runtime, {}, task_label="灵脉_座位"))
 
     assert result == "success"
     assert runtime.actions[0] == (
@@ -5375,7 +5375,7 @@ def test_daily_lingmai_reward_confirm_uses_scene_318():
             return "success"
 
     runtime = FakeRuntime()
-    result = _drain_generator(runner._confirm_daily_lingmai_reward(runtime, {}, task_label="日常_灵脉"))
+    result = _drain_generator(runner._confirm_daily_lingmai_reward(runtime, {}, task_label="灵脉_座位"))
 
     assert result == "success"
     assert runtime.actions[0] == (
@@ -5424,7 +5424,7 @@ def test_daily_lingmai_summary_popup_clicks_ocr_confirm_before_returning_world(m
         runner._finish_daily_lingmai_to_world(
             runtime,
             {},
-            task_label="日常_灵脉",
+            task_label="灵脉_座位",
             scene_id=302,
             frame="summary",
         )
@@ -5473,7 +5473,7 @@ def test_daily_lingmai_frame_306_clicks_ocr_confirm_before_returning_world(monke
         runner._finish_daily_lingmai_to_world(
             runtime,
             {},
-            task_label="日常_灵脉",
+            task_label="灵脉_座位",
             scene_id=306,
             frame="summary",
         )

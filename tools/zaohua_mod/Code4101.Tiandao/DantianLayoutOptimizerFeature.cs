@@ -6,6 +6,7 @@ using System.Threading;
 using HarmonyLib;
 using Newtonsoft.Json;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Code4101.Zaohua.Tiandao
@@ -34,6 +35,7 @@ namespace Code4101.Zaohua.Tiandao
         internal int RuleCount;
         internal int Potential;
         internal List<int> Multipliers = new List<int>();
+        internal List<int> TargetCounts = new List<int>();
         internal List<string> RuleDetails = new List<string>();
         internal List<string> RuleEvidence = new List<string>();
 
@@ -241,13 +243,15 @@ namespace Code4101.Zaohua.Tiandao
                             .Distinct()
                             .ToList();
                         var potential = upObjects.Count;
-                        score.RuleCount++;
-                        score.Total += multiplier;
-                        score.Potential += potential;
-                        score.Balance += Math.Log(1d + multiplier);
+                        var targetCount = targetObjects.Count;
+                        score.RuleCount += targetCount;
+                        score.Total += multiplier * targetCount;
+                        score.Potential += potential * targetCount;
+                        score.Balance += Math.Log(1d + multiplier) * targetCount;
                         score.Multipliers.Add(multiplier);
+                        score.TargetCounts.Add(targetCount);
                         score.RuleDetails.Add(
-                            $"{piece.Name}#{ruleIndex + 1}=x{multiplier}/progress{potential}");
+                            $"{piece.Name}#{ruleIndex + 1}=x{multiplier}/targets{targetCount}/progress{potential}");
                         score.RuleEvidence.Add(
                             $"{piece.Name}#{ruleIndex + 1} " +
                             $"targetEff='{rule.targetEff}' targetCells={targetCells.Count} " +
@@ -512,15 +516,28 @@ namespace Code4101.Zaohua.Tiandao
     internal sealed class DantianOptimizerUi : MonoBehaviour
     {
         private const int MaxIterations = 120000;
-        private const int MaxMilliseconds = 20000;
+        // 给求解器进程启动、JSON 通信和主线程应用结果预留约 1.5 秒，确保用户
+        // 从点击到得到结果的常见总等待控制在 10 秒内。
+        private const int MaxMilliseconds = 8500;
         private const int GreedyMilliseconds = 2400;
         private const int KickInterval = 1800;
         private DantianPanel _panel;
         private Button _button;
+        private Button _priorityButton;
         private TextPro _label;
+        private TextPro _priorityLabel;
+        private GameObject _priorityPopup;
+        private Transform _controlParent;
+        private readonly List<PriorityRuleOption> _priorityRules = new List<PriorityRuleOption>();
         private Coroutine _running;
         private CancellationTokenSource _solveCancellation;
         private int _runId;
+
+        private sealed class PriorityRuleOption
+        {
+            internal string Key;
+            internal string Label;
+        }
 
         internal void Initialize(DantianPanel panel)
         {
@@ -535,6 +552,7 @@ namespace Code4101.Zaohua.Tiandao
             // “清空 / 重塑 / 扩排”是原生专属动作组，不能再向其 LayoutGroup 插入四字按钮。
             // 优化作用于当前组合方案，因此以方案选择框为锚点，横向放在它的正上方。
             var controlParent = combination.transform.parent;
+            _controlParent = controlParent;
             _button = Instantiate(reset, controlParent);
             _button.gameObject.name = "Code4101DantianOptimize";
             _button.onClick.RemoveAllListeners();
@@ -544,7 +562,7 @@ namespace Code4101.Zaohua.Tiandao
             _label = labels.FirstOrDefault();
             if (_label != null)
             {
-                _label.text = "优化排布";
+                _label.text = "排布";
                 _label.alignment = TMPro.TextAlignmentOptions.Center;
                 _label.enableWordWrapping = false;
                 _label.enableAutoSizing = true;
@@ -563,21 +581,203 @@ namespace Code4101.Zaohua.Tiandao
             rect.anchorMin = new Vector2(0.5f, 0.5f);
             rect.anchorMax = new Vector2(0.5f, 0.5f);
             rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.sizeDelta = new Vector2(180f, 50f);
+            rect.sizeDelta = new Vector2(92f, 50f);
             var combinationBounds = RectTransformUtility.CalculateRelativeRectTransformBounds(
                 controlParent, combination.transform);
             rect.localPosition = new Vector3(
-                combinationBounds.center.x,
+                combinationBounds.center.x + 50f,
                 combinationBounds.max.y + rect.sizeDelta.y * 0.5f + 8f,
                 combination.transform.localPosition.z);
             var layoutElement = _button.GetComponent<LayoutElement>() ??
                                 _button.gameObject.AddComponent<LayoutElement>();
             layoutElement.ignoreLayout = true;
             _button.transform.SetAsLastSibling();
+            _priorityButton = Instantiate(reset, controlParent);
+            _priorityButton.gameObject.name = "Code4101DantianPriority";
+            _priorityButton.onClick.RemoveAllListeners();
+            foreach (var localization in _priorityButton.GetComponentsInChildren<TextProLocalization>(true))
+                localization.enabled = false;
+            _priorityLabel = _priorityButton.GetComponentsInChildren<TextPro>(true).FirstOrDefault();
+            if (_priorityLabel != null)
+            {
+                _priorityLabel.text = "顺序";
+                _priorityLabel.alignment = TMPro.TextAlignmentOptions.Center;
+                _priorityLabel.enableWordWrapping = false;
+                _priorityLabel.enableAutoSizing = true;
+                _priorityLabel.fontSizeMin = 18f;
+                _priorityLabel.fontSizeMax = 30f;
+            }
+            var priorityRect = (RectTransform)_priorityButton.transform;
+            priorityRect.anchorMin = new Vector2(0.5f, 0.5f);
+            priorityRect.anchorMax = new Vector2(0.5f, 0.5f);
+            priorityRect.pivot = new Vector2(0.5f, 0.5f);
+            priorityRect.sizeDelta = new Vector2(76f, 50f);
+            priorityRect.localPosition = new Vector3(
+                combinationBounds.center.x - 44f,
+                rect.localPosition.y,
+                combination.transform.localPosition.z);
+            var priorityLayout = _priorityButton.GetComponent<LayoutElement>() ??
+                                 _priorityButton.gameObject.AddComponent<LayoutElement>();
+            priorityLayout.ignoreLayout = true;
+            _priorityButton.transform.SetAsLastSibling();
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:UI] " +
                                   $"parent={controlParent.name} position={rect.localPosition} " +
                                   $"size={rect.sizeDelta} anchor=combination");
             _button.onClick.AddListener(StartOptimization);
+            _priorityButton.onClick.AddListener(TogglePriorityPopup);
+        }
+
+        private void TogglePriorityPopup()
+        {
+            if (_priorityPopup != null)
+            {
+                Destroy(_priorityPopup);
+                _priorityPopup = null;
+                return;
+            }
+            if (!DantianLayoutOptimizer.TryCapture(out var problem, out var error))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:UI] " +
+                                             $"priority-capture-failed {error}");
+                return;
+            }
+            _priorityRules.Clear();
+            foreach (var piece in problem.Pieces)
+            for (var ruleIndex = 0; ruleIndex < piece.Rules.Count; ruleIndex++)
+            {
+                _priorityRules.Add(new PriorityRuleOption
+                {
+                    Key = DantianCpSatBridge.DantianRuleKey(piece, piece.Rules[ruleIndex]),
+                    Label = $"{piece.Name}{(piece.Rules.Count > 1 ? $" #{ruleIndex + 1}" : string.Empty)}",
+                });
+            }
+            var orderedKeys = DantianOptimizationPriorityState.Order(
+                _priorityRules.Select(rule => rule.Key));
+            var byKey = _priorityRules.ToDictionary(rule => rule.Key);
+            _priorityRules.Clear();
+            _priorityRules.AddRange(orderedKeys.Select(key => byKey[key]));
+            RebuildPriorityPopup();
+        }
+
+        private void RebuildPriorityPopup()
+        {
+            if (_priorityPopup != null) Destroy(_priorityPopup);
+            _priorityPopup = new GameObject("Code4101DantianPriorityPopup",
+                typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup),
+                typeof(ContentSizeFitter), typeof(LayoutElement), typeof(Canvas),
+                typeof(GraphicRaycaster));
+            _priorityPopup.transform.SetParent(_controlParent, false);
+            var rect = (RectTransform)_priorityPopup.transform;
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0f);
+            var buttonRect = (RectTransform)_button.transform;
+            rect.localPosition = new Vector3(buttonRect.localPosition.x + 24f,
+                buttonRect.localPosition.y + buttonRect.sizeDelta.y * 0.5f + 8f,
+                buttonRect.localPosition.z);
+            rect.sizeDelta = new Vector2(440f, 0f);
+            _priorityPopup.GetComponent<Image>().color = new Color(0.08f, 0.06f, 0.04f, 0.96f);
+            var popupCanvas = _priorityPopup.GetComponent<Canvas>();
+            popupCanvas.overrideSorting = true;
+            popupCanvas.sortingOrder = 10000;
+            var layout = _priorityPopup.GetComponent<VerticalLayoutGroup>();
+            layout.padding = new RectOffset(10, 10, 10, 10);
+            layout.spacing = 4f;
+            layout.childControlWidth = true;
+            layout.childForceExpandWidth = true;
+            layout.childControlHeight = false;
+            layout.childForceExpandHeight = false;
+            var fitter = _priorityPopup.GetComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            _priorityPopup.GetComponent<LayoutElement>().ignoreLayout = true;
+
+            for (var index = 0; index < _priorityRules.Count; index++)
+                CreatePriorityRow(index);
+            _priorityPopup.transform.SetAsLastSibling();
+        }
+
+        private void CreatePriorityRow(int index)
+        {
+            var row = new GameObject($"Rule{index}", typeof(RectTransform), typeof(Image),
+                typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            row.transform.SetParent(_priorityPopup.transform, false);
+            row.GetComponent<Image>().color = index == 0
+                ? new Color(0.42f, 0.28f, 0.10f, 0.92f)
+                : new Color(0.18f, 0.15f, 0.12f, 0.9f);
+            row.GetComponent<LayoutElement>().preferredHeight = 40f;
+            var rowLayout = row.GetComponent<HorizontalLayoutGroup>();
+            rowLayout.padding = new RectOffset(8, 4, 3, 3);
+            rowLayout.spacing = 4f;
+            rowLayout.childAlignment = TextAnchor.MiddleLeft;
+            rowLayout.childControlWidth = true;
+            rowLayout.childControlHeight = true;
+            rowLayout.childForceExpandWidth = false;
+            rowLayout.childForceExpandHeight = false;
+
+            var text = Instantiate(_label, row.transform);
+            text.name = "Label";
+            text.text = $"{index + 1}. {_priorityRules[index].Label}";
+            text.alignment = TMPro.TextAlignmentOptions.MidlineLeft;
+            text.enableAutoSizing = true;
+            text.fontSizeMin = 14f;
+            text.fontSizeMax = 22f;
+            var textLayout = text.GetComponent<LayoutElement>() ??
+                             text.gameObject.AddComponent<LayoutElement>();
+            textLayout.flexibleWidth = 1f;
+            textLayout.preferredHeight = 34f;
+
+            AddPriorityDragHandlers(row, index);
+        }
+
+        private void AddPriorityDragHandlers(GameObject row, int index)
+        {
+            var trigger = row.AddComponent<EventTrigger>();
+            trigger.triggers = new List<EventTrigger.Entry>();
+            var begin = new EventTrigger.Entry { eventID = EventTriggerType.BeginDrag };
+            begin.callback.AddListener(_ =>
+            {
+                var image = row.GetComponent<Image>();
+                if (image != null) image.color = new Color(0.52f, 0.36f, 0.13f, 0.96f);
+            });
+            trigger.triggers.Add(begin);
+            var end = new EventTrigger.Entry { eventID = EventTriggerType.EndDrag };
+            end.callback.AddListener(data =>
+            {
+                var pointer = data as PointerEventData;
+                if (pointer == null || _priorityPopup == null) return;
+                var target = FindPriorityDropIndex(pointer.position, pointer.pressEventCamera);
+                if (target < 0 || target == index)
+                {
+                    RebuildPriorityPopup();
+                    return;
+                }
+                var item = _priorityRules[index];
+                _priorityRules.RemoveAt(index);
+                _priorityRules.Insert(target, item);
+                DantianOptimizationPriorityState.Save(_priorityRules.Select(rule => rule.Key));
+                RebuildPriorityPopup();
+            });
+            trigger.triggers.Add(end);
+        }
+
+        private int FindPriorityDropIndex(Vector2 screenPosition, Camera eventCamera)
+        {
+            var bestIndex = -1;
+            var bestDistance = float.MaxValue;
+            var corners = new Vector3[4];
+            for (var index = 0; index < _priorityPopup.transform.childCount; index++)
+            {
+                var row = _priorityPopup.transform.GetChild(index) as RectTransform;
+                if (row == null) continue;
+                row.GetWorldCorners(corners);
+                var center = (corners[0] + corners[2]) * 0.5f;
+                var centerScreen = RectTransformUtility.WorldToScreenPoint(eventCamera, center);
+                var distance = Mathf.Abs(screenPosition.y - centerScreen.y);
+                if (distance >= bestDistance) continue;
+                bestDistance = distance;
+                bestIndex = index;
+            }
+            return bestIndex;
         }
 
         private void StartOptimization()
@@ -589,6 +789,12 @@ namespace Code4101.Zaohua.Tiandao
         private IEnumerator OptimizeAndApply(int runId)
         {
             _button.interactable = false;
+            if (_priorityButton != null) _priorityButton.interactable = false;
+            if (_priorityPopup != null)
+            {
+                Destroy(_priorityPopup);
+                _priorityPopup = null;
+            }
             SetLabel("分析中…");
             if (!DantianLayoutOptimizer.TryCapture(out var problem, out var captureError))
             {
@@ -666,6 +872,7 @@ namespace Code4101.Zaohua.Tiandao
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
                                   $"placements={candidates} modelMs={buildResult.ElapsedMilliseconds} " +
                                   $"jsonChars={jsonBytes} current={currentScore} " +
+                                  $"priority=[{string.Join(" > ", request.priorityOrder.Select(index => request.rules[index].name))}] " +
                                   $"currentRules=[{string.Join(", ", currentScore.RuleDetails)}] " +
                                   $"ruleDefinitions=[{DescribeRules(problem)}]");
 
@@ -720,11 +927,16 @@ namespace Code4101.Zaohua.Tiandao
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] solved-cpsat " +
                                   $"status={response.status} workerModel={response.modelBuildSeconds:F3}s " +
                                   $"solve={response.elapsedSeconds:F3}s total={response.totalSeconds:F3}s " +
+                                  $"phase1={response.phaseOneStatus}/{response.phaseOneSeconds:F3}s " +
+                                  $"exact={response.exactStatus}/{response.exactSeconds:F3}s " +
+                                  $"source={response.resultSource} " +
+                                  $"encodedPriorities={response.encodedPriorityCount}/{request.rules.Length} " +
                                   $"objective={response.objective:F0} bound={response.bestBound:F0} " +
                                   $"solverProduct={response.product} solverTotal={response.total} " +
+                                  $"solverTargets=[{string.Join(",", response.targetCounts ?? Array.Empty<int>())}] " +
                                   $"nativeBest={bestScore} nativeRules=[{string.Join(", ", bestScore.RuleDetails)}] " +
                                   $"solution=[{DescribeSolution(problem, best)}]");
-            if (!bestScore.ExactBetterThan(currentScore))
+            if (!PriorityBetterThan(problem, bestScore, currentScore))
             {
                 yield return ShowTemporary("暂未找到更优");
                 yield break;
@@ -765,6 +977,25 @@ namespace Code4101.Zaohua.Tiandao
                                              $"panel-refresh-failed {refreshException.Message}");
             }
             yield return ShowTemporary($"总增幅 {currentScore.Total}→{bestScore.Total}");
+        }
+
+        private static bool PriorityBetterThan(DantianLayoutProblem problem,
+            DantianLayoutScore left, DantianLayoutScore right)
+        {
+            var keys = new List<string>();
+            foreach (var piece in problem.Pieces)
+            foreach (var rule in piece.Rules)
+                keys.Add(DantianCpSatBridge.DantianRuleKey(piece, rule));
+            var indexByKey = keys.Select((key, index) => new { key, index })
+                .ToDictionary(item => item.key, item => item.index);
+            foreach (var key in DantianOptimizationPriorityState.Order(keys))
+            {
+                var index = indexByKey[key];
+                var leftBenefit = left.Multipliers[index] * left.TargetCounts[index];
+                var rightBenefit = right.Multipliers[index] * right.TargetCounts[index];
+                if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
+            }
+            return left.Total > right.Total;
         }
 
         private static int[] BuildOccupancy(DantianLayoutProblem problem, int[] placements)
@@ -851,8 +1082,9 @@ namespace Code4101.Zaohua.Tiandao
         {
             SetLabel(message);
             yield return new WaitForSecondsRealtime(1.8f);
-            SetLabel("优化排布");
+            SetLabel("排布");
             if (_button != null) _button.interactable = true;
+            if (_priorityButton != null) _priorityButton.interactable = true;
             _running = null;
         }
 
@@ -870,7 +1102,13 @@ namespace Code4101.Zaohua.Tiandao
             if (_running != null) StopCoroutine(_running);
             _running = null;
             if (_button != null) _button.interactable = true;
-            SetLabel("优化排布");
+            if (_priorityButton != null) _priorityButton.interactable = true;
+            if (_priorityPopup != null)
+            {
+                Destroy(_priorityPopup);
+                _priorityPopup = null;
+            }
+            SetLabel("排布");
         }
     }
 
