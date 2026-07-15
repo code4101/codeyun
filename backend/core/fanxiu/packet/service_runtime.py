@@ -29,7 +29,8 @@ FANXIU_PACKET_SERVICE_MODULE = "backend.services.fanxiu_packet_daemon"
 FANXIU_PACKET_SERVICE_TITLE = "凡修抓包"
 FANXIU_PACKET_SERVICE_COMMAND_SCHEMA_VERSION = 1
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
-_PACKET_SERVICE_COMMAND_ACTION_LOCK = threading.Lock()
+_PACKET_SERVICE_REALTIME_COMMAND_ACTION_LOCK = threading.Lock()
+_PACKET_SERVICE_MAINTENANCE_COMMAND_ACTION_LOCK = threading.Lock()
 
 
 class FanxiuPacketServiceError(RuntimeError):
@@ -384,7 +385,12 @@ def _iter_pending_packet_service_commands() -> list[Path]:
 
 
 def _run_packet_service_command_action(action: str, *, reason: str) -> dict[str, Any]:
-    if not _PACKET_SERVICE_COMMAND_ACTION_LOCK.acquire(blocking=False):
+    action_lock = (
+        _PACKET_SERVICE_MAINTENANCE_COMMAND_ACTION_LOCK
+        if action == "maintenance"
+        else _PACKET_SERVICE_REALTIME_COMMAND_ACTION_LOCK
+    )
+    if not action_lock.acquire(blocking=False):
         return {
             "ok": False,
             "skipped": True,
@@ -400,7 +406,7 @@ def _run_packet_service_command_action(action: str, *, reason: str) -> dict[str,
             raise FanxiuPacketServiceError(f"未知抓包服务命令：{action}")
         return result if isinstance(result, dict) else {"ok": True}
     finally:
-        _PACKET_SERVICE_COMMAND_ACTION_LOCK.release()
+        action_lock.release()
 
 
 def _process_packet_service_command(path: Path) -> dict[str, Any] | None:

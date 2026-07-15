@@ -79,6 +79,7 @@ def test_packet_service_command_processes_catch_up(tmp_path, monkeypatch):
 def test_packet_service_command_times_out_and_clears_stuck_request(tmp_path, monkeypatch):
     monkeypatch.setattr(service_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
     monkeypatch.setattr(service_runtime, "_packet_service_command_timeout_seconds", lambda: 1.0)
+    monkeypatch.setattr(service_runtime, "_packet_service_action_timeout_seconds", lambda _action: 1.0)
 
     class FakeWorker:
         def maintenance_once(self):
@@ -110,15 +111,32 @@ def test_packet_service_command_times_out_and_clears_stuck_request(tmp_path, mon
 
 
 def test_packet_service_rejects_overlapping_command_threads(monkeypatch):
-    acquired = service_runtime._PACKET_SERVICE_COMMAND_ACTION_LOCK.acquire(blocking=False)
+    acquired = service_runtime._PACKET_SERVICE_REALTIME_COMMAND_ACTION_LOCK.acquire(blocking=False)
     assert acquired is True
     try:
         result = service_runtime._run_packet_service_command_action("packet_facts_catch_up", reason="unit-test")
     finally:
-        service_runtime._PACKET_SERVICE_COMMAND_ACTION_LOCK.release()
+        service_runtime._PACKET_SERVICE_REALTIME_COMMAND_ACTION_LOCK.release()
 
     assert result["ok"] is False
     assert result["reason"] == "packet_service_command_already_running"
+
+
+def test_stuck_maintenance_command_does_not_block_realtime_catch_up(monkeypatch):
+    class FakeWorker:
+        def catch_up_once(self, *, reason: str):
+            return {"ok": True, "reason": reason}
+
+    monkeypatch.setattr(service_runtime, "fanxiu_packet_insight_worker", FakeWorker())
+    maintenance_lock = service_runtime.threading.Lock()
+    assert maintenance_lock.acquire(blocking=False) is True
+    monkeypatch.setattr(service_runtime, "_PACKET_SERVICE_MAINTENANCE_COMMAND_ACTION_LOCK", maintenance_lock)
+    try:
+        result = service_runtime._run_packet_service_command_action("packet_facts_catch_up", reason="urgent")
+    finally:
+        maintenance_lock.release()
+
+    assert result == {"ok": True, "reason": "urgent"}
 
 
 def test_submit_packet_service_command_returns_pending_when_daemon_has_not_processed(tmp_path, monkeypatch):

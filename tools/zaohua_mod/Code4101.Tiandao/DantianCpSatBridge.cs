@@ -6,6 +6,8 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace Code4101.Zaohua.Tiandao
@@ -17,7 +19,10 @@ namespace Code4101.Zaohua.Tiandao
         public int timeLimitMs;
         public int seed;
         public int cellCount;
+        public int[] cellX;
+        public int[] cellY;
         public int[] currentPlacements;
+        public int[] expectedCurrentMultipliers;
         public DantianSolverPiece[] pieces;
         public DantianSolverRule[] rules;
     }
@@ -43,6 +48,12 @@ namespace Code4101.Zaohua.Tiandao
         public int maxMultiplier;
         public int[] multiplierByCount;
         public DantianSolverSourceOption[] sourceOptions;
+        public bool countSelf;
+        public int[] countGeometry;
+        public int[] countTargetPieces;
+        public bool gateSelf;
+        public int[] gateGeometry;
+        public int[] gateTargetPieces;
     }
 
     [Serializable]
@@ -78,6 +89,8 @@ namespace Code4101.Zaohua.Tiandao
         public double objective = 0;
         public double bestBound = 0;
         public double elapsedSeconds = 0;
+        public double modelBuildSeconds = 0;
+        public double totalSeconds = 0;
     }
 
     internal sealed class DantianSolverRunResult
@@ -85,6 +98,7 @@ namespace Code4101.Zaohua.Tiandao
         internal DantianSolverResponse Response;
         internal string Error;
         internal string StandardError;
+        internal string SnapshotPath;
     }
 
     internal sealed class DantianSolverBuildResult
@@ -94,19 +108,26 @@ namespace Code4101.Zaohua.Tiandao
         internal long ElapsedMilliseconds;
     }
 
+    internal sealed class DantianSolverBuildProgress
+    {
+        internal int CompletedOptions;
+        internal int TotalOptions;
+        internal string CurrentRule;
+    }
+
     internal static class DantianCpSatBridge
     {
-        private const int ProtocolVersion = 1;
+        private const int ProtocolVersion = 2;
 
         internal static Task<DantianSolverBuildResult> BuildAsync(DantianLayoutProblem problem,
             DantianLayoutScore currentScore, int timeLimitMs, int seed,
-            CancellationToken cancellationToken)
+            DantianSolverBuildProgress progress, CancellationToken cancellationToken)
         {
             return Task.Run(() =>
             {
                 var watch = Stopwatch.StartNew();
-                var succeeded = TryBuildRequest(problem, currentScore, timeLimitMs, seed,
-                    cancellationToken, out var request, out var error);
+                var succeeded = TryBuildCompactRequest(problem, currentScore, timeLimitMs, seed,
+                    progress, cancellationToken, out var request, out var error);
                 return new DantianSolverBuildResult
                 {
                     Request = succeeded ? request : null,
@@ -116,16 +137,215 @@ namespace Code4101.Zaohua.Tiandao
             }, cancellationToken);
         }
 
-        private static bool TryBuildRequest(DantianLayoutProblem problem,
+        private sealed class CompactEffect
+        {
+            internal bool Self;
+            internal int[] Geometry = Array.Empty<int>();
+            internal int[] TargetPieces = Array.Empty<int>();
+        }
+
+        private static bool TryBuildCompactRequest(DantianLayoutProblem problem,
             DantianLayoutScore currentScore, int timeLimitMs, int seed,
-            CancellationToken cancellationToken,
+            DantianSolverBuildProgress progress, CancellationToken cancellationToken,
             out DantianSolverRequest request, out string error)
         {
             request = null;
             error = null;
             try
             {
-                var maskCache = new Dictionary<string, HashSet<int>>();
+                var rules = new List<DantianSolverRule>();
+                var nativeIndex = 0;
+                for (var sourcePiece = 0; sourcePiece < problem.Pieces.Count; sourcePiece++)
+                {
+                    var piece = problem.Pieces[sourcePiece];
+                    for (var ruleIndex = 0; ruleIndex < piece.Rules.Count; ruleIndex++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var cfg = piece.Rules[ruleIndex];
+                        var parsed = ParseMultiplier(cfg.upMulType, cfg.maxUpMul);
+                        progress.CurrentRule = $"{piece.Name}#{ruleIndex + 1}";
+                        if (parsed.CountKind != 0 ||
+                            !TryCompileCompactEffect(problem, sourcePiece, cfg.upMulEff,
+                                out var countEffect) ||
+                            !TryCompileCompactEffect(problem, sourcePiece, cfg.targetEff,
+                                out var gateEffect))
+                        {
+                            error = $"暂不支持的原生规则：{progress.CurrentRule}，" +
+                                    $"target='{cfg.targetEff}'，up='{cfg.upMulEff}'，" +
+                                    $"type='{cfg.upMulType}'。为避免错误排布，已拒绝建模。";
+                            return false;
+                        }
+                        var count = countEffect.Self
+                            ? 1
+                            : CountCurrentHits(problem, sourcePiece, countEffect);
+                        var gate = gateEffect.Self ||
+                                   CountCurrentHits(problem, sourcePiece, gateEffect) > 0;
+                        var modeled = gate ? parsed.GetMultiplier(count) : 0;
+                        var native = nativeIndex < currentScore.Multipliers.Count
+                            ? currentScore.Multipliers[nativeIndex]
+                            : -1;
+                        if (modeled != native)
+                        {
+                            var evidence = nativeIndex < currentScore.RuleEvidence.Count
+                                ? currentScore.RuleEvidence[nativeIndex]
+                                : "native evidence unavailable";
+                            error = $"紧凑模型校验失败：{progress.CurrentRule}，模型x{modeled}，" +
+                                    $"原生x{native}，count={count}，gate={gate}；{evidence}";
+                            return false;
+                        }
+                        var maximumCount = countEffect.Self
+                            ? 1
+                            : countEffect.TargetPieces.Length;
+                        var table = Enumerable.Range(0, maximumCount + 1)
+                            .Select(parsed.GetMultiplier).ToArray();
+                        rules.Add(new DantianSolverRule
+                        {
+                            name = progress.CurrentRule,
+                            sourcePiece = sourcePiece,
+                            maxMultiplier = table.Max(),
+                            multiplierByCount = table,
+                            countSelf = countEffect.Self,
+                            countGeometry = countEffect.Geometry,
+                            countTargetPieces = countEffect.TargetPieces,
+                            gateSelf = gateEffect.Self,
+                            gateGeometry = gateEffect.Geometry,
+                            gateTargetPieces = gateEffect.TargetPieces,
+                        });
+                        nativeIndex++;
+                        Interlocked.Increment(ref progress.CompletedOptions);
+                    }
+                }
+                request = new DantianSolverRequest
+                {
+                    version = ProtocolVersion,
+                    timeLimitMs = timeLimitMs,
+                    seed = seed,
+                    cellCount = problem.Board.Count,
+                    cellX = problem.Board.Select(cell => cell.x).ToArray(),
+                    cellY = problem.Board.Select(cell => cell.y).ToArray(),
+                    currentPlacements = problem.CurrentPlacements.ToArray(),
+                    expectedCurrentMultipliers = currentScore.Multipliers.ToArray(),
+                    pieces = problem.Pieces.Select(piece => new DantianSolverPiece
+                    {
+                        name = piece.Name,
+                        placements = piece.Placements.Select(placement =>
+                            new DantianSolverPlacement { cells = placement.CellIndices }).ToArray(),
+                    }).ToArray(),
+                    rules = rules.ToArray(),
+                };
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                error = "求解已取消";
+                return false;
+            }
+            catch (Exception exception)
+            {
+                error = exception.GetType().Name + ": " + exception.Message;
+                return false;
+            }
+        }
+
+        private static bool TryCompileCompactEffect(DantianLayoutProblem problem,
+            int sourcePiece, string effect, out CompactEffect compiled)
+        {
+            compiled = new CompactEffect();
+            if (IsSourceSelfEffect(effect))
+            {
+                compiled.Self = true;
+                return true;
+            }
+            if (effect.Contains("|")) return false;
+            var geometry = new List<int>();
+            var staticCodes = new List<Tuple<int, int>>();
+            foreach (var raw in effect.Split('&'))
+            {
+                var parts = raw.Split('#');
+                if (!int.TryParse(parts[0], out var code) || code < 0) return false;
+                var index = 0;
+                if (parts.Length > 1 && !int.TryParse(parts[1], out index)) return false;
+                if ((code >= 1 && code <= 7) || code == 10 || code == 13)
+                    geometry.Add(code == 13 ? 10 : code);
+                if (code == 13 || (code >= 20 && code <= 28) ||
+                    (code >= 40 && code <= 51) || code == 100 || code == 101 ||
+                    code == 200 || code == 201)
+                    staticCodes.Add(Tuple.Create(code, index));
+                else if (!((code >= 1 && code <= 7) || code == 10))
+                    return false;
+            }
+            compiled.Geometry = geometry.Distinct().ToArray();
+            compiled.TargetPieces = Enumerable.Range(0, problem.Pieces.Count)
+                .Where(target => target != sourcePiece && staticCodes.All(item =>
+                    MatchesStaticCode(problem.Pieces[target], item.Item1, item.Item2)))
+                .ToArray();
+            return true;
+        }
+
+        private static bool MatchesStaticCode(DantianLayoutPiece piece, int code, int index)
+        {
+            if (code == 13) return piece.IsArt || piece.IsMagic;
+            if (code >= 20 && code <= 28) return piece.Attribute + 20 == code;
+            if (code >= 40 && code <= 45)
+                return (piece.IsMagic && piece.Type - 221 == code - 40) ||
+                       (piece.IsArt && piece.Type - 201 == code - 40);
+            if (code == 50) return piece.IsMagic && piece.IsAttackMagic;
+            if (code == 51) return piece.IsMagic && piece.IsDefenceMagic;
+            if (code == 100) return piece.IsArt;
+            if (code == 101) return piece.IsMagic;
+            if (code == 200) return piece.IsArt && piece.Id.sedId == index;
+            if (code == 201) return piece.IsMagic && piece.Id.sedId == index;
+            return true;
+        }
+
+        private static int CountCurrentHits(DantianLayoutProblem problem, int sourcePiece,
+            CompactEffect effect)
+        {
+            var sourceCells = problem.Pieces[sourcePiece]
+                .Placements[problem.CurrentPlacements[sourcePiece]].CellIndices;
+            return effect.TargetPieces.Count(target => problem.Pieces[target]
+                .Placements[problem.CurrentPlacements[target]].CellIndices.Any(candidate =>
+                    MatchesGeometry(problem, sourceCells, candidate, effect.Geometry)));
+        }
+
+        private static bool MatchesGeometry(DantianLayoutProblem problem, int[] sourceCells,
+            int candidate, int[] geometry)
+        {
+            var target = problem.Board[candidate];
+            return geometry.All(code =>
+            {
+                if (code == 7) return true;
+                if (code == 10) return sourceCells.Any(source =>
+                    Math.Abs(problem.Board[source].x - target.x) +
+                    Math.Abs(problem.Board[source].y - target.y) <= 1);
+                if (code == 11) return sourceCells.All(source =>
+                    Math.Abs(problem.Board[source].x - target.x) +
+                    Math.Abs(problem.Board[source].y - target.y) > 1);
+                if (code == 1) return sourceCells.Any(source =>
+                    problem.Board[source].x == target.x && problem.Board[source].y < target.y);
+                if (code == 2) return sourceCells.Any(source =>
+                    problem.Board[source].x == target.x && problem.Board[source].y > target.y);
+                if (code == 3) return sourceCells.Any(source =>
+                    problem.Board[source].y == target.y && problem.Board[source].x > target.x);
+                if (code == 4) return sourceCells.Any(source =>
+                    problem.Board[source].y == target.y && problem.Board[source].x < target.x);
+                if (code == 5) return sourceCells.Any(source =>
+                    problem.Board[source].x - target.x == problem.Board[source].y - target.y);
+                if (code == 6) return sourceCells.Any(source =>
+                    problem.Board[source].x - target.x == target.y - problem.Board[source].y);
+                return false;
+            });
+        }
+
+        private static bool TryBuildRequest(DantianLayoutProblem problem,
+            DantianLayoutScore currentScore, int timeLimitMs, int seed,
+            DantianSolverBuildProgress progress, CancellationToken cancellationToken,
+            out DantianSolverRequest request, out string error)
+        {
+            request = null;
+            error = null;
+            try
+            {
                 var rules = new List<DantianSolverRule>();
                 var currentMultiplierIndex = 0;
                 for (var sourcePieceIndex = 0;
@@ -139,53 +359,63 @@ namespace Code4101.Zaohua.Tiandao
                         cancellationToken.ThrowIfCancellationRequested();
                         var cfg = sourcePiece.Rules[ruleIndex];
                         var parsed = ParseMultiplier(cfg.upMulType, cfg.maxUpMul);
+                        if (parsed.CountKind != 0 ||
+                            !IsSupportedObjectCountEffect(cfg.upMulEff) ||
+                            !IsSupportedObjectCountEffect(cfg.targetEff))
+                        {
+                            error = $"暂不支持的原生规则：{sourcePiece.Name}#{ruleIndex + 1}，" +
+                                    $"target='{cfg.targetEff}'，up='{cfg.upMulEff}'，" +
+                                    $"type='{cfg.upMulType}'。为避免错误排布，已拒绝建模。";
+                            return false;
+                        }
                         var unconditionalGate = IsUnconditionalTargetEffect(cfg.targetEff);
                         var options = new DantianSolverSourceOption[sourcePiece.Placements.Count];
-                        var maximumCount = 0;
-                        for (var sourcePlacementIndex = 0;
-                             sourcePlacementIndex < sourcePiece.Placements.Count;
-                             sourcePlacementIndex++)
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            var upMasks = new HashSet<int>[problem.Pieces.Count];
-                            var gateMasks = new HashSet<int>[problem.Pieces.Count];
-                            for (var targetPieceIndex = 0;
-                                 targetPieceIndex < problem.Pieces.Count;
-                                 targetPieceIndex++)
-                            {
-                                if (targetPieceIndex == sourcePieceIndex)
-                                {
-                                    upMasks[targetPieceIndex] = new HashSet<int>();
-                                    gateMasks[targetPieceIndex] = new HashSet<int>();
-                                    continue;
-                                }
-                                upMasks[targetPieceIndex] = GetCachedMask(maskCache,
-                                    cfg.upMulEff, problem, sourcePieceIndex,
-                                    sourcePlacementIndex, targetPieceIndex, cancellationToken);
-                                gateMasks[targetPieceIndex] = unconditionalGate
-                                    ? new HashSet<int>()
-                                    : GetCachedMask(maskCache, cfg.targetEff, problem,
-                                        sourcePieceIndex, sourcePlacementIndex, targetPieceIndex,
-                                        cancellationToken);
-                            }
+                        var featureCounts = new int[sourcePiece.Placements.Count];
+                        var currentPlacement = problem.CurrentPlacements[sourcePieceIndex];
+                        progress.CurrentRule = $"{sourcePiece.Name}#{ruleIndex + 1}";
 
-                            var features = BuildCountFeatures(problem, parsed, upMasks,
-                                sourcePieceIndex);
-                            maximumCount = Math.Max(maximumCount, features.Count);
-                            options[sourcePlacementIndex] = new DantianSolverSourceOption
-                            {
-                                countFeatures = features.ToArray(),
-                                // targetEff=0 means the rule has no separate target gate.  The
-                                // native evaluator treats the source piece itself as a valid
-                                // target, so requiring another piece here incorrectly forces the
-                                // multiplier to zero (for example, 涌泉化春霖 x5 -> x0).
-                                gateFeature = unconditionalGate
-                                    ? BuildAlwaysFeature(sourcePieceIndex,
-                                        sourcePiece.Placements.Count)
-                                    : BuildGateFeature(problem, gateMasks, sourcePieceIndex),
-                            };
+                        // Validate the rule semantics against the native game before paying the
+                        // cost of expanding every possible source placement.
+                        options[currentPlacement] = BuildSourceOption(problem, cfg, parsed,
+                            sourcePieceIndex, currentPlacement, unconditionalGate,
+                            cancellationToken, out featureCounts[currentPlacement]);
+                        Interlocked.Increment(ref progress.CompletedOptions);
+                        var currentOption = options[currentPlacement];
+                        var currentCount = currentOption.countFeatures.Count(feature =>
+                            IsFeatureActive(problem, feature));
+                        var currentGate = IsFeatureActive(problem, currentOption.gateFeature);
+                        var modeledCurrent = currentGate ? parsed.GetMultiplier(currentCount) : 0;
+                        var nativeCurrent = currentMultiplierIndex < currentScore.Multipliers.Count
+                            ? currentScore.Multipliers[currentMultiplierIndex]
+                            : -1;
+                        if (modeledCurrent != nativeCurrent)
+                        {
+                            var nativeEvidence = currentMultiplierIndex < currentScore.RuleEvidence.Count
+                                ? currentScore.RuleEvidence[currentMultiplierIndex]
+                                : "native evidence unavailable";
+                            error = $"规则模型校验失败：{progress.CurrentRule}，" +
+                                    $"模型x{modeledCurrent}，原生x{nativeCurrent}，" +
+                                    $"count={currentCount}，gate={currentGate}；{nativeEvidence}";
+                            return false;
                         }
 
+                        var parallelOptions = new ParallelOptions
+                        {
+                            CancellationToken = cancellationToken,
+                            MaxDegreeOfParallelism = Math.Min(6,
+                                Math.Max(1, Environment.ProcessorCount - 2)),
+                        };
+                        Parallel.For(0, sourcePiece.Placements.Count, parallelOptions,
+                            sourcePlacementIndex =>
+                            {
+                                if (sourcePlacementIndex == currentPlacement) return;
+                                options[sourcePlacementIndex] = BuildSourceOption(problem, cfg,
+                                    parsed, sourcePieceIndex, sourcePlacementIndex,
+                                    unconditionalGate, cancellationToken,
+                                    out featureCounts[sourcePlacementIndex]);
+                                Interlocked.Increment(ref progress.CompletedOptions);
+                            });
+                        var maximumCount = featureCounts.Max();
                         var table = Enumerable.Range(0, maximumCount + 1)
                             .Select(parsed.GetMultiplier).ToArray();
                         var maxMultiplier = table.Length == 0 ? 0 : table.Max();
@@ -197,16 +427,6 @@ namespace Code4101.Zaohua.Tiandao
                             multiplierByCount = table,
                             sourceOptions = options,
                         };
-                        var modeledCurrent = EvaluateCurrentRule(problem, solverRule);
-                        var nativeCurrent = currentMultiplierIndex < currentScore.Multipliers.Count
-                            ? currentScore.Multipliers[currentMultiplierIndex]
-                            : -1;
-                        if (modeledCurrent != nativeCurrent)
-                        {
-                            error = $"规则模型校验失败：{solverRule.name}，" +
-                                    $"模型x{modeledCurrent}，原生x{nativeCurrent}";
-                            return false;
-                        }
                         currentMultiplierIndex++;
                         rules.Add(solverRule);
                     }
@@ -241,6 +461,56 @@ namespace Code4101.Zaohua.Tiandao
                 error = exception.GetType().Name + ": " + exception.Message;
                 return false;
             }
+        }
+
+        private static DantianSolverSourceOption BuildSourceOption(
+            DantianLayoutProblem problem, TbDrawStateCfg cfg, ParsedMultiplier parsed,
+            int sourcePieceIndex, int sourcePlacementIndex, bool unconditionalGate,
+            CancellationToken cancellationToken, out int featureCount)
+        {
+            var maskCache = new Dictionary<string, HashSet<int>>();
+            var distanceCache = new Dictionary<string, int[]>();
+            var upMasks = new HashSet<int>[problem.Pieces.Count];
+            var gateMasks = new HashSet<int>[problem.Pieces.Count];
+            var sourceCountsItself = IsSourceSelfEffect(cfg.upMulEff);
+            for (var targetPieceIndex = 0;
+                 targetPieceIndex < problem.Pieces.Count;
+                 targetPieceIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (targetPieceIndex == sourcePieceIndex)
+                {
+                    upMasks[targetPieceIndex] = new HashSet<int>();
+                    gateMasks[targetPieceIndex] = new HashSet<int>();
+                    continue;
+                }
+                upMasks[targetPieceIndex] = sourceCountsItself
+                    ? new HashSet<int>()
+                    : GetCachedMask(maskCache, distanceCache, cfg.upMulEff, problem,
+                        sourcePieceIndex, sourcePlacementIndex, targetPieceIndex,
+                        cancellationToken);
+                gateMasks[targetPieceIndex] = unconditionalGate
+                    ? new HashSet<int>()
+                    : GetCachedMask(maskCache, distanceCache, cfg.targetEff, problem,
+                        sourcePieceIndex, sourcePlacementIndex, targetPieceIndex,
+                        cancellationToken);
+            }
+            var features = sourceCountsItself
+                ? new List<DantianSolverFeature>
+                {
+                    BuildAlwaysFeature(sourcePieceIndex,
+                        problem.Pieces[sourcePieceIndex].Placements.Count),
+                }
+                : BuildCountFeatures(problem, parsed, upMasks, sourcePieceIndex);
+            featureCount = features.Count;
+            return new DantianSolverSourceOption
+            {
+                countFeatures = features.ToArray(),
+                gateFeature = unconditionalGate
+                    ? BuildAlwaysFeature(sourcePieceIndex,
+                        problem.Pieces[sourcePieceIndex].Placements.Count)
+                    : BuildGateFeature(problem, gateMasks, sourcePieceIndex),
+            };
         }
 
         internal static Task<DantianSolverRunResult> RunAsync(DantianSolverRequest request,
@@ -298,6 +568,9 @@ namespace Code4101.Zaohua.Tiandao
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardInputEncoding = Encoding.UTF8,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
                 };
                 using (var process = Process.Start(startInfo))
                 {
@@ -308,7 +581,16 @@ namespace Code4101.Zaohua.Tiandao
                     }
                     var stdout = process.StandardOutput.ReadToEndAsync();
                     var stderr = process.StandardError.ReadToEndAsync();
-                    process.StandardInput.Write(JsonUtility.ToJson(request));
+                    var payload = JsonConvert.SerializeObject(request);
+                    result.SnapshotPath = SaveSnapshot("request", payload);
+                    var localCheck = JsonConvert.DeserializeObject<DantianSolverRequest>(payload);
+                    if (localCheck?.pieces == null || localCheck.pieces.Length != request.pieces.Length)
+                    {
+                        result.Error = "求解请求在发送前自检失败";
+                        try { process.Kill(); } catch { }
+                        return result;
+                    }
+                    process.StandardInput.Write(payload);
                     process.StandardInput.Close();
                     var timeout = Math.Max(3000, request.timeLimitMs + 5000);
                     var elapsed = 0;
@@ -323,12 +605,13 @@ namespace Code4101.Zaohua.Tiandao
                     Task.WaitAll(new Task[] { stdout, stderr }, 2000);
                     result.StandardError = stderr.IsCompleted ? stderr.Result : string.Empty;
                     var output = stdout.IsCompleted ? stdout.Result : string.Empty;
+                    if (!string.IsNullOrWhiteSpace(output)) SaveSnapshot("response", output);
                     if (string.IsNullOrWhiteSpace(output))
                     {
                         result.Error = $"求解器没有返回结果（退出码{process.ExitCode}）";
                         return result;
                     }
-                    result.Response = JsonUtility.FromJson<DantianSolverResponse>(output);
+                    result.Response = JsonConvert.DeserializeObject<DantianSolverResponse>(output);
                     if (result.Response == null)
                         result.Error = "无法解析求解器结果";
                     else if (!string.IsNullOrEmpty(result.Response.error))
@@ -340,6 +623,23 @@ namespace Code4101.Zaohua.Tiandao
             {
                 result.Error = exception.GetType().Name + ": " + exception.Message;
                 return result;
+            }
+        }
+
+        private static string SaveSnapshot(string kind, string content)
+        {
+            try
+            {
+                var directory = Path.Combine(Path.GetTempPath(), "codeyun", "zaohua_mod",
+                    "dantian_solver");
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, $"latest.{kind}.json");
+                File.WriteAllText(path, content, Encoding.UTF8);
+                return path;
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -357,13 +657,12 @@ namespace Code4101.Zaohua.Tiandao
 
         private static HashSet<int> GetMask(string effect,
             DantianLayoutProblem problem, int sourcePieceIndex, int sourcePlacementIndex,
-            int targetPieceIndex, CancellationToken cancellationToken)
+            int targetPieceIndex, int[] distances, CancellationToken cancellationToken)
         {
             var sourcePiece = problem.Pieces[sourcePieceIndex];
             var targetPiece = problem.Pieces[targetPieceIndex];
             var sourceCells = new HashSet<int>(
                 sourcePiece.Placements[sourcePlacementIndex].CellIndices);
-            var distances = GetDistances(problem, sourceCells);
             var mask = new HashSet<int>();
             for (var candidateCell = 0; candidateCell < problem.Board.Count; candidateCell++)
             {
@@ -501,16 +800,68 @@ namespace Code4101.Zaohua.Tiandao
         }
 
         private static HashSet<int> GetCachedMask(Dictionary<string, HashSet<int>> cache,
-            string effect, DantianLayoutProblem problem,
+            Dictionary<string, int[]> distanceCache, string effect, DantianLayoutProblem problem,
             int sourcePiece, int sourcePlacement, int targetPiece,
             CancellationToken cancellationToken)
         {
-            var key = $"{sourcePiece}:{sourcePlacement}:{targetPiece}:{effect ?? string.Empty}";
+            var distanceKey = $"{sourcePiece}:{sourcePlacement}";
+            if (!distanceCache.TryGetValue(distanceKey, out var distances))
+            {
+                distances = GetDistances(problem, new HashSet<int>(
+                    problem.Pieces[sourcePiece].Placements[sourcePlacement].CellIndices));
+                distanceCache[distanceKey] = distances;
+            }
+            var targetSignature = GetTargetSignature(effect, problem.Pieces[targetPiece]);
+            var key = $"{distanceKey}:{effect ?? string.Empty}:{targetSignature}";
             if (cache.TryGetValue(key, out var mask)) return mask;
             mask = GetMask(effect, problem, sourcePiece, sourcePlacement,
-                targetPiece, cancellationToken);
+                targetPiece, distances, cancellationToken);
             cache[key] = mask;
             return mask;
+        }
+
+        private static string GetTargetSignature(string effect, DantianLayoutPiece piece)
+        {
+            var needsCategory = false;
+            var needsAttribute = false;
+            var needsType = false;
+            var needsAttack = false;
+            var needsDefence = false;
+            var needsExactId = false;
+            foreach (var raw in (effect ?? string.Empty).Split('&', '|'))
+            {
+                var parts = raw.Split('#');
+                if (!int.TryParse(parts[0], out var signedCode)) continue;
+                var code = Math.Abs(signedCode);
+                if (code == 13 || code == 100 || code == 101 || code == 200 || code == 201)
+                    needsCategory = true;
+                if (code >= 20 && code <= 28) needsAttribute = true;
+                if (code >= 40 && code <= 45)
+                {
+                    needsCategory = true;
+                    needsType = true;
+                }
+                if (code == 50)
+                {
+                    needsCategory = true;
+                    needsAttack = true;
+                }
+                if (code == 51)
+                {
+                    needsCategory = true;
+                    needsDefence = true;
+                }
+                if (code == 200 || code == 201) needsExactId = true;
+            }
+            return string.Join(":", new[]
+            {
+                needsCategory ? $"{piece.IsArt},{piece.IsMagic}" : "*",
+                needsAttribute ? piece.Attribute.ToString() : "*",
+                needsType ? piece.Type.ToString() : "*",
+                needsAttack ? piece.IsAttackMagic.ToString() : "*",
+                needsDefence ? piece.IsDefenceMagic.ToString() : "*",
+                needsExactId ? $"{(int)piece.Id.blendEnum},{piece.Id.sedId}" : "*",
+            });
         }
 
         private static List<DantianSolverFeature> BuildCountFeatures(DantianLayoutProblem problem,
@@ -603,6 +954,29 @@ namespace Code4101.Zaohua.Tiandao
         {
             return string.Equals((effect ?? string.Empty).Trim(), "0",
                 StringComparison.Ordinal);
+        }
+
+        private static bool IsSourceSelfEffect(string effect)
+        {
+            return string.IsNullOrWhiteSpace(effect) ||
+                   string.Equals(effect.Trim(), "0", StringComparison.Ordinal);
+        }
+
+        private static bool IsSupportedObjectCountEffect(string effect)
+        {
+            if (IsSourceSelfEffect(effect)) return true;
+            if (effect.Contains("|")) return false;
+            foreach (var raw in effect.Split('&'))
+            {
+                var parts = raw.Split('#');
+                if (!int.TryParse(parts[0], out var code) || code < 0) return false;
+                var supported = (code >= 1 && code <= 7) || code == 10 || code == 11 ||
+                                code == 13 || (code >= 20 && code <= 28) ||
+                                (code >= 40 && code <= 51) || code == 100 || code == 101 ||
+                                code == 200 || code == 201;
+                if (!supported) return false;
+            }
+            return true;
         }
 
         private static DantianSolverFeature BuildAlwaysFeature(int sourcePieceIndex,

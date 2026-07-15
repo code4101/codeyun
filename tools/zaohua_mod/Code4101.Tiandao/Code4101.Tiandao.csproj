@@ -6,9 +6,11 @@
     <AssemblyName>Code4101.Zaohua.Tiandao</AssemblyName>
     <RootNamespace>Code4101.Zaohua.Tiandao</RootNamespace>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <Reference Include="UnityEngine"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.AnimationModule"><HintPath>$(ZaohuaGameDir)\Zaohua_Data\Managed\UnityEngine.AnimationModule.dll</HintPath><Private>false</Private></Reference>

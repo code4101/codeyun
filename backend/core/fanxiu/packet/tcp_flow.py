@@ -87,6 +87,10 @@ from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 
 
 DEFAULT_FANXIU_SERVER_HOST = "1.12.44.63"
+# Bump this whenever protocol decoding semantics or schema interpretation changes.
+# Historical maintenance treats records from older versions as stale and
+# re-decodes their preserved pcap evidence through the same decoder.
+FANXIU_TCP_DECODE_SCHEMA_VERSION = 1
 DEFAULT_TCP_CAPTURE_DIR = Path("tcp_captures")
 DEFAULT_TCP_STORE_DIR = Path("fanxiu") / "tcp-flow"
 DEFAULT_TCP_RETENTION_MAX_RECORDS = 0
@@ -1881,6 +1885,7 @@ def decode_fanxiu_tcp_pcap(
         "server_host": server_host,
         "text_assets": str(text_assets_path),
         "capture_sha256": pcap_digest,
+        "decoder_version": FANXIU_TCP_DECODE_SCHEMA_VERSION,
         "stream_candidates": stream_candidates[:20],
         "summary": {
             "c2s_bytes": len(c2s_payload),
@@ -1923,6 +1928,7 @@ def decode_fanxiu_tcp_pcap(
             "pcap_size": pcap_path.stat().st_size,
             "pcap_modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pcap_path.stat().st_mtime)),
             "capture_sha256": pcap_digest,
+            "decoder_version": FANXIU_TCP_DECODE_SCHEMA_VERSION,
             "stream": stream,
             "server_host": server_host,
             "text_assets": str(text_assets_path),

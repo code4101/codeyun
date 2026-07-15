@@ -33,6 +33,7 @@ class FanxiuJupyterBinding:
         self.entry_id = str(entry_id)
         self.asset_tree_path = Path(asset_tree_path)
         self.execution_lock = getattr(runner, "_cell_execution_lock", threading.RLock())
+        self._cell_lock_acquired = False
         self.stop_event = threading.Event()
         self.runtime_ctx: dict[str, Any] = {}
         self.runtime: Any = None
@@ -88,6 +89,7 @@ class FanxiuJupyterBinding:
 
     def begin_cell(self, info: Any, shell: Any) -> None:
         self.execution_lock.acquire()
+        self._cell_lock_acquired = True
         try:
             source = str(getattr(info, "raw_cell", "") or "")
             self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
@@ -104,6 +106,7 @@ class FanxiuJupyterBinding:
                     )
             shell.user_ns.update(self.namespace())
         except Exception:
+            self._cell_lock_acquired = False
             self.execution_lock.release()
             raise
 
@@ -126,7 +129,13 @@ class FanxiuJupyterBinding:
                     })
                 self.runner._persist_status()
         finally:
-            self.execution_lock.release()
+            # IPython can emit post_run_cell without a matching successful
+            # pre_run_cell (notably around interrupt/rebind and hot reload).
+            # Releasing an RLock in that state turns an otherwise completed
+            # Cell into a 500 response and breaks every following submission.
+            if self._cell_lock_acquired:
+                self._cell_lock_acquired = False
+                self.execution_lock.release()
 
     def namespace(self) -> dict[str, Any]:
         return {
