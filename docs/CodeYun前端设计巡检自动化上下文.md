@@ -30,13 +30,22 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "c580233e4070c23c653955d382eb1f3cb12b7613"
-last_audited_at: "2026-07-15T01:13:18.2424236+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-15-frontend-design-c580233e/report.md"
-last_frontend_commit_summary: "完整关闭 eca87774..c580233e：Runtime、日历详情、笔记类型与修道班考勤表保持既有基础模型；空文件目录删除重复无媒体空壳，保留唯一目录工作区。"
-audited_commit_count: 117
+last_audited_commit: "dd8678cd279868efd8130d1d8bd811e67aa05a30"
+last_audited_at: "2026-07-16T01:08:04.6624901+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-16-frontend-design-dd8678cd/report.md"
+last_frontend_commit_summary: "完整关闭 c580233e..dd8678cd：空目录保持唯一目录工作区，Jobs/Services 收回两种基础运行对象，OCR 建议复用名称下划线与 hover，不新增常驻控件。"
+audited_commit_count: 122
 pending_or_skipped_ranges: []
 ```
+
+### 2026-07-16 · `dd8678cd`
+
+- 完整范围：`c580233e4070c23c653955d382eb1f3cb12b7613..dd8678cd279868efd8130d1d8bd811e67aa05a30`；共 5 个提交，按从旧到新逐个归类。`333bee07`、`f144f6f9`、`98302707` 直接修改前端；`8ed34462`、`dd8678cd` 只改变凡修抓包、标注护栏和 Zaohua 工具链后端实现，未改变页面或状态投影。
+- 入口与模型：文件空目录只保留“设备/路径/目录”工作区；运行管理明确使用“服务 = 长期进程、作业 = 按规则或一次性触发”的两种基础对象；数据标注把 OCR 候选作为 shape 名称的下划线和 hover 建议，不新增按钮、字段、面板或持久状态。
+- 本轮减法：复验 `333bee07` 已把真正空目录的第二块媒体空壳隐藏并取消 640px 强制高度；`98302707` 删除“添加作业 → 自定义命令”平行入口，并将 legacy command 统一归为 service。没有追加源码修复。
+- 真实页面：文件空目录、`/cluster/runtime` 的添加作业弹窗、`/fanxiu/data-annotation` 均覆盖 `1600x1000`、`1366x900`、`820x1180`。全部页面 `body/root` 横向溢出为 0；添加作业弹窗不含“自定义命令”；数据标注控制台无 `warn/error`。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过（Vite 7.3.1，4256 modules，约 1m09s）。本轮未触发强制入口依赖污染检查。
+- 剩余风险：当前真实选中帧的 2 个 shape 没有命中 OCR 建议，故只验证了视觉语法、降级和布局，尚缺一张真实命中状态截图；后续同链路提交应补验下划线与场景标识红色、选中蓝色的区分度。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-16-frontend-design-dd8678cd/`。
 
 ### 2026-07-15 · `c580233e`
 
