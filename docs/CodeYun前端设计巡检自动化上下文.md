@@ -30,13 +30,22 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "dd8678cd279868efd8130d1d8bd811e67aa05a30"
-last_audited_at: "2026-07-16T01:08:04.6624901+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-16-frontend-design-dd8678cd/report.md"
-last_frontend_commit_summary: "完整关闭 c580233e..dd8678cd：空目录保持唯一目录工作区，Jobs/Services 收回两种基础运行对象，OCR 建议复用名称下划线与 hover，不新增常驻控件。"
-audited_commit_count: 122
+last_audited_commit: "6c2b6d8c5b118cb3d720a1cec7ea67e8ff69461a"
+last_audited_at: "2026-07-17T01:06:19.2949865+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-17-frontend-design-6c2b6d8c/report.md"
+last_frontend_commit_summary: "完整关闭 dd8678cd..6c2b6d8c：东财计算器只把行情轮询收回后端 TTL 与单一静默定时器，保持标的、九点价格轴、现价标记、交易记录四个既有概念，不新增 UI。"
+audited_commit_count: 126
 pending_or_skipped_ranges: []
 ```
+
+### 2026-07-17 · `6c2b6d8c`
+
+- 完整范围：`dd8678cd279868efd8130d1d8bd811e67aa05a30..6c2b6d8c5b118cb3d720a1cec7ea67e8ff69461a`；共 4 个提交，按从旧到新逐个归类。`d2fb2c27` 直接修改东财计算器前端及其行情 API；`43c67f70`、`1e32bc7d`、`6c2b6d8c` 只涉及维护快照/文档、凡修 Runtime/调度、考勤桥接与测试，没有改变前端页面或可视状态投影。
+- 入口与模型：页面继续使用“标的 + 基准价 → 9 个价格点位 + 单一现价标记 → 该标的交易记录”的决策闭环。行情刷新改为读取后端 `fetched_at + ttl_seconds` 安排下一次刷新，并复用一个静默 `setTimeout`；没有新增刷新按钮、loading、状态标签、说明区或持久状态。
+- 本轮减法：没有追加源码修复。提交本身把固定 60 秒轮询收回到后端 TTL 这一基础缓存事实，避免前端再维护一套独立刷新规则；异常时仍回到 10 秒重试，页面语义和控件数量保持不变。
+- 真实页面：`/notes/eastmoney/calculator` 覆盖 `1600x1000`、`1366x900`、`820x1180`。三个视口的 `body/root` 横向溢出均为 0；窄屏仅 9 点价格轴内部保留 101px 局部横向滚动，交易表无额外横向溢出。页面、菜单、真实行情与交易记录正常，观察一个刷新周期后控制台无 `warn/error`。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过（Vite 7.3.1，4256 modules，约 1m07s）；`uv run pytest tests/backend/test_eastmoney_calculator.py -q` 通过（4 passed）。本轮没有依赖、Vite/Rollup、全局样式、worker/wasm、解析器/预览器/编辑器/图表库或公开入口改动，不触发强制入口依赖污染检查。
+- 现场边界：巡检开始前工作区已有 NoteSheet、凡修日常任务及相关测试的 7 个未提交修改；本轮未覆盖或改写这些用户变更。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-17-frontend-design-6c2b6d8c/`。
 
 ### 2026-07-16 · `dd8678cd`
 

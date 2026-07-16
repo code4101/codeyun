@@ -745,7 +745,23 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         issues.append("tcpdump_not_ready")
     if latest_capture.get("age_seconds") is None:
         issues.append("no_live_pcap")
-    elif float(latest_capture.get("age_seconds") or 0) > 120:
+    # remote-file capture is copied locally only when a segment finalizes.  Its
+    # healthy silence window must therefore follow the configured segment size,
+    # rather than the old hard-coded 120 seconds used by 30-second segments.
+    try:
+        max_segment_seconds = max(0.0, float(capture.get("max_segment_seconds") or 0))
+        watchdog_interval_seconds = max(0.0, float(capture.get("watchdog_interval_seconds") or 0))
+    except (TypeError, ValueError):
+        max_segment_seconds = 0.0
+        watchdog_interval_seconds = 0.0
+    live_pcap_stale_after_seconds = max(
+        120.0,
+        max_segment_seconds + max(30.0, watchdog_interval_seconds),
+    )
+    if (
+        latest_capture.get("age_seconds") is not None
+        and float(latest_capture.get("age_seconds") or 0) > live_pcap_stale_after_seconds
+    ):
         issues.append("live_pcap_stale")
     if worker and worker.get("ok") is False:
         issues.append("packet_worker_error")
@@ -776,6 +792,7 @@ def build_fanxiu_packet_service_health(status: dict[str, Any]) -> dict[str, Any]
         "issues": issues,
         "warnings": warnings,
         "latest_live_capture": latest_capture,
+        "live_pcap_stale_after_seconds": live_pcap_stale_after_seconds,
         "mail_database": mail,
         "mail_protocol_probe": mail_probe,
         "worker_updated_age_seconds": _age_seconds(worker.get("updated_at")) if worker else None,

@@ -1895,6 +1895,197 @@ class MailTaskMixin:
         self._log("detail", f"邮件_历史扫描：当前页 OCR+行解析耗时 {elapsed:.1f}s，识别 {len(rows)} 行")
         return rows
 
+    def _compare_visible_mail_row_with_packet_store(self, row: dict[str, Any]) -> dict[str, Any]:
+        """只读判断一封游戏可见邮件是否存在对应 packet 事实。
+
+        完整性口径是 A - B：游戏当前可见邮件为 A，packet 数据库为 B。
+        同标题的历史邮件不能证明当前这封已入库，因此这里明确禁用
+        title-only 降级；必须在相同分钟内找到标题相符的 packet 记录。
+        """
+
+        title = str(row.get("title") or "").strip()
+        time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
+        compared = dict(row)
+        compared["time_text"] = time_text
+        if not title or not self._is_valid_mail_time_text(time_text):
+            compared.update(
+                {
+                    "packet_match": "unresolved_visible_key",
+                    "packet_missing_reason": "invalid_title_or_time",
+                    "mail_key": "",
+                }
+            )
+            return compared
+        records = self._find_packet_mail_records_for_visible_row(
+            title,
+            time_text,
+            allow_title_only=False,
+        )
+        records = [record for record in records if self._mail_record_matches_visible_time(record, time_text)]
+        if records:
+            compared.update(
+                {
+                    "packet_match": "matched",
+                    "packet_missing_reason": "",
+                    "mail_key": str(records[0].mail_key or ""),
+                }
+            )
+            return compared
+        compared.update(
+            {
+                "packet_match": "missing",
+                "packet_missing_reason": self._mail_row_packet_missing_reason(title, time_text),
+                "mail_key": "",
+            }
+        )
+        return compared
+
+    def scan_mail_inventory_readonly(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        max_scrolls: int = 40,
+        settle_seconds: float = 2.0,
+        reset_to_top: bool = True,
+    ):
+        """滚动读取 #121 邮件清单并返回 A、A-B 和时间降序证据。
+
+        该方法不会打开邮件详情，不会领取、删除或写邮件扫描水位；唯一
+        的界面动作是滚动“邮件清单2”。调用前必须已经位于 #121。
+        """
+
+        image121 = ctx.get("images", {}).get(121)
+        if not isinstance(image121, dict):
+            raise RuntimeError("缺少 #121 邮件帧标注，无法只读扫描邮件")
+        list_shape = self._find_shape(image121, "邮件清单2") or self._find_shape(image121, "邮件清单")
+        if not list_shape:
+            raise RuntimeError("缺少 #121「邮件清单2」标注，无法只读扫描邮件")
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        observations: list[dict[str, Any]] = []
+        seen_observation_keys: set[tuple[str, str]] = set()
+        windows: list[dict[str, Any]] = []
+        descending_violations: list[dict[str, Any]] = []
+        adjacency_intervals: list[dict[str, str]] = []
+        reached_end = False
+        scroll_limit = max(0, min(int(max_scrolls), 80))
+        reset_scroll_count = 0
+
+        if reset_to_top:
+            for _ in range(scroll_limit + 1):
+                self._raise_if_stopped(stop_event)
+                changed = yield from self._scroll_shape_content_changed(
+                    ctx,
+                    image121,
+                    list_shape,
+                    stop_event,
+                    reverse=True,
+                    settle_seconds=max(0.5, float(settle_seconds)),
+                )
+                if not changed:
+                    break
+                reset_scroll_count += 1
+
+        for window_index in range(scroll_limit + 1):
+            self._raise_if_stopped(stop_event)
+            frame = runtime.cur_frame(update=True)
+            visible_rows = self._recognize_visible_mail_rows(ctx, image121, frame)
+            compared_rows = [self._compare_visible_mail_row_with_packet_store(row) for row in visible_rows]
+            valid_times: list[tuple[str, Any]] = []
+            for row in compared_rows:
+                title = _runtime_runner.normalize_fanxiu_mail_title(str(row.get("title") or ""))
+                time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
+                key = (title, time_text)
+                if title and key not in seen_observation_keys:
+                    seen_observation_keys.add(key)
+                    observations.append(row)
+                parsed = parse_data_annotation_task_time(time_text)
+                if parsed is not None:
+                    valid_times.append((time_text, parsed))
+            for (newer_text, newer), (older_text, older) in zip(valid_times, valid_times[1:]):
+                if newer < older:
+                    descending_violations.append(
+                        {
+                            "window_index": window_index,
+                            "newer_time_text": newer_text,
+                            "older_time_text": older_text,
+                        }
+                    )
+            adjacency_intervals.extend(self._visible_mail_adjacency_intervals(compared_rows))
+            windows.append(
+                {
+                    "window_index": window_index,
+                    "row_count": len(compared_rows),
+                    "rows": compared_rows,
+                }
+            )
+            if window_index >= scroll_limit:
+                break
+            changed = yield from self._scroll_shape_content_changed(
+                ctx,
+                image121,
+                list_shape,
+                stop_event,
+                settle_seconds=max(0.5, float(settle_seconds)),
+            )
+            if not changed:
+                reached_end = True
+                break
+
+        # A 只包含具备“标题+时间”身份的游戏邮件。滚动重叠区可能用不同
+        # OCR 标题再次读到同一封邮件；匹配成功时优先用 packet mail_key
+        # 去重，缺包项才退回标题+时间。无时间文本只保留为 OCR 诊断观察，
+        # 不能擅自放进 A-B。
+        inventory: list[dict[str, Any]] = []
+        inventory_keys: set[tuple[str, str]] = set()
+        for row in observations:
+            if row.get("packet_match") == "unresolved_visible_key":
+                continue
+            mail_key = str(row.get("mail_key") or "").strip()
+            key = (
+                "mail_key" if mail_key else _runtime_runner.normalize_fanxiu_mail_title(str(row.get("title") or "")),
+                mail_key or self._normalize_mail_time_text(str(row.get("time_text") or "")),
+            )
+            if key in inventory_keys:
+                continue
+            inventory_keys.add(key)
+            inventory.append(row)
+        missing = [row for row in inventory if row.get("packet_match") == "missing"]
+        unresolved = [row for row in observations if row.get("packet_match") == "unresolved_visible_key"]
+        unresolved = [
+            row
+            for row in unresolved
+            if not any(
+                self._mail_title_similarity(str(row.get("title") or ""), str(valid.get("title") or "")) >= 0.86
+                for valid in inventory
+            )
+        ]
+        unique_intervals = list(
+            {
+                (item["newer_time_text"], item["older_time_text"]): item
+                for item in adjacency_intervals
+            }.values()
+        )
+        return {
+            "ok": True,
+            "read_only": True,
+            "reset_scroll_count": reset_scroll_count,
+            "reached_end": reached_end,
+            "window_count": len(windows),
+            "inventory_count": len(inventory),
+            "matched_count": sum(1 for row in inventory if row.get("packet_match") == "matched"),
+            "a_minus_b_count": len(missing),
+            "a_minus_b": missing,
+            "unresolved_visible_key_count": len(unresolved),
+            "unresolved_visible_keys": unresolved,
+            "descending_violation_count": len(descending_violations),
+            "descending_violations": descending_violations,
+            "adjacency_intervals": unique_intervals,
+            "inventory": inventory,
+            "observations": observations,
+            "windows": windows,
+        }
+
     def _read_mail_scan_state(self) -> dict[str, Any]:
         payload = _read_data_annotation_json(_data_annotation_mail_scan_state_path(), {})
         return payload if isinstance(payload, dict) else {}

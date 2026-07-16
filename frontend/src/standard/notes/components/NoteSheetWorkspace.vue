@@ -22,6 +22,7 @@ import {
   fetchWorkbookDefinedNames,
   fetchSheetDefinedNames,
   exportAttendanceSheet,
+  exportNoteSheet,
   applyAttendanceVideoRevision,
   detectNoteSheetRegistrationUserId,
   generateAttendanceCourseScript,
@@ -208,6 +209,7 @@ const SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT = 'registration_add_student'
 const SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = 'registration_order_match'
 const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
 const SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = 'registration_composite_update'
+const SHEET_CELL_ACTION_SHEET_EXPORT = 'sheet_export'
 const SHEET_CELL_ACTION_ATTENDANCE_EXPORT = 'attendance_export'
 const SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = 'clockin_link_detect'
 const SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA = 'attendance_course_update_data'
@@ -224,6 +226,7 @@ const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]: '更新订单匹配',
   [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]: '更新用户匹配',
   [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]: '综合更新',
+  [SHEET_CELL_ACTION_SHEET_EXPORT]: '导出excel',
   [SHEET_CELL_ACTION_ATTENDANCE_EXPORT]: '导出excel',
   [SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]: '自动检测打卡链接',
   [SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA]: '更新数据',
@@ -1366,6 +1369,7 @@ const effectiveAccessCapabilities = computed(() => (
     ?? FULL_ACCESS_CAPABILITIES
 ))
 const canUseLocalView = computed(() => effectiveAccessCapabilities.value.can_use_local_view)
+const canReadSheet = computed(() => effectiveAccessCapabilities.value.can_read)
 const canEditData = computed(() => effectiveAccessCapabilities.value.can_edit_data)
 const editableDataColumnSet = computed(() => new Set(
   (effectiveAccessCapabilities.value.editable_data_columns ?? [])
@@ -5917,6 +5921,10 @@ function canExportAttendanceSheet() {
   return props.sheetId != null && canEditData.value && canRunSheetActions.value
 }
 
+function canExportSheet() {
+  return props.sheetId != null && canReadSheet.value
+}
+
 function canDetectClockinLinks() {
   return props.sheetId != null && canEditData.value && canRunSheetActions.value
 }
@@ -6047,6 +6055,9 @@ function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) 
   }
   if (actionType === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
     return !canExportAttendanceSheet()
+  }
+  if (actionType === SHEET_CELL_ACTION_SHEET_EXPORT) {
+    return !canExportSheet()
   }
   if (actionType === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     return !canDetectClockinLinks()
@@ -6487,6 +6498,31 @@ async function downloadAttendanceExport() {
   }
 }
 
+async function downloadSheetExport() {
+  if (props.sheetId == null || !canExportSheet() || sheetCellActionRunning.value) {
+    return
+  }
+
+  sheetCellActionRunning.value = SHEET_CELL_ACTION_SHEET_EXPORT
+  try {
+    const result = await exportNoteSheet(props.sheetId, { workbookId: props.workbookId })
+    const url = window.URL.createObjectURL(result.blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = result.filename || '表格.xlsx'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('已导出表格')
+  } catch (error) {
+    console.warn('Failed to export note sheet', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '导出表格失败'))
+  } finally {
+    sheetCellActionRunning.value = null
+  }
+}
+
 async function startClockinLinkDetectionRun(forceRestart = false) {
   if (props.sheetId == null) {
     return
@@ -6683,6 +6719,10 @@ function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: 
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
     addRegistrationStudentRow()
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_SHEET_EXPORT) {
+    void downloadSheetExport()
     return
   }
   if (action.type === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
@@ -8636,6 +8676,9 @@ function addLegacySheetCellActions(
       const key = createCellMetaKey(rowIndex, columnIndex)
       const currentMeta = sourceMeta[key]
       if (currentMeta?.action?.type === actionType) {
+        return
+      }
+      if (currentMeta?.action?.type === SHEET_CELL_ACTION_SHEET_EXPORT) {
         return
       }
       pendingActions.push({ key, actionType })
@@ -13754,6 +13797,9 @@ function getCellActionTitle(action: SheetCellAction) {
   }
   if (action.type === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
     return '导出考勤表，导出文件会按报名表学号把手机号补到昵称后面'
+  }
+  if (action.type === SHEET_CELL_ACTION_SHEET_EXPORT) {
+    return '导出当前工作表，所有具有查看权限的用户都可以使用'
   }
   if (action.type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     return '从名称管理器的“打卡根目录”开始识别共学、共修打卡数据页，并写回当前打卡配置'

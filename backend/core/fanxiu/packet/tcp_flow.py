@@ -1851,6 +1851,7 @@ def decode_fanxiu_tcp_pcap(
     persist: bool = True,
     data_dir: str | Path | None = None,
     sync_after_decode: bool = True,
+    prune_storage_after_decode: bool = True,
 ) -> dict[str, Any]:
     root = resolve_fanxiu_export_root(export_root)
     pcap_path = _resolve_export_child(export_root, pcap)
@@ -1959,10 +1960,17 @@ def decode_fanxiu_tcp_pcap(
                 "skipped_duplicate": 0,
                 "error": str(exc),
             }
-        result["retention"] = prune_fanxiu_tcp_storage(
-            data_dir=data_dir,
-            preserve_paths={pcap_path, record_dir, stored_pcap, output},
-        )
+        if prune_storage_after_decode:
+            result["retention"] = prune_fanxiu_tcp_storage(
+                data_dir=data_dir,
+                preserve_paths={pcap_path, record_dir, stored_pcap, output},
+            )
+        else:
+            result["retention"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "batch_decode_defers_storage_prune_to_maintenance",
+            }
         if sync_after_decode:
             _sync_fanxiu_packet_runtime_insights_after_decode(result, data_dir=data_dir, export_root=export_root)
     return result

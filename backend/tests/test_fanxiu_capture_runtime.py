@@ -213,6 +213,7 @@ def test_capture_runtime_starts_local_stream_tcpdump_by_default(monkeypatch, tmp
     assert popen_calls
     assert popen_calls[0][3:5] == ["shell", "-T"]
     assert "tcpdump -U -i wlan0 -s 0 -w -" in popen_calls[0][-1]
+    assert f"host {service.server_host}" in popen_calls[0][-1]
     assert "2>/dev/null" in popen_calls[0][-1]
 
 

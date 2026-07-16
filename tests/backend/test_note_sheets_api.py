@@ -6,6 +6,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote
 
 from openpyxl import Workbook, load_workbook
 from sqlmodel import Session, select
@@ -6102,6 +6103,67 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         ]
     finally:
         _clear_user_override()
+
+
+def test_note_sheet_export_allows_anonymous_viewer_and_exports_current_grid(client, session):
+    owner = _create_user(session, username="sheet-export-owner")
+    sheet = SheetDocument(
+        numeric_id=9301,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="course-summary",
+        title="课程",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["课程", "人数"],
+            "data_start_row": 2,
+            "grid_rows": [
+                ["课程", "人数"],
+                ["导出excel", "说明"],
+                ["修道班13期1阶", "77"],
+            ],
+            "rows": [["修道班13期1阶", "77"]],
+            "cell_meta": {
+                "0:0": {"style": {"background_color": "#D9E1F2", "bold": True}},
+                "1:0": {"action": {"type": "sheet_export", "label": "导出excel"}},
+            },
+            "column_widths": [140, 70],
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    session.refresh(sheet)
+    grant = ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=str(sheet.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    )
+    session.add(grant)
+    session.commit()
+
+    response = client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export")
+
+    assert response.status_code == 200
+    assert "课程.xlsx" in unquote(response.headers["content-disposition"])
+    workbook = load_workbook(io.BytesIO(response.content), data_only=True)
+    worksheet = workbook.active
+    assert worksheet.title == "课程"
+    assert worksheet["A1"].value == "课程"
+    assert worksheet["A1"].fill.fgColor.rgb.endswith("D9E1F2")
+    assert worksheet["A2"].value is None
+    assert worksheet["B2"].value == "说明"
+    assert worksheet["A3"].value == "修道班13期1阶"
+    assert worksheet["B3"].value == "77"
+
+    session.delete(grant)
+    session.commit()
+    assert client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export").status_code == 403
 
 
 def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(client, session):

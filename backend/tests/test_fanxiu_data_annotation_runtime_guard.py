@@ -7002,6 +7002,49 @@ def test_world_reward_tip_detection_ignores_daily_gongfeng_page():
     ) is False
 
 
+def test_world_reward_tip_detection_requires_click_hint_inside_menu(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
+    )
+    ctx = {"images": {35: image35}}
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines_in_shapes",
+        lambda *_args, **_kwargs: [{"text": "角色 装备 功法书 邮件 设置", "x": 400, "y": 1400, "w": 300, "h": 40}],
+    )
+
+    assert runner._world_reward_tip_detected(ctx, "frame", "活动奖励 点击查看") is False
+
+
+def test_readonly_mail_inventory_comparison_does_not_accept_title_only(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    seen_allow_title_only: list[bool] = []
+    historical = SimpleNamespace(
+        mail_key="old-mail",
+        create_time_text="2026年07月15日22:44",
+        title="功法新的敬赠",
+        normalized_title="功法新的敬赠",
+    )
+
+    def fake_find(_title, _time_text, *, allow_title_only=True):
+        seen_allow_title_only.append(bool(allow_title_only))
+        return [historical]
+
+    monkeypatch.setattr(runner, "_find_packet_mail_records_for_visible_row", fake_find)
+    monkeypatch.setattr(runner, "_mail_row_packet_missing_reason", lambda *_args: "same_title_without_time")
+
+    result = runner._compare_visible_mail_row_with_packet_store(
+        {"title": "功法新的敬赠", "time_text": "2026年07月16日22:44"}
+    )
+
+    assert seen_allow_title_only == [False]
+    assert result["packet_match"] == "missing"
+    assert result["mail_key"] == ""
+
+
 def test_daily_entry_world_text_with_fengmosha_does_not_click_popup(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
@@ -11838,7 +11881,11 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
 
     result = _drain_generator(
-        runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
+        runner._execute_daily_mojie_raid_task(
+            ctx,
+            threading.Event(),
+            {"mojie_raid_target_shape": "修罗"},
+        )
     )
     definition = fanxiu_api._data_annotation_task_cell_definition("daily_mojie_raid")
 
@@ -11854,7 +11901,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("wait_click_then_view", 319, "参与进攻", (320,), {}),
         ("wait_click", 320, "修罗", {"timeout": 12.0}),
         ("wait_action_settle", 1.5),
-        ("wait_view", (321, 331), {"timeout": 12.0, "label": "日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321/#331"}),
+        ("wait_view", (321,), {"timeout": 12.0, "label": "日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321"}),
         ("wait_click_then_view", 321, "创建队伍", (322,), {}),
         ("wait_click_then_view", 322, "下拉选项", (323,), {}),
         ("wait_click_then_view", 323, "开启", (322,), {}),
@@ -11862,7 +11909,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("wait_click_then_view", 324, "返回", (331,), {}),
         ("click_shape_center_then_view", 331, "返回", (320,), {}),
         ("wait_click", 320, "返回", {}),
-        ("wait_click", 319, "返回", {}),
+        ("wait_click_then_view", 319, "返回", (34,), {}),
     ]
 
 
@@ -11921,7 +11968,7 @@ def test_daily_mojie_raid_can_pause_after_daily_entry(tmp_path, monkeypatch, pay
 
     assert result == "skipped"
     assert calls == [
-        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34, 20), True),
         ("ocr_text", "daily-frame"),
         ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
         ("wait_action_settle", 1.5),
@@ -11974,7 +12021,7 @@ def test_daily_mojie_raid_rejects_daily_entry_done_as_weekly_success(tmp_path, m
         )
 
     assert calls == [
-        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34), True),
+        ("current_scene", (330, 319, 320, 321, 322, 323, 324, 331, 69, 34, 20), True),
         ("ocr_text", "daily-frame"),
         ("open_daily_entry", "日常_奇袭魔界", r"参与.{0,4}奇|奇.{0,4}魔|魔界", False),
     ]
@@ -12019,7 +12066,7 @@ def test_daily_mojie_raid_returns_when_remaining_empty(tmp_path, monkeypatch):
         runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
     )
 
-    assert result == "skipped"
+    assert result == "success"
     assert calls == [
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
         ("wait_click", 319, "返回", {}),
@@ -12074,7 +12121,7 @@ def test_daily_mojie_raid_confirms_optional_reward_popup_before_main(tmp_path, m
         runner._execute_daily_mojie_raid_task(ctx, threading.Event(), {})
     )
 
-    assert result == "skipped"
+    assert result == "success"
     assert ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}) in calls
     assert ("wait_click", 330, "确定", {}) in calls
     assert ("wait_view", (319,), {"label": "日常_奇袭魔界：等待 #330 后的奇袭魔界 #319"}) in calls

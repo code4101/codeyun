@@ -744,7 +744,32 @@ def _merge_pcap_states(previous_state: Any, updates: list[dict[str, Any]], *, li
         key = str(item.get("digest") or item.get("path") or "").strip()
         if key:
             states[key] = item
-    return sorted(states.values(), key=lambda item: float(item.get("mtime") or 0), reverse=True)[:limit]
+    ordered = sorted(states.values(), key=lambda item: float(item.get("mtime") or 0))
+    if len(ordered) <= limit:
+        return list(reversed(ordered))
+    # Keep both ends: newest states explain realtime health, while the oldest
+    # states are required to advance the contiguous confirmed cursor. Keeping
+    # only the newest states made an old gap impossible to close once the
+    # state file was truncated.
+    oldest_count = max(1, limit // 2)
+    newest_count = max(1, limit - oldest_count)
+    selected = ordered[:oldest_count] + ordered[-newest_count:]
+    deduped = {str(item.get("digest") or item.get("path") or ""): item for item in selected}
+    return sorted(deduped.values(), key=lambda item: float(item.get("mtime") or 0), reverse=True)
+
+
+def _interleave_newest_and_oldest(paths: list[Path]) -> list[Path]:
+    """Keep realtime latency without starving chronological backlog gaps."""
+    rows: list[Path] = []
+    left = 0
+    right = len(paths) - 1
+    while left <= right:
+        rows.append(paths[left])
+        left += 1
+        if left <= right:
+            rows.append(paths[right])
+            right -= 1
+    return rows
 
 
 def _confirmed_cursor_from_contiguous_states(
@@ -1525,6 +1550,8 @@ def sync_fanxiu_live_capture_backlog(
         newest_first=newest_first,
         now=now_epoch,
     )
+    if newest_first and len(stable_paths) > 1:
+        stable_paths = _interleave_newest_and_oldest(stable_paths)
     confirmed_cursor_mtime = previous_cursor_mtime
     confirmed_cursor_pcap = str(
         previous_state.get("confirmed_cursor_pcap") or previous_state.get("cursor_pcap") or ""

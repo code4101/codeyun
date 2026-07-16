@@ -346,13 +346,12 @@ def test_live_capture_backlog_newest_failures_do_not_starve_decodable_pcaps(tmp_
         limit=1,
     )
 
-    assert calls == ["0003-bad.pcap", "0002-bad.pcap", "0001-good.pcap"]
+    assert calls == ["0003-bad.pcap", "0001-good.pcap"]
     assert result["decoded_count"] == 1
-    assert result["error_count"] == 2
+    assert result["error_count"] == 1
     assert result["has_unconfirmed_gap"] is True
     states = {item["name"]: item["status"] for item in result["pcap_states"]}
     assert states["0001-good.pcap"] == "decoded"
-    assert states["0002-bad.pcap"] == "failed"
     assert states["0003-bad.pcap"] == "failed"
 
 

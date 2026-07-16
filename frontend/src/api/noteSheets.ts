@@ -726,6 +726,23 @@ export async function exportAttendanceSheet(
   }
 }
 
+export async function exportNoteSheet(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<Blob>(`/note-sheets/sheets/${sheetId}/export`, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+    responseType: 'blob',
+    timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+  })
+  return {
+    blob: response.data,
+    filename: parseContentDispositionFilename(response.headers['content-disposition']) || '表格.xlsx',
+  }
+}
+
 export async function updateNoteSheetRegistrationOrderMatch(
   sheetId: number,
   options?: NoteSheetResourceRequestOptions,

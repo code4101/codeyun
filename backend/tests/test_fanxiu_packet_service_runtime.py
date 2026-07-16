@@ -154,6 +154,34 @@ def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
     assert health["worker_maintenance_age_seconds"] == 4 * 3600
 
 
+def test_packet_service_health_uses_capture_segment_duration_for_live_pcap_staleness(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "_latest_live_capture_summary",
+        lambda _capture, _worker=None: {"age_seconds": 240, "path": "capture.pcap", "size": 128},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_mail_database_freshness",
+        lambda: {"ok": True, "exists": True, "record_count": 0, "latest_seen_age_seconds": 0},
+    )
+
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "capture_runtime": {
+                "game_running": True,
+                "tcpdump_ready": True,
+                "max_segment_seconds": 300,
+                "watchdog_interval_seconds": 60,
+            },
+        }
+    )
+
+    assert health["live_pcap_stale_after_seconds"] == 360
+    assert "live_pcap_stale" not in health["issues"]
+
+
 def test_packet_service_health_uses_active_heartbeat_for_maintenance(monkeypatch):
     monkeypatch.setattr(
         service_runtime,
