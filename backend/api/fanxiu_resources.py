@@ -2460,6 +2460,37 @@ def get_fanxiu_item_cards(
     )
 
 
+def _get_fanxiu_item_cards_by_ids(item_ids: str) -> dict[str, Any]:
+    requested_ids = list(dict.fromkeys(part.strip() for part in item_ids.split(",") if part.strip()))[:200]
+    cards: list[dict[str, Any]] = []
+    missing: list[str] = []
+    catalog_path = ""
+    for item_id in requested_ids:
+        try:
+            result = get_fanxiu_item_card(item_id, rebuild_missing=False)
+        except FanxiuResourceError:
+            missing.append(item_id)
+            continue
+        catalog_path = str(result.get("catalog_path") or catalog_path)
+        card = result.get("card")
+        if isinstance(card, dict):
+            cards.append(card)
+        else:
+            missing.append(item_id)
+    return {
+        "catalog_path": catalog_path,
+        "cards": cards,
+        "missing": missing,
+    }
+
+
+@router.get("/resources/items/cards/by-ids")
+def get_fanxiu_item_cards_by_ids(
+    item_ids: str = Query(min_length=1),
+) -> dict[str, Any]:
+    return _run_resource_operation(_get_fanxiu_item_cards_by_ids, item_ids=item_ids)
+
+
 @router.get("/resources/items/card")
 def get_fanxiu_item_card_detail(
     item_id: str = Query(min_length=1),

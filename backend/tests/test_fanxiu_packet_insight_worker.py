@@ -646,6 +646,30 @@ def test_live_capture_backlog_caps_single_pass_scan_window(monkeypatch, tmp_path
     assert len(scanned) <= 2 * worker.DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER
 
 
+def test_newest_first_interleaves_oldest_gap_in_same_pass():
+    paths = [Path(f"{index}.pcap") for index in range(6, 0, -1)]
+
+    assert worker._interleave_newest_and_oldest(paths) == [
+        Path("6.pcap"),
+        Path("1.pcap"),
+        Path("5.pcap"),
+        Path("2.pcap"),
+        Path("4.pcap"),
+        Path("3.pcap"),
+    ]
+
+
+def test_pcap_state_compaction_keeps_oldest_cursor_evidence_and_newest_health():
+    updates = [
+        {"path": f"{index}.pcap", "digest": f"d{index}", "mtime": float(index), "status": "decoded"}
+        for index in range(10)
+    ]
+
+    compacted = worker._merge_pcap_states({}, updates, limit=4)
+
+    assert {item["digest"] for item in compacted} == {"d0", "d1", "d8", "d9"}
+
+
 def test_live_capture_backlog_skips_pcaps_without_target_stream(monkeypatch, tmp_path):
     live_dir = tmp_path / "live-captures"
     live_dir.mkdir()

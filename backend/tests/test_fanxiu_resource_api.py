@@ -86,6 +86,30 @@ def test_fanxiu_item_card_routes_do_not_rebuild_catalog_on_read(monkeypatch):
     assert calls[1][1]["rebuild_missing"] is False
 
 
+def test_fanxiu_item_cards_by_ids_batches_card_reads(monkeypatch):
+    client = _build_client(monkeypatch)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_get_fanxiu_item_card(item_id, **kwargs):
+        calls.append((item_id, kwargs))
+        return {"catalog_path": "catalog.json", "card": {"id": item_id, "name": f"道具{item_id}"}}
+
+    monkeypatch.setattr("backend.api.fanxiu_resources.get_fanxiu_item_card", fake_get_fanxiu_item_card)
+
+    response = client.get(
+        "/api/fanxiu/resources/items/cards/by-ids",
+        params={"item_ids": "1001, 1002,1001"},
+    )
+
+    assert response.status_code == 200
+    assert [card["id"] for card in response.json()["cards"]] == ["1001", "1002"]
+    assert response.json()["missing"] == []
+    assert calls == [
+        ("1001", {"rebuild_missing": False}),
+        ("1002", {"rebuild_missing": False}),
+    ]
+
+
 def test_fanxiu_item_icon_quality_review_route_forwards_threshold(monkeypatch):
     client = _build_client(monkeypatch)
     calls: list[dict] = []

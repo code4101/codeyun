@@ -2798,6 +2798,12 @@ export interface FanxiuItemCardResponse {
   card: FanxiuItemCard;
 }
 
+export interface FanxiuItemCardsByIdsResponse {
+  catalog_path: string;
+  cards: FanxiuItemCard[];
+  missing: string[];
+}
+
 export interface FanxiuActivityStats {
   activity_count?: number;
   activity_gift_count?: number;
@@ -4811,6 +4817,14 @@ export const searchFanxiuItemCards = (params: {
 export const getFanxiuItemCard = (itemId: string | number) => {
   return api
     .get<FanxiuItemCardResponse>('/fanxiu/resources/items/card', { params: { item_id: itemId } })
+    .then(res => res.data);
+};
+
+export const getFanxiuItemCardsByIds = (itemIds: Array<string | number>) => {
+  return api
+    .get<FanxiuItemCardsByIdsResponse>('/fanxiu/resources/items/cards/by-ids', {
+      params: { item_ids: itemIds.join(',') },
+    })
     .then(res => res.data);
 };
 

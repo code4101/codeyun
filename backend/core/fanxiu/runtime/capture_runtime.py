@@ -13,7 +13,7 @@ from typing import Any
 import psutil
 
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
-from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
+from backend.core.fanxiu.packet.tcp_flow import DEFAULT_FANXIU_SERVER_HOST, resolve_fanxiu_tcp_live_capture_dir
 from backend.core.services.launcher import popen_service, run_quiet
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
@@ -26,8 +26,8 @@ DEFAULT_FANXIU_DEVICE_ID = "127.0.0.1:7555"
 FANXIU_DEVICE_ID_ENV_KEYS = ("FANXIU_CAPTURE_DEVICE_ID", "FANXIU_ADB_DEVICE_ID")
 DEFAULT_FANXIU_PACKAGE_NAME = "com.frxxcrjpwssc3.ggws"
 DEFAULT_REMOTE_CAPTURE_DIR = "/data/local/tmp"
-DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 30.0
-DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS = 30.0
+DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 300.0
+DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS = 300.0
 DEFAULT_CAPTURE_SNAPSHOT_INTERVAL_SECONDS = 10.0
 DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
 DEFAULT_CAPTURE_STREAM_TO_LOCAL = False
@@ -56,12 +56,14 @@ class FanxiuCaptureRuntimeService:
         *,
         device_id: str = DEFAULT_FANXIU_DEVICE_ID,
         package_name: str = DEFAULT_FANXIU_PACKAGE_NAME,
+        server_host: str = DEFAULT_FANXIU_SERVER_HOST,
         supervisor_interval: float = 5.0,
         idle_finalize_seconds: float = DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS,
         max_segment_seconds: float = DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS,
     ) -> None:
         self.device_id = self._configured_device_id() or str(device_id or DEFAULT_FANXIU_DEVICE_ID).strip()
         self.package_name = package_name
+        self.server_host = str(server_host or DEFAULT_FANXIU_SERVER_HOST).strip()
         self.supervisor_interval = supervisor_interval
         self.idle_finalize_seconds = max(1.0, float(idle_finalize_seconds))
         self.max_segment_seconds = max(10.0, float(max_segment_seconds))
@@ -204,6 +206,8 @@ class FanxiuCaptureRuntimeService:
                 "current_pcap_size": self._current_pcap_size,
                 "current_remote_pcap_path": self._current_remote_pcap_path,
                 "capture_mode": self._capture_mode,
+                "idle_finalize_seconds": self.idle_finalize_seconds,
+                "max_segment_seconds": self.max_segment_seconds,
                 "stream_writer_alive": bool(self._stream_writer_thread and self._stream_writer_thread.is_alive()),
                 "stream_writer_error": self._stream_writer_error,
                 "packet_sync_alive": bool(self._packet_sync_thread and self._packet_sync_thread.is_alive()),
@@ -215,6 +219,7 @@ class FanxiuCaptureRuntimeService:
                 "tcpdump_started_at": self._tcpdump_started_at,
                 "device_id": self.device_id,
                 "package_name": self.package_name,
+                "server_host": self.server_host,
                 "watchdog_running": bool(self._watchdog_thread and self._watchdog_thread.is_alive()),
                 "watchdog_started_at": self._watchdog_started_at,
                 "watchdog_interval_seconds": self._watchdog_interval,
@@ -454,6 +459,9 @@ class FanxiuCaptureRuntimeService:
             remote_path,
             "tcp",
             "and",
+            "host",
+            self.server_host,
+            "and",
             "not",
             "port",
             "5555",
@@ -485,7 +493,10 @@ class FanxiuCaptureRuntimeService:
 
     def _start_local_stream_tcpdump_locked(self, local_path: Path) -> None:
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        shell_command = "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555 2>/dev/null"
+        shell_command = (
+            f"tcpdump -U -i wlan0 -s 0 -w - tcp and host {self.server_host} "
+            "and not port 5555 2>/dev/null"
+        )
         command = [str(self._adb_path()), "-s", self.device_id, "shell", "-T", shell_command]
         process = popen_service(
             command,

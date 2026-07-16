@@ -1700,11 +1700,10 @@ class DailyFoundationTaskMixin:
         *,
         menu_ocr_lines: list[dict[str, Any]] | None = None,
     ) -> bool:
-        if self._world_reward_tip_text_matches(text):
-            return True
+        full_frame_matches = self._world_reward_tip_text_matches(text)
         image35 = ctx.get("images", {}).get(35)
         if not isinstance(image35, dict) or not self._find_shape(image35, "菜单"):
-            return False
+            return full_frame_matches
         lines = menu_ocr_lines
         if lines is None:
             try:
@@ -1713,8 +1712,9 @@ class DailyFoundationTaskMixin:
                 self._log("detail", f"世界提示清理：#35 菜单 OCR 失败：{exc}")
                 return False
         menu_text = self._ocr_text(lines or [])
-        if self._world_reward_tip_text_matches(f"{text} {menu_text}"):
-            return True
+        # 全屏 OCR 会同时读到世界页活动卡片里的“奖励/点击查看”和
+        # 正常底部菜单；只有点击提示实际覆盖菜单区域时，才把它当成
+        # 挡住菜单的奖励卡。否则会在普通世界页反复点击关闭坐标。
         menu_compact = _sanitize_ocr_text(menu_text).replace(" ", "")
         return "点击查看" in menu_compact or "点击使用" in menu_compact
 
@@ -2986,13 +2986,6 @@ class DailyFoundationTaskMixin:
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
-            _scene_320, _score_320, frame_320 = runtime.current_scene([320], update=True)
-            text_320 = runtime.ocr_text(frame_320)
-            if self._daily_mojie_raid_attack_in_progress_text(text_320):
-                self._log("success", f"日常_奇袭魔界：检测到进攻倒计时，今日进攻已在进行，OCR={text_320[:120]}")
-                yield from runtime.wait_click(320, "返回")
-                yield from runtime.wait_click_then_view(319, "返回", 34)
-                return "success"
             scene_id = yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
         if scene_id == 321:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)
@@ -3012,10 +3005,6 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_click(320, "返回")
             yield from runtime.wait_click_then_view(319, "返回", 34)
         return "success"
-
-    def _daily_mojie_raid_attack_in_progress_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        return bool("进攻倒计时" in compact and re.search(r"\d{1,2}:\d{2}:\d{2}", compact))
 
     def _click_daily_mojie_raid_top_attack_target(
         self,
@@ -3046,9 +3035,8 @@ class DailyFoundationTaskMixin:
         yield from runtime.wait_action_settle(float(payload.get("mojie_raid_target_click_settle_seconds") or 1.5))
         waited = yield from runtime.wait_view(
             321,
-            331,
             timeout=float(payload.get("mojie_raid_target_wait_timeout") or self._daily_default_wait_condition_timeout),
-            label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321/#331",
+            label="日常_奇袭魔界：点击 #320 顶部据点计数后等待 #321",
         )
         return int(getattr(waited, "id", waited) or 0)
 

@@ -845,8 +845,9 @@ def test_decode_and_sync_runtime_capture_decodes_streams_and_syncs_snapshot(tmp_
         lambda *_args, **_kwargs: [{"stream": 2}, {"stream": 5}],
     )
 
-    def fake_decode(_path, *, stream, **_kwargs):
+    def fake_decode(_path, *, stream, **kwargs):
         calls["decode"].append(stream)
+        assert kwargs["prune_storage_after_decode"] is False
         return {
             "output_path": str(tmp_path / f"{stream}.json"),
             "record_id": f"r{stream}",

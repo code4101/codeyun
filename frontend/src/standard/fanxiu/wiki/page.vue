@@ -59,6 +59,7 @@ import {
   getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
   getFanxiuGongfaSpecialFazeCatalog,
   getFanxiuItemCard,
+  getFanxiuItemCardsByIds,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
   getFanxiuMailRecords,
@@ -5748,18 +5749,20 @@ async function loadMailRewardItemCards(itemIds: string[]) {
     .slice(0, 120)
   if (!missing.length) return
   missing.forEach(itemId => mailRewardItemCardLoading.add(itemId))
-  const results = await Promise.allSettled(missing.map(async itemId => {
-    const response = await getFanxiuItemCard(itemId)
-    return { itemId, card: response.card || null }
-  }))
   const next = { ...mailRewardItemCardCache.value }
-  for (let index = 0; index < results.length; index += 1) {
-    const itemId = missing[index]
-    const result = results[index]
-    next[itemId] = result.status === 'fulfilled' ? result.value.card : null
+  try {
+    const response = await getFanxiuItemCardsByIds(missing)
+    for (const itemId of missing) next[itemId] = null
+    for (const card of response.cards || []) {
+      const itemId = String(card.id || '').trim()
+      if (itemId) next[itemId] = card
+    }
+  } catch {
+    for (const itemId of missing) next[itemId] = null
+  } finally {
+    missing.forEach(itemId => mailRewardItemCardLoading.delete(itemId))
   }
   mailRewardItemCardCache.value = next
-  missing.forEach(itemId => mailRewardItemCardLoading.delete(itemId))
 }
 
 function mailContentText(row: FanxiuMailRecord) {

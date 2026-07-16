@@ -2904,6 +2904,7 @@ def decode_and_sync_fanxiu_runtime_capture(
             persist=True,
             data_dir=data_dir,
             sync_after_decode=False,
+            prune_storage_after_decode=False,
         )
         frames = result.get("frames") or []
         runtime_count = sum(

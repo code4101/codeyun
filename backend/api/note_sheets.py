@@ -112,6 +112,7 @@ NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = "excel_import_reset"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = "registration_order_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = "registration_user_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = "registration_composite_update"
+NOTE_SHEET_CELL_ACTION_SHEET_EXPORT = "sheet_export"
 NOTE_SHEET_CELL_ACTION_ATTENDANCE_EXPORT = "attendance_export"
 NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = "clockin_link_detect"
 NOTE_SHEET_ATTENDANCE_REFUND_FAQ_TEXT = "考勤返款常见问题解答"
@@ -17247,6 +17248,111 @@ def _attendance_export_filename(workbook: WorkbookDocument | None, document: She
     return f"{safe_title}{suffix}.xlsx"
 
 
+def _sheet_export_color(value: Any) -> str | None:
+    text = _normalize_sheet_text(value).lstrip("#")
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", text):
+        return text.upper()
+    return None
+
+
+def _build_sheet_export_workbook_bytes(
+    table: NoteSheetTableResponse,
+    *,
+    document_json: dict[str, Any],
+) -> bytes:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法导出 Excel") from exc
+
+    normalized = _normalize_document_json(document_json)
+    rows = table.grid_rows or [
+        table.columns,
+        *[[item.get(column, "") for column in table.columns] for item in table.rows],
+    ]
+    column_count = len(table.columns)
+    workbook = Workbook()
+    worksheet = workbook.active
+    safe_sheet_title = re.sub(r"[\\/*?:\[\]]+", "_", _normalize_sheet_text(table.title)).strip() or "表格"
+    worksheet.title = safe_sheet_title[:31]
+    cell_meta = normalized.get("cell_meta") if isinstance(normalized.get("cell_meta"), dict) else {}
+
+    for row_index, row in enumerate(rows, start=1):
+        normalized_row = _normalize_sheet_row(row, column_count)
+        for column_index, value in enumerate(normalized_row, start=1):
+            meta = cell_meta.get(f"{row_index - 1}:{column_index - 1}")
+            meta = meta if isinstance(meta, dict) else {}
+            action = meta.get("action")
+            action = action if isinstance(action, dict) else {}
+            if _normalize_sheet_text(action.get("type") or action.get("name")) == NOTE_SHEET_CELL_ACTION_SHEET_EXPORT:
+                value = ""
+            cell = worksheet.cell(row=row_index, column=column_index, value=_normalize_attendance_export_cell(value))
+            text_value = _normalize_sheet_text(value)
+            if text_value.startswith(("http://", "https://")):
+                cell.hyperlink = text_value
+                cell.style = "Hyperlink"
+
+            style = meta.get("style")
+            if not isinstance(style, dict):
+                continue
+            text_color = _sheet_export_color(style.get("text_color"))
+            background_color = _sheet_export_color(style.get("background_color"))
+            cell.font = Font(
+                name=_normalize_sheet_text(style.get("font_family")) or None,
+                size=float(style["font_size"]) if isinstance(style.get("font_size"), int | float) else None,
+                bold=bool(style.get("bold")),
+                italic=bool(style.get("italic")),
+                underline="single" if style.get("underline") else None,
+                color=text_color,
+            )
+            if background_color:
+                cell.fill = PatternFill(fill_type="solid", fgColor=background_color)
+            horizontal = _normalize_sheet_text(style.get("text_align")) or None
+            vertical = _normalize_sheet_text(style.get("vertical_align")) or None
+            cell.alignment = Alignment(
+                horizontal=horizontal if horizontal in {"left", "center", "right", "justify"} else None,
+                vertical=vertical if vertical in {"top", "center", "bottom", "justify"} else None,
+                wrap_text=True,
+            )
+
+    for merged in _normalize_sheet_merged_cells(
+        normalized.get("merged_cells"),
+        row_count=len(rows),
+        column_count=column_count,
+    ):
+        worksheet.merge_cells(
+            start_row=merged["row"] + 1,
+            start_column=merged["col"] + 1,
+            end_row=merged["row"] + merged["rowspan"],
+            end_column=merged["col"] + merged["colspan"],
+        )
+
+    source_widths = normalized.get("column_widths")
+    if isinstance(source_widths, list):
+        for column_index, width in enumerate(source_widths[:column_count], start=1):
+            if isinstance(width, int | float) and width > 0:
+                worksheet.column_dimensions[get_column_letter(column_index)].width = min(max(float(width) / 7, 4), 80)
+    source_heights = normalized.get("row_heights")
+    if isinstance(source_heights, list):
+        for row_index, height in enumerate(source_heights[:len(rows)], start=1):
+            if isinstance(height, int | float) and height > 0:
+                worksheet.row_dimensions[row_index].height = float(height) * 0.75
+
+    stream = io.BytesIO()
+    workbook.save(stream)
+    return stream.getvalue()
+
+
+def _sheet_export_filename(workbook: WorkbookDocument | None, document: SheetDocument) -> str:
+    workbook_title = _normalize_sheet_text(workbook.title if workbook is not None else "")
+    sheet_title = _normalize_sheet_text(document.title) or "表格"
+    base_title = f"{workbook_title}_{sheet_title}" if workbook_title and workbook_title != sheet_title else sheet_title
+    safe_title = re.sub(r'[\\/:*?"<>|]+', "_", base_title).strip() or "表格"
+    return f"{safe_title}.xlsx"
+
+
 def _ensure_table_data_row(rows: list[Any], row_index: int, columns: list[str]) -> None:
     while len(rows) <= row_index:
         rows.append([""] * len(columns))
@@ -18330,6 +18436,43 @@ def get_note_sheet_table(
     )
 
 
+@router.get("/sheets/{sheet_id}/export")
+def export_note_sheet(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+    trusted_device: Any | None = Depends(_get_optional_trusted_device),
+):
+    document, _access, workbook = _get_note_sheet_for_table_or_404(
+        session,
+        current_user,
+        trusted_device,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    table = _build_note_sheet_table_response(
+        document,
+        workbook=workbook,
+        include_grid=True,
+        value_mode="text",
+        defined_names=_defined_names_for_formula(session, document, workbook),
+    )
+    raw_bytes = _build_sheet_export_workbook_bytes(
+        table,
+        document_json=dict(document.document_json or {}),
+    )
+    filename = _sheet_export_filename(workbook, document)
+    return StreamingResponse(
+        io.BytesIO(raw_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
 @router.get("/sheets/{sheet_id}/attendance-export")
 def export_note_sheet_attendance_table(
     sheet_id: int,
@@ -18480,6 +18623,8 @@ def patch_note_sheet_table(
         current_document,
         payload.operations,
     )
+
+
     if _is_registration_sheet(document):
         next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
     next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)

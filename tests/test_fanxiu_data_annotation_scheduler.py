@@ -5306,14 +5306,6 @@ def test_daily_mojie_raid_remaining_ocr_fallback_accepts_b_as_eight():
     assert runner._daily_mojie_raid_remaining_ocr_fallback("其他次数：B") is None
 
 
-def test_daily_mojie_raid_attack_in_progress_requires_countdown_clock():
-    runner = create_fanxiu_runtime_runner()
-
-    assert runner._daily_mojie_raid_attack_in_progress_text("进攻倒计时：14:24:24") is True
-    assert runner._daily_mojie_raid_attack_in_progress_text("进攻倒计时") is False
-    assert runner._daily_mojie_raid_attack_in_progress_text("活动倒计时：14:24:24") is False
-
-
 def test_daily_mojie_raid_top_attack_target_clicks_above_count_by_default():
     runner = create_fanxiu_runtime_runner()
     actions: list[tuple[object, ...]] = []
@@ -5367,7 +5359,7 @@ def test_daily_mojie_raid_top_attack_target_clicks_above_count_by_default():
     assert actions[2] == ("click_frame_point", 320, 384.0, pytest.approx(195.46))
     assert actions[3] == ("wait_action_settle", 1.5)
     assert actions[4][0] == "wait_view"
-    assert actions[4][1] == (321, 331)
+    assert actions[4][1] == (321,)
 
 
 def test_daily_mojie_raid_top_attack_target_allows_shape_override():
@@ -5404,37 +5396,6 @@ def test_daily_mojie_raid_top_attack_target_allows_shape_override():
 
     assert result == 321
     assert actions[0] == ("wait_click", 320, "检索区域/修罗", {"timeout": 3.0})
-
-
-def test_daily_mojie_raid_top_attack_target_accepts_direct_331():
-    runner = create_fanxiu_runtime_runner()
-
-    class FakeRuntime:
-        default_wait_click_timeout = 12.0
-
-        def wait_click(self, scene_id, shape, **kwargs):
-            if False:
-                yield None
-            return "clicked"
-
-        def wait_action_settle(self, seconds):
-            if False:
-                yield None
-            return "settled"
-
-        def wait_view(self, *scene_ids, **kwargs):
-            if False:
-                yield None
-            return 331
-
-    result = _drain_generator(
-        runner._click_daily_mojie_raid_top_attack_target(
-            FakeRuntime(),
-            {"mojie_raid_target_shape": "检索区域/修罗"},
-        )
-    )
-
-    assert result == 331
 
 
 def test_daily_mojie_raid_top_attack_target_normalizes_wait_view_object():
