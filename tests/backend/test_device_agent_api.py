@@ -1,9 +1,15 @@
 import json
+import threading
+import time
 
 from backend.core.ai.app_config import AI_APP_DEVICE_AGENT, save_user_ai_app_config
 from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
-from backend.core.device_agent.service import get_device_agent_config
-from backend.models import UserDevice
+from backend.core.device_agent.service import (
+    _heartbeat_device_agent_turn,
+    get_device_agent_config,
+    get_device_agent_turn,
+)
+from backend.models import DeviceAgentSession, DeviceAgentTurn, UserDevice
 
 
 def _add_local_entry(session, auth_user, test_device):
@@ -72,6 +78,68 @@ def test_device_agent_default_model_is_codex_level(session):
     config = get_device_agent_config(session)
     assert config["default_provider"] == "codex-cli"
     assert config["default_model"] == ""
+
+
+def test_device_agent_read_reconciles_stale_running_turn(session, monkeypatch):
+    now = time.time()
+    parent = DeviceAgentSession(status="running", last_turn_id=None, created_at=now - 100, updated_at=now - 100)
+    session.add(parent)
+    session.commit()
+    session.refresh(parent)
+    turn = DeviceAgentTurn(
+        session_id=parent.id,
+        status="running",
+        stage="calling_ai",
+        heartbeat_at=now - 100,
+        created_at=now - 100,
+        updated_at=now - 100,
+    )
+    session.add(turn)
+    session.commit()
+    session.refresh(turn)
+    parent.last_turn_id = turn.id
+    session.add(parent)
+    session.commit()
+    monkeypatch.setattr("backend.core.device_agent.service._device_agent_stale_heartbeat_seconds", lambda: 30.0)
+
+    payload = get_device_agent_turn(session, turn.id)
+
+    assert payload["status"] == "failed"
+    assert "心跳中断" in payload["error_message"]
+    session.refresh(parent)
+    assert parent.status == "failed"
+
+
+def test_device_agent_heartbeat_advances_during_ai_call(session, monkeypatch):
+    now = time.time()
+    parent = DeviceAgentSession(status="running", created_at=now, updated_at=now)
+    session.add(parent)
+    session.commit()
+    session.refresh(parent)
+    turn = DeviceAgentTurn(
+        session_id=parent.id,
+        status="running",
+        stage="calling_ai",
+        heartbeat_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(turn)
+    session.commit()
+    session.refresh(turn)
+    monkeypatch.setattr("backend.core.device_agent.service.engine", session.get_bind())
+    monkeypatch.setattr("backend.core.device_agent.service.DEVICE_AGENT_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    stop_event = threading.Event()
+    worker = threading.Thread(target=_heartbeat_device_agent_turn, args=(turn.id, stop_event))
+    worker.start()
+    time.sleep(0.05)
+    stop_event.set()
+    worker.join(timeout=1)
+
+    session.expire_all()
+    refreshed = session.get(DeviceAgentTurn, turn.id)
+    assert refreshed is not None
+    assert refreshed.heartbeat_at > now
 
 
 def test_device_agent_manifest_uses_user_configured_model(client, session, auth_user, test_device, monkeypatch):

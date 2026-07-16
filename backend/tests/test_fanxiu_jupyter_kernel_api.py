@@ -187,6 +187,12 @@ def test_formal_task_resets_to_stable_anchor_before_business_steps() -> None:
 
     class Runner:
         @staticmethod
+        def _clear_known_blocking_overlay_if_possible(_ctx, _stop_event, *, label):
+            events.append(("clear_overlay", label))
+            if False:
+                yield None
+
+        @staticmethod
         def _normalize_runtime_task_result(value):
             return str(value), ""
 
@@ -216,7 +222,7 @@ def test_formal_task_resets_to_stable_anchor_before_business_steps() -> None:
     binding.run = drain
 
     assert binding.run_task("test_atomic_job", {}) == "success"
-    assert events == [("reset", 34), "business", ("reset", 34)]
+    assert events == [("clear_overlay", "测试原子作业"), ("reset", 34), "business", ("reset", 34)]
 
 
 def test_manual_check_task_keeps_human_inspection_scene() -> None:
@@ -241,6 +247,12 @@ def test_manual_check_task_keeps_human_inspection_scene() -> None:
                 yield None
 
     class Runner:
+        @staticmethod
+        def _clear_known_blocking_overlay_if_possible(_ctx, _stop_event, *, label):
+            events.append(("clear_overlay", label))
+            if False:
+                yield None
+
         @staticmethod
         def _normalize_runtime_task_result(value):
             return str(value["result"]), str(value["message"])
@@ -274,7 +286,7 @@ def test_manual_check_task_keeps_human_inspection_scene() -> None:
         "result": "manual_check_pending",
         "message": "请人工检查",
     }
-    assert events == [("reset", 34), "business"]
+    assert events == [("clear_overlay", "测试人工检查作业"), ("reset", 34), "business"]
 
 
 def test_jupyter_binding_end_cell_tolerates_missing_pre_run_cell() -> None:

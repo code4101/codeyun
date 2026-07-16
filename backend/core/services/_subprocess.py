@@ -284,6 +284,60 @@ def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess
     return subprocess.run(command, **kwargs)
 
 
+def run_hidden_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run a bounded command and tear down its whole process tree on timeout.
+
+    ``subprocess.run`` only kills the direct child.  On Windows a CLI shim can
+    leave Node/Python descendants holding inherited stdout/stderr pipes, which
+    makes the timeout cleanup block forever.  This variant is intended for
+    bounded, captured commands such as Codex CLI calls.
+    """
+
+    timeout = kwargs.pop("timeout", None)
+    if timeout is None:
+        return run_hidden(command, **kwargs)
+
+    input_value = kwargs.pop("input", None)
+    check = bool(kwargs.pop("check", False))
+    capture_output = bool(kwargs.pop("capture_output", False))
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr arguments may not be used with capture_output")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    if input_value is not None and kwargs.get("stdin") is not None:
+        raise ValueError("stdin and input arguments may not both be used")
+    if input_value is not None:
+        kwargs["stdin"] = subprocess.PIPE
+
+    kwargs.setdefault("shell", False)
+    _inject_managed_child_env_for_command(command, kwargs)
+    kwargs.update(hidden_subprocess_kwargs())
+    process = subprocess.Popen(command, **kwargs)
+    try:
+        stdout, stderr = process.communicate(input_value, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        from pyxllib.prog import process_runtime
+
+        process_runtime.terminate_process_tree(process.pid, timeout=3.0)
+        try:
+            stdout, stderr = process.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout if stdout is not None else exc.output,
+            stderr=stderr if stderr is not None else exc.stderr,
+        ) from exc
+
+    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    if check:
+        completed.check_returncode()
+    return completed
+
+
 def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
     kwargs.setdefault("stdin", subprocess.DEVNULL)
     kwargs.setdefault("stdout", subprocess.DEVNULL)

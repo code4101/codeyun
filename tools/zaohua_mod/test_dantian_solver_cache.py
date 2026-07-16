@@ -204,6 +204,15 @@ def main() -> None:
     )
     assert order_test.stdout == "priority order self-test passed", order_test.stdout
     print(order_test.stdout)
+    floor_test = subprocess.run(
+        [str(SOLVER), "--self-test-satisfaction-floor"],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert floor_test.stdout == "satisfaction floor self-test passed", floor_test.stdout
+    print(floor_test.stdout)
     synthetic_cases()
     cache_matrix(args.snapshot, args.milliseconds)
     print("all dantian solver cache tests passed")

@@ -100,6 +100,8 @@ namespace Code4101.DantianSolver
             Console.OutputEncoding = Encoding.UTF8;
             if (args.Length == 1 && args[0] == "--self-test-priority-order")
                 return SelfTestPriorityOrder();
+            if (args.Length == 1 && args[0] == "--self-test-satisfaction-floor")
+                return SelfTestSatisfactionFloor();
             try
             {
                 var json = Console.In.ReadToEnd();
@@ -144,6 +146,44 @@ namespace Code4101.DantianSolver
             if (!reloaded.SequenceEqual(new[] { "c", "a", "d", "e" }))
                 return WriteError("priority reload/new append failed");
             Console.Out.Write("priority order self-test passed");
+            return 0;
+        }
+
+        private static int SelfTestSatisfactionFloor()
+        {
+            var request = new Request
+            {
+                priorityOrder = new[] { 0, 1, 2 },
+                rules = Enumerable.Range(0, 3).Select(index => new Rule
+                {
+                    name = $"r{index}",
+                    maxMultiplier = 1,
+                    gateSelf = true,
+                }).ToArray(),
+            };
+            var targets = new[] { 1, 1, 1 };
+            var floor = new[] { 0, 1, 1 };
+            var priorityGainButTotalLoss = new[] { 1, 0, 0 };
+            if (BetterExact(request, priorityGainButTotalLoss, targets, floor, targets))
+                return WriteError("total floor allowed an exact regression");
+            var equalTotalPriorityGain = new[] { 1, 1, 0 };
+            if (!BetterExact(request, equalTotalPriorityGain, targets, floor, targets))
+                return WriteError("total floor rejected a non-regressing priority gain");
+            var floorHeuristic = new HeuristicSolution
+            {
+                Multipliers = floor,
+                TargetCounts = targets,
+                Total = 2,
+            };
+            var regressingHeuristic = new HeuristicSolution
+            {
+                Multipliers = priorityGainButTotalLoss,
+                TargetCounts = targets,
+                Total = 1,
+            };
+            if (BetterHeuristic(request, regressingHeuristic, floorHeuristic))
+                return WriteError("total floor allowed a heuristic regression");
+            Console.Out.Write("satisfaction floor self-test passed");
             return 0;
         }
 
@@ -454,14 +494,16 @@ namespace Code4101.DantianSolver
         private static bool BetterExact(Request request, int[] left, int[] leftTargets,
             int[] right, int[] rightTargets)
         {
+            var leftTotal = left.Zip(leftTargets, (value, targets) => value * targets).Sum();
+            var rightTotal = right.Zip(rightTargets, (value, targets) => value * targets).Sum();
+            if (leftTotal < rightTotal) return false;
             foreach (var ruleIndex in NormalizePriorityOrder(request))
             {
                 var leftBenefit = left[ruleIndex] * leftTargets[ruleIndex];
                 var rightBenefit = right[ruleIndex] * rightTargets[ruleIndex];
                 if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
             }
-            return left.Zip(leftTargets, (value, targets) => value * targets).Sum() >
-                   right.Zip(rightTargets, (value, targets) => value * targets).Sum();
+            return leftTotal > rightTotal;
         }
 
         private static HeuristicSolution ImprovePlacementHint(Request request, int milliseconds)
@@ -679,6 +721,9 @@ namespace Code4101.DantianSolver
         private static bool BetterHeuristic(Request request, HeuristicSolution left,
             HeuristicSolution right)
         {
+            // 历史/当前满意解既是词典序起点，也是总收益硬下限。允许搜索过程
+            // 暂时走低，但只有总收益不下降且优先级严格改善的候选才能替换 best。
+            if (left.Total < right.Total) return false;
             foreach (var ruleIndex in NormalizePriorityOrder(request))
             {
                 var leftBenefit = left.Multipliers[ruleIndex] * left.TargetCounts[ruleIndex];

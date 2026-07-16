@@ -18,11 +18,12 @@ interface ParsedPrice {
 }
 
 const STORAGE_KEY = 'notes.eastmoney.priceCalculators.v1'
+const QUOTE_REFRESH_RETRY_MS = 10_000
 const multipliers = [80, 85, 90, 95, 100, 105, 110, 115, 120] as const
 const calculators = ref<EastmoneyCalculatorItem[]>([])
 const targets = ref<EastmoneyCalculatorTarget[]>([])
 const historyByTarget = ref<Record<string, EastmoneyCalculatorTrade[]>>({})
-const currentPrices = ref<Record<string, { price: number; updateTime: string }>>({})
+const currentPrices = ref<Record<string, { price: number; updateTime: string; fetchedAt: number }>>({})
 const loading = ref(true)
 const ready = ref(false)
 const saveError = ref(false)
@@ -31,8 +32,10 @@ const selectedTargetKey = ref('')
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveInFlight = false
 let saveQueued = false
-let quoteRefreshTimer: ReturnType<typeof setInterval> | null = null
+let quoteRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let quoteRefreshInFlight = false
+let quoteRefreshStarted = false
+let quoteRefreshDelayMs = QUOTE_REFRESH_RETRY_MS
 
 function createId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -155,6 +158,7 @@ async function loadCurrentPrices(): Promise<void> {
     currentPrices.value[key] = {
       price: quote.price,
       updateTime: quote.update_time,
+      fetchedAt: quote.fetched_at,
     }
   }
   await Promise.all(
@@ -167,6 +171,7 @@ async function loadCurrentPrices(): Promise<void> {
 async function refreshCurrentPrices(): Promise<void> {
   if (quoteRefreshInFlight || document.hidden) return
   quoteRefreshInFlight = true
+  let nextRefreshMs = QUOTE_REFRESH_RETRY_MS
   try {
     const result = await syncEastmoneyCalculatorMarketQuotes()
     for (const quote of result.items) {
@@ -174,12 +179,24 @@ async function refreshCurrentPrices(): Promise<void> {
       currentPrices.value[`${quote.market}.${quote.symbol}`] = {
         price: quote.price,
         updateTime: quote.update_time,
+        fetchedAt: quote.fetched_at,
       }
+    }
+    const fetchedTimes = result.items
+      .map((quote) => quote.fetched_at)
+      .filter((value) => Number.isFinite(value) && value > 0)
+    if (result.target_count === 0) {
+      nextRefreshMs = result.ttl_seconds * 1000
+    } else if (fetchedTimes.length && result.error_count === 0) {
+      const oldestFetchedAt = Math.min(...fetchedTimes) * 1000
+      nextRefreshMs = Math.max(1_000, oldestFetchedAt + result.ttl_seconds * 1000 - Date.now())
     }
   } catch (error) {
     console.warn('Failed to refresh calculator prices:', error)
   } finally {
     quoteRefreshInFlight = false
+    quoteRefreshDelayMs = nextRefreshMs
+    if (quoteRefreshStarted && !document.hidden) scheduleQuoteRefresh(nextRefreshMs)
   }
 }
 
@@ -188,9 +205,18 @@ function handleVisibilityChange(): void {
 }
 
 function startQuoteRefresh(): void {
-  if (quoteRefreshTimer) return
-  quoteRefreshTimer = setInterval(() => void refreshCurrentPrices(), 60_000)
+  if (quoteRefreshStarted) return
+  quoteRefreshStarted = true
   document.addEventListener('visibilitychange', handleVisibilityChange)
+  scheduleQuoteRefresh(quoteRefreshDelayMs)
+}
+
+function scheduleQuoteRefresh(delayMs: number): void {
+  if (quoteRefreshTimer) clearTimeout(quoteRefreshTimer)
+  quoteRefreshTimer = setTimeout(() => {
+    quoteRefreshTimer = null
+    void refreshCurrentPrices()
+  }, delayMs)
 }
 
 async function loadCurrentPriceForTarget(target: EastmoneyCalculatorTarget): Promise<void> {
@@ -211,6 +237,7 @@ async function loadCurrentPriceForTarget(target: EastmoneyCalculatorTarget): Pro
     currentPrices.value[key] = {
       price: latest.close,
       updateTime: latest.date,
+      fetchedAt: 0,
     }
   } catch (error) {
     console.warn(`Failed to load current price for ${key}:`, error)
@@ -255,7 +282,7 @@ onMounted(() => void loadWorkspace())
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
-  if (quoteRefreshTimer) clearInterval(quoteRefreshTimer)
+  if (quoteRefreshTimer) clearTimeout(quoteRefreshTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 

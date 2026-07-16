@@ -10,6 +10,7 @@ from typing import Any
 
 from pyxllib.autogui import CloseActionPlanner, Shape, View
 
+from backend.core.fanxiu.data_annotation.recognition_graph import SceneGraphCandidate, choose_scene_from_graph
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 
 
@@ -207,6 +208,12 @@ class PopupGuardMixin:
         return not any(marker in text for marker in blocked_markers)
 
     def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Flatten identity-bearing scenes below every ``弹窗`` folder.
+
+        Asset nesting is presentation metadata only.  It neither creates a
+        recognition edge nor a second recognition layer.
+        """
+
         candidates: list[dict[str, Any]] = []
         seen_image_ids: set[int] = set()
 
@@ -221,389 +228,136 @@ class PopupGuardMixin:
                 "action_shape": action_shape,
             })
 
-        def add_first_level_popup_images(folder: dict[str, Any]) -> None:
-            children = folder.get("children")
-            if not isinstance(children, list):
-                return
-            folder_title = str(folder.get("title") or "").strip()
-            for child in children:
-                if not isinstance(child, dict) or child.get("type") != "image":
-                    continue
-                add_candidate(child, folder_title, self._auto_close_guard_action_shape(child))
-
-        def visit(items: list[dict[str, Any]], path: list[str]) -> None:
+        def collect_popup_scenes(items: list[dict[str, Any]], path: list[str]) -> None:
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 node_type = str(item.get("type") or "")
                 title = str(item.get("title") or "").strip()
                 current_path = [*path, title] if title else path
-                if node_type == "folder" and title == "弹窗":
-                    add_first_level_popup_images(item)
-                    continue
-                if node_type == "image":
-                    action_shape = self._auto_close_guard_action_shape(item)
-                    if action_shape is not None and self._is_independent_exit_shape(action_shape):
-                        add_candidate(item, "/".join(path), action_shape)
+                if node_type == "image" and self._scene_identity_shapes(item):
+                    add_candidate(item, "/".join(path), self._auto_close_guard_action_shape(item))
                 children = item.get("children")
                 if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)], current_path)
+                    collect_popup_scenes([child for child in children if isinstance(child, dict)], current_path)
 
-        visit(nodes, [])
+        def find_popup_groups(items: list[dict[str, Any]], path: list[str]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                current_path = [*path, title] if title else path
+                children = item.get("children")
+                if str(item.get("type") or "") == "folder" and title == "弹窗":
+                    if isinstance(children, list):
+                        collect_popup_scenes(
+                            [child for child in children if isinstance(child, dict)],
+                            current_path,
+                        )
+                    continue
+                if isinstance(children, list):
+                    find_popup_groups([child for child in children if isinstance(child, dict)], current_path)
+
+        find_popup_groups(nodes, [])
         return candidates
 
-    def _best_popup_47_child(self, runtime: Any, popup_view: View) -> tuple[View | None, float]:
-        children = popup_view.raw.get("children") if isinstance(popup_view.raw, dict) else None
-        if not isinstance(children, list):
-            return None, 0.0
-        best_view: View | None = None
-        best_score = 0.0
-        for child in children:
-            if not isinstance(child, dict) or child.get("type") != "image":
-                continue
-            child_view = View(child)
-            child_score = runtime.popup_score(child_view)
-            if child_score > best_score:
-                best_view = child_view
-                best_score = child_score
-        return best_view, best_score
-
-    def _handle_auto_close_popup_47_child(
+    def _handle_auto_close_popup_84(
         self,
         runtime: Any,
-        popup_view: View,
+        view: View,
         event: dict[str, Any],
         *,
-        allow_confirm_actions: bool = True,
-    ) -> bool | None:
-        child_view, child_score = self._best_popup_47_child(runtime, popup_view)
-        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
-            return None
-        if child_view.id == 84:
-            return self._handle_auto_close_popup_47_child_84(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-        if child_view.id in self._LEAVE_CONFIRM_VIEW_IDS:
-            return self._handle_auto_close_popup_47_child_leave_confirm(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-        if child_view.id == 287:
-            return self._handle_auto_close_popup_47_child_287(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-        if child_view.id == 300:
-            return self._handle_auto_close_popup_47_child_confirm(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-
-        child_label = f"#{child_view.id}" if child_view.id is not None else child_view.title or "unknown"
-        child_event = {
-            **event,
-            "image": child_label,
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        action_shape = self._auto_close_guard_action_shape(child_view.raw)
-        if not self._auto_close_guard_action_allowed(action_shape):
-            # 已识别到业务子弹窗但守护无权点击时，必须放行主行为树。
-            # True 会让 WithServices 持续抢占主任务，形成守护饥饿。
-            return False
-        try:
-            child_view.close(runtime)
-        except RuntimeError:
-            self._record_popup_guard_missing(
-                child_view.id,
-                f"守护命中：#47/{child_label} {event.get('score', 0):.0f}%/{child_score:.0f}%，缺少关闭标注",
-                child_event,
-                "missing_action",
-            )
-            return False
-        action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
-        self._record_popup_guard_click(
-            child_view.id,
-            f"守护处理：#47/{child_label} 点击「{action_title or 'shape'}」 {event.get('score', 0):.0f}%/{child_score:.0f}%",
-            child_event,
-            action_title or "shape",
-        )
-        return True
-
-    def _popup_guard_leave_confirm_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        return bool(("是否离开" in compact or "离开当前场景" in compact) and ("确认" in compact or "确定" in compact))
-
-    def _popup_guard_world_guide_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if not compact:
-            return False
-        return (
-            "时装可升级" in compact
-            or ("衣装阁" in compact and "升级" in compact)
-            or ("速去升级" in compact and ("衣装" in compact or "时装" in compact))
-        )
-
-    def _popup_guard_world_guide_click_point(
-        self,
-        lines: list[dict[str, Any]],
-        *,
-        width: int,
-        height: int,
-    ) -> tuple[float, float]:
-        boxes: list[tuple[float, float, float, float]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text or not any(token in text for token in ("衣装", "时装", "升级", "速去")):
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            if w <= 0 or h <= 0:
-                continue
-            if y < height * 0.60 or x > width * 0.70:
-                continue
-            boxes.append((x, y, x + w, y + h))
-        if boxes:
-            x1 = min(item[0] for item in boxes)
-            y1 = min(item[1] for item in boxes)
-            x2 = max(item[2] for item in boxes)
-            y2 = max(item[3] for item in boxes)
-            return (x1 + x2) / 2, (y1 + y2) / 2
-        return width * 0.30, height * 0.825
-
-    def _handle_auto_close_popup_47_world_guide_bubble(
-        self,
-        runtime: Any,
-        event: dict[str, Any],
-    ) -> bool:
-        try:
-            frame = runtime.cur_frame(update=False)
-            lines = runtime.ocr_lines(frame)
-            text = runtime.ocr_text(frame) if hasattr(runtime, "ocr_text") else " ".join(str(line.get("text") or "") for line in lines)
-        except Exception:
-            return False
-        if not self._popup_guard_world_guide_text(text):
-            return False
-
-        width, height = self._disconnect_popup_frame_size(frame)
-        x, y = self._popup_guard_world_guide_click_point(lines, width=width, height=height)
-        click_image = {
-            "type": "image",
-            "title": "世界引导气泡",
-            "filename": "runtime_world_guide_bubble.png",
-            "width": width,
-            "height": height,
-            "shapes": [],
-        }
-        runtime.click_frame_point(click_image, x, y)
-        guide_event = {
-            **event,
-            "action": "click:世界引导气泡",
-            "ocr": _sanitize_ocr_text(text)[:120],
-            "click": [round(x, 1), round(y, 1)],
-        }
-        self._record_popup_guard_click(
-            47,
-            f"守护处理：#47 世界引导气泡点击 ({x:.0f},{y:.0f})",
-            guide_event,
-            "世界引导气泡",
-        )
-        return True
-
-    def _handle_auto_close_popup_47_leave_confirm_ocr(
-        self,
-        runtime: Any,
-        popup_view: View,
-        event: dict[str, Any],
-    ) -> bool:
-        try:
-            text = runtime.ocr_text(runtime.cur_frame(update=False))
-        except Exception:
-            return False
-        if not self._popup_guard_leave_confirm_text(text):
-            return False
-        for view_id in self._LEAVE_CONFIRM_VIEW_IDS:
-            child_view = runtime.get_view(int(view_id), root=popup_view) or runtime.get_view(int(view_id))
-            if child_view is None:
-                continue
-            confirm_shape = child_view.get_shape("确认") or child_view.get_shape("确定")
-            if confirm_shape is None:
-                continue
-            child_score = runtime.popup_score(child_view)
-            child_event = {
-                **event,
-                "image": f"#{int(view_id)}",
-                "title": child_view.title,
-                "score": round(float(child_score or 0.0), 1),
-                "parent_score": event.get("score"),
-                "ocr": _sanitize_ocr_text(text)[:120],
-            }
-            runtime.click_shape(child_view, confirm_shape)
-            self._record_popup_guard_click(
-                int(view_id),
-                f"守护处理：#47/#{int(view_id)} OCR离开确认点击「{confirm_shape.title or '确认'}」 {event.get('score', 0):.0f}%/{float(child_score or 0.0):.0f}%",
-                child_event,
-                confirm_shape.title or "确认",
-            )
-            return True
-        self._record_popup_guard_missing(
-            None,
-            "守护命中：#47 OCR离开确认，但缺少 #86/#289「确认」标注",
-            {**event, "ocr": _sanitize_ocr_text(text)[:120]},
-            "missing_leave_confirm",
-        )
-        return True
-
-    def _handle_auto_close_popup_47_child_84(
-        self,
-        runtime: Any,
-        popup_view: View,
-        event: dict[str, Any],
-        *,
-        child_view: View | None = None,
-        child_score: float | None = None,
+        score: float,
         allow_confirm_actions: bool = True,
     ) -> bool:
-        child_view = child_view or runtime.get_view(84, root=popup_view)
-        child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
-            return False
-        child_event = {
-            **event,
-            "image": "#84",
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-
-        no_more_prompt = child_view.get_shape("不再提示")
+        no_more_prompt = view.get_shape("不再提示")
         if no_more_prompt is not None and not no_more_prompt.is_match(runtime):
-            runtime.click_shape(child_view, no_more_prompt)
-            self._record_popup_guard_click(84, f"守护处理：#47/#84 点击「不再提示」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "不再提示")
+            runtime.click_shape(view, no_more_prompt, frame_data_url=runtime.cur_frame())
+            self._record_popup_guard_click(84, f"守护处理：#84 点击「不再提示」 {score:.0f}%", event, "不再提示")
             return True
 
-        confirm_shape = child_view.get_shape("确认")
+        confirm_shape = view.get_shape("确认")
         if confirm_shape is None:
-            self._record_popup_guard_missing(84, f"守护命中：#84 {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
+            self._record_popup_guard_missing(84, f"守护命中：#84 {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(84, f"守护处理：#47/#84 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
+            return self._close_popup_view_without_confirm(runtime, view, event)
+        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(84, f"守护处理：#84 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
-    def _handle_auto_close_popup_47_child_leave_confirm(
+    def _handle_auto_close_leave_confirm_popup(
         self,
         runtime: Any,
-        popup_view: View,
+        view: View,
         event: dict[str, Any],
         *,
-        child_view: View | None = None,
-        child_score: float | None = None,
-        allow_confirm_actions: bool = True,
+        score: float,
     ) -> bool:
-        if child_view is None:
-            return False
-        child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_score < self._runtime_popup_guard_min_score(runtime):
-            return False
-        view_id = int(child_view.id or 0)
+        view_id = int(view.id or 0)
         view_label = f"#{view_id}" if view_id else "#?"
-        child_event = {
-            **event,
-            "image": view_label,
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        confirm_shape = child_view.get_shape("确认")
+        confirm_shape = view.get_shape("确认")
         if not confirm_shape:
-            self._record_popup_guard_missing(view_id or None, f"守护命中：{view_label} {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
+            self._record_popup_guard_missing(view_id or None, f"守护命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(view_id or None, f"守护处理：#47/{view_label} 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
+        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(view_id or None, f"守护处理：{view_label} 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
-    def _handle_auto_close_popup_47_child_287(
+    def _handle_auto_close_popup_287(
         self,
         runtime: Any,
-        popup_view: View,
+        view: View,
         event: dict[str, Any],
         *,
-        child_view: View | None = None,
-        child_score: float | None = None,
+        score: float,
         allow_confirm_actions: bool = True,
     ) -> bool:
-        child_view = child_view or runtime.get_view(287, root=popup_view)
-        child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
-            return False
-        child_event = {
-            **event,
-            "image": "#287",
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        confirm_shape = child_view.get_shape("确认")
+        confirm_shape = view.get_shape("确认")
         if not confirm_shape:
-            self._record_popup_guard_missing(287, f"守护命中：#287 {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
+            self._record_popup_guard_missing(287, f"守护命中：#287 {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(287, f"守护处理：#47/#287 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
+            return self._close_popup_view_without_confirm(runtime, view, event)
+        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(287, f"守护处理：#287 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
-    def _handle_auto_close_popup_47_child_confirm(
+    def _handle_auto_close_popup_355(
         self,
         runtime: Any,
-        popup_view: View,
+        view: View,
         event: dict[str, Any],
         *,
-        child_view: View,
-        child_score: float,
+        score: float,
+    ) -> bool:
+        cancel_shape = view.get_shape("取消")
+        if not cancel_shape:
+            self._record_popup_guard_missing(355, f"守护命中：#355 {score:.0f}%，缺少「取消」标注", event, "missing_cancel")
+            return True
+        runtime.click_shape(view, cancel_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(355, f"守护处理：#355 点击「取消」 {score:.0f}%", event, "取消")
+        return True
+
+    def _handle_auto_close_confirm_popup(
+        self,
+        runtime: Any,
+        view: View,
+        event: dict[str, Any],
+        *,
+        score: float,
         allow_confirm_actions: bool = True,
     ) -> bool:
-        view_id = int(child_view.id or 0)
+        view_id = int(view.id or 0)
         view_label = f"#{view_id}" if view_id else "#?"
-        child_event = {
-            **event,
-            "image": view_label,
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        confirm_shape = child_view.get_shape("确认")
+        confirm_shape = view.get_shape("确认")
         if not confirm_shape:
-            self._record_popup_guard_missing(view_id or None, f"守护命中：#47/{view_label} {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
+            self._record_popup_guard_missing(view_id or None, f"守护命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(view_id or None, f"守护处理：#47/{view_label} 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
+            return self._close_popup_view_without_confirm(runtime, view, event)
+        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(view_id or None, f"守护处理：{view_label} 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
     def _record_popup_guard_missing(self, scene_id: int | None, message: str, event: dict[str, Any], action: str) -> None:
@@ -665,7 +419,7 @@ class PopupGuardMixin:
         image = candidate.get("image")
         if not isinstance(image, dict):
             return 0.0
-        return self._popup_score(ctx, image, frame_data_url)
+        return self._scene_score(ctx, image, frame_data_url)
 
     def _auto_close_popup_candidate_scores_serial(
         self,
@@ -687,21 +441,7 @@ class PopupGuardMixin:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-popup-match") as executor:
             return list(executor.map(lambda candidate: self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url), candidates))
 
-    def _popup_candidate_has_ocr_match(self, candidate: dict[str, Any]) -> bool:
-        image = candidate.get("image")
-        if not isinstance(image, dict):
-            return False
-        return any(self._shape_ocr_fallback_enabled(shape) for shape in self._popup_match_shapes(image))
-
-    def _auto_close_popup_candidate_scores(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        return self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-
-    def _auto_close_popup_first_match(
+    def _auto_close_popup_graph_match(
         self,
         ctx: dict[str, Any],
         candidates: list[dict[str, Any]],
@@ -709,20 +449,40 @@ class PopupGuardMixin:
         *,
         min_score: float | None = None,
     ) -> tuple[dict[str, Any] | None, float]:
+        """Recognize one popup from a single flattened Layer-0 graph pass."""
+
         if not candidates:
             return None, 0.0
-        threshold = self.overlay_threshold if min_score is None else float(min_score)
+        guard_threshold = self.overlay_threshold if min_score is None else float(min_score)
         scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
+        graph_candidates: list[SceneGraphCandidate] = []
+        candidate_by_scene_id: dict[int, dict[str, Any]] = {}
         for candidate, score in zip(candidates, scores):
-            if score >= threshold:
-                return candidate, score
-        return None, 0.0
+            image = candidate.get("image")
+            if not isinstance(image, dict):
+                continue
+            scene_id = self._image_number(image)
+            if scene_id is None:
+                continue
+            scene_id = int(scene_id)
+            candidate_by_scene_id.setdefault(scene_id, candidate)
+            threshold = max(guard_threshold, float(self._scene_match_threshold(scene_id)))
+            graph_candidates.append(
+                SceneGraphCandidate(
+                    scene_id=scene_id,
+                    score=float(score or 0.0),
+                    matched=float(score or 0.0) >= threshold,
+                )
+            )
 
-    def _runtime_popup_guard_min_score(self, runtime: Any) -> float:
-        try:
-            return float(runtime.attrs.get("popup_guard_min_score") or self.overlay_threshold)
-        except Exception:
-            return float(self.overlay_threshold)
+        matched_ids = [item.scene_id for item in graph_candidates if item.matched]
+        edges = self._recognition_parent_match_edges_for_candidates(ctx, matched_ids)
+        if len(matched_ids) > 1:
+            edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids))
+        result = choose_scene_from_graph(graph_candidates, edges)
+        if result.scene_id is None:
+            return None, 0.0
+        return candidate_by_scene_id.get(int(result.scene_id)), float(result.score or 0.0)
 
     def _auto_close_popup_guard_step(
         self,
@@ -783,25 +543,53 @@ class PopupGuardMixin:
                     self._log("detail", f"守护跳过 #47：日常_周本业务弹窗由业务流程处理，phase={phase}")
                     return False
 
-            if view.id == 47:
-                child_result = self._handle_auto_close_popup_47_child(
+            if view.id == 84:
+                return self._handle_auto_close_popup_84(
                     runtime,
                     view,
                     event,
+                    score=matched.score,
                     allow_confirm_actions=allow_confirm_actions,
                 )
-                if child_result is not None:
-                    return child_result
-            if view.id == 47 and self._handle_auto_close_popup_47_leave_confirm_ocr(runtime, view, event):
-                return True
-            if view.id == 47 and self._handle_auto_close_popup_47_world_guide_bubble(runtime, event):
-                return True
+            if view.id in self._LEAVE_CONFIRM_VIEW_IDS:
+                return self._handle_auto_close_leave_confirm_popup(
+                    runtime,
+                    view,
+                    event,
+                    score=matched.score,
+                )
+            if view.id == 287:
+                return self._handle_auto_close_popup_287(
+                    runtime,
+                    view,
+                    event,
+                    score=matched.score,
+                    allow_confirm_actions=allow_confirm_actions,
+                )
+            if view.id == 300:
+                return self._handle_auto_close_confirm_popup(
+                    runtime,
+                    view,
+                    event,
+                    score=matched.score,
+                    allow_confirm_actions=allow_confirm_actions,
+                )
+            if view.id == 355:
+                return self._handle_auto_close_popup_355(
+                    runtime,
+                    view,
+                    event,
+                    score=matched.score,
+                )
 
             try:
                 if not allow_confirm_actions:
                     return self._close_popup_view_without_confirm(runtime, view, event)
                 if not self._auto_close_guard_action_allowed(matched.action_shape):
-                    return True
+                    # A recognized business-only action belongs to the
+                    # downstream task.  Reporting it as handled would starve
+                    # the task while leaving the popup untouched.
+                    return False
                 view.close(runtime)
             except RuntimeError:
                 self._record_popup_guard_missing(
