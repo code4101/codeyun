@@ -501,9 +501,10 @@ def test_mail_business_backlog_records_mail_source_probe(monkeypatch, tmp_path):
     assert result["mail_source_probe"]["protocol_counts"] == {"SM_DeleteMail": 1}
 
 
-def test_maintenance_loop_scans_before_wait(monkeypatch):
+def test_maintenance_loop_waits_before_first_scan(monkeypatch):
     service = worker.FanxiuPacketInsightWorker(maintenance_interval_seconds=60, stable_seconds=1)
     calls = 0
+    waits: list[float] = []
 
     def fake_maintenance_once():
         nonlocal calls
@@ -512,10 +513,16 @@ def test_maintenance_loop_scans_before_wait(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(service, "maintenance_once", fake_maintenance_once)
+    monkeypatch.setattr(
+        service._maintenance_stop_event,
+        "wait",
+        lambda seconds: waits.append(seconds) or True,
+    )
 
     service._maintenance_loop()
 
-    assert calls == 1
+    assert calls == 0
+    assert waits == [60.0]
 
 
 def test_mail_business_backlog_processes_bounded_latest_and_historical_sources(monkeypatch, tmp_path):
@@ -600,6 +607,7 @@ def test_batch_business_sync_passes_non_profile_runtime_protocols(monkeypatch):
     assert runtime_sync["sync_count"] == 1
     assert runtime_sync["changed"] is True
     assert mail_sync["ok"] is True
+    assert mail_sync["reason"] == "no_mail_protocols_in_batch"
 
 
 def test_live_capture_backlog_caps_single_pass_scan_window(monkeypatch, tmp_path):

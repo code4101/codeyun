@@ -32,6 +32,26 @@ class _FakeCapture:
         return _Frame()
 
 
+def test_adb_mjpeg_stream_skips_capture_errors_without_emitting_non_image_parts(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_frame(*, min_interval):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("temporary adb failure")
+        return b"png-frame"
+
+    monkeypatch.setattr(mumu, "_get_mumu_adb_stream_frame", fake_frame)
+    monkeypatch.setattr(mumu.time, "sleep", lambda _seconds: None)
+
+    part = next(mumu.stream_mumu_adb_screencap_mjpeg(fps=1.0))
+
+    assert calls["count"] == 2
+    assert b"Content-Type: image/png" in part
+    assert b"text/plain" not in part
+    assert b"png-frame" in part
+
+
 def _patch_window_fallback(monkeypatch):
     monkeypatch.setattr(mumu, "ensure_windows_runtime", lambda: None)
     monkeypatch.setattr(mumu, "set_dpi_awareness", lambda: None)

@@ -56,21 +56,13 @@ def test_lingmai_clear_checks_unchecked_image_before_clicking_one_click_explore(
     assert checked.calls == [("wait_click_then_view", 313, "确定", 314)]
 
 
-def test_lingmai_clear_clicks_annotated_scrollbar_right_endpoint_then_confirms():
-    class Shape:
-        def box(self):
-            return {"x": 230.0, "y": 960.0, "w": 455.0, "h": 52.0}
-
+def test_lingmai_clear_drags_annotated_scrollbar_then_confirms():
     class Runtime:
         def __init__(self):
             self.calls = []
 
-        def shape(self, scene, title):
-            assert (scene, title) == (314, "滚动条")
-            return Shape()
-
-        def click_frame_point(self, scene, x, y):
-            self.calls.append(("click_frame_point", scene, x, y))
+        def drag_shape_to_frame_edge(self, scene, shape, **options):
+            self.calls.append(("drag_shape_to_frame_edge", scene, shape, options))
 
         def wait_action_settle(self, seconds):
             self.calls.append(("settle", seconds))
@@ -89,14 +81,14 @@ def test_lingmai_clear_clicks_annotated_scrollbar_right_endpoint_then_confirms()
 
     assert result == "success"
     assert runtime.calls == [
-        ("click_frame_point", 314, 685.0, 986.0),
+        ("drag_shape_to_frame_edge", 314, "滚动条", {"direction": "right", "duration": 0.6}),
         ("settle", 1.0),
         (
             "wait_click_then_view",
             314,
             "确定",
-            [315, 285],
-            {"timeout": 15.0, "label": "灵脉_清体力：等待 #314 确定后的 #315 或 #285"},
+            [315, 313, 285],
+            {"timeout": 15.0, "label": "灵脉_清体力：等待 #314 确定后的 #315/#313/#285"},
         ),
     ]
 
@@ -105,19 +97,12 @@ def test_lingmai_clear_clicks_transient_315_when_observed():
     class View:
         id = 315
 
-    class Shape:
-        def box(self):
-            return {"x": 230.0, "y": 960.0, "w": 455.0, "h": 52.0}
-
     class Runtime:
         def __init__(self):
             self.calls = []
 
-        def shape(self, scene, title):
-            return Shape()
-
-        def click_frame_point(self, scene, x, y):
-            self.calls.append(("click_frame_point", scene, x, y))
+        def drag_shape_to_frame_edge(self, scene, shape, **options):
+            self.calls.append(("drag_shape_to_frame_edge", scene, shape, options))
 
         def wait_action_settle(self, seconds):
             self.calls.append(("settle", seconds))
@@ -139,8 +124,8 @@ def test_lingmai_clear_clicks_transient_315_when_observed():
         "wait_click_then_view",
         315,
         "继续",
-        285,
-        {"settle_seconds": 0.2, "timeout": 2.0, "label": "灵脉_清体力：点击 #315 继续后等待 #285"},
+        [313, 285],
+        {"settle_seconds": 0.2, "timeout": 2.0, "label": "灵脉_清体力：点击 #315 继续后等待 #313/#285"},
     )
 
 
@@ -154,8 +139,8 @@ def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
             yield
             raise TimeoutError("#315 expired")
 
-        def wait_view(self, scene, **options):
-            self.calls.append(("wait_view", scene, options))
+        def wait_view(self, *scenes, **options):
+            self.calls.append(("wait_view", scenes, options))
             yield
             return 285
 
@@ -171,12 +156,12 @@ def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
             "wait_click_then_view",
             315,
             "继续",
-            285,
-            {"settle_seconds": 0.2, "timeout": 2.0, "label": "灵脉_清体力：点击 #315 继续后等待 #285"},
+            [313, 285],
+            {"settle_seconds": 0.2, "timeout": 2.0, "label": "灵脉_清体力：点击 #315 继续后等待 #313/#285"},
         ),
         (
             "wait_view",
-            285,
-            {"timeout": 15.0, "label": "灵脉_清体力：等待有时效性的 #315 自动消失并回到 #285"},
+            (313, 285),
+            {"timeout": 15.0, "label": "灵脉_清体力：等待有时效性的 #315 自动消失并回到 #313/#285"},
         ),
     ]

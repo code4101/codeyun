@@ -89,7 +89,7 @@ def test_packet_service_action_timeout_uses_longer_budget_for_maintenance(monkey
     monkeypatch.delenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", raising=False)
 
     assert service_runtime._packet_service_action_timeout_seconds("maintenance") == 180.0
-    assert service_runtime._packet_service_action_timeout_seconds("packet_facts_catch_up") == 45.0
+    assert service_runtime._packet_service_action_timeout_seconds("packet_facts_catch_up") == 120.0
 
 
 def test_packet_service_action_timeout_respects_global_floor_for_maintenance(monkeypatch):

@@ -45,6 +45,7 @@ DEFAULT_DECODE_MAX_STREAMS = 4
 DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER = 40
 DEFAULT_DECODE_TIMEOUT_SECONDS = 30.0
 DEFAULT_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS = 5 * 60.0
+DEFAULT_REALTIME_BOUNDARY_MAX_AGE_SECONDS = 2 * 60.0
 MIN_PCAP_BYTES = 24
 PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
 # Bump when decoded facts must be replayed through changed reducers/upserts.
@@ -583,6 +584,8 @@ def _iter_stable_live_pcaps(
     active_capture_path = _current_runtime_capture_path()
     rows: list[Path] = []
     for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.stat().st_mtime, reverse=bool(newest_first)):
+        if path.name.startswith("fanxiu_runtime_snapshot_"):
+            continue
         if active_capture_path and _same_path(path, active_capture_path):
             continue
         try:
@@ -599,6 +602,61 @@ def _iter_stable_live_pcaps(
             continue
         rows.append(path)
     return rows
+
+
+def _latest_recent_sealed_live_pcap(
+    *,
+    data_dir: str | Path | None = None,
+    max_age_seconds: float = DEFAULT_REALTIME_BOUNDARY_MAX_AGE_SECONDS,
+    now: float | None = None,
+) -> Path | None:
+    """Return the latest completed non-snapshot segment near a realtime flush."""
+    live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
+    if not live_dir.is_dir():
+        return None
+    now_value = time.time() if now is None else float(now)
+    active_capture_path = _current_runtime_capture_path()
+    candidates: list[Path] = []
+    for path in live_dir.glob("fanxiu_runtime_*.pcap"):
+        if path.name.startswith("fanxiu_runtime_snapshot_"):
+            continue
+        if active_capture_path and _same_path(path, active_capture_path):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_size <= MIN_PCAP_BYTES:
+            continue
+        if now_value - stat.st_mtime > max(1.0, float(max_age_seconds)):
+            continue
+        candidates.append(path)
+    return max(candidates, key=lambda item: item.stat().st_mtime, default=None)
+
+
+def _capture_has_current_decoded_record(
+    path: Path,
+    *,
+    data_dir: str | Path | None = None,
+) -> bool:
+    """Use deterministic record paths to avoid re-decoding a recent boundary pcap."""
+    try:
+        digest = _sha256_file(path)
+    except OSError:
+        return False
+    prefix = f"{path.stem}_{digest[:12]}_stream"
+    for meta_path in resolve_fanxiu_tcp_store_root(data_dir).glob(f"{prefix}*/meta.json"):
+        meta = _load_json(meta_path, {})
+        if str(meta.get("capture_sha256") or "") != digest:
+            continue
+        if int(meta.get("decoder_version") or 0) != FANXIU_TCP_DECODE_SCHEMA_VERSION:
+            continue
+        decoded_path = Path(str(meta.get("decoded_path") or meta_path.with_name("decoded.json")))
+        if not decoded_path.is_absolute():
+            decoded_path = meta_path.parent / "decoded.json"
+        if decoded_path.is_file():
+            return True
+    return False
 
 
 def _previous_errors_by_digest(state: Any) -> dict[str, dict[str, Any]]:
@@ -761,21 +819,31 @@ def _sync_business_after_decoded(
             runtime_sync["ok"] = False
             runtime_sync["error_count"] += 1
             runtime_sync["errors"].append({"decoded_path": str(source.get("decoded_path") or ""), "error": str(exc)})
-    try:
-        from sqlmodel import Session
+    mail_probe = _mail_source_protocol_probe(decoded_sources)
+    if mail_probe.get("has_any_mail_source") or mail_probe.get("has_mail_action"):
+        try:
+            from sqlmodel import Session
 
-        from backend.core.fanxiu.mail.packet_sync import sync_fanxiu_mail_packets
-        from backend.db import engine
+            from backend.core.fanxiu.mail.packet_sync import sync_fanxiu_mail_packets
+            from backend.db import engine
 
-        with Session(engine) as session:
-            mail_sync = sync_fanxiu_mail_packets(
-                session,
-                data_dir=data_dir,
-                clear_existing=False,
-                decoded_sources=decoded_sources,
-            )
-    except Exception as exc:
-        mail_sync = {"ok": False, "error": str(exc)}
+            with Session(engine) as session:
+                mail_sync = sync_fanxiu_mail_packets(
+                    session,
+                    data_dir=data_dir,
+                    clear_existing=False,
+                    decoded_sources=decoded_sources,
+                )
+        except Exception as exc:
+            mail_sync = {"ok": False, "error": str(exc)}
+    else:
+        mail_sync = {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_mail_protocols_in_batch",
+            "source_count": len(decoded_sources),
+            "protocol_counts": mail_probe.get("protocol_counts") or {},
+        }
     for item in decoded:
         item["batch_packet_runtime_sync"] = {
             "changed": bool(runtime_sync.get("changed")) if isinstance(runtime_sync, dict) else False,
@@ -1323,6 +1391,9 @@ def catch_up_fanxiu_packet_facts(
     writers.
     """
     requested_at = _now_text()
+    boundary_pcap = _latest_recent_sealed_live_pcap(data_dir=data_dir)
+    if boundary_pcap and _capture_has_current_decoded_record(boundary_pcap, data_dir=data_dir):
+        boundary_pcap = None
     capture_backstop: dict[str, Any]
     try:
         capture_backstop = _ensure_capture_runtime_from_packet_worker(data_dir=data_dir)
@@ -1355,6 +1426,7 @@ def catch_up_fanxiu_packet_facts(
             "requested_at": requested_at,
             "reason": reason,
             "capture_runtime_backstop": capture_backstop,
+            "boundary_pcap": str(boundary_pcap or ""),
             "flush": flush_result,
             "sync": {
                 "ok": True,
@@ -1367,20 +1439,34 @@ def catch_up_fanxiu_packet_facts(
             "decoded_record_db_prune": decoded_record_db_prune,
         }
 
+    capture_paths = list(
+        dict.fromkeys(
+            [
+                *([str(boundary_pcap)] if boundary_pcap else []),
+                pcap_path,
+            ]
+        )
+    )
     sync_result = sync_fanxiu_capture_paths(
-        [pcap_path],
+        capture_paths,
         data_dir=data_dir,
         max_streams=max(1, int(max_streams)),
         scan_existing_decoded=False,
     )
     return {
         "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
-        "ok": bool(capture_backstop.get("ok", True) and flush_result.get("ok", True) and sync_result.get("ok", True)),
+        "ok": bool(
+            capture_backstop.get("ok", True)
+            and flush_result.get("ok", True)
+            and sync_result.get("ok", True)
+        ),
         "mode": "packet_facts_catch_up",
         "updated_at": _now_text(),
         "requested_at": requested_at,
         "reason": reason,
         "capture_runtime_backstop": capture_backstop,
+        "boundary_pcap": str(boundary_pcap or ""),
+        "capture_paths": capture_paths,
         "flush": flush_result,
         "sync": sync_result,
         "decoded_record_db_prune": decoded_record_db_prune,
@@ -1900,6 +1986,13 @@ class FanxiuPacketInsightWorker:
                 "mode": "packet_worker_startup",
                 "capture_runtime_backstop": startup_backstop,
             }
+            self._last_maintenance_result = {
+                "ok": True,
+                "updated_at": _now_text(),
+                "mode": "maintenance_scheduled",
+                "phase": "waiting_first_interval",
+                "interval_seconds": self.maintenance_interval_seconds,
+            }
             _write_json(_worker_state_path(), _compact_worker_state_payload(self._last_realtime_result))
             if not (self._thread and self._thread.is_alive()):
                 self._thread = threading.Thread(target=self._run_loop, name="fanxiu-packet-realtime-worker", daemon=True)
@@ -2063,6 +2156,10 @@ class FanxiuPacketInsightWorker:
             self._stop_event.wait(self.scan_interval_seconds)
 
     def _maintenance_loop(self) -> None:
+        # Give realtime capture and gameplay catch-up the first decoder budget
+        # after daemon startup. Historical repair keeps its own later cadence.
+        if self._maintenance_stop_event.wait(self.maintenance_interval_seconds):
+            return
         while not self._maintenance_stop_event.is_set():
             try:
                 with self._lock:

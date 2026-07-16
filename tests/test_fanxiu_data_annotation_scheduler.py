@@ -633,6 +633,7 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     dongtian_clear = next(item for item in tasks if item["id"] == "legacy-daily-dongtian-clear")
     lingmai_clear = next(item for item in tasks if item["id"] == "legacy-daily-lingmai-clear")
     gift = next(item for item in tasks if item["id"] == "gift-code-weekly")
+    lundao = next(item for item in tasks if item["id"] == "daily-lundao-seat")
     weekly_dungeon = next(item for item in tasks if item["id"] == "daily-weekly-dungeon")
     mojie_raid = next(item for item in tasks if item["id"] == "legacy-daily-mojie-raid")
 
@@ -661,6 +662,11 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert baiye["payload"] == {"args": ["魔道"]}
     assert gift["schedule_kind"] == "manual"
     assert gift["payload"] == {"codes": []}
+    assert lundao["task_type"] == "daily_lundao"
+    assert lundao["label"] == "论道_座位"
+    assert lundao["schedule_kind"] == "manual"
+    assert lundao["enabled"] is False
+    assert lundao["schedule_times"] == []
     assert weekly_dungeon["task_type"] == "daily_weekly_dungeon"
     assert weekly_dungeon["schedule_kind"] == "weekly"
     assert weekly_dungeon["weekdays"] == [0]

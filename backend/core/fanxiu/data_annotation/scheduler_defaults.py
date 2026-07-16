@@ -214,6 +214,15 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         },
         manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
         manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗"),
+        manual_task("daily-lundao-seat", "daily_lundao", "论道_座位"),
+        runtime_daily_task(
+            "daily-lingmai-seat",
+            "daily_lingmai",
+            "灵脉_座位",
+            "17:30",
+            cooldown_seconds=600,
+            payload={"lingmai_no_slot_retry_seconds": 600},
+        ),
         runtime_daily_task(
             "mail-selective-claim",
             "mail_selective_claim",

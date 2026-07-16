@@ -303,7 +303,7 @@ def test_core_packet_current_facts_helper_updates_then_queries(monkeypatch):
     assert calls == ["start", "catch_up", "list"]
     assert result["ok"] is True
     assert result["status"] == "completed"
-    assert result["catch_up"]["kwargs"] == {"reason": "unit-test", "wait_seconds": 6}
+    assert result["catch_up"]["kwargs"] == {"reason": "unit-test", "wait_seconds": 120.0}
     assert result["decoded_records"]["kwargs"] == {
         "names": ["SM_XianLvMineEnterSync"],
         "pro_ids": [95102],

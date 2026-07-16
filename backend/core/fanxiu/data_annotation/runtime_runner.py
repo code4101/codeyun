@@ -794,6 +794,8 @@ class FanxiuRuntime(Runtime):
         timeout: float | None = None,
         label: str | None = None,
         wait_leave: bool = False,
+        retry_if_source_remains: bool = True,
+        max_clicks: int = 2,
         **options: Any,
     ) -> View:
         source_view = self.resolve_view_selector(frame)
@@ -825,30 +827,64 @@ class FanxiuRuntime(Runtime):
             target_ids = self.runner._scene_jump_target_ids(tree if isinstance(tree, list) else [], target_shape.raw)
         if not target_ids and not wait_leave:
             raise RuntimeError(f"点击 #{source_view.id or '?'}「{self._shape_path(target_shape)}」后缺少目标场景；请显式传入目标或补 sceneJumpTarget")
-        yield from self.wait_click(source_view, target_shape, **options)
-        yield from self.wait_action_settle(settle_seconds)
-        if not target_ids and wait_leave:
-            return (yield from self.wait_leave_view(
-                source_view,
-                timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
-                label=label or f"点击后等待离开 #{source_view.id or '?'}",
-            ))
-        wait_label = label or f"点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
+        wait_label = label or (
+            f"点击后等待离开 #{source_view.id or '?'}"
+            if wait_leave and not target_ids
+            else f"点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
+        )
+        wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
+        click_count = max(1, int(max_clicks or 1))
+        last_error: TimeoutError | None = None
+        attempts_made = 0
+        transition_attr = "business_transition_wait"
+        had_transition_attr = transition_attr in self.attrs
+        previous_transition_attr = self.attrs.get(transition_attr)
+        self.attrs[transition_attr] = True
         try:
-            target_view = yield from self.wait_view(
-                *target_ids,
-                timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
-                label=wait_label,
-            )
-            self._record_wait_click_then_view_landing(source_view, target_shape, target_view)
-            return target_view
-        except TimeoutError as exc:
-            target_text = ",".join(f"#{target_id}" for target_id in target_ids)
+            for attempt in range(1, click_count + 1):
+                attempts_made = attempt
+                yield from self.wait_click(source_view, target_shape, **options)
+                yield from self.wait_action_settle(settle_seconds)
+                try:
+                    if not target_ids and wait_leave:
+                        return (yield from self.wait_leave_view(
+                            source_view,
+                            timeout=wait_timeout,
+                            label=label or f"点击后等待离开 #{source_view.id or '?'}",
+                        ))
+                    target_view = yield from self.wait_view(
+                        *target_ids,
+                        timeout=wait_timeout,
+                        label=wait_label,
+                    )
+                    self._record_wait_click_then_view_landing(source_view, target_shape, target_view)
+                    return target_view
+                except TimeoutError as exc:
+                    last_error = exc
+                    if not retry_if_source_remains or attempt >= click_count or source_view.id is None:
+                        break
+                    scene_id, score, _frame = self.current_scene([source_view], update=True)
+                    if scene_id != source_view.id:
+                        break
+                    self.runner._log(
+                        "warning",
+                        (
+                            f"{wait_label}：点击后仍在源场景 #{source_view.id} {score:.0f}%，"
+                            f"重试点击 {attempt + 1}/{click_count}"
+                        ),
+                    )
+
+            target_text = ",".join(f"#{target_id}" for target_id in target_ids) or "离开源场景"
             jump_target = str(target_shape.raw.get("sceneJumpTarget") or "").strip() or "未声明"
             raise TimeoutError(
                 f"{wait_label} 失败：源场景=#{source_view.id or '?'}，shape={self._shape_path(target_shape)}，"
-                f"期望目标={target_text}，sceneJumpTarget={jump_target}；{exc}"
-            ) from exc
+                f"期望目标={target_text}，sceneJumpTarget={jump_target}，已点击 {attempts_made} 次；{last_error or ''}"
+            ) from last_error
+        finally:
+            if had_transition_attr:
+                self.attrs[transition_attr] = previous_transition_attr
+            else:
+                self.attrs.pop(transition_attr, None)
 
     def _record_wait_click_then_view_landing(self, source_view: View, shape: Shape, target_view: View) -> None:
         if target_view.id is None:
@@ -1884,6 +1920,62 @@ class FanxiuRuntime(Runtime):
             direction=str(direction or target_shape.content_direction or "down"),
             ratio=ratio,
         )
+        self.runner._drag_frame_point(
+            self.ctx,
+            view.raw,
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            duration_ms=max(0, int(float(duration) * 1000)),
+        )
+        self.clear_frame()
+
+    def drag_shape_to_frame_edge(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape: Shape | str | None = None,
+        *,
+        direction: str,
+        duration: float = 0.6,
+    ) -> None:
+        """从指定 shape 内部起拖，并一直拖到画面的安全边缘。
+
+        适用于滑块这类控件：标注框描述控件本身，但要把滑块可靠推到极限，
+        拖拽终点不能受标注框边界限制。业务代码只需要提供场景和 shape 名称。
+        """
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
+        view = target_shape.parent_view
+        if not isinstance(view, View) or not isinstance(view.raw, dict):
+            raise RuntimeError("shape 缺少 parent_view，无法拖到画面边缘")
+
+        box = self.runner._box(target_shape.raw, view.raw)
+        frame_width, frame_height = self.runner._frame_size(view.raw)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        width = max(1.0, float(box.get("w") or 0))
+        height = max(1.0, float(box.get("h") or 0))
+        margin_x = max(2.0, frame_width * 0.02)
+        margin_y = max(2.0, frame_height * 0.02)
+        inset_x = min(width * 0.5, max(2.0, width * 0.04))
+        inset_y = min(height * 0.5, max(2.0, height * 0.04))
+        normalized_direction = str(direction or "").strip().lower()
+
+        if normalized_direction == "right":
+            start_x, start_y = left + inset_x, top + height / 2
+            end_x, end_y = frame_width - margin_x, start_y
+        elif normalized_direction == "left":
+            start_x, start_y = left + width - inset_x, top + height / 2
+            end_x, end_y = margin_x, start_y
+        elif normalized_direction == "down":
+            start_x, start_y = left + width / 2, top + inset_y
+            end_x, end_y = start_x, frame_height - margin_y
+        elif normalized_direction == "up":
+            start_x, start_y = left + width / 2, top + height - inset_y
+            end_x, end_y = start_x, margin_y
+        else:
+            raise ValueError(f"不支持的拖拽方向：{direction}")
+
         self.runner._drag_frame_point(
             self.ctx,
             view.raw,
@@ -5704,8 +5796,14 @@ class DataAnnotationRuntimeRunner(
                 pass
 
         matches: list[dict[str, Any]] = []
-        for reference_id in scene_ids:
-            for fact_id in scene_ids:
+        # Keep one fact frame hot while evaluating every reference rule.  Scene
+        # scoring shares OCR by current frame through ctx["_ocr_lines_cache"];
+        # iterating references first would cycle through every fact image and
+        # evict/expire that OCR result before the next OCR rule can reuse it.
+        # With facts outermost, a full matrix performs at most one OCR pass per
+        # fact image instead of one OCR pass per OCR-reference/fact pair.
+        for fact_id in scene_ids:
+            for reference_id in scene_ids:
                 if int(reference_id) == int(fact_id):
                     continue
                 result = self.match_scene_frame(ctx, reference_id, fact_id, threshold=scene_threshold)

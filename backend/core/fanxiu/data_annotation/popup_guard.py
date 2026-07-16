@@ -532,6 +532,15 @@ class PopupGuardMixin:
             }
 
             if view.id == 47:
+                if float(matched.score or 0.0) < 100.0:
+                    self._log(
+                        "detail",
+                        (
+                            f"守护跳过 #47：通用空白弹窗仅 {matched.score:.0f}%，"
+                            "未满分命中时不执行高破坏性空白点击"
+                        ),
+                    )
+                    return False
                 with self._lock:
                     task_type = str(self._status.get("task_type") or "")
                     phase = str(self._status.get("phase") or "")

@@ -417,7 +417,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_xianmeng_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_task_cell("daily_lundao", "日常_论道", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell("daily_lundao", "论道_座位", scheduler_supported=True)
     def _run_data_annotation_daily_lundao_task_cell(
         runner: Any,
         ctx: dict[str, Any],

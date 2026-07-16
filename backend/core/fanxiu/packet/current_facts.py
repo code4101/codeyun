@@ -25,7 +25,7 @@ def catch_up_and_list_fanxiu_packet_decoded_records(
     start_result = start_fanxiu_packet_service()
     catch_up_result = request_fanxiu_packet_service_catch_up(
         reason=reason,
-        wait_seconds=wait_seconds,
+        wait_seconds=max(120.0, float(wait_seconds)),
     )
     decoded_records = list_fanxiu_packet_decoded_records(
         session,
