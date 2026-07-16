@@ -2848,17 +2848,17 @@ class DailyFoundationTaskMixin:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_仙缘资产树路径，无法执行作业")
+            raise RuntimeError("缺少仙缘_斗法资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, frame = runtime.current_scene([308, 69, 34], update=True)
         text = runtime.ocr_text(frame)
         if scene_id not in {308, 69}:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_仙缘")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="仙缘_斗法")
         if scene_id not in {308, 69}:
-            raise RuntimeError("日常_仙缘：未能进入 #69 日常列表")
+            raise RuntimeError("仙缘_斗法：未能进入 #69 日常列表")
         if scene_id == 69:
             status = yield from runtime.open_daily_entry(
-                label="日常_仙缘",
+                label="仙缘_斗法",
                 title_pattern=r"斗\s*法",
                 progress_can_mark_done=False,
                 max_scrolls=int(payload.get("max_scrolls") or 30),
@@ -2869,7 +2869,7 @@ class DailyFoundationTaskMixin:
                     payload,
                     task_id="legacy-daily-xianyuan",
                     task_type="daily_xianyuan_duel",
-                    label="日常_仙缘",
+                    label="仙缘_斗法",
                     entry_label="斗法",
                 )
                 return "skipped"
@@ -2877,13 +2877,13 @@ class DailyFoundationTaskMixin:
             yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
         max_runs = int(payload.get("max_runs") or 7)
         for index in range(max_runs):
-            self._log("action", f"日常_仙缘：斗法挑战 {index + 1}/{max_runs}")
+            self._log("action", f"仙缘_斗法：斗法挑战 {index + 1}/{max_runs}")
             yield from runtime.wait_click_then_view(308, "挑战1", 309)
             yield from self._optimize_daily_xianyuan_duel_formation(runtime, payload)
             view_after_start = yield from runtime.wait_click_then_view(309, "开始挑战", [310, 308])
             if int(getattr(view_after_start, "id", 0) or 0) == 310:
                 yield from runtime.wait_click_then_view(310, "点击继续", [308, 316])
-        self._log("success", f"日常_仙缘：已完成斗法挑战 {max_runs} 次")
+        self._log("success", f"仙缘_斗法：已完成斗法挑战 {max_runs} 次")
         return "success"
 
     def _execute_daily_mojie_raid_task(
@@ -3381,10 +3381,10 @@ class DailyFoundationTaskMixin:
             if price >= 300:
                 yield from runtime.wait_click_then_view(311, "返回", 308)
                 return
-            self._log("action", f"日常_仙缘：购买斗法次数，价格 {price}")
+            self._log("action", f"仙缘_斗法：购买斗法次数，价格 {price}")
             yield from runtime.wait_click(311, "购买")
             yield from runtime.wait_action_settle(1.0)
-        raise RuntimeError(f"日常_仙缘：购买页价格识别失败或未达到停止价格，最后识别文本：{text if 'text' in locals() else ''}")
+        raise RuntimeError(f"仙缘_斗法：购买页价格识别失败或未达到停止价格，最后识别文本：{text if 'text' in locals() else ''}")
 
     def _optimize_daily_xianyuan_duel_formation(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
         if bool(payload.get("skip_formation_optimize")):
@@ -3435,7 +3435,7 @@ class DailyFoundationTaskMixin:
         elapsed = time.monotonic() - start_ts
         self._log(
             "action",
-            "日常_仙缘：阵容优化 "
+            "仙缘_斗法：阵容优化 "
             f"{'/'.join(state['my_order'])}，克制={state['states']}，"
             f"探测{probe_actions}次，调整{min(len(final_swaps), max_final_swaps)}次，耗时{elapsed:.1f}s",
         )
@@ -3445,13 +3445,13 @@ class DailyFoundationTaskMixin:
 
         scene_id, score, frame = runtime.current_scene([309], update=True)
         if scene_id != 309:
-            raise RuntimeError(f"日常_仙缘：阵容优化要求当前为 #309，实际为 #{scene_id or 'unknown'} {score:.0f}%")
+            raise RuntimeError(f"仙缘_斗法：阵容优化要求当前为 #309，实际为 #{scene_id or 'unknown'} {score:.0f}%")
         image309 = runtime.view(309).raw
         entry = runtime.ctx.get("entry") if isinstance(runtime.ctx, dict) else None
         entry_id = str(getattr(entry, "entry_id", "") or "")
         filename = str(image309.get("filename") or "")
         if not entry_id or not filename:
-            raise RuntimeError("日常_仙缘：缺少 #309 参考图，无法识别阵容")
+            raise RuntimeError("仙缘_斗法：缺少 #309 参考图，无法识别阵容")
         ref_path = data_annotation_entry_image_dir(entry_id) / filename
         ref_image = Image.open(ref_path).convert("RGB")
         cur_image = Image.open(io.BytesIO(runtime.runner._decode_frame_data_url(frame))).convert("RGB")
@@ -3491,7 +3491,7 @@ class DailyFoundationTaskMixin:
                 state_shapes.append((parsed[0], int(parsed[1]), shape))
         state_shapes.sort(key=lambda item: item[0])
         if len(career_shapes) != 5 or len(state_shapes) != 5:
-            raise RuntimeError("日常_仙缘：#309 缺少职业或克制三态标注")
+            raise RuntimeError("仙缘_斗法：#309 缺少职业或克制三态标注")
 
         career_templates: dict[str, list[Any]] = {}
         for _slot, career, shape in career_shapes:
@@ -4687,16 +4687,16 @@ class DailyFoundationTaskMixin:
         #285 进入探索并一次性选择最大体力，后者寻找空位并占领聚灵位。二者
         只复用 ``#34 -> #69 -> #285`` 的进入能力，进入 #285 后必须分流。
 
-        ``#314[确定]`` 后可能短暂出现有时效性的 #315「继续」，也可能因为
-        自动消失或识别时机而直接回到 #285。#315 不是必经锚点：检测到就尝试
-        点击，未检测到或点击前已消失则等待 #285。业务回到 #285 后返回成功，
-        正式 task cell 再由通用稳定锚点收尾回到 #34。
+        #314 的滚动条必须通过 Runtime 的 shape 级基础动作从控件内部拖到画面
+        右边缘，业务层不得读取标注框或换算坐标。``#314[确定]`` 后可能短暂
+        出现 #315「继续」；正确拖满时一轮即可清空体力和摸鱼额度，继续后应
+        回到 #285。若落回 #313，说明基础拖拽未把滚动条推满，必须失败并保留
+        证据，不能用业务循环掩盖输入问题。正式 task cell 随后由通用稳定锚点
+        收尾回到 #34。
 
-        截至 2026-07-15，这条路径已按真实现场逐步确认并完成代码/单元测试闭环，
-        但尚未经过一次由 Scheduler 从 #34 发起、最终回到 #34 的无人值守实战。
-        2026-07-16 21:30 的首次工程运行属于验收轮：若失败，应保留 Runtime
-        日志与真实画面作为修正证据；下一次执行仍从稳定起点整单重跑，不承接
-        #313/#314/#315 等中间状态。
+        每次正式执行都从稳定起点整单运行，不跨 Kernel restart 承接
+        #313/#314/#315 等中间业务进度。点击未生效的有限重试、瞬时 #315、
+        单轮完成判定和滑块拖满均由 Runtime/本作业闭环处理。
         """
         payload = {"max_scrolls": 30, "reverse_scrolls": 8, **dict(payload or {})}
         outside_window_next_time = self._runtime_daily_window_next_time(
@@ -4769,11 +4769,6 @@ class DailyFoundationTaskMixin:
         task_label: str,
     ):
         """在 #313 勾选一键探索，再进入 #314 选择消耗体力。"""
-        batch_count = int(payload.get("_lingmai_clear_batch_count") or 0) + 1
-        max_batches = max(1, int(payload.get("lingmai_clear_max_batches") or 10))
-        if batch_count > max_batches:
-            raise RuntimeError(f"{task_label}：连续探索达到安全上限 {max_batches} 批，仍未回到 #285")
-        payload["_lingmai_clear_batch_count"] = batch_count
         frame = runtime.cur_frame(update=True)
         unchecked_score = runtime.shape_score(313, "一键探索", frame_data_url=frame)
         # #313「一键探索」参考图表示未勾选状态。真实调试中未勾选为 100，
@@ -4817,8 +4812,7 @@ class DailyFoundationTaskMixin:
         if landing_id == 315:
             return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
         if landing_id == 313:
-            self._log("detail", f"{task_label}：本批探索后回到 #313，继续清理剩余体力")
-            return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+            raise RuntimeError(f"{task_label}：#314 确定后仍回到 #313，滚动条未拖满，单轮清体力未闭环")
         self._log("success", f"{task_label}：#315 未出现或已自动消失，已回到 #285 造化灵脉")
         return "success"
 
@@ -4841,7 +4835,7 @@ class DailyFoundationTaskMixin:
                 label=f"{task_label}：点击 #315 继续后等待 #313/#285",
             )
             if int(getattr(landing, "id", landing) or 0) == 313:
-                return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+                raise RuntimeError(f"{task_label}：#315 继续后回到 #313，仍有体力或摸鱼额度，滚动条未拖满")
         except TimeoutError:
             self._log("detail", f"{task_label}：#315 可能已自动消失，确认回到 #313 或 #285")
             landing = yield from runtime.wait_view(
@@ -4851,7 +4845,7 @@ class DailyFoundationTaskMixin:
                 label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #313/#285",
             )
             if int(getattr(landing, "id", landing) or 0) == 313:
-                return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+                raise RuntimeError(f"{task_label}：#315 消失后回到 #313，仍有体力或摸鱼额度，滚动条未拖满")
         self._log("success", f"{task_label}：体力已清理并回到 #285 造化灵脉")
         return "success"
 

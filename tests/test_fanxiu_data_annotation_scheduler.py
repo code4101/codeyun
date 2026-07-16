@@ -3384,7 +3384,9 @@ def test_daily_dongtian_clear_outside_window_records_next_window(tmp_path, monke
     ])
     runner = create_fanxiu_runtime_runner()
 
-    result = runner._execute_daily_dongtian_clear_task({}, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-dongtian-clear"})
+    result = _drain_generator(
+        runner._execute_daily_dongtian_clear_task({}, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-dongtian-clear"})
+    )
 
     assert result == "skipped"
     fact = runtime_runner_core._read_data_annotation_world_facts()["discoveries"]["task"]["legacy-daily-dongtian-clear"]
