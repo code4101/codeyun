@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
-from backend.core.services.launcher import run_quiet
+from backend.core.services.launcher import run_quiet, run_quiet_tree_safe
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -643,7 +643,7 @@ def _chat_with_codex_cli(
         command_args.append("-")
 
         try:
-            completed = run_quiet(
+            completed = run_quiet_tree_safe(
                 command_args,
                 input=prompt,
                 capture_output=True,

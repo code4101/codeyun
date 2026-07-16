@@ -77,6 +77,10 @@ def _scene_image(
     return image
 
 
+def _popup_domain(popup: dict, *specific_nodes: dict) -> list[dict]:
+    return [{"type": "folder", "title": "弹窗", "children": [popup, *specific_nodes]}]
+
+
 def _drain_generator(result):
     while True:
         try:
@@ -2391,11 +2395,12 @@ def test_wait_click_shape_does_not_infer_ocr_text_from_title():
     assert runner._shape_match_conditions(search_shape) == []
 
 
-def test_auto_close_guard_images_use_only_top_level_popup_entries():
+def test_auto_close_guard_images_flatten_popup_domain_and_require_scene_identity():
     runner = create_fanxiu_runtime_runner()
-    top_level = _image("所有提示窗口", "0047.jpg")
-    nested = _image("拍卖", "0028.jpg")
-    login = _image("修炼", "0019.jpg")
+    top_level = _image("所有提示窗口", "0047.jpg", [{"id": "identity-47", "isSceneIdentity": True}])
+    nested = _image("拍卖", "0028.jpg", [{"id": "identity-28", "sceneIdentityRole": "required"}])
+    no_identity = _image("普通素材", "0355.jpg", [{"id": "close", "title": "关闭"}])
+    login = _image("修炼", "0019.jpg", [{"id": "identity-19", "isSceneIdentity": True}])
 
     candidates = runner._auto_close_guard_images([
         {"type": "folder", "title": "遮挡", "children": [_image("公告遮挡", "0026.jpg")]},
@@ -2405,12 +2410,13 @@ def test_auto_close_guard_images_use_only_top_level_popup_entries():
             "title": "弹窗",
             "children": [
                 top_level,
-                {"type": "folder", "title": "所有提示窗口", "children": [nested]},
+                    {"type": "folder", "title": "所有提示窗口", "children": [nested, no_identity]},
             ],
         },
     ])
 
-    assert [item["image"]["title"] for item in candidates] == ["所有提示窗口"]
+    assert [item["image"]["title"] for item in candidates] == ["所有提示窗口", "拍卖"]
+    assert [item["folder_path"] for item in candidates] == ["弹窗", "弹窗/所有提示窗口"]
 
 
 def test_scene_score_requires_explicit_scene_identity_shape(monkeypatch):
@@ -3054,7 +3060,7 @@ def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, 
     assert saved["current_scene_id"] is None
 
 
-def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monkeypatch):
+def test_auto_close_guard_tick_clicks_graph_selected_popup(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
     nested_shape = {"id": "nested", "kind": "rect", "title": "空白", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
@@ -3063,11 +3069,11 @@ def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monke
             "type": "folder",
             "title": "弹窗",
             "children": [
-                _image("所有提示窗口", "0047.jpg", [blank_shape]),
+                _image("所有提示窗口", "0047.jpg", [{"id": "identity-47", "isSceneIdentity": True}, blank_shape]),
                 {
                     "type": "folder",
                     "title": "所有提示窗口",
-                    "children": [_image("拍卖", "0028.jpg", [nested_shape])],
+                    "children": [_image("拍卖", "0028.jpg", [{"id": "identity-28", "isSceneIdentity": True}, nested_shape])],
                 },
             ],
         },
@@ -3076,7 +3082,7 @@ def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monke
     path.write_text(json.dumps(tree), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "所有提示窗口" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 90 if image["title"] == "所有提示窗口" else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
@@ -3089,13 +3095,13 @@ def test_auto_close_guard_requires_high_confidence_during_task(tmp_path, monkeyp
     tree = [{
         "type": "folder",
         "title": "弹窗",
-        "children": [_image("所有提示窗口", "0047.jpg", [blank_shape])],
+        "children": [_image("所有提示窗口", "0047.jpg", [{"id": "identity", "isSceneIdentity": True}, blank_shape])],
     }]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "所有提示窗口" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 85 if image["title"] == "所有提示窗口" else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     with runner._lock:
@@ -3133,16 +3139,19 @@ def test_auto_close_guard_clicks_popup_blank_without_jump_target(tmp_path, monke
     runner = create_fanxiu_runtime_runner()
     tree = [{
         "type": "folder",
-        "title": "弹窗",
-        "children": [
-            _image("封魔杀", "0059.png", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}]),
+            "title": "弹窗",
+            "children": [
+                _image("封魔杀", "0059.png", [
+                    {"id": "identity", "isSceneIdentity": True},
+                    {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1},
+                ]),
         ],
     }]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
 
     clicked: list[str] = []
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] == "封魔杀" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] == "封魔杀" else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked.append(shape["title"]))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
@@ -3254,19 +3263,18 @@ def test_auto_close_guard_candidates_are_cached_by_asset_tree_signature(tmp_path
     assert load_count == 1
 
 
-def test_auto_close_guard_popup_47_child_84_clicks_no_more_prompt_only_when_unchecked(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_84_clicks_no_more_prompt_only_when_unchecked(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
-    child_84 = _image("自动切磋", "0084.png", [
+    specific_84 = _image("自动切磋", "0084.png", [
         {"id": "identity", "kind": "rect", "title": "切磋已满30次", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
         no_more_prompt_shape,
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [blank_shape])
-    popup_47["children"] = [child_84]
-    tree = [{"type": "folder", "title": "弹窗", "children": [popup_47]}]
+    tree = _popup_domain(popup_47, specific_84)
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
 
@@ -3279,6 +3287,7 @@ def test_auto_close_guard_popup_47_child_84_clicks_no_more_prompt_only_when_unch
         return 0 if shape["title"] == "不再提示" else 70
 
     monkeypatch.setattr(runner, "_popup_score", scene_score)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
     monkeypatch.setattr(runner, "_shape_score", shape_score)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
@@ -3286,22 +3295,22 @@ def test_auto_close_guard_popup_47_child_84_clicks_no_more_prompt_only_when_unch
     assert clicked == [("自动切磋", "不再提示")]
 
 
-def test_auto_close_guard_popup_47_child_84_checked_clicks_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_84_checked_clicks_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
-    child_84 = _image("自动切磋", "0084.png", [
+    specific_84 = _image("自动切磋", "0084.png", [
         {"id": "identity", "kind": "rect", "title": "切磋已满30次", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
         no_more_prompt_shape,
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_84]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_84)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
     monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame: 70)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
     monkeypatch.setattr("backend.api.fanxiu.time.sleep", lambda _seconds: None)
@@ -3310,66 +3319,66 @@ def test_auto_close_guard_popup_47_child_84_checked_clicks_confirm(tmp_path, mon
     assert clicked == [("自动切磋", "确认")]
 
 
-def test_auto_close_guard_popup_47_child_84_can_avoid_confirm_for_mail_wait(tmp_path, monkeypatch):
+def test_auto_close_guard_popup_84_defers_when_confirm_actions_are_disabled(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
-    child_84 = _image("自动切磋", "0084.png", [
+    specific_84 = _image("自动切磋", "0084.png", [
         {"id": "identity", "kind": "rect", "title": "切磋已满30次", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
         no_more_prompt_shape,
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_84]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_84)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
     monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame: 70)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
-    assert runner._auto_close_popup_guard_step(
+    assert not runner._auto_close_popup_guard_step(
         runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
         allow_confirm_actions=False,
     )
-    assert clicked == [("所有提示窗口", "空白")]
+    assert clicked == []
 
 
-def test_auto_close_guard_popup_47_child_86_clicks_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_86_clicks_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
-    child_86 = _image("离开场景", "0086.png", [
+    specific_86 = _image("离开场景", "0086.png", [
         {"id": "identity", "kind": "rect", "title": "离开场景", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_86]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_86)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "离开场景"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "离开场景"} else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == [("离开场景", "确认")]
 
 
-def test_auto_close_guard_popup_47_child_289_clicks_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_289_clicks_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.64, "w": 0.18, "h": 0.06}
-    child_289 = _image("0289.png", "0289.png", [
+    specific_289 = _image("0289.png", "0289.png", [
         {"id": "identity", "kind": "rect", "title": "退出灵脉", "isSceneIdentity": True, "x": 0.3, "y": 0.42, "w": 0.4, "h": 0.08},
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_289]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_289)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "0289.png"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "0289.png"} else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert runner._auto_close_popup_guard_step(
@@ -3379,61 +3388,108 @@ def test_auto_close_guard_popup_47_child_289_clicks_confirm(tmp_path, monkeypatc
     assert clicked == [("0289.png", "确认")]
 
 
-def test_auto_close_guard_popup_47_leave_confirm_ocr_fallback_clicks_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_does_not_use_ocr_as_a_second_popup_recognition_layer(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.64, "w": 0.18, "h": 0.06}
-    child_289 = _image("0289.png", "0289.png", [
+    specific_289 = _image("0289.png", "0289.png", [
         {"id": "identity", "kind": "rect", "title": "退出灵脉", "isSceneIdentity": True, "x": 0.3, "y": 0.42, "w": 0.4, "h": 0.08},
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [
         {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
     ])
-    popup_47["children"] = [child_289]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_289)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
 
-    def popup_score(_ctx, image, _frame):
+    def scene_score(_ctx, image, _frame):
         if image["title"] == "所有提示窗口":
-            return 70
+            return 0
         if image["title"] == "0289.png":
             return 0
         return 0
 
-    monkeypatch.setattr(runner, "_popup_score", popup_score)
+    monkeypatch.setattr(runner, "_scene_score", scene_score)
     monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: [{"text": "是否离开当前场景 取消 确认"}])
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
-    assert runner._auto_close_popup_guard_step(
+    assert not runner._auto_close_popup_guard_step(
         runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
         allow_confirm_actions=False,
     )
-    assert clicked == [("0289.png", "确认")]
+    assert clicked == []
 
 
-def test_auto_close_guard_popup_47_child_287_clicks_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_287_clicks_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.58, "y": 0.64, "w": 0.2, "h": 0.05}
-    child_287 = _image("0287.png", "0287.png", [
+    specific_287 = _image("0287.png", "0287.png", [
         {"id": "identity", "kind": "rect", "title": "前往灵脉", "isSceneIdentity": True, "x": 0.36, "y": 0.44, "w": 0.32, "h": 0.04},
         confirm_shape,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_287]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_287)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "0287.png"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "0287.png"} else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == [("0287.png", "确认")]
 
 
-def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_specific_popup_355_clicks_cancel(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    cancel_shape = {"id": "cancel", "kind": "rect", "title": "取消", "x": 0.29, "y": 0.65, "w": 0.11, "h": 0.03}
+    specific_355 = _image("0355.png", "0355.png", [
+        {
+            "id": "identity",
+            "kind": "rect",
+            "title": "激活镇魔玺",
+            "isSceneIdentity": True,
+            "x": 0.26,
+            "y": 0.44,
+            "w": 0.5,
+            "h": 0.05,
+        },
+        cancel_shape,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [
+        {"id": "identity-47", "isSceneIdentity": True},
+        {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1},
+    ])
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_355)), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_scene_score",
+        lambda _ctx, image, _frame: 100 if image["title"] == "0355.png" else 95,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_scene_match_edges_for_candidates",
+        lambda _ctx, _ids: [{"s": 47, "x": 355, "matched": True}],
+    )
+    monkeypatch.setattr(
+        runner,
+        "_click_shape",
+        lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])),
+    )
+
+    assert runner._auto_close_popup_guard_step(
+        runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"),
+        allow_confirm_actions=False,
+    )
+    assert clicked == [("0355.png", "取消")]
+    assert runner.status()["last_guard_event"]["action"] == "click:取消"
+
+
+def test_auto_close_guard_specific_popup_skips_business_only_confirm(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     business_confirm = {
         "id": "confirm",
@@ -3445,17 +3501,17 @@ def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, m
         "w": 0.28,
         "h": 0.055,
     }
-    child_210 = _image("同游传道确认提示", "0210.png", [
+    specific_210 = _image("同游传道确认提示", "0210.png", [
         {"id": "identity", "kind": "rect", "title": "同游传道确认标识", "isSceneIdentity": True, "x": 0.18, "y": 0.43, "w": 0.67, "h": 0.075},
         business_confirm,
     ])
     popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
-    popup_47["children"] = [child_210]
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, specific_210)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "同游传道确认提示"} else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "同游传道确认提示"} else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert not runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
@@ -3465,6 +3521,7 @@ def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, m
 def test_auto_close_guard_defers_popup_47_during_daily_assistant_one_key(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     popup_47 = _image("所有提示窗口", "0047.jpg", [
+        {"id": "identity", "isSceneIdentity": True},
         {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"},
     ])
     path = tmp_path / "asset_tree.json"
@@ -3476,7 +3533,7 @@ def test_auto_close_guard_defers_popup_47_during_daily_assistant_one_key(tmp_pat
         })
 
     clicked: list[tuple[str, str]] = []
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] == "所有提示窗口" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100 if image["title"] == "所有提示窗口" else 0)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     result = runner._auto_close_popup_guard_step(
@@ -3487,7 +3544,7 @@ def test_auto_close_guard_defers_popup_47_during_daily_assistant_one_key(tmp_pat
     assert clicked == []
 
 
-def test_auto_close_guard_popup_47_uses_best_child_before_special_confirm(tmp_path, monkeypatch):
+def test_auto_close_guard_uses_graph_edge_to_choose_more_specific_popup(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     event_blank = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
     event_popup = _image("洗灵活动提示", "0032.png", [
@@ -3498,10 +3555,12 @@ def test_auto_close_guard_popup_47_uses_best_child_before_special_confirm(tmp_pa
         {"id": "identity", "kind": "rect", "title": "离开场景", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
         {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1},
     ])
-    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "parent-blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}])
-    popup_47["children"] = [event_popup, leave_popup]
+    popup_47 = _image("所有提示窗口", "0047.jpg", [
+        {"id": "identity-47", "isSceneIdentity": True},
+        {"id": "parent-blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1},
+    ])
     path = tmp_path / "asset_tree.json"
-    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+    path.write_text(json.dumps(_popup_domain(popup_47, event_popup, leave_popup)), encoding="utf-8")
 
     clicked: list[tuple[str, str]] = []
 
@@ -3509,10 +3568,31 @@ def test_auto_close_guard_popup_47_uses_best_child_before_special_confirm(tmp_pa
         return {"所有提示窗口": 100, "洗灵活动提示": 90, "离开场景": 70}.get(image["title"], 0)
 
     monkeypatch.setattr(runner, "_popup_score", popup_score)
+    monkeypatch.setattr(runner, "_scene_score", popup_score)
+    monkeypatch.setattr(runner, "_scene_match_edges_for_candidates", lambda _ctx, _ids: [{"s": 47, "x": 32}])
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == [("洗灵活动提示", "空白")]
+
+
+def test_auto_close_guard_flattens_physically_nested_popup_scene(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    generic_blank = {"id": "generic-blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
+    nested_blank = {"id": "nested-blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
+    physically_nested = _image("仅物理嵌套", "0032.png", [{"id": "identity-32", "isSceneIdentity": True}, nested_blank])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "identity-47", "isSceneIdentity": True}, generic_blank])
+    popup_47["children"] = [physically_nested]
+    tree = [{"type": "folder", "title": "弹窗", "children": [popup_47]}]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 95 if image["title"] == "仅物理嵌套" else 90)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    assert clicked == [("仅物理嵌套", "空白")]
 
 
 def test_wait_mail_detail_closes_popup_and_keeps_waiting(tmp_path, monkeypatch):
@@ -3615,16 +3695,16 @@ def test_runtime_behavior_tree_popup_84_uses_separate_ticks_for_checkbox_and_con
     def scene_score(_ctx, image, _frame):
         if len(clicked) >= 2:
             return 0
-        return 70 if image["title"] in {"所有提示窗口", "自动切磋"} else 0
+        return 90 if image["title"] in {"所有提示窗口", "自动切磋"} else 0
 
-    def shape_score(_ctx, _image, shape, _frame):
-        return 0 if shape["title"] == "不再提示" and not clicked else 70
+    def shape_score(_ctx, _image, shape, _frame, **_kwargs):
+        return 0 if shape["title"] == "不再提示" and not clicked else 90
 
     def click_shape(_ctx, image, shape, frame=None, **_kwargs):
         clicked.append((image["title"], shape["title"], str(frame or "")))
 
     monkeypatch.setattr(runner, "_capture_frame", capture_frame)
-    monkeypatch.setattr(runner, "_popup_score", scene_score)
+    monkeypatch.setattr(runner, "_scene_score", scene_score)
     monkeypatch.setattr(runner, "_shape_score", shape_score)
     monkeypatch.setattr(runner, "_click_shape", click_shape)
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
@@ -3794,7 +3874,14 @@ def test_popup_guard_restarts_scan_each_tick_so_actual_popup_order_can_differ(tm
         title: {"id": title, "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
         for title in ("图1", "图2", "图3", "图4", "图5")
     }
-    tree = [{"type": "folder", "title": "弹窗", "children": [_image(title, f"{index:04d}.jpg", [shapes[title]]) for index, title in enumerate(shapes, start=1)]}]
+    tree = [{
+        "type": "folder",
+        "title": "弹窗",
+        "children": [
+            _image(title, f"{index:04d}.jpg", [{"id": f"identity-{index}", "isSceneIdentity": True}, shapes[title]])
+            for index, title in enumerate(shapes, start=1)
+        ],
+    }]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree), encoding="utf-8")
     ctx = {"entry": object()}
@@ -3820,10 +3907,10 @@ def test_popup_guard_restarts_scan_each_tick_so_actual_popup_order_can_differ(tm
     def scene_score(_ctx, image, _frame):
         if len(clicked) >= len(actual_order):
             return 0
-        return 70 if image["title"] == actual_order[len(clicked)] else 0
+        return 90 if image["title"] == actual_order[len(clicked)] else 0
 
     monkeypatch.setattr(runner, "_capture_frame", capture_frame)
-    monkeypatch.setattr(runner, "_popup_score", scene_score)
+    monkeypatch.setattr(runner, "_scene_score", scene_score)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, _shape, _frame=None, **_kwargs: clicked.append(image["title"]))
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
 
@@ -3840,15 +3927,15 @@ def test_popup_guard_restarts_scan_each_tick_so_actual_popup_order_can_differ(tm
     assert captured == ["frame0", "frame1", "frame2", "frame3", "frame4"]
 
 
-def test_popup_guard_parallel_scores_still_choose_first_matching_candidate(tmp_path, monkeypatch):
+def test_popup_guard_parallel_scores_choose_best_graph_candidate_without_an_edge(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     tree = [{
         "type": "folder",
         "title": "弹窗",
         "children": [
-            _image("图1", "0001.jpg", [{"id": "s1", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
-            _image("图2", "0002.jpg", [{"id": "s2", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
-            _image("图3", "0003.jpg", [{"id": "s3", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
+            _image("图1", "0001.jpg", [{"id": "i1", "isSceneIdentity": True}, {"id": "s1", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
+            _image("图2", "0002.jpg", [{"id": "i2", "isSceneIdentity": True}, {"id": "s2", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
+            _image("图3", "0003.jpg", [{"id": "i3", "isSceneIdentity": True}, {"id": "s3", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1, "sceneJumpTarget": "-1"}]),
         ],
     }]
     path = tmp_path / "asset_tree.json"
@@ -3856,13 +3943,13 @@ def test_popup_guard_parallel_scores_still_choose_first_matching_candidate(tmp_p
     clicked: list[tuple[str, str | None]] = []
 
     def score(_ctx, image, _frame):
-        return {"图1": 10, "图2": 75, "图3": 90}[image["title"]]
+        return {"图1": 10, "图2": 85, "图3": 90}[image["title"]]
 
-    monkeypatch.setattr(runner, "_popup_score", score)
+    monkeypatch.setattr(runner, "_scene_score", score)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, _shape, _frame=None, **_kwargs: clicked.append(image["title"]))
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "frame"))
-    assert clicked == ["图2"]
+    assert clicked == ["图3"]
 
 
 def test_popup_guard_parallel_scoring_checks_all_candidates_in_one_tick(tmp_path, monkeypatch):
@@ -3872,15 +3959,15 @@ def test_popup_guard_parallel_scoring_checks_all_candidates_in_one_tick(tmp_path
 
     def score(_ctx, image, _frame):
         seen.append(image["title"])
-        return 70 if image["title"] == "图1" else 0
+        return 90 if image["title"] == "图1" else 0
 
-    monkeypatch.setattr(runner, "_popup_score", score)
+    monkeypatch.setattr(runner, "_scene_score", score)
 
-    candidate, score_value = runner._auto_close_popup_first_match({"entry": object()}, candidates, "frame")
+    candidate, score_value = runner._auto_close_popup_graph_match({"entry": object()}, candidates, "frame")
 
     assert candidate is not None
     assert candidate["image"]["title"] == "图1"
-    assert score_value == 70
+    assert score_value == 90
     assert set(seen) == {f"图{index}" for index in range(12)}
 
 
@@ -3896,12 +3983,12 @@ def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate_up_to_cap(mo
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(popup_guard_core, "ThreadPoolExecutor", SpyExecutor)
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "图11" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 90 if image["title"] == "图11" else 0)
 
     scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
 
     assert created_workers == [len(candidates)]
-    assert scores == [0] * 11 + [70]
+    assert scores == [0] * 11 + [90]
 
 
 def test_popup_guard_parallel_scoring_caps_worker_count(monkeypatch):
@@ -3916,12 +4003,12 @@ def test_popup_guard_parallel_scoring_caps_worker_count(monkeypatch):
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(popup_guard_core, "ThreadPoolExecutor", SpyExecutor)
-    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "图39" else 0)
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 90 if image["title"] == "图39" else 0)
 
     scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
 
     assert created_workers == [32]
-    assert scores == [0] * 39 + [70]
+    assert scores == [0] * 39 + [90]
 
 
 def test_popup_guard_parallel_scoring_reuses_one_full_frame_ocr(monkeypatch):
@@ -3979,18 +4066,18 @@ def test_popup_guard_parallel_scoring_reuses_one_full_frame_ocr(monkeypatch):
     assert run_match_calls == []
 
 
-def test_popup_guard_first_match_scores_candidates_once(monkeypatch):
+def test_popup_guard_graph_match_scores_candidates_once(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(3)]
     calls: list[int] = []
 
     def fake_scores(_ctx, score_candidates, _frame):
         calls.append(len(score_candidates))
-        return [0.0, 100.0, 100.0]
+        return [0.0, 100.0, 90.0]
 
     monkeypatch.setattr(runner, "_auto_close_popup_candidate_scores_parallel", fake_scores)
 
-    candidate, score = runner._auto_close_popup_first_match({"entry": object()}, candidates, "frame")
+    candidate, score = runner._auto_close_popup_graph_match({"entry": object()}, candidates, "frame")
 
     assert candidate is candidates[1]
     assert score == 100
@@ -4081,9 +4168,9 @@ def test_popup_guard_parallel_scoring_is_faster_than_serial_for_independent_cand
 
     def score(_ctx, image, _frame):
         time.sleep(score_delay)
-        return 0 if image["title"] != "图11" else 70
+        return 0 if image["title"] != "图11" else 90
 
-    monkeypatch.setattr(runner, "_popup_score", score)
+    monkeypatch.setattr(runner, "_scene_score", score)
 
     start = time.perf_counter()
     for _ in range(rounds):

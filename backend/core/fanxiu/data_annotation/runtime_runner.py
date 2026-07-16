@@ -296,6 +296,19 @@ class FanxiuRuntime(Runtime):
         self.runner = runner
         self.ctx = ctx
         self.asset_tree_path = asset_tree_path
+        if isinstance(asset_tree_path, Path) and asset_tree_path.is_file() and (
+            not isinstance(ctx.get("asset_tree"), list) or not isinstance(ctx.get("images"), dict)
+        ):
+            tree = runner._load_asset_tree(asset_tree_path)
+            ctx.setdefault("asset_tree", tree)
+            indexed_images = runner._index_images(tree)
+            images = ctx.get("images")
+            if isinstance(images, dict):
+                for scene_id, image in indexed_images.items():
+                    images.setdefault(scene_id, image)
+            else:
+                ctx["images"] = indexed_images
+            ctx.setdefault("asset_tree_path", asset_tree_path)
         self.frame_data_url = frame_data_url
         self.candidates = candidates
         self.stop_event = stop_event
@@ -391,7 +404,7 @@ class FanxiuRuntime(Runtime):
             self.matched_view = None
             return None
         min_score = self.attrs.get("popup_guard_min_score")
-        candidate, score = self.runner._auto_close_popup_first_match(
+        candidate, score = self.runner._auto_close_popup_graph_match(
             self.ctx,
             self.popup_candidates(),
             self.cur_frame(),
@@ -8946,21 +8959,14 @@ class DataAnnotationRuntimeRunner(
                     return 171
             if scene_id == 47:
                 runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame, stop_event=stop_event)
-                popup_view = runtime.find_view("弹窗")
-                if popup_view is not None and popup_view.id == 47:
-                    event = {
-                        "kind": "popup",
-                        "image": "#47",
-                        "title": popup_view.title,
-                        "score": round(score, 1),
-                        "during": "scene_jump",
-                    }
-                    if self._handle_auto_close_popup_47_child(runtime, popup_view, event):
-                        self._clear_tick_frame(ctx)
-                        left_source = True
-                        start = time.monotonic()
-                    history.append(f"{elapsed:.1f}s #47 弹窗已处理")
-                    continue
+                if self._auto_close_popup_guard_step(runtime, during_task=True):
+                    self._clear_tick_frame(ctx)
+                    left_source = True
+                    start = time.monotonic()
+                    history.append(f"{elapsed:.1f}s 弹窗图节点已处理")
+                else:
+                    history.append(f"{elapsed:.1f}s #47 无可处理的弹窗图节点")
+                continue
             if scene_id is None and self._recover_unknown_hidden_world_popup(ctx, frame):
                 left_source = True
                 start = time.monotonic()

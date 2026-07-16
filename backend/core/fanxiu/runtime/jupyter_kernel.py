@@ -195,8 +195,17 @@ class FanxiuJupyterBinding:
         if callable(definition.normalize_payload):
             normalized = definition.normalize_payload(normalized)
 
-        def execute_atomic_task():
-            yield from self.runtime.goto_view(definition.stable_start_scene_id)
+        def execute_task():
+            # 启动级遮挡（例如重启模拟器后出现的“游戏公告”）不是业务
+            # 场景。必须在场景图寻路前先清理，否则局部素材可能把整张公告
+            # 误判成普通场景，并让 goto_view 在错误节点上反复点击。
+            yield from self.runner._clear_known_blocking_overlay_if_possible(
+                self.runtime_ctx,
+                self.stop_event,
+                label=definition.label,
+            )
+            if definition.stable_start_scene_id is not None:
+                yield from self.runtime.goto_view(definition.stable_start_scene_id)
             value = definition.handler(
                 self.runner,
                 self.runtime_ctx,
@@ -206,19 +215,11 @@ class FanxiuJupyterBinding:
             if isinstance(value, GeneratorType):
                 value = yield from value
             result_name, _message = self.runner._normalize_runtime_task_result(value)
-            if result_name != "manual_check_pending":
+            if definition.stable_start_scene_id is not None and result_name != "manual_check_pending":
                 yield from self.runtime.goto_view(definition.stable_start_scene_id)
             return value
 
-        if definition.stable_start_scene_id is None:
-            value = definition.handler(
-                self.runner,
-                self.runtime_ctx,
-                normalized,
-                self.stop_event,
-            )
-        else:
-            value = execute_atomic_task()
+        value = execute_task()
         return self.run(
             value,
             label=definition.label,

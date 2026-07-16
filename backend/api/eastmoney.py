@@ -305,12 +305,15 @@ def _fetch_eastmoney_calculator_quote(target: dict) -> MarketQuoteItem:
         "fetched_at": fetched_at,
     }
     try:
-        response = requests.get(
+        request_session = requests.Session()
+        request_session.trust_env = False
+        response = request_session.get(
             "https://push2.eastmoney.com/api/qt/stock/get",
             params={
                 "secid": _eastmoney_quote_secid(market, symbol),
                 "fields": EASTMONEY_QUOTE_FIELDS,
                 "fltt": 2,
+                "_": int(time.time() * 1000),
             },
             headers={
                 "User-Agent": "Mozilla/5.0",
@@ -337,6 +340,7 @@ def _fetch_eastmoney_calculator_quote(target: dict) -> MarketQuoteItem:
             "volume": data.get("f47"),
             "turnover": data.get("f48"),
             "update_time": update_time,
+            "fetched_at": time.time(),
             "raw_json": data,
         })
     except Exception as exc:

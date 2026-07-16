@@ -22,6 +22,7 @@ from backend.core.services._subprocess import (
     resolve_python,
     resolve_pythonw,
     run_hidden,
+    run_hidden_tree_safe,
 )
 
 
@@ -29,6 +30,12 @@ def run_quiet(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[
     """Run a short command without opening a Windows console window."""
 
     return run_hidden(command, **kwargs)
+
+
+def run_quiet_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run a bounded command and terminate all descendants on timeout."""
+
+    return run_hidden_tree_safe(command, **kwargs)
 
 
 def check_call_quiet(command: list[str], **kwargs: Any) -> None:

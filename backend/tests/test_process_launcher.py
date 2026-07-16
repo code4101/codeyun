@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import time
+
+import psutil
+import pytest
 
 from backend.core.services import launcher as process_launcher
+from backend.core.services._subprocess import run_hidden_tree_safe
 
 
 def test_run_quiet_delegates_to_hidden_runner(monkeypatch):
@@ -18,6 +24,45 @@ def test_run_quiet_delegates_to_hidden_runner(monkeypatch):
 
     assert result.stdout == "ok"
     assert calls == [(["tool"], {"text": True})]
+
+
+def test_run_quiet_tree_safe_delegates_to_tree_safe_runner(monkeypatch):
+    calls = []
+
+    def fake_run_hidden_tree_safe(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(process_launcher, "run_hidden_tree_safe", fake_run_hidden_tree_safe)
+
+    result = process_launcher.run_quiet_tree_safe(["tool"], timeout=3)
+
+    assert result.stdout == "ok"
+    assert calls == [(["tool"], {"timeout": 3})]
+
+
+def test_tree_safe_timeout_terminates_descendants(tmp_path):
+    child_pid_path = tmp_path / "child.pid"
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+        "time.sleep(60)"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_hidden_tree_safe(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+
+    child_pid = int(child_pid_path.read_text())
+    deadline = time.time() + 2.0
+    while psutil.pid_exists(child_pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not psutil.pid_exists(child_pid)
 
 
 def test_check_call_quiet_enforces_check(monkeypatch):

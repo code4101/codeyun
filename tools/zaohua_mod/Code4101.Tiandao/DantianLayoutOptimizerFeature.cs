@@ -591,13 +591,15 @@ namespace Code4101.Zaohua.Tiandao
             var layoutElement = _button.GetComponent<LayoutElement>() ??
                                 _button.gameObject.AddComponent<LayoutElement>();
             layoutElement.ignoreLayout = true;
+            PromoteToOverlayCanvas(_button.gameObject, 9998);
             _button.transform.SetAsLastSibling();
             _priorityButton = Instantiate(reset, controlParent);
             _priorityButton.gameObject.name = "Code4101DantianPriority";
             _priorityButton.onClick.RemoveAllListeners();
             foreach (var localization in _priorityButton.GetComponentsInChildren<TextProLocalization>(true))
                 localization.enabled = false;
-            _priorityLabel = _priorityButton.GetComponentsInChildren<TextPro>(true).FirstOrDefault();
+            var priorityLabels = _priorityButton.GetComponentsInChildren<TextPro>(true);
+            _priorityLabel = priorityLabels.FirstOrDefault();
             if (_priorityLabel != null)
             {
                 _priorityLabel.text = "顺序";
@@ -607,6 +609,7 @@ namespace Code4101.Zaohua.Tiandao
                 _priorityLabel.fontSizeMin = 18f;
                 _priorityLabel.fontSizeMax = 30f;
             }
+            for (var i = 1; i < priorityLabels.Length; i++) priorityLabels[i].text = string.Empty;
             var priorityRect = (RectTransform)_priorityButton.transform;
             priorityRect.anchorMin = new Vector2(0.5f, 0.5f);
             priorityRect.anchorMax = new Vector2(0.5f, 0.5f);
@@ -619,6 +622,7 @@ namespace Code4101.Zaohua.Tiandao
             var priorityLayout = _priorityButton.GetComponent<LayoutElement>() ??
                                  _priorityButton.gameObject.AddComponent<LayoutElement>();
             priorityLayout.ignoreLayout = true;
+            PromoteToOverlayCanvas(_priorityButton.gameObject, 9999);
             _priorityButton.transform.SetAsLastSibling();
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:UI] " +
                                   $"parent={controlParent.name} position={rect.localPosition} " +
@@ -629,6 +633,8 @@ namespace Code4101.Zaohua.Tiandao
 
         private void TogglePriorityPopup()
         {
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:UI] " +
+                                  $"priority-click popupOpen={_priorityPopup != null}");
             if (_priorityPopup != null)
             {
                 Destroy(_priorityPopup);
@@ -656,7 +662,18 @@ namespace Code4101.Zaohua.Tiandao
             var byKey = _priorityRules.ToDictionary(rule => rule.Key);
             _priorityRules.Clear();
             _priorityRules.AddRange(orderedKeys.Select(key => byKey[key]));
+            UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:UI] " +
+                                  $"priority-captured rules={_priorityRules.Count}");
             RebuildPriorityPopup();
+        }
+
+        private static void PromoteToOverlayCanvas(GameObject target, int sortingOrder)
+        {
+            var canvas = target.GetComponent<Canvas>() ?? target.AddComponent<Canvas>();
+            canvas.overrideSorting = true;
+            canvas.sortingOrder = sortingOrder;
+            if (target.GetComponent<GraphicRaycaster>() == null)
+                target.AddComponent<GraphicRaycaster>();
         }
 
         private void RebuildPriorityPopup()
@@ -867,6 +884,47 @@ namespace Code4101.Zaohua.Tiandao
                 yield break;
             }
             var request = buildResult.Request;
+            if (DantianBestSolutionRepository.SaveIfBetter(request, current, currentScore,
+                    out var currentReferencePath, out var currentReferenceError))
+            {
+                UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                      $"incumbent-saved-current path={currentReferencePath}");
+            }
+            else if (!string.IsNullOrEmpty(currentReferenceError))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"incumbent-save-failed {currentReferenceError}");
+            }
+            DantianLayoutScore referenceFloorScore = null;
+            if (DantianBestSolutionRepository.TryLoad(request, out var reference,
+                    out var referencePath, out var referenceError))
+            {
+                if (DantianCpSatBridge.ValidateSolution(problem, reference.placements,
+                        out var referenceValidationError) &&
+                    DantianLayoutOptimizer.TryEvaluate(problem, reference.placements,
+                        out var referenceScore, out _))
+                {
+                    referenceFloorScore = referenceScore;
+                    if (PriorityBetterThan(problem, referenceScore, currentScore))
+                    {
+                        request.currentPlacements = reference.placements.ToArray();
+                        request.expectedCurrentMultipliers = reference.multipliers.ToArray();
+                        UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                              $"incumbent-loaded path={referencePath} " +
+                                              $"score={referenceScore}");
+                    }
+                }
+                else if (!string.IsNullOrEmpty(referenceValidationError))
+                {
+                    UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                                 $"incumbent-invalid {referenceValidationError}");
+                }
+            }
+            else if (!string.IsNullOrEmpty(referenceError))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"incumbent-load-failed {referenceError}");
+            }
             var jsonBytes = JsonConvert.SerializeObject(request).Length;
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] begin-cpsat " +
                                   $"board={problem.Board.Count} pieces={problem.Pieces.Count} rules={rules} " +
@@ -941,6 +999,15 @@ namespace Code4101.Zaohua.Tiandao
                 yield return ShowTemporary("暂未找到更优");
                 yield break;
             }
+            if (referenceFloorScore != null &&
+                !PriorityAtLeastAsGood(problem, bestScore, referenceFloorScore))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"historical-floor-rejected candidate={bestScore} " +
+                                             $"floor={referenceFloorScore}");
+                yield return ShowTemporary("未超过历史最佳");
+                yield break;
+            }
 
             // Modeling and solving are intentionally asynchronous.  Do not overwrite a layout
             // the player changed while the worker was running; only the short native apply step
@@ -967,6 +1034,19 @@ namespace Code4101.Zaohua.Tiandao
             UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] applied " +
                                   $"before={currentScore} predicted={bestScore} actual={actual} " +
                                   $"actualRules=[{string.Join(", ", actual?.RuleDetails ?? new List<string>())}]");
+            var acceptedScore = actual ?? bestScore;
+            if (DantianBestSolutionRepository.SaveIfBetter(request, best, acceptedScore,
+                    out var acceptedPath, out var acceptedError))
+            {
+                UnityEngine.Debug.Log($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                      $"incumbent-saved-accepted path={acceptedPath} " +
+                                      $"score={acceptedScore}");
+            }
+            else if (!string.IsNullOrEmpty(acceptedError))
+            {
+                UnityEngine.Debug.LogWarning($"[Code4101 Tiandao][DantianOptimizer:{runId:D4}] " +
+                                             $"incumbent-save-failed {acceptedError}");
+            }
             try
             {
                 _panel?.InitPanel();
@@ -982,6 +1062,19 @@ namespace Code4101.Zaohua.Tiandao
         private static bool PriorityBetterThan(DantianLayoutProblem problem,
             DantianLayoutScore left, DantianLayoutScore right)
         {
+            if (left.Total < right.Total) return false;
+            return ComparePriority(problem, left, right) > 0;
+        }
+
+        private static bool PriorityAtLeastAsGood(DantianLayoutProblem problem,
+            DantianLayoutScore left, DantianLayoutScore right)
+        {
+            return left.Total >= right.Total && ComparePriority(problem, left, right) >= 0;
+        }
+
+        private static int ComparePriority(DantianLayoutProblem problem,
+            DantianLayoutScore left, DantianLayoutScore right)
+        {
             var keys = new List<string>();
             foreach (var piece in problem.Pieces)
             foreach (var rule in piece.Rules)
@@ -993,9 +1086,9 @@ namespace Code4101.Zaohua.Tiandao
                 var index = indexByKey[key];
                 var leftBenefit = left.Multipliers[index] * left.TargetCounts[index];
                 var rightBenefit = right.Multipliers[index] * right.TargetCounts[index];
-                if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
+                if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit ? 1 : -1;
             }
-            return left.Total > right.Total;
+            return left.Total.CompareTo(right.Total);
         }
 
         private static int[] BuildOccupancy(DantianLayoutProblem problem, int[] placements)

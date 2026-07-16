@@ -3,6 +3,7 @@ import time
 import pytest
 from fastapi import HTTPException
 
+from backend.api import eastmoney
 from backend.api.eastmoney import (
     EastmoneyCalculatorPayload,
     EastmoneyCalculatorWorkspaceRequest,
@@ -160,3 +161,47 @@ def test_calculator_quote_sync_reuses_one_minute_database_cache(session, monkeyp
     assert second["downloaded_count"] == 0
     assert second["cache_hit_count"] == 1
     assert second["items"][0]["price"] == 25.94
+
+
+def test_calculator_quote_fetch_ignores_broken_environment_proxy(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": {
+                    "f43": 27.0,
+                    "f44": 27.2,
+                    "f45": 26.5,
+                    "f46": 26.7,
+                    "f47": 1,
+                    "f48": 2,
+                    "f58": "小米集团-W",
+                    "f60": 26.6,
+                    "f86": 1784168454,
+                },
+            }
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def get(self, url, **kwargs):
+            captured.update({"url": url, "trust_env": self.trust_env, **kwargs})
+            return FakeResponse()
+
+    monkeypatch.setattr("requests.Session", FakeSession)
+    quote = eastmoney._fetch_eastmoney_calculator_quote({
+        "market": "HK",
+        "symbol": "01810",
+        "name": "小米集团",
+    })
+
+    assert captured["trust_env"] is False
+    assert captured["params"]["_"] > 0
+    assert quote.price == 27.0
+    assert quote.update_time
+    assert not quote.error

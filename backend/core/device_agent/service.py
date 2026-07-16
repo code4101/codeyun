@@ -23,6 +23,8 @@ DEVICE_AGENT_DEFAULT_MODEL = ""
 DEVICE_AGENT_FALLBACK_MODEL = "gpt-5.5"
 DEVICE_AGENT_RUNTIME_CONTEXT_KEY = "_device_agent_runtime"
 DEVICE_AGENT_DEFAULT_AI_TIMEOUT_SECONDS = 300
+DEVICE_AGENT_HEARTBEAT_INTERVAL_SECONDS = 10.0
+DEVICE_AGENT_STALE_HEARTBEAT_SECONDS = 45.0
 
 
 class DeviceAgentError(RuntimeError):
@@ -44,6 +46,15 @@ def _device_agent_ai_timeout_seconds() -> float:
     except ValueError:
         value = DEVICE_AGENT_DEFAULT_AI_TIMEOUT_SECONDS
     return max(5.0, min(value, 1800.0))
+
+
+def _device_agent_stale_heartbeat_seconds() -> float:
+    raw = os.getenv("CODEYUN_DEVICE_AGENT_STALE_HEARTBEAT_SECONDS")
+    try:
+        value = float(raw) if raw is not None else DEVICE_AGENT_STALE_HEARTBEAT_SECONDS
+    except ValueError:
+        value = DEVICE_AGENT_STALE_HEARTBEAT_SECONDS
+    return max(15.0, min(value, 300.0))
 
 
 def _default_config() -> dict[str, Any]:
@@ -285,6 +296,7 @@ def _create_turn(
     turn_context[DEVICE_AGENT_RUNTIME_CONTEXT_KEY] = {
         "provider": str(runtime_config.get("provider") or DEVICE_AGENT_DEFAULT_PROVIDER),
         "model": str(runtime_config.get("model") or DEVICE_AGENT_FALLBACK_MODEL),
+        "timeout_seconds": _device_agent_ai_timeout_seconds(),
     }
     turn = DeviceAgentTurn(
         session_id=item.id,
@@ -333,6 +345,7 @@ def start_device_agent_turn(turn_id: str) -> str:
 
 
 def list_device_agent_sessions(session: Session, *, limit: int = 30) -> list[dict[str, Any]]:
+    reconcile_stale_device_agent_turns(session)
     statement = (
         select(DeviceAgentSession)
         .order_by(DeviceAgentSession.updated_at.desc())
@@ -342,6 +355,7 @@ def list_device_agent_sessions(session: Session, *, limit: int = 30) -> list[dic
 
 
 def get_device_agent_session(session: Session, session_id: str) -> dict[str, Any]:
+    reconcile_stale_device_agent_turns(session, session_id=session_id)
     item = session.get(DeviceAgentSession, session_id)
     if item is None:
         raise DeviceAgentError("设备代理会话不存在")
@@ -354,6 +368,7 @@ def get_device_agent_session(session: Session, session_id: str) -> dict[str, Any
 
 
 def get_device_agent_turn(session: Session, turn_id: str) -> dict[str, Any]:
+    reconcile_stale_device_agent_turns(session, turn_id=turn_id)
     turn = session.get(DeviceAgentTurn, turn_id)
     if turn is None:
         raise DeviceAgentError("设备代理请求不存在")
@@ -429,6 +444,75 @@ def _update_turn(session: Session, turn: DeviceAgentTurn, *, status: str | None 
     session.commit()
 
 
+def _heartbeat_device_agent_turn(turn_id: str, stop_event: threading.Event) -> None:
+    """Keep a long AI call observable without sharing the worker's DB session."""
+
+    while not stop_event.wait(DEVICE_AGENT_HEARTBEAT_INTERVAL_SECONDS):
+        with Session(engine) as heartbeat_session:
+            turn = heartbeat_session.get(DeviceAgentTurn, turn_id)
+            if turn is None or turn.status != "running":
+                return
+            now = _now()
+            turn.heartbeat_at = now
+            turn.updated_at = now
+            heartbeat_session.add(turn)
+            heartbeat_session.commit()
+
+
+def reconcile_stale_device_agent_turns(
+    session: Session,
+    *,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+) -> int:
+    """Fail active records whose worker heartbeat disappeared.
+
+    Device-agent workers are in-process daemon threads, so they do not survive
+    a backend restart.  Reconciling on reads prevents those records from
+    remaining ``running`` forever and makes retries unambiguous.
+    """
+
+    statement = select(DeviceAgentTurn).where(DeviceAgentTurn.status.in_(("pending", "running")))
+    if session_id:
+        statement = statement.where(DeviceAgentTurn.session_id == session_id)
+    if turn_id:
+        statement = statement.where(DeviceAgentTurn.id == turn_id)
+    now = _now()
+    stale_after = _device_agent_stale_heartbeat_seconds()
+    changed = 0
+    for turn in session.exec(statement).all():
+        heartbeat_at = turn.heartbeat_at or turn.updated_at or turn.created_at
+        if now - heartbeat_at <= stale_after:
+            continue
+        message = f"设备代理工作线程心跳中断超过 {stale_after:.0f} 秒，任务已自动收口"
+        turn.status = "failed"
+        turn.stage = "failed"
+        turn.stage_label = "设备代理执行失联"
+        turn.error_message = message
+        turn.heartbeat_at = now
+        turn.finished_at = now
+        turn.updated_at = now
+        turn.result_report = {
+            "status": "failed",
+            "summary": message,
+            "findings": [],
+            "actions_taken": [],
+            "not_verified": ["原工作线程已不存在或无法继续回报"],
+            "suggested_next_steps": ["确认设备负载后重新发起请求"],
+            "final_message": message,
+        }
+        session.add(turn)
+        parent = session.get(DeviceAgentSession, turn.session_id)
+        if parent is not None and parent.last_turn_id == turn.id:
+            parent.status = "failed"
+            parent.updated_at = now
+            session.add(parent)
+        changed += 1
+    if changed:
+        session.commit()
+    return changed
+
+
 def run_device_agent_turn_worker(turn_id: str) -> dict[str, Any]:
     with Session(engine) as session:
         turn = session.get(DeviceAgentTurn, turn_id)
@@ -449,14 +533,26 @@ def run_device_agent_turn_worker(turn_id: str) -> dict[str, Any]:
             prompt = build_device_agent_prompt(session, config, parent, turn)
 
             _update_turn(session, turn, status="running", stage="calling_ai", stage_label="调用设备代理模型")
-            response = chat_with_provider(
-                provider_id=runtime["provider"],
-                model=runtime["model"],
-                messages=[{"role": "user", "content": prompt}],
-                system_prompt=build_device_agent_system_prompt(config),
-                response_format="json",
-                timeout_seconds=_device_agent_ai_timeout_seconds(),
+            heartbeat_stop = threading.Event()
+            heartbeat_worker = threading.Thread(
+                target=_heartbeat_device_agent_turn,
+                args=(turn.id, heartbeat_stop),
+                name=f"codeyun-device-agent-heartbeat-{turn.id[:8]}",
+                daemon=True,
             )
+            heartbeat_worker.start()
+            try:
+                response = chat_with_provider(
+                    provider_id=runtime["provider"],
+                    model=runtime["model"],
+                    messages=[{"role": "user", "content": prompt}],
+                    system_prompt=build_device_agent_system_prompt(config),
+                    response_format="json",
+                    timeout_seconds=_turn_timeout_seconds(turn),
+                )
+            finally:
+                heartbeat_stop.set()
+                heartbeat_worker.join(timeout=1.0)
             content = str(response.get("content") or "").strip()
             report = _parse_report(content)
 
@@ -606,6 +702,17 @@ def _resolve_turn_runtime(session: Session, turn: DeviceAgentTurn, config: dict[
         return {"provider": provider, "model": model}
     runtime = resolve_device_agent_runtime_config(session, config=config)
     return {"provider": runtime["provider"], "model": runtime["model"]}
+
+
+def _turn_timeout_seconds(turn: DeviceAgentTurn) -> float:
+    raw_context = turn.context if isinstance(turn.context, dict) else {}
+    raw_runtime = raw_context.get(DEVICE_AGENT_RUNTIME_CONTEXT_KEY)
+    runtime_context = raw_runtime if isinstance(raw_runtime, dict) else {}
+    try:
+        value = float(runtime_context.get("timeout_seconds"))
+    except (TypeError, ValueError):
+        return _device_agent_ai_timeout_seconds()
+    return max(5.0, min(value, 1800.0))
 
 
 def _parse_report(content: str) -> dict[str, Any]:
