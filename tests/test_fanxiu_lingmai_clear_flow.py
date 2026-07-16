@@ -129,6 +129,29 @@ def test_lingmai_clear_clicks_transient_315_when_observed():
     )
 
 
+def test_lingmai_clear_fails_when_confirm_returns_to_313():
+    class Runtime:
+        def drag_shape_to_frame_edge(self, *_args, **_kwargs):
+            pass
+
+        def wait_action_settle(self, _seconds):
+            yield
+
+        def wait_click_then_view(self, *_args, **_kwargs):
+            yield
+            return 313
+
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner._log = lambda *_args, **_kwargs: None
+
+    try:
+        _drain(runner._continue_daily_lingmai_clear_from_amount(Runtime(), {}, task_label="灵脉_清体力"))
+    except RuntimeError as exc:
+        assert "滚动条未拖满" in str(exc)
+    else:
+        raise AssertionError("返回 #313 时必须失败，不能循环掩盖拖拽不足")
+
+
 def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
     class Runtime:
         def __init__(self):

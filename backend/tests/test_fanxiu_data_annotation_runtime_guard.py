@@ -5791,6 +5791,24 @@ def test_daily_lundao_is_registered_as_manual_standard_job():
     assert definition.scheduler_supported is True
 
 
+def test_daily_xianyuan_duel_is_registered_as_manual_standard_job():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_xianyuan_duel")
+
+    task = tasks["daily-xianyuan-duel"]
+    assert task["task_type"] == "daily_xianyuan_duel"
+    assert task["label"] == "仙缘_斗法"
+    assert task["schedule_kind"] == "manual"
+    assert task["schedule_times"] == []
+    assert task["enabled"] is False
+    assert definition is not None
+    assert definition.label == "仙缘_斗法"
+    assert definition.scheduler_supported is True
+
+
 def test_daily_lundao_seat_confirmation_retries_transient_unknown():
     runner = create_fanxiu_runtime_runner()
 
