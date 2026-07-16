@@ -603,16 +603,12 @@ class FanxiuCaptureRuntimeService:
         if capture_mode == "local-stream" and local_path:
             self._current_pcap_size = Path(local_path).stat().st_size if Path(local_path).exists() else 0
             self._log(f"local stream pcap sealed: {local_path} ({self._current_pcap_size} bytes)")
-            if queue_sync and self._current_pcap_size > 0:
-                self._start_runtime_packet_sync_thread(local_path)
         elif remote_path and local_path:
             try:
                 self._run_adb(["-s", self.device_id, "pull", remote_path, local_path], timeout=60)
                 self._run_adb(["-s", self.device_id, "shell", "rm", "-f", remote_path], timeout=5)
                 self._current_pcap_size = Path(local_path).stat().st_size if Path(local_path).exists() else 0
                 self._log(f"pcap pulled: {local_path} ({self._current_pcap_size} bytes)")
-                if queue_sync and self._current_pcap_size > 0:
-                    self._start_runtime_packet_sync_thread(local_path)
             except Exception as exc:
                 self._log(f"pcap pull failed: {exc}")
         self._tcpdump_started_at = ""
@@ -679,54 +675,6 @@ class FanxiuCaptureRuntimeService:
         if warnings:
             self._log(f"stale local adb tcpdump cleanup warning: {'; '.join(warnings[:3])}")
 
-    def _start_runtime_packet_sync_thread(self, local_path: str) -> None:
-        if self._packet_sync_thread and self._packet_sync_thread.is_alive():
-            self._packet_sync_skipped_count += 1
-            self._log(
-                "runtime packet sync skipped: "
-                f"busy={self._packet_sync_active_path or '?'} next={local_path}"
-            )
-            return
-        self._packet_sync_active_path = str(local_path)
-        thread = threading.Thread(
-            target=self._decode_and_sync_runtime_packets,
-            args=(local_path,),
-            name="fanxiu-runtime-packet-sync",
-            daemon=True,
-        )
-        self._packet_sync_thread = thread
-        thread.start()
-        self._log(f"runtime packet sync queued: {local_path}")
-
-    def _decode_and_sync_runtime_packets(self, local_path: str) -> None:
-        try:
-            from backend.core.fanxiu.packet.insight_worker import sync_fanxiu_capture_paths
-
-            result = sync_fanxiu_capture_paths([local_path], max_streams=4)
-            mail_sync = result.get("mail_packet_sync") or {}
-            runtime_changed = False
-            for item in result.get("decoded") or []:
-                if isinstance(item, dict):
-                    sync_result = item.get("batch_packet_runtime_sync")
-                    if isinstance(sync_result, dict):
-                        runtime_changed = bool(runtime_changed or sync_result.get("changed"))
-            self._log(
-                "runtime packet sync done: "
-                f"decoded={result.get('decoded_count') or 0}, "
-                f"skipped={result.get('skipped_count') or 0}, "
-                f"errors={result.get('error_count') or 0}, "
-                f"runtime_changed={runtime_changed}, "
-                f"mail_records={mail_sync.get('record_count') or 0}, "
-                f"mail_inserted={mail_sync.get('inserted') or 0}, "
-                f"mail_updated={mail_sync.get('updated') or 0}"
-            )
-        except Exception as exc:
-            self._log(f"runtime packet sync failed: {exc}")
-        finally:
-            with self._lock:
-                if self._packet_sync_active_path == str(local_path):
-                    self._packet_sync_active_path = ""
-
     def _force_stop_locked(self, *, clear_reasons: bool, state: str) -> None:
         self._stop_event.set()
         if clear_reasons:
@@ -765,7 +713,6 @@ class FanxiuCaptureRuntimeService:
             if size != self._last_remote_pcap_size:
                 self._last_remote_pcap_size = size
                 self._last_remote_pcap_size_seen_at = now
-            self._snapshot_running_capture_locked(remote_path, size=size, now=now)
         if self._stream_writer_error:
             raise RuntimeError(f"本机抓包流写入失败：{self._stream_writer_error}")
         if self._tcpdump_process and self._tcpdump_process.poll() is not None:
@@ -811,7 +758,6 @@ class FanxiuCaptureRuntimeService:
         self._last_snapshot_remote_pcap_size = size
         self._last_snapshot_at = now
         self._log(f"running pcap snapshot pulled: {local_path} ({local_size} bytes)")
-        self._start_runtime_packet_sync_thread(str(local_path))
 
     def _remote_capture_size(self, remote_path: str) -> int:
         output = self._run_adb(

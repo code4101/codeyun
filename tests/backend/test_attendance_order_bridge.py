@@ -163,11 +163,38 @@ def test_execute_order_action_closes_owned_weipay_tabs(monkeypatch):
     assert events[-1] == ("close", fake_weipay, 1)
 
 
-def test_execute_order_action_skips_automatic_weipay_tab_cleanup_by_default(monkeypatch):
+def test_execute_order_action_closes_owned_weipay_tabs_by_default(monkeypatch):
     events = []
     fake_weipay = object()
 
     monkeypatch.delenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS", raising=False)
+    monkeypatch.setattr(
+        attendance_order,
+        "_ensure_managed_weipay",
+        lambda weipay=None, *, weipay_login_users=None: (fake_weipay, True),
+    )
+    monkeypatch.setattr(attendance_order, "_execute_order_action", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        attendance_order,
+        "_close_extra_weipay_tabs",
+        lambda weipay, *, min_tabs_to_keep=1: events.append(("close", weipay, min_tabs_to_keep)),
+    )
+
+    result = attendance_order.execute_order_action(
+        action="inspect",
+        rows=[{"商户订单号": "MA2026"}],
+        lookup_mode="browser_only",
+    )
+
+    assert result == {"ok": True}
+    assert events == [("close", fake_weipay, 1)]
+
+
+def test_execute_order_action_skips_automatic_weipay_tab_cleanup_when_disabled(monkeypatch):
+    events = []
+    fake_weipay = object()
+
+    monkeypatch.setenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS", "0")
     monkeypatch.setattr(
         attendance_order,
         "_ensure_managed_weipay",

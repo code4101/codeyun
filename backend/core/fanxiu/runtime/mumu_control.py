@@ -1832,15 +1832,13 @@ def stream_mumu_adb_screencap_mjpeg(*, fps: float = 2.0) -> Any:
                 + data
                 + b"\r\n"
             )
-        except Exception as exc:
-            message = str(exc).encode("utf-8", errors="replace")
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: text/plain; charset=utf-8\r\n"
-                b"Cache-Control: no-store\r\n\r\n"
-                + message
-                + b"\r\n"
-            )
+        except Exception:
+            # An MJPEG <img> stream must contain image parts only. Emitting a
+            # text/plain error part can leave Chromium displaying the last
+            # valid frame forever while the HTTP connection stays open. Skip
+            # transient capture failures and let the next valid PNG recover
+            # the existing stream instead.
+            pass
         elapsed = time.monotonic() - started
         if elapsed < interval:
             time.sleep(interval - elapsed)

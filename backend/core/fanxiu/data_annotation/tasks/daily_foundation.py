@@ -4022,12 +4022,12 @@ class DailyFoundationTaskMixin:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_论道资产树路径，无法执行作业")
+            raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, frame = runtime.current_scene([69, 34, 296, 297, 298, 329, 301, 302, 303, 52, 53, 54], update=True)
         text = runtime.ocr_text(frame)
         if self._daily_lundao_text_is_seated(text):
-            self._log("success", "日常_论道：已处于听道中，按完成处理")
+            self._log("success", "论道_座位：已处于听道中，按完成处理")
             return "success"
         if scene_id == 54 or self._daily_lundao_text_is_exit_confirm(text):
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
@@ -4039,14 +4039,14 @@ class DailyFoundationTaskMixin:
             next_scene_id, _next_score = yield from self._open_daily_lundao_available_seat(runtime, stop_event)
             return (yield from self._continue_daily_lundao_scene(runtime, stop_event, next_scene_id))
         if scene_id != 69:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_论道")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="论道_座位")
         if scene_id != 69:
-            raise RuntimeError("日常_论道：未能进入 #69 日常列表")
+            raise RuntimeError("论道_座位：未能进入 #69 日常列表")
         status = yield from self._open_daily_entry_from_daily(
             ctx,
             stop_event,
             payload,
-            task_label="日常_论道",
+            task_label="论道_座位",
             title_pattern="论道",
             progress_can_mark_done=False,
         )
@@ -4055,7 +4055,7 @@ class DailyFoundationTaskMixin:
                 payload,
                 task_id="legacy-daily-lundao",
                 task_type="daily_lundao",
-                label="日常_论道",
+                label="论道_座位",
                 entry_label="论道",
             )
             return "skipped"
@@ -4085,7 +4085,7 @@ class DailyFoundationTaskMixin:
             frame = runtime.cur_frame(update=True)
             if self._daily_lundao_text_is_seated(runtime.ocr_text(frame)):
                 yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 186)
-                self._log("success", "日常_论道：已进入道场听道中并退出回世界")
+                self._log("success", "论道_座位：已进入道场听道中并退出回世界")
                 return "success"
         if scene_id == 303:
             yield from runtime.wait_click_then_view(303, "对话", [52, 53], settle_seconds=1.5, timeout=30.0)
@@ -4096,20 +4096,20 @@ class DailyFoundationTaskMixin:
             text_after = runtime.ocr_text(frame_after)
             if self._daily_lundao_text_is_seated(text_after):
                 yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 186)
-                self._log("success", "日常_论道：已确认听道收益并退出回世界")
+                self._log("success", "论道_座位：已确认听道收益并退出回世界")
                 return "success"
         if scene_id in {69, 34}:
-            self._log("success", f"日常_论道：已确认听道收益并返回 #{scene_id}")
+            self._log("success", f"论道_座位：已确认听道收益并返回 #{scene_id}")
             return "success"
         if scene_id == 53:
             yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 53)
-            self._log("success", "日常_论道：已完成听道并退出回世界")
+            self._log("success", "论道_座位：已完成听道并退出回世界")
             return "success"
         if scene_id == 54:
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
         if scene_id == 296:
-            raise RuntimeError("日常_论道：已到 #296，但未能选择可用道场进入 #297/#298，请检查 #296 列表 OCR 或子帧标注")
-        raise RuntimeError(f"日常_论道：已点击 #69「论道」入口，但未到达论道页面，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
+            raise RuntimeError("论道_座位：已到 #296，但未能选择可用道场进入 #297/#298，请检查 #296 列表 OCR 或子帧标注")
+        raise RuntimeError(f"论道_座位：已点击 #69「论道」入口，但未到达论道页面，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
 
     def _daily_lundao_text_is_reward(self, text: Any) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)).translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -4156,7 +4156,7 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_lundao_exit_to_world(self, runtime: Any) -> str:
         yield from runtime.wait_click_then_view(54, "确认", [34, 69], settle_seconds=1.5, timeout=20.0)
-        self._log("success", "日常_论道：已确认退出道场，神识分身继续闻道")
+        self._log("success", "论道_座位：已确认退出道场，神识分身继续闻道")
         return "success"
 
     def _leave_daily_lundao_seated_for_daily_entry(self, runtime: Any, scene_id: int | None):
@@ -4196,8 +4196,8 @@ class DailyFoundationTaskMixin:
                     continue
                 if not self._daily_lundao_text_is_seat_choice_prompt(text):
                     if self._daily_lundao_text_is_unrelated_runtime_page(text):
-                        raise RuntimeError(f"日常_论道：#301 入座确认疑似误判到非论道页面，已停止避免误点，OCR={text[:160]}")
-                    raise RuntimeError(f"日常_论道：命中 #301 但 OCR 不像论道听道座位确认，已停止避免误点，OCR={text[:160]}")
+                        raise RuntimeError(f"论道_座位：#301 入座确认疑似误判到非论道页面，已停止避免误点，OCR={text[:160]}")
+                    raise RuntimeError(f"论道_座位：命中 #301 但 OCR 不像论道听道座位确认，已停止避免误点，OCR={text[:160]}")
                 runtime.click_shape_center(301, "入座")
                 yield from runtime.wait_action_settle(2.0)
             if scene_id == 302:
@@ -4208,8 +4208,8 @@ class DailyFoundationTaskMixin:
                     continue
                 if not self._daily_lundao_text_is_seat_confirm_prompt(text):
                     if self._daily_lundao_text_is_unrelated_runtime_page(text):
-                        raise RuntimeError(f"日常_论道：#302 入座确认疑似误判到非论道页面，已停止避免误点，OCR={text[:160]}")
-                    raise RuntimeError(f"日常_论道：命中 #302 但 OCR 不像论道空位入座确认，已停止避免误点，OCR={text[:160]}")
+                        raise RuntimeError(f"论道_座位：#302 入座确认疑似误判到非论道页面，已停止避免误点，OCR={text[:160]}")
+                    raise RuntimeError(f"论道_座位：命中 #302 但 OCR 不像论道空位入座确认，已停止避免误点，OCR={text[:160]}")
                 runtime.click_shape_center(302, "确定")
                 yield from runtime.wait_action_settle(2.0)
             scene_id, score, _frame = runtime.current_scene([303, 301, 302, 329, 52, 53, 186, 237, 18, 14, 69, 34], update=True)
@@ -4219,7 +4219,7 @@ class DailyFoundationTaskMixin:
             if scene_id in {303, 52, 53}:
                 return scene_id, float(score)
             if scene_id in {237, 18, 14}:
-                raise RuntimeError(f"日常_论道：入座确认后落到非论道页面 #{scene_id}，已停止避免误点")
+                raise RuntimeError(f"论道_座位：入座确认后落到非论道页面 #{scene_id}，已停止避免误点")
             if scene_id is None:
                 yield from runtime.wait_action_settle(1.0)
                 continue
@@ -4230,7 +4230,7 @@ class DailyFoundationTaskMixin:
             if scene_id == 329:
                 continue
             return scene_id, float(score)
-        raise RuntimeError(f"日常_论道：#301/#302 入座确认循环超过上限，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%")
+        raise RuntimeError(f"论道_座位：#301/#302 入座确认循环超过上限，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%")
 
     def _advance_daily_lundao_request_seat(
         self,
@@ -4257,12 +4257,12 @@ class DailyFoundationTaskMixin:
                 if go_dojo_line is not None:
                     x = float(go_dojo_line.get("x") or 0) + float(go_dojo_line.get("w") or 0) * 0.5
                     y = float(go_dojo_line.get("y") or 0) + float(go_dojo_line.get("h") or 0) * 0.5
-                    self._log("click", "日常_论道：#297 满座，点击顶部「前往道场」进入占位确认")
+                    self._log("click", "论道_座位：#297 满座，点击顶部「前往道场」进入占位确认")
                     runtime.click_frame_point(297, x, y)
                     yield from runtime.wait_action_settle(2.0)
                     continue
-                self._log("warning", f"日常_论道：#297 未找到顶部「前往道场」OCR，改尝试「请他让座」，OCR={last_text[:120]}")
-            self._log("click", "日常_论道：#297 满座，点击「请他让座」尝试让座分支")
+                self._log("warning", f"论道_座位：#297 未找到顶部「前往道场」OCR，改尝试「请他让座」，OCR={last_text[:120]}")
+            self._log("click", "论道_座位：#297 满座，点击「请他让座」尝试让座分支")
             yield from runtime.wait_click_then_view(
                 297,
                 "请他让座",
@@ -4276,7 +4276,7 @@ class DailyFoundationTaskMixin:
                 return 186, float(score)
             return scene_id, float(score)
         raise RuntimeError(
-            f"日常_论道：#297 满座分支仍未出现确认/空位/后续流程，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%，OCR={last_text[:120]}"
+            f"论道_座位：#297 满座分支仍未出现确认/空位/后续流程，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%，OCR={last_text[:120]}"
         )
 
     def _daily_lundao_go_dojo_ocr_line(self, ocr_lines: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -4358,13 +4358,13 @@ class DailyFoundationTaskMixin:
                 chosen = max(available, key=lambda row: int(row.get("remaining") or 0))
                 self._log(
                     "click",
-                    f"日常_论道：选择道场 {chosen.get('title')}，剩余座位 {chosen.get('remaining')}/{chosen.get('total')}",
+                    f"论道_座位：选择道场 {chosen.get('title')}，剩余座位 {chosen.get('remaining')}/{chosen.get('total')}",
                 )
             else:
                 chosen = max(rows, key=lambda row: int(row.get("total") or 0))
                 self._log(
                     "click",
-                    f"日常_论道：#296 道场列表暂无空位，选择 {chosen.get('title')} 进入 #297 让座分支，rows={[(r.get('title'), r.get('remaining'), r.get('total')) for r in rows]}",
+                    f"论道_座位：#296 道场列表暂无空位，选择 {chosen.get('title')} 进入 #297 让座分支，rows={[(r.get('title'), r.get('remaining'), r.get('total')) for r in rows]}",
                 )
             title_line = chosen.get("title_line") or {}
             click_x = float(title_line.get("x") or 0) + float(title_line.get("w") or 0) * 0.5
@@ -4377,7 +4377,7 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_action_settle(1.2)
         row_summary = [(row.get("title"), row.get("remaining"), row.get("total")) for row in last_rows]
         raise RuntimeError(
-            f"日常_论道：选择 #296 可用道场后未进入 #297/#298，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%，rows={row_summary}"
+            f"论道_座位：选择 #296 可用道场后未进入 #297/#298，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%，rows={row_summary}"
         )
 
     def _daily_dongtian_text_is_home(self, text: Any) -> bool:
@@ -4769,6 +4769,11 @@ class DailyFoundationTaskMixin:
         task_label: str,
     ):
         """在 #313 勾选一键探索，再进入 #314 选择消耗体力。"""
+        batch_count = int(payload.get("_lingmai_clear_batch_count") or 0) + 1
+        max_batches = max(1, int(payload.get("lingmai_clear_max_batches") or 10))
+        if batch_count > max_batches:
+            raise RuntimeError(f"{task_label}：连续探索达到安全上限 {max_batches} 批，仍未回到 #285")
+        payload["_lingmai_clear_batch_count"] = batch_count
         frame = runtime.cur_frame(update=True)
         unchecked_score = runtime.shape_score(313, "一键探索", frame_data_url=frame)
         # #313「一键探索」参考图表示未勾选状态。真实调试中未勾选为 100，
@@ -4792,31 +4797,28 @@ class DailyFoundationTaskMixin:
         *,
         task_label: str,
     ):
-        """在 #314 把体力选择滚动条设到最右端并确认。
-
-        点击点从正式「滚动条」标注框动态计算，不保存设备固定坐标。右端点
-        使用标注框右边界与纵向中心；以后调整标注，点击位置会自动同步。
-        """
-        scrollbar = runtime.shape(314, "滚动条")
-        if scrollbar is None:
-            raise RuntimeError(f"{task_label}：缺少 #314「滚动条」标注，无法选择最大体力")
-        box = scrollbar.box()
-        right_x = float(box.get("x") or 0) + float(box.get("w") or 0)
-        center_y = float(box.get("y") or 0) + float(box.get("h") or 0) * 0.5
-        if right_x <= 0 or center_y <= 0:
-            raise RuntimeError(f"{task_label}：#314「滚动条」标注坐标无效，box={box}")
-        self._log("action", f"{task_label}：点击 #314「滚动条」右端点选择最大体力")
-        runtime.click_frame_point(314, right_x, center_y)
+        """在 #314 通过已标注滚动条选择最大体力并确认。"""
+        self._log("action", f"{task_label}：拖动 #314「滚动条」到最右端选择最大体力")
+        runtime.drag_shape_to_frame_edge(
+            314,
+            "滚动条",
+            direction="right",
+            duration=float(payload.get("lingmai_amount_drag_seconds") or 0.6),
+        )
         yield from runtime.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
         landing = yield from runtime.wait_click_then_view(
             314,
             "确定",
-            [315, 285],
+            [315, 313, 285],
             timeout=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
-            label=f"{task_label}：等待 #314 确定后的 #315 或 #285",
+            label=f"{task_label}：等待 #314 确定后的 #315/#313/#285",
         )
-        if int(getattr(landing, "id", landing) or 0) == 315:
+        landing_id = int(getattr(landing, "id", landing) or 0)
+        if landing_id == 315:
             return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
+        if landing_id == 313:
+            self._log("detail", f"{task_label}：本批探索后回到 #313，继续清理剩余体力")
+            return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
         self._log("success", f"{task_label}：#315 未出现或已自动消失，已回到 #285 造化灵脉")
         return "success"
 
@@ -4830,21 +4832,26 @@ class DailyFoundationTaskMixin:
         """尽快消费有时效性的 #315；错过它时仍以回到 #285 为完成。"""
         self._log("action", f"{task_label}：检测到有时效性的 #315，尝试点击「继续」")
         try:
-            yield from runtime.wait_click_then_view(
+            landing = yield from runtime.wait_click_then_view(
                 315,
                 "继续",
-                285,
+                [313, 285],
                 settle_seconds=0.2,
                 timeout=float(payload.get("lingmai_transient_click_timeout_seconds") or 2.0),
-                label=f"{task_label}：点击 #315 继续后等待 #285",
+                label=f"{task_label}：点击 #315 继续后等待 #313/#285",
             )
+            if int(getattr(landing, "id", landing) or 0) == 313:
+                return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
         except TimeoutError:
-            self._log("detail", f"{task_label}：#315 可能已自动消失，直接确认是否回到 #285")
-            yield from runtime.wait_view(
+            self._log("detail", f"{task_label}：#315 可能已自动消失，确认回到 #313 或 #285")
+            landing = yield from runtime.wait_view(
+                313,
                 285,
                 timeout=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
-                label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #285",
+                label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #313/#285",
             )
+            if int(getattr(landing, "id", landing) or 0) == 313:
+                return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
         self._log("success", f"{task_label}：体力已清理并回到 #285 造化灵脉")
         return "success"
 

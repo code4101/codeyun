@@ -37,6 +37,7 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL = {
 }
 _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
+    "daily-lingmai-seat",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
     "legacy-daily-vip",
@@ -44,6 +45,7 @@ _STANDARD_ENABLED_TASK_IDS = {
 }
 _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS: set[str] = set()
 _DEFAULT_LABEL_SYNC_TASK_IDS = {
+    "daily-lingmai-seat",
     "legacy-daily-dongtian",
     "legacy-daily-dongtian-clear",
     "legacy-daily-lingmai-clear",
@@ -836,6 +838,7 @@ def repair_data_annotation_scheduler_tasks(
         if (
             str(task.get("id") or "") in {
                 "daily-boss",
+                "daily-lingmai-seat",
                 "xianfu-visit-partner",
                 "xianfu-learn-skill",
                 "legacy-daily-jianling",
@@ -849,6 +852,11 @@ def repair_data_annotation_scheduler_tasks(
             changed = True
         if str(task.get("id") or "") == "legacy-daily-assistant":
             for key in ("schedule_times", "cooldown_seconds"):
+                if task.get(key) != default_task.get(key):
+                    task[key] = default_task.get(key)
+                    changed = True
+        if str(task.get("id") or "") == "daily-lingmai-seat":
+            for key in ("template_id", "template_label", "template_source", "trigger_kind"):
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True

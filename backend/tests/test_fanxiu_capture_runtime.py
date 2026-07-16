@@ -238,11 +238,10 @@ def test_capture_runtime_stream_writer_flushes_available_pipe_bytes(tmp_path):
     assert local_path.read_bytes() == b"pcap-header"
 
 
-def test_capture_runtime_local_stream_stop_queues_sealed_pcap(monkeypatch, tmp_path):
+def test_capture_runtime_local_stream_stop_only_seals_pcap(monkeypatch, tmp_path):
     service = FanxiuCaptureRuntimeService()
     pcap = tmp_path / "fanxiu_runtime_test.pcap"
     pcap.write_bytes(b"x" * 128)
-    queued: list[str] = []
 
     class FakeProcess:
         stdout = None
@@ -256,61 +255,11 @@ def test_capture_runtime_local_stream_stop_queues_sealed_pcap(monkeypatch, tmp_p
     service._tcpdump_process = FakeProcess()
     monkeypatch.setattr(service, "_run_adb", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(service, "_cleanup_stale_local_tcpdump_adb_locked", lambda: None)
-    monkeypatch.setattr(service, "_start_runtime_packet_sync_thread", lambda path: queued.append(path))
-
     service._stop_tcpdump_locked(queue_sync=True)
 
     assert service._current_pcap_size == 128
-    assert queued == [str(pcap)]
+    assert service._packet_sync_thread is None
     assert service._capture_mode == ""
-
-
-def test_capture_runtime_packet_sync_is_serialized(monkeypatch):
-    service = FanxiuCaptureRuntimeService()
-    started: list[str] = []
-
-    class AliveThread:
-        def is_alive(self):
-            return True
-
-    class FakeThread:
-        def __init__(self, *, target, args, name, daemon):
-            del target, name, daemon
-            self.args = args
-
-        def start(self):
-            started.append(self.args[0])
-
-        def is_alive(self):
-            return False
-
-    service._packet_sync_thread = AliveThread()
-    service._packet_sync_active_path = "busy.pcap"
-    service._start_runtime_packet_sync_thread("next.pcap")
-
-    assert started == []
-    assert service._packet_sync_skipped_count == 1
-    assert any("runtime packet sync skipped" in line for line in service.log_lines())
-
-    service._packet_sync_thread = None
-    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.threading.Thread", FakeThread)
-    service._start_runtime_packet_sync_thread("next.pcap")
-
-    assert started == ["next.pcap"]
-    assert service._packet_sync_active_path == "next.pcap"
-
-
-def test_capture_runtime_packet_sync_clears_active_path(monkeypatch):
-    service = FanxiuCaptureRuntimeService()
-    service._packet_sync_active_path = "done.pcap"
-    monkeypatch.setattr(
-        "backend.core.fanxiu.packet.insight_worker.sync_fanxiu_capture_paths",
-        lambda *_args, **_kwargs: {"decoded": [], "decoded_count": 0, "skipped_count": 0, "error_count": 0},
-    )
-
-    service._decode_and_sync_runtime_packets("done.pcap")
-
-    assert service._packet_sync_active_path == ""
 
 
 def test_capture_runtime_idle_seals_and_restarts_tcpdump(monkeypatch):
@@ -403,16 +352,14 @@ def test_capture_runtime_seals_when_segment_exceeds_max_age(monkeypatch):
     assert start_calls == 1
 
 
-def test_capture_runtime_snapshots_running_pcap_without_stopping_tcpdump(monkeypatch, tmp_path):
+def test_capture_runtime_does_not_snapshot_running_pcap(monkeypatch, tmp_path):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=1)
     service.device_id = "127.0.0.1:7555"
     service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
-    queued: list[str] = []
     adb_calls: list[tuple[str, ...]] = []
 
     monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
     monkeypatch.setattr(service, "_remote_capture_size", lambda remote_path: 4096)
-    monkeypatch.setattr(service, "_start_runtime_packet_sync_thread", lambda local_path: queued.append(local_path))
 
     def fake_run_adb(args: list[str], timeout: float = 8) -> str:
         del timeout
@@ -425,9 +372,9 @@ def test_capture_runtime_snapshots_running_pcap_without_stopping_tcpdump(monkeyp
 
     service._finalize_idle_capture_locked()
 
-    assert queued
-    assert Path(queued[0]).is_file()
-    assert "snapshot" in Path(queued[0]).name
-    assert service._last_snapshot_remote_pcap_size == 4096
-    assert any(call[2:4] == ("shell", "cp") for call in adb_calls)
+    snapshots = list(tmp_path.glob("fanxiu_runtime_snapshot_*.pcap"))
+    assert snapshots == []
+    assert service._packet_sync_thread is None
+    assert service._last_snapshot_remote_pcap_size == 0
+    assert not any(call[2:4] == ("shell", "cp") for call in adb_calls)
     assert not any("pkill" in call for call in adb_calls)

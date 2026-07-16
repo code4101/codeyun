@@ -97,6 +97,14 @@ def _packet_service_command_timeout_seconds() -> float:
 
 def _packet_service_action_timeout_seconds(action: str) -> float:
     action_name = str(action or "").strip()
+    if action_name == "packet_facts_catch_up":
+        try:
+            return max(
+                _packet_service_command_timeout_seconds(),
+                float(os.getenv("FX_PACKET_SERVICE_CATCH_UP_TIMEOUT_SECONDS") or 120.0),
+            )
+        except (TypeError, ValueError):
+            return max(_packet_service_command_timeout_seconds(), 120.0)
     if action_name == "maintenance":
         try:
             return max(

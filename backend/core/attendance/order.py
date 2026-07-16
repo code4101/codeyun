@@ -71,7 +71,7 @@ def _close_extra_weipay_tabs(weipay: Any, *, min_tabs_to_keep: int = 1) -> None:
 def _auto_weipay_tab_cleanup_enabled() -> bool:
     value = os.getenv("CODEYUN_AUTO_CLEANUP_WEIPAY_TABS")
     if value is None:
-        return False
+        return True
     return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
