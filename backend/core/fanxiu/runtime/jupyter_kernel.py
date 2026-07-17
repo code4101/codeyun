@@ -442,7 +442,14 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
         manager = start_kernel()
         should_exit = False
         while not should_exit:
-            connection = listener.accept()
+            try:
+                connection = listener.accept()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, EOFError):
+                # A short-lived local CLI client may disconnect during the
+                # multiprocessing authentication handshake.  That client is
+                # gone, but the manager and live kernel must keep serving the
+                # next control request.
+                continue
             try:
                 request = connection.recv()
                 command = str(request.get("command") or "status") if isinstance(request, dict) else "status"
@@ -484,7 +491,10 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                     }
                 connection.send(response)
             except Exception as exc:
-                connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                try:
+                    connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, EOFError, OSError):
+                    pass
             finally:
                 connection.close()
     finally:
