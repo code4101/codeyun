@@ -1,203 +1,119 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.data_annotation.ocr_spatial import locate_text_box, query_spatial_ocr
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
 
 
-def test_spatial_ocr_estimates_characters_for_partially_covered_line():
+def _tokens(text: str, *, x: float = 0, y: float = 10, width: float = 20, height: float = 20):
+    return [
+        {"text": char, "x": x + index * width, "y": y, "w": width, "h": height}
+        for index, char in enumerate(text)
+    ]
+
+
+def test_spatial_ocr_selects_tokens_then_groups_text():
     result = query_spatial_ocr(
-        [{"text": "12345678", "x": 0, "y": 10, "w": 80, "h": 20}],
-        [],
-        {"x": 0, "y": 0, "w": 50, "h": 40},
-    )
-
-    assert result["text"] == "12345"
-    assert result["ambiguous"] is True
-    assert result["fragments"][0]["source"] == "estimated_characters"
-
-
-def test_spatial_ocr_rebuilds_shape_text_across_multiple_blocks():
-    result = query_spatial_ocr(
-        [
-            {"text": "队伍？", "x": 210, "y": 100, "w": 90, "h": 30},
-            {"text": "是否创建", "x": 80, "y": 100, "w": 120, "h": 30},
-        ],
-        [],
+        _tokens("是否创建队伍？", x=80, y=100, width=20, height=30),
         {"x": 60, "y": 90, "w": 260, "h": 50},
     )
 
     assert result["text"] == "是否创建队伍？"
-    assert [fragment["text"] for fragment in result["fragments"]] == ["是否创建", "队伍？"]
+    assert [fragment["text"] for fragment in result["fragments"]] == ["是否创建队伍？"]
 
 
-def test_spatial_ocr_uses_character_boxes_for_partial_variable_width_text():
-    result = query_spatial_ocr(
-        [{"text": "甲乙丙丁", "x": 0, "y": 10, "w": 100, "h": 20}],
-        [
-            {"text": "甲", "x": 0, "y": 10, "w": 10, "h": 20, "line_index": 0},
-            {"text": "乙", "x": 12, "y": 10, "w": 18, "h": 20, "line_index": 0},
-            {"text": "丙", "x": 40, "y": 10, "w": 35, "h": 20, "line_index": 0},
-            {"text": "丁", "x": 80, "y": 10, "w": 20, "h": 20, "line_index": 0},
-        ],
-        {"x": 10, "y": 0, "w": 68, "h": 40},
-    )
+def test_spatial_ocr_uses_real_variable_width_character_boxes():
+    tokens = [
+        {"text": "甲", "x": 0, "y": 10, "w": 10, "h": 20},
+        {"text": "乙", "x": 12, "y": 10, "w": 18, "h": 20},
+        {"text": "丙", "x": 40, "y": 10, "w": 35, "h": 20},
+        {"text": "丁", "x": 80, "y": 10, "w": 20, "h": 20},
+    ]
+
+    result = query_spatial_ocr(tokens, {"x": 10, "y": 0, "w": 68, "h": 40})
 
     assert result["text"] == "乙丙"
-    assert result["ambiguous"] is False
-    assert result["fragments"][0]["source"] == "words"
+    assert result["fragments"][0]["source"] == "tokens"
 
 
-def test_spatial_ocr_uses_character_boxes_for_full_line_and_locates_substring():
-    words = [
-        {"text": "真", "x": 146, "y": 1144, "w": 36, "h": 49, "line_index": 0},
-        {"text": "仙", "x": 183, "y": 1144, "w": 36, "h": 49, "line_index": 0},
-        {"text": "试", "x": 220, "y": 1144, "w": 36, "h": 49, "line_index": 0},
-        {"text": "炼", "x": 257, "y": 1144, "w": 36, "h": 49, "line_index": 0},
+def test_spatial_ocr_groups_rows_by_geometry_without_line_metadata():
+    tokens = _tokens("甲乙", x=10, y=10) + _tokens("丙丁", x=10, y=60)
+
+    assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["甲乙", "丙丁"]
+
+
+def test_locate_substring_uses_exact_character_boxes():
+    tokens = [
+        {"text": "真", "x": 146, "y": 1144, "w": 36, "h": 49},
+        {"text": "仙", "x": 183, "y": 1144, "w": 36, "h": 49},
+        {"text": "试", "x": 220, "y": 1144, "w": 36, "h": 49},
+        {"text": "炼", "x": 257, "y": 1144, "w": 36, "h": 49},
     ]
+
+    assert locate_text_box(tokens, "真仙") == {"x": 146.0, "y": 1144.0, "w": 73.0, "h": 49.0}
+
+
+def test_spatial_ocr_includes_character_at_thirty_percent_overlap():
     result = query_spatial_ocr(
-        [{"text": "真仙试炼", "x": 146, "y": 1144, "w": 147, "h": 49}],
-        words,
-        {"x": 100, "y": 1100, "w": 250, "h": 120},
+        _tokens("天地", y=0),
+        {"x": 14, "y": 0, "w": 6, "h": 20},
     )
 
-    assert result["text"] == "真仙试炼"
-    assert result["fragments"][0]["source"] == "words"
-    assert locate_text_box(result["tokens"], "真仙") == {"x": 146.0, "y": 1144.0, "w": 73.0, "h": 49.0}
+    assert result["text"] == "天"
 
 
-def test_spatial_ocr_associates_raw_tokens_by_geometry_after_lines_are_merged():
-    words = [
-        {"text": "真", "x": 146, "y": 1144, "w": 42, "h": 49, "line_index": 6},
-        {"text": "仙", "x": 193, "y": 1144, "w": 44, "h": 49, "line_index": 6},
-        {"text": "金", "x": 400, "y": 1144, "w": 42, "h": 49, "line_index": 7},
-        {"text": "仙", "x": 447, "y": 1144, "w": 44, "h": 49, "line_index": 7},
-    ]
+def test_spatial_ocr_excludes_character_below_thirty_percent_even_when_center_inside():
     result = query_spatial_ocr(
-        [{"text": "真仙金仙", "x": 146, "y": 1144, "w": 345, "h": 49}],
-        words,
-        {"x": 120, "y": 1120, "w": 400, "h": 100},
+        [{"text": "天", "x": 0, "y": 0, "w": 100, "h": 100}],
+        {"x": 49, "y": 49, "w": 2, "h": 2},
     )
 
-    assert result["text"] == "真仙金仙"
-    assert locate_text_box(result["tokens"], "真仙") == {
-        "x": 146.0,
-        "y": 1144.0,
-        "w": 91.0,
-        "h": 49.0,
-    }
+    assert result == {"text": "", "fragments": [], "tokens": []}
 
 
-def test_ocr_center_uses_exact_character_boxes_instead_of_uniform_line_width():
+def test_shape_match_keeps_exact_token_box():
     runner = create_fanxiu_runtime_runner()
-    image = {
-        "width": 900,
-        "height": 1600,
-        "shapes": [{"title": "试炼", "x": 0.12, "y": 0.70, "w": 0.82, "h": 0.07}],
+    image = {"id": 34, "width": 900, "height": 1600}
+    shape = {
+        "title": "左侧菜单",
+        "ocrText": "天道",
+        "ocrMatchMode": "contains",
+        "x": 0,
+        "y": 0.4,
+        "w": 0.3,
+        "h": 0.2,
     }
-    lines = [{"text": "真仙试炼金仙试炼", "x": 146, "y": 1144, "w": 414, "h": 49}]
-    words = [
-        {"text": "真", "x": 146, "y": 1144, "w": 42, "h": 49, "line_index": 6},
-        {"text": "仙", "x": 193, "y": 1144, "w": 44, "h": 49, "line_index": 6},
-    ]
+    frame = "same-frame"
+    ctx = {
+        "_ocr_tokens_cache": {
+            "version": 3,
+            "frame": frame,
+            "tokens": [
+                {"text": "天", "x": 11, "y": 721, "w": 31, "h": 35},
+                {"text": "道", "x": 46, "y": 721, "w": 31, "h": 35},
+            ],
+        }
+    }
 
-    assert runner._ocr_centers_in_shape(
-        lines,
-        image,
-        "试炼",
-        include=("真仙",),
-        words=words,
-    ) == [(191.5, 1168.5, "真仙试炼金仙试炼")]
+    result = runner._shape_cached_frame_ocr_match(ctx, image, shape, frame)
+
+    assert result["matched"] is True
+    assert result["ocr_box"] == {"x": 11.0, "y": 721.0, "w": 66.0, "h": 35.0}
 
 
-def test_shape_ocr_runs_full_frame_once_and_reuses_spatial_index(monkeypatch):
+def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
     runner = create_fanxiu_runtime_runner()
-    image = {
-        "id": 322,
-        "title": "创建团队",
-        "filename": "0322.png",
-        "width": 900,
-        "height": 1600,
-    }
-    first = {
-        "title": "问题前半",
-        "imageMatchRole": "off",
-        "ocrMatchRole": "required",
-        "ocrText": "是否创建",
-        "x": 0.1,
-        "y": 0.3,
-        "w": 0.2,
-        "h": 0.05,
-    }
-    second = {
-        "title": "问题整句",
-        "imageMatchRole": "off",
-        "ocrMatchRole": "required",
-        "ocrText": "是否创建队伍",
-        "x": 0.1,
-        "y": 0.3,
-        "w": 0.4,
-        "h": 0.05,
-    }
+    image = {"id": 322, "width": 900, "height": 1600}
+    first = {"title": "前半", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.2, "h": 0.06}
+    second = {"title": "整句", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建队伍", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.4, "h": 0.06}
     calls: list[tuple[str, dict | None]] = []
 
     def fake_ocr_frame(frame: str, *, options=None):
         calls.append((frame, options))
-        return {
-            "lines": [
-                {"text": "是否创建", "x": 90, "y": 480, "w": 150, "h": 50},
-                {"text": "队伍？", "x": 245, "y": 480, "w": 100, "h": 50},
-            ],
-            "words": [],
-        }
+        return {"tokens": _tokens("是否创建队伍？", x=80, y=480, width=25, height=50)}
 
     monkeypatch.setattr(runner, "_ocr_frame", fake_ocr_frame)
-    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+    ctx: dict = {}
 
-    first_result = runner._match_shape(ctx, image, first, "same-frame", condition="ocr")
-    second_result = runner._match_shape(ctx, image, second, "same-frame", condition="ocr")
-
-    assert first_result["matched"] is True
-    assert second_result["matched"] is True
-    assert second_result["ocr_text"] == "是否创建队伍？"
-    assert calls == [("same-frame", {"return_word_box": True})]
-
-    runner._match_shape(ctx, image, second, "changed-frame", condition="ocr")
-    assert calls == [
-        ("same-frame", {"return_word_box": True}),
-        ("changed-frame", {"return_word_box": True}),
-    ]
-
-
-def test_shape_region_ocr_rebuilds_from_the_same_full_frame_cache(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    image = {
-        "id": 356,
-        "width": 900,
-        "height": 1600,
-        "shapes": [
-            {"title": "试炼", "x": 0.12, "y": 0.70, "w": 0.82, "h": 0.07},
-        ],
-    }
-    calls: list[tuple[str, dict | None]] = []
-
-    def fake_ocr_frame(frame: str, *, options=None):
-        calls.append((frame, options))
-        return {
-            "lines": [{"text": "真仙试炼金仙试炼", "x": 146, "y": 1144, "w": 414, "h": 49}],
-            "words": [
-                {"text": "真", "x": 146, "y": 1144, "w": 42, "h": 49, "line_index": 6},
-                {"text": "仙", "x": 193, "y": 1144, "w": 44, "h": 49, "line_index": 6},
-                {"text": "金", "x": 400, "y": 1144, "w": 42, "h": 49, "line_index": 7},
-                {"text": "仙", "x": 447, "y": 1144, "w": 44, "h": 49, "line_index": 7},
-            ],
-        }
-
-    monkeypatch.setattr(runner, "_ocr_frame", fake_ocr_frame)
-    ctx = {"images": {356: image}}
-
-    lines = runner._ocr_lines_in_shapes("same-frame", image, ("试炼",), padding=0, ctx=ctx)
-    words = runner._ocr_words_in_shapes("same-frame", image, ("试炼",), padding=0, ctx=ctx)
-
-    assert "".join(line["text"] for line in lines) == "真仙金仙"
-    assert "".join(word["text"] for word in words) == "真仙金仙"
+    assert runner._match_shape(ctx, image, first, "same-frame", condition="ocr")["matched"] is True
+    assert runner._match_shape(ctx, image, second, "same-frame", condition="ocr")["matched"] is True
     assert calls == [("same-frame", {"return_word_box": True})]

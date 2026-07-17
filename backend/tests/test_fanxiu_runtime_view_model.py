@@ -17,6 +17,14 @@ from pyxllib.autogui import (
 )
 
 
+def _ocr_tokens(text: str, *, x: float, y: float, w: float, h: float) -> list[dict]:
+    token_width = w / max(1, len(text))
+    return [
+        {"text": char, "x": x + index * token_width, "y": y, "w": token_width, "h": h}
+        for index, char in enumerate(text)
+    ]
+
+
 def test_match_role_normalizes_legacy_and_new_values():
     assert normalize_match_role("off") is MatchRole.off
     assert normalize_match_role("required") is MatchRole.required
@@ -936,8 +944,8 @@ def test_shape_match_uses_shared_full_frame_ocr_spatial_index(monkeypatch):
     monkeypatch.setattr(runner, "_run_match", lambda *_args, **_kwargs: pytest.fail("shape OCR should reuse the full-frame spatial index"))
     monkeypatch.setattr(
         runner,
-        "_ocr_lines",
-        lambda _frame: [{"text": "止清羊驼仙缘邮件设置", "x": 87, "y": 1526, "w": 560, "h": 43}],
+        "_ocr_frame",
+        lambda _frame, **_kwargs: {"tokens": _ocr_tokens("止清羊驼仙缘邮件设置", x=87, y=1526, w=560, h=43)},
     )
 
     result = runner._match_shape(ctx, image35, shape, "frame", condition="ocr")
@@ -975,10 +983,7 @@ def test_shape_match_accepts_ocr_contains_even_when_similarity_is_low(monkeypatc
 
     def ocr_frame(_frame, *, options=None):
         assert options == {"return_word_box": True}
-        return {
-            "lines": [{"text": "邮传", "x": 459, "y": 1527, "w": 57, "h": 30}],
-            "words": [],
-        }
+        return {"tokens": _ocr_tokens("邮传", x=459, y=1527, w=57, h=30)}
 
     monkeypatch.setattr(runner, "_ocr_frame", ocr_frame)
 
@@ -1499,12 +1504,12 @@ def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatc
         def click_shape(self, _view, shape):
             clicked.append(shape.title)
 
-    def fake_ocr_lines_in_shapes(_frame, _image, shape_titles, **_kwargs):
+    def fake_ocr_fragments_in_shapes(_frame, _image, shape_titles, **_kwargs):
         if tuple(shape_titles) == ("半价",):
             return [{"text": next(ocr_values), "x": 0, "y": 0, "w": 10, "h": 10}]
         return []
 
-    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", fake_ocr_lines_in_shapes)
+    monkeypatch.setattr(runner, "_ocr_fragments_in_shapes", fake_ocr_fragments_in_shapes)
 
     result = runner._run_direct_runtime_action(
         lambda: runner._handle_xianfu_continue_visit_popup(FakeRuntime(), max_continue=20),
@@ -1571,7 +1576,7 @@ def test_xianfu_continue_visit_popup_retries_close_when_popup_remains(monkeypatc
             if shape.title == "关闭":
                 self.close_count += 1
 
-    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "100半价"}])
+    monkeypatch.setattr(runner, "_ocr_fragments_in_shapes", lambda *_args, **_kwargs: [{"text": "100半价"}])
 
     result = runner._run_direct_runtime_action(
         lambda: runner._handle_xianfu_continue_visit_popup(FakeRuntime(), max_continue=20),

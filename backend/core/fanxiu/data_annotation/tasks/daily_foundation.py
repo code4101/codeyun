@@ -16,6 +16,7 @@ from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr
 from backend.core.fanxiu.data_annotation.duel_strategy import (
     best_order_for_enemy_candidates,
     infer_enemy_candidate_order,
@@ -1698,16 +1699,16 @@ class DailyFoundationTaskMixin:
         frame: str,
         text: str = "",
         *,
-        menu_ocr_lines: list[dict[str, Any]] | None = None,
+        menu_ocr_fragments: list[dict[str, Any]] | None = None,
     ) -> bool:
         full_frame_matches = self._world_reward_tip_text_matches(text)
         image35 = ctx.get("images", {}).get(35)
         if not isinstance(image35, dict) or not self._find_shape(image35, "菜单"):
             return full_frame_matches
-        lines = menu_ocr_lines
+        lines = menu_ocr_fragments
         if lines is None:
             try:
-                lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
+                lines = self._ocr_fragments_in_shapes(frame, image35, ("菜单",), padding=8)
             except Exception as exc:
                 self._log("detail", f"世界提示清理：#35 菜单 OCR 失败：{exc}")
                 return False
@@ -1930,7 +1931,7 @@ class DailyFoundationTaskMixin:
                 matches = [(float(x), float(y), f"#85「离开」{score:.0f}%")]
                 click_image = image85
         if not matches:
-            lines = runtime.ocr_lines(frame)
+            lines = runtime.ocr_fragments(frame)
             matches = self._world_scene_leave_matches(lines, width=width, height=height)
             click_image = ref_image
         if not matches:
@@ -2991,11 +2992,58 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_click_then_view(321, "创建队伍", 322)
             scene_id = 322
         if scene_id == 322:
+            # 业务语义：奇袭魔界的建队额度由整个同盟共享，并非每个玩家各有
+            # 3 个名额；每个触发周期同盟最多只能建立 3 支队伍。作业触发较晚
+            # 时，盟友可能已经把额度用完，因此 #322 显示 3/3 是“本周期同盟
+            # 建队名额已满”，不是「确定」按钮失效，也不应靠重复点击恢复。
+            # 此时本轮应跳过并回到稳定世界，等待下一调度周期重新尝试。
+            team_numbers, team_text = runtime.ocr_numbers_in_shapes(
+                322,
+                ("队伍数",),
+                padding=int(payload.get("mojie_raid_team_count_padding") or 12),
+            )
+            team_count: int | None = None
+            team_limit: int | None = None
+            if len(team_numbers) >= 2:
+                team_count, team_limit = int(team_numbers[0]), int(team_numbers[1])
+            else:
+                match = re.search(r"(\d+)\s*[/／]\s*(\d+)", str(team_text or ""))
+                if match:
+                    team_count, team_limit = int(match.group(1)), int(match.group(2))
+            self._log(
+                "detail",
+                f"日常_奇袭魔界：#322 队伍数 {team_count if team_count is not None else '?'}"
+                f"/{team_limit if team_limit is not None else '?'}，OCR={str(team_text or '')[:80]}",
+            )
+            if team_count is not None and team_limit is not None and team_limit > 0 and team_count >= team_limit:
+                scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid")
+                next_time = (
+                    self._scheduler_task_next_time_from_schedule(scheduler_task_id, "daily_mojie_raid")
+                    or (_runtime_runner._now() + timedelta(seconds=600)).strftime("%Y-%m-%d %H:%M:%S")
+                )
+                self._record_scheduler_task_discovered_retry_after(
+                    scheduler_task_id,
+                    next_time,
+                    task_type="daily_mojie_raid",
+                    label="日常_奇袭魔界",
+                    last_result="skipped",
+                )
+                self._log("skip", f"日常_奇袭魔界：#322 队伍数已满 {team_count}/{team_limit}，本轮不再创建，下次 {next_time}")
+                return "skipped"
             yield from runtime.wait_click_then_view(322, "下拉选项", 323)
             scene_id = 323
         if scene_id == 323:
             yield from runtime.wait_click_then_view(323, "开启", 322)
-            yield from runtime.wait_click_then_view(322, "确定", 324)
+            # 创建队伍的“确定”输入历史上经常不生效；#322 仍被可靠识别时，
+            # 继续补点同一已标注按钮。重试必须有界，且一旦离开 #322 或
+            # 进入 unknown，wait_click_then_view 会立即停止，不能盲目连点。
+            yield from runtime.wait_click_then_view(
+                322,
+                "确定",
+                324,
+                timeout=float(payload.get("mojie_raid_confirm_wait_timeout") or 8),
+                max_clicks=int(payload.get("mojie_raid_confirm_max_clicks") or 6),
+            )
             scene_id = 324
         if scene_id == 324:
             yield from runtime.wait_click_then_view(324, "返回", 331)
@@ -3057,12 +3105,16 @@ class DailyFoundationTaskMixin:
             payload=payload,
         )
         candidates: list[tuple[float, float, str]] = []
-        for line in runtime.ocr_lines(frame):
-            text = str(line.get("text") or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
+        tokens = runtime.ocr_tokens(frame)
+        for fragment in group_ocr_tokens(tokens):
+            text = str(fragment.get("text") or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
+            fragment_tokens = query_spatial_ocr(tokens, fragment)["tokens"]
             for match in re.finditer(r"([0-9]+)\s*/\s*30", text):
                 if int(match.group(1)) <= 0:
                     continue
-                count_box = self._daily_mojie_raid_attack_count_box(runtime, line, text, match)
+                count_box = locate_text_box(fragment_tokens, match.group(0))
+                if count_box is None:
+                    continue
                 x = float(count_box.get("x") or 0) + float(count_box.get("w") or 0) / 2
                 count_y = float(count_box.get("y") or 0) + float(count_box.get("h") or 0) / 2
                 if not (0 <= x <= width and min_y <= count_y <= max_y):
@@ -3090,53 +3142,6 @@ class DailyFoundationTaskMixin:
         except (RuntimeError, AttributeError, KeyError, TypeError):
             fallback_y = -height * float(payload.get("mojie_raid_target_icon_offset_ratio") or 0.14)
             return 0.0, fallback_y
-
-    def _daily_mojie_raid_attack_count_box(
-        self,
-        runtime: FanxiuRuntimeSession,
-        line: dict[str, Any],
-        text: str,
-        match: re.Match[str],
-    ) -> dict[str, float]:
-        token = match.group(0)
-        box = runtime.runner._ocr_match_resolved_box(line, token, "contains")
-        try:
-            count_template_box = runtime.shape(runtime.view(320), "检索区域/队伍数").box()
-        except (RuntimeError, AttributeError, KeyError, TypeError):
-            count_template_box = None
-        if box is not None and all(key in box for key in ("x", "y", "w", "h")):
-            if not count_template_box:
-                return box
-            template_w = float(count_template_box.get("w") or 0)
-            template_h = float(count_template_box.get("h") or 0)
-            if (
-                float(box.get("w") or 0) <= template_w * 1.35
-                and float(box.get("h") or 0) <= template_h * 1.75
-            ):
-                return box
-        line_x = float(line.get("x") or 0)
-        line_y = float(line.get("y") or 0)
-        line_w = float(line.get("w") or 0)
-        line_h = float(line.get("h") or 0)
-        if count_template_box:
-            template_w = float(count_template_box.get("w") or 0)
-            template_h = float(count_template_box.get("h") or 0)
-            estimated_x = line_x if match.start() == 0 else float((box or {}).get("x") or line_x)
-            return {
-                "x": estimated_x,
-                "y": line_y + max(0.0, (line_h - template_h) / 2),
-                "w": template_w,
-                "h": template_h,
-            }
-        text_len = max(1, len(text))
-        start_ratio = max(0.0, min(1.0, match.start() / text_len))
-        end_ratio = max(start_ratio, min(1.0, match.end() / text_len))
-        return {
-            "x": line_x + line_w * start_ratio,
-            "y": line_y,
-            "w": max(1.0, line_w * (end_ratio - start_ratio)),
-            "h": max(1.0, line_h),
-        }
 
     def _daily_mojie_raid_remaining_ocr_fallback(self, text: str) -> int | None:
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -3714,7 +3719,7 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", f"日常_复核：读取日常列表 {index + 1}/{max_scrolls + 1}", phase="daily_audit_scan", current_scene=69)
             frame = runtime.cur_frame(update=True)
-            lines = self._cached_ocr_lines(ctx, frame)
+            lines = self._cached_ocr_fragments(ctx, frame)
             self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
             rows = self._merge_daily_audit_rows(rows, self._daily_audit_visible_rows(lines, image69))
             if index >= max_scrolls:
@@ -3839,6 +3844,7 @@ class DailyFoundationTaskMixin:
         title_pattern: str,
         exclude_pattern: str | None = None,
         progress_can_mark_done: bool = True,
+        initial_checks: int = 1,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
@@ -3850,6 +3856,7 @@ class DailyFoundationTaskMixin:
             progress_can_mark_done=progress_can_mark_done,
             max_scrolls=max_scrolls,
             reverse_scrolls=self._payload_int(payload, "reverse_scrolls", "max_scrolls", default=max_scrolls),
+            initial_checks=initial_checks,
         ))
 
     def _record_daily_entry_done(self, payload: dict[str, Any], *, task_id: str, task_type: str, label: str, message: str) -> str:
@@ -4241,7 +4248,7 @@ class DailyFoundationTaskMixin:
             if scene_id != 297:
                 return scene_id, float(score)
             if index == 0:
-                go_dojo_line = self._daily_lundao_go_dojo_ocr_line(runtime.ocr_lines(frame))
+                go_dojo_line = self._daily_lundao_go_dojo_ocr_line(runtime.ocr_fragments(frame))
                 if go_dojo_line is not None:
                     x = float(go_dojo_line.get("x") or 0) + float(go_dojo_line.get("w") or 0) * 0.5
                     y = float(go_dojo_line.get("y") or 0) + float(go_dojo_line.get("h") or 0) * 0.5
@@ -4267,9 +4274,9 @@ class DailyFoundationTaskMixin:
             f"论道_座位：#297 满座分支仍未出现确认/空位/后续流程，最后 #{last_scene_id if last_scene_id is not None else 'unknown'} {last_score:.0f}%，OCR={last_text[:120]}"
         )
 
-    def _daily_lundao_go_dojo_ocr_line(self, ocr_lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _daily_lundao_go_dojo_ocr_line(self, ocr_fragments: list[dict[str, Any]]) -> dict[str, Any] | None:
         candidates: list[dict[str, Any]] = []
-        for line in ocr_lines:
+        for line in ocr_fragments:
             if not isinstance(line, dict):
                 continue
             text = _sanitize_ocr_text(line.get("text"))
@@ -4279,10 +4286,10 @@ class DailyFoundationTaskMixin:
             return None
         return max(candidates, key=lambda line: float(line.get("w") or 0) * float(line.get("h") or 0))
 
-    def _daily_lundao_available_seat_rows(self, ocr_lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _daily_lundao_available_seat_rows(self, ocr_fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         sorted_lines = sorted(
-            (line for line in ocr_lines if isinstance(line, dict)),
+            (line for line in ocr_fragments if isinstance(line, dict)),
             key=lambda line: (float(line.get("y") or 0), float(line.get("x") or 0)),
         )
         title_candidates: list[dict[str, Any]] = []
@@ -4336,7 +4343,7 @@ class DailyFoundationTaskMixin:
                 return scene_id, float(score)
             if scene_id != 296:
                 return scene_id, float(score)
-            rows = self._daily_lundao_available_seat_rows(runtime.ocr_lines(frame))
+            rows = self._daily_lundao_available_seat_rows(runtime.ocr_fragments(frame))
             last_rows = rows
             available = [row for row in rows if int(row.get("remaining") or 0) > 0]
             if not available and not rows:
@@ -4379,6 +4386,7 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
         *,
         task_label: str,
+        allow_claim_page: bool = False,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
@@ -4390,9 +4398,20 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([279], update=True)
+            scene_candidates = [284, 279] if allow_claim_page else [279]
+            scene_id, score, frame = runtime.current_scene(scene_candidates, update=True)
             text = runtime.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, float(score), text
+            if allow_claim_page and scene_id == 284:
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"{task_label}：已直接到收益领取页",
+                        phase="daily_dongtian_claim",
+                        current_scene=284,
+                    )
+                    self._log_locked("success", f"{task_label}：入口直接落到 #284 {score:.0f}%，跳过 #279「收益」")
+                return 284
             if scene_id == 279 or self._daily_dongtian_text_is_home(text):
                 with self._lock:
                     self._set_status_locked(
@@ -4402,7 +4421,7 @@ class DailyFoundationTaskMixin:
                         current_scene=279,
                     )
                     self._log_locked("success", f"{task_label}：识别 #279 {score:.0f}%，OCR={text[:120]}")
-                return "success"
+                return 279
             if time.monotonic() - start >= timeout:
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 raise RuntimeError(f"{task_label}：等待 #279 洞天福地主页超时，最后 {scene_text} {last_score:.0f}% OCR={last_text[:180]}")
@@ -4463,6 +4482,7 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
         *,
         task_label: str,
+        start_scene_id: int | None = None,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
@@ -4472,13 +4492,20 @@ class DailyFoundationTaskMixin:
         if not self._daily_dongtian_has_shape(ctx, 284, "领取"):
             raise RuntimeError(f"{task_label}：缺少 #284「领取」shape 标注，无法执行下一步领取")
 
-        yield from runtime.wait_click_then_view(
-            279,
-            "收益",
-            284,
-            label=f"{task_label}：点击 #279「收益」后等待 #284 领取页",
-            settle_seconds=float(payload.get("dongtian_profit_settle_seconds") or 2.0),
-        )
+        if start_scene_id is None:
+            start_scene_id, _score, _frame = runtime.current_scene([284, 279], update=True)
+        if start_scene_id == 279:
+            yield from runtime.wait_click_then_view(
+                279,
+                "收益",
+                284,
+                label=f"{task_label}：点击 #279「收益」后等待 #284 领取页",
+                settle_seconds=float(payload.get("dongtian_profit_settle_seconds") or 2.0),
+            )
+        elif start_scene_id == 284:
+            self._log("detail", f"{task_label}：当前已在 #284 收益领取页，直接领取，不重复点击 #279「收益」")
+        else:
+            raise RuntimeError(f"{task_label}：领取收益前应在 #279/#284，实际 #{start_scene_id if start_scene_id is not None else 'unknown'}")
         yield from runtime.wait_click_then_view(
             284,
             "领取",
@@ -4541,10 +4568,16 @@ class DailyFoundationTaskMixin:
 
         task_label = "洞天_领取"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
+        scene_id, _score, frame = runtime.current_scene([284, 279, 69, 34, 47], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 284:
+            yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=284)
+            self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
+            with self._lock:
+                self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
+            return "success"
         if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-            yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+            yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=279)
             self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
             with self._lock:
                 self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
@@ -4552,10 +4585,16 @@ class DailyFoundationTaskMixin:
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
+                scene_id, _score, frame = runtime.current_scene([284, 279, 69, 34, 47], update=True)
                 text = runtime.ocr_text(frame)
+                if scene_id == 284:
+                    yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=284)
+                    self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
+                    with self._lock:
+                        self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
+                    return "success"
                 if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-                    yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+                    yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=279)
                     self._record_daily_dongtian_done(payload, message="已领取洞天福地收益")
                     with self._lock:
                         self._set_status_locked("success", "洞天_领取：已领取洞天福地收益", phase="daily_dongtian_done", current_scene=279)
@@ -4588,8 +4627,20 @@ class DailyFoundationTaskMixin:
                 entry_label="收取两万九曜玄墨",
             )
             return "skipped"
-        yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
-        yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label)
+        landing_scene_id = yield from self._wait_daily_dongtian_home(
+            ctx,
+            stop_event,
+            payload,
+            task_label=task_label,
+            allow_claim_page=True,
+        )
+        yield from self._claim_daily_dongtian_profit(
+            ctx,
+            stop_event,
+            payload,
+            task_label=task_label,
+            start_scene_id=int(landing_scene_id),
+        )
         self._record_daily_dongtian_done(payload, message="已从日常进入洞天福地并领取收益")
         with self._lock:
             self._set_status_locked("success", "洞天_领取：已进入洞天福地并领取收益", phase="daily_dongtian_done", current_scene=279)
@@ -5157,7 +5208,7 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             yield from runtime.wait_view(279, label="洞天_行动力：等待 #279 洞天福地")
             frame = runtime.cur_frame(update=True)
-            lines = runtime.ocr_lines_in_shapes(279, ["窗口"], frame_data_url=frame)
+            lines = runtime.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
             matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
             for line in lines:
                 text = _sanitize_ocr_text(line.get("text"))
@@ -5289,6 +5340,7 @@ class DailyFoundationTaskMixin:
             task_label=task_label,
             title_pattern=r"参\s*与?.*灵\s*脉.*(?:争|夺).*?(?:1|一)?.*?(?:小\s*时|时)?|灵\s*脉.*(?:争|夺)|灵\s*脉",
             progress_can_mark_done=False,
+            initial_checks=self._payload_int(payload, "lingmai_daily_initial_checks", default=10),
         )
         if daily_status == "not_found":
             self._record_daily_entry_not_found_retry(
@@ -5447,14 +5499,14 @@ class DailyFoundationTaskMixin:
         frame: str | None = None,
     ) -> str:
         frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        tokens = self._cached_ocr_tokens(runtime.ctx, frame)
         target_box: dict[str, float] | None = None
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in group_ocr_tokens(tokens):
+            text = _sanitize_ocr_text(fragment.get("text"))
             if "确认" not in text and "确定" not in text:
                 continue
             keyword = "确认" if "确认" in text else "确定"
-            box = self._ocr_match_resolved_box(line, keyword, "contains") or self._ocr_line_box(line)
+            box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], keyword)
             if box is None:
                 continue
             if float(box.get("y") or 0) < 850:
@@ -5504,7 +5556,7 @@ class DailyFoundationTaskMixin:
 
         remaining_slots = int(numbers[0])
         total_slots = int(numbers[1]) if len(numbers) >= 2 else None
-        lines = self._cached_ocr_lines(ctx, frame or runtime.cur_frame(update=True))
+        lines = self._cached_ocr_fragments(ctx, frame or runtime.cur_frame(update=True))
         candidates = self._daily_lingmai_slot_candidates(lines)
         available = next((item for item in candidates if int(item["remaining"]) > 0), None)
         clicked_slot_label = "「空位」"
@@ -5649,13 +5701,13 @@ class DailyFoundationTaskMixin:
         task_label: str,
     ) -> None:
         frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        tokens = self._cached_ocr_tokens(runtime.ctx, frame)
         target_box: dict[str, float] | None = None
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in group_ocr_tokens(tokens):
+            text = _sanitize_ocr_text(fragment.get("text"))
             if "前往灵脉" not in text:
                 continue
-            box = self._ocr_match_resolved_box(line, "前往灵脉", "contains") or self._ocr_line_box(line)
+            box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], "前往灵脉")
             if box is None:
                 continue
             target_box = box
@@ -5675,13 +5727,13 @@ class DailyFoundationTaskMixin:
         task_label: str,
     ) -> None:
         frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        lines = self._cached_ocr_lines(runtime.ctx, frame)
+        tokens = self._cached_ocr_tokens(runtime.ctx, frame)
         target_box: dict[str, float] | None = None
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in group_ocr_tokens(tokens):
+            text = _sanitize_ocr_text(fragment.get("text"))
             if "聚灵位" not in text:
                 continue
-            box = self._ocr_match_resolved_box(line, "聚灵位", "contains") or self._ocr_line_box(line)
+            box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], "聚灵位")
             if box is None:
                 continue
             target_box = box
@@ -6047,14 +6099,16 @@ class DailyFoundationTaskMixin:
                         current_scene=264,
                     )
                 frame = runtime.cur_frame(update=True)
-                lines = runtime.ocr_lines_in_shapes(264, ["识别区"], frame_data_url=frame)
-                matches = [line for line in lines if keyword in _sanitize_ocr_text(line.get("text"))]
+                tokens = runtime.ocr_tokens_in_shapes(264, ["识别区"], frame_data_url=frame)
+                matches = [fragment for fragment in group_ocr_tokens(tokens) if keyword in _sanitize_ocr_text(fragment.get("text"))]
                 if matches:
-                    line = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
-                    target_box = self._ocr_match_resolved_box(line, keyword, "contains") or line
+                    fragment = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
+                    target_box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], keyword)
+                    if target_box is None:
+                        continue
                     x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
                     y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
-                    text = _sanitize_ocr_text(line.get("text"))
+                    text = _sanitize_ocr_text(fragment.get("text"))
                     self._log("action", f"日常_拜谒：点击 #264 OCR「{text}」")
                     runtime.click_frame_point(264, x, y)
                     yield from runtime.wait_any(
@@ -6074,77 +6128,13 @@ class DailyFoundationTaskMixin:
                     break
         raise RuntimeError(f"日常_拜谒：#264 识别区未找到包含 {keyword} 的法则")
 
-    def _baiye_target_box_from_words(self, words: list[dict[str, Any]], target: str) -> dict[str, float] | None:
-        def resolved_sub_box(x: float, y: float, w: float, h: float, text: str, start: int, length: int) -> dict[str, float]:
-            raw_width = max(1.0, w / max(1, len(text)))
-            glyph_width = min(raw_width, max(1.0, h * 1.4))
-            if raw_width > h * 2.0 and start + length >= len(text):
-                left = x + w - glyph_width * length
-            else:
-                left = x + glyph_width * start
-            return {"x": left, "y": y, "w": glyph_width * length, "h": h}
-
-        fragments: list[dict[str, Any]] = []
-        for word in sorted(words, key=lambda item: (int(item.get("line_index") or 0), float(item.get("y") or 0), float(item.get("x") or 0))):
-            text = _sanitize_ocr_text(word.get("text"))
-            if not text:
+    def _baiye_target_box_from_tokens(self, tokens: list[dict[str, Any]], target: str) -> dict[str, float] | None:
+        candidate_tokens: list[dict[str, Any]] = []
+        for fragment in group_ocr_tokens(tokens):
+            if "法则" in _sanitize_ocr_text(fragment.get("text")):
                 continue
-            if "法则" in text:
-                continue
-            x = float(word.get("x") or 0)
-            y = float(word.get("y") or 0)
-            w = float(word.get("w") or 0)
-            h = float(word.get("h") or 0)
-            if target in text:
-                start = text.index(target)
-                return resolved_sub_box(x, y, w, h, text, start, len(target))
-            fragments.append({"text": text, "x": x, "y": y, "w": w, "h": h})
-        joined = "".join(fragment["text"] for fragment in fragments)
-        start = joined.find(target)
-        if start < 0:
-            return None
-        end = start + len(target)
-        cursor = 0
-        boxes: list[dict[str, float]] = []
-        for fragment in fragments:
-            text = str(fragment["text"])
-            next_cursor = cursor + len(text)
-            if next_cursor <= start:
-                cursor = next_cursor
-                continue
-            if cursor >= end:
-                break
-            local_start = max(0, start - cursor)
-            local_end = min(len(text), end - cursor)
-            boxes.append(resolved_sub_box(
-                float(fragment["x"]),
-                float(fragment["y"]),
-                float(fragment["w"]),
-                float(fragment["h"]),
-                text,
-                local_start,
-                max(1, local_end - local_start),
-            ))
-            cursor = next_cursor
-        if not boxes:
-            return None
-        left = min(box["x"] for box in boxes)
-        top = min(box["y"] for box in boxes)
-        right = max(box["x"] + box["w"] for box in boxes)
-        bottom = max(box["y"] + box["h"] for box in boxes)
-        return {"x": left, "y": top, "w": max(1.0, right - left), "h": max(1.0, bottom - top)}
-
-    def _baiye_target_box_from_lines(self, lines: list[dict[str, Any]], target: str) -> tuple[dict[str, float], str] | None:
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if "法则" in text:
-                continue
-            if target not in text:
-                continue
-            box = self._ocr_match_resolved_box(line, target, "contains")
-            if box is not None:
-                return box, text
-        return None
+            candidate_tokens.extend(query_spatial_ocr(tokens, fragment)["tokens"])
+        return locate_text_box(candidate_tokens, target)
 
     def _baiye_lord_click_point_from_box(
         self,
@@ -6222,7 +6212,7 @@ class DailyFoundationTaskMixin:
                 else:
                     reason = f"当前详情页已显示可拜谒状态，但 OCR 未稳定包含目标「{target}」"
                 return (yield from self._click_baiye_worship_button(runtime, payload, reason=reason))
-            words = runtime.ocr_words_in_shapes(
+            tokens = runtime.ocr_tokens_in_shapes(
                 265,
                 ["识别区"],
                 frame_data_url=frame,
@@ -6232,15 +6222,8 @@ class DailyFoundationTaskMixin:
                     "text_det_unclip_ratio": float(payload.get("baiye_text_det_unclip_ratio") or 1.2),
                 },
             )
-            target_box = self._baiye_target_box_from_words(words, target)
-            source_text = "".join(_sanitize_ocr_text(word.get("text")) for word in words)
-            if target_box is None:
-                lines = runtime.ocr_lines_in_shapes(265, ["识别区"], frame_data_url=frame)
-                line_match = self._baiye_target_box_from_lines(lines, target)
-                if line_match is not None:
-                    target_box, source_text = line_match
-                elif lines:
-                    source_text = "".join(_sanitize_ocr_text(line.get("text")) for line in lines)
+            target_box = self._baiye_target_box_from_tokens(tokens, target)
+            source_text = "".join(_sanitize_ocr_text(token.get("text")) for token in tokens)
             last_text = source_text or last_text
             if target_box is not None:
                 click_x, click_y = self._baiye_lord_click_point_from_box(target_box, payload)

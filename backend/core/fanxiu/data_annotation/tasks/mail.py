@@ -225,7 +225,7 @@ class MailTaskMixin:
             scene_id = reward_result_view.id if isinstance(reward_result_view, View) else None
             score = 100.0 if scene_id in {121, 34} else 0.0
             frame = runtime.cur_frame(update=True)
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
         if scene_id not in {121, 122, 123} and (
             yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_选择性领取")
         ):
@@ -1052,9 +1052,9 @@ class MailTaskMixin:
         frame: str,
         text: str = "",
         *,
-        menu_ocr_lines: list[dict[str, Any]] | None = None,
+        menu_ocr_fragments: list[dict[str, Any]] | None = None,
     ) -> bool:
-        return self._world_reward_tip_detected(ctx, frame, text, menu_ocr_lines=menu_ocr_lines)
+        return self._world_reward_tip_detected(ctx, frame, text, menu_ocr_fragments=menu_ocr_fragments)
 
     def _close_mail_world_reward_tip_if_present(self, ctx: dict[str, Any], runtime: FanxiuRuntime, frame: str, text: str) -> bool:
         return self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label="邮件_选择性领取")
@@ -1295,14 +1295,14 @@ class MailTaskMixin:
         mail_shape = self._find_shape(image35, "邮件")
         menu_shape = self._find_shape(image35, "菜单")
         if not require_world_scene and menu_shape:
-            ocr_lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
-            if self._mail_world_reward_tip_detected(ctx, frame, menu_ocr_lines=ocr_lines):
+            ocr_fragments = self._ocr_fragments_in_shapes(frame, image35, ("菜单",), padding=8)
+            if self._mail_world_reward_tip_detected(ctx, frame, menu_ocr_fragments=ocr_fragments):
                 self._log("info", "邮件_历史扫描：#35 菜单区域检测到世界奖励提示，先关闭提示")
                 return "blocked_reward_tip"
-            menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+            menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
             menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
             if not menu_matches:
-                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_lines):
+                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_fragments):
                     x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
                     with self._lock:
                         self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件标注", phase="mail_claim_click_world_menu_mail", current_scene=35)
@@ -1330,7 +1330,7 @@ class MailTaskMixin:
             runtime.click_frame_point(image35, x, y)
             yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
             return "success"
-        menu_matches = self._ocr_centers_in_shape(runtime.ocr_lines(frame), image35, "菜单", include=("邮件",))
+        menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
         menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
         if not menu_matches:
             return "missing"
@@ -1404,9 +1404,9 @@ class MailTaskMixin:
                     return "success"
 
             if not mail_shape:
-                ocr_lines = runtime.ocr_lines(frame)
-                last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_lines[-3:]) or last_ocr
-                menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+                ocr_fragments = runtime.ocr_fragments(frame)
+                last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_fragments[-3:]) or last_ocr
+                menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
                 menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
                 if menu_matches:
                     x, y, text = menu_matches[0]
@@ -1519,8 +1519,8 @@ class MailTaskMixin:
                 yield BehaviorTreeStatus.RUNNING
                 continue
             if menu_shape:
-                ocr_lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
-                menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+                ocr_fragments = self._ocr_fragments_in_shapes(frame, image35, ("菜单",), padding=8)
+                menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
                 menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
                 if menu_matches:
                     x, y = self._mail_world_menu_icon_click_point(image35, menu_matches[0][0], menu_matches[0][1])
@@ -1531,7 +1531,7 @@ class MailTaskMixin:
                     runtime.click_frame_point(image35, x, y)
                     yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                     return "success"
-                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_lines):
+                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_fragments):
                     x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
                     with self._lock:
                         self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件标注", phase="mail_claim_click_world_menu_mail", current_scene=35)
@@ -1557,7 +1557,7 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
                 yield BehaviorTreeStatus.RUNNING
                 continue
-            menu_matches = self._ocr_centers_in_shape(runtime.ocr_lines(frame), image35, "菜单", include=("邮件",))
+            menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
             if menu_matches:
                 x, y, text = menu_matches[0]
                 x, y = self._mail_world_menu_icon_click_point(image35, x, y)
@@ -1882,7 +1882,7 @@ class MailTaskMixin:
     ) -> list[dict[str, Any]]:
         started_at = time.monotonic()
         runtime = self._fanxiu_runtime(ctx, frame_data_url=frame)
-        lines = runtime.ocr_lines_in_shapes(image121, ("第1封", "邮件清单2"), frame_data_url=frame)
+        lines = runtime.ocr_fragments_in_shapes(image121, ("第1封", "邮件清单2"), frame_data_url=frame)
         first_rows = self._mail_rows_in_shape(lines, image121, "第1封")
         list_rows = self._mail_rows_in_shape(lines, image121, "邮件清单2")
         template_shape = self._find_shape(image121, "邮件模板")

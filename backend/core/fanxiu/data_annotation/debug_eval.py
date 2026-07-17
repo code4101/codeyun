@@ -104,9 +104,9 @@ class DataAnnotationRuntimeDebugContext:
 
     def ocr(self, frame: str | None = None) -> list[dict[str, Any]]:
         self.check_stop()
-        return self._runner._ocr_lines(frame or self.frame())
+        return self._runner._ocr_fragments(frame or self.frame())
 
-    def ocr_words_in_shapes(
+    def ocr_tokens_in_shapes(
         self,
         scene: int | str,
         shape_titles: list[str] | tuple[str, ...],
@@ -118,7 +118,7 @@ class DataAnnotationRuntimeDebugContext:
     ) -> list[dict[str, Any]]:
         self.check_stop()
         runtime = self._bound_runtime()
-        return runtime.ocr_words_in_shapes(
+        return runtime.ocr_tokens_in_shapes(
             scene,
             tuple(shape_titles),
             frame_data_url=frame_data_url or frame or self.frame(),

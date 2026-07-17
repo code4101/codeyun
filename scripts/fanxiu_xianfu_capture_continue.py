@@ -139,7 +139,7 @@ def _current_xianfu_status(runner: Any, ctx: dict[str, Any]) -> dict[str, Any]:
     status_text = ""
     cd_seconds: int | None = None
     if isinstance(image174, dict) and scene_id == 174:
-        lines = runner._ocr_lines_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
+        lines = runner._ocr_fragments_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
         status_text = runner._ocr_text(lines)
         cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
     return {

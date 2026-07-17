@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.core.fanxiu.game.macro_annotation import _recognize_data_annotation_ocr_frame
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
 from backend.core.fanxiu.runtime.mumu_control import screencap_mumu_adb_png
 from backend.core.temp_paths import codeyun_temp_root
 
@@ -202,9 +203,10 @@ def _capture_frame(output_dir: Path) -> tuple[Path, dict[str, Any]]:
     return path, meta
 
 
-def _ocr_lines(frame_path: Path) -> list[dict[str, Any]]:
+def _ocr_fragments(frame_path: Path) -> list[dict[str, Any]]:
     response = _recognize_data_annotation_ocr_frame(_image_to_data_url(frame_path))
-    return [line.model_dump() for line in response.lines]
+    tokens = [token.model_dump() for token in response.tokens]
+    return group_ocr_tokens(tokens)
 
 
 def _shape_title(shape: dict[str, Any]) -> str:
@@ -237,21 +239,21 @@ def _iter_images(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return images
 
 
-def _ocr_text_in_shape(lines: list[dict[str, Any]], shape: dict[str, Any], width: int, height: int, *, padding: int = 18) -> str:
+def _ocr_text_in_shape(fragments: list[dict[str, Any]], shape: dict[str, Any], width: int, height: int, *, padding: int = 18) -> str:
     x1 = float(shape.get("x") or 0) * width - padding
     y1 = float(shape.get("y") or 0) * height - padding
     x2 = (float(shape.get("x") or 0) + float(shape.get("w") or 0)) * width + padding
     y2 = (float(shape.get("y") or 0) + float(shape.get("h") or 0)) * height + padding
     texts: list[str] = []
-    for line in lines:
-        lx = float(line.get("x") or 0)
-        ly = float(line.get("y") or 0)
-        lw = float(line.get("w") or 0)
-        lh = float(line.get("h") or 0)
+    for fragment in fragments:
+        lx = float(fragment.get("x") or 0)
+        ly = float(fragment.get("y") or 0)
+        lw = float(fragment.get("w") or 0)
+        lh = float(fragment.get("h") or 0)
         cx = lx + lw / 2
         cy = ly + lh / 2
         if x1 <= cx <= x2 and y1 <= cy <= y2:
-            texts.append(str(line.get("text") or ""))
+            texts.append(str(fragment.get("text") or ""))
     return "".join(texts)
 
 
@@ -335,12 +337,12 @@ def audit_xianfu_assets(
         if audit_ocr and screenshot.is_file():
             with Image.open(screenshot) as frame:
                 width, height = frame.size
-            lines = _ocr_lines(screenshot)
+            fragments = _ocr_fragments(screenshot)
             for title, shape_spec in (spec.get("shapes") or {}).items():
                 expected_ocr = str(shape_spec.get("ocr") or "")
                 if not expected_ocr or title not in shapes_by_title:
                     continue
-                text = _ocr_text_in_shape(lines, shapes_by_title[title], width, height)
+                text = _ocr_text_in_shape(fragments, shapes_by_title[title], width, height)
                 row["ocr"][title] = text
                 if expected_ocr not in text:
                     role = str(shapes_by_title[title].get("ocrMatchRole") or "")
@@ -370,13 +372,13 @@ def audit_xianfu_assets(
     return result
 
 
-def _ocr_matches_for_label(label: str, lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ocr_matches_for_label(label: str, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keywords = SNAP_KEYWORDS.get(label, (label,))
     matches: list[dict[str, Any]] = []
-    for line in lines:
-        text = str(line.get("text") or "")
+    for fragment in fragments:
+        text = str(fragment.get("text") or "")
         if any(keyword and keyword in text for keyword in keywords):
-            matches.append(line)
+            matches.append(fragment)
     return matches
 
 
@@ -407,9 +409,9 @@ def _draw_box(draw: ImageDraw.ImageDraw, box: Box, color: tuple[int, int, int], 
     draw.text((box.x, max(0, box.y - 28)), label, fill=color, font=font)
 
 
-def _draw_ocr_line(draw: ImageDraw.ImageDraw, line: dict[str, Any], font: ImageFont.ImageFont | None) -> None:
-    box = Box(float(line.get("x") or 0), float(line.get("y") or 0), float(line.get("w") or 0), float(line.get("h") or 0))
-    text = str(line.get("text") or "")
+def _draw_ocr_fragment(draw: ImageDraw.ImageDraw, fragment: dict[str, Any], font: ImageFont.ImageFont | None) -> None:
+    box = Box(float(fragment.get("x") or 0), float(fragment.get("y") or 0), float(fragment.get("w") or 0), float(fragment.get("h") or 0))
+    text = str(fragment.get("text") or "")
     color = (30, 144, 255)
     draw.rectangle(box.as_xyxy(), outline=color, width=2)
     if text:
@@ -430,13 +432,13 @@ def build_candidates(
         raise FileNotFoundError(f"old labelme file not found: {old_json}")
     frame = Image.open(frame_path).convert("RGB")
     new_size = frame.size
-    lines = _ocr_lines(frame_path)
+    fragments = _ocr_fragments(frame_path)
     candidates: list[dict[str, Any]] = []
     for item in _load_old_shapes(old_json):
         label = str(item["label"] or "")
         old_box: Box = item["old_box"]
         projected = _project_box(old_box, old_crop, new_size)
-        matches = _ocr_matches_for_label(label, lines)
+        matches = _ocr_matches_for_label(label, fragments)
         snapped = _nearest_ocr_box(projected, matches)
         final = snapped or projected
         source = "ocr_snap" if snapped else "projected"
@@ -454,8 +456,8 @@ def build_candidates(
     annotated = frame.copy()
     draw = ImageDraw.Draw(annotated)
     font = _load_font()
-    for line in lines:
-        _draw_ocr_line(draw, line, font)
+    for fragment in fragments:
+        _draw_ocr_fragment(draw, fragment, font)
     for candidate in candidates:
         projected = Box(**candidate["projected_box"])
         final = Box(**candidate["final_box"])
@@ -473,7 +475,7 @@ def build_candidates(
         "frame_path": str(frame_path),
         "new_size": {"width": new_size[0], "height": new_size[1]},
         "annotated_path": str(annotated_path),
-        "ocr_lines": lines,
+        "ocr_fragments": fragments,
         "candidates": candidates,
         "ocr_verified": all(candidate["source"] == "ocr_snap" for candidate in candidates),
         "unverified_labels": [candidate["label"] for candidate in candidates if candidate["source"] != "ocr_snap"],

@@ -820,7 +820,7 @@ export interface FanxiuDataAnnotationFrameStructureResponse {
   frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
-export interface FanxiuDataAnnotationOcrFrameLine {
+export interface FanxiuDataAnnotationOcrFrameToken {
   text: string;
   x: number;
   y: number;
@@ -828,13 +828,8 @@ export interface FanxiuDataAnnotationOcrFrameLine {
   h: number;
 }
 
-export interface FanxiuDataAnnotationOcrFrameWord extends FanxiuDataAnnotationOcrFrameLine {
-  line_index?: number | null;
-}
-
 export interface FanxiuDataAnnotationOcrFrameResponse {
-  lines: FanxiuDataAnnotationOcrFrameLine[];
-  words: FanxiuDataAnnotationOcrFrameWord[];
+  tokens: FanxiuDataAnnotationOcrFrameToken[];
 }
 
 export interface FanxiuDataAnnotationRemoveBackgroundPayload {

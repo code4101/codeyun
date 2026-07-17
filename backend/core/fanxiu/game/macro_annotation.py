@@ -13,11 +13,10 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuGameWindow2MatchBox,
     FanxiuDataAnnotationMacroAnnotateRequest,
     FanxiuDataAnnotationMacroAnnotateResponse,
-    FanxiuDataAnnotationOcrFrameLine,
-    FanxiuDataAnnotationOcrFrameWord,
+    FanxiuDataAnnotationOcrFrameToken,
     FanxiuDataAnnotationOcrFrameResponse,
 )
-from backend.core.fanxiu.game.ocr_utils import _extract_ocr_line_entries, _join_ocr_line_entries, _sanitize_ocr_text
+from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.ocr.spatial_document import extract_ocr_tokens
 from backend.models import User
@@ -179,32 +178,13 @@ def _recognize_data_annotation_ocr_frame(
             temp_path = Path(file.name)
         preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle", options=options)
         document = preview.get("document") or {}
-        line_entries = _extract_ocr_line_entries(document)
-        lines: list[FanxiuDataAnnotationOcrFrameLine] = []
-        for entries in line_entries:
-            text = _join_ocr_line_entries(entries)
-            if not text:
-                continue
-            left = min(_coerce_float(item.get("x"), 0) for item in entries)
-            right = max(_coerce_float(item.get("x2"), _coerce_float(item.get("x"), 0) + _coerce_float(item.get("width"), 1)) for item in entries)
-            top = min(_coerce_float(item.get("y"), 0) - _coerce_float(item.get("height"), 1) / 2 for item in entries)
-            bottom = max(_coerce_float(item.get("y"), 0) + _coerce_float(item.get("height"), 1) / 2 for item in entries)
-            lines.append(
-                FanxiuDataAnnotationOcrFrameLine(
-                    text=text,
-                    x=max(0.0, left),
-                    y=max(0.0, top),
-                    w=max(1.0, right - left),
-                    h=max(1.0, bottom - top),
-                )
-            )
         flags = document.get("flags") if isinstance(document, dict) else {}
         payload = flags.get("paddleocr_payload") if isinstance(flags, dict) else None
-        words = [
-            FanxiuDataAnnotationOcrFrameWord.model_validate(item)
+        tokens = [
+            FanxiuDataAnnotationOcrFrameToken.model_validate(item)
             for item in extract_ocr_tokens(payload)
         ] if isinstance(payload, dict) else []
-        return FanxiuDataAnnotationOcrFrameResponse(lines=lines, words=words)
+        return FanxiuDataAnnotationOcrFrameResponse(tokens=tokens)
     except OcrPreviewError as exc:
         raise RuntimeError(str(exc)) from exc
     finally:

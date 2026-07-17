@@ -196,28 +196,40 @@ class FanxiuJupyterBinding:
             normalized = definition.normalize_payload(normalized)
 
         def execute_task():
-            # 启动级遮挡（例如重启模拟器后出现的“游戏公告”）不是业务
-            # 场景。必须在场景图寻路前先清理，否则局部素材可能把整张公告
-            # 误判成普通场景，并让 goto_view 在错误节点上反复点击。
-            yield from self.runner._clear_known_blocking_overlay_if_possible(
-                self.runtime_ctx,
-                self.stop_event,
-                label=definition.label,
-            )
-            if definition.stable_start_scene_id is not None:
-                yield from self.runtime.goto_view(definition.stable_start_scene_id)
-            value = definition.handler(
-                self.runner,
-                self.runtime_ctx,
-                normalized,
-                self.stop_event,
-            )
-            if isinstance(value, GeneratorType):
-                value = yield from value
-            result_name, _message = self.runner._normalize_runtime_task_result(value)
-            if definition.stable_start_scene_id is not None and result_name != "manual_check_pending":
-                yield from self.runtime.goto_view(definition.stable_start_scene_id)
-            return value
+            try:
+                # 启动级遮挡（例如重启模拟器后出现的“游戏公告”）不是业务
+                # 场景。必须在场景图寻路前先清理，否则局部素材可能把整张公告
+                # 误判成普通场景，并让 goto_view 在错误节点上反复点击。
+                yield from self.runner._clear_known_blocking_overlay_if_possible(
+                    self.runtime_ctx,
+                    self.stop_event,
+                    label=definition.label,
+                )
+                if definition.stable_start_scene_id is not None:
+                    yield from self.runtime.goto_view(definition.stable_start_scene_id)
+                value = definition.handler(
+                    self.runner,
+                    self.runtime_ctx,
+                    normalized,
+                    self.stop_event,
+                )
+                if isinstance(value, GeneratorType):
+                    value = yield from value
+                result_name, _message = self.runner._normalize_runtime_task_result(value)
+                if definition.stable_start_scene_id is not None and result_name != "manual_check_pending":
+                    yield from self.runtime.goto_view(definition.stable_start_scene_id)
+                return value
+            except Exception:
+                # AI/人工单步调试必须保留异常现场；只有 Scheduler 注入了
+                # __scheduler_task_id 的正式工程作业，失败后才强制归一回稳定
+                # 锚点。收尾失败仍保留原始异常，由 Scheduler 写回并整单重试。
+                if normalized.get("__scheduler_task_id") and definition.stable_start_scene_id == 34:
+                    self.runner._cleanup_failed_scheduler_task_to_world(
+                        ctx=self.runtime_ctx,
+                        asset_tree_path=self.asset_tree_path,
+                        task_label=definition.label,
+                    )
+                raise
 
         value = execute_task()
         return self.run(

@@ -249,7 +249,6 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuDataAnnotationMacroAnnotateRequest,
     FanxiuDataAnnotationMacroAnnotateResponse,
     FanxiuDataAnnotationMacroPoint,
-    FanxiuDataAnnotationOcrFrameLine,
     FanxiuDataAnnotationOcrFrameRequest,
     FanxiuDataAnnotationOcrFrameResponse,
     FanxiuDataAnnotationRemoveBackgroundRequest,
