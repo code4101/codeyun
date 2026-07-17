@@ -217,9 +217,9 @@ const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
     daily: '每日',
     weekly: '每周',
     dynamic: '动态',
-    manual: '按需',
+    manual: '手动',
   };
-  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '按需';
+  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '手动';
 };
 
 const pad2 = (value: number) => String(value).padStart(2, '0');
@@ -257,7 +257,7 @@ const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.retry_after) return `重试时间 ${task.retry_after}`;
   if (task.next_time) return task.next_time || '';
   if (task.schedule_kind === 'dynamic') return '动态作业未记录下次时间';
-  if (task.schedule_kind === 'manual') return '按需触发的作业实例没有固定下次触发时间';
+  if (task.schedule_kind === 'manual') return '手动触发的作业实例没有固定下次触发时间';
   return '';
 };
 
@@ -1070,7 +1070,7 @@ onUnmounted(() => {
 }
 
 .runtime-native-table.is-job-table {
-  width: 582px;
+  width: 516px;
 }
 
 .runtime-native-table th,
@@ -1086,6 +1086,16 @@ onUnmounted(() => {
 .runtime-native-table th:nth-child(2),
 .runtime-native-table td:nth-child(2) {
   width: 128px;
+}
+
+.runtime-native-table.is-job-table th:nth-child(2),
+.runtime-native-table.is-job-table td:nth-child(2) {
+  width: 184px;
+}
+
+.runtime-native-table.is-job-table th:nth-child(3),
+.runtime-native-table.is-job-table td:nth-child(3) {
+  width: 88px;
 }
 
 .runtime-native-table th:nth-child(3),

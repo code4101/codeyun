@@ -1406,7 +1406,7 @@ import {
   type FanxiuDataAnnotationRecognitionOpsIssue,
   type FanxiuDataAnnotationRecognitionOpsResponse,
   type FanxiuDataAnnotationMacroAnnotateResponse,
-  type FanxiuDataAnnotationOcrFrameLine,
+  type FanxiuDataAnnotationOcrFrameToken,
   type FanxiuDataAnnotationSchedulerTaskItem,
   type FanxiuDataAnnotationRuntimeLogEntry,
   type FanxiuPseudoCodeCard,
@@ -7241,9 +7241,9 @@ const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => 
     daily: '每日',
     weekly: '每周',
     dynamic: '动态',
-    manual: '按需',
+    manual: '手动',
   };
-  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '按需';
+  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '手动';
 };
 const formatRuntimeScheduleTime = (value: string) => {
   const text = String(value || '').trim();
@@ -9317,9 +9317,9 @@ const flattenShapes = (shapes: DataAnnotationShape[]): DataAnnotationShape[] => 
   shape,
   ...flattenShapes(shape.children ?? []),
 ]);
-const selectedImageOcrCandidates = ref<FanxiuDataAnnotationOcrFrameLine[]>([]);
+const selectedImageOcrCandidates = ref<FanxiuDataAnnotationOcrFrameToken[]>([]);
 const selectedImageOcrCandidateImageId = ref('');
-const imageOcrCandidateCache = new Map<string, Promise<FanxiuDataAnnotationOcrFrameLine[]>>();
+const imageOcrCandidateCache = new Map<string, Promise<FanxiuDataAnnotationOcrFrameToken[]>>();
 let selectedImageOcrProbeSeq = 0;
 
 const shapeHasOcrRule = (shape: DataAnnotationShape) => (
@@ -9328,7 +9328,7 @@ const shapeHasOcrRule = (shape: DataAnnotationShape) => (
 
 const ocrCandidateOverlapsShape = (
   shape: DataAnnotationShape,
-  candidate: FanxiuDataAnnotationOcrFrameLine,
+  candidate: FanxiuDataAnnotationOcrFrameToken,
   imageWidth: number,
   imageHeight: number,
 ) => {
@@ -10732,7 +10732,7 @@ const refreshSelectedImageOcrSuggestions = async () => {
     if (!pending) {
       pending = imageSourceToDataUrl(source)
         .then(recognizeFanxiuDataAnnotationOcrFrame)
-        .then((response) => response.words?.length ? response.words : response.lines)
+        .then((response) => response.tokens)
         .catch((error) => {
           imageOcrCandidateCache.delete(cacheKey);
           throw error;

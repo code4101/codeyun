@@ -421,26 +421,16 @@ class FanxiuDataAnnotationOcrFrameRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuDataAnnotationOcrFrameLine(BaseModel):
+class FanxiuDataAnnotationOcrFrameToken(BaseModel):
     text: str
     x: float
     y: float
     w: float
     h: float
-
-
-class FanxiuDataAnnotationOcrFrameWord(BaseModel):
-    text: str
-    x: float
-    y: float
-    w: float
-    h: float
-    line_index: int | None = None
 
 
 class FanxiuDataAnnotationOcrFrameResponse(BaseModel):
-    lines: list[FanxiuDataAnnotationOcrFrameLine] = Field(default_factory=list)
-    words: list[FanxiuDataAnnotationOcrFrameWord] = Field(default_factory=list)
+    tokens: list[FanxiuDataAnnotationOcrFrameToken] = Field(default_factory=list)
 
 
 class FanxiuDataAnnotationRemoveBackgroundRequest(BaseModel):

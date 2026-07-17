@@ -5,6 +5,8 @@ import threading
 from types import GeneratorType
 from pathlib import Path
 
+import pytest
+
 from backend.core.fanxiu.data_annotation import runtime_framework
 from backend.core.fanxiu.data_annotation import runtime_control
 from backend.core.fanxiu.runtime.kernel import FanxiuKernel
@@ -287,6 +289,80 @@ def test_manual_check_task_keeps_human_inspection_scene() -> None:
         "message": "请人工检查",
     }
     assert events == [("clear_overlay", "测试人工检查作业"), ("reset", 34), "business"]
+
+
+def test_failed_scheduler_task_cleans_up_to_world_but_manual_task_keeps_scene() -> None:
+    from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
+    from backend.core.fanxiu.runtime.jupyter_kernel import FanxiuJupyterBinding
+
+    events = []
+
+    @register_fanxiu_data_annotation_task_cell(
+        "test_failed_atomic_job",
+        "测试失败原子作业",
+        scheduler_supported=True,
+    )
+    def handler(_runner, _ctx, _payload, _stop_event):
+        events.append("business_error")
+        raise RuntimeError("业务失败")
+
+    class Runtime:
+        def goto_view(self, scene_id):
+            events.append(("reset", scene_id))
+            if False:
+                yield None
+
+    class Runner:
+        @staticmethod
+        def _clear_known_blocking_overlay_if_possible(_ctx, _stop_event, *, label):
+            events.append(("clear_overlay", label))
+            if False:
+                yield None
+
+        @staticmethod
+        def _task_timeout_seconds(_payload):
+            return 60.0
+
+        @staticmethod
+        def _runtime_guard_override_from_payload(_payload):
+            return None
+
+        @staticmethod
+        def _cleanup_failed_scheduler_task_to_world(*, ctx, asset_tree_path, task_label):
+            events.append(("failure_cleanup", ctx, asset_tree_path, task_label))
+            return True
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.runtime = Runtime()
+    binding.runtime_ctx = {"entry_id": "entry"}
+    binding.asset_tree_path = Path("asset-tree.json")
+    binding.stop_event = threading.Event()
+
+    def drain(value, **_kwargs):
+        if not isinstance(value, GeneratorType):
+            return value
+        while True:
+            try:
+                next(value)
+            except StopIteration as stop:
+                return stop.value
+
+    binding.run = drain
+
+    with pytest.raises(RuntimeError, match="业务失败"):
+        binding.run_task("test_failed_atomic_job", {"__scheduler_task_id": "scheduled-job"})
+    assert events[-1] == (
+        "failure_cleanup",
+        {"entry_id": "entry"},
+        Path("asset-tree.json"),
+        "测试失败原子作业",
+    )
+
+    events.clear()
+    with pytest.raises(RuntimeError, match="业务失败"):
+        binding.run_task("test_failed_atomic_job", {})
+    assert not any(event[0] == "failure_cleanup" for event in events if isinstance(event, tuple))
 
 
 def test_jupyter_binding_end_cell_tolerates_missing_pre_run_cell() -> None:

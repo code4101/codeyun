@@ -1145,7 +1145,7 @@ class DailyChallengeTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             scene_id, score, frame = runtime.current_scene([188, 189, 69, 34], update=True)
-            lines = runtime.ocr_lines(frame)
+            lines = runtime.ocr_fragments(frame)
             text = runtime.ocr_text(frame)
             if self._daily_free_challenge_text_is_purchase_modal(text):
                 return (yield from self._finish_daily_free_challenge_purchase_modal(
@@ -1521,7 +1521,7 @@ class DailyChallengeTaskMixin:
                         current_scene=69,
                     )
                 frame = runtime.cur_frame(update=True)
-                lines = runtime.ocr_lines(frame)
+                lines = runtime.ocr_fragments(frame)
                 matches = self._daily_assistant_entry_matches(lines, image69)
                 if matches:
                     x, y, matched_text = matches[0]
@@ -1650,9 +1650,9 @@ class DailyChallengeTaskMixin:
 
     def _daily_assistant_click_visible_exit(self, runtime: Any, frame: Any, *, scene_hint: int = 275) -> bool:
         try:
-            lines = runtime.ocr_lines(frame)
+            lines = runtime.ocr_fragments(frame)
         except TypeError:
-            lines = runtime.ocr_lines()
+            lines = runtime.ocr_fragments()
         except Exception:
             lines = []
         candidates: list[tuple[float, float, float]] = []
@@ -2234,7 +2234,7 @@ class DailyChallengeTaskMixin:
                         current_scene=69,
                     )
                 frame = runtime.cur_frame(update=True)
-                lines = runtime.ocr_lines(frame)
+                lines = runtime.ocr_fragments(frame)
                 text = runtime.ocr_text(frame)
                 matches = self._daily_xianyuan_entry_matches(lines, image69)
                 if matches:
@@ -2453,7 +2453,7 @@ class DailyChallengeTaskMixin:
                 for scroll_index in range(scroll_count + 1):
                     self._raise_if_stopped(stop_event)
                     frame = runtime.cur_frame(update=True)
-                    lines = runtime.ocr_lines(frame)
+                    lines = runtime.ocr_fragments(frame)
                     candidates = self._daily_xianyuan_list_target_candidates(lines, image197, payload)
                     if candidates:
                         x, y, matched_text = candidates[0]
@@ -2596,7 +2596,7 @@ class DailyChallengeTaskMixin:
             raise RuntimeError("日常_挑战仙缘：缺少 #199「仙缘人物对话」标注，无法发起挑战")
         observer = self._fanxiu_observer(ctx, stop_event)
         frame = observer.cur_frame(update=True)
-        lines = observer.ocr_lines(frame)
+        lines = observer.ocr_fragments(frame)
         text = observer.ocr_text(frame)
         teach_matches = self._daily_xianyuan_dialogue_button_matches(lines, image199, r"教他做人")
         if not teach_matches:
@@ -2704,7 +2704,7 @@ class DailyChallengeTaskMixin:
             scene_id, _score, frame = observer.current_scene(challenge_scene_ids, update=True)
             if scene_id in {200, 201, 202, 203}:
                 break
-            lines = observer.ocr_lines(frame)
+            lines = observer.ocr_fragments(frame)
             teach_matches = self._daily_xianyuan_text_button_matches(
                 lines,
                 r"教他做人",
@@ -2728,7 +2728,7 @@ class DailyChallengeTaskMixin:
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
             scene_id, _score, frame = observer.current_scene(challenge_scene_ids, update=True)
-            lines = observer.ocr_lines(frame)
+            lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             if scene_id == 201:
                 break
@@ -2784,7 +2784,7 @@ class DailyChallengeTaskMixin:
             scene_id, _score, frame = observer.current_scene(challenge_scene_ids, update=True)
             if scene_id == 202:
                 break
-            lines = observer.ocr_lines(frame)
+            lines = observer.ocr_fragments(frame)
             matches = self._daily_xianyuan_text_button_matches(
                 lines,
                 r"继续",
@@ -2863,7 +2863,7 @@ class DailyChallengeTaskMixin:
                 with self._lock:
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
                 return "success"
-            lines = observer.ocr_lines(frame)
+            lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             last_text = text or last_text
             if self._daily_lingta_text_is_world_like(text):

@@ -236,8 +236,8 @@ def test_extract_ocr_tokens_supports_paddlex_3_text_word_fields() -> None:
     )
 
     assert [token["text"] for token in tokens] == ["真", "仙", "试", "炼", "2", "/", "2"]
-    assert tokens[0] == {"text": "真", "x": 10.0, "y": 20.0, "w": 20.0, "h": 30.0, "line_index": 0}
-    assert tokens[-1]["line_index"] == 1
+    assert tokens[0] == {"text": "真", "x": 10.0, "y": 20.0, "w": 20.0, "h": 30.0}
+    assert tokens[-1] == {"text": "2", "x": 126.0, "y": 80.0, "w": 12.0, "h": 20.0}
 
 
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(

@@ -54,7 +54,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
 from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _reference_frame_similarity
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
-from backend.core.fanxiu.data_annotation.ocr_spatial import locate_text_box, query_spatial_ocr, union_fragment_box
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr, union_fragment_box
 from backend.core.fanxiu.data_annotation.slider_control import (
     BalancedPointState,
     DiscreteSliderScale,
@@ -377,11 +377,15 @@ class FanxiuRuntime(Runtime):
 
     def ocr_text(self, frame_data_url: str | None = None, *, update: bool = False) -> str:
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
-        return self.runner._ocr_text(self.runner._cached_ocr_lines(self.ctx, frame))
+        return self.runner._ocr_text(self.runner._cached_ocr_fragments(self.ctx, frame))
 
-    def ocr_lines(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+    def ocr_fragments(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
-        return self.runner._cached_ocr_lines(self.ctx, frame)
+        return self.runner._cached_ocr_fragments(self.ctx, frame)
+
+    def ocr_tokens(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+        return self.runner._cached_ocr_tokens(self.ctx, frame)
 
     def clear_frame(self) -> None:
         self.frame_data_url = None
@@ -1283,7 +1287,7 @@ class FanxiuRuntime(Runtime):
         optional_clean = [clean(item) for item in optional]
 
         def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
-            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_lines(runtime.ctx, frame))
+            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_fragments(runtime.ctx, frame))
             haystack = clean(text)
             required_ok = all(item in haystack for item in required_clean)
             optional_ok = True if not optional_clean else any(item in haystack for item in optional_clean)
@@ -1301,7 +1305,7 @@ class FanxiuRuntime(Runtime):
         preview_chars: int = 60,
     ) -> _FanxiuWaitCondition:
         def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
-            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_lines(runtime.ctx, frame))
+            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_fragments(runtime.ctx, frame))
             matched = bool(predicate(text))
             preview = _sanitize_ocr_text(text)[: max(0, int(preview_chars))]
             return _FanxiuWaitResult(matched, f"{label} {'命中' if matched else '未命中'}：{preview}")
@@ -1611,7 +1615,7 @@ class FanxiuRuntime(Runtime):
     ) -> list[tuple[float, float, str]]:
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        lines = self.runner._cached_ocr_fragments(self.ctx, frame)
         target_shape = self.resolve_shape_selector(target_view, shape_title)
         source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_row_clicks_in_shape(
@@ -1634,20 +1638,20 @@ class FanxiuRuntime(Runtime):
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         cached = self.runner._shared_spatial_ocr_result(self.ctx, frame)
-        lines = cached.get("lines") if isinstance(cached.get("lines"), list) else []
-        words = cached.get("words") if isinstance(cached.get("words"), list) else []
+        tokens = cached.get("tokens") if isinstance(cached.get("tokens"), list) else []
+        fragments = group_ocr_tokens(tokens)
         target_shape = self.resolve_shape_selector(target_view, shape_title)
         source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_centers_in_shape(
-            lines,
+            fragments,
             source_view.raw,
             shape_title,
             include=include,
             exclude=exclude,
-            words=words,
+            tokens=tokens,
         )
 
-    def ocr_lines_in_shapes(
+    def ocr_fragments_in_shapes(
         self,
         view: View | int | str | dict[str, Any],
         shape_titles: Iterable[str],
@@ -1658,9 +1662,9 @@ class FanxiuRuntime(Runtime):
     ) -> list[dict[str, Any]]:
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options, ctx=self.ctx)
+        return self.runner._ocr_fragments_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options, ctx=self.ctx)
 
-    def ocr_words_in_shapes(
+    def ocr_tokens_in_shapes(
         self,
         view: View | int | str | dict[str, Any],
         shape_titles: Iterable[str],
@@ -1672,7 +1676,7 @@ class FanxiuRuntime(Runtime):
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         ocr_options = {"return_word_box": True, **dict(options or {})}
-        return self.runner._ocr_words_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=ocr_options, ctx=self.ctx)
+        return self.runner._ocr_tokens_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=ocr_options, ctx=self.ctx)
 
     def ocr_text_in_shapes(
         self,
@@ -1683,7 +1687,7 @@ class FanxiuRuntime(Runtime):
         frame_data_url: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> str:
-        lines = self.ocr_lines_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url, options=options)
+        lines = self.ocr_fragments_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url, options=options)
         return self.runner._ocr_text(lines)
 
     def ocr_numbers_in_shapes(
@@ -1746,9 +1750,9 @@ class FanxiuRuntime(Runtime):
         for attempt in range(1, attempts + 1):
             frame = self.cur_frame(update=True)
             cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
-            cached_lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
-            cached_words = cached_ocr.get("words") if isinstance(cached_ocr.get("words"), list) else []
-            observation = find_labeled_percentage(cached_lines, label)
+            cached_tokens = cached_ocr.get("tokens") if isinstance(cached_ocr.get("tokens"), list) else []
+            cached_fragments = group_ocr_tokens(cached_tokens)
+            observation = find_labeled_percentage(cached_fragments, label)
             if observation is None:
                 raise RuntimeError(f"未从当前画面读到滑杆「{label}」的百分比")
             current, observed_text = observation.value, observation.text
@@ -1767,12 +1771,10 @@ class FanxiuRuntime(Runtime):
 
             active_track_box = dict(track_box)
             if anchor_offset_y is not None:
-                # A normalized OCR line can span several visually unrelated
-                # rows.  Anchor the track to the matched label's character
-                # tokens first; only fall back to the coarse line geometry
-                # when Paddle did not return word/character boxes.
-                label_box = locate_text_box(cached_words, label)
-                anchor_geometry = label_box or observation.line
+                label_box = locate_text_box(cached_tokens, label)
+                if label_box is None:
+                    raise RuntimeError(f"未从 OCR token 定位到滑杆标题「{label}」")
+                anchor_geometry = label_box
                 live_anchor_center_y = (
                     float(anchor_geometry.get("y") or 0)
                     + float(anchor_geometry.get("h") or 0) / 2
@@ -1803,8 +1805,8 @@ class FanxiuRuntime(Runtime):
 
         frame = self.cur_frame(update=True)
         cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
-        cached_lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
-        observation = find_labeled_percentage(cached_lines, label)
+        cached_tokens = cached_ocr.get("tokens") if isinstance(cached_ocr.get("tokens"), list) else []
+        observation = find_labeled_percentage(group_ocr_tokens(cached_tokens), label)
         after = observation.value if observation is not None else None
         raise RuntimeError(
             f"滑杆「{label}」调整失败：目标 {target}%，{attempts} 次拖拽后为 "
@@ -1932,8 +1934,8 @@ class FanxiuRuntime(Runtime):
         self.view(view)  # Fail early when the requested asset is unavailable.
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
-        lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
-        observation = find_current_trial_difficulty(lines)
+        tokens = cached_ocr.get("tokens") if isinstance(cached_ocr.get("tokens"), list) else []
+        observation = find_current_trial_difficulty(group_ocr_tokens(tokens))
         if observation is None:
             raise RuntimeError("未从当前画面读取到“当前难度为 N 级”")
         return observation
@@ -1970,8 +1972,8 @@ class FanxiuRuntime(Runtime):
         def label_visible(label: str) -> bool:
             frame = self.cur_frame(update=True)
             cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
-            lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
-            return any(label in re.sub(r"\s+", "", str(line.get("text") or "")) for line in lines)
+            tokens = cached_ocr.get("tokens") if isinstance(cached_ocr.get("tokens"), list) else []
+            return any(label in re.sub(r"\s+", "", str(fragment.get("text") or "")) for fragment in group_ocr_tokens(tokens))
 
         def ensure_axis_visible(label: str, direction: str):
             for scroll_index in range(max_scrolls_per_axis + 1):
@@ -3014,7 +3016,8 @@ class FanxiuRuntime(Runtime):
         item_template = self.resolve_shape_selector(target_view, template_shape)
         anchor_shape = self._resolve_floating_item_field(target_view, item_template, anchor_field)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        tokens = self.runner._cached_ocr_tokens(self.ctx, frame)
+        fragments = group_ocr_tokens(tokens)
         container_box = (
             _absolute_shape_box(self.resolve_shape_selector(target_view, container_shape))
             if container_shape is not None
@@ -3024,11 +3027,12 @@ class FanxiuRuntime(Runtime):
         anchor_template_box = _absolute_shape_box(anchor_shape)
         target_text = _sanitize_ocr_text(anchor_shape.raw.get("ocrText") or anchor_shape.title)
         mode = str(anchor_shape.raw.get("ocrMatchMode") or "contains")
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in fragments:
+            text = _sanitize_ocr_text(fragment.get("text"))
             if not text or not target_text or not self.runner._ocr_text_matches(text, target_text, mode):
                 continue
-            resolved_box = self.runner._ocr_match_resolved_box(line, target_text, mode) or self.runner._ocr_line_box(line)
+            fragment_tokens = query_spatial_ocr(tokens, fragment)["tokens"]
+            resolved_box = locate_text_box(fragment_tokens, target_text)
             if resolved_box is None:
                 continue
             center_x = float(resolved_box.get("x") or 0) + float(resolved_box.get("w") or 0) / 2
@@ -3070,13 +3074,8 @@ class FanxiuRuntime(Runtime):
         field_shape = self._resolve_floating_item_field(item.view, item.template_shape, field)
         field_box = self._padded_box(item.field_box(field_shape), padding)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        lines = self.runner._cached_ocr_lines(self.ctx, frame)
-        selected: list[dict[str, Any]] = []
-        for line in lines:
-            line_box = self.runner._ocr_line_box(line)
-            if line_box is not None and self.runner._ocr_line_overlaps_box(line, field_box):
-                selected.append(line)
-        return self.runner._ocr_text(selected)
+        tokens = self.runner._cached_ocr_tokens(self.ctx, frame)
+        return str(query_spatial_ocr(tokens, field_box).get("text") or "")
 
     def click_floating_item_field(
         self,
@@ -3581,7 +3580,7 @@ class FanxiuRuntime(Runtime):
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         return self._daily_entry_matches(
-            self.ocr_lines(frame),
+            self.ocr_fragments(frame),
             target_view,
             title_pattern=title_pattern,
             exclude_pattern=exclude_pattern,
@@ -3599,13 +3598,14 @@ class FanxiuRuntime(Runtime):
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         cached = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+        tokens = cached.get("tokens") if isinstance(cached.get("tokens"), list) else []
         return self.runner._ocr_centers_in_shape(
-            cached.get("lines") if isinstance(cached.get("lines"), list) else [],
+            group_ocr_tokens(tokens),
             target_view.raw,
             shape_title,
             include=include,
             exclude=exclude,
-            words=cached.get("words") if isinstance(cached.get("words"), list) else [],
+            tokens=tokens,
         )
 
     def _daily_text_is_daily_list(self, text: str) -> bool:
@@ -3653,9 +3653,11 @@ class FanxiuRuntime(Runtime):
         progress_can_mark_done: bool = True,
         max_scrolls: int = 30,
         reverse_scrolls: int = 0,
+        initial_checks: int = 1,
     ):
         view69 = self.view(69)
         list_shape = self.shape(view69, "滚动窗口")
+        initial_checks = max(1, int(initial_checks or 1))
         passes: list[tuple[str, int]] = [("down", max(0, int(max_scrolls)))]
         if int(reverse_scrolls) > 0:
             passes.append(("up", int(reverse_scrolls)))
@@ -3664,42 +3666,54 @@ class FanxiuRuntime(Runtime):
             for scroll_index in range(scroll_count + 1):
                 if self.stop_event is not None:
                     self.runner._raise_if_stopped(self.stop_event)
-                self._emit_runtime_action(
-                    f"{label}：查找日常任务入口 {direction} {scroll_index}/{scroll_count}",
-                    phase="daily_entry_find",
-                    kind="wait",
-                    current_scene=69,
-                )
-                frame = self.cur_frame(update=True)
-                lines = self.runner._cached_ocr_lines(self.ctx, frame)
-                self._ensure_daily_list_frame(frame, lines, label=label)
-                matches = self._daily_entry_matches(
-                    lines,
-                    view69,
-                    title_pattern=title_pattern,
-                    exclude_pattern=exclude_pattern,
-                )
-                if matches:
-                    x, y, matched_text = matches[0]
-                    progress = self._daily_entry_row_progress(lines, y)
-                    if progress_can_mark_done and progress is not None and progress[0] >= progress[1]:
-                        return "done"
+                check_count = initial_checks if direction == "down" and scroll_index == 0 else 1
+                for check_index in range(check_count):
                     self._emit_runtime_action(
-                        f"{label}：点击日常任务 {matched_text}",
-                        phase="daily_entry_click",
-                        kind="click",
+                        (
+                            f"{label}：第一屏重复识别 {check_index + 1}/{check_count}"
+                            if check_count > 1
+                            else f"{label}：查找日常任务入口 {direction} {scroll_index}/{scroll_count}"
+                        ),
+                        phase="daily_entry_find",
+                        kind="wait",
                         current_scene=69,
                     )
-                    self.click_frame_point(view69, x, y)
-                    yield from self.wait_action_settle()
-                    return "open"
+                    frame = self.cur_frame(update=True)
+                    lines = self.runner._cached_ocr_fragments(self.ctx, frame)
+                    self._ensure_daily_list_frame(frame, lines, label=label)
+                    matches = self._daily_entry_matches(
+                        lines,
+                        view69,
+                        title_pattern=title_pattern,
+                        exclude_pattern=exclude_pattern,
+                    )
+                    if matches:
+                        x, y, matched_text = matches[0]
+                        progress = self._daily_entry_row_progress(lines, y)
+                        if progress_can_mark_done and progress is not None and progress[0] >= progress[1]:
+                            return "done"
+                        self._emit_runtime_action(
+                            f"{label}：点击日常任务 {matched_text}",
+                            phase="daily_entry_click",
+                            kind="click",
+                            current_scene=69,
+                        )
+                        self.click_frame_point(view69, x, y)
+                        yield from self.wait_action_settle()
+                        return "open"
+                    if check_index + 1 < check_count:
+                        self.runner._log(
+                            "detail",
+                            f"{label}：第一屏暂未识别到入口，保持列表不动并等待下一 tick {check_index + 1}/{check_count}",
+                        )
+                        yield BehaviorTreeStatus.RUNNING
                 if scroll_index >= scroll_count:
                     break
                 self.runner._log("action", f"{label}：未找到入口，{direction} 滚动日常列表 {scroll_index + 1}")
                 before_visible_signature = self._daily_visible_list_signature(lines, view69)
                 changed = yield from self.scroll_shape_content(view69, list_shape, direction=direction)
                 after_frame = self.cur_frame(update=True)
-                after_lines = self.runner._cached_ocr_lines(self.ctx, after_frame)
+                after_lines = self.runner._cached_ocr_fragments(self.ctx, after_frame)
                 after_visible_signature = self._daily_visible_list_signature(after_lines, view69)
                 if after_visible_signature and after_visible_signature != before_visible_signature:
                     changed = True
@@ -4880,7 +4894,7 @@ class DataAnnotationRuntimeRunner(
         asset_tree_path = ctx.get("asset_tree_path")
         if isinstance(asset_tree_path, Path):
             runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame_data_url, stop_event=stop_event)
-            required_methods = ("cur_frame", "current_scene", "ocr_lines", "ocr_text", "clear_frame")
+            required_methods = ("cur_frame", "current_scene", "ocr_fragments", "ocr_text", "clear_frame")
             if all(hasattr(runtime, name) for name in required_methods):
                 return runtime
 
@@ -4909,13 +4923,13 @@ class DataAnnotationRuntimeRunner(
                 scene_id, score = runner._identify_scene_number(ctx, frame, views)
                 return scene_id, float(score or 0.0), frame
 
-            def ocr_lines(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+            def ocr_fragments(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
                 frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
-                return runner._cached_ocr_lines(ctx, frame)
+                return runner._cached_ocr_fragments(ctx, frame)
 
             def ocr_text(self, frame_data_url: str | None = None, *, update: bool = False) -> str:
                 frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
-                return runner._ocr_text(self.ocr_lines(frame))
+                return runner._ocr_text(self.ocr_fragments(frame))
 
             def click_frame_point(self, view: View | dict[str, Any], x: float, y: float) -> None:
                 image = view.raw if isinstance(view, View) else view
@@ -4982,7 +4996,7 @@ class DataAnnotationRuntimeRunner(
                 frame = runtime.cur_frame(update=update) if hasattr(runtime, "cur_frame") else self._screencap(ctx)
             scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
         try:
-            text = runtime.ocr_text(frame) if hasattr(runtime, "ocr_text") else self._ocr_text(self._ocr_lines(frame))
+            text = runtime.ocr_text(frame) if hasattr(runtime, "ocr_text") else self._ocr_text(self._ocr_fragments(frame))
         except Exception:
             text = ""
         return scene_id, float(score or 0.0), frame, text
@@ -4999,7 +5013,7 @@ class DataAnnotationRuntimeRunner(
         if hasattr(runtime, "ocr_text_in_shapes"):
             return runtime.ocr_text_in_shapes(view, tuple(shape_titles), frame_data_url=frame_data_url, padding=padding)
         image = view.raw if isinstance(view, View) else view
-        return self._ocr_text(self._ocr_lines_in_shapes(frame_data_url, image, tuple(shape_titles), padding=padding))
+        return self._ocr_text(self._ocr_fragments_in_shapes(frame_data_url, image, tuple(shape_titles), padding=padding))
 
     def _runtime_guard_enabled(self, guard_id: str) -> bool:
         guard_id = str(guard_id or "").strip()
@@ -5296,8 +5310,8 @@ class DataAnnotationRuntimeRunner(
             return titles
 
         frame = self._screencap(ctx)
-        ocr_lines = self._ocr_lines(frame)
-        text = self._ocr_text(ocr_lines)
+        ocr_fragments = self._ocr_fragments(frame)
+        text = self._ocr_text(ocr_fragments)
         if "游戏公告" in text or ("更新公告" in text and "风险提醒" in text):
             image = self._find_asset_image_by_title(ctx, "游戏公告")
             close_shape = self._known_game_announcement_action_shape(image)
@@ -5788,7 +5802,7 @@ class DataAnnotationRuntimeRunner(
         if scene_id == 228:
             yield from self._select_daily_youli_tab_from_menu_if_visible(ctx, stop_event, payload, image228, task_label=task_label)
         frame = self._screencap(ctx)
-        text = self._ocr_text(self._ocr_lines(frame))
+        text = self._ocr_text(self._ocr_fragments(frame))
         scene_id, _score = self._identify_scene_number(ctx, frame, [228, 71])
         if scene_id == 71:
             self._log("success", f"{task_label}：主线快路径进入修仙传菜单")
@@ -5844,18 +5858,20 @@ class DataAnnotationRuntimeRunner(
         if not isinstance(image71, dict):
             raise RuntimeError(f"{task_label}：缺少 #71「修仙传」标注，无法从菜单选择游历")
         frame = self._screencap(ctx)
-        lines = self._ocr_lines(frame)
+        tokens = self._ocr_tokens(frame)
+        fragments = group_ocr_tokens(tokens)
         width, height = self._frame_size(image71)
         min_y = height * float(payload.get("youli_menu_min_y_ratio") or 0.62)
         candidates: list[tuple[float, float, str]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in fragments:
+            text = _sanitize_ocr_text(fragment.get("text"))
             if "游历" not in text:
                 continue
-            center = self._ocr_substring_center(line, "游历")
-            if center is None:
+            target_box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], "游历")
+            if target_box is None:
                 continue
-            cx, cy = center
+            cx = float(target_box["x"]) + float(target_box["w"]) / 2
+            cy = float(target_box["y"]) + float(target_box["h"]) / 2
             if cy >= min_y:
                 candidates.append((cx, cy, text))
         if not candidates:
@@ -6029,21 +6045,18 @@ class DataAnnotationRuntimeRunner(
             return
         width, height = self._frame_size(image34)
         candidates: list[tuple[float, float, str]] = []
-        for line in runtime.ocr_lines(frame):
-            line_text = _sanitize_ocr_text(line.get("text"))
-            if "世界" not in line_text:
+        tokens = runtime.ocr_tokens(frame)
+        for fragment in group_ocr_tokens(tokens):
+            fragment_text = _sanitize_ocr_text(fragment.get("text"))
+            if "世界" not in fragment_text:
                 continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            cx = x + w / 2
-            cy = y + h / 2
+            target_box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], "世界")
+            if target_box is None:
+                continue
+            cx = float(target_box["x"]) + float(target_box["w"]) / 2
+            cy = float(target_box["y"]) + float(target_box["h"]) / 2
             if cx <= width * 0.22 and cy >= height * 0.72:
-                center = self._ocr_substring_center(line, "世界")
-                if center is not None:
-                    cx, cy = center
-                candidates.append((float(cx), float(cy), line_text))
+                candidates.append((float(cx), float(cy), fragment_text))
         if not candidates:
             return
         x, y, source_text = sorted(candidates, key=lambda item: (item[1], item[0]))[-1]
@@ -6196,7 +6209,7 @@ class DataAnnotationRuntimeRunner(
             self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
             last_text = text or last_text
             if self._daily_shuangxiu_text_is_invite(text):
                 with self._lock:
@@ -6302,7 +6315,7 @@ class DataAnnotationRuntimeRunner(
             self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
             last_text = text or last_text
             if self._daily_shuangxiu_text_is_training_ready(text):
                 with self._lock:
@@ -6373,7 +6386,7 @@ class DataAnnotationRuntimeRunner(
             self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
             last_text = text or last_text
             if self._daily_shuangxiu_text_is_complete(text):
                 with self._lock:
@@ -6444,7 +6457,7 @@ class DataAnnotationRuntimeRunner(
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
             scene_id, score = self._identify_scene_number(ctx, frame, [34, 289, 86])
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
             last_text = text or last_text
             if scene_id == 34 or self._daily_lingta_text_is_world_like(text):
                 return self._complete_daily_shuangxiu_after_continue(current_scene=34)
@@ -6512,7 +6525,7 @@ class DataAnnotationRuntimeRunner(
             yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=settle_seconds)
         frame = self._screencap(ctx)
         scene_id, _score = self._identify_scene_number(ctx, frame, [289, 86])
-        text = self._ocr_text(self._ocr_lines(frame))
+        text = self._ocr_text(self._ocr_fragments(frame))
         if scene_id in {289, 86} or self._leave_scene_confirm_text(text):
             yield from self._confirm_daily_shuangxiu_leave(ctx, stop_event, payload, scene_id=scene_id)
 
@@ -6656,7 +6669,7 @@ class DataAnnotationRuntimeRunner(
                     self._log_locked("success", f"{label}：已到达 #{scene_id} {score:.0f}%")
                 return int(scene_id), float(score)
             if 34 in scene_ids:
-                text = self._ocr_text(self._ocr_lines(frame))
+                text = self._ocr_text(self._ocr_fragments(frame))
                 if self._daily_lingta_text_is_world_like(text):
                     with self._lock:
                         self._status.update({"current_scene": 34, "updated_at": time.time()})
@@ -6727,7 +6740,7 @@ class DataAnnotationRuntimeRunner(
             self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
-            text = self._ocr_text(self._ocr_lines(frame))
+            text = self._ocr_text(self._ocr_fragments(frame))
             last_text = text or last_text
             scene_id, score = self._identify_scene_number(ctx, frame, [184])
             if scene_id == 184 or self._daily_lingzu_text_is_detail(text):
@@ -6745,7 +6758,7 @@ class DataAnnotationRuntimeRunner(
                     current_scene=scene_id,
                 )
         frame = self._screencap(ctx)
-        detail_text = self._ocr_text(self._ocr_lines(frame))
+        detail_text = self._ocr_text(self._ocr_fragments(frame))
         if self._daily_lingzu_remaining_zero(detail_text):
             self._record_daily_lingzu_done(payload, message="详情页显示今日剩余次数 0/1")
             return "done"
@@ -6770,7 +6783,7 @@ class DataAnnotationRuntimeRunner(
 
     def _ensure_xianfu_learn_skill_xianpin_tab(self, runtime: FanxiuRuntime, image176: dict[str, Any]):
         frame = runtime.cur_frame(update=True)
-        status_text = self._ocr_text(self._ocr_lines_in_shapes(frame, image176, ("状态", "价格"), padding=16))
+        status_text = self._ocr_text(self._ocr_fragments_in_shapes(frame, image176, ("状态", "价格"), padding=16))
         if _parse_xianfu_skill_cd_seconds(status_text) is not None:
             self._log("detail", f"仙府_领悟绝技：当前绝技页状态区已可读，跳过重复切换仙品绝技：{status_text}")
             return frame
@@ -7127,7 +7140,7 @@ class DataAnnotationRuntimeRunner(
 
         matches: list[dict[str, Any]] = []
         # Keep one fact frame hot while evaluating every reference rule.  Scene
-        # scoring shares OCR by current frame through ctx["_ocr_lines_cache"];
+        # scoring shares OCR by current frame through ctx["_ocr_tokens_cache"];
         # iterating references first would cycle through every fact image and
         # evict/expire that OCR result before the next OCR rule can reuse it.
         # With facts outermost, a full matrix performs at most one OCR pass per
@@ -7267,7 +7280,7 @@ class DataAnnotationRuntimeRunner(
         if not candidate_scene_ids:
             return None, 0.0, "no_candidates"
         if 86 in candidate_scene_ids:
-            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
             if self._leave_scene_confirm_text(text):
                 if trace is not None:
                     trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr", "model": "graph"})
@@ -7414,7 +7427,7 @@ class DataAnnotationRuntimeRunner(
         score: float,
     ) -> bool:
         if int(scene_id) == 71:
-            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
             if self._game_cover_scene_ocr_text(text):
                 self._log("detail", f"场景识别降级：#71 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 是 #18 登录封面，OCR={text[:120]}")
                 return False
@@ -7423,7 +7436,7 @@ class DataAnnotationRuntimeRunner(
                 return False
             return True
         if int(scene_id) == 180:
-            text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
             if self._daily_boss_fighting_scene_ocr_confirmed_text(text):
                 return True
             self._log("detail", f"场景识别降级：#180 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像首领战斗，OCR={text[:120]}")
@@ -7432,7 +7445,7 @@ class DataAnnotationRuntimeRunner(
             return True
         if not isinstance(ctx.get("asset_tree"), list):
             return True
-        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
         if self._world_scene_ocr_confirmed_text(text):
             return True
         self._log("detail", f"场景识别降级：#34 图像命中 {float(score or 0):.0f}% 但 OCR 不像世界，OCR={text[:120]}")
@@ -7467,6 +7480,27 @@ class DataAnnotationRuntimeRunner(
         world_markers = ("大地图", "储物袋", "仙市", "仙府", "天机阁", "角色", "装备", "星海", "功法书")
         return sum(1 for marker in world_markers if marker in compact) >= 2
 
+    def _target_world_scene_ocr_confirmed(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        target_scene_id: int,
+    ) -> bool:
+        """Treat strong world semantics as a terminal #34 condition.
+
+        The world background and side promotions change often, so the #34
+        reference image can temporarily miss even after navigation has already
+        arrived.  Continuing unknown recovery from that point is dangerous:
+        coordinates belonging to another page's ``返回`` shape can hit a real
+        world entry (historically the lower-left green-bottle entry).  This
+        target-specific check must therefore run before every unknown recovery
+        action while navigating to #34.
+        """
+        if int(target_scene_id) != 34:
+            return False
+        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
+        return self._world_scene_ocr_confirmed_text(text)
+
     def _game_cover_scene_ocr_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return (
@@ -7485,7 +7519,7 @@ class DataAnnotationRuntimeRunner(
         return any(marker in compact for marker in ("游历", "游历值", "探索完成", "当前区域", "区域列表"))
 
     def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
-        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         if self._game_cover_scene_ocr_text(text):
             self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过局部标题候选")
@@ -7834,6 +7868,9 @@ class DataAnnotationRuntimeRunner(
             "关闭": 420,
             "空白": 380,
             "取消": 340,
+            # Explicit local navigation remains preferable to the global
+            # coordinate fallbacks used only after this scene has no route.
+            "前往": 300,
             # Confirmation is intentionally last: it is useful for known
             # prompt/result scenes such as #330, but less universally safe
             # than an explicit return/close control.
@@ -7850,15 +7887,25 @@ class DataAnnotationRuntimeRunner(
         target_scene_id: int,
         *,
         failed_edge_keys: set[tuple[Any, ...]] | None = None,
+        explored_shape_keys: set[tuple[str, str, str]] | None = None,
+        navigation_state_key: str | None = None,
     ) -> dict[str, Any] | None:
         """Choose one safe, evidence-ranked action without requiring a route."""
         failed_edge_keys = failed_edge_keys or set()
+        explored_shape_keys = explored_shape_keys or set()
         candidates: list[dict[str, Any]] = []
         for order, shape in enumerate(self._flatten_shapes(image.get("shapes"))):
             if self._scene_identity_scope(shape) != "none":
                 continue
             priority = self._scene_navigation_exploration_priority(shape)
             if priority <= 0:
+                continue
+            exploration_key = (
+                str(navigation_state_key or f"scene:{int(current_scene_id)}"),
+                str(shape.get("id") or ""),
+                str(shape.get("title") or ""),
+            )
+            if exploration_key in explored_shape_keys:
                 continue
             target_ids = self._scene_jump_target_ids(tree, shape)
             edge = {
@@ -7901,6 +7948,101 @@ class DataAnnotationRuntimeRunner(
             return None
         candidates.sort(key=lambda item: item["score"], reverse=True)
         return candidates[0]
+
+    def _navigation_frame_signature(self, frame_data_url: str) -> bytes:
+        """Return a small visual signature used to distinguish planner states.
+
+        Scene recognition and planner state are intentionally different: two
+        visually different screens may both be unknown, or may share one scene
+        id.  The signature lets goto continue unknown -> unknown exploration
+        without repeatedly clicking the same fallback on an unchanged screen.
+        """
+        try:
+            from PIL import Image
+
+            png_data = self._decode_frame_data_url(frame_data_url)
+            with Image.open(io.BytesIO(png_data)) as source:
+                resampling = getattr(Image, "Resampling", Image).LANCZOS
+                return source.convert("L").resize((16, 16), resampling).tobytes()
+        except Exception:
+            return str(frame_data_url or "").encode("utf-8", errors="replace")
+
+    def _navigation_state_key(
+        self,
+        frame_data_url: str,
+        current_scene_id: int | None,
+        states: list[tuple[int | None, bytes, str]],
+    ) -> str:
+        """Resolve the current observed screen to a stable state within one goto."""
+        signature = self._navigation_frame_signature(frame_data_url)
+        for known_scene_id, known_signature, state_key in states:
+            if known_scene_id != current_scene_id:
+                continue
+            if signature == known_signature:
+                return state_key
+            if len(signature) == 256 and len(known_signature) == 256:
+                total_delta = sum(abs(a - b) for a, b in zip(signature, known_signature))
+                similarity = 100.0 * (1.0 - total_delta / (255.0 * len(signature)))
+                if similarity >= 95.0:
+                    return state_key
+        prefix = f"scene:{current_scene_id}" if current_scene_id is not None else "unknown"
+        state_key = f"{prefix}:state:{len(states) + 1}"
+        states.append((current_scene_id, signature, state_key))
+        return state_key
+
+    def _try_global_scene_recovery_action(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        *,
+        current_scene_id: int | None,
+        navigation_state_key: str,
+        target_scene_id: int,
+        attempted_actions: set[tuple[str, str]],
+    ) -> bool:
+        """Use world-layout coordinates only after local navigation is exhausted."""
+        if current_scene_id == 34:
+            return False
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        world_image = images.get(34) if isinstance(images, dict) else None
+        if not isinstance(world_image, dict):
+            return False
+        templates = (
+            ("进入绿瓶", "通用返回"),
+            ("空白", "通用空白"),
+        )
+        for shape_title, action_label in templates:
+            attempt_key = (navigation_state_key, shape_title)
+            if attempt_key in attempted_actions:
+                continue
+            shape = self._find_shape(world_image, shape_title)
+            if not isinstance(shape, dict):
+                continue
+            attempted_actions.add(attempt_key)
+            x, y = ActionPlanner().shape_center(world_image, shape)
+            source_text = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
+            self._log(
+                "warning",
+                f"场景移动：{source_text} 本地导航已耗尽，点击 #34「{shape_title}」坐标作为{action_label}，随后重新规划到 #{target_scene_id}",
+            )
+            self._save_action_trace(
+                ctx,
+                world_image,
+                {
+                    "kind": "click",
+                    "point": [float(x), float(y)],
+                    "label": f"click #34 {shape_title} global recovery",
+                    "shape_title": shape.get("title"),
+                    "shape_id": shape.get("id"),
+                    "source_scene_id": current_scene_id,
+                    "target_scene_id": int(target_scene_id),
+                },
+                frame_data_url=frame_data_url,
+            )
+            self._click_frame_point(ctx, world_image, x, y)
+            self._clear_tick_frame(ctx)
+            return True
+        return False
 
     def _add_runtime_confirm_scene_edges(self, edges: dict[int, list[dict[str, Any]]]) -> None:
         for source_id, source_edges in list(edges.items()):
@@ -8723,7 +8865,7 @@ class DataAnnotationRuntimeRunner(
             raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
         similarity = float(result.get("similarity") or 0)
         result_ocr_matched = bool(ocr_enabled and self._shape_match_result_ocr_matches(shape, result))
-        if ocr_enabled and not result_ocr_matched and self._has_cached_ocr_lines(ctx, frame_data_url):
+        if ocr_enabled and not result_ocr_matched and self._has_cached_ocr_tokens(ctx, frame_data_url):
             existing_fixed_box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else None
             existing_resolved_box = result.get("resolved_box") if isinstance(result.get("resolved_box"), dict) else None
             frame_ocr_result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
@@ -8766,15 +8908,14 @@ class DataAnnotationRuntimeRunner(
             text = _sanitize_ocr_text(item.get("text") or item.get("ocr_text"))
             if text and self._ocr_text_matches(text, target, mode):
                 result["ocr_text"] = text
-                fixed_box = self._ocr_line_box(item)
+                fixed_box = self._ocr_fragment_box(item)
                 if fixed_box is not None:
                     if existing_fixed_box is not None:
                         result["ocr_box"] = fixed_box
                         result.setdefault("resolved_box", existing_fixed_box)
                     else:
                         result["fixed_box"] = fixed_box
-                        resolved_box = self._ocr_match_resolved_box(item, target, mode)
-                        result["resolved_box"] = resolved_box or fixed_box
+                        result["resolved_box"] = fixed_box
                 return True
         return False
 
@@ -8797,30 +8938,28 @@ class DataAnnotationRuntimeRunner(
         if not target:
             return result
         mode = str(shape.get("ocrMatchMode") or "contains")
-        cache = ctx.get("_ocr_lines_cache")
+        cache = ctx.get("_ocr_tokens_cache")
         if not isinstance(cache, dict) or cache.get("frame") != frame_data_url:
             return result
-        lines = cache.get("lines") if isinstance(cache.get("lines"), list) else []
-        words = cache.get("words") if isinstance(cache.get("words"), list) else []
+        tokens = cache.get("tokens") if isinstance(cache.get("tokens"), list) else []
         box = self._box(shape, image)
-        spatial = query_spatial_ocr(lines, words, box)
+        spatial = query_spatial_ocr(tokens, box)
         text = _sanitize_ocr_text(spatial.get("text"))
         fragments = spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
         result["ocr_text"] = text
-        result["ocr_spatial_ambiguous"] = bool(spatial.get("ambiguous"))
         result["matches"] = fragments
         if text and self._ocr_text_matches(text, target, mode):
             result["matched"] = True
             result["similarity"] = 100
-            ocr_box = locate_text_box(spatial.get("tokens") or [], target) or union_fragment_box(fragments)
+            token_box = locate_text_box(spatial.get("tokens") or [], target)
+            ocr_box = token_box or union_fragment_box(fragments)
             result["fixed_box"] = box
             result["resolved_box"] = box
             if ocr_box is not None:
-                result["ocr_box"] = self._ocr_match_resolved_box(
-                    {"text": text, **ocr_box},
-                    target,
-                    mode,
-                ) or ocr_box
+                # ``token_box`` already is the exact union of the matched
+                # character boxes.  Re-slicing it by the full aggregated text
+                # would incorrectly apply the old uniform-line estimate twice.
+                result["ocr_box"] = token_box or ocr_box
         return result
 
     def _ocr_options_cache_key(self, options: dict[str, Any] | None = None) -> str:
@@ -8833,37 +8972,25 @@ class DataAnnotationRuntimeRunner(
 
     def _cached_ocr_result(self, ctx: dict[str, Any], frame_data_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         canonical_options = {**dict(options or {}), "return_word_box": True}
-        cache = ctx.setdefault("_ocr_lines_cache", {})
+        cache = ctx.setdefault("_ocr_tokens_cache", {})
         options_key = self._ocr_options_cache_key(canonical_options)
         if (
             isinstance(cache, dict)
-            and cache.get("version") == 2
+            and cache.get("version") == 3
             and cache.get("frame") == frame_data_url
             and cache.get("options_key") == options_key
-            and isinstance(cache.get("lines"), list)
-            and isinstance(cache.get("words"), list)
+            and isinstance(cache.get("tokens"), list)
         ):
             return cache
         response = self._ocr_frame(frame_data_url, options=canonical_options)
-        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
-        words = response.get("words") if isinstance(response.get("words"), list) else []
-        ocr_lines_method = getattr(self, "_ocr_lines", None)
-        if (
-            not lines
-            and callable(ocr_lines_method)
-            and getattr(ocr_lines_method, "__func__", None) is not type(self)._ocr_lines
-        ):
-            fallback_lines = ocr_lines_method(frame_data_url)
-            if isinstance(fallback_lines, list):
-                lines = fallback_lines
+        tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
         cache = {
-            "version": 2,
+            "version": 3,
             "frame": frame_data_url,
             "options_key": options_key,
-            "lines": lines,
-            "words": words,
+            "tokens": tokens,
         }
-        ctx["_ocr_lines_cache"] = cache
+        ctx["_ocr_tokens_cache"] = cache
         return cache
 
     def _shared_spatial_ocr_result(
@@ -8875,41 +9002,29 @@ class DataAnnotationRuntimeRunner(
         canonical_options = {**dict(options or {}), "return_word_box": True}
         options_key = self._ocr_options_cache_key(canonical_options)
         with self._shared_ocr_lock:
-            cache = ctx.get("_ocr_lines_cache")
-            # A Cell may retain the previous cache schema while the backend is
-            # hot-reloaded.  Reuse its line data for the remainder of that
-            # frame instead of issuing a second OCR request; the next frame is
-            # written in the token-aware v2 schema.
+            cache = ctx.get("_ocr_tokens_cache")
             if (
                 isinstance(cache, dict)
-                and cache.get("version") is None
-                and cache.get("frame") == frame_data_url
-                and isinstance(cache.get("lines"), list)
-            ):
-                cache.setdefault("words", [])
-                return cache
-            if (
-                isinstance(cache, dict)
-                and cache.get("version") == 2
+                and cache.get("version") == 3
                 and cache.get("frame") == frame_data_url
                 and cache.get("options_key") == options_key
-                and isinstance(cache.get("lines"), list)
-                and isinstance(cache.get("words"), list)
+                and isinstance(cache.get("tokens"), list)
             ):
                 return cache
             return self._cached_ocr_result(ctx, frame_data_url, options=canonical_options)
 
-    def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
+    def _cached_ocr_tokens(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
         result = self._cached_ocr_result(ctx, frame_data_url)
-        lines = result.get("lines")
-        if not isinstance(lines, list):
-            return []
-        return lines
+        tokens = result.get("tokens")
+        return tokens if isinstance(tokens, list) else []
 
-    def _has_cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> bool:
-        cache = ctx.get("_ocr_lines_cache")
-        lines = cache.get("lines") if isinstance(cache, dict) and cache.get("frame") == frame_data_url else None
-        return isinstance(lines, list) and any(isinstance(line, dict) for line in lines)
+    def _cached_ocr_fragments(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
+        return group_ocr_tokens(self._cached_ocr_tokens(ctx, frame_data_url))
+
+    def _has_cached_ocr_tokens(self, ctx: dict[str, Any], frame_data_url: str) -> bool:
+        cache = ctx.get("_ocr_tokens_cache")
+        tokens = cache.get("tokens") if isinstance(cache, dict) and cache.get("frame") == frame_data_url else None
+        return isinstance(tokens, list) and any(isinstance(token, dict) for token in tokens)
 
     def _ocr_text_matches(self, text: str, target: str, mode: str) -> bool:
         mode = str(mode or "contains").strip().lower()
@@ -8924,19 +9039,6 @@ class DataAnnotationRuntimeRunner(
             pattern = "^" + re.escape(target).replace("\\*", ".*").replace("\\?", ".") + "$"
             return re.search(pattern, text) is not None
         return target in text
-
-    def _ocr_line_overlaps_box(self, line: dict[str, Any], box: dict[str, Any]) -> bool:
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        line_left = float(line.get("x") or 0)
-        line_top = float(line.get("y") or 0)
-        line_right = line_left + float(line.get("w") or 0)
-        line_bottom = line_top + float(line.get("h") or 0)
-        overlap_x = max(0.0, min(right, line_right) - max(left, line_left))
-        overlap_y = max(0.0, min(bottom, line_bottom) - max(top, line_top))
-        return overlap_x > 0 and overlap_y > 0
 
     def _require_shape_match(
         self,
@@ -9589,7 +9691,7 @@ class DataAnnotationRuntimeRunner(
             scene_id, score = self._identify_scene_number(ctx, frame, [121])
             last_scene_id, last_score = scene_id, score
             try:
-                text = self._ocr_text(self._ocr_lines(frame))
+                text = self._ocr_text(self._ocr_fragments(frame))
             except Exception:
                 text = ""
             reward_transition_matches = getattr(self, "_mail_reward_transition_text_matches", None)
@@ -9660,18 +9762,18 @@ class DataAnnotationRuntimeRunner(
             response = _recognize_data_annotation_ocr_frame(frame_data_url, options=options)
         except Exception as exc:
             self._log("detail", f"OCR 失败：{exc}")
-            return {"lines": [], "words": []}
-        return {
-            "lines": [line.model_dump() for line in response.lines],
-            "words": [word.model_dump() for word in getattr(response, "words", [])],
-        }
+            return {"tokens": []}
+        return {"tokens": [token.model_dump() for token in response.tokens]}
 
-    def _ocr_lines(self, frame_data_url: str) -> list[dict[str, Any]]:
+    def _ocr_tokens(self, frame_data_url: str) -> list[dict[str, Any]]:
         response = self._ocr_frame(frame_data_url)
-        lines = response.get("lines")
-        return lines if isinstance(lines, list) else []
+        tokens = response.get("tokens")
+        return tokens if isinstance(tokens, list) else []
 
-    def _ocr_lines_in_shapes(
+    def _ocr_fragments(self, frame_data_url: str) -> list[dict[str, Any]]:
+        return group_ocr_tokens(self._ocr_tokens(frame_data_url))
+
+    def _ocr_fragments_in_shapes(
         self,
         frame_data_url: str,
         image: dict[str, Any],
@@ -9686,21 +9788,21 @@ class DataAnnotationRuntimeRunner(
             if query_box is None:
                 return []
             cached = self._shared_spatial_ocr_result(ctx, frame_data_url, options=options)
-            spatial = query_spatial_ocr(cached.get("lines") or [], cached.get("words") or [], query_box)
+            spatial = query_spatial_ocr(cached.get("tokens") or [], query_box)
             return spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
-            return response.get("lines") if isinstance(response.get("lines"), list) else []
+            return group_ocr_tokens(response.get("tokens") or [])
         crop_data_url, offset_x, offset_y = crop
         response = self._ocr_frame(crop_data_url, options=options)
-        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
-        for line in lines:
-            line["x"] = float(line.get("x") or 0) + offset_x
-            line["y"] = float(line.get("y") or 0) + offset_y
-        return lines
+        tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
+        for token in tokens:
+            token["x"] = float(token.get("x") or 0) + offset_x
+            token["y"] = float(token.get("y") or 0) + offset_y
+        return group_ocr_tokens(tokens)
 
-    def _ocr_words_in_shapes(
+    def _ocr_tokens_in_shapes(
         self,
         frame_data_url: str,
         image: dict[str, Any],
@@ -9715,19 +9817,19 @@ class DataAnnotationRuntimeRunner(
             if query_box is None:
                 return []
             cached = self._shared_spatial_ocr_result(ctx, frame_data_url, options=options)
-            spatial = query_spatial_ocr(cached.get("lines") or [], cached.get("words") or [], query_box)
+            spatial = query_spatial_ocr(cached.get("tokens") or [], query_box)
             return spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
-            return response.get("words") if isinstance(response.get("words"), list) else []
+            return response.get("tokens") if isinstance(response.get("tokens"), list) else []
         crop_data_url, offset_x, offset_y = crop
         response = self._ocr_frame(crop_data_url, options=options)
-        words = response.get("words") if isinstance(response.get("words"), list) else []
-        for word in words:
-            word["x"] = float(word.get("x") or 0) + offset_x
-            word["y"] = float(word.get("y") or 0) + offset_y
-        return words
+        tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
+        for token in tokens:
+            token["x"] = float(token.get("x") or 0) + offset_x
+            token["y"] = float(token.get("y") or 0) + offset_y
+        return tokens
 
     def _query_box_for_shapes(
         self,
@@ -9808,58 +9910,17 @@ class DataAnnotationRuntimeRunner(
             self._log("detail", f"裁剪 OCR 区域失败，回退全图 OCR：{exc}")
             return None
 
-    def _ocr_text(self, lines: list[dict[str, Any]]) -> str:
-        return "".join(_sanitize_ocr_text(line.get("text")) for line in lines)
+    def _ocr_text(self, fragments: list[dict[str, Any]]) -> str:
+        return "".join(_sanitize_ocr_text(fragment.get("text")) for fragment in fragments)
 
-    def _ocr_line_box(self, line: dict[str, Any]) -> dict[str, float] | None:
-        x = float(line.get("x") or 0)
-        y = float(line.get("y") or 0)
-        w = float(line.get("w") or 0)
-        h = float(line.get("h") or 0)
+    def _ocr_fragment_box(self, fragment: dict[str, Any]) -> dict[str, float] | None:
+        x = float(fragment.get("x") or 0)
+        y = float(fragment.get("y") or 0)
+        w = float(fragment.get("w") or 0)
+        h = float(fragment.get("h") or 0)
         if w <= 0 or h <= 0:
             return None
         return {"x": x, "y": y, "w": w, "h": h}
-
-    def _ocr_match_resolved_box(self, line: dict[str, Any], target: str, mode: str = "contains") -> dict[str, float] | None:
-        text = _sanitize_ocr_text(line.get("text"))
-        target_text = _sanitize_ocr_text(target)
-        line_box = self._ocr_line_box(line)
-        if not text or not target_text or line_box is None:
-            return None
-        mode = str(mode or "contains").strip().lower()
-        start = -1
-        end = -1
-        if mode == "regex":
-            try:
-                match = re.search(target_text, text)
-            except re.error:
-                match = None
-            if match is not None:
-                start, end = match.span()
-        elif mode == "exact":
-            if text == target_text:
-                return line_box
-        elif mode == "wildcard":
-            if self._ocr_text_matches(text, target_text, mode):
-                return line_box
-        else:
-            start = text.find(target_text)
-            if start >= 0:
-                end = start + len(target_text)
-        if start < 0 or end <= start:
-            return None
-        text_len = max(1, len(text))
-        left_ratio = min(1.0, max(0.0, start / text_len))
-        right_ratio = min(1.0, max(0.0, end / text_len))
-        x = line_box["x"] + line_box["w"] * left_ratio
-        w = max(1.0, line_box["w"] * (right_ratio - left_ratio))
-        return {"x": x, "y": line_box["y"], "w": w, "h": line_box["h"]}
-
-    def _ocr_substring_center(self, line: dict[str, Any], target: str) -> tuple[float, float] | None:
-        box = self._ocr_match_resolved_box(line, target, "contains")
-        if box is None:
-            return None
-        return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) / 2
 
     def _text_in_shape(self, lines: list[dict[str, Any]], image: dict[str, Any] | None, shape_title: str) -> str:
         shape = self._find_shape(image, shape_title) if image else None
@@ -9880,13 +9941,13 @@ class DataAnnotationRuntimeRunner(
 
     def _ocr_centers_in_shape(
         self,
-        lines: list[dict[str, Any]],
+        fragments: list[dict[str, Any]],
         image: dict[str, Any] | None,
         shape_title: str,
         *,
         include: tuple[str, ...],
         exclude: tuple[str, ...] = (),
-        words: list[dict[str, Any]] | None = None,
+        tokens: list[dict[str, Any]] | None = None,
     ) -> list[tuple[float, float, str]]:
         shape = self._find_shape(image, shape_title) if image else None
         if not shape or not image:
@@ -9897,29 +9958,24 @@ class DataAnnotationRuntimeRunner(
         right = left + float(box.get("w") or 0)
         bottom = top + float(box.get("h") or 0)
         matches: list[tuple[float, float, str]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
+        for fragment in fragments:
+            text = _sanitize_ocr_text(fragment.get("text"))
             if not text:
                 continue
             if include and not all(fragment in text for fragment in include):
                 continue
             if exclude and any(fragment in text for fragment in exclude):
                 continue
-            line_x = float(line.get("x") or 0)
-            line_w = float(line.get("w") or 0)
-            cx = line_x + line_w / 2
-            if include and line_w > 0 and text:
+            fragment_x = float(fragment.get("x") or 0)
+            fragment_w = float(fragment.get("w") or 0)
+            cx = fragment_x + fragment_w / 2
+            if include and fragment_w > 0 and text:
                 target_fragment = next((fragment for fragment in include if fragment in text), "")
                 if target_fragment:
-                    spatial = query_spatial_ocr([line], words or [], line)
-                    token_box = locate_text_box(spatial.get("tokens") or [], target_fragment)
+                    token_box = locate_text_box(tokens or [], target_fragment)
                     if token_box is not None:
                         cx = float(token_box["x"]) + float(token_box["w"]) / 2
-                    else:
-                        center = self._ocr_substring_center(line, target_fragment)
-                        if center is not None:
-                            cx = center[0]
-            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            cy = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
             if left <= cx <= right and top <= cy <= bottom:
                 matches.append((cx, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
@@ -10093,9 +10149,18 @@ class DataAnnotationRuntimeRunner(
         ctx: dict[str, Any],
         frame_data_url: str,
     ) -> bool:
-        text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
+        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        is_store_offer = any(token in compact for token in ("至尊甄选", "适度娱乐", "理性消费", "限购次数"))
+        # 世界页本身长期会展示「至尊甄选」等活动入口；单个宣传词不能
+        # 证明当前是可安全套用其它页面固定「返回」坐标的促销详情页。
+        is_store_offer = (
+            "限购次数" in compact
+            and any(token in compact for token in ("至尊甄选", "适度娱乐", "理性消费"))
+        ) or (
+            "至尊甄选" in compact
+            and "适度娱乐" in compact
+            and "理性消费" in compact
+        )
         is_signup_activity_offer = (
             ("活动规则" in compact or "活动时间" in compact)
             and "前往" in compact
@@ -10322,6 +10387,13 @@ class DataAnnotationRuntimeRunner(
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
 
+            if self._target_world_scene_ocr_confirmed(ctx, frame, target_scene_id):
+                self._log(
+                    "success",
+                    f"场景跳转：#{source_scene_id} -> #34，{elapsed:.1f}s，世界语义已成立，停止后续恢复点击",
+                )
+                return 34
+
             expected_id_set = {int(item) for item in expected_ids}
             fallback_scene_id: int | None = None
             fallback_score = 0.0
@@ -10467,7 +10539,7 @@ class DataAnnotationRuntimeRunner(
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
             history.append(f"{elapsed:.1f}s {scene_text} {score:.0f}% expected={expected_score:.0f}% left={left_source}")
             if 171 in expected_ids:
-                text = self._ocr_text(self._ocr_lines(frame))
+                text = self._ocr_text(self._ocr_fragments(frame))
                 if self._xianfu_home_text_is_scene(text):
                     if self._increment_scene_jump_target(shape, 171):
                         self._write_asset_tree(asset_tree_path, tree)
@@ -10508,7 +10580,7 @@ class DataAnnotationRuntimeRunner(
                     history.append(f"{elapsed:.1f}s unknown #34 空白已点击")
                     continue
             if scene_id is None and not handled_world_side_leave:
-                text = self._ocr_text(self._ocr_lines(frame))
+                text = self._ocr_text(self._ocr_fragments(frame))
                 if (yield from self._leave_world_side_scene_if_present(
                     ctx,
                     stop_event,
@@ -10656,14 +10728,26 @@ class DataAnnotationRuntimeRunner(
             ctx["asset_tree"] = tree
             ctx["images"] = self._index_images(tree)
 
-        recovered_unknown_start = False
-        recovered_unknown_side_leave = False
-        failed_edge_keys: set[tuple[Any, ...]] = set()
+        recovered_unknown_start_states: set[str] = set()
+        recovered_unknown_side_leave_states: set[str] = set()
+        recovered_unknown_route_states: set[str] = set()
+        failed_edge_keys_by_state: dict[str, set[tuple[Any, ...]]] = {}
+        last_failed_edges_by_state: dict[str, dict[str, Any]] = {}
+        explored_shape_keys: set[tuple[str, str, str]] = set()
+        global_recovery_attempts: set[tuple[str, str]] = set()
+        navigation_states: list[tuple[int | None, bytes, str]] = []
         stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
-        last_failed_edge: dict[str, Any] | None = None
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
+            if self._target_world_scene_ocr_confirmed(ctx, frame, target_scene_id):
+                with self._lock:
+                    self._status.update({
+                        "current_scene": 34,
+                        "updated_at": time.time(),
+                    })
+                self._log("success", "已在目标场景 #34（世界语义），停止后续恢复点击")
+                return "success"
             known_scene_id = ctx.pop("_go_scene_known_scene_id", None)
             if known_scene_id is not None:
                 current_scene_id, score = int(known_scene_id), float(self.scene_threshold)
@@ -10683,13 +10767,18 @@ class DataAnnotationRuntimeRunner(
                         target_scene_id,
                         route_candidate_ids,
                     )
+            navigation_state_key = self._navigation_state_key(frame, current_scene_id, navigation_states)
+            failed_edge_keys = failed_edge_keys_by_state.setdefault(navigation_state_key, set())
+            last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)
             if current_scene_id is None:
-                if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
-                    recovered_unknown_start = True
-                    yield BehaviorTreeStatus.RUNNING
-                    continue
-                if not recovered_unknown_side_leave:
-                    text = self._ocr_text(self._ocr_lines(frame))
+                if navigation_state_key not in recovered_unknown_start_states:
+                    recovered_unknown_start_states.add(navigation_state_key)
+                    if self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if navigation_state_key not in recovered_unknown_side_leave_states:
+                    recovered_unknown_side_leave_states.add(navigation_state_key)
+                    text = self._ocr_text(self._ocr_fragments(frame))
                     if (yield from self._leave_world_side_scene_if_present(
                         ctx,
                         stop_event,
@@ -10698,16 +10787,27 @@ class DataAnnotationRuntimeRunner(
                         label="场景移动",
                         require_world_like=False,
                     )):
-                        recovered_unknown_side_leave = True
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._recover_unknown_by_matched_existing_route(
+                if navigation_state_key not in recovered_unknown_route_states:
+                    recovered_unknown_route_states.add(navigation_state_key)
+                    if self._recover_unknown_by_matched_existing_route(
+                        ctx,
+                        tree,
+                        frame,
+                        target_scene_id=target_scene_id,
+                    ):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if self._try_global_scene_recovery_action(
                     ctx,
-                    tree,
                     frame,
+                    current_scene_id=None,
+                    navigation_state_key=navigation_state_key,
                     target_scene_id=target_scene_id,
+                    attempted_actions=global_recovery_attempts,
                 ):
-                    yield BehaviorTreeStatus.RUNNING
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
                     continue
                 return self._save_unknown_scene_frame(
                     ctx,
@@ -10726,10 +10826,47 @@ class DataAnnotationRuntimeRunner(
                     f"场景移动：候选 #{current_scene_id} 仅 {float(score or 0.0):.0f}%，低于阈值，不作为当前场景",
                 )
                 current_scene_id = None
+                navigation_state_key = self._navigation_state_key(frame, None, navigation_states)
+                failed_edge_keys = failed_edge_keys_by_state.setdefault(navigation_state_key, set())
+                last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)
             if current_scene_id is None:
-                if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
-                    recovered_unknown_start = True
-                    yield BehaviorTreeStatus.RUNNING
+                if navigation_state_key not in recovered_unknown_start_states:
+                    recovered_unknown_start_states.add(navigation_state_key)
+                    if self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if navigation_state_key not in recovered_unknown_side_leave_states:
+                    recovered_unknown_side_leave_states.add(navigation_state_key)
+                    text = self._ocr_text(self._ocr_fragments(frame))
+                    if (yield from self._leave_world_side_scene_if_present(
+                        ctx,
+                        stop_event,
+                        frame,
+                        text,
+                        label="场景移动",
+                        require_world_like=False,
+                    )):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if navigation_state_key not in recovered_unknown_route_states:
+                    recovered_unknown_route_states.add(navigation_state_key)
+                    if self._recover_unknown_by_matched_existing_route(
+                        ctx,
+                        tree,
+                        frame,
+                        target_scene_id=target_scene_id,
+                    ):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if self._try_global_scene_recovery_action(
+                    ctx,
+                    frame,
+                    current_scene_id=None,
+                    navigation_state_key=navigation_state_key,
+                    target_scene_id=target_scene_id,
+                    attempted_actions=global_recovery_attempts,
+                ):
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
                     continue
                 return self._save_unknown_scene_frame(
                     ctx,
@@ -10751,7 +10888,7 @@ class DataAnnotationRuntimeRunner(
                 self._log("success", f"已在目标场景 #{target_scene_id}")
                 return "success"
             if int(current_scene_id) == 34 and int(target_scene_id) != 34:
-                text = self._ocr_text(self._cached_ocr_lines(ctx, frame))
+                text = self._ocr_text(self._cached_ocr_fragments(ctx, frame))
                 runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame, stop_event=stop_event)
                 if self._world_reward_tip_detected(ctx, frame, text):
                     yield from self._close_world_reward_tip_stack_if_present(
@@ -10777,13 +10914,18 @@ class DataAnnotationRuntimeRunner(
                     last_failed_source_matches = False
             if not has_navigation_edge and not last_failed_source_matches:
                 current_scene_id = self._navigation_scene_id(ctx, current_scene_id, frame)
+                navigation_state_key = self._navigation_state_key(frame, current_scene_id, navigation_states)
+                failed_edge_keys = failed_edge_keys_by_state.setdefault(navigation_state_key, set())
+                last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)
             if current_scene_id is None:
-                if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
-                    recovered_unknown_start = True
-                    yield BehaviorTreeStatus.RUNNING
-                    continue
-                if not recovered_unknown_side_leave:
-                    text = self._ocr_text(self._cached_ocr_lines(ctx, frame))
+                if navigation_state_key not in recovered_unknown_start_states:
+                    recovered_unknown_start_states.add(navigation_state_key)
+                    if self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if navigation_state_key not in recovered_unknown_side_leave_states:
+                    recovered_unknown_side_leave_states.add(navigation_state_key)
+                    text = self._ocr_text(self._cached_ocr_fragments(ctx, frame))
                     if (yield from self._leave_world_side_scene_if_present(
                         ctx,
                         stop_event,
@@ -10792,16 +10934,27 @@ class DataAnnotationRuntimeRunner(
                         label="场景移动",
                         require_world_like=False,
                     )):
-                        recovered_unknown_side_leave = True
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._recover_unknown_by_matched_existing_route(
+                if navigation_state_key not in recovered_unknown_route_states:
+                    recovered_unknown_route_states.add(navigation_state_key)
+                    if self._recover_unknown_by_matched_existing_route(
+                        ctx,
+                        tree,
+                        frame,
+                        target_scene_id=target_scene_id,
+                    ):
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
+                if self._try_global_scene_recovery_action(
                     ctx,
-                    tree,
                     frame,
+                    current_scene_id=None,
+                    navigation_state_key=navigation_state_key,
                     target_scene_id=target_scene_id,
+                    attempted_actions=global_recovery_attempts,
                 ):
-                    yield BehaviorTreeStatus.RUNNING
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
                     continue
                 return self._save_unknown_scene_frame(
                     ctx,
@@ -10830,33 +10983,6 @@ class DataAnnotationRuntimeRunner(
                 failed_edge_keys=failed_edge_keys,
             )
             if decision is None:
-                direct_failed_targets: set[int] = set()
-                last_failed_source_id: int | None = None
-                if last_failed_edge is not None:
-                    try:
-                        last_failed_source_id = int(last_failed_edge.get("source_id"))
-                    except (TypeError, ValueError):
-                        last_failed_source_id = None
-                if last_failed_edge is not None and last_failed_source_id == int(current_scene_id):
-                    for item in last_failed_edge.get("target_ids") or []:
-                        try:
-                            direct_failed_targets.add(int(item))
-                        except (TypeError, ValueError):
-                            continue
-                if last_failed_source_id == int(current_scene_id) and int(target_scene_id) in direct_failed_targets:
-                    return self._save_unknown_scene_frame(
-                        ctx,
-                        asset_tree_path,
-                        tree,
-                        frame,
-                        target_scene_id=target_scene_id,
-                        current_scene_id=current_scene_id,
-                        action_shape=last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None,
-                        elapsed_seconds=0.0,
-                        history=[
-                            f"#{current_scene_id} 直达入口点击后仍停在源场景，疑似被弹窗/遮挡吃掉或入口标注失效；不执行泛化恢复动作"
-                        ],
-                    )
                 current_image = (ctx.get("images") or {}).get(int(current_scene_id)) if isinstance(ctx.get("images"), dict) else None
                 if isinstance(current_image, dict):
                     decision = self._select_scene_exploration_edge(
@@ -10865,10 +10991,13 @@ class DataAnnotationRuntimeRunner(
                         current_scene_id,
                         target_scene_id,
                         failed_edge_keys=failed_edge_keys,
+                        explored_shape_keys=explored_shape_keys,
+                        navigation_state_key=navigation_state_key,
                     )
             if decision is None:
-                if not recovered_unknown_side_leave:
-                    text = self._ocr_text(self._cached_ocr_lines(ctx, frame))
+                if navigation_state_key not in recovered_unknown_side_leave_states:
+                    recovered_unknown_side_leave_states.add(navigation_state_key)
+                    text = self._ocr_text(self._cached_ocr_fragments(ctx, frame))
                     if (yield from self._leave_world_side_scene_if_present(
                         ctx,
                         stop_event,
@@ -10877,9 +11006,18 @@ class DataAnnotationRuntimeRunner(
                         label="场景移动",
                         require_world_like=False,
                     )):
-                        recovered_unknown_side_leave = True
                         yield BehaviorTreeStatus.RUNNING
                         continue
+                if self._try_global_scene_recovery_action(
+                    ctx,
+                    frame,
+                    current_scene_id=current_scene_id,
+                    navigation_state_key=navigation_state_key,
+                    target_scene_id=target_scene_id,
+                    attempted_actions=global_recovery_attempts,
+                ):
+                    yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.5)
+                    continue
                 if last_failed_edge is not None:
                     failed_shape = last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None
                     return self._save_unknown_scene_frame(
@@ -10900,6 +11038,40 @@ class DataAnnotationRuntimeRunner(
             image = edge["image"]
             shape = edge["shape"]
             shape_title = str(shape.get("title") or "未命名")
+            if int(target_scene_id) == 34:
+                # Returning to the stable world anchor is common and a false
+                # positive here is unusually destructive: one stale/animated
+                # frame once identified the real world as #69 and immediately
+                # clicked #69「退出」at the lower-left world entry.  Require a
+                # fresh-frame confirmation before every return-to-world click.
+                self._clear_tick_frame(ctx)
+                yield BehaviorTreeStatus.RUNNING
+                confirm_frame = self._screencap(ctx)
+                if self._target_world_scene_ocr_confirmed(ctx, confirm_frame, target_scene_id):
+                    with self._lock:
+                        self._status.update({
+                            "current_scene": 34,
+                            "updated_at": time.time(),
+                        })
+                    self._log("success", "到达目标场景 #34（新帧世界语义），取消原计划恢复点击")
+                    return "success"
+                confirm_scene_id, confirm_score = self._identify_scene_number(ctx, confirm_frame)
+                if (
+                    confirm_scene_id != current_scene_id
+                    or not self._scene_matches_id(int(confirm_scene_id), float(confirm_score or 0.0))
+                ):
+                    confirm_text = f"#{confirm_scene_id}" if confirm_scene_id is not None else "unknown"
+                    self._log(
+                        "warning",
+                        (
+                            f"场景移动：回 #34 前新帧由 #{current_scene_id} 变为 {confirm_text} "
+                            f"{float(confirm_score or 0.0):.0f}%，取消本次「{shape_title}」点击并重新规划"
+                        ),
+                    )
+                    if confirm_scene_id is not None and self._scene_matches_id(int(confirm_scene_id), float(confirm_score or 0.0)):
+                        ctx["_go_scene_known_scene_id"] = int(confirm_scene_id)
+                    continue
+                frame = confirm_frame
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -10912,6 +11084,12 @@ class DataAnnotationRuntimeRunner(
                 f"场景移动：#{current_scene_id} -> #{target_scene_id}，点击 {shape_title}"
                 f"（{decision['reason']}）",
             )
+            if edge.get("_dynamic_exploration"):
+                explored_shape_keys.add((
+                    navigation_state_key,
+                    str(shape.get("id") or ""),
+                    str(shape.get("title") or ""),
+                ))
             self._click_scene_route_shape(ctx, image, shape, frame)
             actual_scene_id = yield from self._wait_scene_jump_result(
                 ctx,
@@ -10933,25 +11111,11 @@ class DataAnnotationRuntimeRunner(
                 self._log("success", f"到达目标场景 #{target_scene_id}")
                 return "success"
             if actual_scene_id == current_scene_id:
-                direct_target_ids = {int(item) for item in edge.get("target_ids") or []}
-                if int(target_scene_id) in direct_target_ids:
-                    return self._save_unknown_scene_frame(
-                        ctx,
-                        asset_tree_path,
-                        tree,
-                        frame,
-                        target_scene_id=target_scene_id,
-                        current_scene_id=current_scene_id,
-                        action_shape=shape,
-                        elapsed_seconds=0.0,
-                        history=[
-                            f"#{current_scene_id} 直达入口点击后仍停在源场景，疑似被弹窗/遮挡吃掉或入口标注失效；不执行泛化恢复动作"
-                        ],
-                    )
-                edge_key = self._scene_jump_edge_key(edge)
+                edge_key = (navigation_state_key, *self._scene_jump_edge_key(edge))
                 attempts = stalled_edge_attempts.get(edge_key, 0) + 1
                 stalled_edge_attempts[edge_key] = attempts
                 last_failed_edge = edge
+                last_failed_edges_by_state[navigation_state_key] = edge
                 if attempts < 2:
                     self._log(
                         "warning",
@@ -10960,7 +11124,7 @@ class DataAnnotationRuntimeRunner(
                     )
                     yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.0)
                     continue
-                failed_edge_keys.add(edge_key)
+                failed_edge_keys.add(self._scene_jump_edge_key(edge))
                 self._log(
                     "warning",
                     f"场景移动：点击 {shape_title} 后仍在 #{current_scene_id}，"

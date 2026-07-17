@@ -4,6 +4,9 @@ import math
 from typing import Any, Iterable
 
 
+MIN_TOKEN_SHAPE_OVERLAP_RATIO = 0.30
+
+
 def _box(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
     x = float(item.get("x") or 0)
     y = float(item.get("y") or 0)
@@ -28,80 +31,14 @@ def _intersection(
 
 
 def _overlap_ratio(
-    item_box: tuple[float, float, float, float],
+    token_box: tuple[float, float, float, float],
     query_box: tuple[float, float, float, float],
 ) -> float:
-    overlap = _intersection(item_box, query_box)
+    overlap = _intersection(token_box, query_box)
     if overlap is None:
         return 0.0
-    area = max(1.0, (item_box[2] - item_box[0]) * (item_box[3] - item_box[1]))
-    return ((overlap[2] - overlap[0]) * (overlap[3] - overlap[1])) / area
-
-
-def _center_in_box(
-    item_box: tuple[float, float, float, float],
-    query_box: tuple[float, float, float, float],
-) -> bool:
-    center_x = (item_box[0] + item_box[2]) / 2
-    center_y = (item_box[1] + item_box[3]) / 2
-    return query_box[0] <= center_x <= query_box[2] and query_box[1] <= center_y <= query_box[3]
-
-
-def _line_sort_key(item: dict[str, Any]) -> tuple[float, float]:
-    return float(item.get("y") or 0), float(item.get("x") or 0)
-
-
-def _word_belongs_to_line(word: dict[str, Any], line: dict[str, Any], line_index: int) -> bool:
-    word_box = _box(word)
-    line_box = _box(line)
-    if word_box is None or line_box is None:
-        return False
-    # Paddle's token ``line_index`` addresses the raw detector region.  The
-    # normalized line layer may merge adjacent regions (a frequent layout in
-    # game UIs), so those indexes are not comparable.  Geometry remains stable
-    # across both representations and is therefore the source of truth.
-    return _center_in_box(word_box, line_box) or _overlap_ratio(word_box, line_box) >= 0.5
-
-
-def _clip_uniform_text(
-    text: str,
-    line_box: tuple[float, float, float, float],
-    query_box: tuple[float, float, float, float],
-) -> str:
-    """Estimate visible characters when Paddle only returned a line-level box.
-
-    Game UI text is predominantly horizontal and close to fixed-width. Character
-    centers are used instead of slicing by raw overlap length so a half-width
-    shape does not accidentally include the first character outside its box.
-    """
-    if not text:
-        return ""
-    overlap = _intersection(line_box, query_box)
-    if overlap is None:
-        return ""
-    width = max(1.0, line_box[2] - line_box[0])
-    char_width = width / len(text)
-    selected: list[str] = []
-    for index, char in enumerate(text):
-        center_x = line_box[0] + (index + 0.5) * char_width
-        if overlap[0] <= center_x <= overlap[2]:
-            selected.append(char)
-    return "".join(selected)
-
-
-def _selected_words_text(
-    words: Iterable[dict[str, Any]],
-    query_box: tuple[float, float, float, float],
-) -> tuple[str, list[dict[str, Any]]]:
-    selected: list[dict[str, Any]] = []
-    for word in words:
-        word_box = _box(word)
-        if word_box is None:
-            continue
-        if _center_in_box(word_box, query_box) or _overlap_ratio(word_box, query_box) >= 0.5:
-            selected.append(word)
-    selected.sort(key=_line_sort_key)
-    return "".join(str(word.get("text") or "") for word in selected), selected
+    token_area = max(1.0, (token_box[2] - token_box[0]) * (token_box[3] - token_box[1]))
+    return ((overlap[2] - overlap[0]) * (overlap[3] - overlap[1])) / token_area
 
 
 def _union_boxes(items: Iterable[dict[str, Any]]) -> dict[str, float] | None:
@@ -116,83 +53,88 @@ def _union_boxes(items: Iterable[dict[str, Any]]) -> dict[str, float] | None:
     return {"x": left, "y": top, "w": max(1.0, right - left), "h": max(1.0, bottom - top)}
 
 
-def query_spatial_ocr(
-    lines: list[dict[str, Any]],
-    words: list[dict[str, Any]],
-    query: dict[str, Any],
-) -> dict[str, Any]:
-    """Rebuild the OCR text covered by a shape from one full-frame OCR pass."""
-    query_box = _box(query)
-    if query_box is None:
-        return {"text": "", "fragments": [], "ambiguous": False}
+def _group_token_rows(tokens: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Group character tokens into visual rows using geometry only."""
+
+    candidates = [token for token in tokens if isinstance(token, dict) and _box(token) is not None]
+    candidates.sort(key=lambda item: (float(item.get("y") or 0) + float(item.get("h") or 0) / 2, float(item.get("x") or 0)))
+    rows: list[list[dict[str, Any]]] = []
+    for token in candidates:
+        center_y = float(token.get("y") or 0) + float(token.get("h") or 0) / 2
+        height = max(1.0, float(token.get("h") or 0))
+        best_row: list[dict[str, Any]] | None = None
+        best_distance = float("inf")
+        for row in rows:
+            row_center_y = sum(float(item.get("y") or 0) + float(item.get("h") or 0) / 2 for item in row) / len(row)
+            row_height = max(float(item.get("h") or 1) for item in row)
+            distance = abs(center_y - row_center_y)
+            if distance <= max(height, row_height) * 0.5 and distance < best_distance:
+                best_row = row
+                best_distance = distance
+        if best_row is None:
+            rows.append([token])
+        else:
+            best_row.append(token)
+    for row in rows:
+        row.sort(key=lambda item: float(item.get("x") or 0))
+    rows.sort(
+        key=lambda row: (
+            min(float(item.get("y") or 0) for item in row),
+            min(float(item.get("x") or 0) for item in row),
+        )
+    )
+    return rows
+
+
+def order_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [token for row in _group_token_rows(tokens) for token in row]
+
+
+def group_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive visual text fragments from tokens at the consumer boundary."""
 
     fragments: list[dict[str, Any]] = []
-    selected_tokens: list[dict[str, Any]] = []
-    ambiguous = False
-    indexed_lines = [(index, line) for index, line in enumerate(lines) if isinstance(line, dict)]
-    indexed_lines.sort(key=lambda pair: _line_sort_key(pair[1]))
-    for original_index, line in indexed_lines:
-        text = str(line.get("text") or "")
-        line_box = _box(line)
-        if not text or line_box is None:
+    for row in _group_token_rows(tokens):
+        box = _union_boxes(row)
+        if box is None:
             continue
-        overlap = _intersection(line_box, query_box)
-        if overlap is None:
-            continue
-        line_height = max(1.0, line_box[3] - line_box[1])
-        vertical_ratio = (overlap[3] - overlap[1]) / line_height
-        if vertical_ratio < 0.35:
-            continue
-
-        horizontal_ratio = (overlap[2] - overlap[0]) / max(1.0, line_box[2] - line_box[0])
-        line_words = [
-            word for word in words
-            if isinstance(word, dict) and _word_belongs_to_line(word, line, original_index)
-        ]
-        word_text, selected_words = _selected_words_text(line_words, query_box)
-        selected_text = word_text
-        source = "words"
-        fragment_box = _union_boxes(selected_words)
-        if not selected_text:
-            selected_text = text
-            source = "line"
-            fragment_box = None
-            if horizontal_ratio < 0.96:
-                selected_text = _clip_uniform_text(text, line_box, query_box)
-                source = "estimated_characters"
-                ambiguous = True
-        if not selected_text:
-            continue
-        selected_tokens.extend(selected_words)
-        if fragment_box is None:
-            fragment_box = {
-                "x": max(line_box[0], query_box[0]),
-                "y": max(line_box[1], query_box[1]),
-                "w": max(1.0, min(line_box[2], query_box[2]) - max(line_box[0], query_box[0])),
-                "h": max(1.0, min(line_box[3], query_box[3]) - max(line_box[1], query_box[1])),
-            }
         fragments.append(
             {
-                "text": selected_text,
-                **fragment_box,
-                "source": source,
+                "text": "".join(str(item.get("text") or "") for item in row),
+                **box,
+                "source": "tokens",
             }
         )
+    return fragments
 
-    fragments.sort(key=_line_sort_key)
+
+def query_spatial_ocr(tokens: list[dict[str, Any]], query: dict[str, Any]) -> dict[str, Any]:
+    """Select tokens by shape first, then derive text fragments."""
+
+    query_box = _box(query)
+    if query_box is None:
+        return {"text": "", "fragments": [], "tokens": []}
+    selected = [
+        token
+        for token in tokens
+        if isinstance(token, dict)
+        and (token_box := _box(token)) is not None
+        and _overlap_ratio(token_box, query_box) >= MIN_TOKEN_SHAPE_OVERLAP_RATIO
+    ]
+    ordered = order_ocr_tokens(selected)
+    fragments = group_ocr_tokens(ordered)
     return {
         "text": "".join(str(fragment.get("text") or "") for fragment in fragments),
         "fragments": fragments,
-        "tokens": selected_tokens,
-        "ambiguous": ambiguous,
+        "tokens": ordered,
     }
 
 
 def locate_text_box(tokens: list[dict[str, Any]], target: str) -> dict[str, float] | None:
-    """Locate a substring from ordered OCR tokens without falling back to a line center."""
+    """Locate a substring from ordered OCR tokens using real token boxes."""
 
     target = str(target or "")
-    ordered = [token for token in tokens if isinstance(token, dict) and str(token.get("text") or "")]
+    ordered = order_ocr_tokens(tokens)
     text = "".join(str(token.get("text") or "") for token in ordered)
     start = text.find(target)
     if start < 0 or not target:
@@ -215,9 +157,10 @@ def locate_text_box(tokens: list[dict[str, Any]], target: str) -> dict[str, floa
         if overlap_start > token_start or overlap_end < token_end:
             width = max(1.0, right - left)
             length = max(1, len(token_text))
-            piece_left = left + width * ((overlap_start - token_start) / length)
-            piece_right = left + width * ((overlap_end - token_start) / length)
-            left, right = piece_left, piece_right
+            left, right = (
+                left + width * ((overlap_start - token_start) / length),
+                left + width * ((overlap_end - token_start) / length),
+            )
         pieces.append({"x": left, "y": top, "w": max(1.0, right - left), "h": max(1.0, bottom - top)})
     return _union_boxes(pieces)
 

@@ -20,6 +20,13 @@ def _finish(generator):
             return stop.value
 
 
+def _tokens(text: str, *, x: float = 100, y: float = 400, h: float = 40) -> list[dict]:
+    return [
+        {"text": char, "x": x + index * 20, "y": y, "w": 18, "h": h}
+        for index, char in enumerate(text)
+    ]
+
+
 def test_discrete_slider_scale_maps_twenty_positions_to_thumb_centers():
     scale = DiscreteSliderScale(minimum=2, maximum=40, step=2)
     box = {"x": 226.0, "y": 700.0, "w": 492.0, "h": 32.0}
@@ -64,11 +71,7 @@ def test_runtime_slider_rechecks_and_applies_a_bounded_correction(monkeypatch):
         runner,
         "_shared_spatial_ocr_result",
         lambda _ctx, _frame: {
-            "lines": [{"text": f"怪物受到伤害降低【{next(values)}%】", "y": 400, "h": 500}],
-            "words": [
-                {"text": char, "x": 180 + index * 20, "y": 645, "w": 18, "h": 40}
-                for index, char in enumerate("伤害降低")
-            ],
+            "tokens": _tokens(f"怪物受到伤害降低【{next(values)}%】", x=100, y=645, h=40),
         },
     )
     monkeypatch.setattr(

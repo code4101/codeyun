@@ -344,10 +344,10 @@ def build_unknown_evidence(
     frame_stability_score = _image_similarity_percent(runner, previous_frame_data_url, frame_data_url)
     candidates = _build_candidates(runner, ctx, frame_data_url, expected, max_candidates=max_candidates)
     try:
-        ocr_lines = runner._cached_ocr_lines(ctx, frame_data_url)
+        ocr_fragments = runner._cached_ocr_fragments(ctx, frame_data_url)
     except Exception:
-        ocr_lines = []
-    ocr_texts = [str(line.get("text") or "") for line in ocr_lines if isinstance(line, dict) and str(line.get("text") or "").strip()][:80]
+        ocr_fragments = []
+    ocr_texts = [str(line.get("text") or "") for line in ocr_fragments if isinstance(line, dict) and str(line.get("text") or "").strip()][:80]
     classification, suggestion = _classification_and_suggestion(
         candidates,
         expected,

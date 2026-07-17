@@ -113,7 +113,7 @@ class PopupGuardMixin:
     def _handle_disconnect_reconnect_popup(self, runtime: Any) -> bool | str:
         try:
             frame = runtime.cur_frame(update=False)
-            lines = runtime.ocr_lines(frame)
+            lines = runtime.ocr_fragments(frame)
             text = runtime.ocr_text(frame)
         except Exception:
             return False

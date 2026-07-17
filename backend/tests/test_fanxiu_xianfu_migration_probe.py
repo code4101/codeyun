@@ -188,7 +188,7 @@ def test_audit_xianfu_assets_rejects_wrong_required_jump(tmp_path: Path):
     assert any("寻仙台.sceneJumpTarget" in issue for issue in row171["issues"])
 
 
-def test_build_candidates_records_ocr_lines_and_overlay(monkeypatch, tmp_path: Path):
+def test_build_candidates_records_ocr_fragments_and_overlay(monkeypatch, tmp_path: Path):
     old_root = tmp_path / "old"
     old_root.mkdir()
     (old_root / "继续寻访.json").write_text(json.dumps({
@@ -199,7 +199,7 @@ def test_build_candidates_records_ocr_lines_and_overlay(monkeypatch, tmp_path: P
     frame = tmp_path / "frame.png"
     Image.new("RGB", (900, 1600), "black").save(frame)
     monkeypatch.setattr(
-        "scripts.fanxiu_xianfu_migration_probe._ocr_lines",
+        "scripts.fanxiu_xianfu_migration_probe._ocr_fragments",
         lambda _frame_path: [{"text": "关闭", "x": 20, "y": 20, "w": 60, "h": 24}],
     )
 
@@ -211,7 +211,7 @@ def test_build_candidates_records_ocr_lines_and_overlay(monkeypatch, tmp_path: P
         output_dir=tmp_path / "out",
     )
 
-    assert result["ocr_lines"] == [{"text": "关闭", "x": 20, "y": 20, "w": 60, "h": 24}]
+    assert result["ocr_fragments"] == [{"text": "关闭", "x": 20, "y": 20, "w": 60, "h": 24}]
     assert result["candidates"][0]["source"] == "ocr_snap"
     assert Path(result["annotated_path"]).is_file()
     assert Path(tmp_path / "out" / "继续寻访_candidates.json").is_file()
@@ -435,4 +435,3 @@ def test_preflight_report_combines_audit_queue_and_wait_plan(monkeypatch, tmp_pa
     assert report["image_175_present"] is False
     assert report["wait_plan"]["next_time"] == "2026-06-10 23:00:00"
     assert report["asset_audit_output"] == "audit.json"
-
