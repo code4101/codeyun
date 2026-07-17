@@ -92,3 +92,13 @@ def test_background_job_is_hidden_catalog_item_with_hourly_default_schedule():
     policy = scheduler._default_background_task_schedule_policy(DP_BROWSER_TAB_CLEANUP_TASK_KEY)
     assert policy is not None
     assert policy["trigger"] == {"type": "interval", "minutes": 60, "anchor": "last_finish"}
+
+
+def test_runner_tree_contains_hidden_cleanup_task_for_later_enable(monkeypatch):
+    monkeypatch.setattr(scheduler, "_is_task_enabled", lambda task_key: False)
+    monkeypatch.setattr(scheduler, "_effective_background_task_schedule_policy", lambda task_key, **kwargs: None)
+
+    tree = scheduler.BackgroundTaskRunner().build_tree()
+    labels = {getattr(node, "label", "") for node in scheduler._iter_tree_nodes(tree)}
+
+    assert DP_BROWSER_TAB_CLEANUP_TASK_KEY in labels

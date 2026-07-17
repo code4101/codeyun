@@ -62,6 +62,10 @@ TRIAL_DIFFICULTY_AXES = (
     TrialDifficultyAxis("致命抵御", 2, 40, 2),
     TrialDifficultyAxis("攻击频率", 10, 200, 10),
 )
+TRIAL_DIFFICULTY_MIN_LEVEL = TRIAL_DIFFICULTY_BASE_LEVEL + len(TRIAL_DIFFICULTY_AXES)
+TRIAL_DIFFICULTY_MAX_LEVEL = TRIAL_DIFFICULTY_BASE_LEVEL + sum(
+    axis.max_position for axis in TRIAL_DIFFICULTY_AXES
+)
 
 
 @dataclass(frozen=True)
@@ -95,8 +99,8 @@ def build_even_trial_difficulty_plan(level: int) -> TrialDifficultyPlan:
     level = int(level)
     distributable = level - TRIAL_DIFFICULTY_BASE_LEVEL
     axis_count = len(TRIAL_DIFFICULTY_AXES)
-    minimum_level = TRIAL_DIFFICULTY_BASE_LEVEL + axis_count
-    maximum_level = TRIAL_DIFFICULTY_BASE_LEVEL + sum(axis.max_position for axis in TRIAL_DIFFICULTY_AXES)
+    minimum_level = TRIAL_DIFFICULTY_MIN_LEVEL
+    maximum_level = TRIAL_DIFFICULTY_MAX_LEVEL
     if level < minimum_level or level > maximum_level:
         raise ValueError(f"试炼难度 {level} 超出 {minimum_level}..{maximum_level}")
 

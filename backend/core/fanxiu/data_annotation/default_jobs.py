@@ -50,6 +50,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_dungeon",
     "daily_assistant",
     "daily_audit",
+    "xianqiao_trial",
     "mail_selective_claim",
     "xianfu_visit_partner",
     "xianfu_learn_skill",
@@ -524,6 +525,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_audit_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_task_cell("xianqiao_trial", "仙窍_试炼", scheduler_supported=True)
+    def _run_data_annotation_xianqiao_trial_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_xianqiao_trial_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("mail_selective_claim", "邮件_选择性领取", scheduler_supported=True)
     def _run_data_annotation_mail_selective_claim_task_cell(

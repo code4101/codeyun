@@ -249,6 +249,28 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "volcano-princess",
+      "title": "火山的女儿",
+      "node_type": "group",
+      "parent_key": "game-tools",
+      "sort_order": 35,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "volcano-princess.audio",
+      "title": "音频图鉴",
+      "node_type": "feature",
+      "parent_key": "volcano-princess",
+      "sort_order": 10,
+      "route_paths": ["/volcano-princess/audio"],
+      "menu_paths": ["/volcano-princess/audio"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "fanxiu",
       "title": "凡修手游",
       "node_type": "group",

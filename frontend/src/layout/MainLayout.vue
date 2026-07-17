@@ -85,6 +85,7 @@ const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
+const VOLCANO_PRINCESS_AUDIO_PATH = requirePageMenuPath('VolcanoPrincessAudioCatalog');
 const ZAOHUA_ALCHEMY_PATH = requirePageMenuPath('ZaohuaAlchemyCatalog');
 const ZAOHUA_FURNACE_PATH = requirePageMenuPath('ZaohuaFurnaceCatalog');
 const ZAOHUA_HERB_PATH = requirePageMenuPath('ZaohuaHerbCatalog');
@@ -170,6 +171,8 @@ const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDE
 const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
 const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
 const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
+const VOLCANO_PRINCESS_TITLE = requirePermissionTitle('volcano-princess');
+const VOLCANO_PRINCESS_AUDIO_TITLE = requirePermissionTitleByMenuPath(VOLCANO_PRINCESS_AUDIO_PATH);
 const ZAOHUA_TITLE = requirePermissionTitle('zaohua');
 const ZAOHUA_ALCHEMY_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_ALCHEMY_PATH);
 const ZAOHUA_FURNACE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_FURNACE_PATH);
@@ -237,6 +240,7 @@ const BUILTIN_MENU_SECTION_KEYS = new Set([
   'ai-tools',
   'attendance-tools',
   'game-tools',
+  'volcano-princess',
   'zaohua',
   'fanxiu',
   'magic-craft',
@@ -502,11 +506,17 @@ const zaohuaMenuVisible = computed(() =>
   && [ZAOHUA_ALCHEMY_PATH, ZAOHUA_FURNACE_PATH, ZAOHUA_HERB_PATH, ZAOHUA_PASTURE_PATH].some((path) => canAccessMenuPath(path)),
 );
 
+const volcanoPrincessMenuVisible = computed(() =>
+  canAccessFeature('volcano-princess')
+  && canAccessMenuPath(VOLCANO_PRINCESS_AUDIO_PATH),
+);
+
 const gameToolsMenuVisible = computed(() =>
   canAccessFeature('game-tools')
   && (
     fanxiuMenuVisible.value
     || zaohuaMenuVisible.value
+    || volcanoPrincessMenuVisible.value
     || magicCraftMenuVisible.value
     || canAccessMenuPath(DSP_CALCULATOR_PATH)
     || canAccessMenuPath(MYSTIA_WIKI_PATH)
@@ -639,6 +649,7 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
   if (route.path.startsWith('/zaohua/')) openeds.push('game-tools', 'zaohua');
+  if (route.path.startsWith('/volcano-princess/')) openeds.push('game-tools', 'volcano-princess');
   if (route.path.startsWith('/pokemon-tcg/')) openeds.push('game-tools');
   if (route.path.startsWith('/notes/')) openeds.push('note-tools');
   if (route.path === NOTES_CENTER_CANONICAL_PATH || route.path === NOTES_CENTER_MENU_PATH || route.path === NOTES_CHAT_DATA_PATH) {
@@ -916,6 +927,14 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(MYSTIA_WIKI_PATH)" :index="MYSTIA_WIKI_PATH">
               <span>{{ MYSTIA_WIKI_TITLE }}</span>
             </el-menu-item>
+            <el-sub-menu v-if="volcanoPrincessMenuVisible" index="volcano-princess">
+              <template #title>
+                <span>{{ VOLCANO_PRINCESS_TITLE }}</span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(VOLCANO_PRINCESS_AUDIO_PATH)" :index="VOLCANO_PRINCESS_AUDIO_PATH">
+                {{ VOLCANO_PRINCESS_AUDIO_TITLE }}
+              </el-menu-item>
+            </el-sub-menu>
             <el-sub-menu v-if="zaohuaMenuVisible" index="zaohua">
               <template #title>
                 <span>{{ ZAOHUA_TITLE }}</span>

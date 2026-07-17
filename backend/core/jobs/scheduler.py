@@ -737,7 +737,7 @@ class BackgroundTaskRunner:
 
         return Root(
             MemorySelector(
-                *(scheduled(spec) for spec in BACKGROUND_TASK_SPECS if not _is_task_deleted(spec.key)),
+                *(scheduled(spec) for spec in BACKGROUND_TASK_SPECS),
                 Sequence(
                     Action(self._record_idle_summary),
                     IdleUntilNextWake(ratio=0.8, min_seconds=1, max_seconds=300),

@@ -41,7 +41,7 @@ const devOptimizedDeps = [
 ]
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   cacheDir: 'node_modules/.vite-codeyun',
   plugins: [
     vue(),
@@ -55,7 +55,9 @@ export default defineConfig({
       missingRenderer: 'warn',
     }),
     Components({
-      dts: 'src/components.d.ts',
+      // Declarations are a development/typecheck aid. Writing the same file while
+      // Rollup transforms multiple production inputs is racy on Windows sync roots.
+      dts: command === 'serve' ? 'src/components.d.ts' : false,
       exclude: [/sync-conflict/],
       globsExclude: ['**/*sync-conflict*'],
       resolvers: [
@@ -218,4 +220,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))
