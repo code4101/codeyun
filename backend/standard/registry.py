@@ -11,6 +11,7 @@ from .fanxiu import register as register_fanxiu_standard_features
 from .mystia import register as register_mystia_standard_features
 from .notes import register as register_notes_standard_features
 from .tools import register as register_tools_standard_features
+from .volcano_princess import register as register_volcano_princess_standard_features
 from .zaohua import register as register_zaohua_standard_features
 
 
@@ -24,6 +25,7 @@ STANDARD_MODULE_REGISTRARS: tuple[StandardModuleRegistrar, ...] = (
     register_mystia_standard_features,
     register_notes_standard_features,
     register_tools_standard_features,
+    register_volcano_princess_standard_features,
     register_zaohua_standard_features,
 )
 

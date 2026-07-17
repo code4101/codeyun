@@ -244,21 +244,13 @@
                     v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
                     :type="burstCaptureRunning ? 'primary' : 'default'"
-                    :icon="burstCaptureRunning ? VideoPause : VideoPlay"
-                    title="连拍"
-                    aria-label="连拍"
+                    title="连拍管理"
+                    aria-label="连拍管理"
                     :disabled="!selectedEntryId"
-                    @click="toggleBurstCapture"
-                  />
-                  <el-button
-                    v-if="assetTreeViewMode !== 'recognitionOps'"
-                    size="small"
-                    plain
-                    :icon="Picture"
-                    title="连拍缓存"
-                    aria-label="连拍缓存"
                     @click="openBurstDialog"
-                  />
+                  >
+                    {{ burstCaptureRunning ? '连拍中' : '连拍' }}
+                  </el-button>
                   <div v-if="assetTreeViewMode === 'recognitionOps'" class="recognition-ops-toolbar">
                     <span>{{ recognitionOpsMatrixText }}</span>
                     <el-button
@@ -794,7 +786,7 @@
     </section>
     <el-dialog
       v-model="burstDialogVisible"
-      title="连拍缓存"
+      title="连拍管理"
       width="860px"
       append-to-body
       @opened="loadBurstFrames"
@@ -7238,6 +7230,7 @@ const runtimeTaskTypeLabel = (taskType: string) => {
     go_scene: '到场景',
     hide_floating_window: '隐藏浮动窗',
     daily_signup: '日常_报名',
+    xianqiao_trial: '仙窍_试炼',
     legacy_daily_task: '旧版每日任务',
     legacy_dynamic_task: '旧版动态任务',
   };
