@@ -19,6 +19,7 @@ from backend.core.fanxiu.game.window_models import (
 )
 from backend.core.fanxiu.game.ocr_utils import _extract_ocr_line_entries, _join_ocr_line_entries, _sanitize_ocr_text
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
+from backend.core.ocr.spatial_document import extract_ocr_tokens
 from backend.models import User
 
 
@@ -163,118 +164,6 @@ def _build_game_macro_ocr_context(image_data_url: str) -> str:
                 pass
 
 
-def _ocr_box_to_xywh(value: Any) -> tuple[float, float, float, float] | None:
-    if isinstance(value, dict):
-        if {"x", "y", "w", "h"} <= set(value):
-            x = _coerce_float(value.get("x"), 0)
-            y = _coerce_float(value.get("y"), 0)
-            w = _coerce_float(value.get("w"), 0)
-            h = _coerce_float(value.get("h"), 0)
-            return (x, y, w, h) if w > 0 and h > 0 else None
-        points = value.get("points") or value.get("poly") or value.get("polygon") or value.get("box")
-        return _ocr_box_to_xywh(points)
-    if not isinstance(value, (list, tuple)) or not value:
-        return None
-    if len(value) >= 4 and all(not isinstance(item, (list, tuple, dict)) for item in value[:4]):
-        x1 = _coerce_float(value[0], 0)
-        y1 = _coerce_float(value[1], 0)
-        x2 = _coerce_float(value[2], 0)
-        y2 = _coerce_float(value[3], 0)
-        return (min(x1, x2), min(y1, y2), max(1.0, abs(x2 - x1)), max(1.0, abs(y2 - y1)))
-    points: list[tuple[float, float]] = []
-    for item in value:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        points.append((_coerce_float(item[0], 0), _coerce_float(item[1], 0)))
-    if not points:
-        return None
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
-    return (min(xs), min(ys), max(1.0, max(xs) - min(xs)), max(1.0, max(ys) - min(ys)))
-
-
-def _iter_ocr_word_candidates(payload: dict[str, Any]) -> list[tuple[str, Any, int | None]]:
-    candidates: list[tuple[str, Any, int | None]] = []
-
-    def add_parallel(texts: Any, boxes: Any, line_index: int | None = None) -> None:
-        if isinstance(texts, str):
-            text_items = list(texts)
-        elif isinstance(texts, (list, tuple)):
-            text_items = list(texts)
-        else:
-            return
-        box_items = list(boxes) if isinstance(boxes, (list, tuple)) else []
-        for index, text in enumerate(text_items):
-            if index >= len(box_items):
-                break
-            clean = _sanitize_ocr_text(text)
-            if clean:
-                candidates.append((clean, box_items[index], line_index))
-
-    for key in ("rec_word_infos", "rec_word_info", "word_infos", "words"):
-        raw_infos = payload.get(key)
-        if not isinstance(raw_infos, (list, tuple)):
-            continue
-        for line_index, info in enumerate(raw_infos):
-            if isinstance(info, dict):
-                texts = (
-                    info.get("texts")
-                    or info.get("words")
-                    or info.get("chars")
-                    or info.get("word_texts")
-                    or info.get("char_texts")
-                )
-                boxes = (
-                    info.get("boxes")
-                    or info.get("word_boxes")
-                    or info.get("char_boxes")
-                    or info.get("polys")
-                    or info.get("points")
-                )
-                add_parallel(texts, boxes, line_index)
-            elif isinstance(info, (list, tuple)) and len(info) >= 2:
-                add_parallel(info[0], info[1], line_index)
-
-    for text_key, box_key in (
-        ("rec_words", "rec_word_boxes"),
-        ("rec_word_texts", "rec_word_boxes"),
-        ("word_texts", "word_boxes"),
-        ("char_texts", "char_boxes"),
-    ):
-        raw_texts = payload.get(text_key)
-        raw_boxes = payload.get(box_key)
-        if not isinstance(raw_texts, (list, tuple)) or not isinstance(raw_boxes, (list, tuple)):
-            continue
-        nested = any(isinstance(item, (list, tuple)) and not isinstance(item, str) for item in raw_texts)
-        if nested:
-            for line_index, (texts, boxes) in enumerate(zip(raw_texts, raw_boxes)):
-                add_parallel(texts, boxes, line_index)
-        else:
-            add_parallel(raw_texts, raw_boxes, None)
-
-    return candidates
-
-
-def _extract_ocr_words_from_payload(payload: dict[str, Any]) -> list[FanxiuDataAnnotationOcrFrameWord]:
-    words: list[FanxiuDataAnnotationOcrFrameWord] = []
-    for text, raw_box, line_index in _iter_ocr_word_candidates(payload):
-        box = _ocr_box_to_xywh(raw_box)
-        if box is None:
-            continue
-        x, y, w, h = box
-        words.append(
-            FanxiuDataAnnotationOcrFrameWord(
-                text=text,
-                x=max(0.0, x),
-                y=max(0.0, y),
-                w=max(1.0, w),
-                h=max(1.0, h),
-                line_index=line_index,
-            )
-        )
-    return words
-
-
 def _recognize_data_annotation_ocr_frame(
     image_data_url: str,
     *,
@@ -311,7 +200,10 @@ def _recognize_data_annotation_ocr_frame(
             )
         flags = document.get("flags") if isinstance(document, dict) else {}
         payload = flags.get("paddleocr_payload") if isinstance(flags, dict) else None
-        words = _extract_ocr_words_from_payload(payload) if isinstance(payload, dict) else []
+        words = [
+            FanxiuDataAnnotationOcrFrameWord.model_validate(item)
+            for item in extract_ocr_tokens(payload)
+        ] if isinstance(payload, dict) else []
         return FanxiuDataAnnotationOcrFrameResponse(lines=lines, words=words)
     except OcrPreviewError as exc:
         raise RuntimeError(str(exc)) from exc

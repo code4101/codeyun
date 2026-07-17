@@ -54,7 +54,18 @@ from backend.core.fanxiu.data_annotation.scheduler import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
 from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _reference_frame_similarity
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
-from backend.core.fanxiu.data_annotation.ocr_spatial import query_spatial_ocr, union_fragment_box
+from backend.core.fanxiu.data_annotation.ocr_spatial import locate_text_box, query_spatial_ocr, union_fragment_box
+from backend.core.fanxiu.data_annotation.slider_control import (
+    BalancedPointState,
+    DiscreteSliderScale,
+    find_labeled_percentage,
+)
+from backend.core.fanxiu.data_annotation.trial_difficulty import (
+    TRIAL_DIFFICULTY_AXES,
+    ObservedTrialDifficulty,
+    build_even_trial_difficulty_plan,
+    find_current_trial_difficulty,
+)
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
     CLOSE_POPUPS_GUARD_CONFIG_VERSION,
@@ -71,6 +82,7 @@ from backend.core.fanxiu.data_annotation.state import (
     record_data_annotation_scheduler_task_fact,
     write_data_annotation_json as _write_data_annotation_json,
 )
+from backend.core.fanxiu.data_annotation.storage import normalize_data_annotation_shape_load_directions
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
@@ -1611,7 +1623,9 @@ class FanxiuRuntime(Runtime):
     ) -> list[tuple[float, float, str]]:
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
-        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        cached = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+        lines = cached.get("lines") if isinstance(cached.get("lines"), list) else []
+        words = cached.get("words") if isinstance(cached.get("words"), list) else []
         target_shape = self.resolve_shape_selector(target_view, shape_title)
         source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_centers_in_shape(
@@ -1620,6 +1634,7 @@ class FanxiuRuntime(Runtime):
             shape_title,
             include=include,
             exclude=exclude,
+            words=words,
         )
 
     def ocr_lines_in_shapes(
@@ -1672,6 +1687,470 @@ class FanxiuRuntime(Runtime):
         text = self.ocr_text_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url)
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
         return [int(match) for match in re.findall(r"\d+", normalized)], normalized
+
+    def set_slider_value(
+        self,
+        view: View | int | str,
+        label: str,
+        target: int,
+        *,
+        track: Shape | str,
+        anchor: Shape | str | None = None,
+        minimum: int,
+        maximum: int,
+        step: int,
+        max_attempts: int = 3,
+        duration: float = 1.0,
+        settle_seconds: float = 0.8,
+    ):
+        """Set a discrete slider and close the loop with its OCR percentage."""
+
+        scale = DiscreteSliderScale(minimum=int(minimum), maximum=int(maximum), step=int(step))
+        target = int(target)
+        scale.index(target)
+        attempts = max(1, int(max_attempts))
+        target_view = self.view(view)
+        track_shape = self.resolve_shape_selector(target_view, track)
+        source_view = (
+            track_shape.parent_view
+            if isinstance(track_shape.parent_view, View) and isinstance(track_shape.parent_view.raw, dict)
+            else target_view
+        )
+        track_box = self.runner._box(track_shape.raw, source_view.raw)
+        anchor_offset_y: float | None = None
+        if anchor is not None:
+            anchor_shape = self.resolve_shape_selector(target_view, anchor)
+            anchor_view = (
+                anchor_shape.parent_view
+                if isinstance(anchor_shape.parent_view, View) and isinstance(anchor_shape.parent_view.raw, dict)
+                else target_view
+            )
+            anchor_box = self.runner._box(anchor_shape.raw, anchor_view.raw)
+            anchor_offset_y = (
+                float(track_box.get("y") or 0) + float(track_box.get("h") or 0) / 2
+                - float(anchor_box.get("y") or 0) - float(anchor_box.get("h") or 0) / 2
+            )
+        before: int | None = None
+        observed_text = ""
+
+        for attempt in range(1, attempts + 1):
+            frame = self.cur_frame(update=True)
+            cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+            cached_lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
+            cached_words = cached_ocr.get("words") if isinstance(cached_ocr.get("words"), list) else []
+            observation = find_labeled_percentage(cached_lines, label)
+            if observation is None:
+                raise RuntimeError(f"未从当前画面读到滑杆「{label}」的百分比")
+            current, observed_text = observation.value, observation.text
+            scale.index(current)
+            if before is None:
+                before = current
+            if current == target:
+                return {
+                    "label": label,
+                    "before": before,
+                    "after": current,
+                    "target": target,
+                    "attempts": attempt - 1,
+                    "text": observed_text,
+                }
+
+            active_track_box = dict(track_box)
+            if anchor_offset_y is not None:
+                # A normalized OCR line can span several visually unrelated
+                # rows.  Anchor the track to the matched label's character
+                # tokens first; only fall back to the coarse line geometry
+                # when Paddle did not return word/character boxes.
+                label_box = locate_text_box(cached_words, label)
+                anchor_geometry = label_box or observation.line
+                live_anchor_center_y = (
+                    float(anchor_geometry.get("y") or 0)
+                    + float(anchor_geometry.get("h") or 0) / 2
+                )
+                active_track_box["y"] = (
+                    live_anchor_center_y
+                    + anchor_offset_y
+                    - float(track_box.get("h") or 0) / 2
+                )
+            start_x, start_y, end_x, end_y = scale.drag_points(active_track_box, current, target)
+            self._emit_runtime_action(
+                f"调整 #{target_view.id or '?'}「{label}」：{current}% -> {target}%",
+                phase="runtime_set_slider",
+                kind="drag",
+                current_scene=target_view.id,
+            )
+            self.runner._drag_frame_point(
+                self.ctx,
+                source_view.raw,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                duration_ms=max(50, int(float(duration) * 1000)),
+            )
+            self.clear_frame()
+            yield from self.wait_action_settle(settle_seconds)
+
+        frame = self.cur_frame(update=True)
+        cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+        cached_lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
+        observation = find_labeled_percentage(cached_lines, label)
+        after = observation.value if observation is not None else None
+        raise RuntimeError(
+            f"滑杆「{label}」调整失败：目标 {target}%，{attempts} 次拖拽后为 "
+            f"{str(after) + '%' if after is not None else '无法识别'}"
+        )
+
+    def allocate_balanced_points(
+        self,
+        view: View | int | str,
+        *,
+        points_shape: Shape | str,
+        first_value_shape: Shape | str,
+        second_value_shape: Shape | str,
+        first_increase_shape: Shape | str,
+        second_increase_shape: Shape | str,
+        first_label: str = "第一项",
+        second_label: str = "第二项",
+        minimum: int = 10,
+        step: int = 10,
+        max_points: int = 100,
+        verify_attempts: int = 3,
+        settle_seconds: float = 0.8,
+    ):
+        """均衡消耗两个增量属性的剩余点数，并逐次闭环复核。
+
+        本函数不知道“攻击/伤害”或“仙窍试炼”，只处理两个具有共同最小值和
+        步长的增量控件。它按累计已投入档位选择较少的一项，相同时优先第一
+        项。每次点击后只做 OCR 复读，不会因识别延迟重复点击。
+
+        :return dict: 初始状态、最终状态及每一次实际点击后的状态。
+        """
+
+        target_view = self.view(view)
+        verify_attempts = max(1, int(verify_attempts))
+        max_points = max(0, int(max_points))
+
+        def read_one(shape: Shape | str, frame: str, label: str) -> int:
+            numbers, text = self.ocr_numbers_in_shapes(
+                target_view,
+                (shape.title if isinstance(shape, Shape) else str(shape),),
+                frame_data_url=frame,
+            )
+            if len(numbers) != 1:
+                raise RuntimeError(f"未能唯一读取「{label}」：OCR={text!r}，数字={numbers}")
+            return int(numbers[0])
+
+        def read_state() -> BalancedPointState:
+            frame = self.cur_frame(update=True)
+            return BalancedPointState(
+                remaining=read_one(points_shape, frame, "剩余点数"),
+                first_value=read_one(first_value_shape, frame, first_label),
+                second_value=read_one(second_value_shape, frame, second_label),
+                minimum=int(minimum),
+                step=int(step),
+            )
+
+        initial = read_state()
+        if initial.remaining > max_points:
+            raise RuntimeError(f"剩余点数 {initial.remaining} 超过安全上限 {max_points}")
+        state = initial
+        actions: list[dict[str, Any]] = []
+
+        while state.remaining > 0:
+            target = state.next_target()
+            is_first = target == "first"
+            target_label = first_label if is_first else second_label
+            target_shape = first_increase_shape if is_first else second_increase_shape
+            expected = BalancedPointState(
+                remaining=state.remaining - 1,
+                first_value=state.first_value + (state.step if is_first else 0),
+                second_value=state.second_value + (0 if is_first else state.step),
+                minimum=state.minimum,
+                step=state.step,
+            )
+            self.click_shape_center(target_view, target_shape)
+            yield from self.wait_action_settle(settle_seconds)
+
+            observed: BalancedPointState | None = None
+            for verification in range(verify_attempts):
+                observed = read_state()
+                if observed == expected:
+                    break
+                if verification + 1 < verify_attempts:
+                    yield from self.wait_action_settle(settle_seconds)
+            if observed != expected:
+                raise RuntimeError(
+                    f"点击增加{target_label}后状态未按预期更新：expected={expected}，observed={observed}"
+                )
+            actions.append(
+                {
+                    "target": target_label,
+                    "remaining": observed.remaining,
+                    "first_value": observed.first_value,
+                    "second_value": observed.second_value,
+                }
+            )
+            state = observed
+
+        return {
+            "before": {
+                "remaining": initial.remaining,
+                "first_value": initial.first_value,
+                "second_value": initial.second_value,
+            },
+            "after": {
+                "remaining": state.remaining,
+                "first_value": state.first_value,
+                "second_value": state.second_value,
+            },
+            "actions": actions,
+        }
+
+    def read_current_trial_difficulty(
+        self,
+        view: View | int | str,
+        *,
+        frame_data_url: str | None = None,
+    ) -> ObservedTrialDifficulty:
+        """从 #358 当前真实帧读取“当前难度为 N 级”。
+
+        该函数只建立本轮 ``当前+1`` 的难度起点，不推断任何滑杆值。每根
+        滑杆仍必须由 ``set_slider_value`` 读取自己的标题百分比并复核。
+        """
+
+        self.view(view)  # Fail early when the requested asset is unavailable.
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+        lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
+        observation = find_current_trial_difficulty(lines)
+        if observation is None:
+            raise RuntimeError("未从当前画面读取到“当前难度为 N 级”")
+        return observation
+
+    def configure_even_trial_difficulty(
+        self,
+        view: View | int | str,
+        target_level: int,
+        *,
+        scroll_shape: Shape | str = "难度窗口",
+        track_shape: Shape | str = "伤害降低",
+        title_anchor_shape: Shape | str = "难度条",
+        max_scrolls_per_axis: int = 3,
+        settle_seconds: float = 0.8,
+    ):
+        """按均匀模型配置五根难度滑杆并复核最终显示等级。
+
+        函数职责仅是业务编排：计算计划、按标题滚动到可见行、逐根调用
+        ``set_slider_value``，最后确认界面显示的当前难度。单根滑杆的坐标
+        换算、拖拽和百分比校准不在这里重复实现。
+
+        #358 当前资产中两个历史 shape 名称与视觉语义相反：``伤害降低``
+        标的是第一根滑轨，``难度条`` 标的是第一行标题区域。本函数通过参数
+        显式保留这个事实，若以后重命名标注，只需调整调用参数。
+
+        :param int target_level: 最终目标等级，例如 26。
+        :return dict: 纯业务计划、五根滑杆结果和最终显示等级。
+        """
+
+        target_view = self.view(view)
+        plan = build_even_trial_difficulty_plan(target_level)
+        max_scrolls_per_axis = max(0, int(max_scrolls_per_axis))
+
+        def label_visible(label: str) -> bool:
+            frame = self.cur_frame(update=True)
+            cached_ocr = self.runner._shared_spatial_ocr_result(self.ctx, frame)
+            lines = cached_ocr.get("lines") if isinstance(cached_ocr.get("lines"), list) else []
+            return any(label in re.sub(r"\s+", "", str(line.get("text") or "")) for line in lines)
+
+        def ensure_axis_visible(label: str, direction: str):
+            for scroll_index in range(max_scrolls_per_axis + 1):
+                if label_visible(label):
+                    return
+                if scroll_index >= max_scrolls_per_axis:
+                    break
+                self.drag_shape_content(target_view, scroll_shape, direction=direction, ratio=0.65, duration=1.0)
+                yield from self.wait_action_settle(settle_seconds)
+            raise RuntimeError(f"滚动难度窗口后仍未看到“{label}”")
+
+        results: list[dict[str, Any]] = []
+        for index, (axis, target_value) in enumerate(zip(TRIAL_DIFFICULTY_AXES, plan.values)):
+            # Start from the first row and then move monotonically toward the
+            # lower rows.  This keeps scroll behavior deterministic regardless
+            # of where the previous Cell left the list.
+            direction = "up" if index < 3 else "down"
+            yield from ensure_axis_visible(axis.label, direction)
+            result = yield from self.set_slider_value(
+                target_view,
+                axis.label,
+                target_value,
+                track=track_shape,
+                anchor=title_anchor_shape,
+                minimum=axis.minimum,
+                maximum=axis.maximum,
+                step=axis.step,
+                settle_seconds=settle_seconds,
+            )
+            results.append(result)
+
+        final_observation: ObservedTrialDifficulty | None = None
+        for verification in range(3):
+            final_observation = self.read_current_trial_difficulty(target_view)
+            if final_observation.level == plan.level:
+                break
+            if verification < 2:
+                yield from self.wait_action_settle(settle_seconds)
+        if final_observation is None or final_observation.level != plan.level:
+            actual = final_observation.level if final_observation is not None else None
+            raise RuntimeError(f"难度配置后显示等级不符：目标 {plan.level}，实际 {actual}")
+
+        return {
+            "plan": {
+                "level": plan.level,
+                "positions": list(plan.positions),
+                "values": list(plan.values),
+            },
+            "sliders": results,
+            "final_level": final_observation.level,
+            "final_text": final_observation.text,
+        }
+
+    def prepare_xianqiao_trial_settings(
+        self,
+        view: View | int | str = 358,
+        *,
+        difficulty_increment: int = 1,
+        settle_seconds: float = 0.8,
+    ):
+        """按仙窍试炼业务顺序准备 #358 的全部开战参数。
+
+        固定顺序是：
+
+        1. 先把五行增益点数按累计投入均衡分完；
+        2. 再从实时画面读取当前难度；
+        3. 以 ``当前难度 + difficulty_increment`` 生成均匀难度计划；
+        4. 配置五根滑杆并复核最终显示等级。
+
+        五行增益和难度滑杆是两套独立资源模型。五行点数不参与难度等级
+        公式，但必须先完成，避免后续流程在 #358 留下未消费资源。
+        """
+
+        five_elements = yield from self.allocate_balanced_points(
+            view,
+            points_shape="五行点数",
+            first_value_shape="当前攻击",
+            second_value_shape="当前伤害",
+            first_increase_shape="增加攻击",
+            second_increase_shape="增加伤害",
+            first_label="攻击",
+            second_label="伤害",
+            minimum=10,
+            step=10,
+            settle_seconds=settle_seconds,
+        )
+        current = self.read_current_trial_difficulty(view)
+        target_level = current.level + int(difficulty_increment)
+        difficulty = yield from self.configure_even_trial_difficulty(
+            view,
+            target_level,
+            settle_seconds=settle_seconds,
+        )
+        return {
+            "five_elements": five_elements,
+            "current_level": current.level,
+            "target_level": target_level,
+            "difficulty": difficulty,
+        }
+
+    def start_xianqiao_trial_challenge(
+        self,
+        *,
+        challenge_view: View | int | str = 357,
+        start_confirm_view: View | int | str = 359,
+        continue_confirm_view: View | int | str = 360,
+        max_polls: int = 30,
+        stable_departure_polls: int = 5,
+        settle_seconds: float = 0.8,
+    ):
+        """按当前实际场景推进仙窍试炼的开战确认链。
+
+        这是从试炼主页进入战斗的一组标准动作。函数每轮只观察当前场景并
+        响应它实际看到的按钮，不使用“是否加过难度”等历史变量推导弹窗：
+
+        - 遇到 #357，点击“挑战”；
+        - 遇到 #359，点击“开始挑战”；
+        - 遇到 #360，点击“继续挑战”。
+
+        因此函数也可从 #359 或 #360 恢复执行。若游戏没有展示某个确认场景，
+        该步骤会自然跳过；连续若干轮离开三个已知场景后，视为已经进入加载
+        或战斗。每个已处理场景最多点击一次，避免界面切换延迟造成重复操作。
+
+        :param challenge_view: 试炼主页及“挑战”动作所在 View，默认 #357。
+        :param start_confirm_view: “开始挑战”确认 View，默认 #359。
+        :param continue_confirm_view: “继续挑战”确认 View，默认 #360。
+        :param int max_polls: 整个确认链允许的最大观察轮数。
+        :param int stable_departure_polls: 离开已知场景后判定进入战斗所需连续轮数。
+        :param float settle_seconds: 点击或观察之间的稳定等待秒数。
+        :return dict: 实际执行的动作及离开确认链的原因。
+        """
+
+        views = {
+            int(self.view(challenge_view).id): "挑战",
+            int(self.view(start_confirm_view).id): "开始挑战",
+            int(self.view(continue_confirm_view).id): "继续挑战",
+        }
+        challenge_id = int(self.view(challenge_view).id)
+        continue_id = int(self.view(continue_confirm_view).id)
+        max_polls = max(1, int(max_polls))
+        stable_departure_polls = max(1, int(stable_departure_polls))
+        handled: set[int] = set()
+        actions: list[dict[str, Any]] = []
+        absent_polls = 0
+        last_scene_id: int | None = None
+
+        for poll_index in range(max_polls):
+            scene_id, score, frame = self.current_scene(list(views), update=True)
+            last_scene_id = scene_id
+            if scene_id in views:
+                absent_polls = 0
+                if scene_id not in handled:
+                    shape = views[scene_id]
+                    self.click_shape(scene_id, shape, frame_data_url=frame)
+                    handled.add(scene_id)
+                    actions.append({
+                        "scene": scene_id,
+                        "shape": shape,
+                        "score": float(score),
+                    })
+                    yield from self.wait_action_settle(settle_seconds)
+                    if scene_id == continue_id:
+                        return {
+                            "actions": actions,
+                            "exit_reason": "continue_confirmed",
+                            "last_scene": scene_id,
+                        }
+                    continue
+            elif handled:
+                absent_polls += 1
+                if absent_polls >= stable_departure_polls:
+                    return {
+                        "actions": actions,
+                        "exit_reason": "left_confirmation_chain",
+                        "last_scene": scene_id,
+                    }
+            elif poll_index + 1 >= stable_departure_polls:
+                raise RuntimeError("未遇到 #357/#359/#360，无法开始仙窍试炼挑战")
+
+            yield from self.wait_action_settle(settle_seconds)
+
+        pending = (
+            f"#{last_scene_id}"
+            if last_scene_id is not None
+            else "unknown"
+        )
+        if challenge_id in handled:
+            raise TimeoutError(f"仙窍试炼开战确认链超时，最后场景 {pending}")
+        raise RuntimeError(f"未能开始仙窍试炼挑战，最后场景 {pending}")
 
     def find_floating_item_by_anchor(
         self,
@@ -1917,7 +2396,7 @@ class FanxiuRuntime(Runtime):
         start_x, start_y, end_x, end_y = ActionPlanner().drag_shape_content_points(
             view.raw,
             target_shape.raw,
-            direction=str(direction or target_shape.content_direction or "down"),
+            direction=str(direction or target_shape.load_direction or "down"),
             ratio=ratio,
         )
         self.runner._drag_frame_point(
@@ -2061,7 +2540,7 @@ class FanxiuRuntime(Runtime):
         similarity = self.image_signature_similarity(before_signature, after_signature)
         changed = bool(after_signature and similarity < float(unchanged_threshold))
         shape_identity = str(target_shape.raw.get("id") or target_shape.raw.get("title") or "shape")
-        state_key = f"{shape_identity}:{direction or target_shape.content_direction or 'down'}"
+        state_key = f"{shape_identity}:{direction or target_shape.load_direction or 'down'}"
         confirmation_state = self.attrs.setdefault("_scroll_unchanged_confirmations", {})
         if changed:
             confirmation_state[state_key] = 0
@@ -2086,7 +2565,7 @@ class FanxiuRuntime(Runtime):
         target_shape = view_or_shape if isinstance(view_or_shape, Shape) else self.shape(view_or_shape, "")
         normalized_keys = {str(item).strip() for item in (visible_keys or ()) if str(item).strip()}
         shape_identity = str(target_shape.raw.get("id") or target_shape.raw.get("title") or "shape")
-        state_key = f"{shape_identity}:{direction or target_shape.content_direction or 'down'}"
+        state_key = f"{shape_identity}:{direction or target_shape.load_direction or 'down'}"
         states = self.attrs.setdefault("_scroll_semantic_progress", {})
         state = states.setdefault(state_key, {"seen": set(), "unchanged": 0})
         seen = state.setdefault("seen", set())
@@ -2133,9 +2612,9 @@ class FanxiuRuntime(Runtime):
         cx = float(candidate_box.get("x") or 0) + float(candidate_box.get("w") or 0) / 2
         cy = float(candidate_box.get("y") or 0) + float(candidate_box.get("h") or 0) / 2
         margin = max(0.0, min(0.45, float(edge_margin_ratio)))
-        content_direction = str(target_shape.content_direction or "down").strip().lower()
+        load_direction = str(target_shape.load_direction or "down").strip().lower()
         direction: str | None = None
-        if content_direction in {"left", "right"}:
+        if load_direction in {"left", "right"}:
             if cx <= left + width * margin:
                 direction = "left"
             elif cx >= left + width * (1.0 - margin):
@@ -2270,12 +2749,14 @@ class FanxiuRuntime(Runtime):
     ) -> list[tuple[float, float, str]]:
         target_view = self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        cached = self.runner._shared_spatial_ocr_result(self.ctx, frame)
         return self.runner._ocr_centers_in_shape(
-            self.ocr_lines(frame),
+            cached.get("lines") if isinstance(cached.get("lines"), list) else [],
             target_view.raw,
             shape_title,
             include=include,
             exclude=exclude,
+            words=cached.get("words") if isinstance(cached.get("words"), list) else [],
         )
 
     def _daily_text_is_daily_list(self, text: str) -> bool:
@@ -2803,22 +3284,20 @@ class DataAnnotationRuntimeRunner(
     ):
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
         runtime_shape = self._runtime_shape_for_legacy_shape(image, shape)
-        original_direction = runtime_shape.raw.get("contentDirection")
+        direction = runtime_shape.load_direction or "down"
         if reverse:
-            direction = str(original_direction or runtime_shape.content_direction or "down").strip().lower()
-            runtime_shape.raw["contentDirection"] = "down" if direction == "up" else "up"
-        try:
-            return (yield from runtime.scroll_shape_content(
-                runtime_shape,
-                settle_seconds=settle_seconds,
-                unchanged_threshold=unchanged_threshold,
-            ))
-        finally:
-            if reverse:
-                if original_direction is None:
-                    runtime_shape.raw.pop("contentDirection", None)
-                else:
-                    runtime_shape.raw["contentDirection"] = original_direction
+            direction = {
+                "up": "down",
+                "down": "up",
+                "left": "right",
+                "right": "left",
+            }.get(str(direction).strip().lower(), "up")
+        return (yield from runtime.scroll_shape_content(
+            runtime_shape,
+            direction=direction,
+            settle_seconds=settle_seconds,
+            unchanged_threshold=unchanged_threshold,
+        ))
 
     def _occlusion_marker_boxes(self, ctx: dict[str, Any] | None, image: dict[str, Any]) -> list[dict[str, float]]:
         if not ctx:
@@ -6774,6 +7253,7 @@ class DataAnnotationRuntimeRunner(
 
     def _write_asset_tree(self, asset_tree_path: Path, tree: list[dict[str, Any]]) -> None:
         tree = self._merge_asset_tree_existing_shapes(asset_tree_path, tree)
+        tree = normalize_data_annotation_shape_load_directions(tree)
         _write_data_annotation_json(asset_tree_path, tree)
         self._auto_close_candidates_cache.pop(str(asset_tree_path), None)
 
@@ -7481,7 +7961,7 @@ class DataAnnotationRuntimeRunner(
         if text and self._ocr_text_matches(text, target, mode):
             result["matched"] = True
             result["similarity"] = 100
-            ocr_box = union_fragment_box(fragments)
+            ocr_box = locate_text_box(spatial.get("tokens") or [], target) or union_fragment_box(fragments)
             result["fixed_box"] = box
             result["resolved_box"] = box
             if ocr_box is not None:
@@ -7501,16 +7981,19 @@ class DataAnnotationRuntimeRunner(
             return str(sorted((str(key), str(value)) for key, value in options.items()))
 
     def _cached_ocr_result(self, ctx: dict[str, Any], frame_data_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        canonical_options = {**dict(options or {}), "return_word_box": True}
         cache = ctx.setdefault("_ocr_lines_cache", {})
-        options_key = self._ocr_options_cache_key(options)
+        options_key = self._ocr_options_cache_key(canonical_options)
         if (
             isinstance(cache, dict)
+            and cache.get("version") == 2
             and cache.get("frame") == frame_data_url
             and cache.get("options_key") == options_key
             and isinstance(cache.get("lines"), list)
+            and isinstance(cache.get("words"), list)
         ):
             return cache
-        response = self._ocr_frame(frame_data_url, options=options)
+        response = self._ocr_frame(frame_data_url, options=canonical_options)
         lines = response.get("lines") if isinstance(response.get("lines"), list) else []
         words = response.get("words") if isinstance(response.get("words"), list) else []
         ocr_lines_method = getattr(self, "_ocr_lines", None)
@@ -7522,16 +8005,48 @@ class DataAnnotationRuntimeRunner(
             fallback_lines = ocr_lines_method(frame_data_url)
             if isinstance(fallback_lines, list):
                 lines = fallback_lines
-        cache = {"frame": frame_data_url, "options_key": options_key, "lines": lines, "words": words}
+        cache = {
+            "version": 2,
+            "frame": frame_data_url,
+            "options_key": options_key,
+            "lines": lines,
+            "words": words,
+        }
         ctx["_ocr_lines_cache"] = cache
         return cache
 
-    def _shared_spatial_ocr_result(self, ctx: dict[str, Any], frame_data_url: str) -> dict[str, Any]:
+    def _shared_spatial_ocr_result(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        canonical_options = {**dict(options or {}), "return_word_box": True}
+        options_key = self._ocr_options_cache_key(canonical_options)
         with self._shared_ocr_lock:
             cache = ctx.get("_ocr_lines_cache")
-            if isinstance(cache, dict) and cache.get("frame") == frame_data_url and isinstance(cache.get("lines"), list):
+            # A Cell may retain the previous cache schema while the backend is
+            # hot-reloaded.  Reuse its line data for the remainder of that
+            # frame instead of issuing a second OCR request; the next frame is
+            # written in the token-aware v2 schema.
+            if (
+                isinstance(cache, dict)
+                and cache.get("version") is None
+                and cache.get("frame") == frame_data_url
+                and isinstance(cache.get("lines"), list)
+            ):
+                cache.setdefault("words", [])
                 return cache
-            return self._cached_ocr_result(ctx, frame_data_url, options={"return_word_box": True})
+            if (
+                isinstance(cache, dict)
+                and cache.get("version") == 2
+                and cache.get("frame") == frame_data_url
+                and cache.get("options_key") == options_key
+                and isinstance(cache.get("lines"), list)
+                and isinstance(cache.get("words"), list)
+            ):
+                return cache
+            return self._cached_ocr_result(ctx, frame_data_url, options=canonical_options)
 
     def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
         result = self._cached_ocr_result(ctx, frame_data_url)
@@ -8315,6 +8830,13 @@ class DataAnnotationRuntimeRunner(
         options: dict[str, Any] | None = None,
         ctx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        if isinstance(ctx, dict):
+            query_box = self._query_box_for_shapes(image, shape_titles, padding=padding, ctx=ctx)
+            if query_box is None:
+                return []
+            cached = self._shared_spatial_ocr_result(ctx, frame_data_url, options=options)
+            spatial = query_spatial_ocr(cached.get("lines") or [], cached.get("words") or [], query_box)
+            return spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
@@ -8337,6 +8859,13 @@ class DataAnnotationRuntimeRunner(
         options: dict[str, Any] | None = None,
         ctx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        if isinstance(ctx, dict):
+            query_box = self._query_box_for_shapes(image, shape_titles, padding=padding, ctx=ctx)
+            if query_box is None:
+                return []
+            cached = self._shared_spatial_ocr_result(ctx, frame_data_url, options=options)
+            spatial = query_spatial_ocr(cached.get("lines") or [], cached.get("words") or [], query_box)
+            return spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
@@ -8348,6 +8877,39 @@ class DataAnnotationRuntimeRunner(
             word["x"] = float(word.get("x") or 0) + offset_x
             word["y"] = float(word.get("y") or 0) + offset_y
         return words
+
+    def _query_box_for_shapes(
+        self,
+        image: dict[str, Any],
+        shape_titles: tuple[str, ...] | list[str],
+        *,
+        padding: int = 16,
+        ctx: dict[str, Any] | None = None,
+    ) -> dict[str, float] | None:
+        boxes: list[dict[str, Any]] = []
+        for title in shape_titles:
+            shape = self._find_shape(image, str(title))
+            if shape:
+                source_image = self._effective_shape_source_image(ctx, image, shape) if isinstance(ctx, dict) else image
+                boxes.append(self._box(shape, source_image))
+                continue
+            if isinstance(ctx, dict):
+                for ancestor in self._image_ancestor_chain(ctx, image):
+                    shape = self._find_shape(ancestor, str(title))
+                    if shape:
+                        boxes.append(self._box(shape, ancestor))
+                        break
+        if not boxes:
+            return None
+        width = max(1.0, float(image.get("width") or 900))
+        height = max(1.0, float(image.get("height") or 1600))
+        left = max(0.0, min(float(box.get("x") or 0) for box in boxes) - padding)
+        top = max(0.0, min(float(box.get("y") or 0) for box in boxes) - padding)
+        right = min(width, max(float(box.get("x") or 0) + float(box.get("w") or 0) for box in boxes) + padding)
+        bottom = min(height, max(float(box.get("y") or 0) + float(box.get("h") or 0) for box in boxes) + padding)
+        if right <= left or bottom <= top:
+            return None
+        return {"x": left, "y": top, "w": right - left, "h": bottom - top}
 
     def _crop_frame_data_url_for_shapes(
         self,
@@ -8473,6 +9035,7 @@ class DataAnnotationRuntimeRunner(
         *,
         include: tuple[str, ...],
         exclude: tuple[str, ...] = (),
+        words: list[dict[str, Any]] | None = None,
     ) -> list[tuple[float, float, str]]:
         shape = self._find_shape(image, shape_title) if image else None
         if not shape or not image:
@@ -8497,9 +9060,14 @@ class DataAnnotationRuntimeRunner(
             if include and line_w > 0 and text:
                 target_fragment = next((fragment for fragment in include if fragment in text), "")
                 if target_fragment:
-                    center = self._ocr_substring_center(line, target_fragment)
-                    if center is not None:
-                        cx = center[0]
+                    spatial = query_spatial_ocr([line], words or [], line)
+                    token_box = locate_text_box(spatial.get("tokens") or [], target_fragment)
+                    if token_box is not None:
+                        cx = float(token_box["x"]) + float(token_box["w"]) / 2
+                    else:
+                        center = self._ocr_substring_center(line, target_fragment)
+                        if center is not None:
+                            cx = center[0]
             cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
             if left <= cx <= right and top <= cy <= bottom:
                 matches.append((cx, cy, text))

@@ -5430,12 +5430,13 @@ function mailStatusRank(status: MailDesiredStatus) {
 }
 
 function mailInitialStatus(row: FanxiuMailRecord): MailDesiredStatus {
-  if (mailRewardsUnknown(row)) return '锁定'
+  if (mailRewardsUnknown(row)) return '留存'
   const items = mailRewardItems(row)
   if (!items.length) return '可领'
   for (const item of items) {
     const name = mailRewardName(item)
-    if (!name || name.startsWith('未知道具') || name.includes('法则')) return '锁定'
+    if (!name || name.startsWith('未知道具')) return '留存'
+    if (name.includes('法则')) return '锁定'
   }
   if (items.some(item => mailRewardName(item).includes('潜修心得'))) return '可领'
   if (items.some(item => mailProtectedResourceCategory(mailRewardName(item)))) return '留存'

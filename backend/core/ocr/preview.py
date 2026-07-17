@@ -330,7 +330,7 @@ def _coerce_bool_option(value: Any, default: bool) -> bool:
 
 def _predict_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     source = options or {}
-    result: dict[str, Any] = {}
+    result: dict[str, Any] = {"return_word_box": True}
     for key in _PADDLE_OCR_PREDICT_OPTION_KEYS:
         if key not in source:
             continue
@@ -338,6 +338,10 @@ def _predict_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
         if value is None:
             continue
         result[key] = value
+    # CodeYun treats a full OCR result as one reusable spatial document.
+    # Character/word boxes are therefore part of the canonical output rather
+    # than an optional feature selected independently by downstream callers.
+    result["return_word_box"] = True
     return result
 
 
@@ -712,9 +716,10 @@ def run_paddle_ocr_preview(
 ) -> dict[str, Any]:
     from backend.core.runtime.ocr_service import predict_via_ocr_service, should_use_inline_ocr
 
+    canonical_options = {**dict(options or {}), "return_word_box": True}
     if not should_use_inline_ocr():
-        return predict_via_ocr_service(Path(image_path), shape_type=shape_type, options=options)
-    return run_local_paddle_ocr_preview(Path(image_path), shape_type=shape_type, options=options)
+        return predict_via_ocr_service(Path(image_path), shape_type=shape_type, options=canonical_options)
+    return run_local_paddle_ocr_preview(Path(image_path), shape_type=shape_type, options=canonical_options)
 
 
 def run_local_paddle_ocr_preview(

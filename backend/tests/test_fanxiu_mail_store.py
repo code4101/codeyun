@@ -19,6 +19,7 @@ from backend.core.fanxiu.mail.store import (
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_desired_status_for_rewards,
     fanxiu_mail_rewards_unresolved,
     fanxiu_mail_visible_group_action_policy,
 )
@@ -804,10 +805,22 @@ def test_mail_visible_group_holds_ambiguous_same_title_time_candidates():
     assert fanxiu_mail_visible_group_action_policy([safe_record, protected_record]) == ""
 
 
-def test_mail_policy_holds_unknown_rewards():
-    assert fanxiu_mail_action_policy_for_rewards([
-        {"item_id": "999999", "item_name": "未知道具 #999999"},
-    ]) == ""
+def test_mail_policy_keeps_unknown_rewards_without_locking_or_claiming():
+    rewards = [{"item_id": "999999", "item_name": "未知道具 #999999"}]
+
+    assert fanxiu_mail_desired_status_for_rewards(rewards) == "留存"
+    assert fanxiu_mail_action_policy_for_rewards(rewards) == ""
+
+
+def test_mail_policy_claims_domain_blessing_points_after_item_resolution():
+    rewards = [{
+        "item_id": "7433",
+        "item_name": "领域福令积分",
+        "item_type": "类型未知",
+    }]
+
+    assert fanxiu_mail_desired_status_for_rewards(rewards) == "可领"
+    assert fanxiu_mail_action_policy_for_rewards(rewards) == "claim"
 
 
 def test_mail_sync_replaces_legacy_title_policy_with_packet_reward_policy(monkeypatch):

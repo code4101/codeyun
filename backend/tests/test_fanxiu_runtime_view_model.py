@@ -166,7 +166,7 @@ def test_fanxiu_runtime_shape_load_uses_existing_drag_action(monkeypatch):
         "width": 100,
         "height": 200,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.4, "h": 0.5, "contentDirection": "down"}
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.4, "h": 0.5, "loadDirection": "down"}
         ],
     }
     shape = View(image).get_shape("邮件清单2")
@@ -198,7 +198,7 @@ def test_scroll_semantic_progress_requires_two_unchanged_observations():
         "width": 100,
         "height": 200,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "列表区", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"}
+            {"id": "list", "kind": "rect", "title": "列表区", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"}
         ],
     }
     runtime = runner._fanxiu_runtime({"entry": object()})
@@ -998,7 +998,7 @@ def test_mail_selective_claim_uses_runtime_view_shape_flow(monkeypatch, tmp_path
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"}
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"}
         ],
     }
     image122 = {
@@ -1072,7 +1072,7 @@ def test_mail_selective_claim_deletes_read_only_after_scanned_to_end(monkeypatch
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"},
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
@@ -1161,7 +1161,7 @@ def test_mail_selective_claim_confirms_one_key_delete_prompt(monkeypatch, tmp_pa
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"},
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
@@ -1250,7 +1250,7 @@ def test_mail_selective_claim_uses_runtime_default_scroll_parameters(monkeypatch
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"},
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
@@ -1336,7 +1336,7 @@ def test_mail_selective_claim_deletes_read_after_scroll_limit(monkeypatch, tmp_p
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "loadDirection": "down"},
             {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
         ],
     }
