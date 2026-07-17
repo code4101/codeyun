@@ -3980,6 +3980,7 @@ from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoun
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.gift_code import GiftCodeTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.jianling import JianlingTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.login_game import LoginGameTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.misc_actions import MiscActionTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.mozu import MozuTaskMixin
@@ -3996,6 +3997,7 @@ class DataAnnotationRuntimeRunner(
     ZhenxieTaskMixin,
     日常异火任务Mixin,
     JianlingTaskMixin,
+    LoginGameTaskMixin,
     DailyFoundationTaskMixin,
     DailyResourceTaskMixin,
     DailyChallengeTaskMixin,

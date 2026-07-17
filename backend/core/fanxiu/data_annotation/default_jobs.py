@@ -16,6 +16,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 _DEFAULT_RUNTIME_JOB_TYPES = (
     "detect_scene",
     "manual_tick",
+    "login_game",
     "gift_code_redeem",
     "go_scene",
     "hide_floating_window",
@@ -135,6 +136,20 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> str:
         return _run_data_annotation_detect_scene_task_cell(runner, ctx, payload, stop_event)
+
+    @register_fanxiu_data_annotation_task_cell(
+        "login_game",
+        "登录游戏",
+        scheduler_supported=True,
+        stable_start_scene_id=None,
+    )
+    def _run_data_annotation_login_game_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_login_game_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("gift_code_redeem", "兑换礼包码", scheduler_supported=True)
     def _run_data_annotation_gift_code_task_cell(

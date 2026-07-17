@@ -3382,6 +3382,95 @@ def test_go_scene_unknown_states_try_global_return_then_blank_sequentially(tmp_p
     assert clicked == ["返回", "空白", "返回"]
 
 
+def test_lingmai_clear_treats_return_to_313_after_transient_as_one_round_complete():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def wait_click_then_view(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return 313
+
+    result = _drain_generator(runner._continue_daily_lingmai_clear_from_transient(
+        FakeRuntime(),
+        {},
+        task_label="灵脉_清体力",
+    ))
+
+    assert result == "success"
+    assert any("固定一轮探索" in item["message"] for item in runner.status()["logs"])
+
+
+def test_lingmai_clear_treats_direct_return_to_313_as_one_round_complete():
+    runner = create_fanxiu_runtime_runner()
+    actions: list[str] = []
+
+    class FakeRuntime:
+        def drag_shape_to_frame_edge(self, *_args, **_kwargs):
+            actions.append("drag")
+
+        def wait_action_settle(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+
+        def wait_click_then_view(self, *_args, **_kwargs):
+            actions.append("confirm")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return 313
+
+    result = _drain_generator(runner._continue_daily_lingmai_clear_from_amount(
+        FakeRuntime(),
+        {},
+        task_label="灵脉_清体力",
+    ))
+
+    assert result == "success"
+    assert actions == ["drag", "confirm"]
+
+
+def test_lingmai_clear_skips_when_available_stamina_is_below_single_run_cost():
+    runner = create_fanxiu_runtime_runner()
+    actions: list[str] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update=False):
+            return "scene-313"
+
+        def ocr_text_in_shapes(self, view, shapes, *, frame_data_url=None):
+            assert view == 313
+            assert shapes == ("体力",)
+            assert frame_data_url == "scene-313"
+            return "30/11"
+
+        def shape_score(self, *_args, **_kwargs):
+            raise AssertionError("体力不足时不应继续检查或点击一键探索")
+
+        def goto_view(self, target):
+            actions.append(f"goto:{target}")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    result = _drain_generator(runner._continue_daily_lingmai_clear_from_explore(
+        FakeRuntime(),
+        {},
+        task_label="灵脉_清体力",
+    ))
+
+    assert result == "success"
+    assert actions == ["goto:34"]
+    assert any("现有体力 11 小于单次消耗 30" in item["message"] for item in runner.status()["logs"])
+
+
+def test_lingmai_clear_stamina_parser_uses_cost_then_available_order():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._parse_daily_lingmai_clear_stamina("30/1113") == (30, 1113)
+    assert runner._parse_daily_lingmai_clear_stamina("30／11") == (30, 11)
+    assert runner._parse_daily_lingmai_clear_stamina("识别失败") is None
+
+
 def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _scene_image("世界", "0034.png", [

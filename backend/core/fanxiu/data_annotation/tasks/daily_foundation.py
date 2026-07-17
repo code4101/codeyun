@@ -4728,9 +4728,11 @@ class DailyFoundationTaskMixin:
 
         #314 的滚动条必须通过 Runtime 的 shape 级基础动作从控件内部拖到画面
         右边缘，业务层不得读取标注框或换算坐标。``#314[确定]`` 后可能短暂
-        出现 #315「继续」；正确拖满时一轮即可清空体力和摸鱼额度，继续后应
-        回到 #285。若落回 #313，说明基础拖拽未把滚动条推满，必须失败并保留
-        证据，不能用业务循环掩盖输入问题。正式 task cell 随后由通用稳定锚点
+        出现 #315「继续」。本作业固定只处理一轮：无论一轮后回到 #285 还是
+        #313，都按本轮完成处理，不根据剩余体力再次进入探索。#313「体力」的
+        文本格式是“单次消耗/现有体力”（例如 30/1113）；仅当现有体力小于
+        单次消耗时用于执行前短路，直接回 #34 并按成功完成。除此之外，一键
+        探索仍负责在本轮中尽量消耗体力。正式 task cell 随后由通用稳定锚点
         收尾回到 #34。
 
         每次正式执行都从稳定起点整单运行，不跨 Kernel restart 承接
@@ -4809,6 +4811,23 @@ class DailyFoundationTaskMixin:
     ):
         """在 #313 勾选一键探索，再进入 #314 选择消耗体力。"""
         frame = runtime.cur_frame(update=True)
+        stamina_text = runtime.ocr_text_in_shapes(313, ("体力",), frame_data_url=frame)
+        stamina = self._parse_daily_lingmai_clear_stamina(stamina_text)
+        if stamina is not None:
+            per_run_cost, available = stamina
+            self._log(
+                "detail",
+                f"{task_label}：#313 体力={per_run_cost}/{available}（单次消耗/现有体力）",
+            )
+            if available < per_run_cost:
+                self._log(
+                    "success",
+                    f"{task_label}：现有体力 {available} 小于单次消耗 {per_run_cost}，本次无需探索，返回 #34",
+                )
+                yield from runtime.goto_view(34)
+                return "success"
+        else:
+            self._log("detail", f"{task_label}：未可靠解析 #313[体力]「{stamina_text}」，继续固定一轮探索")
         unchecked_score = runtime.shape_score(313, "一键探索", frame_data_url=frame)
         # #313「一键探索」参考图表示未勾选状态。真实调试中未勾选为 100，
         # 勾选后仍可能因大部分背景相同而达到 81；因此这里使用独立的严格
@@ -4823,6 +4842,14 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_action_settle(float(payload.get("lingmai_one_click_settle_seconds") or 1.0))
         yield from runtime.wait_click_then_view(313, "确定", 314)
         return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
+
+    @staticmethod
+    def _parse_daily_lingmai_clear_stamina(text: str) -> tuple[int, int] | None:
+        """Parse #313 stamina as (single-run cost, currently available)."""
+        match = re.search(r"(\d{1,5})\s*[/／]\s*(\d{1,5})", str(text or ""))
+        if match is None:
+            return None
+        return int(match.group(1)), int(match.group(2))
 
     def _continue_daily_lingmai_clear_from_amount(
         self,
@@ -4851,7 +4878,8 @@ class DailyFoundationTaskMixin:
         if landing_id == 315:
             return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
         if landing_id == 313:
-            raise RuntimeError(f"{task_label}：#314 确定后仍回到 #313，滚动条未拖满，单轮清体力未闭环")
+            self._log("success", f"{task_label}：已完成固定一轮探索并回到 #313，剩余体力不再继续处理")
+            return "success"
         self._log("success", f"{task_label}：#315 未出现或已自动消失，已回到 #285 造化灵脉")
         return "success"
 
@@ -4874,7 +4902,8 @@ class DailyFoundationTaskMixin:
                 label=f"{task_label}：点击 #315 继续后等待 #313/#285",
             )
             if int(getattr(landing, "id", landing) or 0) == 313:
-                raise RuntimeError(f"{task_label}：#315 继续后回到 #313，仍有体力或摸鱼额度，滚动条未拖满")
+                self._log("success", f"{task_label}：已完成固定一轮探索并回到 #313，剩余体力不再继续处理")
+                return "success"
         except TimeoutError:
             self._log("detail", f"{task_label}：#315 可能已自动消失，确认回到 #313 或 #285")
             landing = yield from runtime.wait_view(
@@ -4884,7 +4913,8 @@ class DailyFoundationTaskMixin:
                 label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #313/#285",
             )
             if int(getattr(landing, "id", landing) or 0) == 313:
-                raise RuntimeError(f"{task_label}：#315 消失后回到 #313，仍有体力或摸鱼额度，滚动条未拖满")
+                self._log("success", f"{task_label}：已完成固定一轮探索并回到 #313，剩余体力不再继续处理")
+                return "success"
         self._log("success", f"{task_label}：体力已清理并回到 #285 造化灵脉")
         return "success"
 
