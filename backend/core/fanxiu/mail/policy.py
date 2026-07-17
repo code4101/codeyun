@@ -83,7 +83,7 @@ def fanxiu_mail_desired_status_for_rewards(rewards: list[dict[str, Any]]) -> str
         return "可领"
     for reward in rewards:
         if not fanxiu_mail_reward_name_known(reward):
-            return "锁定"
+            return "留存"
         if fanxiu_mail_reward_is_faze(reward):
             return "锁定"
     if any(fanxiu_mail_reward_is_always_claim(reward) for reward in rewards):

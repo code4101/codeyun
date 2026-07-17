@@ -14,6 +14,10 @@ from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, 
 from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
 from backend.core.jobs.executor import background_task_queue
+from backend.core.dp_browser_tab_cleanup import (
+    DP_BROWSER_TAB_CLEANUP_TASK_KEY,
+    run_dp_browser_tab_cleanup,
+)
 from backend.core.attendance.course_completion import (
     COURSE_COMPLETION_RUN_TIME,
     COURSE_COMPLETION_TASK_KEY,
@@ -47,7 +51,7 @@ HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 10
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 11
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "codex_diary_yesterday_import",
@@ -61,6 +65,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
+    DP_BROWSER_TAB_CLEANUP_TASK_KEY,
 }
 
 
@@ -182,6 +187,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
+    if task_key == DP_BROWSER_TAB_CLEANUP_TASK_KEY:
+        return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
     return None
@@ -476,6 +483,14 @@ def _enqueue_note_sheet_page_snapshot_backfill() -> str | None:
     return task_id
 
 
+def _enqueue_dp_browser_tab_cleanup() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        DP_BROWSER_TAB_CLEANUP_TASK_KEY,
+        run_dp_browser_tab_cleanup,
+    )
+    return task_id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     BackgroundTaskSpec(
         key="codex_diary_yesterday_import",
@@ -608,6 +623,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后下次手动重试",
         action=_enqueue_note_sheet_page_snapshot_backfill,
         manual_warning="会读取历史普通分页表并写入 sheetpagesnapshot 缓存；跳过考勤表，不改原始表格数据。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=DP_BROWSER_TAB_CLEANUP_TASK_KEY,
+        title="DP 浏览器重复标签页清理",
+        category="自动化",
+        description="每小时检查 DrissionPage 专用调试浏览器的标签页；同一域名同一 URL 连续跨周期重复且未被调试器附着时，关闭旧重复页，并为每个域名保留一个最新窗口。",
+        schedule_label="每小时扫描",
+        retry_label="失败后下次调度重试",
+        action=_enqueue_dp_browser_tab_cleanup,
+        manual_warning="只连接本机 DP 调试端口，默认仅处理白名单域名；登录、扫码、验证码、授权、正在被调试器附着的页面不会关闭。",
         default_visible=False,
     ),
 )

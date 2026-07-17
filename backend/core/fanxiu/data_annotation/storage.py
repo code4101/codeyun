@@ -193,6 +193,73 @@ def _image_filename_from_node(node: dict[str, Any], index: int) -> str:
     return f"frame-{index:04d}.png"
 
 
+def normalize_data_annotation_shape_load_directions(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将 shape 的窗口加载方向迁移为 ``loadDirection`` 主字段。"""
+
+    legacy_keys = ("contentDirection", "content_direction", "内容方向")
+    direction_aliases = {
+        "": "none",
+        "none": "none",
+        "off": "none",
+        "无": "none",
+        "up": "up",
+        "上": "up",
+        "down": "down",
+        "下": "down",
+        "left": "left",
+        "左": "left",
+        "right": "right",
+        "右": "right",
+    }
+
+    def normalize_direction(value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        return direction_aliases.get(text, value)
+
+    def normalize_shape(shape: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(shape)
+        has_direction = "loadDirection" in normalized
+        direction = normalized.get("loadDirection")
+        if not has_direction:
+            for key in ("load_direction", "窗口加载方向", *legacy_keys):
+                if key in normalized:
+                    direction = normalized.get(key)
+                    has_direction = True
+                    break
+        for key in ("load_direction", "窗口加载方向", *legacy_keys):
+            normalized.pop(key, None)
+        if has_direction:
+            normalized["loadDirection"] = normalize_direction(direction)
+        children = normalized.get("children")
+        if isinstance(children, list):
+            normalized["children"] = [
+                normalize_shape(child)
+                for child in children
+                if isinstance(child, dict)
+            ]
+        return normalized
+
+    def normalize_node(node: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(node)
+        shapes = normalized.get("shapes")
+        if isinstance(shapes, list):
+            normalized["shapes"] = [
+                normalize_shape(shape)
+                for shape in shapes
+                if isinstance(shape, dict)
+            ]
+        children = normalized.get("children")
+        if isinstance(children, list):
+            normalized["children"] = [
+                normalize_node(child)
+                for child in children
+                if isinstance(child, dict)
+            ]
+        return normalized
+
+    return [normalize_node(node) for node in nodes if isinstance(node, dict)]
+
+
 def _normalize_asset_tree_images(
     nodes: list[dict[str, Any]],
     *,
@@ -246,6 +313,7 @@ def save_data_annotation_asset_tree_bundle(
     entry_id: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
+    normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
     if missing:
         joined = "、".join(str(item) for item in missing[:10])
         raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")

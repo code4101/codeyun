@@ -161,7 +161,8 @@ def test_run_paddle_ocr_preview_accepts_json_string_payload(
         )
 
     class _FakeOcr:
-        def predict(self, _input: str) -> list[object]:
+        def predict(self, _input: str, **kwargs: object) -> list[object]:
+            assert kwargs == {"return_word_box": True}
             return [_FakeResult()]
 
     monkeypatch.setattr(ocr_preview, "_get_ocr_instance", lambda: _FakeOcr())
@@ -219,6 +220,24 @@ def test_run_paddle_ocr_preview_passes_safe_predict_options(
     assert preview["document"]["flags"]["paddleocr_payload"]["rec_texts"] == ["魔道"]
     assert "unknown_option" not in observed
     ocr_preview.ocr_service_manager.reset()
+
+
+def test_extract_ocr_tokens_supports_paddlex_3_text_word_fields() -> None:
+    from backend.core.ocr.spatial_document import extract_ocr_tokens
+
+    tokens = extract_ocr_tokens(
+        {
+            "text_word": [["真", "仙", "试", "炼"], ["2", "/", "2"]],
+            "text_word_boxes": [
+                [[10, 20, 30, 50], [31, 20, 51, 50], [52, 20, 72, 50], [73, 20, 93, 50]],
+                [[100, 80, 112, 100], [113, 80, 125, 100], [126, 80, 138, 100]],
+            ],
+        }
+    )
+
+    assert [token["text"] for token in tokens] == ["真", "仙", "试", "炼", "2", "/", "2"]
+    assert tokens[0] == {"text": "真", "x": 10.0, "y": 20.0, "w": 20.0, "h": 30.0, "line_index": 0}
+    assert tokens[-1]["line_index"] == 1
 
 
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(

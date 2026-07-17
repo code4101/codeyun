@@ -618,8 +618,11 @@
                     />
                   </div>
                   <div class="shape-jump-field">
-                    <span>内容方向</span>
-                    <el-select v-model="selectedShape.contentDirection" class="shape-direction-select" size="small">
+                    <span>窗口加载方向</span>
+                    <button type="button" class="shape-inline-help" title="查看窗口加载方向说明" aria-label="查看窗口加载方向说明" @click="showShapeLoadDirectionHelp">
+                      ?
+                    </button>
+                    <el-select v-model="selectedShape.loadDirection" class="shape-direction-select" size="small">
                       <el-option label="无" value="none" />
                       <el-option label="↑" value="up" />
                       <el-option label="↓" value="down" />
@@ -6950,7 +6953,7 @@ type DataAnnotationShape = {
   sceneIdentityRole?: ShapeMatchRole;
   sceneIdentityScope?: SceneIdentityScope;
   sceneJumpTarget?: string;
-  contentDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
+  loadDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
   imageMatchRole?: ShapeMatchRole;
   pixelTolerance?: number;
   ocrMatchRole?: ShapeMatchRole;
@@ -7480,9 +7483,16 @@ const createDefaultAssetTree = (): DataAnnotationAssetNode[] => ([
   },
 ]);
 
-const normalizeShapeContentDirection = (value: unknown): DataAnnotationShape['contentDirection'] => (
-  value === 'up' || value === 'down' || value === 'left' || value === 'right' ? value : 'none'
-);
+const normalizeShapeLoadDirection = (value: unknown): DataAnnotationShape['loadDirection'] => ({
+  up: 'up',
+  上: 'up',
+  down: 'down',
+  下: 'down',
+  left: 'left',
+  左: 'left',
+  right: 'right',
+  右: 'right',
+}[String(value ?? '').trim().toLowerCase()] as DataAnnotationShape['loadDirection'] | undefined) ?? 'none';
 
 const normalizeShapePixelTolerance = (value: unknown) => {
   const numberValue = Number(value);
@@ -7635,8 +7645,23 @@ const normalizeShapes = (
     shape.ocrMatchRole,
     legacyOcrMatchRole !== 'off' ? legacyOcrMatchRole : (shape.ocrEnabled ? 'required' : 'off'),
   );
+  const shapeRecord = shape as DataAnnotationShape & Record<string, unknown>;
+  const normalizedLoadDirection = normalizeShapeLoadDirection(
+    shape.loadDirection
+      ?? shapeRecord.contentDirection
+      ?? shapeRecord.load_direction
+      ?? shapeRecord.content_direction
+      ?? shapeRecord['窗口加载方向']
+      ?? shapeRecord['内容方向'],
+  );
+  const shapeWithoutLegacyLoadDirection = { ...shapeRecord };
+  delete shapeWithoutLegacyLoadDirection.contentDirection;
+  delete shapeWithoutLegacyLoadDirection.load_direction;
+  delete shapeWithoutLegacyLoadDirection.content_direction;
+  delete shapeWithoutLegacyLoadDirection['窗口加载方向'];
+  delete shapeWithoutLegacyLoadDirection['内容方向'];
   return [{
-    ...shape,
+    ...shapeWithoutLegacyLoadDirection,
     kind: isDailyTaskBlockTemplate ? 'shape' : (shape.kind === 'group' ? 'group' : 'shape'),
     title: typeof shape.title === 'string' ? shape.title : '',
     description: isDailyTaskBlockTemplate
@@ -7652,7 +7677,7 @@ const normalizeShapes = (
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
       ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
       : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
-    contentDirection: normalizeShapeContentDirection(shape.contentDirection),
+    loadDirection: normalizedLoadDirection,
     imageMatchRole: normalizedImageMatchRole,
     pixelTolerance: normalizeShapePixelTolerance(shape.pixelTolerance),
     ocrMatchRole: normalizedOcrMatchRole,
@@ -11146,12 +11171,20 @@ const dragShapeBox = (start: VisualPoint, end: VisualPoint, image: DataAnnotatio
   return { x, y, w: right - x, h: bottom - y };
 };
 
-const dragDirectionOf = (start: VisualPoint, end: VisualPoint): DataAnnotationShape['contentDirection'] => {
+const dragDirectionOf = (start: VisualPoint, end: VisualPoint): NonNullable<DataAnnotationShape['loadDirection']> => {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
   return dy >= 0 ? 'down' : 'up';
 };
+
+const loadDirectionOfDrag = (start: VisualPoint, end: VisualPoint): DataAnnotationShape['loadDirection'] => ({
+  up: 'down',
+  down: 'up',
+  left: 'right',
+  right: 'left',
+  none: 'none',
+}[dragDirectionOf(start, end)] as DataAnnotationShape['loadDirection']);
 
 const gameMacroDragDurationMs = (durationMs: number) => (
   gameMacroConfig.value.dragDurationMode === 'fixed'
@@ -11227,7 +11260,7 @@ const createRecordedGameShape = (
     sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
     sceneIdentityScope: shouldMarkScene ? 'local' : 'none',
     sceneJumpTarget: '',
-    contentDirection: action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none',
+    loadDirection: action === 'drag' && endPoint ? loadDirectionOfDrag(point, endPoint) : 'none',
     imageMatchRole: shouldMarkScene ? 'required' : 'off',
     pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
@@ -11575,7 +11608,7 @@ const addAnnotationShape = () => {
     sceneIdentityRole: 'off',
     sceneIdentityScope: 'none',
     sceneJumpTarget: '',
-    contentDirection: 'none',
+    loadDirection: 'none',
     imageMatchRole: 'off',
     pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
@@ -13138,7 +13171,7 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     sceneIdentityRole: 'off',
     sceneIdentityScope: 'none',
     sceneJumpTarget: '',
-    contentDirection: 'none',
+    loadDirection: 'none',
     imageMatchRole: source?.imageMatchRole ?? 'off',
     pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
@@ -13539,6 +13572,29 @@ const showShapeDiscriminatorHelp = () => {
   ]);
 };
 
+const showShapeLoadDirectionHelp = () => {
+  showStructuredHelp('窗口加载方向说明', [
+    {
+      title: '1. 含义',
+      lines: [
+        '表示这个窗口继续查看、加载新内容的方向。',
+        '方向以窗口视野的前进方向为准，不表示手指、鼠标或底层拖拽方向。',
+      ],
+    },
+    {
+      title: '2. 用法',
+      lines: [
+        '例如选择“↓”，表示下方还有内容，Runtime 会执行“向下加载 / 向下滚动”。',
+        '底层需要采用什么拖拽手势由系统自动换算，业务代码不需要处理相反方向。',
+      ],
+    },
+    {
+      title: '3. 无',
+      lines: ['选择“无”表示它不是可滚动加载的窗口，Shape.load() 不会执行滚动。'],
+    },
+  ]);
+};
+
 const showSceneJumpHelp = () => {
   showStructuredHelp('场景跳转说明', [
     {
@@ -13649,7 +13705,7 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   sceneIdentityRole: 'off',
   sceneIdentityScope: 'none',
   sceneJumpTarget: '',
-  contentDirection: 'none',
+  loadDirection: 'none',
   imageMatchRole: 'off',
   pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
   ocrMatchRole: 'off',
@@ -13737,7 +13793,7 @@ const finishShapeDraft = (event: PointerEvent) => {
     sceneIdentityRole: 'off',
     sceneIdentityScope: 'none',
     sceneJumpTarget: '',
-    contentDirection: 'none',
+    loadDirection: 'none',
     imageMatchRole: 'off',
     pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',

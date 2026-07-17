@@ -69,6 +69,37 @@ def test_save_asset_tree_bundle_rejects_missing_image_reference(tmp_path, monkey
     assert not path.exists()
 
 
+def test_save_asset_tree_bundle_migrates_shape_load_direction_fields(tmp_path, monkeypatch):
+    import backend.core.fanxiu.data_annotation.storage as storage
+
+    monkeypatch.setattr(storage, "fanxiu_data_annotation_dir", lambda: tmp_path)
+    path = storage.data_annotation_asset_tree_path("entry-a")
+    tree = [
+        {
+            "id": "image-279",
+            "type": "image",
+            "title": "0279.png",
+            "filename": "0279.png",
+            "imageDataUrl": _png_data_url(),
+            "shapes": [
+                {
+                    "id": "list",
+                    "contentDirection": "down",
+                    "children": [{"id": "child", "内容方向": "右"}],
+                }
+            ],
+        }
+    ]
+
+    normalized = save_data_annotation_asset_tree_bundle(path, tree, entry_id="entry-a")
+
+    shape = normalized[0]["shapes"][0]
+    assert shape["loadDirection"] == "down"
+    assert "contentDirection" not in shape
+    assert shape["children"][0]["loadDirection"] == "right"
+    assert "内容方向" not in shape["children"][0]
+
+
 def test_save_data_annotation_image_bytes_allocates_from_entry_state(tmp_path, monkeypatch):
     import backend.core.fanxiu.data_annotation.storage as storage
 

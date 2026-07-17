@@ -505,7 +505,7 @@ def _shape_from_candidate(
         "isSceneIdentity": bool(is_scene_identity),
         "sceneIdentityRole": "required" if is_scene_identity else "off",
         "sceneJumpTarget": scene_jump_target,
-        "contentDirection": "none",
+        "loadDirection": "none",
         "imageMatchRole": "off",
         "pixelTolerance": 5,
         "ocrMatchRole": role,
