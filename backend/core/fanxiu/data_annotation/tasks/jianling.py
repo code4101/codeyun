@@ -72,7 +72,7 @@ class JianlingTaskMixin:
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"剑灵_淬灵：等待 #349/#351 局部状态 {unknown_rounds}/{max_unknown_rounds}",
+                        f"剑灵_淬灵：等待 #349/#351 当前事务状态 {unknown_rounds}/{max_unknown_rounds}",
                         phase="jianling_cuiling_wait_layer0",
                         current_scene=None,
                     )

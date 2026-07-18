@@ -8,7 +8,7 @@ from backend.core.fanxiu.data_annotation.recognition_graph import normalize_matc
 
 RECOGNITION_OPS_CATEGORIES: tuple[dict[str, str], ...] = (
     {"id": "mutual_match", "label": "互相匹配"},
-    {"id": "multi_parent", "label": "多上游匹配"},
+    {"id": "multi_source", "label": "多入边匹配"},
     {"id": "cycle_group", "label": "循环匹配组"},
 )
 
@@ -167,8 +167,8 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
         issue_edges = [edge_by_pair[(source_id, target_id)] for source_id in sources if (source_id, target_id) in edge_by_pair]
         issues.append(
             {
-                "id": f"multi-parent:{target_id}",
-                "category": "multi_parent",
+                "id": f"multi-source:{target_id}",
+                "category": "multi_source",
                 "severity": "warning",
                 "label": f"{_scene_label(target_id, normalized_images)} <- {len(sources)}",
                 "node_ids": [target_id, *sources],

@@ -115,3 +115,33 @@ def get_audio_media_path(path_id: int) -> Path:
     if target.suffix.lower() != ".mp3" or not target.is_file():
         raise HTTPException(status_code=404, detail="音频文件不存在")
     return target
+
+
+def get_theater_image_path(image_id: str) -> Path:
+    catalog = load_theater_catalog()
+    image = next(
+        (
+            row
+            for row in catalog.get("images") or []
+            if isinstance(row, dict) and str(row.get("id") or "") == image_id
+        ),
+        None,
+    )
+    if not isinstance(image, dict):
+        raise HTTPException(status_code=404, detail="剧院场景图不存在")
+
+    relative_path = str(image.get("media_path") or "").strip().replace("\\", "/")
+    parts = Path(relative_path).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=404, detail="剧院场景图不存在")
+
+    reverse_root = get_volcano_princess_reverse_root().resolve()
+    media_root = (reverse_root / "media" / "images" / "theater").resolve()
+    target = reverse_root.joinpath(*parts).resolve()
+    try:
+        target.relative_to(media_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="剧院场景图不存在") from exc
+    if target.suffix.lower() != ".png" or not target.is_file():
+        raise HTTPException(status_code=404, detail="剧院场景图不存在")
+    return target

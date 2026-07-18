@@ -11380,7 +11380,6 @@ def test_go_scene_uses_routed_scene_layer3_child_as_parent_navigation(monkeypatc
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
-    monkeypatch.setattr(runner, "_strong_ocr_scene_number", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_identify_scene_number_for_route", lambda *_args, **_kwargs: (68, 86.7))
     monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
 

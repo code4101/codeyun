@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,10 +38,9 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
-from backend.core.fanxiu.data_annotation.recognition_catalog import (
-    build_recognition_graph_nodes,
+from backend.core.fanxiu.data_annotation.recognition_candidates import (
     default_recognition_candidate_ids,
-    expand_graph_candidate_ids,
+    default_recognition_candidate_layers,
 )
 from backend.core.fanxiu.data_annotation.recognition_graph import (
     SceneGraphCandidate,
@@ -51,7 +51,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
     repair_data_annotation_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
-from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _reference_frame_similarity
+from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _image_similarity_percent
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr, union_fragment_box
 from backend.core.fanxiu.data_annotation.slider_control import (
@@ -180,6 +180,29 @@ def _absolute_shape_box(shape: Shape) -> dict[str, float]:
         "w": float(box.get("w") or 0),
         "h": float(box.get("h") or 0),
     }
+
+
+def repeated_template_item_box_from_anchor(
+    template_box: Mapping[str, Any],
+    anchor_template_box: Mapping[str, Any],
+    resolved_anchor_box: Mapping[str, Any],
+    *,
+    load_direction: str,
+) -> dict[str, float]:
+    """按滚动方向和锚点中心位移解析一个重复模板实例，不使用像素魔法常量。"""
+    item = {key: float(template_box.get(key) or 0) for key in ("x", "y", "w", "h")}
+    anchor_center_x = float(anchor_template_box.get("x") or 0) + float(anchor_template_box.get("w") or 0) / 2
+    anchor_center_y = float(anchor_template_box.get("y") or 0) + float(anchor_template_box.get("h") or 0) / 2
+    resolved_center_x = float(resolved_anchor_box.get("x") or 0) + float(resolved_anchor_box.get("w") or 0) / 2
+    resolved_center_y = float(resolved_anchor_box.get("y") or 0) + float(resolved_anchor_box.get("h") or 0) / 2
+    direction = str(load_direction or "").strip().lower()
+    if direction in {"up", "down"}:
+        item["y"] += resolved_center_y - anchor_center_y
+    elif direction in {"left", "right"}:
+        item["x"] += resolved_center_x - anchor_center_x
+    else:
+        raise RuntimeError(f"重复模板容器缺少有效 loadDirection：{load_direction!r}")
+    return item
 DEFAULT_SCROLL_SETTLE_SECONDS = 1.0
 DEFAULT_SCROLL_UNCHANGED_THRESHOLD = 95.0
 _default_engine: Any | None = None
@@ -230,7 +253,10 @@ def _parse_xianfu_skill_cd_seconds(text: Any) -> int | None:
 
 
 def _parse_daily_boss_cd_seconds(text: Any) -> int | None:
-    return _parse_xianfu_visit_cd_seconds(text)
+    seconds = _parse_xianfu_visit_cd_seconds(text)
+    if seconds is None or not 0 <= seconds <= 1800:
+        return None
+    return seconds
 
 
 def _parse_daily_boss_cd_seconds_from_six_digits(text: Any) -> int | None:
@@ -244,7 +270,8 @@ def _parse_daily_boss_cd_seconds_from_six_digits(text: Any) -> int | None:
     seconds = int(compact[4:6])
     if minutes >= 60 or seconds >= 60:
         return None
-    return hours * 3600 + minutes * 60 + seconds
+    total_seconds = hours * 3600 + minutes * 60 + seconds
+    return total_seconds if total_seconds <= 1800 else None
 
 
 def _parse_daily_boss_reward_remaining(text: Any) -> int | None:
@@ -1128,9 +1155,8 @@ class FanxiuRuntime(Runtime):
                 if isinstance(target_view, View) and target_view.is_match(self):
                     matched_scene_id = int(view_id)
                     matched_score = float(self.runner.scene_threshold)
-                    if self.runner._scene_number_ocr_confirmed(self.ctx, frame, matched_scene_id, matched_score):
-                        scene_id, score = matched_scene_id, matched_score
-                        break
+                    scene_id, score = matched_scene_id, matched_score
+                    break
             else:
                 preferred_ids = view_ids if in_layer0_window else None
                 scene_id, score = self.runner._identify_scene_number(self.ctx, frame, preferred_ids)
@@ -3061,6 +3087,84 @@ class FanxiuRuntime(Runtime):
                 text=text,
             )
         return None
+
+    def find_floating_items_by_anchor_text(
+        self,
+        view: View | int | str,
+        template_shape: Shape | str,
+        anchor_field: Shape | str,
+        target_text: str,
+        *,
+        container_shape: Shape | str,
+        frame_data_url: str | None = None,
+        match_mode: str = "exact",
+    ) -> list[FloatingItemInstance]:
+        """在滚动容器内用动态 OCR 锚点解析所有同名重复模板实例。"""
+        target_view = self.view(view)
+        item_template = self.resolve_shape_selector(target_view, template_shape)
+        anchor_shape = self._resolve_floating_item_field(target_view, item_template, anchor_field)
+        container = self.resolve_shape_selector(target_view, container_shape)
+        direction = str(container.raw.get("loadDirection") or "").strip().lower()
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        tokens = self.runner._cached_ocr_tokens(self.ctx, frame)
+        container_box = _absolute_shape_box(container)
+        template_box = _absolute_shape_box(item_template)
+        anchor_template_box = _absolute_shape_box(anchor_shape)
+        normalized_target = _sanitize_ocr_text(target_text)
+        matches: list[FloatingItemInstance] = []
+        for fragment in group_ocr_tokens(tokens):
+            text = _sanitize_ocr_text(fragment.get("text"))
+            if not text or not normalized_target or not self.runner._ocr_text_matches(text, normalized_target, match_mode):
+                continue
+            fragment_tokens = query_spatial_ocr(tokens, fragment)["tokens"]
+            resolved_box = locate_text_box(fragment_tokens, normalized_target)
+            if resolved_box is None:
+                continue
+            center_x = float(resolved_box.get("x") or 0) + float(resolved_box.get("w") or 0) / 2
+            center_y = float(resolved_box.get("y") or 0) + float(resolved_box.get("h") or 0) / 2
+            if not self._point_in_box(center_x, center_y, container_box):
+                continue
+            item_box = repeated_template_item_box_from_anchor(
+                template_box,
+                anchor_template_box,
+                resolved_box,
+                load_direction=direction,
+            )
+            matches.append(
+                FloatingItemInstance(
+                    view=target_view,
+                    template_shape=item_template,
+                    anchor_shape=anchor_shape,
+                    anchor_box={key: float(resolved_box.get(key) or 0) for key in ("x", "y", "w", "h")},
+                    item_box=item_box,
+                    text=text,
+                )
+            )
+        return matches
+
+    def floating_item_is_fully_inside(self, item: FloatingItemInstance, container_shape: Shape | str) -> bool:
+        container = self.resolve_shape_selector(item.view, container_shape)
+        outer = _absolute_shape_box(container)
+        inner = item.item_box
+        return (
+            float(inner.get("x") or 0) >= outer["x"]
+            and float(inner.get("y") or 0) >= outer["y"]
+            and float(inner.get("x") or 0) + float(inner.get("w") or 0) <= outer["x"] + outer["w"]
+            and float(inner.get("y") or 0) + float(inner.get("h") or 0) <= outer["y"] + outer["h"]
+        )
+
+    def floating_item_field_is_inside(
+        self,
+        item: FloatingItemInstance,
+        field: Shape | str,
+        container_shape: Shape | str,
+    ) -> bool:
+        field_shape = self._resolve_floating_item_field(item.view, item.template_shape, field)
+        field_box = item.field_box(field_shape)
+        center_x = field_box["x"] + field_box["w"] / 2
+        center_y = field_box["y"] + field_box["h"] / 2
+        container = self.resolve_shape_selector(item.view, container_shape)
+        return self._point_in_box(center_x, center_y, _absolute_shape_box(container))
 
     def read_floating_item_field(
         self,
@@ -7192,20 +7296,26 @@ class DataAnnotationRuntimeRunner(
             and int(View(image).layer) <= 2
         ]
 
-    def _recognition_parent_match_edges_for_candidates(self, ctx: dict[str, Any], scene_ids: list[int]) -> list[dict[str, Any]]:
-        tree = ctx.get("asset_tree")
+    def _runtime_graph_scene_candidate_layers(self, ctx: dict[str, Any]) -> list[tuple[int, list[int]]]:
         images = ctx.get("images") or {}
-        if not isinstance(tree, list) or not isinstance(images, dict):
+        if not isinstance(images, dict):
             return []
-        candidate_set = {int(scene_id) for scene_id in scene_ids}
-        edges: list[dict[str, Any]] = []
-        for node in build_recognition_graph_nodes(tree, images):
-            if node.scene_id not in candidate_set:
-                continue
-            for parent_id in node.parent_scene_ids:
-                if int(parent_id) in candidate_set:
-                    edges.append({"s": int(parent_id), "x": int(node.scene_id), "matched": True, "source": "recognition_parent"})
-        return edges
+        tree = ctx.get("asset_tree")
+        if isinstance(tree, list):
+            return default_recognition_candidate_layers(tree, images)
+        candidate_ids = self._runtime_graph_scene_candidate_ids(ctx)
+        return [
+            (
+                layer,
+                [
+                    int(scene_id)
+                    for scene_id in candidate_ids
+                    if isinstance(images.get(int(scene_id)), dict)
+                    and int(View(images[int(scene_id)]).layer) == layer
+                ],
+            )
+            for layer in (1, 2)
+        ]
 
     def _scene_match_edges_for_candidates(
         self,
@@ -7237,6 +7347,20 @@ class DataAnnotationRuntimeRunner(
                     edges.append(result)
         return edges
 
+    def _scene_reference_similarity(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        frame_data_url: str,
+    ) -> float | None:
+        """Compare the stored scene frame with the current fact frame."""
+
+        try:
+            reference_frame = self._scene_frame_data_url_from_reference(ctx, image)
+        except Exception:
+            return None
+        return _image_similarity_percent(self, reference_frame, frame_data_url)
+
     def _identify_scene_number_by_graph(
         self,
         ctx: dict[str, Any],
@@ -7247,26 +7371,54 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(images, dict) or not images:
             return None, 0.0, "unavailable"
+        recognition_layers: list[tuple[str, list[int]]] = []
         if preferred_scene_ids is not None:
             candidate_ids = [int(scene_id) for scene_id in preferred_scene_ids if int(scene_id) in images]
-            tree = ctx.get("asset_tree")
-            if isinstance(tree, list):
-                candidate_ids = expand_graph_candidate_ids(tree, images, candidate_ids) or candidate_ids
-            return self._identify_scene_number_in_graph_candidates(
+            recognition_layers.append(("layer0", candidate_ids))
+        recognition_layers.extend(
+            (f"layer{layer}", candidate_ids)
+            for layer, candidate_ids in self._runtime_graph_scene_candidate_layers(ctx)
+        )
+
+        best_miss_score = 0.0
+        evaluated_scene_ids: set[int] = set()
+        for layer_label, candidate_ids in recognition_layers:
+            layer_scene_ids = [
+                int(scene_id)
+                for scene_id in candidate_ids
+                if int(scene_id) not in evaluated_scene_ids
+            ]
+            evaluated_scene_ids.update(layer_scene_ids)
+            scene_id, score, status = self._identify_scene_number_in_graph_candidates(
                 ctx,
                 frame_data_url,
-                candidate_ids,
-                layer_label="layer0",
+                layer_scene_ids,
+                layer_label=layer_label,
                 trace=trace,
             )
+            best_miss_score = max(best_miss_score, float(score or 0.0))
+            if status not in {"no_candidates", "no_match"}:
+                return scene_id, score, status
+        return None, best_miss_score, "no_match"
 
-        return self._identify_scene_number_in_graph_candidates(
-            ctx,
-            frame_data_url,
-            self._runtime_graph_scene_candidate_ids(ctx),
-            layer_label="default",
-            trace=trace,
-        )
+    def _scene_candidate_scores_parallel(
+        self,
+        ctx: dict[str, Any],
+        images: dict[int, dict[str, Any]],
+        scene_ids: list[int],
+        frame_data_url: str,
+    ) -> list[float]:
+        def score(scene_id: int) -> float:
+            image = images.get(int(scene_id))
+            if not isinstance(image, dict):
+                return 0.0
+            return float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+
+        if len(scene_ids) <= 1:
+            return [score(scene_id) for scene_id in scene_ids]
+        workers = min(len(scene_ids), 32)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-scene-match") as executor:
+            return list(executor.map(score, scene_ids))
 
     def _identify_scene_number_in_graph_candidates(
         self,
@@ -7279,53 +7431,39 @@ class DataAnnotationRuntimeRunner(
     ) -> tuple[int | None, float, str]:
         if not candidate_scene_ids:
             return None, 0.0, "no_candidates"
-        if 86 in candidate_scene_ids:
-            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
-            if self._leave_scene_confirm_text(text):
-                if trace is not None:
-                    trace.append({"event": "special_case", "scene_id": 86, "reason": "leave_scene_confirm_ocr", "model": "graph"})
-                return 86, 100.0, "matched"
 
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        scene_ids = [
+            scene_id
+            for scene_id in list(dict.fromkeys(int(item) for item in candidate_scene_ids))
+            if isinstance(images.get(scene_id), dict)
+        ]
+        scores = self._scene_candidate_scores_parallel(ctx, images, scene_ids, frame_data_url)
         candidates: list[SceneGraphCandidate] = []
-        for scene_id in list(dict.fromkeys(int(item) for item in candidate_scene_ids)):
+        for scene_id, score in zip(scene_ids, scores):
             image = images.get(scene_id)
             if not isinstance(image, dict):
                 continue
-            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
             matched = score >= self._scene_match_threshold(scene_id)
-            if (
-                matched
-                and isinstance(ctx.get("asset_tree"), list)
-                and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score)
-            ):
-                matched = False
-                if trace is not None:
-                    trace.append({
-                        "event": "candidate_rejected",
-                        "model": "graph",
-                        "layer": layer_label,
-                        "scene_id": scene_id,
-                        "score": round(score, 3),
-                        "reason": "ocr_confirm_failed",
-                    })
             candidates.append(SceneGraphCandidate(scene_id=scene_id, score=score, matched=matched))
 
         matched_ids = [item.scene_id for item in candidates if item.matched]
-        edges = self._recognition_parent_match_edges_for_candidates(ctx, matched_ids)
+        edges: list[dict[str, Any]] = []
         if len(matched_ids) > 1:
             edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids, trace=trace))
-            strong_ocr_scene_id = self._strong_ocr_scene_number(ctx, frame_data_url)
-            if strong_ocr_scene_id in matched_ids:
-                score = self._scene_match_threshold(int(strong_ocr_scene_id))
-                if trace is not None:
-                    trace.append({
-                        "event": "graph_strong_ocr",
-                        "layer": layer_label,
-                        "scene_id": int(strong_ocr_scene_id),
-                        "score": score,
-                    })
-                return int(strong_ocr_scene_id), score, "graph_strong_ocr"
+            candidates = [
+                SceneGraphCandidate(
+                    scene_id=item.scene_id,
+                    score=item.score,
+                    matched=item.matched,
+                    frame_similarity=(
+                        self._scene_reference_similarity(ctx, images[item.scene_id], frame_data_url)
+                        if item.matched and isinstance(images.get(item.scene_id), dict)
+                        else None
+                    ),
+                )
+                for item in candidates
+            ]
         result = choose_scene_from_graph(candidates, edges)
         if result.status == "unknown":
             if trace is not None:
@@ -7419,47 +7557,6 @@ class DataAnnotationRuntimeRunner(
         )
         return graph_scene_id, graph_score
 
-    def _scene_number_ocr_confirmed(
-        self,
-        ctx: dict[str, Any],
-        frame_data_url: str,
-        scene_id: int,
-        score: float,
-    ) -> bool:
-        if int(scene_id) == 71:
-            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
-            if self._game_cover_scene_ocr_text(text):
-                self._log("detail", f"场景识别降级：#71 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 是 #18 登录封面，OCR={text[:120]}")
-                return False
-            if not self._youli_scene_ocr_confirmed_text(text):
-                self._log("detail", f"场景识别降级：#71 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像修仙传游历，OCR={text[:120]}")
-                return False
-            return True
-        if int(scene_id) == 180:
-            text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
-            if self._daily_boss_fighting_scene_ocr_confirmed_text(text):
-                return True
-            self._log("detail", f"场景识别降级：#180 图像/OCR 命中 {float(score or 0):.0f}% 但 OCR 不像首领战斗，OCR={text[:120]}")
-            return False
-        if int(scene_id) != 34:
-            return True
-        if not isinstance(ctx.get("asset_tree"), list):
-            return True
-        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
-        if self._world_scene_ocr_confirmed_text(text):
-            return True
-        self._log("detail", f"场景识别降级：#34 图像命中 {float(score or 0):.0f}% 但 OCR 不像世界，OCR={text[:120]}")
-        return False
-
-    def _daily_boss_fighting_scene_ocr_confirmed_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if not compact or "首领" not in compact:
-            return False
-        reward_noise = ("活动时间", "大奖预览", "奖励预览", "成功击败", "获得了", "使用后可以获得")
-        if any(marker in compact for marker in reward_noise):
-            return False
-        return any(marker in compact for marker in ("自动战斗中", "数据统计", "伤害", "离开"))
-
     def _world_scene_ocr_confirmed_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         internal_markers = (
@@ -7500,58 +7597,6 @@ class DataAnnotationRuntimeRunner(
             return False
         text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
         return self._world_scene_ocr_confirmed_text(text)
-
-    def _game_cover_scene_ocr_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        return (
-            "进入游戏" in compact
-            and ("AppVer" in compact or "ResVer" in compact or "适龄提示" in compact)
-            and ("账号" in compact or "公告" in compact or "协议" in compact)
-        )
-
-    def _youli_scene_ocr_confirmed_text(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if not compact:
-            return False
-        blockers = ("进入游戏", "适龄提示", "游戏公告", "限时上线", "锁定官方", "照妖镜")
-        if any(marker in compact for marker in blockers):
-            return False
-        return any(marker in compact for marker in ("游历", "游历值", "探索完成", "当前区域", "区域列表"))
-
-    def _strong_ocr_scene_number(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
-        text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        if self._game_cover_scene_ocr_text(text):
-            self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过当前标题候选")
-            return 18
-        if "日程" in compact and "凡人历" in compact and re.search(r"\d{2}月\d{2}日", compact):
-            self._log("detail", "场景强 OCR 命中 #66 日程，跳过活动素材候选")
-            return 66
-        internal_markers = ("灵脉", "聚灵位", "剩余空位", "神脉", "探索")
-        world_markers = ("储物袋", "仙市", "仙府", "天机阁", "角色", "装备", "星海", "功法书")
-        if (
-            "大地图" in compact
-            and not any(marker in compact for marker in internal_markers)
-            and sum(1 for marker in world_markers if marker in compact) >= 1
-        ):
-            self._log("detail", "场景强 OCR 命中 #34 世界，跳过当前路径候选")
-            return 34
-        if "可旋转" in compact and "法则之主" in compact and "拜谒" in compact:
-            self._log("detail", "场景强 OCR 命中 #265 法则之主旋转选择页")
-            return 265
-        if "封印" in compact and "离开" in compact:
-            self._log("detail", "场景强 OCR 命中 #181 首领封印完成")
-            return 181
-        if "首领规则" in compact and ("神识注视" in compact or "前往挑战" in compact or "剩余奖励次数" in compact):
-            self._log("detail", "场景强 OCR 命中 #179 首领详情")
-            return 179
-        if "首领" in compact and ("自动战斗中" in compact or "数据统计" in compact or "伤害" in compact):
-            self._log("detail", "场景强 OCR 命中 #180 首领挑战中")
-            return 180
-        if "首领境界" in compact and ("剩余奖励次数" in compact or "掉落记录" in compact) and "首领规则" not in compact:
-            self._log("detail", "场景强 OCR 命中 #178 首领列表")
-            return 178
-        return None
 
     def _leave_scene_confirm_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
@@ -7868,8 +7913,8 @@ class DataAnnotationRuntimeRunner(
             "关闭": 420,
             "空白": 380,
             "取消": 340,
-            # Explicit local navigation remains preferable to the global
-            # coordinate fallbacks used only after this scene has no route.
+            # Prefer an annotated route action before fixed-coordinate
+            # recovery, which is used only after this scene has no route.
             "前往": 300,
             # Confirmation is intentionally last: it is useful for known
             # prompt/result scenes such as #330, but less universally safe
@@ -8000,7 +8045,7 @@ class DataAnnotationRuntimeRunner(
         target_scene_id: int,
         attempted_actions: set[tuple[str, str]],
     ) -> bool:
-        """Use world-layout coordinates only after local navigation is exhausted."""
+        """Use world-layout coordinates only after annotated navigation is exhausted."""
         if current_scene_id == 34:
             return False
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
@@ -8023,7 +8068,7 @@ class DataAnnotationRuntimeRunner(
             source_text = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
             self._log(
                 "warning",
-                f"场景移动：{source_text} 本地导航已耗尽，点击 #34「{shape_title}」坐标作为{action_label}，随后重新规划到 #{target_scene_id}",
+                f"场景移动：{source_text} 标注导航已耗尽，点击 #34「{shape_title}」坐标作为{action_label}，随后重新规划到 #{target_scene_id}",
             )
             self._save_action_trace(
                 ctx,
@@ -8031,7 +8076,7 @@ class DataAnnotationRuntimeRunner(
                 {
                     "kind": "click",
                     "point": [float(x), float(y)],
-                    "label": f"click #34 {shape_title} global recovery",
+                    "label": f"click #34 {shape_title} default recovery",
                     "shape_title": shape.get("title"),
                     "shape_id": shape.get("id"),
                     "source_scene_id": current_scene_id,
@@ -10737,19 +10782,14 @@ class DataAnnotationRuntimeRunner(
             else:
                 current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
-                strong_ocr_scene_id = self._strong_ocr_scene_number(ctx, frame)
-                if strong_ocr_scene_id is not None:
-                    current_scene_id, score = int(strong_ocr_scene_id), float(self.scene_threshold)
-                    self._log("detail", f"场景移动：场景强 OCR 命中 #{current_scene_id}")
-                else:
-                    route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                    current_scene_id, score = self._identify_scene_number_for_route(
-                        ctx,
-                        frame,
-                        tree,
-                        target_scene_id,
-                        route_candidate_ids,
-                    )
+                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                current_scene_id, score = self._identify_scene_number_for_route(
+                    ctx,
+                    frame,
+                    tree,
+                    target_scene_id,
+                    route_candidate_ids,
+                )
             navigation_state_key = self._navigation_state_key(frame, current_scene_id, navigation_states)
             failed_edge_keys = failed_edge_keys_by_state.setdefault(navigation_state_key, set())
             last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from backend.core.volcano_princess.catalog import (
     find_audio_entry,
     get_audio_media_path,
+    get_theater_image_path,
     load_audio_catalog,
     load_theater_catalog,
 )
@@ -27,12 +28,25 @@ def get_theater_catalog() -> dict[str, Any]:
         "source": source,
         "summary": dict(catalog.get("summary") or {}),
         "mechanics": dict(catalog.get("mechanics") or {}),
+        "images": [
+            {
+                **dict(row),
+                "media_url": f"/api/volcano-princess/theater/images/{row.get('id')}",
+            }
+            for row in catalog.get("images") or []
+            if isinstance(row, dict) and row.get("id")
+        ],
         "line_types": list(catalog.get("line_types") or []),
         "drama_categories": list(catalog.get("drama_categories") or []),
         "nature_names": list(catalog.get("nature_names") or []),
         "questions": list(catalog.get("questions") or []),
         "dramas": list(catalog.get("dramas") or []),
     }
+
+
+@router.get("/theater/images/{image_id}")
+def get_theater_image(image_id: str) -> FileResponse:
+    return FileResponse(get_theater_image_path(image_id), media_type="image/png")
 
 
 def _serialize_entry(entry: dict[str, Any]) -> dict[str, Any]:

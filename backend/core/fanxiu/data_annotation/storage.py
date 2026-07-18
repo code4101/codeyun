@@ -272,6 +272,9 @@ def _normalize_asset_tree_images(
     def normalize_node(node: dict[str, Any]) -> dict[str, Any]:
         nonlocal image_count
         normalized = dict(node)
+        # This retired field encoded a single-parent recognition hierarchy.
+        # Persisted asset trees are flattened by dropping it on the next save.
+        normalized.pop("recognitionParentId", None)
         children = normalized.get("children")
         if isinstance(children, list):
             normalized["children"] = [

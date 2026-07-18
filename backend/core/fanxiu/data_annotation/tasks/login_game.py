@@ -33,12 +33,6 @@ class LoginGameTaskMixin:
             if self._world_scene_ocr_confirmed_text(frame_text):
                 scene_id = 34
                 score = float(self.scene_threshold)
-            if scene_id is None:
-                strong_scene_id = self._strong_ocr_scene_number(ctx, frame)
-                if strong_scene_id in self.login_game_scene_ids:
-                    scene_id = int(strong_scene_id)
-                    score = float(self.scene_threshold)
-
             if scene_id == 34:
                 runtime.set_completion_message("登录游戏完成，已进入 #34 世界")
                 self._log("success", "登录游戏：已进入 #34 世界")

@@ -90,7 +90,7 @@ DEFAULT_FANXIU_SERVER_HOST = "1.12.44.63"
 # Bump this whenever protocol decoding semantics or schema interpretation changes.
 # Historical maintenance treats records from older versions as stale and
 # re-decodes their preserved pcap evidence through the same decoder.
-FANXIU_TCP_DECODE_SCHEMA_VERSION = 1
+FANXIU_TCP_DECODE_SCHEMA_VERSION = 2
 DEFAULT_TCP_CAPTURE_DIR = Path("tcp_captures")
 DEFAULT_TCP_STORE_DIR = Path("fanxiu") / "tcp-flow"
 DEFAULT_TCP_RETENTION_MAX_RECORDS = 0
@@ -1743,7 +1743,11 @@ def _fanxiu_protocol_business_order(name: str, category: str = "") -> tuple[Any,
 
 
 def _trim_value(value: Any, *, max_items: int = 8, preserve_item_types: set[str] | None = None) -> Any:
-    preserve_item_types = preserve_item_types or {"MailVo", "RewardItem"}
+    # These lists are business records rather than display samples.  A lundao
+    # target may sit after the eighth item, so trimming SeatVO would make a
+    # deterministic role_id/seat_id selection impossible.  Nested appearance
+    # data inside each seat still follows the normal limit.
+    preserve_item_types = preserve_item_types or {"MailVo", "RewardItem", "SeatVO"}
     if isinstance(value, dict):
         output: dict[str, Any] = {}
         for key, item in value.items():

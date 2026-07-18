@@ -189,17 +189,6 @@ class FanxiuDataAnnotationSaveFrameRequest(BaseModel):
     filename: Optional[str] = None
 
 
-class FanxiuDataAnnotationFrameStructureRequest(BaseModel):
-    entry_id: str
-    write: bool = False
-    backup: bool = True
-    scope: str = Field("layer", pattern="^(layer|sibling)$")
-    threshold: float = Field(80.0, ge=0, le=100)
-    min_shared_anchors: int = Field(1, ge=1, le=20)
-    require_same_layer: bool = True
-    demote_unshared_parent_identities: bool = False
-
-
 class FanxiuGameWindow2BurstListRequest(BaseModel):
     entry_id: str
     page: int = Field(1, ge=1)

@@ -22,6 +22,11 @@ from backend.core.fanxiu.data_annotation.runtime_runner import (
     _parse_xianfu_skill_cd_seconds,
     _parse_xianfu_visit_cd_seconds,
 )
+from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
+    DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS,
+    DAILY_XIANYUAN_LAYER0_SCENE_IDS,
+    DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS,
+)
 
 class DailyChallengeTaskMixin:
     def _execute_daily_dungeon_task(
@@ -2643,7 +2648,7 @@ class DailyChallengeTaskMixin:
 
     def _daily_xianyuan_reference_image(self, ctx: dict[str, Any]) -> dict[str, Any]:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
-        for scene_id in (203, 202, 201, 200, 199, 198, 197, 34, 69):
+        for scene_id in DAILY_XIANYUAN_LAYER0_SCENE_IDS:
             image = images.get(scene_id)
             if isinstance(image, dict):
                 return image
@@ -2694,7 +2699,7 @@ class DailyChallengeTaskMixin:
         observer = self._fanxiu_observer(ctx, stop_event)
         ref_image = self._daily_xianyuan_reference_image(ctx)
         width, height = self._frame_size(ref_image)
-        challenge_scene_ids = [203, 202, 201, 200, 199, 198, 197, 69, 34]
+        challenge_scene_ids = DAILY_XIANYUAN_LAYER0_SCENE_IDS
 
         teach_deadline = time.monotonic() + float(payload.get("teach_disappear_timeout") or 15.0)
         while time.monotonic() < teach_deadline:
@@ -2702,7 +2707,7 @@ class DailyChallengeTaskMixin:
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
             scene_id, _score, frame = observer.current_scene(challenge_scene_ids, update=True)
-            if scene_id in {200, 201, 202, 203}:
+            if scene_id in DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS:
                 break
             lines = observer.ocr_fragments(frame)
             teach_matches = self._daily_xianyuan_text_button_matches(
@@ -2858,7 +2863,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = observer.current_scene([34, 69, 197, 198, 199, 200, 201, 202, 203], update=True)
+            scene_id, score, frame = observer.current_scene(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True)
             if scene_id == 34:
                 with self._lock:
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
@@ -2940,7 +2945,7 @@ class DailyChallengeTaskMixin:
 
     def _return_daily_xianyuan_current_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
         observer = self._fanxiu_observer(ctx, stop_event)
-        scene_id, score, frame = observer.current_scene([34, 69, 197, 198, 199, 200, 201, 202, 203], update=True)
+        scene_id, score, frame = observer.current_scene(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True)
         if scene_id == 34:
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
