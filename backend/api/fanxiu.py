@@ -117,6 +117,10 @@ from backend.core.fanxiu.catalog.inventory import load_spirit_artifact_hall, sav
 from backend.core.fanxiu.catalog.inventory import load_wardrobe_hall, save_wardrobe_hall
 from backend.core.fanxiu.catalog.inventory import load_spirit_beast_hall, save_spirit_beast_hall
 from backend.core.fanxiu.catalog.inventory import load_activity_list, save_activity_list
+from backend.core.fanxiu.catalog.server_relations import (
+    load_fanxiu_server_relations,
+    save_fanxiu_server_relations,
+)
 from backend.core.fanxiu.catalog.inventory import load_modao_invasion_exchange_list, save_modao_invasion_exchange_list
 from backend.core.fanxiu.catalog.inventory import (
     load_shouyuan_exploration_exchange_list,
@@ -192,6 +196,8 @@ from backend.core.fanxiu.catalog.status_models import (
     FanxiuPacketProxyTimelineResponse,
     FanxiuPacketStorageBagResponse,
     FanxiuPlayerProfileRecordListResponse,
+    FanxiuServerRelationTreeResponse,
+    FanxiuServerRelationTreeUpdateRequest,
     FanxiuProcessItem,
     FanxiuProcessListResponse,
     FanxiuProcessTerminateError,
@@ -2576,6 +2582,22 @@ def list_fanxiu_packet_player_profiles(
     else:
         records = list_latest_fanxiu_player_profile_records(session, limit=limit)
     return FanxiuPlayerProfileRecordListResponse(ok=True, count=len(records), records=records)
+
+
+@status_router.get("/server-relations", response_model=FanxiuServerRelationTreeResponse)
+def get_fanxiu_server_relations() -> FanxiuServerRelationTreeResponse:
+    return FanxiuServerRelationTreeResponse(**load_fanxiu_server_relations())
+
+
+@status_router.put("/server-relations", response_model=FanxiuServerRelationTreeResponse)
+def update_fanxiu_server_relations(
+    payload: FanxiuServerRelationTreeUpdateRequest,
+) -> FanxiuServerRelationTreeResponse:
+    try:
+        saved = save_fanxiu_server_relations(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FanxiuServerRelationTreeResponse(**saved)
 
 
 def _fanxiu_mail_create_time_sort_value(row: FanxiuMailRecord) -> float:

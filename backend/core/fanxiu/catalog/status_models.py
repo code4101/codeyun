@@ -305,6 +305,19 @@ class FanxiuPlayerProfileRecordListResponse(BaseModel):
     records: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class FanxiuServerRelationTreeResponse(BaseModel):
+    ok: bool = True
+    version: int = 1
+    ordering: str = "protection_desc"
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FanxiuServerRelationTreeUpdateRequest(BaseModel):
+    version: int = 1
+    ordering: str = "protection_desc"
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class FanxiuMailRecordListResponse(BaseModel):
     ok: bool = True
     count: int = 0

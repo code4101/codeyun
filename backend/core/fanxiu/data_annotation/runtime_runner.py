@@ -4079,6 +4079,7 @@ def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, A
 
 
 from backend.core.fanxiu.data_annotation.tasks.daily_challenge import DailyChallengeTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.daofa import DaofaTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoundationTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.gift_code import GiftCodeTaskMixin
@@ -4096,6 +4097,7 @@ from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial import XianqiaoTri
 
 class DataAnnotationRuntimeRunner(
     PopupGuardMixin,
+    DaofaTaskMixin,
     MozuTaskMixin,
     ZhenxieTaskMixin,
     日常异火任务Mixin,

@@ -6203,7 +6203,7 @@ def test_daily_lundao_in_progress_routes_then_returns_through_formal_shape():
     ]
 
 
-def test_daily_lundao_seat_node_starts_with_only_297_298_layer0():
+def test_daily_lundao_seat_node_starts_with_only_297_298_371_372_373_375_layer0():
     runner = create_fanxiu_runtime_runner()
 
     class FakeRuntime:
@@ -6215,10 +6215,10 @@ def test_daily_lundao_seat_node_starts_with_only_297_298_layer0():
             return None, 0.0, "unknown"
 
     runtime = FakeRuntime()
-    with pytest.raises(RuntimeError, match="只接受 #297/#298"):
+    with pytest.raises(RuntimeError, match="只接受 #297/#298/#371/#372/#373/#375"):
         _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event()))
 
-    assert runtime.calls == [((297, 298), True)]
+    assert runtime.calls == [((297, 298, 371, 372, 373, 375), True)]
 
 
 def test_daily_xianyuan_duel_is_registered_as_manual_standard_job():
@@ -6426,6 +6426,8 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
             self.actions = []
             self.frames = iter(["before-scroll", "after-scroll"])
             self.item = object()
+            self.pre_battle_checks = iter([(None, 0.0, "dialog"), (375, 100.0, "battle")])
+            self.post_battle_checks = iter([(373, 100.0, "dialog"), (52, 100.0, "done")])
 
         def shape(self, view, shape):
             assert (view, shape) == (297, "窗口")
@@ -6454,7 +6456,16 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
             yield BehaviorTreeStatus.RUNNING
             return True
 
-        def current_scene(self, *_args, **_kwargs):
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 371
+
+        def current_scene(self, candidates, **_kwargs):
+            if list(candidates) == [52, 375]:
+                return next(self.pre_battle_checks)
+            if list(candidates) == [52, 373]:
+                return next(self.post_battle_checks)
             return next(self.scenes)
 
         def ocr_text(self, frame):
@@ -6487,7 +6498,12 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
         )
     )
 
-    assert result == {"status": "clicked", "target": {"id": "seat-17", "name": "雪花"}}
+    assert result == {
+        "status": "request_sent",
+        "target": {"id": "seat-17", "name": "雪花"},
+        "scene_id": 52,
+        "score": 100.0,
+    }
     assert [action[0] for action in runtime.actions] == [
         "fresh_frame",
         "find",
@@ -6495,9 +6511,195 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
         "fresh_frame",
         "find",
         "click_floating_item_field",
+        "wait_scene",
+        "click_shape_center",
+        "wait_scene",
+        "click_shape_center",
+        "settle",
+        "click_shape_center",
+        "settle",
+        "wait_scene",
+        "click_shape_center",
+        "settle",
     ]
     assert runtime.actions[1][2]["frame_data_url"] == "before-scroll"
     assert runtime.actions[4][2]["frame_data_url"] == "after-scroll"
+    assert runtime.actions[6] == (
+        "wait_scene",
+        (371,),
+        {"timeout": 20.0, "label": "论道_座位：等待 #371 请他让座确认页"},
+    )
+    assert runtime.actions[7] == ("click_shape_center", (371, "请他让座"), {})
+    assert runtime.actions[8] == (
+        "wait_scene",
+        (372,),
+        {"timeout": 20.0, "label": "论道_座位：等待 #372 请离玩家确认框"},
+    )
+    assert runtime.actions[9] == ("click_shape_center", (372, "确定"), {})
+    assert runtime.actions[10] == ("settle", 1.5)
+    assert runtime.actions[11] == ("click_shape_center", (373, "聊天按钮"), {})
+    assert runtime.actions[13] == (
+        "wait_scene",
+        (373, 52),
+        {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"},
+    )
+    assert runtime.actions[14] == ("click_shape_center", (373, "聊天按钮"), {})
+
+
+def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+            self.pre_battle_checks = iter([(375, 100.0, "battle")])
+            self.post_battle_checks = iter([(373, 100.0, "dialog"), (52, 100.0, "done")])
+
+        def current_scene(self, candidates, **_kwargs):
+            if list(candidates) == [52, 375]:
+                return next(self.pre_battle_checks)
+            if list(candidates) == [52, 373]:
+                return next(self.post_battle_checks)
+            if list(candidates) == [186, 53, 69, 34, 85, 52]:
+                return 34, 100.0, "world"
+            return 371, 100.0, "confirm"
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 372 if scenes == (372,) else 373
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+
+        def ocr_text(self, _frame):
+            return ""
+
+    runtime = FakeRuntime()
+    assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, FakeStopEvent())) == "success"
+
+    assert runtime.actions == [
+        ("click_shape_center", (371, "请他让座"), {}),
+        ("wait_scene", (372,), {"timeout": 20.0, "label": "论道_座位：等待 #372 请离玩家确认框"}),
+        ("click_shape_center", (372, "确定"), {}),
+        ("settle", 1.5),
+        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("click_shape_center", (373, "聊天按钮"), {}),
+        ("settle", 1.5),
+        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    ]
+
+
+def test_daily_lundao_kick_confirmation_can_resume_directly_from_372():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+            self.pre_battle_checks = iter([(375, 100.0, "battle")])
+            self.post_battle_checks = iter([(373, 100.0, "dialog"), (52, 100.0, "done")])
+
+        def current_scene(self, candidates, **_kwargs):
+            if list(candidates) == [52, 375]:
+                return next(self.pre_battle_checks)
+            if list(candidates) == [52, 373]:
+                return next(self.post_battle_checks)
+            if list(candidates) == [186, 53, 69, 34, 85, 52]:
+                return 34, 100.0, "world"
+            return 372, 100.0, "confirm"
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 373
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+
+        def ocr_text(self, _frame):
+            return ""
+
+    runtime = FakeRuntime()
+    assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event())) == "success"
+
+    assert runtime.actions == [
+        ("click_shape_center", (372, "确定"), {}),
+        ("settle", 1.5),
+        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("click_shape_center", (373, "聊天按钮"), {}),
+        ("settle", 1.5),
+        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    ]
+
+
+def test_daily_lundao_resumes_scene_373_and_clicks_until_375_without_rematching_373():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+            self.pre_battle_checks = iter([(None, 0.0, "transition"), (375, 100.0, "battle")])
+            self.post_battle_checks = iter([(373, 100.0, "dialog"), (52, 100.0, "done")])
+
+        def current_scene(self, candidates, **_kwargs):
+            if list(candidates) == [52, 375]:
+                return next(self.pre_battle_checks)
+            if list(candidates) == [52, 373]:
+                return next(self.post_battle_checks)
+            if list(candidates) == [186, 53, 69, 34, 85, 52]:
+                return 34, 100.0, "world"
+            return 373, 100.0, "dialog"
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 373
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+
+        def ocr_text(self, _frame):
+            return ""
+
+    runtime = FakeRuntime()
+    assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event())) == "success"
+
+    assert runtime.actions == [
+        ("click_shape_center", (373, "聊天按钮"), {}),
+        ("settle", 1.5),
+        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("click_shape_center", (373, "聊天按钮"), {}),
+        ("settle", 1.5),
+        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    ]
 
 
 def test_daily_lundao_seated_scene_exits_to_world_before_success():

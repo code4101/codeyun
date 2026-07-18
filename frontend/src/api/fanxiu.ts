@@ -3096,6 +3096,33 @@ export interface FanxiuPlayerProfileRecordListResponse {
   records: Record<string, any>[];
 }
 
+export interface FanxiuServerRelationServer {
+  server_id: number;
+  server_order: number;
+  server_name: string;
+}
+
+export interface FanxiuServerRelationNode {
+  key: string;
+  label: string;
+  servers?: FanxiuServerRelationServer[];
+}
+
+export interface FanxiuServerRelationGroup {
+  key: string;
+  label: string;
+  children: FanxiuServerRelationNode[];
+}
+
+export interface FanxiuServerRelationTreeResponse {
+  ok: boolean;
+  version: number;
+  ordering: 'protection_desc';
+  groups: FanxiuServerRelationGroup[];
+}
+
+export type FanxiuServerRelationTreeUpdate = Omit<FanxiuServerRelationTreeResponse, 'ok'>;
+
 export interface FanxiuMailRecord {
   id: string;
   mail_key: string;
@@ -4780,6 +4807,18 @@ export const getFanxiuPacketRuntimeInsights = (params: { auto_sync?: boolean } =
 export const getFanxiuPlayerProfiles = (params: { limit?: number } = {}) => {
   return api
     .get<FanxiuPlayerProfileRecordListResponse>('/fanxiu/packet-capture/tcp/player-profiles', { params, timeout: 120000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuServerRelations = () => {
+  return api
+    .get<FanxiuServerRelationTreeResponse>('/fanxiu/server-relations', { timeout: 30000 })
+    .then(res => res.data);
+};
+
+export const updateFanxiuServerRelations = (payload: FanxiuServerRelationTreeUpdate) => {
+  return api
+    .put<FanxiuServerRelationTreeResponse>('/fanxiu/server-relations', payload, { timeout: 30000 })
     .then(res => res.data);
 };
 

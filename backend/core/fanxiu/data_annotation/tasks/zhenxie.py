@@ -19,11 +19,7 @@ class ZhenxieTaskMixin:
                 "current_scene": None,
             }
 
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_click_then_view(34, "\u65e5\u7a0b", 66)
-        yield from runtime.wait_click_then_view(66, "\u524d\u5f80", 63)
-        yield from runtime.wait_click_then_view(63, "\u524d\u5f80", 271)
-        yield from runtime.wait_click_then_view(271, "\u53c2\u52a0", 272)
+        yield from runtime.goto_view(272, layer0_wait_seconds=90.0)
         yield from runtime.wait_click(272, "\u524d\u5f80")
         yield from runtime.wait_action_settle(30.0)
         return {

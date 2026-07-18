@@ -229,7 +229,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             flow=runner.daily_mozu_flow,
         )
 
-    @register_fanxiu_data_annotation_task_cell("daily_zhenxie", "\u65e5\u5e38_\u9547\u90aa", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell(
+        "daily_zhenxie",
+        "\u65e5\u5e38_\u9547\u90aa",
+        scheduler_supported=True,
+        stable_start_scene_id=None,
+    )
     def _run_data_annotation_daily_zhenxie_task_cell(
         runner: Any,
         ctx: dict[str, Any],

@@ -64,6 +64,7 @@ import {
   getFanxiuLatestWorldlineActivitySchedule,
   getFanxiuMailRecords,
   getFanxiuPlayerProfiles,
+  getFanxiuServerRelations,
   getFanxiuPacketRuntimeInsights,
   getFanxiuPacketStorageBag,
   getFanxiuProtocolSemantics,
@@ -97,6 +98,7 @@ import {
   type FanxiuActivityStats,
   type FanxiuWorldlineActivityItem,
   type FanxiuWorldlineActivityScheduleResponse,
+  type FanxiuServerRelationGroup,
   type FanxiuDigitDoorBuffRuntime,
   type FanxiuDigitDoorCharacterCard,
   type FanxiuDigitDoorCharacterSearchItem,
@@ -705,6 +707,7 @@ const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'spirit_stone_v
 const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
 const playerProfileSortKey = ref<PlayerProfileSortKey>('attack_desc')
 const playerProfilePage = ref(1)
+const playerServerRelationGroups = ref<FanxiuServerRelationGroup[]>([])
 const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
 const storageBagWorshipTableVisible = ref(false)
 const selectedPacketCategory = ref('')
@@ -7068,7 +7071,11 @@ async function loadPlayerProfileSnapshots(options: { silent?: boolean } = {}) {
     loadingDetail.value = false
   }
   try {
-    const response = await getFanxiuPlayerProfiles()
+    const [response, relationResponse] = await Promise.all([
+      getFanxiuPlayerProfiles(),
+      getFanxiuServerRelations(),
+    ])
+    playerServerRelationGroups.value = relationResponse.groups || []
     packetRuntimeInsights.value = {
       ...(packetRuntimeInsights.value ?? {}),
       player_profiles: {
@@ -13717,6 +13724,31 @@ onBeforeUnmount(() => {
           <span v-else>还没有解析到玩家面板快照</span>
         </div>
       </section>
+      <section v-if="playerServerRelationGroups.length" class="player-server-relations">
+        <div class="player-server-relation-tree">
+          <div class="player-server-relation-tree-root">
+            <strong>区服关系</strong>
+            <span>越靠上越友好、越受保护</span>
+          </div>
+          <ul>
+            <li v-for="group in playerServerRelationGroups" :key="group.key">
+              <div class="player-server-relation-tree-row player-server-relation-group-label">{{ group.label }}</div>
+              <ul>
+                <li v-for="node in group.children" :key="node.key">
+                  <div class="player-server-relation-tree-row">{{ node.label }}</div>
+                  <ul v-if="node.servers?.length">
+                    <li v-for="server in node.servers" :key="server.server_id">
+                      <div class="player-server-relation-tree-row player-server-relation-server">
+                        <span>{{ server.server_order }}</span>{{ server.server_name }}
+                      </div>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      </section>
       <section v-if="playerProfileAttackUnitOptions.length" class="storage-bag-groups player-profile-unit-groups">
         <div class="storage-bag-group-row">
           <span class="facet-label">攻击单位</span>
@@ -18098,6 +18130,94 @@ onBeforeUnmount(() => {
 
 .player-profile-unit-groups .facet-option {
   color: #667085;
+}
+
+.player-server-relations {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.player-server-relation-tree {
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  color: #344054;
+  font-size: 13px;
+}
+
+.player-server-relation-tree-root {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 28px;
+  line-height: 28px;
+}
+
+.player-server-relation-tree-root strong {
+  color: #101828;
+  font-size: 14px;
+}
+
+.player-server-relation-tree-root span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.player-server-relation-tree ul {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 20px;
+  list-style: none;
+}
+
+.player-server-relation-tree li {
+  position: relative;
+  min-height: 28px;
+  padding-left: 14px;
+}
+
+.player-server-relation-tree li::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 14px;
+  border-bottom: 1px solid #cbd5e1;
+  border-left: 1px solid #cbd5e1;
+  content: '';
+}
+
+.player-server-relation-tree li:not(:last-child)::after {
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  left: 0;
+  border-left: 1px solid #cbd5e1;
+  content: '';
+}
+
+.player-server-relation-tree-row {
+  position: relative;
+  z-index: 1;
+  min-height: 28px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.player-server-relation-group-label {
+  color: #101828;
+  font-weight: 650;
+}
+
+.player-server-relation-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.player-server-relation-server span {
+  color: #667085;
+  font-variant-numeric: tabular-nums;
 }
 
 .player-profile-unit-groups .facet-option .facet-option-label,
