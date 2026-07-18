@@ -95,3 +95,8 @@ backend/data/
 /bc_*.db
 /@AutomationLog.txt
 /compact_log.txt
+
+# Accidental root-level probe artifacts created by unexpanded script variables
+/%s
+/$*
+/'*
