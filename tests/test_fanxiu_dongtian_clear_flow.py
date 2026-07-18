@@ -121,6 +121,23 @@ def test_daily_dongtian_action_power_reuses_279_hud_shape_on_current_frame():
     assert runner._daily_dongtian_action_power(Runtime()) == (80, "80")
 
 
+def test_daily_dongtian_action_power_reads_zero_from_full_frame_context():
+    class Runtime:
+        def cur_frame(self, *, update):
+            return "current-279-frame"
+
+        def ocr_numbers_in_shapes(self, *_args, **_kwargs):
+            return [], ""
+
+        def ocr_text(self, frame):
+            assert frame == "current-279-frame"
+            return "洞天福地 我的编队 0 联盟占领"
+
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+
+    assert runner._daily_dongtian_action_power(Runtime()) == (0, "我的编队0")
+
+
 def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
     class Runtime:
         def __init__(self):
@@ -188,6 +205,54 @@ def test_daily_dongtian_packet_builds_enemy_place_list(monkeypatch):
     runner._log = lambda *_args, **_kwargs: None
 
     assert runner._daily_dongtian_enemy_places_from_latest_packet({"own_union_name": "own"}) == ["\u767d\u7389\u4eac"]
+
+
+def test_daily_dongtian_packet_resolves_own_union_from_packet(monkeypatch):
+    from backend.core.fanxiu.packet import current_facts, decoded_store
+
+    monkeypatch.setattr(
+        current_facts,
+        "catch_up_and_list_fanxiu_packet_decoded_records",
+        lambda *_args, **_kwargs: {
+            "decoded_records": {
+                "records": [{
+                    "payload": {
+                        "parsed": {
+                            "mines": {
+                                "_count": 2,
+                                "items": [
+                                    {"id": 1, "crossUnion": {"id": 11, "name": "enemy"}},
+                                    {"id": 7, "crossUnion": {"id": 22, "name": "own"}},
+                                ],
+                            }
+                        }
+                    }
+                }]
+            }
+        },
+    )
+    monkeypatch.setattr(
+        decoded_store,
+        "list_fanxiu_packet_decoded_records",
+        lambda *_args, **_kwargs: {
+            "records": [{
+                "payload": {
+                    "parsed": {
+                        "crossUnionVO": {
+                            "_super": {"id": 22, "name": "own"}
+                        }
+                    }
+                }
+            }]
+        },
+    )
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner._log = lambda *_args, **_kwargs: None
+    payload = {}
+
+    assert runner._daily_dongtian_enemy_places_from_latest_packet(payload) == ["\u767d\u7389\u4eac"]
+    assert payload["own_union_id"] == 22
+    assert payload["own_union_name"] == "own"
 
 
 def test_daily_dongtian_packet_level_two_ids_match_real_map_order(monkeypatch):

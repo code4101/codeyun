@@ -4023,7 +4023,7 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34, 294, 296, 297, 298, 329, 301, 302, 303, 304, 52, 53, 54], update=True)
+        scene_id, _score, frame = runtime.current_scene([69, 34, 294, 296, 297, 298, 371, 372, 373, 375, 329, 301, 302, 303, 304, 52, 53, 54], update=True)
         text = runtime.ocr_text(frame)
         if scene_id == 304:
             return (yield from self._finish_daily_lundao_in_progress(runtime))
@@ -4031,7 +4031,7 @@ class DailyFoundationTaskMixin:
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
         if self._daily_lundao_text_is_reward(text):
             scene_id = 52
-        if scene_id in {297, 298}:
+        if scene_id in {297, 298, 371, 372, 373, 375}:
             return (yield from self._run_daily_lundao_seat_and_leave(runtime, stop_event))
         if scene_id in {329, 301, 302, 303, 52, 53}:
             return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id))
@@ -4175,18 +4175,32 @@ class DailyFoundationTaskMixin:
         只负责推进到共同后续场景，随后统一交给确认入座、离场和完成收尾，
         禁止各自复制一套离场逻辑。
         """
-        scene_id, score, _frame = runtime.current_scene([297, 298], update=True)
+        scene_id, score, _frame = runtime.current_scene([297, 298, 371, 372, 373, 375], update=True)
         if scene_id == 297:
             kick_result = yield from self._run_daily_lundao_kick_for_seat_strategy(runtime, stop_event)
-            raise RuntimeError(
-                f"论道_座位：已点击目标玩家条目的[请他让座]，后续落点尚未确认，"
-                f"target={kick_result.get('target')!r}"
-            )
+            scene_id = int(kick_result.get("scene_id") or 52)
+            score = float(kick_result.get("score") or 0.0)
         elif scene_id == 298:
             scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(runtime)
+        elif scene_id == 371:
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime, start_scene=371)
+            scene_id = int(dialogue_result.get("scene_id") or 52)
+            score = float(dialogue_result.get("score") or 0.0)
+        elif scene_id == 372:
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime, start_scene=372)
+            scene_id = int(dialogue_result.get("scene_id") or 52)
+            score = float(dialogue_result.get("score") or 0.0)
+        elif scene_id == 373:
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime)
+            scene_id = int(dialogue_result.get("scene_id") or 52)
+            score = float(dialogue_result.get("score") or 0.0)
+        elif scene_id == 375:
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime, start_scene=375)
+            scene_id = int(dialogue_result.get("scene_id") or 52)
+            score = float(dialogue_result.get("score") or 0.0)
         else:
             raise RuntimeError(
-                f"论道_座位：抢座节点入口只接受 #297/#298，当前 "
+                f"论道_座位：抢座节点入口只接受 #297/#298/#371/#372/#373/#375，当前 "
                 f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
             )
         return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id, score))
@@ -4247,11 +4261,99 @@ class DailyFoundationTaskMixin:
                 if not runtime.floating_item_field_is_inside(item, "按钮", "窗口"):
                     raise RuntimeError(f"论道_座位：目标「{target_name}」预测按钮中心不在窗口内，已停止且未点击")
                 runtime.click_floating_item_field(item, "按钮")
-                return {"status": "clicked", "target": {"id": target_id, "name": target_name}}
+                # 点击条目右侧莲花[按钮]后会经过若干无业务语义的过渡画面。
+                # 这些画面既不能算成功，也不应加入业务状态分支；只在有界时间内
+                # 等待正式确认场景 #371，再点击其[请他让座]完成本步闭环。
+                dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime)
+                return {
+                    "status": "request_sent",
+                    "target": {"id": target_id, "name": target_name},
+                    "scene_id": dialogue_result.get("scene_id"),
+                    "score": dialogue_result.get("score"),
+                }
             changed = yield from runtime.scroll_shape_content(297, "窗口")
             if not changed:
                 break
         raise RuntimeError(f"论道_座位：向下滚动 #297[窗口] 后仍未找到目标「{target_name}」，已停止且未点击")
+
+    def _confirm_daily_lundao_kick_request(self, runtime: Any, *, start_scene: int | None = None):
+        """忽略过渡帧，依次在 #371 发起请离、在 #372 确认。"""
+        if start_scene is None:
+            yield from runtime.wait_scene(
+                371,
+                timeout=20.0,
+                label="论道_座位：等待 #371 请他让座确认页",
+            )
+            start_scene = 371
+        if start_scene == 371:
+            runtime.click_shape_center(371, "请他让座")
+            yield from runtime.wait_scene(
+                372,
+                timeout=20.0,
+                label="论道_座位：等待 #372 请离玩家确认框",
+            )
+            start_scene = 372
+        if start_scene != 372:
+            raise RuntimeError(f"论道_座位：请离确认节点只接受 #371/#372，当前 #{start_scene}")
+        runtime.click_shape_center(372, "确定")
+        # #372 后会进入若干段同坐标对话。无需把每一段都识别成 #373；
+        # 先给首段画面稳定时间，随后只以正式终点 #375 是否出现作为循环条件。
+        yield from runtime.wait_action_settle(1.5)
+        return (yield from self._advance_daily_lundao_kick_dialogue(runtime))
+
+    def _advance_daily_lundao_kick_dialogue(
+        self,
+        runtime: Any,
+        *,
+        start_scene: int | None = None,
+    ) -> dict[str, Any]:
+        """推进战前与战后两段对话，最终只停在 #52。"""
+        pre_battle_clicks = 0
+        if start_scene != 375:
+            for click_index in range(12):
+                scene_id, _score, _frame = runtime.current_scene([52, 375], update=True)
+                if scene_id == 52:
+                    return {
+                        "status": "dialogue_finished",
+                        "clicks": click_index,
+                        "pre_battle_clicks": click_index,
+                        "post_battle_clicks": 0,
+                        "scene_id": 52,
+                        "score": _score,
+                    }
+                if scene_id == 375:
+                    pre_battle_clicks = click_index
+                    break
+                # 战前中间台词/过渡帧无需匹配 #373；#375 未出现就点固定聊天按钮。
+                runtime.click_shape_center(373, "聊天按钮")
+                yield from runtime.wait_action_settle(1.5)
+            else:
+                raise RuntimeError("论道_座位：战前连续点击 #373[聊天按钮] 12 次后仍未识别到 #375/#52")
+
+        # #375 是战斗阶段；不在战斗画面点击。等待它结束并进入战后 #373
+        # 对话，若直接落到 #52 也允许立即结束。
+        yield from runtime.wait_scene(
+            373,
+            52,
+            timeout=180.0,
+            label="论道_座位：等待 #375 战斗结束后的对话/#52",
+        )
+        for post_click_index in range(12):
+            scene_id, _score, _frame = runtime.current_scene([52, 373], update=True)
+            if scene_id == 52:
+                return {
+                    "status": "dialogue_finished",
+                    "clicks": pre_battle_clicks + post_click_index,
+                    "pre_battle_clicks": pre_battle_clicks,
+                    "post_battle_clicks": post_click_index,
+                    "scene_id": 52,
+                    "score": _score,
+                }
+            if scene_id == 373:
+                runtime.click_shape_center(373, "聊天按钮")
+            # 战后过渡帧既不是 #373 也不是 #52 时只等待，不误点。
+            yield from runtime.wait_action_settle(1.5)
+        raise RuntimeError("论道_座位：#375 结束后推进战后对话 12 轮仍未识别到 #52")
 
     def _run_daily_lundao_empty_seat_strategy(self, runtime: Any):
         """#298 空位策略；复用既有入座及后续确认落点，不复制收尾。"""
@@ -5081,6 +5183,14 @@ class DailyFoundationTaskMixin:
             frame_data_url=frame,
         )
         if not numbers:
+            # 单个“0”在窄 HUD 裁剪里偶尔会被 OCR 当成空白；全帧仍能稳定读到
+            # “我的编队0”。只接受这个明确上下文，不能把任意空 OCR 猜成 0。
+            full_text = _sanitize_ocr_text(runtime.ocr_text(frame))
+            match = re.search(r"我的编队(\d{1,4})", full_text)
+            if match:
+                numbers = [int(match.group(1))]
+                text = match.group(0)
+        if not numbers:
             raise RuntimeError(f"洞天_行动力：行动力区域未识别到数字，OCR={text!r}")
         return int(numbers[0]), str(text or "")
 
@@ -5142,12 +5252,11 @@ class DailyFoundationTaskMixin:
     def _daily_dongtian_enemy_places_from_latest_packet(self, payload: dict[str, Any]) -> list[str]:
         own_union_id = int(payload.get("own_union_id") or 0)
         own_union_name = str(payload.get("own_union_name") or "").strip()
-        if own_union_id <= 0 and not own_union_name:
-            raise RuntimeError("洞天_行动力：缺少我方联盟 own_union_id/own_union_name 配置，无法判断敌我")
 
         from sqlmodel import Session
 
         from backend.core.fanxiu.packet.current_facts import catch_up_and_list_fanxiu_packet_decoded_records
+        from backend.core.fanxiu.packet.decoded_store import list_fanxiu_packet_decoded_records
         from backend.db import engine
 
         with Session(engine) as session:
@@ -5160,6 +5269,31 @@ class DailyFoundationTaskMixin:
                 reason="daily-dongtian-clear",
                 wait_seconds=max(1.0, min(30.0, float(payload.get("dongtian_packet_wait_seconds") or 15.0))),
             )
+            if own_union_id <= 0 and not own_union_name:
+                own_union_facts = list_fanxiu_packet_decoded_records(
+                    session,
+                    names=["SM_SelfCrossUnionInfo"],
+                    limit=5,
+                )
+                for record in own_union_facts.get("records") or []:
+                    record_payload = record.get("payload") if isinstance(record, dict) else {}
+                    record_parsed = record_payload.get("parsed") if isinstance(record_payload, dict) else {}
+                    cross_union = record_parsed.get("crossUnionVO") if isinstance(record_parsed, dict) else {}
+                    if not isinstance(cross_union, dict):
+                        continue
+                    simple_union = cross_union.get("_super") if isinstance(cross_union.get("_super"), dict) else cross_union
+                    own_union_id = int(simple_union.get("id") or 0)
+                    own_union_name = str(simple_union.get("name") or "").strip()
+                    if own_union_id > 0 or own_union_name:
+                        payload.setdefault("own_union_id", own_union_id)
+                        payload.setdefault("own_union_name", own_union_name)
+                        self._log(
+                            "detail",
+                            f"洞天_行动力：从抓包识别我方联盟 {own_union_name or '-'}({own_union_id or '-'})",
+                        )
+                        break
+        if own_union_id <= 0 and not own_union_name:
+            raise RuntimeError("洞天_行动力：抓包中缺少自己的跨服联盟信息，无法判断敌我")
         records = ((facts.get("decoded_records") or {}).get("records") or []) if isinstance(facts, dict) else []
         if not records:
             raise RuntimeError("洞天_行动力：进入 #279 后未获得最近 5 分钟的 SM_XianLvMineEnterSync 抓包")
