@@ -245,7 +245,6 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuGameWindow2StreamTokenResponse,
     FanxiuGameWindow2TextRequest,
     FanxiuDataAnnotationAssetTreeRequest,
-    FanxiuDataAnnotationFrameStructureRequest,
     FanxiuDataAnnotationMacroAnnotateRequest,
     FanxiuDataAnnotationMacroAnnotateResponse,
     FanxiuDataAnnotationMacroPoint,
@@ -463,7 +462,6 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     register_fanxiu_runtime_runner,
     resolve_fanxiu_entry,
 )
-from backend.core.fanxiu.data_annotation.frame_structure_organizer import organize_frame_structure_file
 from backend.core.fanxiu.data_annotation.recognition_ops import build_recognition_ops_report
 from backend.core.fanxiu.data_annotation.storage import (
     decode_data_annotation_image_data_url,
@@ -5105,128 +5103,6 @@ def _data_annotation_asset_tree_path(entry_id: str) -> Path:
     return _core_data_annotation_asset_tree_path(entry_id)
 
 
-def _data_annotation_frame_structure_diagnostics_path(entry_id: str) -> Path:
-    return _data_annotation_asset_tree_path(entry_id).with_name("frame-structure-diagnostics.json")
-
-
-def _data_annotation_frame_info_by_id(tree: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-    result: dict[int, dict[str, Any]] = {}
-
-    def visit(nodes: list[Any], parts: list[str], parent_id: int | None = None) -> None:
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            title = str(node.get("title") or node.get("filename") or "").strip()
-            next_parts = [*parts, title] if title else parts
-            if node.get("type") == "image":
-                scene_id = image_number(node)
-                if scene_id is not None:
-                    result[int(scene_id)] = {
-                        "title": title,
-                        "filename": str(node.get("filename") or ""),
-                        "path": " > ".join(next_parts),
-                        "layer": int(View(node).layer),
-                        "parent_id": parent_id,
-                    }
-                    visit(node.get("children") or [], next_parts, int(scene_id))
-                    continue
-            visit(node.get("children") or [], next_parts, parent_id)
-
-    visit(tree, [])
-    return result
-
-
-def _frame_structure_diagnostics_snapshot(result: dict[str, Any], asset_tree_path: Path) -> dict[str, Any]:
-    stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
-    diagnostics = stats.get("diagnostics") if isinstance(stats, dict) else []
-    if not isinstance(diagnostics, list):
-        diagnostics = []
-    return {
-        "ok": True,
-        "computed_at": time.time(),
-        "asset_tree_updated_at": asset_tree_path.stat().st_mtime if asset_tree_path.is_file() else 0,
-        "diagnostic_count": len(diagnostics),
-        "diagnostics": diagnostics,
-    }
-
-
-def _write_frame_structure_diagnostics_snapshot(entry_id: str, result: dict[str, Any], asset_tree_path: Path) -> dict[str, Any]:
-    snapshot = _frame_structure_diagnostics_snapshot(result, asset_tree_path)
-    path = _data_annotation_frame_structure_diagnostics_path(entry_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-    snapshot["updated_at"] = path.stat().st_mtime
-    return snapshot
-
-
-def _read_frame_structure_diagnostics_snapshot(entry_id: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
-    path = _data_annotation_frame_structure_diagnostics_path(entry_id)
-    if not path.is_file():
-        return {"exists": False, "diagnostic_count": 0, "diagnostics": [], "updated_at": 0}
-    try:
-        snapshot = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"exists": False, "diagnostic_count": 0, "diagnostics": [], "updated_at": 0}
-    if not isinstance(snapshot, dict):
-        return {"exists": False, "diagnostic_count": 0, "diagnostics": [], "updated_at": 0}
-    diagnostics = snapshot.get("diagnostics")
-    if not isinstance(diagnostics, list):
-        diagnostics = []
-    result = {
-        "exists": True,
-        "computed_at": snapshot.get("computed_at"),
-        "asset_tree_updated_at": snapshot.get("asset_tree_updated_at"),
-        "diagnostic_count": len(diagnostics),
-        "diagnostics": diagnostics,
-        "updated_at": path.stat().st_mtime,
-    }
-    _enrich_frame_structure_adoptions({"stats": result}, tree)
-    return result
-
-
-def _delete_frame_structure_diagnostics_snapshot(entry_id: str) -> None:
-    path = _data_annotation_frame_structure_diagnostics_path(entry_id)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
-def _enrich_frame_structure_adoptions(result: dict[str, Any], tree: list[dict[str, Any]]) -> None:
-    by_id = _data_annotation_frame_info_by_id(tree)
-    stats = result.get("stats")
-    if not isinstance(stats, dict):
-        return
-    adoptions = stats.get("adoptions")
-    if isinstance(adoptions, list):
-        for adoption in adoptions:
-            if not isinstance(adoption, dict):
-                continue
-            parent_id = adoption.get("parent_id")
-            child_id = adoption.get("child_id")
-            if isinstance(parent_id, int):
-                adoption["parent"] = by_id.get(parent_id, {})
-            if isinstance(child_id, int):
-                adoption["child"] = by_id.get(child_id, {})
-    diagnostics = stats.get("diagnostics")
-    if not isinstance(diagnostics, list):
-        return
-    for diagnostic in diagnostics:
-        if not isinstance(diagnostic, dict):
-            continue
-        parent_id = diagnostic.get("parent_id")
-        child_id = diagnostic.get("child_id")
-        image_id = diagnostic.get("image_id")
-        if isinstance(parent_id, int):
-            diagnostic["parent"] = by_id.get(parent_id, {})
-        if isinstance(child_id, int):
-            diagnostic["child"] = by_id.get(child_id, {})
-        if isinstance(image_id, int):
-            diagnostic["image"] = by_id.get(image_id, {})
-
-
 @status_router.get("/data-annotation/asset-tree")
 def get_fanxiu_data_annotation_asset_tree(
     entry_id: str,
@@ -5243,7 +5119,6 @@ def get_fanxiu_data_annotation_asset_tree(
             "exists": False,
             "tree": [],
             "updated_at": 0,
-            "frame_structure": {"exists": False, "diagnostic_count": 0, "diagnostics": [], "updated_at": 0},
         }
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -5256,7 +5131,6 @@ def get_fanxiu_data_annotation_asset_tree(
         "exists": True,
         "tree": tree,
         "updated_at": path.stat().st_mtime,
-        "frame_structure": _read_frame_structure_diagnostics_snapshot(entry_id, tree),
     }
 
 
@@ -5443,7 +5317,6 @@ def save_fanxiu_data_annotation_asset_tree(
     try:
         _backup_data_annotation_asset_tree_before_save(path)
         tree = save_data_annotation_asset_tree_bundle(path, req.tree, entry_id=req.entry_id)
-        _delete_frame_structure_diagnostics_snapshot(req.entry_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -5452,7 +5325,6 @@ def save_fanxiu_data_annotation_asset_tree(
         "exists": True,
         "tree": tree,
         "updated_at": path.stat().st_mtime,
-        "frame_structure": {"exists": False, "diagnostic_count": 0, "diagnostics": [], "updated_at": 0},
     }
 
 
@@ -5505,40 +5377,6 @@ def get_fanxiu_data_annotation_image(
     if not asset.exists:
         raise HTTPException(status_code=404, detail="data-annotation 图片不存在")
     return FileResponse(asset.path)
-
-
-@status_router.post("/data-annotation/asset-tree/organize-frame-structure")
-def organize_fanxiu_data_annotation_frame_structure(
-    req: FanxiuDataAnnotationFrameStructureRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _get_user_device_or_404(session, current_user, req.entry_id)
-    path = _data_annotation_asset_tree_path(req.entry_id)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="资产树不存在")
-    result = organize_frame_structure_file(
-        path,
-        entry_id=req.entry_id,
-        write=bool(req.write),
-        backup=bool(req.backup),
-        scope=req.scope,
-        threshold=float(req.threshold),
-        min_shared_anchors=max(1, int(req.min_shared_anchors)),
-        require_same_layer=bool(req.require_same_layer),
-        demote_unshared_parent_identities=bool(req.demote_unshared_parent_identities),
-    )
-    try:
-        tree = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        tree = []
-    if isinstance(tree, list):
-        _enrich_frame_structure_adoptions(result, tree)
-        result["frame_structure"] = _write_frame_structure_diagnostics_snapshot(req.entry_id, result, path)
-    result["entry_id"] = req.entry_id
-    result["updated_at"] = path.stat().st_mtime if path.is_file() else 0
-    return result
 
 
 @status_router.post("/game-window2/save-frame")

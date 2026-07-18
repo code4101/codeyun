@@ -232,17 +232,6 @@
                   <el-button
                     v-if="assetTreeViewMode !== 'recognitionOps'"
                     size="small"
-                    plain
-                    title="按识别层视图体检并归纳 scene/sub-scene"
-                    :loading="frameStructureOrganizing"
-                    :disabled="!selectedEntryId"
-                    @click="organizeFrameStructureFromToolbar"
-                  >
-                    场景归纳
-                  </el-button>
-                  <el-button
-                    v-if="assetTreeViewMode !== 'recognitionOps'"
-                    size="small"
                     :type="burstCaptureRunning ? 'primary' : 'default'"
                     title="连拍管理"
                     aria-label="连拍管理"
@@ -301,14 +290,6 @@
                         class="asset-node-title"
                         :style="data.type === 'image' ? frameLayerStyle(inferredFrameLayer(data)) : undefined"
                       >{{ data.title }}</span>
-                      <span
-                        v-if="data.type === 'folder' && isRecognitionCycleGroupId(data.id)"
-                        class="asset-node-relation-badge is-cycle-group"
-                      >SCC</span>
-                      <span
-                        v-if="data.type === 'image' && data.recognitionProjectionIssue"
-                        class="asset-node-relation-badge"
-                      >{{ recognitionProjectionIssueLabel(data.recognitionProjectionIssue) }}</span>
                     </span>
                   </template>
                 </el-tree>
@@ -1371,7 +1352,6 @@ import {
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
-  organizeFanxiuDataAnnotationFrameStructure,
   recognizeFanxiuDataAnnotationOcrFrame,
   removeFanxiuDataAnnotationBackground,
   runFanxiuVisualScript,
@@ -1400,9 +1380,6 @@ import {
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
   type FanxiuDataAnnotationRuntimeStatus,
-  type FanxiuDataAnnotationFrameStructureAdoption,
-  type FanxiuDataAnnotationFrameStructureDiagnostic,
-  type FanxiuDataAnnotationFrameStructureSnapshot,
   type FanxiuDataAnnotationRecognitionOpsIssue,
   type FanxiuDataAnnotationRecognitionOpsResponse,
   type FanxiuDataAnnotationMacroAnnotateResponse,
@@ -1817,9 +1794,6 @@ const layerVisible = ref(true);
 const windowViewMode = ref<WindowViewMode>('live');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
-const frameStructureOrganizing = ref(false);
-const frameStructureDiagnostics = ref<FanxiuDataAnnotationFrameStructureDiagnostic[]>([]);
-const frameStructureDiagnosisRan = ref(false);
 const burstCaptureRunning = ref(false);
 const burstCaptureSaving = ref(false);
 const burstImporting = ref(false);
@@ -6925,9 +6899,6 @@ type DataAnnotationAssetNode = {
   width?: number;
   height?: number;
   layer?: FrameLayer;
-  recognitionParentId?: number | null;
-  recognitionProjectionIssue?: 'self' | 'cycle' | 'missing-parent';
-  recognitionCycleGroupId?: string;
   shapes?: DataAnnotationShape[];
 };
 
@@ -7521,11 +7492,6 @@ const normalizeShapeOcrMaskMode = (value: unknown): ShapeOcrMaskMode => (
   value === 'custom' || value === 'off' || value === 'raw-alpha' ? value : 'inherit-envelope'
 );
 
-const normalizeRecognitionParentId = (value: unknown) => {
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) && numberValue > 0 ? Math.floor(numberValue) : null;
-};
-
 const SHAPE_MATCH_ROLE_ORDER: ShapeMatchRole[] = ['off', 'required', 'optional'];
 const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
   off: '关',
@@ -7712,7 +7678,6 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   const normalizedNode = { ...node } as DataAnnotationAssetNode & { occlusionMaskEnabled?: boolean };
   delete normalizedNode.occlusionMaskEnabled;
   const normalizedShapes = normalizeShapes(node.shapes ?? []);
-  const recognitionParentId = normalizeRecognitionParentId(node.recognitionParentId);
   return {
     ...normalizedNode,
     filename: typeof node.filename === 'string' ? node.filename : undefined,
@@ -7720,7 +7685,6 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
     layer: node.layer === 1 ? 1 : undefined,
-    recognitionParentId,
     shapes: normalizedShapes,
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -7956,7 +7920,6 @@ const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
   const response = await getFanxiuDataAnnotationAssetTree(entryId);
   if (selectedEntryId.value !== entryId) return;
   assetTreeBackendHydrating.value = true;
-  clearFrameStructureDiagnostics();
   try {
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
@@ -7966,7 +7929,6 @@ const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
       assetTree.value = [];
       assetTreeBackendUpdatedAt.value = 0;
     }
-    applyFrameStructureSnapshot(response.frame_structure);
   } finally {
     assetTreeBackendHydrating.value = false;
   }
@@ -7997,7 +7959,6 @@ const flushAssetTreeToBackend = async (
     }
     if (selectedEntryId.value === entryId) {
       assetTreeBackendUpdatedAt.value = Number(response.updated_at) || assetTreeBackendUpdatedAt.value;
-      applyFrameStructureSnapshot(response.frame_structure);
     }
     return true;
   } catch (error) {
@@ -8027,7 +7988,6 @@ const flushAssetTreeToBackend = async (
         }
         if (selectedEntryId.value === entryId) {
           assetTreeBackendUpdatedAt.value = Number(response.updated_at) || latestUpdatedAt || assetTreeBackendUpdatedAt.value;
-          applyFrameStructureSnapshot(response.frame_structure);
         }
         ElMessage.info('资产树有并发更新，已合并并重新保存');
         return true;
@@ -8072,7 +8032,6 @@ const loadEntryAssetTree = async (entryId: string) => {
   if (!entryId) return;
   assetTreeBackendHydrating.value = true;
   assetTreeBackendUpdatedAt.value = 0;
-  clearFrameStructureDiagnostics();
   try {
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
@@ -8083,7 +8042,6 @@ const loadEntryAssetTree = async (entryId: string) => {
       assetTree.value = [];
       assetTreeBackendUpdatedAt.value = 0;
     }
-    applyFrameStructureSnapshot(response.frame_structure);
     restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
     await focusImageFromRoute();
@@ -8109,7 +8067,6 @@ const refreshEntryAssetTreeIfChanged = async () => {
     const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
-    applyFrameStructureSnapshot(response.frame_structure);
     expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
     await syncAssetTreeExpansionFromState();
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
@@ -8119,91 +8076,6 @@ const refreshEntryAssetTreeIfChanged = async () => {
     // 切换节点时的后台刷新不应打断用户选择。
   } finally {
     assetTreeBackendHydrating.value = false;
-  }
-};
-
-const frameStructureAdoptionLine = (item: FanxiuDataAnnotationFrameStructureAdoption) => {
-  const parentTitle = item.parent?.title || `#${item.parent_id}`;
-  const childTitle = item.child?.title || `#${item.child_id}`;
-  const shapeText = (item.shared_shape_titles ?? []).join('、') || '场景标识';
-  return `#${item.parent_id} ${parentTitle} -> #${item.child_id} ${childTitle} (${shapeText} ${Math.round(item.average_score)}%)`;
-};
-
-const normalizeFrameStructureDiagnostics = (items: FanxiuDataAnnotationFrameStructureDiagnostic[] = []) => (
-  items.filter((item) => Number.isFinite(Number(item.image_id)) && item.message)
-);
-
-const setFrameStructureDiagnostics = (items: FanxiuDataAnnotationFrameStructureDiagnostic[] = []) => {
-  frameStructureDiagnostics.value = normalizeFrameStructureDiagnostics(items);
-  frameStructureDiagnosisRan.value = true;
-};
-
-const clearFrameStructureDiagnostics = () => {
-  frameStructureDiagnostics.value = [];
-  frameStructureDiagnosisRan.value = false;
-};
-
-const applyFrameStructureSnapshot = (snapshot?: FanxiuDataAnnotationFrameStructureSnapshot | null) => {
-  if (!snapshot?.exists) {
-    clearFrameStructureDiagnostics();
-    return;
-  }
-  setFrameStructureDiagnostics(snapshot.diagnostics ?? []);
-};
-
-const frameStructureDiagnosticLine = (item: FanxiuDataAnnotationFrameStructureDiagnostic) => {
-  const imageTitle = item.image?.title || item.child?.title || item.parent?.title || `#${item.image_id}`;
-  const scoreText = typeof item.score === 'number' ? ` ${Math.round(item.score)}%` : '';
-  return `#${item.image_id} ${imageTitle}: ${item.message}${scoreText}`;
-};
-
-const organizeFrameStructureFromToolbar = async () => {
-  if (!selectedEntryId.value || frameStructureOrganizing.value) return;
-  const entryId = selectedEntryId.value;
-  frameStructureOrganizing.value = true;
-  try {
-    const preview = await organizeFanxiuDataAnnotationFrameStructure(entryId, false);
-    const adoptions = preview.stats?.adoptions ?? [];
-    const previewDiagnostics = preview.stats?.diagnostics ?? [];
-    applyFrameStructureSnapshot(preview.frame_structure ?? null);
-    if (!adoptions.length) {
-      const diagnosticCount = previewDiagnostics.length;
-      if (diagnosticCount) {
-        ElMessage.info(`没有发现可写入识别层的 sub-scene 候选；场景归纳体检发现 ${diagnosticCount} 条结构提示`);
-      } else {
-        ElMessage.success('没有发现需要场景归纳的 scene/sub-scene 候选');
-      }
-      return;
-    }
-    const lines = adoptions.slice(0, 30).map(frameStructureAdoptionLine);
-    const diagnosticLines = previewDiagnostics.slice(0, 8).map(frameStructureDiagnosticLine);
-    const previewLines = [...lines];
-    const hiddenCount = adoptions.length - previewLines.length;
-    const moreText = hiddenCount > 0 ? `\n... 还有 ${hiddenCount} 条` : '';
-    const diagnosticText = diagnosticLines.length
-      ? `\n\n结构提示 ${previewDiagnostics.length} 条：\n${diagnosticLines.join('\n')}`
-      : '';
-    await ElMessageBox.confirm(
-      `发现 ${adoptions.length} 个 sub-scene 候选，确认写入识别层？资产树业务布局不会移动。\n\n${previewLines.join('\n')}${moreText}${diagnosticText}`,
-      '场景归纳',
-      {
-        type: 'warning',
-        confirmButtonText: '写入识别层',
-        cancelButtonText: '取消',
-        customClass: 'frame-structure-confirm',
-      },
-    );
-    const result = await organizeFanxiuDataAnnotationFrameStructure(entryId, true);
-    assetTreeBackendUpdatedAt.value = 0;
-    await loadEntryAssetTree(entryId);
-    applyFrameStructureSnapshot(result.frame_structure ?? null);
-    const diagnosticCount = result.stats?.diagnostic_count ?? result.stats?.diagnostics?.length ?? 0;
-    ElMessage.success(`场景归纳完成：${result.stats?.adoption_count ?? 0} 个识别层 sub-scene，${diagnosticCount} 条结构提示`);
-  } catch (error) {
-    if (String((error as { message?: string })?.message || '').includes('cancel')) return;
-    ElMessage.error(getErrorMessage(error));
-  } finally {
-    frameStructureOrganizing.value = false;
   }
 };
 
@@ -8552,22 +8424,6 @@ const buildSceneRelationEdges = (nodes: DataAnnotationAssetNode[]) => {
   for (const image of imageRecords) {
     const sourceId = assetNumericImageId(image);
     if (sourceId === null) continue;
-    const recognitionParentId = assetRecognitionParentId(image);
-    if (recognitionParentId !== null) {
-      const score = recognitionPairScore(recognitionParentId, sourceId);
-      pushEdge({
-        id: `recognition:${recognitionParentId}:${sourceId}`,
-        kind: 'recognition',
-        kindLabel: sceneRelationKindLabel('recognition'),
-        sourceId: recognitionParentId,
-        targetId: sourceId,
-        sourceLabel: sceneImageLabel(recognitionParentId, imagesByNumber),
-        targetLabel: sceneImageLabel(sourceId, imagesByNumber),
-        score,
-        focusImageId: recognitionParentId,
-      });
-    }
-
     for (const shape of flattenShapes(image.shapes ?? [])) {
       for (const target of parseSceneJumpEntries(shape.sceneJumpTarget)) {
         const normalizedTarget = Number(String(target.label).replace(/^#/, ''));
@@ -8677,7 +8533,7 @@ const sceneRelationGraphEdgeTypes = {
 const SCENE_GRAPH_NODE_WIDTH = 156;
 const SCENE_GRAPH_NODE_HEIGHT = 42;
 
-const buildLocalSceneGraphRelations = (
+const buildSelectedSceneGraphRelations = (
   imageId: number | null,
   kinds: Set<SceneRelationEdgeKind>,
 ) => {
@@ -8734,7 +8590,7 @@ const buildLocalSceneGraphRelations = (
 
 const selectedSceneGraphRelations = computed(() => {
   const imageId = selectedImageNode.value ? assetNumericImageId(selectedImageNode.value) : null;
-  return buildLocalSceneGraphRelations(imageId, sceneRelationGraphKinds(activeSceneRelationGraphTab.value));
+  return buildSelectedSceneGraphRelations(imageId, sceneRelationGraphKinds(activeSceneRelationGraphTab.value));
 });
 
 const buildFallbackSceneGraphNodes = (baseNodes: Node<SceneGraphNodeData>[]) => {
@@ -9122,57 +8978,17 @@ const selectSceneRelationEdge = async (edge: SceneRelationEdge) => {
   }
 };
 
-const frameStructureDiagnosticsForNode = (node: DataAnnotationAssetNode) => {
-  const imageId = assetNumericImageId(node);
-  if (imageId === null) return [];
-  return frameStructureDiagnostics.value.filter((item) => Number(item.image_id) === imageId);
-};
-
-const assetTreeNodeDiagnosticLevel = (node: DataAnnotationAssetNode) => {
-  const diagnostics = frameStructureDiagnosticsForNode(node);
-  if (diagnostics.some((item) => item.level === 'error')) return 'error';
-  if (diagnostics.some((item) => item.level === 'warning')) return 'warning';
-  if (diagnostics.some((item) => item.level === 'suggestion')) return 'suggestion';
-  return '';
-};
-
 const assetTreeNodeClasses = (node: DataAnnotationAssetNode) => {
-  const level = node.type === 'image' ? assetTreeNodeDiagnosticLevel(node) : '';
   return {
     'is-image': node.type === 'image',
     'is-virtual': isVirtualAssetTreeNode(node),
-    'is-recognition-cycle-group': isRecognitionCycleGroupId(node.id),
-    'has-recognition-projection-issue': Boolean(node.recognitionProjectionIssue),
-    'has-diagnostic-error': level === 'error',
-    'has-diagnostic-warning': level === 'warning',
-    'has-diagnostic-suggestion': level === 'suggestion',
   };
 };
 
-const recognitionProjectionIssueLabel = (issue: DataAnnotationAssetNode['recognitionProjectionIssue']) => ({
-  self: '自',
-  cycle: '环',
-  'missing-parent': '缺',
-}[issue ?? 'cycle']);
-
-const recognitionProjectionIssueLine = (issue: DataAnnotationAssetNode['recognitionProjectionIssue']) => ({
-  self: '识别父边指向自身，不能投影为子结构',
-  cycle: '识别父边形成互指或循环，作为歧义组保留在当前层',
-  'missing-parent': '识别父边指向的场景不存在，暂不能投影为子结构',
-}[issue ?? 'cycle']);
-
 const assetTreeNodeTitle = (node: DataAnnotationAssetNode) => {
-  if (node.type === 'folder' && isRecognitionCycleGroupId(node.id)) {
-    return '识别父边形成强连通互指组，组内成员不能投影成单向父子结构';
-  }
   if (node.type !== 'image') return '';
-  const diagnostics = frameStructureDiagnosticsForNode(node);
   const layerTitle = frameLayerTitle(inferredFrameLayer(node));
-  return [
-    layerTitle,
-    node.recognitionProjectionIssue ? recognitionProjectionIssueLine(node.recognitionProjectionIssue) : '',
-    ...diagnostics.map(frameStructureDiagnosticLine),
-  ].filter(Boolean).join('\n');
+  return layerTitle;
 };
 
 const findAssetAncestorFolderIds = (
@@ -9377,7 +9193,7 @@ const findShapeById = (shapes: DataAnnotationShape[], id: string | null): DataAn
 const isLayerTreeRootId = (id: string) => (LAYER_TREE_ROOT_IDS as readonly string[]).includes(id);
 
 const filterExistingAssetNodeIds = (ids: string[]) => ids.filter((id) => (
-  isLayerTreeRootId(id) || isRecognitionCycleGroupId(id) || Boolean(findAssetNode(assetTree.value, id))
+  isLayerTreeRootId(id) || Boolean(findAssetNode(assetTree.value, id))
 ));
 const filterExistingShapeNodeIds = (ids: string[]) => {
   const image = selectedImageNode.value;
@@ -9811,221 +9627,25 @@ const frameLayerStyle = (layer: FrameLayer) => ({
   3: { color: '#303133' },
 }[layer]);
 
-const RECOGNITION_CYCLE_GROUP_PREFIX = '__recognition_cycle__';
-const isRecognitionCycleGroupId = (id: string | null | undefined) => (
-  typeof id === 'string' && id.startsWith(RECOGNITION_CYCLE_GROUP_PREFIX)
-);
-
 const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined) => (
-  Boolean(node && ((LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id) || isRecognitionCycleGroupId(node.id)))
+  Boolean(node && (LAYER_TREE_ROOT_IDS as readonly string[]).includes(node.id))
 );
 
-const assetRecognitionParentId = (node: DataAnnotationAssetNode) => {
-  return normalizeRecognitionParentId(node.recognitionParentId);
-};
-
-const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
-  type SceneRecord = {
-    node: DataAnnotationAssetNode;
-    children: SceneRecord[];
-    order: number;
-    issue?: DataAnnotationAssetNode['recognitionProjectionIssue'];
-  };
-  type SceneCycleGroup = {
-    id: string;
-    records: SceneRecord[];
-    children: SceneRecord[];
-    order: number;
-    layer: FrameLayer;
-  };
-  const records = new Map<string, SceneRecord>();
-  const recordsByNumber = new Map<number, SceneRecord>();
-  const ordered: SceneRecord[] = [];
-  const displayOrderById = new Map<string, number>();
-
-  const visit = (items: DataAnnotationAssetNode[]) => {
-    for (const node of items) {
-      if (node.type === 'folder') {
-        visit(node.children ?? []);
-        continue;
-      }
-      const record: SceneRecord = {
-        node,
-        children: [],
-        order: ordered.length,
-      };
-      records.set(node.id, record);
-      const imageId = assetNumericImageId(node);
-      if (imageId !== null) recordsByNumber.set(imageId, record);
-      ordered.push(record);
-      visit(node.children ?? []);
-    }
-  };
-  visit(nodes);
-
-  const parentRecordOf = (record: SceneRecord, markIssue = true): SceneRecord | null => {
-    const imageId = assetNumericImageId(record.node);
-    const recognitionParentId = assetRecognitionParentId(record.node);
-    if (recognitionParentId !== null) {
-      if (imageId !== null && recognitionParentId === imageId) {
-        if (markIssue) record.issue = 'self';
-        return null;
-      }
-      const recognitionParent = recordsByNumber.get(recognitionParentId) ?? null;
-      if (!recognitionParent) {
-        if (markIssue) record.issue = 'missing-parent';
-        return null;
-      }
-      return recognitionParent === record ? null : recognitionParent;
-    }
-    return null;
-  };
-
-  const outgoing = new Map<string, string[]>();
-  for (const record of ordered) {
-    const parent = parentRecordOf(record, false);
-    if (!parent) {
-      parentRecordOf(record, true);
-      continue;
-    }
-    const list = outgoing.get(parent.node.id) ?? [];
-    list.push(record.node.id);
-    outgoing.set(parent.node.id, list);
-  }
-
-  const sccs: SceneRecord[][] = [];
-  const indexById = new Map<string, number>();
-  const lowlinkById = new Map<string, number>();
-  const stack: SceneRecord[] = [];
-  const stackIds = new Set<string>();
-  let tarjanIndex = 0;
-
-  const strongConnect = (record: SceneRecord) => {
-    indexById.set(record.node.id, tarjanIndex);
-    lowlinkById.set(record.node.id, tarjanIndex);
-    tarjanIndex += 1;
-    stack.push(record);
-    stackIds.add(record.node.id);
-
-    for (const targetId of outgoing.get(record.node.id) ?? []) {
-      const target = records.get(targetId);
-      if (!target) continue;
-      if (!indexById.has(targetId)) {
-        strongConnect(target);
-        lowlinkById.set(
-          record.node.id,
-          Math.min(lowlinkById.get(record.node.id) ?? 0, lowlinkById.get(targetId) ?? 0),
-        );
-      } else if (stackIds.has(targetId)) {
-        lowlinkById.set(
-          record.node.id,
-          Math.min(lowlinkById.get(record.node.id) ?? 0, indexById.get(targetId) ?? 0),
-        );
-      }
-    }
-
-    if (lowlinkById.get(record.node.id) !== indexById.get(record.node.id)) return;
-    const component: SceneRecord[] = [];
-    while (stack.length) {
-      const item = stack.pop();
-      if (!item) break;
-      stackIds.delete(item.node.id);
-      component.push(item);
-      if (item === record) break;
-    }
-    sccs.push(component);
-  };
-
-  for (const record of ordered) {
-    if (!indexById.has(record.node.id)) strongConnect(record);
-  }
-
-  const cycleGroupByRecordId = new Map<string, SceneCycleGroup>();
-  const cycleGroups: SceneCycleGroup[] = [];
-  for (const component of sccs) {
-    if (component.length <= 1) continue;
-    const recordsInOrder = [...component].sort((left, right) => left.order - right.order);
-    const memberIds = recordsInOrder
-      .map((record) => assetNumericImageId(record.node))
-      .filter((id): id is number => id !== null);
-    const groupId = `${RECOGNITION_CYCLE_GROUP_PREFIX}${memberIds.length ? memberIds.join('_') : recordsInOrder.map((record) => record.node.id).join('_')}`;
-    const group: SceneCycleGroup = {
-      id: groupId,
-      records: recordsInOrder,
-      children: [],
-      order: Math.min(...recordsInOrder.map((record) => record.order)),
-      layer: recordsInOrder.reduce<FrameLayer>((layer, record) => (
-        Math.min(layer, inferredFrameLayer(record.node)) as FrameLayer
-      ), 3),
-    };
-    for (const record of recordsInOrder) {
-      record.issue = 'cycle';
-      cycleGroupByRecordId.set(record.node.id, group);
-    }
-    cycleGroups.push(group);
-    displayOrderById.set(group.id, group.order);
-  }
-
-  const sceneRoots: SceneRecord[] = [];
-  for (const record of ordered) {
-    if (cycleGroupByRecordId.has(record.node.id)) continue;
-    const parent = parentRecordOf(record);
-    const parentGroup = parent ? cycleGroupByRecordId.get(parent.node.id) : null;
-    if (parentGroup) {
-      parentGroup.children.push(record);
-    } else if (parent) {
-      parent.children.push(record);
-    } else {
-      sceneRoots.push(record);
-    }
-  }
-
-  const cloneSceneRecord = (record: SceneRecord): DataAnnotationAssetNode => ({
-    ...record.node,
-    recognitionProjectionIssue: record.issue,
-    children: record.children.map(cloneSceneRecord),
-  });
-
-  const cloneCycleGroup = (group: SceneCycleGroup): DataAnnotationAssetNode => {
-    const memberLabels = group.records.map((record) => {
-      const imageId = assetNumericImageId(record.node);
-      return imageId === null ? record.node.title : `#${imageId}`;
-    });
-    return {
-      id: group.id,
-      type: 'folder',
-      title: `互指组 ${memberLabels.join(' ↔ ')}`,
-      recognitionCycleGroupId: group.id,
-      children: [
-        ...group.records.map((record) => ({
-          ...cloneSceneRecord({ ...record, children: [] }),
-          recognitionCycleGroupId: group.id,
-        })),
-        ...group.children.map(cloneSceneRecord),
-      ],
-    };
-  };
-
+const buildSceneLayerProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
   const rootsByLayer: Record<FrameLayer, DataAnnotationAssetNode[]> = {
     1: [],
     2: [],
     3: [],
   };
-  for (const record of sceneRoots) {
-    const node = cloneSceneRecord(record);
-    rootsByLayer[inferredFrameLayer(record.node)].push(node);
-    displayOrderById.set(node.id, record.order);
-  }
-  for (const group of cycleGroups) {
-    rootsByLayer[group.layer].push(cloneCycleGroup(group));
-  }
-  for (const layer of [1, 2, 3] as FrameLayer[]) {
-    rootsByLayer[layer].sort((left, right) => {
-      const leftOrder = displayOrderById.get(left.id) ?? records.get(left.id)?.order ?? 0;
-      const rightOrder = displayOrderById.get(right.id) ?? records.get(right.id)?.order ?? 0;
-      return leftOrder - rightOrder;
-    });
-  }
+  const visit = (items: DataAnnotationAssetNode[]) => {
+    for (const node of items) {
+      if (node.type === 'image') {
+        rootsByLayer[inferredFrameLayer(node)].push({ ...node, children: [] });
+      }
+      visit(node.children ?? []);
+    }
+  };
+  visit(nodes);
 
   return [
     {
@@ -10050,7 +9670,7 @@ const buildSceneTreeProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotat
 };
 
 const assetTreeDisplayData = computed(() => (
-  assetTreeViewMode.value === 'scene' ? buildSceneTreeProjection(assetTree.value) : assetTree.value
+  assetTreeViewMode.value === 'scene' ? buildSceneLayerProjection(assetTree.value) : assetTree.value
 ));
 
 const collectSceneExpandedNodeIds = (selectedId: string | null) => Array.from(new Set([
@@ -10427,9 +10047,6 @@ watch(assetTree, (value) => {
   queueAssetTreeExpansionSync();
   if (!assetTreeBackendHydrating.value) {
     assetTreeLocalVersion += 1;
-    if (!frameStructureOrganizing.value && frameStructureDiagnosisRan.value) {
-      clearFrameStructureDiagnostics();
-    }
   }
   scheduleAssetTreeBackendSave();
 }, { deep: true });
@@ -13583,7 +13200,7 @@ const showSceneJumpHelp = () => {
       lines: [
         '0 必须单独填写。',
         '它表示这个 shape 不产生场景跳转记录，但仍然可以作为动作被执行。',
-        '适合会触发局部状态变化、开关、展开等不切换场景的区域。',
+        '适合会触发当前界面状态变化、开关、展开等不切换场景的区域。',
       ],
     },
     {
@@ -16101,12 +15718,6 @@ const finishShapeDrag = () => {
   color: #c45656;
 }
 
-:global(.frame-structure-confirm .el-message-box__message) {
-  max-height: 420px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
 .asset-tree-node {
   display: inline-flex;
   align-items: center;
@@ -16115,24 +15726,6 @@ const finishShapeDrag = () => {
   min-width: 0;
   border-left: 3px solid transparent;
   border-radius: 4px;
-}
-
-.asset-tree-node.has-diagnostic-error {
-  background: #fff1f0;
-  border-left-color: #ff7875;
-}
-
-.asset-tree-node.has-diagnostic-warning {
-  background: #fffbe6;
-  border-left-color: #faad14;
-}
-
-.asset-tree-node.has-diagnostic-suggestion {
-  border-left-color: #52c41a;
-}
-
-.asset-tree-node.has-recognition-projection-issue {
-  border-left-color: #faad14;
 }
 
 .asset-node-id {
@@ -16604,24 +16197,6 @@ const finishShapeDrag = () => {
 }
 
 .shape-condition-toggle.is-required {
-  border-color: #67c23a;
-  color: #fff;
-  background: #67c23a;
-}
-
-.shape-condition-toggle.is-scope-none {
-  border-color: #dcdfe6;
-  color: #909399;
-  background: #fff;
-}
-
-.shape-condition-toggle.is-scope-local {
-  border-color: #409eff;
-  color: #409eff;
-  background: #ecf5ff;
-}
-
-.shape-condition-toggle.is-scope-global {
   border-color: #67c23a;
   color: #fff;
   background: #67c23a;

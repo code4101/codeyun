@@ -75,9 +75,6 @@ class _FakeRunner(LoginGameTaskMixin):
     def _raise_if_stopped(self, _stop_event):
         return None
 
-    def _strong_ocr_scene_number(self, _ctx, _frame):
-        return None
-
     def _world_scene_ocr_confirmed_text(self, text):
         return "储物袋" in text and "装备" in text
 

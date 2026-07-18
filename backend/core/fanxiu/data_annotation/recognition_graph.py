@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -10,6 +10,7 @@ class SceneGraphCandidate:
     scene_id: int
     score: float
     matched: bool
+    frame_similarity: float | None = None
 
 
 @dataclass(frozen=True)
@@ -46,12 +47,15 @@ def normalize_match_edge(edge: Mapping[str, Any]) -> tuple[int, int] | None:
     return source_id, target_id
 
 
-def graph_specific_scene_ids(candidate_ids: Iterable[int], match_edges: Iterable[Mapping[str, Any] | tuple[int, int]]) -> tuple[int, ...]:
-    """Return candidates that are not ancestors of another matched candidate.
+def graph_nearest_scene_ids(candidate_ids: Iterable[int], match_edges: Iterable[Mapping[str, Any] | tuple[int, int]]) -> tuple[int, ...]:
+    """Return the scene nodes nearest to the current fact in the match subgraph.
 
-    With ``match(a, b)`` represented as ``a -> b``, ``b`` is more specific than
-    ``a`` for the current frame. If both ``a`` and ``b`` match the live frame,
-    keep ``b`` and drop ``a``.
+    ``match(s, x)`` is the directed edge ``s -> x``.  Every candidate passed to
+    this function already matches the current fact.  An edge to the fact is
+    redundant when that candidate reaches another matched candidate first, so
+    only terminal strongly-connected components are adjacent to the fact after
+    redundant edges are removed.  Their members therefore share the minimum
+    graph distance to the current fact.
     """
 
     candidates = tuple(dict.fromkeys(int(item) for item in candidate_ids))
@@ -68,20 +72,56 @@ def graph_specific_scene_ids(candidate_ids: Iterable[int], match_edges: Iterable
         if source_id in candidate_set and target_id in candidate_set:
             outgoing[source_id].add(target_id)
 
-    less_specific: set[int] = set()
-    for scene_id in candidates:
-        queue: deque[int] = deque(outgoing.get(scene_id, ()))
-        seen = {scene_id}
-        while queue:
-            target_id = queue.popleft()
-            if target_id in seen:
-                continue
-            seen.add(target_id)
-            if target_id in candidate_set:
-                less_specific.add(scene_id)
+    index = 0
+    stack: list[int] = []
+    on_stack: set[int] = set()
+    indices: dict[int, int] = {}
+    lowlinks: dict[int, int] = {}
+    components: list[tuple[int, ...]] = []
+
+    def visit(scene_id: int) -> None:
+        nonlocal index
+        indices[scene_id] = index
+        lowlinks[scene_id] = index
+        index += 1
+        stack.append(scene_id)
+        on_stack.add(scene_id)
+        for target_id in outgoing.get(scene_id, set()):
+            if target_id not in indices:
+                visit(target_id)
+                lowlinks[scene_id] = min(lowlinks[scene_id], lowlinks[target_id])
+            elif target_id in on_stack:
+                lowlinks[scene_id] = min(lowlinks[scene_id], indices[target_id])
+        if lowlinks[scene_id] != indices[scene_id]:
+            return
+        component: list[int] = []
+        while stack:
+            node = stack.pop()
+            on_stack.discard(node)
+            component.append(node)
+            if node == scene_id:
                 break
-            queue.extend(outgoing.get(target_id, ()))
-    return tuple(scene_id for scene_id in candidates if scene_id not in less_specific)
+        components.append(tuple(component))
+
+    for scene_id in candidates:
+        if scene_id not in indices:
+            visit(scene_id)
+
+    component_by_scene = {
+        scene_id: component_index
+        for component_index, component in enumerate(components)
+        for scene_id in component
+    }
+    terminal_components = set(range(len(components)))
+    for source_id, targets in outgoing.items():
+        source_component = component_by_scene[source_id]
+        if any(component_by_scene[target_id] != source_component for target_id in targets):
+            terminal_components.discard(source_component)
+    return tuple(
+        scene_id
+        for scene_id in candidates
+        if component_by_scene[scene_id] in terminal_components
+    )
 
 
 def choose_scene_from_graph(
@@ -109,26 +149,41 @@ def choose_scene_from_graph(
         )
 
     if len(matched) > 1:
-        specific_ids = graph_specific_scene_ids((item.scene_id for item in matched), match_edges)
-        if len(specific_ids) == 1:
-            winner = next(item for item in matched if item.scene_id == specific_ids[0])
+        nearest_ids = graph_nearest_scene_ids((item.scene_id for item in matched), match_edges)
+        if len(nearest_ids) == 1:
+            winner = next(item for item in matched if item.scene_id == nearest_ids[0])
             return SceneGraphRecognitionResult(
                 scene_id=winner.scene_id,
                 score=winner.score,
-                status="graph_specific",
+                status="graph_nearest",
                 matched_candidates=matched,
                 unresolved_candidates=(),
                 best_similarity_scene_id=winner.scene_id,
                 best_similarity_score=winner.score,
             )
-        if specific_ids:
-            unresolved = tuple(int(item) for item in specific_ids)
+        if nearest_ids:
+            unresolved = tuple(int(item) for item in nearest_ids)
             pool = [item for item in matched if item.scene_id in set(unresolved)]
         else:
             unresolved = tuple(item.scene_id for item in matched)
             pool = list(matched)
-        best = max(pool, key=lambda item: item.score)
-        same_best = [item for item in pool if abs(float(item.score) - float(best.score)) < 1e-9]
+        comparable = [item for item in pool if item.frame_similarity is not None]
+        if not comparable:
+            best = max(pool, key=lambda item: item.score)
+            return SceneGraphRecognitionResult(
+                scene_id=None,
+                score=best.score,
+                status="ambiguous",
+                matched_candidates=matched,
+                unresolved_candidates=unresolved,
+                best_similarity_scene_id=None,
+                best_similarity_score=0.0,
+            )
+        best = max(comparable, key=lambda item: float(item.frame_similarity or 0.0))
+        same_best = [
+            item for item in comparable
+            if abs(float(item.frame_similarity or 0.0) - float(best.frame_similarity or 0.0)) < 1e-9
+        ]
         if len(same_best) == 1:
             return SceneGraphRecognitionResult(
                 scene_id=best.scene_id,
@@ -137,7 +192,7 @@ def choose_scene_from_graph(
                 matched_candidates=matched,
                 unresolved_candidates=unresolved,
                 best_similarity_scene_id=best.scene_id,
-                best_similarity_score=best.score,
+                best_similarity_score=float(best.frame_similarity or 0.0),
             )
         return SceneGraphRecognitionResult(
             scene_id=None,
@@ -146,7 +201,7 @@ def choose_scene_from_graph(
             matched_candidates=matched,
             unresolved_candidates=unresolved,
             best_similarity_scene_id=best.scene_id,
-            best_similarity_score=best.score,
+            best_similarity_score=float(best.frame_similarity or 0.0),
         )
 
     if not candidate_tuple:

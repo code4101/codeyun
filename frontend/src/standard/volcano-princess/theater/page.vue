@@ -10,20 +10,26 @@ import {
   type VolcanoPrincessTheaterDrama,
 } from '@/api/volcanoPrincess'
 
-type CatalogMode = 'questions' | 'dramas'
+type CatalogMode = 'questions' | 'dramas' | 'scenes'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const catalog = ref<VolcanoPrincessTheaterCatalog | null>(null)
-const mode = ref<CatalogMode>(route.query.view === 'dramas' ? 'dramas' : 'questions')
+const initialMode = route.query.view === 'dramas' || route.query.view === 'scenes'
+  ? route.query.view
+  : 'questions'
+const mode = ref<CatalogMode>(initialMode)
 const query = ref('')
 const dramaCategory = ref('')
 
 const modeOptions = [
   { label: '台词题库', value: 'questions' },
   { label: '剧目资料', value: 'dramas' },
+  { label: '场景素材', value: 'scenes' },
 ]
+
+const questionGroupOrder = ['希望', '绝望', '平静', '愤怒', '浪漫']
 
 const filteredQuestions = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
@@ -37,7 +43,10 @@ const questionGroups = computed(() => (catalog.value?.line_types ?? [])
     ...line,
     questions: filteredQuestions.value.filter((item) => item.line_type_index === line.index),
   }))
-  .filter((group) => group.questions.length > 0))
+  .filter((group) => group.questions.length > 0)
+  .sort((left, right) => (
+    questionGroupOrder.indexOf(left.name) - questionGroupOrder.indexOf(right.name)
+  )))
 
 const filteredDramas = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
@@ -49,12 +58,12 @@ const filteredDramas = computed(() => {
 })
 
 function changeMode(value: string | number | boolean) {
-  mode.value = value === 'dramas' ? 'dramas' : 'questions'
+  mode.value = value === 'dramas' || value === 'scenes' ? value : 'questions'
   query.value = ''
   dramaCategory.value = ''
   void router.replace({
     path: route.path,
-    query: mode.value === 'dramas' ? { view: 'dramas' } : {},
+    query: mode.value === 'questions' ? {} : { view: mode.value },
   })
 }
 
@@ -89,13 +98,13 @@ onMounted(loadCatalog)
       <el-segmented v-model="mode" :options="modeOptions" @change="changeMode" />
     </header>
 
-    <p v-if="catalog" class="mechanics-note">
+    <p v-if="catalog && mode !== 'scenes'" class="mechanics-note">
       每次演出进行 {{ catalog.mechanics.rounds }} 轮，每轮随机出现 {{ catalog.mechanics.options_per_round }} 句台词；
       选择符合指定情绪的台词即为正确。消耗 {{ catalog.mechanics.energy_cost }} 点体力，演出 BGM 为
       “{{ catalog.mechanics.performance_bgm_name }}”。
     </p>
 
-    <section class="catalog-toolbar">
+    <section v-if="mode !== 'scenes'" class="catalog-toolbar">
       <el-input
         v-model="query"
         class="search-input"
@@ -117,7 +126,23 @@ onMounted(loadCatalog)
       </span>
     </section>
 
-    <section v-if="mode === 'questions'" class="question-card-scroll">
+    <section v-if="mode === 'scenes'" class="scene-gallery">
+      <figure v-for="image in catalog?.images ?? []" :key="image.id" class="scene-figure">
+        <img
+          :src="image.media_url"
+          :alt="image.title"
+          :width="image.width"
+          :height="image.height"
+        >
+        <figcaption>
+          <strong>{{ image.title }}</strong>
+          <span>{{ image.description }}</span>
+        </figcaption>
+      </figure>
+      <div v-if="!catalog?.images?.length && !loading" class="card-empty">尚未找到剧院场景素材</div>
+    </section>
+
+    <section v-else-if="mode === 'questions'" class="question-card-scroll">
       <div v-if="questionGroups.length" class="question-grid">
         <article
           v-for="group in questionGroups"
@@ -314,12 +339,51 @@ col.description-col {
   overflow: auto;
 }
 
+.scene-gallery {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.scene-figure {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d8dde6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.scene-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1223 / 656;
+  object-fit: contain;
+  background: #2a1d18;
+}
+
+.scene-figure figcaption {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.scene-figure figcaption span {
+  color: #737b87;
+}
+
 .question-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   align-items: start;
-  justify-content: start;
 }
 
 .question-card {
@@ -430,5 +494,7 @@ col.description-col {
   .search-input { width: 100%; }
   .mechanics-note { line-height: 1.55; }
   .question-grid { grid-template-columns: minmax(0, 1fr); }
+  .scene-gallery { grid-template-columns: minmax(0, 1fr); }
+  .scene-figure figcaption { align-items: flex-start; flex-direction: column; gap: 2px; }
 }
 </style>

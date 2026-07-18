@@ -653,7 +653,6 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   exists: boolean;
   tree: unknown[];
   updated_at: number;
-  frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
 export interface FanxiuDataAnnotationRecognitionOpsEdge {
@@ -733,91 +732,6 @@ export interface FanxiuDataAnnotationSaveFrameResponse {
   directory: string;
   width: number;
   height: number;
-}
-
-export interface FanxiuDataAnnotationFrameStructureAdoption {
-  parent_id: number;
-  child_id: number;
-  shared_shape_titles: string[];
-  average_score: number;
-  parent?: {
-    title?: string;
-    filename?: string;
-    path?: string;
-    layer?: number;
-    parent_id?: number | null;
-  };
-  child?: {
-    title?: string;
-    filename?: string;
-    path?: string;
-    layer?: number;
-    parent_id?: number | null;
-  };
-}
-
-export interface FanxiuDataAnnotationFrameStructureDiagnostic {
-  kind: string;
-  level: 'error' | 'warning' | 'suggestion' | string;
-  image_id: number;
-  message: string;
-  parent_id?: number | null;
-  child_id?: number | null;
-  score?: number | null;
-  shape_titles: string[];
-  parent?: {
-    title?: string;
-    filename?: string;
-    path?: string;
-    layer?: number;
-    parent_id?: number | null;
-  };
-  child?: {
-    title?: string;
-    filename?: string;
-    path?: string;
-    layer?: number;
-    parent_id?: number | null;
-  };
-  image?: {
-    title?: string;
-    filename?: string;
-    path?: string;
-    layer?: number;
-    parent_id?: number | null;
-  };
-}
-
-export interface FanxiuDataAnnotationFrameStructureSnapshot {
-  exists: boolean;
-  computed_at?: number | string | null;
-  asset_tree_updated_at?: number | null;
-  diagnostic_count: number;
-  diagnostics: FanxiuDataAnnotationFrameStructureDiagnostic[];
-  updated_at: number;
-}
-
-export interface FanxiuDataAnnotationFrameStructureResponse {
-  path: string;
-  entry_id: string;
-  write: boolean;
-  changed: boolean;
-  backup_path: string | null;
-  updated_at: number;
-  stats: {
-    image_count: number;
-    sibling_group_count: number;
-    scored_pair_count: number;
-    adoption_count: number;
-    demoted_identity_count: number;
-    layer_update_count: number;
-    diagnostic_count: number;
-    adoptions: FanxiuDataAnnotationFrameStructureAdoption[];
-    diagnostics: FanxiuDataAnnotationFrameStructureDiagnostic[];
-    demoted_identities: Array<Record<string, unknown>>;
-    layer_updates: Array<Record<string, unknown>>;
-  };
-  frame_structure?: FanxiuDataAnnotationFrameStructureSnapshot;
 }
 
 export interface FanxiuDataAnnotationOcrFrameToken {
@@ -5362,25 +5276,6 @@ export const getFanxiuDataAnnotationImage = (entryId: string, filename: string) 
       params: { entry_id: entryId, filename },
       responseType: 'blob',
     })
-    .then(res => res.data);
-};
-
-export const organizeFanxiuDataAnnotationFrameStructure = (entryId: string, write = false) => {
-  return api
-    .post<FanxiuDataAnnotationFrameStructureResponse>(
-      '/fanxiu/data-annotation/asset-tree/organize-frame-structure',
-      {
-        entry_id: entryId,
-        write,
-        backup: true,
-        scope: 'layer',
-        threshold: 80,
-        min_shared_anchors: 1,
-        require_same_layer: true,
-        demote_unshared_parent_identities: false,
-      },
-      { timeout: 600000 },
-    )
     .then(res => res.data);
 };
 

@@ -27,7 +27,22 @@ def _write_catalog(root: Path) -> None:
             "question_count": 2,
             "line_type_count": 2,
             "drama_category_count": 1,
+            "image_count": 1,
         },
+        "images": [
+            {
+                "id": "theater-list-background",
+                "title": "剧院大厅",
+                "description": "剧目选择界面的观众席背景",
+                "width": 1222,
+                "height": 657,
+                "sprite_name": "workingUI_21",
+                "sprite_path_id": 9125,
+                "scene_path": "18 剧团演出/theatre/bg",
+                "media_path": "media/images/theater/9125_theater-list-background.png",
+                "media_sha256": "b" * 64,
+            }
+        ],
         "mechanics": {
             "rounds": 3,
             "options_per_round": 3,
@@ -63,6 +78,9 @@ def _write_catalog(root: Path) -> None:
     (catalog_dir / "catalog.json").write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
     )
+    image_dir = root / "media" / "images" / "theater"
+    image_dir.mkdir(parents=True)
+    (image_dir / "9125_theater-list-background.png").write_bytes(b"png-test")
 
 
 def test_theater_catalog(tmp_path: Path, monkeypatch) -> None:
@@ -81,4 +99,9 @@ def test_theater_catalog(tmp_path: Path, monkeypatch) -> None:
     assert payload["questions"][0]["line_type"] == "愤怒"
     assert payload["dramas"][0]["name"] == "光荣王妃"
     assert payload["mechanics"]["performance_bgm_index"] == 22
+    assert payload["images"][0]["media_url"].endswith("/theater-list-background")
     assert "game_root" not in payload["source"]
+
+    image_response = client.get(payload["images"][0]["media_url"])
+    assert image_response.status_code == 200
+    assert image_response.content == b"png-test"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any
 
 from sqlmodel import Session
@@ -10,6 +12,171 @@ from backend.core.fanxiu.packet.service_runtime import (
     request_fanxiu_packet_service_catch_up,
     start_fanxiu_packet_service,
 )
+
+LUNDAO_SCENE_PROTOCOL_NAME = "SM_SyncLundaoSceneInfo"
+LUNDAO_SCENE_PROTOCOL_ID = 59504
+_CAPTURE_NAME_TIME_RE = re.compile(r"(?P<date>\d{8})_(?P<time>\d{6})")
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+def _seat_owner_fact(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    # Only expose fields confirmed by SeatOwnerVO.  In particular, keep the
+    # nested HangPointVO out of this current-fact API: it is appearance data,
+    # may itself be truncated by the generic decoded cache, and is unrelated
+    # to choosing a lundao seat.
+    return {
+        "role_id": _int_or_none(value.get("roleId")),
+        "name": str(value.get("name") or ""),
+        "level": _int_or_none(value.get("level")),
+        "model": _int_or_none(value.get("model")),
+        "avatar": _int_or_none(value.get("avatar")),
+        "head_frame": _int_or_none(value.get("headFrame")),
+        "sex": _int_or_none(value.get("sex")),
+        "faze": _int_or_none(value.get("faze")),
+        "title_id": _int_or_none(value.get("titleId")),
+        "title_name": str(value.get("titleName") or ""),
+        "alliance_id": _int_or_none(value.get("allianceId")),
+        "sit_down_time": _int_or_none(value.get("sitDownTime")),
+        "protect_end_time": _int_or_none(value.get("protectEndTime")),
+        "left_listen_time": _int_or_none(value.get("leftListenTime")),
+        "battle_score": value.get("battleScore") if isinstance(value.get("battleScore"), (int, float)) else None,
+        "server_id": _int_or_none(value.get("serverId")),
+        "ganwu_start_time": _int_or_none(value.get("ganwuStartTime")),
+    }
+
+
+def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, str, float]:
+    """Prefer capture-segment time over the time an old backlog row was inserted."""
+    match = _CAPTURE_NAME_TIME_RE.search(str(record.get("pcap_name") or ""))
+    capture_epoch = 0.0
+    if match:
+        try:
+            capture_epoch = datetime.strptime(
+                f"{match.group('date')}_{match.group('time')}",
+                "%Y%m%d_%H%M%S",
+            ).timestamp()
+        except ValueError:
+            pass
+    return capture_epoch, str(record.get("captured_at") or ""), float(record.get("updated_at") or 0.0)
+
+
+def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one decoded 59504 packet into a traceable current-seat snapshot.
+
+    The generic decoded cache deliberately trims large lists.  Therefore this
+    function always reports declared_count and decoded_count independently and
+    never presents a truncated sample as the complete room roster.
+    """
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    parsed = payload.get("parsed") if isinstance(payload.get("parsed"), dict) else {}
+    seats_value = parsed.get("seats")
+    seats_container = seats_value if isinstance(seats_value, dict) else {}
+    raw_items = seats_container.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
+    seats: list[dict[str, Any]] = []
+    for source_index, value in enumerate(items):
+        if not isinstance(value, dict):
+            continue
+        seats.append(
+            {
+                "source_index": source_index,
+                "seat_id": _int_or_none(value.get("id")),
+                "pre_owner_role_id": _int_or_none(value.get("preOwnerRoleId")),
+                "owner": _seat_owner_fact(value.get("seatOwner")),
+            }
+        )
+
+    declared_count = _int_or_none(seats_container.get("_count"))
+    decoded_count = len(seats)
+    explicit_truncated_count = _int_or_none(seats_container.get("_truncated_items")) or 0
+    complete = (
+        isinstance(seats_value, (dict, list))
+        and explicit_truncated_count == 0
+        and (declared_count is None or declared_count == decoded_count)
+    )
+    evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    return {
+        "ok": bool(parsed and not payload.get("parse_error") and not record.get("decode_error")),
+        "available": bool(parsed),
+        "protocol": str(record.get("name") or payload.get("name") or LUNDAO_SCENE_PROTOCOL_NAME),
+        "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")) or LUNDAO_SCENE_PROTOCOL_ID,
+        "captured_at": str(record.get("captured_at") or ""),
+        "npc_id": _int_or_none(parsed.get("npcId")),
+        "theme_id": _int_or_none(parsed.get("themeId")),
+        "seat_type_id": _int_or_none(seats_container.get("_type_id")),
+        "seat_type": str(seats_container.get("_type") or ""),
+        "declared_count": declared_count,
+        "decoded_count": decoded_count,
+        "truncated_count": max(explicit_truncated_count, (declared_count or 0) - decoded_count),
+        "complete": complete,
+        "seats": seats,
+        "decode": {
+            "decode_error": str(record.get("decode_error") or ""),
+            "parse_error": str(payload.get("parse_error") or ""),
+            "parsed_bytes": _int_or_none(payload.get("parsed_bytes")),
+            "remain": _int_or_none(payload.get("remain")),
+        },
+        "evidence": {
+            "packet_id": str(record.get("packet_id") or evidence.get("packet_id") or ""),
+            "record_id": str(record.get("record_id") or evidence.get("record_id") or ""),
+            "pcap_name": str(record.get("pcap_name") or evidence.get("pcap_name") or ""),
+            "capture_sha256": str(record.get("capture_sha256") or evidence.get("capture_sha256") or ""),
+            "stream": _int_or_none(record.get("stream") if record.get("stream") is not None else evidence.get("stream")),
+            "direction": str(record.get("direction") or evidence.get("direction") or ""),
+            "frame_index": _int_or_none(record.get("frame_index") if record.get("frame_index") is not None else evidence.get("frame_index")),
+            "offset": _int_or_none(record.get("offset") if record.get("offset") is not None else evidence.get("offset")),
+            "sn": _int_or_none(record.get("sn") if record.get("sn") is not None else evidence.get("sn")),
+            "decoded_path": str(evidence.get("decoded_path") or ""),
+            "stored_pcap": str(evidence.get("stored_pcap") or ""),
+        },
+    }
+
+
+def get_latest_fanxiu_lundao_scene_seat_facts(
+    session: Session,
+    *,
+    since_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Read the latest already-decoded lundao room snapshot without side effects."""
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=[LUNDAO_SCENE_PROTOCOL_NAME],
+        pro_ids=[LUNDAO_SCENE_PROTOCOL_ID],
+        since_seconds=since_seconds,
+        # Backlog maintenance can insert an old pcap today, so SQL order by
+        # captured_at/updated_at is not sufficient to find the newest game
+        # event.  Fetch the bounded per-protocol cache and sort by pcap name.
+        limit=500,
+    )
+    records = result.get("records") if isinstance(result.get("records"), list) else []
+    if not records:
+        return {
+            "ok": True,
+            "available": False,
+            "protocol": LUNDAO_SCENE_PROTOCOL_NAME,
+            "pro_id": LUNDAO_SCENE_PROTOCOL_ID,
+            "reason": "no_decoded_record",
+            "declared_count": None,
+            "decoded_count": 0,
+            "truncated_count": 0,
+            "complete": False,
+            "seats": [],
+            "evidence": {},
+        }
+    return normalize_fanxiu_lundao_scene_seat_facts(max(records, key=_decoded_record_capture_sort_key))
 
 
 def catch_up_and_list_fanxiu_packet_decoded_records(

@@ -32,7 +32,7 @@ def test_recognition_ops_report_classifies_match_graph_issues():
 
     assert report["matrix"]["ignored_self_loop_count"] == 1
     assert {tuple(issue["node_ids"]) for issue in issues_by_category["mutual_match"]} == {(1, 2)}
-    assert any(issue["node_ids"][0] == 2 and set(issue["node_ids"][1:]) == {1, 3} for issue in issues_by_category["multi_parent"])
+    assert any(issue["node_ids"][0] == 2 and set(issue["node_ids"][1:]) == {1, 3} for issue in issues_by_category["multi_source"])
     assert any(set(issue["node_ids"]) == {3, 4, 5} for issue in issues_by_category["cycle_group"])
     assert "isolated" not in issues_by_category
     assert all(category["id"] != "isolated" for category in report["categories"])

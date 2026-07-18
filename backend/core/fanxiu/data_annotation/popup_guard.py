@@ -476,9 +476,22 @@ class PopupGuardMixin:
             )
 
         matched_ids = [item.scene_id for item in graph_candidates if item.matched]
-        edges = self._recognition_parent_match_edges_for_candidates(ctx, matched_ids)
+        edges: list[dict[str, Any]] = []
         if len(matched_ids) > 1:
             edges.extend(self._scene_match_edges_for_candidates(ctx, matched_ids))
+            graph_candidates = [
+                SceneGraphCandidate(
+                    scene_id=item.scene_id,
+                    score=item.score,
+                    matched=item.matched,
+                    frame_similarity=(
+                        self._scene_reference_similarity(ctx, candidate_by_scene_id[item.scene_id]["image"], frame_data_url)
+                        if item.matched
+                        else None
+                    ),
+                )
+                for item in graph_candidates
+            ]
         result = choose_scene_from_graph(graph_candidates, edges)
         if result.scene_id is None:
             return None, 0.0

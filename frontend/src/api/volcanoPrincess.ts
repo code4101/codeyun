@@ -117,6 +117,19 @@ export interface VolcanoPrincessTheaterDrama {
   fame: number
 }
 
+export interface VolcanoPrincessTheaterImage {
+  id: string
+  title: string
+  description: string
+  width: number
+  height: number
+  sprite_name: string
+  sprite_path_id: number
+  scene_path: string
+  media_sha256: string
+  media_url: string
+}
+
 export interface VolcanoPrincessTheaterCatalog {
   generated_at: string
   source: {
@@ -143,6 +156,7 @@ export interface VolcanoPrincessTheaterCatalog {
     performance_bgm_name: string
     performance_bgm_path_id: number
   }
+  images: VolcanoPrincessTheaterImage[]
   line_types: Array<{ index: number; name: string; game_color: string }>
   drama_categories: string[]
   nature_names: string[]
