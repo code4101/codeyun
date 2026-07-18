@@ -152,6 +152,11 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./volcano-princess/audio/page.vue'),
   },
   {
+    routeName: 'VolcanoPrincessTheaterCatalog',
+    canonicalPath: '/volcano-princess/theater',
+    component: () => import('./volcano-princess/theater/page.vue'),
+  },
+  {
     routeName: 'ZaohuaAlchemyCatalog',
     canonicalPath: '/zaohua/alchemy',
     component: () => import('./zaohua/alchemy/page.vue'),

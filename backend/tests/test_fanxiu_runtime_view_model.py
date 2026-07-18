@@ -94,13 +94,13 @@ def test_view_layer_derives_from_primary_marker_and_scene_identity():
     layer2_image = {
         "type": "image",
         "filename": "0266.png",
-        "shapes": [{"id": "local", "title": "拜谒", "isSceneIdentity": True, "sceneIdentityScope": "local"}],
+        "shapes": [{"id": "identity", "title": "拜谒", "isSceneIdentity": True}],
     }
     layer1_image = {
         "type": "image",
         "filename": "0034.png",
         "layer": 1,
-        "shapes": [{"id": "global", "title": "世界", "isSceneIdentity": True, "sceneIdentityScope": "global"}],
+        "shapes": [{"id": "identity", "title": "世界", "isSceneIdentity": True}],
     }
     default_image = {
         "type": "image",
@@ -295,7 +295,7 @@ def test_fanxiu_runtime_wait_scene_without_targets_returns_current_scene(monkeyp
     assert stop.value.value == (34, 91.0, "frame")
 
 
-def test_fanxiu_runtime_wait_scene_falls_back_to_global_after_layer0_window(monkeypatch):
+def test_fanxiu_runtime_wait_scene_falls_back_to_default_candidates_after_layer0_window(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",

@@ -86,6 +86,7 @@ const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
 const VOLCANO_PRINCESS_AUDIO_PATH = requirePageMenuPath('VolcanoPrincessAudioCatalog');
+const VOLCANO_PRINCESS_THEATER_PATH = requirePageMenuPath('VolcanoPrincessTheaterCatalog');
 const ZAOHUA_ALCHEMY_PATH = requirePageMenuPath('ZaohuaAlchemyCatalog');
 const ZAOHUA_FURNACE_PATH = requirePageMenuPath('ZaohuaFurnaceCatalog');
 const ZAOHUA_HERB_PATH = requirePageMenuPath('ZaohuaHerbCatalog');
@@ -173,6 +174,7 @@ const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PAT
 const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
 const VOLCANO_PRINCESS_TITLE = requirePermissionTitle('volcano-princess');
 const VOLCANO_PRINCESS_AUDIO_TITLE = requirePermissionTitleByMenuPath(VOLCANO_PRINCESS_AUDIO_PATH);
+const VOLCANO_PRINCESS_THEATER_TITLE = '剧院图鉴';
 const ZAOHUA_TITLE = requirePermissionTitle('zaohua');
 const ZAOHUA_ALCHEMY_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_ALCHEMY_PATH);
 const ZAOHUA_FURNACE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_FURNACE_PATH);
@@ -508,7 +510,7 @@ const zaohuaMenuVisible = computed(() =>
 
 const volcanoPrincessMenuVisible = computed(() =>
   canAccessFeature('volcano-princess')
-  && canAccessMenuPath(VOLCANO_PRINCESS_AUDIO_PATH),
+  && [VOLCANO_PRINCESS_AUDIO_PATH, VOLCANO_PRINCESS_THEATER_PATH].some((path) => canAccessMenuPath(path)),
 );
 
 const gameToolsMenuVisible = computed(() =>
@@ -933,6 +935,9 @@ watch(
               </template>
               <el-menu-item v-if="canAccessMenuPath(VOLCANO_PRINCESS_AUDIO_PATH)" :index="VOLCANO_PRINCESS_AUDIO_PATH">
                 {{ VOLCANO_PRINCESS_AUDIO_TITLE }}
+              </el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(VOLCANO_PRINCESS_THEATER_PATH)" :index="VOLCANO_PRINCESS_THEATER_PATH">
+                {{ VOLCANO_PRINCESS_THEATER_TITLE }}
               </el-menu-item>
             </el-sub-menu>
             <el-sub-menu v-if="zaohuaMenuVisible" index="zaohua">

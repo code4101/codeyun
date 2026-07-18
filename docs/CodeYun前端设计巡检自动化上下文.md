@@ -1142,7 +1142,7 @@ pending_or_skipped_ranges: []
 - 前端入口提交：`a43ff89b0f87f38b98f42350e49b81d89f5a6e09`、`2f6baf8b44212a4d492e7b97b7f537d015dc2a0e`
 - 入口如何牵引到旧问题：本轮先由凡修 data-annotation 场景身份迁移牵引到“帧资产 -> shape 证据 -> 场景识别 -> 运行治理结果”闭环，随后 `HEAD` 新增 Mystia 标准目录入口并继续联动 data-annotation 扩展场景层级。巡检边界因此覆盖 `fanxiu/data-annotation`、`fanxiu/data-annotation/runtime`、`mystia/wiki`，并抽查同轮顺带改动的图鉴邮件、星图列表和存储维护懒加载入口。
 - 本轮减法：凡修链路把旧的 shape 级“场景标识范围”收回到帧级身份层级，shape inspector 只保留与图像/OCR 同构的 `关/必/定` 证据角色；扩展层级继续复用同一徽标体系。Mystia 新页面使用“数据集切换 + 搜索 + 主表 + 详情”四类基础概念，不把图片、音频和字段解释平铺成多个常驻面板。
-- 信息量保持：帧树、场景树、非场景帧、局部/全局/扩展场景层级、shape 身份证据、场景跳转、运行页守护/作业状态、Mystia 菜品/食材/饮品/角色/素材目录、菜单入口和权限路径都保留；减少的是同一场景身份事实在 shape 级控件里的重复表达。
+- 信息量保持：帧树、场景树、非场景帧、默认 Layer 1/2 与调用方动态传入的 Layer 0 候选、shape 身份证据、场景跳转、运行页守护/作业状态、Mystia 菜品/食材/饮品/角色/素材目录、菜单入口和权限路径都保留；场景识别统一由图模型处理，不再表达局部/全局范围。
 - 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-24-frontend-design-2f6baf8b/report.md`
 - 验证：复用本地 `5173/8000` 开发环境，用本地 admin 登录后打开 `fanxiu/data-annotation`、`fanxiu/data-annotation/runtime`、`fanxiu/wiki?tab=mail`、`notes/center?tab=list`、`admin/images`、`mystia/wiki`，补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180`；其中 data-annotation 额外切到“场景”树投影，共 21 张真实截图。浏览器控制台 error/warn 为空；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
 - 根因分层：本轮前端变化属于前端状态投影收敛和新增静态目录页；未发现新增表现层问题、后端数据投影问题或业务建模债务，不新增 `docs/CodeYun自动化协作交接.md` 条目。

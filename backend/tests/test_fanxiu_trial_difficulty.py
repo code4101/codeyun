@@ -414,6 +414,7 @@ def test_trial_attempt_parser():
         text="今日剩余:奖励次数:2/5",
     )
     assert parse_xianqiao_trial_attempts("剩余奖励次数：１／３").remaining == 1
+    assert parse_xianqiao_trial_attempts("励次数:5/2").remaining == 5
 
 
 def test_trial_home_observation_reuses_one_frame_for_attempts_and_sweep(monkeypatch):

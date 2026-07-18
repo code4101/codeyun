@@ -2,6 +2,7 @@ from backend.core.dp_browser_tab_cleanup import (
     DP_BROWSER_TAB_CLEANUP_TASK_KEY,
     DpBrowserTabCleanupConfig,
     plan_dp_browser_tab_cleanup,
+    run_dp_browser_tab_cleanup,
 )
 from backend.core.jobs import scheduler
 
@@ -102,3 +103,63 @@ def test_runner_tree_contains_hidden_cleanup_task_for_later_enable(monkeypatch):
     labels = {getattr(node, "label", "") for node in scheduler._iter_tree_nodes(tree)}
 
     assert DP_BROWSER_TAB_CLEANUP_TASK_KEY in labels
+
+
+def test_run_supports_dry_run_and_max_close_overrides(tmp_path, monkeypatch):
+    config = DpBrowserTabCleanupConfig(
+        allowed_hosts=("pay.weixin.qq.com",),
+        dry_run=False,
+        max_close_per_run=10,
+        min_seen_count=1,
+        min_candidate_age_seconds=0,
+    )
+    tabs = [
+        _tab("old-tab", "https://pay.weixin.qq.com/index.php/core/info"),
+        _tab("new-tab", "https://pay.weixin.qq.com/index.php/core/info"),
+    ]
+    state = {
+        "tabs": {
+            "old-tab": {
+                "id": "old-tab",
+                "url": "https://pay.weixin.qq.com/index.php/core/info",
+                "title": "账户中心",
+                "candidate_since": 1,
+                "seen_count": 2,
+                "first_seen_at": 1,
+                "last_seen_at": 1,
+                "last_changed_at": 1,
+                "last_observed_index": 0,
+            },
+            "new-tab": {
+                "id": "new-tab",
+                "url": "https://pay.weixin.qq.com/index.php/core/info",
+                "title": "账户中心",
+                "candidate_since": None,
+                "seen_count": 2,
+                "first_seen_at": 1,
+                "last_seen_at": 1,
+                "last_changed_at": 1,
+                "last_observed_index": 1,
+            },
+        }
+    }
+    closed: list[str] = []
+
+    monkeypatch.setattr("backend.core.dp_browser_tab_cleanup.fetch_chrome_debug_tabs", lambda resolved_config: tabs)
+    monkeypatch.setattr("backend.core.dp_browser_tab_cleanup.close_chrome_debug_tab", lambda tab_id, resolved_config: closed.append(tab_id))
+    monkeypatch.setattr("backend.core.dp_browser_tab_cleanup._read_state", lambda path: state)
+
+    result = run_dp_browser_tab_cleanup(
+        config=config,
+        state_path=tmp_path / "state.json",
+        dry_run=True,
+        max_close_per_run=0,
+    )
+
+    assert result["status"] == "completed"
+    assert result["dry_run"] is True
+    assert result["candidate_tabs"] == 1
+    assert result["close_ids"] == []
+    assert result["closed_ids"] == []
+    assert result["close_errors"] == {}
+    assert closed == []

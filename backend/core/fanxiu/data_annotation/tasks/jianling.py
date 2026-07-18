@@ -67,7 +67,7 @@ class JianlingTaskMixin:
                 if unknown_rounds > max_unknown_rounds:
                     raise RuntimeError(
                         "剑灵_淬灵：限定 #349/#351 layer0 上下文连续未命中，"
-                        f"最后 OCR={str(level_text)[:120]!r}；不会回退到全局场景猜测"
+                        f"最后 OCR={str(level_text)[:120]!r}；不会回退到默认候选猜测"
                     )
                 with self._lock:
                     self._set_status_locked(

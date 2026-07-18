@@ -39,9 +39,8 @@ from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_dat
 from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer
 from backend.core.fanxiu.data_annotation.recognition_catalog import (
     build_recognition_graph_nodes,
+    default_recognition_candidate_ids,
     expand_graph_candidate_ids,
-    global_recognition_candidate_ids,
-    is_explicit_local_identity_only_scene,
 )
 from backend.core.fanxiu.data_annotation.recognition_graph import (
     SceneGraphCandidate,
@@ -7178,7 +7177,7 @@ class DataAnnotationRuntimeRunner(
             return []
         tree = ctx.get("asset_tree")
         if isinstance(tree, list):
-            return global_recognition_candidate_ids(tree, images)
+            return default_recognition_candidate_ids(tree, images)
         runtime_ids = [
             int(scene_id)
             for scene_id in self._runtime_scene_candidate_ids(ctx)
@@ -7191,7 +7190,6 @@ class DataAnnotationRuntimeRunner(
             for scene_id, image in images.items()
             if isinstance(image, dict)
             and int(View(image).layer) <= 2
-            and not is_explicit_local_identity_only_scene(image)
         ]
 
     def _recognition_parent_match_edges_for_candidates(self, ctx: dict[str, Any], scene_ids: list[int]) -> list[dict[str, Any]]:
@@ -7266,7 +7264,7 @@ class DataAnnotationRuntimeRunner(
             ctx,
             frame_data_url,
             self._runtime_graph_scene_candidate_ids(ctx),
-            layer_label="global",
+            layer_label="default",
             trace=trace,
         )
 
@@ -7524,7 +7522,7 @@ class DataAnnotationRuntimeRunner(
         text = self._ocr_text(self._cached_ocr_fragments(ctx, frame_data_url))
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         if self._game_cover_scene_ocr_text(text):
-            self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过局部标题候选")
+            self._log("detail", "场景强 OCR 命中 #18 游戏封面，跳过当前标题候选")
             return 18
         if "日程" in compact and "凡人历" in compact and re.search(r"\d{2}月\d{2}日", compact):
             self._log("detail", "场景强 OCR 命中 #66 日程，跳过活动素材候选")
@@ -7536,7 +7534,7 @@ class DataAnnotationRuntimeRunner(
             and not any(marker in compact for marker in internal_markers)
             and sum(1 for marker in world_markers if marker in compact) >= 1
         ):
-            self._log("detail", "场景强 OCR 命中 #34 世界，跳过局部路径候选")
+            self._log("detail", "场景强 OCR 命中 #34 世界，跳过当前路径候选")
             return 34
         if "可旋转" in compact and "法则之主" in compact and "拜谒" in compact:
             self._log("detail", "场景强 OCR 命中 #265 法则之主旋转选择页")
@@ -7573,7 +7571,7 @@ class DataAnnotationRuntimeRunner(
             return []
         tree = ctx.get("asset_tree")
         if isinstance(tree, list):
-            return global_recognition_candidate_ids(
+            return default_recognition_candidate_ids(
                 tree,
                 images,
                 include_popups=include_popups,
@@ -7585,7 +7583,7 @@ class DataAnnotationRuntimeRunner(
             for scene_id in self.scene_ids.values()
             if int(scene_id) in images
             and isinstance(images.get(int(scene_id)), dict)
-            and not is_explicit_local_identity_only_scene(images[int(scene_id)])
+            and int(View(images[int(scene_id)]).layer) <= 2
         ]
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -7897,7 +7895,7 @@ class DataAnnotationRuntimeRunner(
         explored_shape_keys = explored_shape_keys or set()
         candidates: list[dict[str, Any]] = []
         for order, shape in enumerate(self._flatten_shapes(image.get("shapes"))):
-            if self._scene_identity_scope(shape) != "none":
+            if Shape(shape).is_scene_identity:
                 continue
             priority = self._scene_navigation_exploration_priority(shape)
             if priority <= 0:
@@ -7992,7 +7990,7 @@ class DataAnnotationRuntimeRunner(
         states.append((current_scene_id, signature, state_key))
         return state_key
 
-    def _try_global_scene_recovery_action(
+    def _try_default_scene_recovery_action(
         self,
         ctx: dict[str, Any],
         frame_data_url: str,
@@ -8441,23 +8439,6 @@ class DataAnnotationRuntimeRunner(
             if isinstance(candidate, dict) and self._image_contains_shape(candidate, shape):
                 return candidate
         return image
-
-    def _scene_identity_scope(self, shape: dict[str, Any]) -> str:
-        value = str(shape.get("sceneIdentityScope") or shape.get("scene_identity_scope") or "").strip().lower()
-        aliases = {
-            "none": "none",
-            "off": "none",
-            "false": "none",
-            "无": "none",
-            "local": "local",
-            "局": "local",
-            "global": "global",
-            "全": "global",
-        }
-        normalized = aliases.get(value)
-        if normalized:
-            return normalized
-        return "local" if bool(shape.get("isSceneIdentity")) or str(shape.get("sceneIdentityRole") or "").strip() not in {"", "off", "无"} else "none"
 
     def _image_layer(self, image: dict[str, Any]) -> int:
         return int(View(image).layer)
@@ -10412,11 +10393,11 @@ class DataAnnotationRuntimeRunner(
                 matched_expected = None
             if matched_expected is not None:
                 if not left_source and matched_expected != source_scene_id:
-                    global_scene_id, global_score = self._identify_scene_number(ctx, frame)
-                    if global_scene_id == source_scene_id and float(global_score or 0) >= float(expected_score or 0):
-                        last_scene_id, last_score, last_frame = global_scene_id, global_score, frame
+                    default_scene_id, default_score = self._identify_scene_number(ctx, frame)
+                    if default_scene_id == source_scene_id and float(default_score or 0) >= float(expected_score or 0):
+                        last_scene_id, last_score, last_frame = default_scene_id, default_score, frame
                         history.append(
-                            f"{elapsed:.1f}s #{global_scene_id} {global_score:.0f}% "
+                            f"{elapsed:.1f}s #{default_scene_id} {default_score:.0f}% "
                             f"expected=#{matched_expected} {expected_score:.0f}% left={left_source}"
                         )
                         continue
@@ -10801,7 +10782,7 @@ class DataAnnotationRuntimeRunner(
                     ):
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._try_global_scene_recovery_action(
+                if self._try_default_scene_recovery_action(
                     ctx,
                     frame,
                     current_scene_id=None,
@@ -10860,7 +10841,7 @@ class DataAnnotationRuntimeRunner(
                     ):
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._try_global_scene_recovery_action(
+                if self._try_default_scene_recovery_action(
                     ctx,
                     frame,
                     current_scene_id=None,
@@ -10948,7 +10929,7 @@ class DataAnnotationRuntimeRunner(
                     ):
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._try_global_scene_recovery_action(
+                if self._try_default_scene_recovery_action(
                     ctx,
                     frame,
                     current_scene_id=None,
@@ -11010,7 +10991,7 @@ class DataAnnotationRuntimeRunner(
                     )):
                         yield BehaviorTreeStatus.RUNNING
                         continue
-                if self._try_global_scene_recovery_action(
+                if self._try_default_scene_recovery_action(
                     ctx,
                     frame,
                     current_scene_id=current_scene_id,

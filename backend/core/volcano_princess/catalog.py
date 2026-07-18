@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 
 CATALOG_SCHEMA_VERSION = 1
+THEATER_CATALOG_SCHEMA_VERSION = 1
 DEFAULT_REVERSE_ROOT = Path(r"D:\home\chenkunze\data\m2607火山的女儿逆向")
 
 
@@ -20,6 +21,10 @@ def get_volcano_princess_reverse_root() -> Path:
 
 def get_audio_catalog_path() -> Path:
     return get_volcano_princess_reverse_root() / "parsed_configs" / "audio_catalog" / "catalog.json"
+
+
+def get_theater_catalog_path() -> Path:
+    return get_volcano_princess_reverse_root() / "parsed_configs" / "theater_catalog" / "catalog.json"
 
 
 @lru_cache(maxsize=4)
@@ -48,6 +53,34 @@ def load_audio_catalog() -> dict[str, Any]:
     if not path.is_file():
         raise HTTPException(status_code=503, detail=f"火山的女儿音频 catalog 尚未生成：{path}")
     return _read_catalog(str(path.resolve()), path.stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=4)
+def _read_theater_catalog(path_text: str, mtime_ns: int) -> dict[str, Any]:
+    del mtime_ns
+    path = Path(path_text)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"奥拉夫剧院 catalog 读取失败：{path.name}") from exc
+    if payload.get("schema_version") != THEATER_CATALOG_SCHEMA_VERSION:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "奥拉夫剧院 catalog schema 不匹配："
+                f"{payload.get('schema_version')} != {THEATER_CATALOG_SCHEMA_VERSION}"
+            ),
+        )
+    if not isinstance(payload.get("questions"), list) or not isinstance(payload.get("dramas"), list):
+        raise HTTPException(status_code=500, detail="奥拉夫剧院 catalog 缺少 questions 或 dramas")
+    return payload
+
+
+def load_theater_catalog() -> dict[str, Any]:
+    path = get_theater_catalog_path()
+    if not path.is_file():
+        raise HTTPException(status_code=503, detail=f"奥拉夫剧院 catalog 尚未生成：{path}")
+    return _read_theater_catalog(str(path.resolve()), path.stat().st_mtime_ns)
 
 
 def find_audio_entry(path_id: int, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -82,4 +115,3 @@ def get_audio_media_path(path_id: int) -> Path:
     if target.suffix.lower() != ".mp3" or not target.is_file():
         raise HTTPException(status_code=404, detail="音频文件不存在")
     return target
-

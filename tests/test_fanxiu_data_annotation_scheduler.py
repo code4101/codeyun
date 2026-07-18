@@ -4529,8 +4529,8 @@ def test_unknown_evidence_classifies_partial_scene_identity_match(monkeypatch):
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"title": "箱子", "isSceneIdentity": True, "sceneIdentityRole": "required", "sceneIdentityScope": "global", "imageMatchRole": "required", "pixelTolerance": 30},
-            {"title": "升阶", "isSceneIdentity": True, "sceneIdentityRole": "required", "sceneIdentityScope": "local", "imageMatchRole": "required", "pixelTolerance": 5},
+            {"title": "箱子", "isSceneIdentity": True, "sceneIdentityRole": "required", "imageMatchRole": "required", "pixelTolerance": 30},
+            {"title": "升阶", "isSceneIdentity": True, "sceneIdentityRole": "required", "imageMatchRole": "required", "pixelTolerance": 5},
             {"title": "返回", "imageMatchRole": "required", "x": 0.05, "y": 0.90, "w": 0.08, "h": 0.04},
         ],
     }
@@ -4687,8 +4687,8 @@ def test_wait_view_timeout_reports_unknown_evidence(monkeypatch):
         "width": 900,
         "height": 1600,
         "shapes": [
-            {"title": "箱子", "isSceneIdentity": True, "sceneIdentityRole": "required", "sceneIdentityScope": "global", "imageMatchRole": "required", "pixelTolerance": 30},
-            {"title": "升阶", "isSceneIdentity": True, "sceneIdentityRole": "required", "sceneIdentityScope": "local", "imageMatchRole": "required", "pixelTolerance": 5},
+            {"title": "箱子", "isSceneIdentity": True, "sceneIdentityRole": "required", "imageMatchRole": "required", "pixelTolerance": 30},
+            {"title": "升阶", "isSceneIdentity": True, "sceneIdentityRole": "required", "imageMatchRole": "required", "pixelTolerance": 5},
         ],
     }
     ctx = {"images": {261: image261}}
@@ -9726,7 +9726,7 @@ def test_daily_lingzu_go_elder_uses_longer_scene_wait(monkeypatch):
     ]
 
 
-def test_daily_lingzu_can_resume_from_elder_when_global_scene_unknown(tmp_path, monkeypatch):
+def test_daily_lingzu_can_resume_from_elder_when_default_scene_unknown(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {
         "asset_tree_path": tmp_path / "asset-tree.json",
@@ -10988,7 +10988,7 @@ def test_popup_guard_closes_world_guide_bubble_by_ocr():
     assert runner.status()["last_guard_event"]["action"] == "click:世界引导气泡"
 
 
-def test_data_annotation_scene_jump_wait_does_not_accept_expected_match_when_global_scene_is_source(monkeypatch, tmp_path):
+def test_data_annotation_scene_jump_wait_does_not_accept_expected_match_when_default_scene_is_source(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     ctx = {"entry": object(), "images": {}}
     shape = {"title": "日程入口", "sceneJumpTarget": "66"}
@@ -11297,7 +11297,7 @@ def test_scene_jump_wait_allows_dynamic_minus_one_landing_to_replan(monkeypatch,
     assert any("动态落点" in str(item) for item in calls)
 
 
-def test_go_scene_uses_global_current_scene_before_route_candidates(monkeypatch, tmp_path):
+def test_go_scene_uses_default_current_scene_before_route_candidates(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     shape = {"title": "回到世界", "sceneJumpTarget": "34"}
     image20 = {"type": "image", "id": "20", "title": "绿瓶", "filename": "0020.png", "layer": 2, "shapes": [shape]}

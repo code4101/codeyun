@@ -265,8 +265,8 @@
       "node_type": "feature",
       "parent_key": "volcano-princess",
       "sort_order": 10,
-      "route_paths": ["/volcano-princess/audio"],
-      "menu_paths": ["/volcano-princess/audio"],
+      "route_paths": ["/volcano-princess/audio", "/volcano-princess/theater"],
+      "menu_paths": ["/volcano-princess/audio", "/volcano-princess/theater"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },

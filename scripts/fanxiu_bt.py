@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from filelock import FileLock, Timeout
+import psutil
 from urllib.parse import urlencode
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -1008,6 +1009,36 @@ def _read_doctor_watch_heartbeat() -> dict[str, Any]:
     }
 
 
+def _terminate_stale_doctor_watch(heartbeat: dict[str, Any], *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    try:
+        pid = int(heartbeat.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid <= 0 or pid == os.getpid():
+        return {"terminated": False, "pid": pid or None, "reason": "invalid_pid"}
+
+    try:
+        process = psutil.Process(pid)
+        command = [str(part) for part in process.cmdline()]
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
+        return {"terminated": False, "pid": pid, "reason": "process_unavailable", "error": str(exc)}
+
+    command_text = " ".join(command).lower()
+    expected_script = str(Path(__file__).resolve()).lower()
+    if expected_script not in command_text or "watch-doctor" not in command_text:
+        return {"terminated": False, "pid": pid, "reason": "process_mismatch", "command": command}
+
+    process.terminate()
+    forced = False
+    try:
+        process.wait(timeout=max(0.1, float(timeout_seconds)))
+    except psutil.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=max(0.1, float(timeout_seconds)))
+        forced = True
+    return {"terminated": True, "pid": pid, "forced": forced, "command": command}
+
+
 def _ensure_doctor_watch_background(
     *,
     interval_seconds: float,
@@ -1033,6 +1064,8 @@ def _ensure_doctor_watch_background(
             "heartbeat": heartbeat,
             "latest": read_doctor_watch_latest(),
         }
+
+    stale_owner = _terminate_stale_doctor_watch(heartbeat)
 
     from backend.core.temp_paths import codeyun_temp_root
 
@@ -1101,6 +1134,7 @@ def _ensure_doctor_watch_background(
         "pid": process.pid,
         "reason": "heartbeat_missing_or_stale",
         "previous_heartbeat": heartbeat,
+        "stale_owner": stale_owner,
         "output_path": str(output_path),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),

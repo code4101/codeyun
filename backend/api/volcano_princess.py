@@ -10,10 +10,29 @@ from backend.core.volcano_princess.catalog import (
     find_audio_entry,
     get_audio_media_path,
     load_audio_catalog,
+    load_theater_catalog,
 )
 
 
 router = APIRouter()
+
+
+@router.get("/theater")
+def get_theater_catalog() -> dict[str, Any]:
+    catalog = load_theater_catalog()
+    source = dict(catalog.get("source") or {})
+    source.pop("game_root", None)
+    return {
+        "generated_at": catalog.get("generated_at"),
+        "source": source,
+        "summary": dict(catalog.get("summary") or {}),
+        "mechanics": dict(catalog.get("mechanics") or {}),
+        "line_types": list(catalog.get("line_types") or []),
+        "drama_categories": list(catalog.get("drama_categories") or []),
+        "nature_names": list(catalog.get("nature_names") or []),
+        "questions": list(catalog.get("questions") or []),
+        "dramas": list(catalog.get("dramas") or []),
+    }
 
 
 def _serialize_entry(entry: dict[str, Any]) -> dict[str, Any]:

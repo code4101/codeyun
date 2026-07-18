@@ -627,17 +627,20 @@ class PaddleOcrServiceManager:
 
         config = _build_runtime_config(options)
         record = self._acquire(config)
+        reusable = True
         try:
             predict_kwargs = _predict_options(options)
             results = record.instance.predict(str(image_path), **predict_kwargs)
         except Exception as exc:  # pragma: no cover - depends on runtime env
+            reusable = False
             message = f"OCR 识别失败：{exc}"
             with self._condition:
                 self._error_count += 1
                 self._last_error = message
             raise OcrPreviewError(message) from exc
         finally:
-            self._release(record)
+            # GPU/runtime failures can leave the Paddle instance unusable.
+            self._release(record, reusable=reusable)
 
         result = results[0] if isinstance(results, list) and results else {}
         payload = _extract_predict_payload(result) if result else {}
