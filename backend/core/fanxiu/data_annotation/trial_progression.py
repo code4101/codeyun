@@ -59,7 +59,7 @@ def parse_xianqiao_trial_attempts(text: str) -> ObservedTrialAttempts:
         compact,
     )
     if match is None:
-        match = re.search(r"奖励次数\D{0,4}(\d+)(?:/(\d+))?", compact)
+        match = re.search(r"次数\D{0,4}(\d+)(?:/(\d+))?", compact)
     if match is None:
         raise ValueError(f"无法解析仙窍试炼剩余次数：{normalized!r}")
     return ObservedTrialAttempts(

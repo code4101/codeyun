@@ -58,6 +58,8 @@ Guard 配置可以持久化，但其执行只能发生在一个正在执行的 C
 ## 场景与 shape
 
 - 业务任务只声明 scene 和 shape，不处理物理坐标。
+- 场景身份不设置候选作用域。带场景身份证据的普通 frame 按统一规则进入 Layer 2；显式标记的主场景进入 Layer 1；没有场景身份的素材或弱帧进入 Layer 3。
+- Layer 0 不是资产字段，而是一次识别调用动态传入的候选清单。默认识别从 Layer 1/2 构造候选；业务步骤已知合法场景范围时传入 scene id 列表形成 Layer 0。两者使用完全相同的身份评分、识别图关系和歧义判定，不得再用 shape scope、文件名或兼容字段暗中排除候选。
 - 资产树读取统一走 data-annotation storage。
 - 场景身份用 `isSceneIdentity / sceneIdentityRole`。
 - 点击和长按使用已命名 shape。

@@ -1,7 +1,7 @@
 from backend.core.fanxiu.data_annotation.recognition_catalog import (
     build_recognition_graph_nodes,
+    default_recognition_candidate_ids,
     expand_graph_candidate_ids,
-    global_recognition_candidate_ids,
 )
 
 
@@ -31,7 +31,7 @@ def test_asset_nesting_is_metadata_not_a_recognition_edge():
     assert nodes[265].parent_scene_ids == ()
     assert nodes[266].parent_scene_ids == ()
     assert nodes[266].asset_path == ("拜谒", "法则选择", "法则详情")
-    assert global_recognition_candidate_ids(tree, images) == [265, 266]
+    assert default_recognition_candidate_ids(tree, images) == [265, 266]
 
 
 def test_recognition_parent_builds_graph_relation_without_asset_reparenting():
@@ -44,7 +44,7 @@ def test_recognition_parent_builds_graph_relation_without_asset_reparenting():
 
     assert nodes[266].parent_scene_ids == (265,)
     assert nodes[266].asset_path == ("拜谒", "法则详情")
-    assert global_recognition_candidate_ids(tree, images) == [265, 266]
+    assert default_recognition_candidate_ids(tree, images) == [265, 266]
     assert expand_graph_candidate_ids(tree, images, [266]) == [265, 266]
 
 
@@ -59,24 +59,25 @@ def test_preferred_graph_candidate_expands_to_ancestors_and_descendants():
     assert expand_graph_candidate_ids(tree, images, [265]) == [265, 266, 267]
 
 
-def test_global_candidates_filter_material_and_context_only_ocr_helpers():
+def test_default_candidates_include_all_identity_frames_and_filter_material():
     world = _image(34, "世界", layer=1)
     material = _image(300, "素材", layer=3, identity=False)
-    local_ocr = _image(201, "仙缘挑战提示", layer=None, identity=False)
-    local_ocr["filename"] = ""
-    local_ocr["shapes"] = [{
+    ocr_scene = _image(201, "仙缘挑战提示", layer=None, identity=False)
+    ocr_scene["id"] = "frame-201"
+    ocr_scene["filename"] = ""
+    ocr_scene["shapes"] = [{
         "id": "confirm",
         "isSceneIdentity": True,
-        "sceneIdentityScope": "local",
         "ocrReg": "继续|是否.*挑战",
     }]
-    tree = [world, material, local_ocr]
-    images = {34: world, 300: material, 201: local_ocr}
+    tree = [world, material, ocr_scene]
+    images = {34: world, 300: material, 201: ocr_scene}
 
-    assert global_recognition_candidate_ids(tree, images) == [34]
+    assert default_recognition_candidate_ids(tree, images) == [34, 201]
+    assert expand_graph_candidate_ids(tree, images, [201]) == [201]
 
 
-def test_global_candidates_support_popup_path_filter_without_tree_semantics():
+def test_default_candidates_support_popup_path_filter_without_tree_semantics():
     world = _image(34, "世界", layer=1)
     popup = _image(47, "所有提示窗口", layer=None)
     tree = [
@@ -85,6 +86,6 @@ def test_global_candidates_support_popup_path_filter_without_tree_semantics():
     ]
     images = {34: world, 47: popup}
 
-    assert global_recognition_candidate_ids(tree, images) == [34, 47]
-    assert global_recognition_candidate_ids(tree, images, include_popups=True) == [47]
-    assert global_recognition_candidate_ids(tree, images, include_popups=False) == [34]
+    assert default_recognition_candidate_ids(tree, images) == [34, 47]
+    assert default_recognition_candidate_ids(tree, images, include_popups=True) == [47]
+    assert default_recognition_candidate_ids(tree, images, include_popups=False) == [34]

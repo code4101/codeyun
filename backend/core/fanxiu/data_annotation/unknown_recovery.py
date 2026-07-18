@@ -22,7 +22,6 @@ class UnknownShapeScore:
     score: float
     is_scene_identity: bool
     scene_identity_role: str
-    legacy_scene_identity_scope: str
     pixel_tolerance: int | None
     image_match_role: str
     ocr_match_role: str
@@ -151,15 +150,6 @@ def _reference_frame_similarity(runner: Any, image: dict[str, Any], frame_data_u
     return _image_bytes_similarity_percent(reference, current)
 
 
-def _shape_identity_scope(runner: Any, shape: dict[str, Any]) -> str:
-    """保留旧 shape scope 作为迁移/诊断信息，不参与候选过滤。"""
-
-    try:
-        return str(runner._scene_identity_scope(shape))
-    except Exception:
-        return str(shape.get("sceneIdentityScope") or "")
-
-
 def _shape_score_detail(runner: Any, ctx: dict[str, Any], image: dict[str, Any], shape: dict[str, Any], frame: str) -> UnknownShapeScore:
     try:
         score = _safe_float(runner._scene_identity_shape_score(ctx, image, shape, frame))
@@ -173,7 +163,6 @@ def _shape_score_detail(runner: Any, ctx: dict[str, Any], image: dict[str, Any],
         score=round(score, 1),
         is_scene_identity=bool(shape.get("isSceneIdentity")),
         scene_identity_role=str(shape.get("sceneIdentityRole") or ""),
-        legacy_scene_identity_scope=_shape_identity_scope(runner, shape),
         pixel_tolerance=_safe_int(shape.get("pixelTolerance")),
         image_match_role=str(shape.get("imageMatchRole") or ""),
         ocr_match_role=str(shape.get("ocrMatchRole") or ""),
@@ -284,7 +273,7 @@ def _classification_and_suggestion(
             weak = sorted(best_expected.identity_scores, key=lambda item: item.score)[0]
             return (
                 "target_identity_partial_match",
-                f"目标 #{best_expected.scene_id} 有局部身份锚点命中，但「{weak.title}」仅 {weak.score:.0f}%，优先检查标注框/像素容差/OCR 条件。",
+                f"目标 #{best_expected.scene_id} 有身份锚点命中，但「{weak.title}」仅 {weak.score:.0f}%，优先检查标注框/像素容差/OCR 条件。",
             )
         if best_expected.scene_score >= 70.0:
             return (

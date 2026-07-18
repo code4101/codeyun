@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import os
 import time
@@ -108,8 +108,17 @@ def run_dp_browser_tab_cleanup(
     *,
     config: DpBrowserTabCleanupConfig | None = None,
     state_path: Path | None = None,
+    dry_run: bool | None = None,
+    max_close_per_run: int | None = None,
 ) -> dict[str, Any]:
     resolved_config = config or load_dp_browser_tab_cleanup_config()
+    overrides: dict[str, Any] = {}
+    if dry_run is not None:
+        overrides["dry_run"] = bool(dry_run)
+    if max_close_per_run is not None:
+        overrides["max_close_per_run"] = max(0, int(max_close_per_run))
+    if overrides:
+        resolved_config = replace(resolved_config, **overrides)
     resolved_state_path = state_path or get_dp_browser_tab_cleanup_state_path()
     state = _read_state(resolved_state_path)
 

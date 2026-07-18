@@ -87,3 +87,70 @@ export async function getVolcanoPrincessAudioEntry(pathId: number): Promise<Volc
   return response.data
 }
 
+export interface VolcanoPrincessTheaterQuestion {
+  index: number
+  line_type_index: number
+  line_type: string
+  line_index: number
+  content: string
+}
+
+export interface VolcanoPrincessTheaterRequirement {
+  nature_index: number
+  nature: string
+  value: number
+}
+
+export interface VolcanoPrincessTheaterDrama {
+  index: number
+  name: string
+  description: string
+  role: string
+  theater_level: number
+  category_index: number
+  category: string
+  drama_variant: number
+  sponsor_index: number
+  requirements: VolcanoPrincessTheaterRequirement[]
+  charm: number
+  base_salary: number
+  fame: number
+}
+
+export interface VolcanoPrincessTheaterCatalog {
+  generated_at: string
+  source: {
+    build_id?: string
+    engine?: string
+    data_sha256?: string
+    txt_sha256?: string
+    assembly_sha256?: string
+  }
+  summary: {
+    drama_count: number
+    question_count: number
+    line_type_count: number
+    drama_category_count: number
+  }
+  mechanics: {
+    rounds: number
+    options_per_round: number
+    energy_cost: number
+    shared_question_bank: boolean
+    correct_rule: string
+    correct_answer_bonus: number
+    performance_bgm_index: number
+    performance_bgm_name: string
+    performance_bgm_path_id: number
+  }
+  line_types: Array<{ index: number; name: string; game_color: string }>
+  drama_categories: string[]
+  nature_names: string[]
+  questions: VolcanoPrincessTheaterQuestion[]
+  dramas: VolcanoPrincessTheaterDrama[]
+}
+
+export async function getVolcanoPrincessTheaterCatalog(): Promise<VolcanoPrincessTheaterCatalog> {
+  const response = await api.get('/volcano-princess/theater')
+  return response.data
+}

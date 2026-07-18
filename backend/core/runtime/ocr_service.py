@@ -386,15 +386,30 @@ def predict_via_ocr_service(
         "shape_type": shape_type,
         "options": options or {},
     }
-    try:
-        response = requests.post(
+
+    def post_predict() -> requests.Response:
+        return requests.post(
             _endpoint("/api/services/ocr/predict"),
             json=payload,
             headers={"X-CodeYun-OCR-Caller": _ocr_request_caller_header()},
             timeout=_predict_timeout(),
         )
+
+    try:
+        response = post_predict()
     except requests.RequestException as exc:
-        raise OcrPreviewError(f"OCR 服务请求失败：{exc}") from exc
+        status = get_ocr_service_status()
+        if get_settings().ocr_device == "gpu" and not status.get("running"):
+            try:
+                start_ocr_service(
+                    replace_existing=True,
+                    env_overrides={"CODEYUN_OCR_DEVICE": "cpu"},
+                )
+                response = post_predict()
+            except (requests.RequestException, OcrPreviewError) as retry_exc:
+                raise OcrPreviewError(f"OCR 服务 GPU 失败且 CPU 降级失败：{retry_exc}") from retry_exc
+        else:
+            raise OcrPreviewError(f"OCR 服务请求失败：{exc}") from exc
 
     if response.status_code >= 400:
         try:

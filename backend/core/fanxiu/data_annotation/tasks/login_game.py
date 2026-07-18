@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 
@@ -16,7 +17,12 @@ class LoginGameTaskMixin:
     ):
         """Enter Fanxiu with the current account and stop at the world scene."""
         payload = dict(payload or {})
-        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(
+            ctx,
+            asset_tree_path if isinstance(asset_tree_path, Path) else None,
+            stop_event=stop_event,
+        )
         unknown_timeout = max(10.0, min(120.0, float(payload.get("unknown_timeout_seconds") or 60.0)))
         unknown_started_at: float | None = None
 

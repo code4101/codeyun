@@ -6020,13 +6020,6 @@ class DailyFoundationTaskMixin:
                     self._log_locked("action", "日常_绿瓶拜谒：点击 #301「返回」退出掌天瓶详情")
                 yield from runtime.wait_click(301, "返回")
                 yield from runtime.wait_action_settle(float(payload.get("green_bottle_rank_back_settle_seconds") or 2.0))
-                with self._lock:
-                    self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
-                    self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动回到 #34")
-                yield from runtime.goto_view(34)
-                final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
-                if final_scene_id != 34:
-                    raise RuntimeError(f"日常_绿瓶拜谒：掌天瓶已达巅峰，但收尾未回到 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
                 self._record_daily_entry_done(
                     payload,
                     task_id="legacy-daily-green-bottle-baiye",
@@ -6035,7 +6028,21 @@ class DailyFoundationTaskMixin:
                     message="掌天瓶已达巅峰，今日绿瓶状态已确认",
                 )
                 with self._lock:
-                    self._set_status_locked("success", "日常_绿瓶拜谒完成，已回到 #34", phase="daily_green_bottle_baiye_done", current_scene=34)
+                    self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
+                    self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动回到 #34")
+                final_scene_id, final_score = None, 0.0
+                try:
+                    yield from runtime.goto_view(34)
+                    final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
+                except Exception as exc:
+                    with self._lock:
+                        self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，收尾返回 #34 失败：{exc}")
+                if final_scene_id != 34:
+                    with self._lock:
+                        self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，但收尾未确认 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
+                with self._lock:
+                    message = "日常_绿瓶拜谒完成，已回到 #34" if final_scene_id == 34 else "日常_绿瓶拜谒今日已完成，收尾场景待后续任务重新归一"
+                    self._set_status_locked("success", message, phase="daily_green_bottle_baiye_done", current_scene=final_scene_id)
                     self._log_locked("success", "日常_绿瓶拜谒完成")
                 return "success"
             raise RuntimeError(f"日常_绿瓶拜谒：进入 #301 但未识别为已达巅峰，OCR={entry_text[:120]}")
@@ -6076,12 +6083,6 @@ class DailyFoundationTaskMixin:
             self._log_locked("success", "日常_绿瓶拜谒：今日拜谒已确认完成")
             self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
             self._log_locked("action", "日常_绿瓶拜谒：从当前场景调用通用场景移动回到 #34")
-        # 不在业务作业里手写 #283 -> #282 -> #20 -> #34。这里必须交给
-        # 通用 goto；sceneJumpTarget 是可增量学习的历史落点频次，不是硬规则。
-        yield from runtime.goto_view(34)
-        final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
-        if final_scene_id != 34:
-            raise RuntimeError(f"日常_绿瓶拜谒：拜谒已完成，但收尾未回到 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
         self._record_daily_entry_done(
             payload,
             task_id="legacy-daily-green-bottle-baiye",
@@ -6089,8 +6090,21 @@ class DailyFoundationTaskMixin:
             label="日常_绿瓶拜谒",
             message="今日拜谒已确认完成",
         )
+        # 不在业务作业里手写 #283 -> #282 -> #20 -> #34。这里必须交给
+        # 通用 goto；sceneJumpTarget 是可增量学习的历史落点频次，不是硬规则。
+        final_scene_id, final_score = None, 0.0
+        try:
+            yield from runtime.goto_view(34)
+            final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
+        except Exception as exc:
+            with self._lock:
+                self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，收尾返回 #34 失败：{exc}")
+        if final_scene_id != 34:
+            with self._lock:
+                self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，但收尾未确认 #34，当前 scene={final_scene_id} score={final_score:.0f}%")
         with self._lock:
-            self._set_status_locked("success", "日常_绿瓶拜谒完成，已回到 #34", phase="daily_green_bottle_baiye_done", current_scene=34)
+            message = "日常_绿瓶拜谒完成，已回到 #34" if final_scene_id == 34 else "日常_绿瓶拜谒今日已完成，收尾场景待后续任务重新归一"
+            self._set_status_locked("success", message, phase="daily_green_bottle_baiye_done", current_scene=final_scene_id)
             self._log_locked("success", "日常_绿瓶拜谒完成")
         return "success"
 

@@ -1528,6 +1528,11 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, 
         encoding="utf-8",
     )
     monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "_terminate_stale_doctor_watch",
+        lambda heartbeat: {"terminated": True, "pid": heartbeat["pid"], "forced": False},
+    )
     monkeypatch.setattr(fanxiu_bt.time, "time", lambda: 400.0)
     monkeypatch.setattr(fanxiu_bt.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
@@ -1555,6 +1560,7 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, 
     assert result["started"] is True
     assert result["pid"] == 456
     assert result["reason"] == "heartbeat_missing_or_stale"
+    assert result["stale_owner"] == {"terminated": True, "pid": 123, "forced": False}
     watch_commands = [call["command"] for call in popen_calls if "watch-doctor" in call["command"]]
     assert len(watch_commands) == 1
     command = watch_commands[0]

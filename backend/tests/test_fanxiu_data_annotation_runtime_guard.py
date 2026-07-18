@@ -1756,7 +1756,7 @@ def test_strong_ocr_scene_number_detects_calendar_schedule(monkeypatch):
     assert runner._strong_ocr_scene_number(ctx, "frame") == 66
 
 
-def test_go_scene_prefers_world_ocr_over_local_route_candidate(tmp_path, monkeypatch):
+def test_go_scene_prefers_world_ocr_over_current_route_candidate(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     image34 = _scene_image("世界", "0034.jpg", [
@@ -3281,14 +3281,14 @@ def test_go_scene_replans_after_direct_entry_stalls_before_failing(tmp_path, mon
     assert "候选" in saved["history"][0]
 
 
-def test_go_scene_prefers_recognized_scene_shape_then_uses_global_return(tmp_path, monkeypatch):
+def test_go_scene_prefers_recognized_scene_shape_then_uses_default_recovery(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     forward_shape = {"id": "forward", "kind": "rect", "title": "前往", "x": 0.4, "y": 0.7, "w": 0.2, "h": 0.1}
-    global_back = {"id": "world-entry", "kind": "rect", "title": "进入绿瓶", "x": 0.1, "y": 0.9, "w": 0.2, "h": 0.08}
-    global_blank = {"id": "world-blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.03, "w": 0.4, "h": 0.05}
+    fallback_back = {"id": "world-entry", "kind": "rect", "title": "进入绿瓶", "x": 0.1, "y": 0.9, "w": 0.2, "h": 0.08}
+    fallback_blank = {"id": "world-blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.03, "w": 0.4, "h": 0.05}
     image63 = _scene_image("宗门镇邪", "0063.png", [forward_shape])
     image271 = _scene_image("宗门镇邪入口", "0271.png", [])
-    image34 = _scene_image("世界", "0034.png", [global_back, global_blank])
+    image34 = _scene_image("世界", "0034.png", [fallback_back, fallback_blank])
     tree = [image63, image271, image34]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
@@ -3304,7 +3304,7 @@ def test_go_scene_prefers_recognized_scene_shape_then_uses_global_return(tmp_pat
         return {"scene-63": (63, 100.0), "scene-271": (271, 100.0), "scene-34": (34, 100.0)}[frame]
 
     def click_scene_shape(_ctx, _image, shape, _frame):
-        clicked.append(f"local:{shape['title']}")
+        clicked.append(f"route:{shape['title']}")
         state["frame"] = "scene-271"
 
     def wait_jump(*_args, **_kwargs):
@@ -3312,8 +3312,8 @@ def test_go_scene_prefers_recognized_scene_shape_then_uses_global_return(tmp_pat
             yield BehaviorTreeStatus.RUNNING
         return 271
 
-    def click_global(_ctx, _image, _x, _y):
-        clicked.append("global:返回")
+    def click_fallback(_ctx, _image, _x, _y):
+        clicked.append("fallback:返回")
         state["frame"] = "scene-34"
 
     def no_side_leave(*_args, **_kwargs):
@@ -3328,19 +3328,19 @@ def test_go_scene_prefers_recognized_scene_shape_then_uses_global_return(tmp_pat
     monkeypatch.setattr(runner, "_click_scene_route_shape", click_scene_shape)
     monkeypatch.setattr(runner, "_wait_scene_jump_result", wait_jump)
     monkeypatch.setattr(runner, "_leave_world_side_scene_if_present", no_side_leave)
-    monkeypatch.setattr(runner, "_click_frame_point", click_global)
+    monkeypatch.setattr(runner, "_click_frame_point", click_fallback)
     monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
 
     assert _drain_generator(runner._go_scene_task(ctx, path, 34, FakeStopEvent())) == "success"
-    assert clicked == ["local:前往", "global:返回"]
+    assert clicked == ["route:前往", "fallback:返回"]
 
 
-def test_go_scene_unknown_states_try_global_return_then_blank_sequentially(tmp_path, monkeypatch):
+def test_go_scene_unknown_states_try_default_return_then_blank_sequentially(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
-    global_back = {"id": "world-entry", "kind": "rect", "title": "进入绿瓶", "x": 0.1, "y": 0.9, "w": 0.2, "h": 0.08}
-    global_blank = {"id": "world-blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.03, "w": 0.4, "h": 0.05}
-    image34 = _scene_image("世界", "0034.png", [global_back, global_blank])
+    fallback_back = {"id": "world-entry", "kind": "rect", "title": "进入绿瓶", "x": 0.1, "y": 0.9, "w": 0.2, "h": 0.08}
+    fallback_blank = {"id": "world-blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.03, "w": 0.4, "h": 0.05}
+    image34 = _scene_image("世界", "0034.png", [fallback_back, fallback_blank])
     tree = [image34]
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
@@ -3352,7 +3352,7 @@ def test_go_scene_unknown_states_try_global_return_then_blank_sequentially(tmp_p
         def is_set(self):
             return False
 
-    def click_global(_ctx, _image, x, _y):
+    def click_fallback(_ctx, _image, x, _y):
         if x < 300:
             clicked.append("返回")
             if state["frame"] == "unknown-b":
@@ -3374,7 +3374,7 @@ def test_go_scene_unknown_states_try_global_return_then_blank_sequentially(tmp_p
     monkeypatch.setattr(runner, "_recover_unknown_start_to_world", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(runner, "_recover_unknown_by_matched_existing_route", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(runner, "_leave_world_side_scene_if_present", no_side_leave)
-    monkeypatch.setattr(runner, "_click_frame_point", click_global)
+    monkeypatch.setattr(runner, "_click_frame_point", click_fallback)
     monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
 
@@ -4569,7 +4569,6 @@ def test_scene_number_reuses_one_full_frame_ocr_across_candidates(monkeypatch):
                     "kind": "rect",
                     "title": "大地图",
                     "isSceneIdentity": True,
-                    "sceneIdentityScope": "global",
                     "imageMatchRole": "optional",
                     "ocrEnabled": True,
                     "ocrText": "大地图",
@@ -4591,7 +4590,6 @@ def test_scene_number_reuses_one_full_frame_ocr_across_candidates(monkeypatch):
                     "kind": "rect",
                     "title": "菜单",
                     "isSceneIdentity": True,
-                    "sceneIdentityScope": "global",
                     "imageMatchRole": "off",
                     "ocrEnabled": True,
                     "ocrText": "菜单",
@@ -5245,18 +5243,18 @@ def test_runtime_scene_terms_are_documented():
 
 
 
-def test_runtime_scene_candidates_use_all_global_graph_nodes_without_context():
+def test_runtime_scene_candidates_use_all_default_graph_nodes_without_context():
     runner = create_fanxiu_runtime_runner()
     image20 = _image("绿瓶", "0020.png", [
-        {"id": "green-bottle-id", "kind": "rect", "title": "绿瓶", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "green-bottle-id", "kind": "rect", "title": "绿瓶", "sceneIdentityRole": "required"},
     ])
     image20["layer"] = 1
     image34 = _image("世界", "0034.png", [
-        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required"},
     ])
     image34["layer"] = 1
     image35 = _image("世界下方菜单", "0035.png", [
-        {"id": "menu-id", "kind": "rect", "title": "下方菜单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "menu-id", "kind": "rect", "title": "下方菜单标识", "sceneIdentityRole": "required"},
     ])
     image35["layer"] = 2
     image47 = _image("提示", "0047.png")
@@ -5266,15 +5264,15 @@ def test_runtime_scene_candidates_use_all_global_graph_nodes_without_context():
     image278 = _image("邮件删除提示", "0278.png")
     image278["layer"] = 3
     image198 = _image("仙缘人物详情", "0198.png", [
-        {"id": "local-id", "kind": "rect", "title": "身份", "sceneIdentityRole": "required", "sceneIdentityScope": "local"},
+        {"id": "identity-id", "kind": "rect", "title": "身份", "sceneIdentityRole": "required"},
     ])
     image198["layer"] = 2
     image199 = _image("素材模板", "0199.png", [
-        {"id": "template-id", "kind": "rect", "title": "素材", "sceneIdentityRole": "required", "sceneIdentityScope": "local"},
+        {"id": "template-id", "kind": "rect", "title": "素材", "sceneIdentityRole": "required"},
     ])
     image199["layer"] = 3
     image204 = _image("小助手清单", "0204.png", [
-        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required"},
     ])
     image204["layer"] = 1
     image34["children"] = [image35]
@@ -5291,16 +5289,16 @@ def test_runtime_scene_candidates_use_all_global_graph_nodes_without_context():
     assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
 
 
-def test_identify_scene_number_without_context_checks_all_global_graph_candidates(monkeypatch):
+def test_identify_scene_number_without_context_checks_all_default_graph_candidates(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
-        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required"},
     ])
     image34["layer"] = 1
     image47 = _image("提示", "0047.png")
     image47["layer"] = 1
     image204 = _image("小助手清单", "0204.png", [
-        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required"},
     ])
     image204["layer"] = 1
     tree = [
@@ -5376,7 +5374,7 @@ def test_identify_scene_number_refines_preferred_parent_to_child(monkeypatch):
 def test_identify_scene_number_continues_after_rejected_world_match(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
-        {"id": "map", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "map", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
     ])
     image299 = _image("论道", "0299.png", [
         {"id": "title", "kind": "rect", "title": "论道", "sceneIdentityRole": "required"},
@@ -6639,6 +6637,71 @@ def test_daily_green_bottle_baiye_treats_peak_bottle_detail_as_done(monkeypatch,
     assert ("goto_view", 34) in calls
     assert records[0]["task_id"] == "legacy-daily-green-bottle-baiye"
     assert records[0]["message"] == "掌天瓶已达巅峰，今日绿瓶状态已确认"
+
+
+def test_daily_green_bottle_baiye_zero_remaining_stays_done_when_cleanup_scene_is_unknown(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            20: _image("绿瓶", "0020.png", []),
+            282: _image("0282.png", "0282.png", []),
+            283: _image("0283.png", "0283.png", []),
+        },
+    }
+    calls: list[tuple[str, object]] = []
+    records: list[dict[str, object]] = []
+
+    class FakeRuntime:
+        def goto_view(self, scene_id):
+            calls.append(("goto_view", scene_id))
+            if False:
+                yield None
+
+        def current_scene(self, preferred=None, update=False):
+            calls.append(("current_scene", tuple(preferred or ())))
+            if preferred == [20]:
+                return 20, 100.0, "frame20"
+            if preferred == [282, 301, 20]:
+                return 282, 100.0, "frame282"
+            if preferred == [283]:
+                return 283, 100.0, "frame283"
+            if preferred == [34]:
+                return None, 0.0, "transition"
+            return None, 0.0, None
+
+        def wait_click(self, scene_id, shape_title):
+            calls.append(("wait_click", (scene_id, shape_title)))
+            if False:
+                yield None
+
+        def wait_action_settle(self, seconds):
+            calls.append(("settle", seconds))
+            if False:
+                yield None
+
+        def ocr_text(self, frame=None, update=False):
+            calls.append(("ocr_text", frame))
+            return "天道魁首 剩余次数：0/1 已拜谒"
+
+        def click_shape_center(self, *_args, **_kwargs):
+            raise AssertionError("0/1 不应再次点击拜谒")
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_record_daily_entry_done", lambda payload, **kwargs: records.append(kwargs))
+
+    result = _drain_generator(runner._execute_daily_green_bottle_baiye_task(ctx, FakeStopEvent(), {}))
+
+    assert result == "success"
+    assert records[0]["message"] == "今日拜谒已确认完成"
+    assert ("goto_view", 34) in calls
 
 
 def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
@@ -7939,7 +8002,7 @@ def test_leave_scene_confirm_ocr_prefers_86_over_false_24(monkeypatch):
 def test_scene_number_does_not_prefetch_unrelated_ocr_identity(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
-        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required"},
     ])
     image999 = _image("其它OCR场景", "0999.png", [
         {
@@ -7947,7 +8010,6 @@ def test_scene_number_does_not_prefetch_unrelated_ocr_identity(monkeypatch):
             "kind": "rect",
             "title": "OCR身份",
             "sceneIdentityRole": "required",
-            "sceneIdentityScope": "global",
             "ocrEnabled": True,
             "ocrMatchRole": "required",
             "ocrText": "其它",

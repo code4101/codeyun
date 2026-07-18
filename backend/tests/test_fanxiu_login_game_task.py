@@ -68,7 +68,7 @@ class _FakeRunner(LoginGameTaskMixin):
         self.runtime = _FakeRuntime(scenes, ocr_text=ocr_text)
         self.logs: list[tuple[str, str]] = []
 
-    def _fanxiu_runtime(self, _ctx, *, stop_event):
+    def _fanxiu_runtime(self, _ctx, _asset_tree_path=None, *, stop_event):
         assert isinstance(stop_event, threading.Event)
         return self.runtime
 

@@ -23,30 +23,6 @@ def effective_recognition_layer(image: dict[str, Any]) -> int:
     return int(View(image).layer)
 
 
-def _flatten_shapes(shapes: Any) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    if not isinstance(shapes, list):
-        return result
-    for shape in shapes:
-        if not isinstance(shape, dict):
-            continue
-        result.append(shape)
-        result.extend(_flatten_shapes(shape.get("children")))
-        result.extend(_flatten_shapes(shape.get("shapes")))
-    return result
-
-
-def is_explicit_local_identity_only_scene(image: dict[str, Any]) -> bool:
-    identity_shapes = []
-    for shape in _flatten_shapes(image.get("shapes")):
-        role = str(shape.get("sceneIdentityRole") or "").strip().lower()
-        if bool(shape.get("isSceneIdentity")) or role not in {"", "off", "无"}:
-            identity_shapes.append(shape)
-    if not identity_shapes:
-        return False
-    return all(str(shape.get("sceneIdentityScope") or "").strip().lower() == "local" for shape in identity_shapes)
-
-
 def recognition_parent_id(image: dict[str, Any]) -> int | None:
     try:
         value = int(image.get("recognitionParentId"))
@@ -119,30 +95,19 @@ def build_recognition_graph_nodes(
     ]
 
 
-def global_recognition_candidate_ids(
+def default_recognition_candidate_ids(
     asset_tree: list[dict[str, Any]],
     images: dict[int, dict[str, Any]],
     *,
     include_popups: bool | None = None,
 ) -> list[int]:
-    """Return globally valid graph candidates in stable asset order.
-
-    Material-only layer-3 frames are not scenes. OCR-only local helpers without
-    a reference image or graph parent are context-bound and must be requested
-    explicitly by their business flow.
-    """
+    """Return all Layer 1/2 graph candidates in stable asset order."""
 
     result: list[int] = []
     for node in build_recognition_graph_nodes(asset_tree, images):
         if node.layer > 2:
             continue
         if include_popups is not None and node.in_popup_path != include_popups:
-            continue
-        if (
-            not str(node.image.get("filename") or "").strip()
-            and not node.parent_scene_ids
-            and is_explicit_local_identity_only_scene(node.image)
-        ):
             continue
         result.append(node.scene_id)
     return result

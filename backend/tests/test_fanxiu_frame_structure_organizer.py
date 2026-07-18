@@ -7,7 +7,6 @@ def _shape(title: str, *, identity: bool = True) -> dict:
         "title": title,
         "isSceneIdentity": identity,
         "sceneIdentityRole": "required" if identity else "off",
-        "sceneIdentityScope": "local" if identity else "none",
         "imageMatchRole": "required" if identity else "off",
         "x": 0,
         "y": 0,

@@ -314,7 +314,6 @@ def _demote_unshared_parent_identities(
             continue
         shape.raw["isSceneIdentity"] = False
         shape.raw["sceneIdentityRole"] = "off"
-        shape.raw["sceneIdentityScope"] = "none"
         demoted.append({"image_id": image_number(image), "shape_title": shape.title})
     return demoted
 

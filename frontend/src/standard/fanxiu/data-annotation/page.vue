@@ -1651,7 +1651,6 @@ interface VisualMacroUiState {
 type GameMacroAnnotationMode = 'simple' | 'ai';
 type GameMacroDragDurationMode = 'real' | 'fixed';
 type ShapeMatchRole = 'off' | 'optional' | 'required';
-type SceneIdentityScope = 'none' | 'local' | 'global';
 type FrameLayer = 1 | 2 | 3;
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
 type ShapeOcrMaskMode = 'inherit-envelope' | 'custom' | 'off' | 'raw-alpha';
@@ -6943,7 +6942,6 @@ type DataAnnotationShape = {
   jitterRadius?: number;
   isSceneIdentity?: boolean;
   sceneIdentityRole?: ShapeMatchRole;
-  sceneIdentityScope?: SceneIdentityScope;
   sceneJumpTarget?: string;
   loadDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
   imageMatchRole?: ShapeMatchRole;
@@ -7501,14 +7499,6 @@ const normalizeShapeMatchRole = (value: unknown, fallback: ShapeMatchRole = 'off
   value === 'optional' || value === 'required' || value === 'off' ? value : fallback
 );
 
-const normalizeSceneIdentityScope = (value: unknown, fallback: SceneIdentityScope = 'none'): SceneIdentityScope => {
-  if (value === 'none' || value === 'local' || value === 'global') return value;
-  if (value === '无') return 'none';
-  if (value === '局') return 'local';
-  if (value === '全') return 'global';
-  return fallback;
-};
-
 const normalizeFrameLayer = (value: unknown, fallback: FrameLayer = 3): FrameLayer => {
   if (value === 1 || value === '1' || value === 'layer1' || value === 'Layer 1') return 1;
   if (value === 2 || value === '2' || value === 'layer2' || value === 'Layer 2') return 2;
@@ -7517,10 +7507,6 @@ const normalizeFrameLayer = (value: unknown, fallback: FrameLayer = 3): FrameLay
   if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Math.min(3, Math.max(1, Math.floor(Number(value.trim())))) as FrameLayer;
   return fallback;
 };
-
-const legacySceneIdentityScope = (shape: DataAnnotationShape, role: ShapeMatchRole): SceneIdentityScope => (
-  shape.isSceneIdentity || role !== 'off' ? 'local' : 'none'
-);
 
 const normalizeLegacyShapeMatchRole = (shape: DataAnnotationShape, key: 'imageRole' | 'ocrRole') => {
   const legacyShape = shape as DataAnnotationShape & Record<string, unknown>;
@@ -7616,16 +7602,7 @@ const normalizeShapes = (
   const isDailyTaskBlockField = parentIsDailyTaskBlockTemplate;
   const effectiveFloating = isDailyTaskBlockField ? false : Boolean(shape.floating);
   const normalizedSceneIdentityRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
-  const legacyScope = normalizeSceneIdentityScope(
-    shape.sceneIdentityScope,
-    legacySceneIdentityScope(shape, normalizedSceneIdentityRole),
-  );
-  const effectiveSceneIdentityRole = normalizedSceneIdentityRole !== 'off'
-    ? normalizedSceneIdentityRole
-    : (legacyScope !== 'none' ? 'required' : 'off');
-  const normalizedSceneIdentityScope = effectiveSceneIdentityRole === 'off'
-    ? 'none'
-    : (legacyScope === 'none' ? 'local' : legacyScope);
+  const effectiveSceneIdentityRole = normalizedSceneIdentityRole;
   const legacyImageMatchRole = normalizeLegacyShapeMatchRole(shape, 'imageRole');
   const legacyOcrMatchRole = normalizeLegacyShapeMatchRole(shape, 'ocrRole');
   const normalizedImageMatchRole = normalizeShapeMatchRole(
@@ -7664,9 +7641,8 @@ const normalizeShapes = (
     floating: effectiveFloating,
     jitterEnabled: isDailyTaskBlockField ? false : Boolean(shape.jitterEnabled),
     jitterRadius: normalizeShapeJitterRadius(shape.jitterRadius),
-    isSceneIdentity: normalizedSceneIdentityScope !== 'none',
+    isSceneIdentity: effectiveSceneIdentityRole !== 'off',
     sceneIdentityRole: effectiveSceneIdentityRole,
-    sceneIdentityScope: normalizedSceneIdentityScope,
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
       ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
       : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
@@ -9740,9 +9716,6 @@ const cycleSelectedShapeSceneIdentityRole = () => {
   const nextRole = nextShapeMatchRole(currentRole);
   shape.sceneIdentityRole = nextRole;
   shape.isSceneIdentity = nextRole !== 'off';
-  shape.sceneIdentityScope = nextRole === 'off'
-    ? 'none'
-    : normalizeSceneIdentityScope(shape.sceneIdentityScope, 'local');
   if (nextRole !== 'off' && !shapePrimaryMatchKind(shape)) {
     shape.imageMatchRole = shape.sceneIdentityRole;
   }
@@ -9816,14 +9789,6 @@ const shapeHasRequiredMatch = (shape: DataAnnotationShape) => (
   || (shapeOcrMatchRole(shape) === 'required' && Boolean(shape.ocrText?.trim()))
 );
 const shapeSceneIdentityRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
-const shapeSceneIdentityScope = (shape: DataAnnotationShape) => (
-  shapeSceneIdentityRole(shape) === 'off'
-    ? normalizeSceneIdentityScope(shape.sceneIdentityScope, 'none')
-    : (() => {
-        const scope = normalizeSceneIdentityScope(shape.sceneIdentityScope, legacySceneIdentityScope(shape, shapeSceneIdentityRole(shape)));
-        return scope === 'none' ? 'local' : scope;
-      })()
-);
 const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityRole(shape) !== 'off';
 
 const imageHasSceneIdentity = (image: DataAnnotationAssetNode) => (
@@ -11251,7 +11216,6 @@ const createRecordedGameShape = (
     jitterRadius: 4,
     isSceneIdentity: shouldMarkScene,
     sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
-    sceneIdentityScope: shouldMarkScene ? 'local' : 'none',
     sceneJumpTarget: '',
     loadDirection: action === 'drag' && endPoint ? loadDirectionOfDrag(point, endPoint) : 'none',
     imageMatchRole: shouldMarkScene ? 'required' : 'off',
@@ -11599,7 +11563,6 @@ const addAnnotationShape = () => {
     jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
-    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     loadDirection: 'none',
     imageMatchRole: 'off',
@@ -13162,7 +13125,6 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     jitterRadius: normalizeShapeJitterRadius(source?.jitterRadius),
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
-    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     loadDirection: 'none',
     imageMatchRole: source?.imageMatchRole ?? 'off',
@@ -13696,7 +13658,6 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   jitterRadius: 4,
   isSceneIdentity: false,
   sceneIdentityRole: 'off',
-  sceneIdentityScope: 'none',
   sceneJumpTarget: '',
   loadDirection: 'none',
   imageMatchRole: 'off',
@@ -13784,7 +13745,6 @@ const finishShapeDraft = (event: PointerEvent) => {
     jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
-    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     loadDirection: 'none',
     imageMatchRole: 'off',

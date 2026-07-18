@@ -189,7 +189,7 @@ def test_ocr_service_manager_reuses_resets_and_cleans_idle_instances(
     created: list[object] = []
 
     class FakeOcr:
-        def predict(self, _path: str):
+        def predict(self, _path: str, **_kwargs: object):
             return [{"res": {"dt_polys": [], "rec_texts": [], "rec_scores": []}}]
 
     def fake_get_instance(_config=None):
@@ -228,3 +228,37 @@ def test_ocr_service_manager_enforces_concurrency_limit(monkeypatch: pytest.Monk
 
     with pytest.raises(OcrPreviewError):
         manager._acquire(_build_runtime_config())
+
+
+def test_ocr_service_manager_discards_failed_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "ocr.png"
+    from PIL import Image
+
+    Image.new("RGB", (10, 8), color=(255, 255, 255)).save(image_path)
+    manager = PaddleOcrServiceManager()
+    created: list[object] = []
+
+    class FakeOcr:
+        def predict(self, _path: str, **_kwargs: object):
+            if len(created) == 1:
+                raise RuntimeError("CUDA out of memory")
+            return [{"res": {"dt_polys": [], "rec_texts": [], "rec_scores": []}}]
+
+    def fake_get_instance(_config=None):
+        instance = FakeOcr()
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(ocr_preview, "_get_ocr_instance", fake_get_instance)
+    monkeypatch.setattr(manager, "_settings_limits", lambda: (1, 600, 0))
+
+    with pytest.raises(OcrPreviewError, match="CUDA out of memory"):
+        manager.predict_file(image_path)
+
+    assert manager.get_status()["instance_count"] == 0
+    result = manager.predict_file(image_path)
+    assert result["shape_count"] == 0
+    assert len(created) == 2

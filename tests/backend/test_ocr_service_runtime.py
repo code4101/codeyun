@@ -1,4 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
+
+import requests
 
 from backend.core import ocr_service_runtime as ocr_runtime
 
@@ -92,3 +95,34 @@ def test_predict_via_ocr_service_posts_image_to_external_daemon(tmp_path: Path, 
         "image": "cG5nLWJ5dGVz",
     }
     assert result["document"] == {"shapes": []}
+
+
+def test_predict_via_ocr_service_falls_back_to_cpu_when_gpu_daemon_exits(tmp_path: Path, monkeypatch):
+    image_path = tmp_path / "ocr.png"
+    image_path.write_bytes(b"png-bytes")
+    attempts = 0
+    starts = []
+
+    monkeypatch.setattr(ocr_runtime, "ensure_ocr_service_running", lambda: {"running": True})
+    monkeypatch.setattr(ocr_runtime, "get_ocr_service_status", lambda: {"running": False})
+    monkeypatch.setattr(ocr_runtime, "get_settings", lambda: SimpleNamespace(ocr_device="gpu"))
+    monkeypatch.setattr(
+        ocr_runtime,
+        "start_ocr_service",
+        lambda **kwargs: starts.append(kwargs) or {"status": "started", "service": {"running": True}},
+    )
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise requests.ConnectionError("daemon exited")
+        return _FakeResponse({"document": {"shapes": []}, "shape_count": 0})
+
+    monkeypatch.setattr(ocr_runtime.requests, "post", fake_post)
+
+    result = ocr_runtime.predict_via_ocr_service(image_path)
+
+    assert result["document"] == {"shapes": []}
+    assert attempts == 2
+    assert starts == [{"replace_existing": True, "env_overrides": {"CODEYUN_OCR_DEVICE": "cpu"}}]
