@@ -97,6 +97,14 @@ def _packet_service_command_timeout_seconds() -> float:
 
 def _packet_service_action_timeout_seconds(action: str) -> float:
     action_name = str(action or "").strip()
+    if action_name == "ensure_capture_ready":
+        try:
+            return max(
+                _packet_service_command_timeout_seconds(),
+                float(os.getenv("FX_PACKET_SERVICE_CAPTURE_READY_TIMEOUT_SECONDS") or 150.0),
+            )
+        except (TypeError, ValueError):
+            return max(_packet_service_command_timeout_seconds(), 150.0)
     if action_name == "packet_facts_catch_up":
         try:
             return max(
@@ -367,6 +375,20 @@ def request_fanxiu_packet_service_catch_up(*, reason: str = "api", wait_seconds:
     )
 
 
+def request_fanxiu_packet_service_capture_ready(
+    *,
+    reason: str = "api",
+    wait_seconds: float = 155.0,
+) -> dict[str, Any]:
+    """Wait until the daemon's tcpdump is active before a game event is emitted."""
+
+    return submit_fanxiu_packet_service_command(
+        "ensure_capture_ready",
+        reason=reason,
+        wait_seconds=wait_seconds,
+    )
+
+
 def request_fanxiu_packet_service_maintenance(*, reason: str = "api", wait_seconds: float = 30.0) -> dict[str, Any]:
     return submit_fanxiu_packet_service_command(
         "maintenance",
@@ -406,6 +428,29 @@ def _run_packet_service_command_action(action: str, *, reason: str) -> dict[str,
             "message": "抓包服务已有命令仍在执行，本次不再启动重复线程。",
         }
     try:
+        if action == "ensure_capture_ready":
+            backstop = fanxiu_capture_runtime_service.ensure_running("packet-command-capture-ready")
+            deadline = time.monotonic() + _packet_service_action_timeout_seconds(action)
+            status = backstop
+            while time.monotonic() <= deadline:
+                status = fanxiu_capture_runtime_service.status()
+                if (
+                    status.get("running")
+                    and status.get("tcpdump_ready")
+                    and status.get("current_remote_pcap_path")
+                ):
+                    return {
+                        "ok": True,
+                        "reason": reason,
+                        "capture_runtime": status,
+                    }
+                time.sleep(0.25)
+            return {
+                "ok": False,
+                "reason": reason,
+                "error": "抓包服务未能在时限内启动 tcpdump",
+                "capture_runtime": status,
+            }
         if action == "packet_facts_catch_up":
             result = fanxiu_packet_insight_worker.catch_up_once(reason=reason)
         elif action == "maintenance":

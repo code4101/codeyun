@@ -17,6 +17,12 @@ LUNDAO_SCENE_PROTOCOL_NAME = "SM_SeatsNoInScene"
 LUNDAO_SCENE_PROTOCOL_ID = 59518
 LUNDAO_SCENE_PROTOCOL_NAMES = ("SM_SeatsNoInScene", "SM_SyncLundaoSceneInfo")
 LUNDAO_SCENE_PROTOCOL_IDS = (59518, 59504)
+LINGMAI_SCENE_PROTOCOL_NAME = "SM_VeinsSeatsNoInScene"
+LINGMAI_SCENE_PROTOCOL_ID = 87216
+LINGMAI_SCENE_PROTOCOL_NAMES = (LINGMAI_SCENE_PROTOCOL_NAME,)
+LINGMAI_SCENE_PROTOCOL_IDS = (LINGMAI_SCENE_PROTOCOL_ID,)
+LINGMAI_SELF_SEAT_PROTOCOL_NAME = "SM_VeinsSelfSeat"
+LINGMAI_SELF_SEAT_PROTOCOL_ID = 87227
 FAZE_SHOW_PROTOCOL_NAMES = ("SM_FazeShow", "SM_ShowFazePanel")
 FAZE_SHOW_PROTOCOL_IDS = (34001, 34003)
 _CAPTURE_NAME_TIME_RE = re.compile(r"(?P<date>\d{8})_(?P<time>\d{6})")
@@ -77,8 +83,13 @@ def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, str
     return capture_epoch, str(record.get("captured_at") or ""), float(record.get("updated_at") or 0.0)
 
 
-def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
-    """Normalize one decoded lundao seat packet into a traceable snapshot.
+def _normalize_fanxiu_scene_seat_facts(
+    record: dict[str, Any],
+    *,
+    default_protocol_name: str,
+    default_protocol_id: int,
+) -> dict[str, Any]:
+    """Normalize one decoded seat packet into a traceable snapshot.
 
     The generic decoded cache deliberately trims large lists.  Therefore this
     function always reports declared_count and decoded_count independently and
@@ -116,12 +127,18 @@ def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str
     return {
         "ok": bool(parsed and not payload.get("parse_error") and not record.get("decode_error")),
         "available": bool(parsed),
-        "protocol": str(record.get("name") or payload.get("name") or LUNDAO_SCENE_PROTOCOL_NAME),
-        "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")) or LUNDAO_SCENE_PROTOCOL_ID,
+        "protocol": str(record.get("name") or payload.get("name") or default_protocol_name),
+        "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")) or default_protocol_id,
         "captured_at": str(record.get("captured_at") or ""),
         "room_id": _int_or_none(parsed.get("roomId") if parsed.get("roomId") is not None else room_vo.get("id")),
         "npc_id": _int_or_none(parsed.get("npcId") if parsed.get("npcId") is not None else room_vo.get("npcId")),
         "theme_id": _int_or_none(parsed.get("themeId") if parsed.get("themeId") is not None else room_vo.get("themeId")),
+        "available_count": _int_or_none(room_vo.get("left")),
+        "capacity": (
+            _int_or_none(room_vo.get("left")) + declared_count
+            if _int_or_none(room_vo.get("left")) is not None and declared_count is not None
+            else None
+        ),
         "seat_type_id": _int_or_none(seats_container.get("_type_id")),
         "seat_type": str(seats_container.get("_type") or ""),
         "declared_count": declared_count,
@@ -147,6 +164,56 @@ def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str
             "sn": _int_or_none(record.get("sn") if record.get("sn") is not None else evidence.get("sn")),
             "decoded_path": str(evidence.get("decoded_path") or ""),
             "stored_pcap": str(evidence.get("stored_pcap") or ""),
+        },
+    }
+
+
+def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one decoded lundao seat packet into a traceable snapshot."""
+
+    return _normalize_fanxiu_scene_seat_facts(
+        record,
+        default_protocol_name=LUNDAO_SCENE_PROTOCOL_NAME,
+        default_protocol_id=LUNDAO_SCENE_PROTOCOL_ID,
+    )
+
+
+def normalize_fanxiu_lingmai_scene_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one decoded lingmai room roster into the shared seat snapshot."""
+
+    return _normalize_fanxiu_scene_seat_facts(
+        record,
+        default_protocol_name=LINGMAI_SCENE_PROTOCOL_NAME,
+        default_protocol_id=LINGMAI_SCENE_PROTOCOL_ID,
+    )
+
+
+def normalize_fanxiu_lingmai_self_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the dedicated response that says whether this role has a seat."""
+
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    parsed = payload.get("parsed") if isinstance(payload.get("parsed"), dict) else {}
+    seat_vo = parsed.get("seatVO") if isinstance(parsed.get("seatVO"), dict) else None
+    evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    seat = None
+    if seat_vo is not None:
+        seat = {
+            "seat_id": _int_or_none(seat_vo.get("id")),
+            "pre_owner_role_id": _int_or_none(seat_vo.get("preOwnerRoleId")),
+            "owner": _seat_owner_fact(seat_vo.get("seatOwner")),
+        }
+    return {
+        "ok": bool(parsed and not payload.get("parse_error") and not record.get("decode_error")),
+        "available": bool(parsed),
+        "seated": bool(seat and seat.get("seat_id") is not None and seat.get("owner")),
+        "protocol": str(record.get("name") or payload.get("name") or LINGMAI_SELF_SEAT_PROTOCOL_NAME),
+        "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")) or LINGMAI_SELF_SEAT_PROTOCOL_ID,
+        "captured_at": str(record.get("captured_at") or ""),
+        "seat": seat,
+        "evidence": {
+            "packet_id": str(record.get("packet_id") or evidence.get("packet_id") or ""),
+            "pcap_name": str(record.get("pcap_name") or evidence.get("pcap_name") or ""),
+            "decoded_path": str(evidence.get("decoded_path") or ""),
         },
     }
 
@@ -183,6 +250,70 @@ def get_latest_fanxiu_lundao_scene_seat_facts(
             "evidence": {},
         }
     return normalize_fanxiu_lundao_scene_seat_facts(max(records, key=_decoded_record_capture_sort_key))
+
+
+def get_latest_fanxiu_lingmai_scene_seat_facts(
+    session: Session,
+    *,
+    since_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Read the latest already-decoded lingmai room roster without side effects."""
+
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=list(LINGMAI_SCENE_PROTOCOL_NAMES),
+        pro_ids=list(LINGMAI_SCENE_PROTOCOL_IDS),
+        since_seconds=since_seconds,
+        limit=500,
+    )
+    records = result.get("records") if isinstance(result.get("records"), list) else []
+    if not records:
+        return {
+            "ok": True,
+            "available": False,
+            "protocol": LINGMAI_SCENE_PROTOCOL_NAME,
+            "pro_id": LINGMAI_SCENE_PROTOCOL_ID,
+            "reason": "no_decoded_record",
+            "room_id": None,
+            "available_count": None,
+            "capacity": None,
+            "declared_count": None,
+            "decoded_count": 0,
+            "truncated_count": 0,
+            "complete": False,
+            "seats": [],
+            "evidence": {},
+        }
+    return normalize_fanxiu_lingmai_scene_seat_facts(max(records, key=_decoded_record_capture_sort_key))
+
+
+def get_latest_fanxiu_lingmai_self_seat_facts(
+    session: Session,
+    *,
+    since_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Read the latest dedicated self-seat response without side effects."""
+
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=[LINGMAI_SELF_SEAT_PROTOCOL_NAME],
+        pro_ids=[LINGMAI_SELF_SEAT_PROTOCOL_ID],
+        since_seconds=since_seconds,
+        limit=500,
+    )
+    records = result.get("records") if isinstance(result.get("records"), list) else []
+    if not records:
+        return {
+            "ok": True,
+            "available": False,
+            "seated": False,
+            "protocol": LINGMAI_SELF_SEAT_PROTOCOL_NAME,
+            "pro_id": LINGMAI_SELF_SEAT_PROTOCOL_ID,
+            "reason": "no_decoded_record",
+            "seat": None,
+            "evidence": {},
+        }
+    return normalize_fanxiu_lingmai_self_seat_facts(max(records, key=_decoded_record_capture_sort_key))
 
 
 def get_latest_fanxiu_faze_show_facts(session: Session) -> dict[str, Any]:

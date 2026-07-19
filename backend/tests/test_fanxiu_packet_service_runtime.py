@@ -84,12 +84,28 @@ def test_request_fanxiu_packet_service_maintenance_submits_maintenance_action(mo
     assert captured == {"action": "maintenance", "reason": "test", "wait_seconds": 12}
 
 
+def test_request_fanxiu_packet_service_capture_ready_submits_readiness_action(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_submit(action: str, *, reason: str = "api", wait_seconds: float = 30.0):
+        captured.update(action=action, reason=reason, wait_seconds=wait_seconds)
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr(service_runtime, "submit_fanxiu_packet_service_command", fake_submit)
+
+    result = service_runtime.request_fanxiu_packet_service_capture_ready(reason="before-entry", wait_seconds=12)
+
+    assert result["action"] == "ensure_capture_ready"
+    assert captured == {"action": "ensure_capture_ready", "reason": "before-entry", "wait_seconds": 12}
+
+
 def test_packet_service_action_timeout_uses_longer_budget_for_maintenance(monkeypatch):
     monkeypatch.delenv("FX_PACKET_SERVICE_COMMAND_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", raising=False)
 
     assert service_runtime._packet_service_action_timeout_seconds("maintenance") == 180.0
     assert service_runtime._packet_service_action_timeout_seconds("packet_facts_catch_up") == 120.0
+    assert service_runtime._packet_service_action_timeout_seconds("ensure_capture_ready") == 150.0
 
 
 def test_packet_service_action_timeout_respects_global_floor_for_maintenance(monkeypatch):

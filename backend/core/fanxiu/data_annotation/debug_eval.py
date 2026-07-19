@@ -302,6 +302,11 @@ class DataAnnotationRuntimeDebugContext:
         runtime = self._bound_runtime()
         return (yield from runtime.wait_action_settle(seconds))
 
+    def advance_dialogue(self, scene: int | str, shape: str, **options: Any):
+        self._require_act()
+        runtime = self._bound_runtime()
+        return (yield from runtime.advance_dialogue(scene, shape, **options))
+
     def wait_click(self, frame: int | str | None, shape: str, **options: Any):
         self._require_act()
         runtime = self._bound_runtime()

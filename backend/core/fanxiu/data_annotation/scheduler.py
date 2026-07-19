@@ -37,6 +37,7 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL = {
 }
 _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
+    "daily-daofa",
     "daily-lingmai-seat",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
@@ -45,6 +46,7 @@ _STANDARD_ENABLED_TASK_IDS = {
 }
 _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS: set[str] = set()
 _DEFAULT_LABEL_SYNC_TASK_IDS = {
+    "daily-daofa",
     "daily-lingmai-seat",
     "legacy-daily-dongtian",
     "legacy-daily-dongtian-clear",

@@ -13,6 +13,7 @@ from backend.core.fanxiu.catalog.server_relations import classify_fanxiu_target_
 from backend.core.fanxiu.packet.decoded_store import list_fanxiu_packet_decoded_records
 from backend.core.fanxiu.packet.insights import get_fanxiu_packet_runtime_insights
 from backend.core.fanxiu.packet.service_runtime import (
+    request_fanxiu_packet_service_capture_ready,
     request_fanxiu_packet_service_catch_up,
     start_fanxiu_packet_service,
 )
@@ -418,6 +419,33 @@ class DaofaTaskMixin:
         runtime.attrs["payload"] = payload
         scene_id, _score, frame = runtime.current_scene([34, 69, 376], update=True)
         started_in_daofa = scene_id == 376
+
+        # The ranking packet is emitted while entering the arena.  Starting
+        # tcpdump after the entry click loses that one-shot event, so capture
+        # readiness is a hard precondition for navigation into #376.
+        start_fanxiu_packet_service(wait_seconds=3.0)
+        capture_ready = request_fanxiu_packet_service_capture_ready(
+            reason="daily-daofa-before-entry",
+            wait_seconds=float(payload.get("capture_ready_timeout") or 155.0),
+        )
+        if not capture_ready.get("ok"):
+            retry_after = (
+                datetime.now() + timedelta(seconds=max(60, int(payload.get("capture_retry_seconds") or 300)))
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_scheduler_task_discovered_retry_after(
+                str(payload.get("__scheduler_task_id") or "daily-daofa"),
+                retry_after,
+                task_type=task_type,
+                label=task_label,
+                last_result="skipped",
+            )
+            if scene_id != 34:
+                yield from runtime.goto_view(34)
+            return {
+                "result": "skipped",
+                "message": f"抓包 tcpdump 未就绪，{retry_after} 安全复查",
+                "current_scene": 34,
+            }
         before_play_info = latest_daofa_facts(protocol=DAOFA_PLAY_INFO_PROTOCOL_NAME)
         text = runtime.ocr_text(frame)
         if scene_id != 376:
