@@ -4,6 +4,8 @@ from backend.core.attendance.nianzhu_course_sheets import (
     CURRENT_RULE,
     VIDEO_RULE_SYSTEM_ZEN_STAGE,
     VideoConfigItem,
+    _load_video_config,
+    _make_table_document_from_dicts,
     _attendance_zen_clockin_refund_formula,
     _attendance_zen_video_refund_rule,
     _highlight_video_refund_for_item,
@@ -100,3 +102,21 @@ def test_zen_stage_clockin_formula_is_derived_from_row_3_notes():
     assert "MIN(IFERROR(VALUE(B4),0),9)*10" in formula
     assert formula.count(">=3,40") == 3
     assert formula.count(">=1,20") == 3
+
+
+def test_xiudaoban_7qi_5jie_excludes_lecture_from_refund_count():
+    document = _make_table_document_from_dicts(
+        columns=["lesson_id", "lesson_name"],
+        rows=[
+            {"lesson_id": "1", "lesson_name": "第1周=佛教史1"},
+            {"lesson_id": "2", "lesson_name": "第3周=佛教史讲座"},
+            {"lesson_id": "3", "lesson_name": "第3周=心经"},
+        ],
+        numeric_columns=set(),
+        page_size=200,
+        source_meta={"course_name": "d260517修道班7期5阶"},
+    )
+
+    items = _load_video_config(document)
+
+    assert [item.participates_refund for item in items] == [True, False, True]

@@ -260,12 +260,7 @@ onMounted(() => {
 <template>
   <main class="audio-catalog-page">
     <header class="page-head">
-      <div>
-        <h1>火山的女儿 · 音频图鉴</h1>
-        <p v-if="meta?.source.build_id">
-          Steam Build {{ meta.source.build_id }} · {{ meta.source.engine }}
-        </p>
-      </div>
+      <h1>火山的女儿 · 音频图鉴</h1>
     </header>
 
     <section class="catalog-toolbar">
@@ -428,12 +423,6 @@ onMounted(() => {
   margin: 0;
   font-size: 22px;
   line-height: 1.35;
-}
-
-.page-head p {
-  margin: 3px 0 0;
-  color: #6b7280;
-  font-size: 13px;
 }
 
 .catalog-toolbar {

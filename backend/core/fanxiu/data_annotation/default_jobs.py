@@ -41,6 +41,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "xianshi_weekly_resources",
     "daily_xianmeng",
     "daily_lundao",
+    "daily_daofa",
     "daily_mojie_raid",
     "daily_weekly_dungeon",
     "daily_vip",
@@ -446,6 +447,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_lundao_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_task_cell("daily_daofa", "道法争锋", scheduler_supported=True)
+    def _run_data_annotation_daily_daofa_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_daofa_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("daily_xianyuan_duel", "仙缘_斗法", scheduler_supported=True)
     def _run_data_annotation_daily_xianyuan_duel_task_cell(

@@ -88,13 +88,7 @@ onMounted(loadCatalog)
 <template>
   <main class="theater-catalog-page" v-loading="loading">
     <header class="page-head">
-      <div>
-        <h1>奥拉夫剧院图鉴</h1>
-        <p v-if="catalog">
-          {{ catalog.summary.question_count }} 道台词题 · {{ catalog.summary.drama_count }} 个剧目
-          <template v-if="catalog.source.build_id"> · Steam Build {{ catalog.source.build_id }}</template>
-        </p>
-      </div>
+      <h1>奥拉夫剧院图鉴</h1>
       <el-segmented v-model="mode" :options="modeOptions" @change="changeMode" />
     </header>
 
@@ -232,12 +226,6 @@ onMounted(loadCatalog)
   margin: 0;
   font-size: 22px;
   line-height: 1.35;
-}
-
-.page-head p {
-  margin: 3px 0 0;
-  color: #6b7280;
-  font-size: 13px;
 }
 
 .mechanics-note {
@@ -487,7 +475,7 @@ col.description-col {
   text-align: center;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .theater-catalog-page { padding: 10px; }
   .page-head { align-items: flex-start; flex-direction: column; }
   .catalog-toolbar { flex-wrap: wrap; }

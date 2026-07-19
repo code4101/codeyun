@@ -2458,8 +2458,10 @@ class FanxiuRuntime(Runtime):
 
         这是业务调用方最常用的完整挑战接口。它组合开战确认链与战斗结果
         等待，明确区分 #361 成功和 #365 失败；两种已知结算都会立即记录并
-        点击各自“退出”，避免约1分钟后自动回 #34。若已自动返回 #34，则以
-        ``result_expired`` 停止，不尝试重新进入或猜测胜负。
+        点击各自“退出”，避免约1分钟后自动回 #34。结算页退出或自动消失后
+        既可能回 #357，也可能直接回 #34；命中 #34 时复用正式入口重新进入
+        #357。若结算未捕捉，本函数只恢复主页，不猜测胜负，交由逐级探测根
+        据战后“开启扫荡”状态判定本轮结果。
 
         Runtime 会在点击前写入明确结果日志并把结构化结果返回。无需持久化
         最高成功或首次失败等级；返回 #357 后由游戏按钮继续提供权威状态。
@@ -2490,10 +2492,21 @@ class FanxiuRuntime(Runtime):
         )
         frame = result.pop("_frame_data_url", None)
         if result["outcome"] == "result_expired":
+            self.runner._log(
+                "warning",
+                "仙窍试炼结算未捕捉且已回到 #34，重新进入 #357 复核当前关卡通关状态",
+            )
+            reentry = yield from self.enter_xianqiao_trial(
+                trial_view=home_view,
+                settle_seconds=settle_seconds,
+            )
             return {
                 "started": started,
                 "result": result,
-                "returned_home": False,
+                "returned_home": True,
+                "landing_scene": int(self.view(world_view).id),
+                "reentered_from_world": True,
+                "reentry": reentry,
             }
 
         self.runner._log(
@@ -2505,15 +2518,30 @@ class FanxiuRuntime(Runtime):
         )
         self.click_shape(result["result_scene"], "退出", frame_data_url=frame)
         yield from self.wait_action_settle(settle_seconds)
-        yield from self.wait_view(
+        landing_view = yield from self.wait_view(
             home_view,
+            world_view,
             timeout=15.0,
-            label="仙窍试炼结算退出后返回主页",
+            label="仙窍试炼结算退出后的实际落点",
         )
+        landing_id = int(landing_view.id) if isinstance(landing_view, View) else int(landing_view)
+        reentry = None
+        if landing_id == int(self.view(world_view).id):
+            self.runner._log(
+                "action",
+                "仙窍试炼结算退出后直接回到 #34，重新进入 #357 继续本轮任务",
+            )
+            reentry = yield from self.enter_xianqiao_trial(
+                trial_view=home_view,
+                settle_seconds=settle_seconds,
+            )
         return {
             "started": started,
             "result": result,
             "returned_home": True,
+            "landing_scene": landing_id,
+            "reentered_from_world": reentry is not None,
+            "reentry": reentry,
         }
 
     def probe_xianqiao_trial_until_failure(
@@ -2535,9 +2563,11 @@ class FanxiuRuntime(Runtime):
         若仍有次数，返回 ``sweep_required=True``，留在 #357 等待后续扫荡
         逻辑消费；扫荡动作尚未纳入本函数。
 
-        #361/#365 约1分钟无人操作会自动回 #34。完整挑战函数会优先消费这
-        个短暂结算窗口；若仍错过并命中 #34，本函数以 ``result_expired``
-        终止，不自动重新导航，因为胜负事实已经丢失，继续会污染阈值状态。
+        #361/#365 约1分钟无人操作会自动回 #34，点击结算页“退出”也可能直
+        接落到 #34。完整挑战函数会重新进入 #357。若结算窗口未捕捉，则用
+        战后主页的“开启扫荡”恢复本轮结果：出现表示刚挑战的当前关已通关，
+        未出现表示刚挑战失败。这个规则只用于同一轮挑战后的复核，不能与初
+        次进入时“无扫荡则允许挑战一次”的规则混用。
 
         当前接口故意不自动购买次数，也不在失败后扫荡。每日入口应先调用
         :meth:`purchase_xianqiao_trial_attempts` 买到目标档位，再调用本函数。
@@ -2597,14 +2627,39 @@ class FanxiuRuntime(Runtime):
                 settle_seconds=settle_seconds,
             )
             outcome = str(challenge["result"]["outcome"])
+            outcome_source = "result_scene"
+            recovery_observation = None
+            if outcome == "result_expired" and challenge.get("returned_home"):
+                recovery_observation = self.observe_xianqiao_trial_home(home_view)
+                outcome = "success" if recovery_observation.sweep_available else "failure"
+                outcome_source = "post_challenge_sweep"
+                self.runner._log(
+                    "success" if outcome == "success" else "warning",
+                    (
+                        "仙窍试炼结算未捕捉，重新进入后"
+                        f"{'检测到' if recovery_observation.sweep_available else '未检测到'}"
+                        f"“开启扫荡”，判定本轮{outcome}"
+                    ),
+                )
             attempts_after = (
-                self.read_xianqiao_trial_attempts(home_view)
-                if challenge.get("returned_home")
-                else None
+                recovery_observation.attempts
+                if recovery_observation is not None
+                else (
+                    self.read_xianqiao_trial_attempts(home_view)
+                    if challenge.get("returned_home")
+                    else None
+                )
             )
             record = {
                 "mode": mode,
+                "resolved_outcome": outcome,
+                "outcome_source": outcome_source,
                 "sweep_score_before": observation.sweep_score,
+                "sweep_score_after": (
+                    recovery_observation.sweep_score
+                    if recovery_observation is not None
+                    else None
+                ),
                 "attempts_before": {
                     "remaining": attempts.remaining,
                     "capacity": attempts.capacity,

@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.tasks.daofa import DaofaTaskMixin
+from datetime import datetime
+
+from backend.core.fanxiu.data_annotation.tasks.daofa import (
+    DaofaTaskMixin,
+    normalize_daofa_packet_record,
+    select_daofa_target,
+    should_force_finish_daofa,
+)
 
 
 class _StopEvent:
@@ -91,7 +98,7 @@ def test_daofa_round_handles_optional_confirmation() -> None:
     }
     assert runtime.actions[:3] == [
         ("click_point", 376, 231.0, 1024.0),
-        ("wait_scene", (377, 378), 15.0, "道法争锋：等待挑战确认或挑战结果"),
+        ("wait_scene", (377, 378), 600.0, "道法争锋：等待挑战确认或挑战结果"),
         ("click_shape", 377, "确认"),
     ]
     assert runtime.actions[-2:] == [
@@ -137,3 +144,101 @@ def test_daofa_round_rejects_missing_or_out_of_bounds_target() -> None:
                 challenge_point=(901.0, 1024.0),
             )
         )
+
+
+def _packet_record(name: str, parsed: dict[str, object]) -> dict[str, object]:
+    return {
+        "name": name,
+        "pro_id": 89202 if name.endswith("PlayInfo") else 89206,
+        "packet_id": "packet-1",
+        "captured_at": "2026-07-18 22:25:45",
+        "payload": {"parsed": parsed},
+    }
+
+
+def test_normalize_daofa_initial_and_challenge_packets() -> None:
+    target = {"id": 7, "rank": 21, "name": "target", "server": 22043, "power": 12.5, "player": True}
+    initial = normalize_daofa_packet_record(
+        _packet_record(
+            "SM_LingArenaPlayInfo",
+            {"joinerVO": {"rank": 26, "remainTimes": 1}, "targets": {"items": [target]}},
+        )
+    )
+    challenge = normalize_daofa_packet_record(
+        _packet_record(
+            "SM_LingArenaChallenge",
+            {"oldRank": 26, "newRank": 21, "remainTimes": 0, "targets": {"items": [target]}},
+        )
+    )
+
+    assert (initial["rank"], initial["remain_times"]) == (26, 1)
+    assert initial["targets"][0]["server_id"] == 22043
+    assert (challenge["old_rank"], challenge["rank"], challenge["remain_times"]) == (26, 21, 0)
+
+
+def test_select_daofa_target_uses_group_order_and_rank(tmp_path: Path) -> None:
+    from backend.core.fanxiu.catalog.server_relations import save_fanxiu_server_relations
+
+    save_fanxiu_server_relations(
+        {
+            "groups": [
+                {
+                    "key": "friendly",
+                    "children": [
+                        {"key": "same_server", "servers": [{"server_id": 22077, "server_order": 53, "server_name": "same"}]},
+                        {"key": "alliance", "servers": [{"server_id": 22055, "server_order": 55, "server_name": "alliance"}]},
+                        {"key": "ally", "servers": [{"server_id": 22064, "server_order": 64, "server_name": "ally"}]},
+                    ],
+                }
+            ]
+        },
+        tmp_path,
+    )
+    facts = {
+        "rank": 55,
+        "targets": [
+            {"rank": 40, "name": "same", "server_id": 22077, "power": 1, "is_npc": False},
+            {"rank": 41, "name": "alliance", "server_id": 22055, "power": 1, "is_npc": False},
+            {"rank": 42, "name": "ally", "server_id": 22064, "power": 1, "is_npc": False},
+            {"rank": 48, "name": "npc", "server_id": 22077, "power": 0, "is_npc": True},
+            {"rank": 49, "name": "other", "server_id": 22049, "power": 1, "is_npc": False},
+        ],
+    }
+
+    selected = select_daofa_target(facts, battle_score=10, data_dir=tmp_path)
+    assert selected is not None
+    assert selected["name"] == "npc"
+
+    facts["targets"] = facts["targets"][:3]
+    assert select_daofa_target(facts, battle_score=10, data_dir=tmp_path)["name"] == "ally"
+
+
+def test_force_finish_still_prefers_beatable_target_ahead() -> None:
+    facts = {
+        "rank": 26,
+        "targets": [
+            {"rank": 21, "name": "ahead", "server_id": 1, "power": 5, "is_npc": False},
+            {"rank": 27, "name": "behind", "server_id": 2, "power": 2, "is_npc": False},
+        ],
+    }
+    selected = select_daofa_target(facts, battle_score=10, force_finish=True)
+    assert selected is not None and selected["name"] == "ahead"
+
+
+def test_force_finish_uses_low_power_target_behind_only_when_no_ahead_target() -> None:
+    facts = {
+        "rank": 26,
+        "targets": [
+            {"rank": 21, "name": "too-strong", "server_id": 1, "power": 20, "is_npc": False},
+            {"rank": 27, "name": "behind", "server_id": 2, "power": 2, "is_npc": False},
+            {"rank": 28, "name": "behind-stronger", "server_id": 3, "power": 4, "is_npc": False},
+        ],
+    }
+    selected = select_daofa_target(facts, battle_score=10, force_finish=True)
+    assert selected is not None and selected["name"] == "behind"
+
+
+def test_force_finish_window_uses_sunday_settlement() -> None:
+    assert should_force_finish_daofa(datetime(2026, 7, 18, 23, 35)) is True
+    assert should_force_finish_daofa(datetime(2026, 7, 19, 21, 35)) is True
+    assert should_force_finish_daofa(datetime(2026, 7, 19, 21, 20)) is False
