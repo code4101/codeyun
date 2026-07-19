@@ -13,8 +13,12 @@ from backend.core.fanxiu.packet.service_runtime import (
     start_fanxiu_packet_service,
 )
 
-LUNDAO_SCENE_PROTOCOL_NAME = "SM_SyncLundaoSceneInfo"
-LUNDAO_SCENE_PROTOCOL_ID = 59504
+LUNDAO_SCENE_PROTOCOL_NAME = "SM_SeatsNoInScene"
+LUNDAO_SCENE_PROTOCOL_ID = 59518
+LUNDAO_SCENE_PROTOCOL_NAMES = ("SM_SeatsNoInScene", "SM_SyncLundaoSceneInfo")
+LUNDAO_SCENE_PROTOCOL_IDS = (59518, 59504)
+FAZE_SHOW_PROTOCOL_NAMES = ("SM_FazeShow", "SM_ShowFazePanel")
+FAZE_SHOW_PROTOCOL_IDS = (34001, 34003)
 _CAPTURE_NAME_TIME_RE = re.compile(r"(?P<date>\d{8})_(?P<time>\d{6})")
 
 
@@ -74,7 +78,7 @@ def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, str
 
 
 def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str, Any]:
-    """Normalize one decoded 59504 packet into a traceable current-seat snapshot.
+    """Normalize one decoded lundao seat packet into a traceable snapshot.
 
     The generic decoded cache deliberately trims large lists.  Therefore this
     function always reports declared_count and decoded_count independently and
@@ -82,6 +86,7 @@ def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str
     """
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
     parsed = payload.get("parsed") if isinstance(payload.get("parsed"), dict) else {}
+    room_vo = parsed.get("roomVO") if isinstance(parsed.get("roomVO"), dict) else {}
     seats_value = parsed.get("seats")
     seats_container = seats_value if isinstance(seats_value, dict) else {}
     raw_items = seats_container.get("items")
@@ -114,8 +119,9 @@ def normalize_fanxiu_lundao_scene_seat_facts(record: dict[str, Any]) -> dict[str
         "protocol": str(record.get("name") or payload.get("name") or LUNDAO_SCENE_PROTOCOL_NAME),
         "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")) or LUNDAO_SCENE_PROTOCOL_ID,
         "captured_at": str(record.get("captured_at") or ""),
-        "npc_id": _int_or_none(parsed.get("npcId")),
-        "theme_id": _int_or_none(parsed.get("themeId")),
+        "room_id": _int_or_none(parsed.get("roomId") if parsed.get("roomId") is not None else room_vo.get("id")),
+        "npc_id": _int_or_none(parsed.get("npcId") if parsed.get("npcId") is not None else room_vo.get("npcId")),
+        "theme_id": _int_or_none(parsed.get("themeId") if parsed.get("themeId") is not None else room_vo.get("themeId")),
         "seat_type_id": _int_or_none(seats_container.get("_type_id")),
         "seat_type": str(seats_container.get("_type") or ""),
         "declared_count": declared_count,
@@ -153,8 +159,8 @@ def get_latest_fanxiu_lundao_scene_seat_facts(
     """Read the latest already-decoded lundao room snapshot without side effects."""
     result = list_fanxiu_packet_decoded_records(
         session,
-        names=[LUNDAO_SCENE_PROTOCOL_NAME],
-        pro_ids=[LUNDAO_SCENE_PROTOCOL_ID],
+        names=list(LUNDAO_SCENE_PROTOCOL_NAMES),
+        pro_ids=list(LUNDAO_SCENE_PROTOCOL_IDS),
         since_seconds=since_seconds,
         # Backlog maintenance can insert an old pcap today, so SQL order by
         # captured_at/updated_at is not sufficient to find the newest game
@@ -177,6 +183,45 @@ def get_latest_fanxiu_lundao_scene_seat_facts(
             "evidence": {},
         }
     return normalize_fanxiu_lundao_scene_seat_facts(max(records, key=_decoded_record_capture_sort_key))
+
+
+def get_latest_fanxiu_faze_show_facts(session: Session) -> dict[str, Any]:
+    """Read the latest equipped/displayed law id known to the game client."""
+
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=list(FAZE_SHOW_PROTOCOL_NAMES),
+        pro_ids=list(FAZE_SHOW_PROTOCOL_IDS),
+        limit=500,
+    )
+    records = result.get("records") if isinstance(result.get("records"), list) else []
+    if not records:
+        return {
+            "ok": True,
+            "available": False,
+            "reason": "no_decoded_record",
+            "faze_id": None,
+            "evidence": {},
+        }
+    record = max(records, key=_decoded_record_capture_sort_key)
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    parsed = payload.get("parsed") if isinstance(payload.get("parsed"), dict) else {}
+    name = str(record.get("name") or payload.get("name") or "")
+    faze_id = _int_or_none(parsed.get("fazeResId") if name == "SM_FazeShow" else parsed.get("showId"))
+    evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    return {
+        "ok": faze_id is not None and not record.get("decode_error") and not payload.get("parse_error"),
+        "available": faze_id is not None,
+        "protocol": name,
+        "pro_id": _int_or_none(record.get("pro_id") or payload.get("pro_id")),
+        "captured_at": str(record.get("captured_at") or ""),
+        "faze_id": faze_id,
+        "evidence": {
+            "packet_id": str(record.get("packet_id") or evidence.get("packet_id") or ""),
+            "pcap_name": str(record.get("pcap_name") or evidence.get("pcap_name") or ""),
+            "decoded_path": str(evidence.get("decoded_path") or ""),
+        },
+    }
 
 
 def catch_up_and_list_fanxiu_packet_decoded_records(

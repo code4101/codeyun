@@ -6,6 +6,7 @@ from backend.core.attendance.course_completion import COURSE_COMPLETION_TASK_KEY
 from backend.core.jobs.executor import background_task_queue
 from backend.core.jobs.scheduler import set_background_task_deleted
 from backend.core.jobs.scheduler import NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY
+from backend.core.runtime.public_frontend_deploy import PUBLIC_FRONTEND_DEPLOY_TASK_KEY
 from backend.models import User
 
 
@@ -38,6 +39,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "attendance_fanbei_morning_steps",
         "market_quote_refresh",
         "storage_analysis",
+        PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     }.issubset(task_keys)
     assert "auto_git_commit" not in task_keys
     assert "rime_config_sync" not in task_keys

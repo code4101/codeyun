@@ -7839,7 +7839,7 @@ def _build_attendance_current_refund_formula(columns: list[str], *, row_number: 
     total_ref = f"{_excel_column_label(total_index)}{row_number}"
     refunded_ref = f"{_excel_column_label(refunded_index)}{row_number}"
     order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
-    return f"=IF({order_ref}>0,MAX({total_ref}-{refunded_ref},0),0)"
+    return f"=IF({order_ref}>0,{total_ref}-{refunded_ref},0)"
 
 
 def _build_attendance_refund_config_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -16154,6 +16154,8 @@ def _build_note_sheet_detail_payload(
     if _header_link_count:
         full_document = _normalize_document_json(full_document)
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "links")
+    # A/B/C attendance cell styles are Step3 output. Read paths must preserve
+    # the persisted styles instead of deriving colors from progress text.
     document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if paginate is None else paginate
 
@@ -18182,6 +18184,8 @@ def query_note_sheet(
     full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
     if _header_link_count:
         full_document = _normalize_document_json(full_document)
+    # Keep query responses consistent with detail responses: Step3 exclusively
+    # owns attendance progress/refund cell styling for every course category.
     document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
 

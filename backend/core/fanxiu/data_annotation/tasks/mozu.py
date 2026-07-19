@@ -23,11 +23,13 @@ class MozuTaskMixin:
         yield from runtime.wait_click_then_view(34, "日程", 66)
         yield from runtime.wait_click_then_view(66, "前往", 336)
         yield from runtime.wait_click_then_view(336, "前往", 337)
-        yield from runtime.wait_click_then_view(337, "前往", 339)
-        yield from runtime.wait_click_then_view(339, "返回", 34)
+        completed_view = yield from runtime.wait_click_then_view(337, "前往", [338, 34, 339])
+        completed_scene_id = getattr(completed_view, "id", completed_view)
+        if completed_scene_id == 338:
+            yield from runtime.wait_action_settle(30.0)
         return {
             "result": "success",
-            "message": "日常_魔祖：已完成并回到世界 #34",
+            "message": f"日常_魔祖：已参与，完成落点 #{completed_scene_id}",
             "next_time": next_run_text,
-            "current_scene": 34,
+            "current_scene": completed_scene_id,
         }

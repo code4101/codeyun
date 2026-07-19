@@ -86,6 +86,28 @@ def test_background_task_runner_note_sheet_snapshot_backfill_is_optional():
     assert background_tasks._default_background_task_schedule_policy(spec.key) is None
 
 
+def test_background_task_runner_public_frontend_deploy_keeps_interval_schedule():
+    spec = background_tasks.get_background_task_spec(
+        background_tasks.PUBLIC_FRONTEND_DEPLOY_TASK_KEY
+    )
+
+    assert spec is not None
+    assert spec.title == "公网前端发布"
+    assert spec.category == "部署"
+    assert spec.default_visible is True
+    policy = background_tasks._default_background_task_schedule_policy(spec.key)
+    assert policy is not None
+    assert policy["trigger"] == {
+        "type": "interval",
+        "minutes": 30,
+        "anchor": "last_finish",
+    }
+    assert policy["outcome"]["on_failure"] == {
+        "type": "retry_after",
+        "minutes": 10,
+    }
+
+
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
     _set_enabled(
         monkeypatch,

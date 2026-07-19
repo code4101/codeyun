@@ -28,6 +28,7 @@ from backend.api.note_sheets import (
 )
 from backend.core.attendance.progress_style import (
     PercentageRefundRule,
+    REFUND_PROGRESS_FULL_COLOR,
     ThresholdRefundRule,
     highlight_percentage_refund_progress,
     highlight_presence_progress,
@@ -466,6 +467,16 @@ def _highlight_video_refund_for_item(
     *,
     zen_stage_refund_amount: float | None = None,
 ) -> tuple[float, str | None]:
+    if _is_zen_stage_video_item(item):
+        if zen_stage_refund_amount is None or zen_stage_refund_amount <= 0:
+            raise ValueError("B类课程视频返款必须使用本阶第3行配置的单课金额")
+        text = _normalize_text(value)
+        if _is_legacy_delayed_completed_video_text(text):
+            return 0, ZERO_REFUND_COMPLETED_BACKGROUND
+        if text == "准时完成":
+            return float(zen_stage_refund_amount), REFUND_PROGRESS_FULL_COLOR
+        return 0, highlight_presence_progress(text)
+
     text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
     if text_rules:
         return highlight_text_refund_progress(text_rules, value)
@@ -473,11 +484,6 @@ def _highlight_video_refund_for_item(
         _rules_for_version(item.rules_by_version, rule_version),
         value,
     )
-    if _is_zen_stage_video_item(item):
-        if _is_legacy_delayed_completed_video_text(value):
-            return 0, ZERO_REFUND_COMPLETED_BACKGROUND
-        if zen_stage_refund_amount is not None and _normalize_text(value) == "准时完成":
-            return max(float(zen_stage_refund_amount), 0.0), color
     return refund_amount, color
 
 
@@ -1706,7 +1712,7 @@ def _attendance_zen_clockin_refund_formula(
     clockin_columns = [
         (index, name)
         for index, name in enumerate(columns)
-        if name == "共学打卡" or name.startswith("共修打卡-")
+        if name == "共学打卡" or name == "共修打卡" or name.startswith("共修打卡-")
     ]
     if not clockin_columns:
         raise ValueError("B类课程缺少共学/共修打卡列，已阻断打卡返款计算")
@@ -1715,7 +1721,7 @@ def _attendance_zen_clockin_refund_formula(
         note_text = _normalize_text(_grid_cell_value(document, config_row_index, column_index))
         cell_ref = _formula_cell_ref(column_index, row_number)
         per_count = re.search(
-            r"(\d+)\s*次\s*[×xX*]\s*(?:每次)?\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
+            r"(\d+)\s*(?:次|周)\s*[×xX*]\s*(?:每(?:次|周))?\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
             note_text,
         )
         if per_count:
@@ -1730,7 +1736,7 @@ def _attendance_zen_clockin_refund_formula(
 
         pairs = [
             (int(count), _to_float(amount))
-            for count, amount in re.findall(r"(\d+)\s*次\s*(\d+(?:\.\d+)?)\s*元", note_text)
+            for count, amount in re.findall(r"(\d+)\s*(?:次|周)\s*(\d+(?:\.\d+)?)\s*元", note_text)
         ]
         if not pairs:
             raise ValueError(
@@ -3938,6 +3944,14 @@ def _select_video_progress_for_identity_keys(
             ),
         )
 
+    if _is_zen_stage_video_item(item):
+        def zen_sort_key(value: str) -> tuple[int, float, int]:
+            text = _normalize_text(value)
+            completion_rank = 2 if text == "准时完成" else (1 if _is_legacy_delayed_completed_video_text(text) else 0)
+            return completion_rank, _video_refund_progress_percent(text) or 0, len(text)
+
+        return max(candidates, key=zen_sort_key)
+
     rules = _rules_for_version(item.rules_by_version, rule_version)
 
     def sort_key(value: str) -> tuple[float, int, float, int]:
@@ -5165,7 +5179,7 @@ def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str
     total_ref = _formula_cell_ref(total_index, row_number)
     refunded_ref = _formula_cell_ref(refunded_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
-    return f"=IF({order_ref}>0,MAX({total_ref}-{refunded_ref},0),0)"
+    return f"=IF({order_ref}>0,{total_ref}-{refunded_ref},0)"
 
 
 def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -5648,7 +5662,7 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
             old_current_refund = next_row[current_index]
             refunded_amount = _to_float(next_row[indexes["已返款"]]) if indexes["已返款"] is not None else 0.0
             order_amount = _to_float(next_row[order_amount_index]) if order_amount_index is not None else 0.0
-            current_refund = max(0.0, computed_total_refund - refunded_amount) if order_amount > 0 else 0.0
+            current_refund = computed_total_refund - refunded_amount if order_amount > 0 else 0.0
             if _set_row_value(
                 current_document,
                 next_row,

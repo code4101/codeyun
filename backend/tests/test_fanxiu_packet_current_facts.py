@@ -1,6 +1,7 @@
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.packet.current_facts import (
+    get_latest_fanxiu_faze_show_facts,
     get_latest_fanxiu_lundao_scene_seat_facts,
     normalize_fanxiu_lundao_scene_seat_facts,
 )
@@ -94,6 +95,30 @@ def test_normalize_lundao_scene_reports_truncated_completeness_and_safe_fields()
     assert "hang_point" not in result["seats"][0]["owner"]
     assert result["seats"][1]["owner"] is None
     assert result["evidence"]["packet_id"] == "packet-1"
+
+
+def test_normalize_current_lundao_room_packet_reads_nested_room_vo() -> None:
+    record = _scene_record()
+    record["pro_id"] = 59518
+    record["name"] = "SM_SeatsNoInScene"
+    record["payload"]["pro_id"] = 59518
+    record["payload"]["name"] = "SM_SeatsNoInScene"
+    parsed = record["payload"]["parsed"]
+    parsed.clear()
+    parsed.update({
+        "_class": "SM_SeatsNoInScene",
+        "roomId": 15,
+        "roomVO": {"id": 15, "npcId": 10111, "themeId": 2},
+        "seats": _scene_record()["payload"]["parsed"]["seats"],
+    })
+
+    result = normalize_fanxiu_lundao_scene_seat_facts(record)
+
+    assert result["room_id"] == 15
+    assert result["npc_id"] == 10111
+    assert result["theme_id"] == 2
+    assert result["protocol"] == "SM_SeatsNoInScene"
+    assert result["pro_id"] == 59518
 
 
 def test_decoder_keeps_full_lundao_seat_roster_but_still_trims_nested_details() -> None:
@@ -203,8 +228,8 @@ def test_get_latest_lundao_scene_returns_explicit_no_fact_result() -> None:
     assert result == {
         "ok": True,
         "available": False,
-        "protocol": "SM_SyncLundaoSceneInfo",
-        "pro_id": 59504,
+        "protocol": "SM_SeatsNoInScene",
+        "pro_id": 59518,
         "reason": "no_decoded_record",
         "declared_count": None,
         "decoded_count": 0,
@@ -213,3 +238,43 @@ def test_get_latest_lundao_scene_returns_explicit_no_fact_result() -> None:
         "seats": [],
         "evidence": {},
     }
+
+
+def test_get_latest_faze_show_prefers_latest_capture_across_both_protocols() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    decode_result = {
+        "record_id": "faze-record",
+        "created_at": "2026-07-18 15:00:00",
+        "pcap_name": "fanxiu_runtime_20260718_150000.pcap",
+        "capture_sha256": "faze-sha",
+        "stream": 0,
+        "frames": [
+            {
+                "direction": "s2c",
+                "offset": 10,
+                "sn": 1,
+                "pro_id": 34003,
+                "name": "SM_ShowFazePanel",
+                "parsed": {"_class": "SM_ShowFazePanel", "showId": 10010},
+            },
+            {
+                "direction": "s2c",
+                "offset": 20,
+                "sn": 2,
+                "pro_id": 34001,
+                "name": "SM_FazeShow",
+                "parsed": {"_class": "SM_FazeShow", "fazeResId": 10020},
+            },
+        ],
+    }
+    with Session(engine) as session:
+        rows = decoded_record_rows_from_decode_result(decode_result)
+        rows[0]["pcap_name"] = "fanxiu_runtime_20260718_140000.pcap"
+        rows[1]["pcap_name"] = "fanxiu_runtime_20260718_150000.pcap"
+        upsert_fanxiu_packet_decoded_records(session, rows)
+        result = get_latest_fanxiu_faze_show_facts(session)
+
+    assert result["available"] is True
+    assert result["protocol"] == "SM_FazeShow"
+    assert result["faze_id"] == 10020

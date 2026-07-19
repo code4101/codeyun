@@ -19793,7 +19793,13 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       : requestWorkbookId
     const embeddedDefinedNamesContext = getUsableDefinedNamesContext(remote, requestSheetId, definedNamesWorkbookId)
     if (embeddedDefinedNamesContext) {
-      syncDefinedNamesFromResponse(embeddedDefinedNamesContext)
+      const formulaContextChanged = syncDefinedNamesFromResponse(embeddedDefinedNamesContext)
+      if (formulaContextChanged) {
+        // remoteDocument was normalized before the embedded workbook names were
+        // installed. Discard that early formula result (often #NAME?) so
+        // loadSheetDocument evaluates header formulas with the current names.
+        normalizedDocumentFormulaDisplayCache.delete(remoteDocument)
+      }
       trace?.mark('defined-names-embedded')
     } else {
       scheduleDefinedNamesSyncAfterSheetLoad(requestSeq, requestSheetId, requestWorkbookId, definedNamesWorkbookId)

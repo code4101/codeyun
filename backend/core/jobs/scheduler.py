@@ -31,6 +31,10 @@ from backend.core.attendance.fanbei_schedule import (
     enqueue_fanbei_attendance_evening_steps,
     enqueue_fanbei_attendance_morning_steps,
 )
+from backend.core.runtime.public_frontend_deploy import (
+    PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+    run_public_frontend_deploy_check,
+)
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
@@ -51,7 +55,8 @@ HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 11
+PUBLIC_FRONTEND_DEPLOY_INTERVAL_MINUTES = 30
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 12
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "codex_diary_yesterday_import",
@@ -66,6 +71,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
     DP_BROWSER_TAB_CLEANUP_TASK_KEY,
+    PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
 }
 
 
@@ -189,6 +195,15 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
     if task_key == DP_BROWSER_TAB_CLEANUP_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
+    if task_key == PUBLIC_FRONTEND_DEPLOY_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "interval",
+                "minutes": PUBLIC_FRONTEND_DEPLOY_INTERVAL_MINUTES,
+                "anchor": "last_finish",
+            },
+            retry_minutes=10,
+        )
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
     return None
@@ -491,7 +506,25 @@ def _enqueue_dp_browser_tab_cleanup() -> str | None:
     return task_id
 
 
+def _enqueue_public_frontend_deploy() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+        run_public_frontend_deploy_check,
+    )
+    return task_id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+        title="公网前端发布",
+        category="部署",
+        description="每半小时检查前端源文件指纹，有变化才构建 dist；只有构建、上传和 yun 软链接切换全部成功后，公网才更新到新版本。",
+        schedule_label=f"每 {PUBLIC_FRONTEND_DEPLOY_INTERVAL_MINUTES} 分钟检查",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_public_frontend_deploy,
+        manual_warning="会执行前端生产构建，并在成功后把 dist 上传到 yun 的静态站点目录；失败不会影响当前公网版本。",
+    ),
     BackgroundTaskSpec(
         key="codex_diary_yesterday_import",
         title="Codex 星图日记",

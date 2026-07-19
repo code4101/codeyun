@@ -48,6 +48,15 @@ def test_zen_stage_delayed_completion_refunds_zero():
     assert amount == 0
 
 
+def test_zen_stage_rejects_missing_stage_specific_refund_amount():
+    with pytest.raises(ValueError, match="本阶第3行配置"):
+        _highlight_video_refund_for_item(
+            _item(),
+            CURRENT_RULE,
+            "准时完成",
+        )
+
+
 def test_zen_stage_rule_is_parsed_from_row_3_note_and_validated():
     document = {
         "data_start_row": 3,
@@ -102,6 +111,32 @@ def test_zen_stage_clockin_formula_is_derived_from_row_3_notes():
     assert "MIN(IFERROR(VALUE(B4),0),9)*10" in formula
     assert formula.count(">=3,40") == 3
     assert formula.count(">=1,20") == 3
+
+
+def test_zen_stage_clockin_formula_accepts_plain_practice_column():
+    columns = ["打卡应返款", "共学打卡", "共修打卡"]
+    document = {
+        "data_start_row": 3,
+        "grid_rows": [
+            ["", "", ""],
+            ["", "", ""],
+            [
+                "共学与共修每次5元",
+                "16次*每次5元=80元",
+                "16周*每周5元=80元",
+            ],
+        ],
+    }
+
+    formula, limit = _attendance_zen_clockin_refund_formula(
+        document,
+        columns,
+        row_number=4,
+    )
+
+    assert limit == 160
+    assert "MIN(IFERROR(VALUE(B4),0),16)*5" in formula
+    assert "MIN(IFERROR(VALUE(C4),0),16)*5" in formula
 
 
 def test_xiudaoban_7qi_5jie_excludes_lecture_from_refund_count():
