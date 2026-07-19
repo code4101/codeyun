@@ -52,9 +52,6 @@ from backend.core.attendance_behavior_tree_service import (
     get_xlproject_root,
 )
 from backend.core.attendance.progress_style import (
-    highlight_presence_progress,
-    highlight_text_refund_progress,
-    highlight_threshold_refund_progress,
     parse_compact_refund_rules,
     parse_threshold_refund_rules,
 )
@@ -287,9 +284,6 @@ NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_BACKGROUND_COLORS = [
     "#F4CCCC",
     "#EADCF8",
 ]
-NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_STUDYING_BACKGROUND = "#FFFFBB"
-NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND = "#80FF80"
-NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND = "#D9D9D9"
 NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_END_COLUMNS = (
     "禅客",
     "优秀学员评分",
@@ -8428,83 +8422,6 @@ def _set_entity_cell_style(
     return previous_style != next_cell["style"]
 
 
-def _set_entity_cell_background_optional(
-    document_json: dict[str, Any],
-    *,
-    document_row: int,
-    column_index: int,
-    color: str | None,
-) -> bool:
-    entity_rows = _extract_document_entity_rows(document_json)
-    entity_columns = _extract_document_entity_columns(document_json)
-    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
-        return False
-
-    row_id = _get_document_entity_row_id(entity_rows[document_row])
-    column_id = _get_document_entity_column_id(entity_columns[column_index])
-    if not row_id or not column_id:
-        return False
-
-    entity_cells = _extract_document_entity_cells(document_json)
-    row_cells = dict(entity_cells.get(row_id)) if isinstance(entity_cells.get(row_id), dict) else {}
-    previous_cell = row_cells.get(column_id)
-    next_cell = dict(previous_cell) if isinstance(previous_cell, dict) else {}
-    style = dict(next_cell.get("style")) if isinstance(next_cell.get("style"), dict) else {}
-    previous_color = style.get("background_color")
-
-    if color:
-        style["background_color"] = color
-    else:
-        style.pop("background_color", None)
-
-    if style:
-        next_cell["style"] = style
-    else:
-        next_cell.pop("style", None)
-
-    if next_cell:
-        row_cells[column_id] = next_cell
-    else:
-        row_cells.pop(column_id, None)
-
-    if row_cells:
-        entity_cells[row_id] = row_cells
-    else:
-        entity_cells.pop(row_id, None)
-    document_json["entity_cells"] = entity_cells
-    return previous_color != color
-
-
-def _set_cell_meta_background_optional(
-    cell_meta: dict[str, Any],
-    *,
-    document_row: int,
-    column_index: int,
-    color: str | None,
-) -> bool:
-    key = f"{document_row}:{column_index}"
-    previous_meta = cell_meta.get(key)
-    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
-    style = dict(next_meta.get("style")) if isinstance(next_meta.get("style"), dict) else {}
-    previous_color = style.get("background_color")
-
-    if color:
-        style["background_color"] = color
-    else:
-        style.pop("background_color", None)
-
-    if style:
-        next_meta["style"] = style
-    else:
-        next_meta.pop("style", None)
-
-    if next_meta:
-        cell_meta[key] = next_meta
-    else:
-        cell_meta.pop(key, None)
-    return previous_color != color
-
-
 def _remove_entity_cell_archived_style(
     document_json: dict[str, Any],
     *,
@@ -8695,9 +8612,25 @@ def _attendance_video_refund_rules(document_json: dict[str, Any]) -> dict[str, i
     data_start_row = _normalize_document_data_start_row(document_json)
     candidates: list[Any] = []
     if grid_rows:
-        for row in grid_rows[:data_start_row]:
-            if video_refund_index < len(row):
-                candidates.append(row[video_refund_index])
+        merged_cells = _normalize_sheet_merged_cells(
+            document_json.get("merged_cells"),
+            row_count=len(grid_rows),
+            column_count=len(columns),
+        )
+        for row_index, row in enumerate(grid_rows[:data_start_row]):
+            source_row_index = row_index
+            source_column_index = video_refund_index
+            for merged_cell in merged_cells:
+                if (
+                    int(merged_cell["row"]) <= row_index < int(merged_cell["row"]) + int(merged_cell["rowspan"])
+                    and int(merged_cell["col"]) <= video_refund_index < int(merged_cell["col"]) + int(merged_cell["colspan"])
+                ):
+                    source_row_index = int(merged_cell["row"])
+                    source_column_index = int(merged_cell["col"])
+                    break
+            source_row = grid_rows[source_row_index]
+            if source_column_index < len(source_row):
+                candidates.append(source_row[source_column_index])
 
     for row in _extract_document_rows(document_json):
         if video_refund_index < len(row):
@@ -8720,32 +8653,6 @@ def _attendance_video_refund_rules(document_json: dict[str, Any]) -> dict[str, i
             return formula_rules
 
     return {}
-
-
-def _attendance_video_progress_background(value: Any, refund_rules: dict[str, int] | None = None) -> tuple[bool, str | None]:
-    text = _normalize_sheet_text(value)
-    if not text:
-        return True, None
-    if re.search(r"学习中|^进度\s*\d+(?:\.\d+)?\s*%|^观看\s*\d+", text):
-        return True, None
-    if refund_rules and re.search(r"当堂完成|第\s*\d+\s*天回放|回放|已完成", text):
-        refund_amount, color = highlight_text_refund_progress(refund_rules, text)
-        if refund_amount <= 0 and color is None:
-            has_zero_refund_match = any(
-                key and amount <= 0 and key in text
-                for key, amount in refund_rules.items()
-            )
-            return True, NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND if has_zero_refund_match else None
-        return True, color
-    if re.search(r"\d+\s*遍", text):
-        return True, NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
-    if re.search(r"准时完成|当周完成", text):
-        return True, NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
-    if re.search(r"延\s*\d+\s*周完成|延迟完成", text):
-        return True, NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND
-    if re.search(r"当堂完成|第\s*\d+\s*天回放|回放|已完成", text):
-        return True, highlight_presence_progress(text) or NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
-    return False, None
 
 
 def _is_attendance_clockin_count_column(header: str) -> bool:
@@ -8780,87 +8687,6 @@ def _attendance_clockin_rules_by_column(document_json: dict[str, Any], columns: 
                 rules_by_column[column_index] = rules
                 break
     return rules_by_column
-
-
-def _attendance_clockin_count_background(value: Any, rules: Any) -> tuple[bool, str | None]:
-    text = _normalize_sheet_text(value)
-    if not text:
-        return True, None
-    if not rules:
-        return False, None
-    _refund_amount, color = highlight_threshold_refund_progress(rules, value)
-    return True, color
-
-
-def _apply_attendance_progress_backgrounds(
-    document_json: dict[str, Any],
-    *,
-    assume_normalized: bool = False,
-) -> tuple[dict[str, Any], int]:
-    normalized = document_json if assume_normalized else _normalize_document_json(document_json)
-    columns = _normalize_document_columns(normalized)
-    video_column_indexes = [
-        index
-        for index, header in enumerate(columns)
-        if _is_attendance_video_progress_column(header)
-    ]
-    video_refund_rules = _attendance_video_refund_rules(normalized)
-    clockin_rules_by_column = _attendance_clockin_rules_by_column(normalized, columns)
-    if not video_column_indexes and not clockin_rules_by_column:
-        return document_json, 0
-
-    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
-    if not rows:
-        return document_json, 0
-
-    next_document = dict(normalized)
-    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
-    row_offset = _normalize_document_data_start_row(next_document) if _extract_document_grid_rows(next_document) else 0
-    changed_cells = 0
-
-    for row_index, row in enumerate(rows):
-        if _is_archived_attendance_row(row, columns):
-            continue
-        document_row = row_offset + row_index
-        for column_index, rules in clockin_rules_by_column.items():
-            recognized, color = _attendance_clockin_count_background(row[column_index], rules)
-            if not recognized:
-                continue
-            legacy_changed = _set_cell_meta_background_optional(
-                cell_meta,
-                document_row=document_row,
-                column_index=column_index,
-                color=color,
-            )
-            entity_changed = _set_entity_cell_background_optional(
-                next_document,
-                document_row=document_row,
-                column_index=column_index,
-                color=color,
-            )
-            if legacy_changed or entity_changed:
-                changed_cells += 1
-        for column_index in video_column_indexes:
-            recognized, color = _attendance_video_progress_background(row[column_index], video_refund_rules)
-            if not recognized:
-                continue
-            legacy_changed = _set_cell_meta_background_optional(
-                cell_meta,
-                document_row=document_row,
-                column_index=column_index,
-                color=color,
-            )
-            entity_changed = _set_entity_cell_background_optional(
-                next_document,
-                document_row=document_row,
-                column_index=column_index,
-                color=color,
-            )
-            if legacy_changed or entity_changed:
-                changed_cells += 1
-
-    next_document["cell_meta"] = cell_meta
-    return next_document, changed_cells
 
 
 def _apply_course_attendance_header_links_for_response(
@@ -16328,8 +16154,6 @@ def _build_note_sheet_detail_payload(
     if _header_link_count:
         full_document = _normalize_document_json(full_document)
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "links")
-    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
-    checkpoint = _record_note_sheet_timing(timings, checkpoint, "styles")
     document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if paginate is None else paginate
 
@@ -18358,7 +18182,6 @@ def query_note_sheet(
     full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
     if _header_link_count:
         full_document = _normalize_document_json(full_document)
-    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
     document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
 

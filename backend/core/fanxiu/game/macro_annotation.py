@@ -1,7 +1,10 @@
 import base64
+import hashlib
 import json
 import re
 import tempfile
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,43 @@ from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.ocr.spatial_document import extract_ocr_tokens
 from backend.models import User
+
+
+_OCR_FRAME_CACHE_MAX_SIZE = 32
+_ocr_frame_cache: OrderedDict[tuple[str, str], FanxiuDataAnnotationOcrFrameResponse] = OrderedDict()
+_ocr_frame_cache_lock = threading.Lock()
+
+
+def _ocr_frame_cache_key(image_bytes: bytes, options: dict[str, Any] | None) -> tuple[str, str]:
+    options_key = json.dumps(options or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(image_bytes).hexdigest(), options_key
+
+
+def _get_cached_ocr_frame(
+    cache_key: tuple[str, str],
+) -> FanxiuDataAnnotationOcrFrameResponse | None:
+    with _ocr_frame_cache_lock:
+        cached = _ocr_frame_cache.get(cache_key)
+        if cached is None:
+            return None
+        _ocr_frame_cache.move_to_end(cache_key)
+        return cached.model_copy(deep=True)
+
+
+def _set_cached_ocr_frame(
+    cache_key: tuple[str, str],
+    response: FanxiuDataAnnotationOcrFrameResponse,
+) -> None:
+    with _ocr_frame_cache_lock:
+        _ocr_frame_cache[cache_key] = response.model_copy(deep=True)
+        _ocr_frame_cache.move_to_end(cache_key)
+        while len(_ocr_frame_cache) > _OCR_FRAME_CACHE_MAX_SIZE:
+            _ocr_frame_cache.popitem(last=False)
+
+
+def _clear_ocr_frame_cache() -> None:
+    with _ocr_frame_cache_lock:
+        _ocr_frame_cache.clear()
 
 
 def _extract_game_macro_annotation_json(raw: Any) -> dict[str, Any]:
@@ -173,6 +213,10 @@ def _recognize_data_annotation_ocr_frame(
         image_bytes = _decode_game_macro_data_url_to_bytes(image_data_url)
         if not image_bytes:
             return FanxiuDataAnnotationOcrFrameResponse()
+        cache_key = _ocr_frame_cache_key(image_bytes, options)
+        cached = _get_cached_ocr_frame(cache_key)
+        if cached is not None:
+            return cached
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
             file.write(image_bytes)
             temp_path = Path(file.name)
@@ -184,7 +228,9 @@ def _recognize_data_annotation_ocr_frame(
             FanxiuDataAnnotationOcrFrameToken.model_validate(item)
             for item in extract_ocr_tokens(payload)
         ] if isinstance(payload, dict) else []
-        return FanxiuDataAnnotationOcrFrameResponse(tokens=tokens)
+        response = FanxiuDataAnnotationOcrFrameResponse(tokens=tokens)
+        _set_cached_ocr_frame(cache_key, response)
+        return response
     except OcrPreviewError as exc:
         raise RuntimeError(str(exc)) from exc
     finally:

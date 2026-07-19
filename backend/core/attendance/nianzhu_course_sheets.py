@@ -1097,17 +1097,13 @@ def _fill_nianzhu_attendance_schema_defaults(
 
 
 def _requires_attendance_tracking_meta_columns(document: dict[str, Any], *, course_name: str = "") -> bool:
-    columns = _normalize_document_columns(document)
-    if any(_find_column_index(columns, header) is not None for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS):
-        return True
-
     resolved_course_name = _normalize_text(course_name)
     if not resolved_course_name:
         source_meta = dict(document.get("source_meta") or {})
         resolved_course_name = _normalize_text(source_meta.get("course_name"))
     if not resolved_course_name:
         return True
-    return any(keyword in resolved_course_name for keyword in ["闯关", "念住", "觉观", "修道班"])
+    return "闯关" in resolved_course_name
 
 
 
@@ -1632,6 +1628,7 @@ def _attendance_video_refund_rules_override(document: dict[str, Any], columns: l
         document,
         max(_normalize_document_data_start_row(document) - 1, 0),
         refund_index,
+        resolve_merged_anchor=True,
     )
     return _parse_attendance_video_refund_rules(note_value)
 
@@ -2504,6 +2501,15 @@ def _is_challenge_video_item(item: VideoConfigItem) -> bool:
 
 def _is_regular_video_item(item: VideoConfigItem) -> bool:
     return item.rule_system == VIDEO_RULE_SYSTEM_REGULAR
+
+
+def _zen_stage_participates_refund(*, course_name: str, lesson_name: str) -> bool:
+    """Return whether a B-class lesson should count toward refund validation."""
+    normalized_course = _normalize_text(course_name)
+    normalized_lesson = _normalize_text(lesson_name)
+    if normalized_course == "d260517修道班7期5阶" and "讲座" in normalized_lesson:
+        return False
+    return True
 
 
 def _read_export_table(file: str | Path):
@@ -3548,8 +3554,13 @@ def _load_video_config(
         is_qa_item = course_key.startswith("qa:")
         rule_strategy = _resolve_video_rule_strategy(course_name=course_name, lesson_name=lesson_name, is_qa_item=is_qa_item)
         rule_system = rule_strategy.system
-        item_type = "课次" if lesson_number is not None or rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE else ("答疑" if is_qa_item else "视频")
         participates_refund = lesson_number is not None or rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE
+        if participates_refund and rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE:
+            participates_refund = _zen_stage_participates_refund(
+                course_name=course_name,
+                lesson_name=lesson_name,
+            )
+        item_type = "课次" if participates_refund else ("答疑" if is_qa_item else "视频")
         refund_rule_mode = _normalize_text(source_meta.get("video_refund_rule_mode"))
         if rule_strategy.uses_challenge_refund:
             refund_rule_mode = ""
@@ -4794,9 +4805,35 @@ def apply_nianzhu_attendance_video_revision(
     return summary
 
 
-def _grid_cell_value(document: dict[str, Any], row_index: int, column_index: int) -> Any:
+def _grid_cell_value(
+    document: dict[str, Any],
+    row_index: int,
+    column_index: int,
+    *,
+    resolve_merged_anchor: bool = False,
+) -> Any:
     rows = document.get("grid_rows")
     if not isinstance(rows, list) or row_index < 0 or row_index >= len(rows):
+        return ""
+    if resolve_merged_anchor:
+        for merged_cell in document.get("merged_cells") or []:
+            if not isinstance(merged_cell, dict):
+                continue
+            try:
+                anchor_row = int(merged_cell.get("row") or 0)
+                anchor_column = int(merged_cell.get("col") or 0)
+                rowspan = max(int(merged_cell.get("rowspan") or 1), 1)
+                colspan = max(int(merged_cell.get("colspan") or 1), 1)
+            except (TypeError, ValueError):
+                continue
+            if (
+                anchor_row <= row_index < anchor_row + rowspan
+                and anchor_column <= column_index < anchor_column + colspan
+            ):
+                row_index = anchor_row
+                column_index = anchor_column
+                break
+    if row_index < 0 or row_index >= len(rows):
         return ""
     row = rows[row_index]
     if not isinstance(row, list) or column_index < 0 or column_index >= len(row):

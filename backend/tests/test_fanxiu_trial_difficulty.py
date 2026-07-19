@@ -362,6 +362,93 @@ def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch
 
     assert clicks == [(361, "退出")]
     assert result["returned_home"] is True
+    assert result["landing_scene"] == 357
+    assert result["reentered_from_world"] is False
+
+
+def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monkeypatch):
+    runtime = _trial_challenge_runtime()
+    runtime.ctx["images"].update({
+        361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
+        362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
+        365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
+    })
+    events: list[object] = []
+
+    def started(**_kwargs):
+        if False:
+            yield None
+        return {"exit_reason": "continue_confirmed"}
+
+    def finished(**_kwargs):
+        if False:
+            yield None
+        return {"outcome": "failure", "result_scene": 365, "_frame_data_url": "failure-frame"}
+
+    def wait_landing(*views, **_kwargs):
+        events.append(("wait", tuple(int(view) for view in views)))
+        if False:
+            yield None
+        return runtime.view(34)
+
+    def reenter(**kwargs):
+        events.append(("reenter", int(kwargs["trial_view"])))
+        if False:
+            yield None
+        return {"terminal_scene": 357}
+
+    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", started)
+    monkeypatch.setattr(runtime, "wait_xianqiao_trial_result", finished)
+    monkeypatch.setattr(runtime, "wait_view", wait_landing)
+    monkeypatch.setattr(runtime, "enter_xianqiao_trial", reenter)
+    monkeypatch.setattr(
+        runtime,
+        "click_shape",
+        lambda view, shape, **_kwargs: events.append(("click", int(view), str(shape))),
+    )
+
+    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+
+    assert events == [
+        ("click", 365, "退出"),
+        ("wait", (357, 34)),
+        ("reenter", 357),
+    ]
+    assert result["returned_home"] is True
+    assert result["landing_scene"] == 34
+    assert result["reentered_from_world"] is True
+
+
+def test_complete_trial_challenge_reenters_after_unobserved_result(monkeypatch):
+    runtime = _trial_challenge_runtime()
+    reentries: list[int] = []
+
+    def started(**_kwargs):
+        if False:
+            yield None
+        return {"exit_reason": "continue_confirmed"}
+
+    def expired(**_kwargs):
+        if False:
+            yield None
+        return {"outcome": "result_expired", "result_scene": 34, "_frame_data_url": None}
+
+    def reenter(**kwargs):
+        reentries.append(int(kwargs["trial_view"]))
+        if False:
+            yield None
+        return {"terminal_scene": 357}
+
+    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", started)
+    monkeypatch.setattr(runtime, "wait_xianqiao_trial_result", expired)
+    monkeypatch.setattr(runtime, "enter_xianqiao_trial", reenter)
+
+    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+
+    assert reentries == [357]
+    assert result["result"]["outcome"] == "result_expired"
+    assert result["returned_home"] is True
+    assert result["reentered_from_world"] is True
 
 
 def test_complete_trial_challenge_treats_returned_sweep_as_terminal(monkeypatch):
@@ -491,6 +578,62 @@ def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure
         "incremented_from_sweep",
         "incremented_from_sweep",
     ]
+
+
+def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeypatch):
+    runtime = _trial_challenge_runtime()
+    observations = iter((
+        ObservedTrialHomeState(
+            attempts=ObservedTrialAttempts(remaining=1, capacity=5, text="奖励次数:1/5"),
+            sweep_available=False,
+            sweep_score=0.0,
+        ),
+        ObservedTrialHomeState(
+            attempts=ObservedTrialAttempts(remaining=1, capacity=5, text="奖励次数:1/5"),
+            sweep_available=False,
+            sweep_score=0.0,
+        ),
+    ))
+    adjustments: list[int] = []
+    challenge_count = 0
+
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(runtime, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
+    monkeypatch.setattr(
+        runtime,
+        "read_xianqiao_trial_attempts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("结算丢失后应复用战后主页观察")),
+    )
+
+    def adjust(increment, **_kwargs):
+        adjustments.append(increment)
+        if False:
+            yield None
+        return {"difficulty_increment": increment}
+
+    def challenge(**_kwargs):
+        nonlocal challenge_count
+        challenge_count += 1
+        if False:
+            yield None
+        return {
+            "result": {"outcome": "result_expired", "result_scene": 34},
+            "returned_home": True,
+            "reentered_from_world": True,
+        }
+
+    monkeypatch.setattr(runtime, "adjust_xianqiao_trial_level", adjust)
+    monkeypatch.setattr(runtime, "complete_xianqiao_trial_challenge", challenge)
+
+    result = _finish(runtime.probe_xianqiao_trial_until_failure())
+
+    assert challenge_count == 1
+    assert adjustments == [-1]
+    assert result["exit_reason"] == "failure_found"
+    assert result["remaining_attempts"] == 1
+    assert result["sweep_required"] is True
+    assert result["trials"][0]["resolved_outcome"] == "failure"
+    assert result["trials"][0]["outcome_source"] == "post_challenge_sweep"
 
 
 def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(monkeypatch):

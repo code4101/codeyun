@@ -30,13 +30,23 @@
 自动化每轮必须先读取本节。
 
 ```yaml
-last_audited_commit: "6c2b6d8c5b118cb3d720a1cec7ea67e8ff69461a"
-last_audited_at: "2026-07-17T01:06:19.2949865+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-17-frontend-design-6c2b6d8c/report.md"
-last_frontend_commit_summary: "完整关闭 dd8678cd..6c2b6d8c：东财计算器只把行情轮询收回后端 TTL 与单一静默定时器，保持标的、九点价格轴、现价标记、交易记录四个既有概念，不新增 UI。"
-audited_commit_count: 126
+last_audited_commit: "6421d1833078e750a83b41939e85f9cac7700594"
+last_audited_at: "2026-07-19T01:10:21.8705308+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-19-frontend-design-6421d183/report.md"
+last_frontend_commit_summary: "完整关闭历史改写后的 6c2b6d8c..6421d183 共 91 个当前提交身份；火山公主音频/剧院删除构建与重复统计摘要，剧院窄屏题库收敛为单列，生产入口未被局部 chunk 污染。"
+audited_commit_count: 217
 pending_or_skipped_ranges: []
 ```
+
+### 2026-07-19 · `6421d183`
+
+- 完整范围：`6c2b6d8c5b118cb3d720a1cec7ea67e8ff69461a..6421d1833078e750a83b41939e85f9cac7700594`。旧游标不再是当前 HEAD 祖先，Git 返回 91 个提交；本轮仍逐提交读取文件清单并分类为 72 个直接前端提交、6 个 API/可视状态投影提交、13 个非前端提交。当前历史中与旧游标同时间/主题的对应提交是 `3a815cfc`，其后 9 个新增语义提交也全部单独覆盖；详细 hash 分类见报告。
+- 入口与模型：火山公主音频使用“搜索/分组/分页列表 → 选中音频 → 播放与必要属性”的上下 inspector；剧院使用“题库/剧目/场景”三种同一资料库视图；凡修数据标注把旧专用识别层级继续收回基础识别候选，凡修图鉴邮件保持搜索、状态过滤、邮件清单与附件投影。
+- 入口牵引到旧问题：音频和剧院标题下常驻 Steam Build、Unity 与条目总量，属于数据源元信息/重复统计，不参与用户决策；剧院 `760px` 单列断点未覆盖带侧栏的 `820px` 窄屏，台词双列被压到约 300px 后过度换行。
+- 本轮减法：删除两个新页面的构建/统计摘要及对应样式，把剧院单列断点调整为 `900px`；源码净计 2 文件、3 行新增、26 行删除，没有新增控件、字段、状态或入口，基本信息量不变。
+- 真实页面：音频、剧院、数据标注、凡修图鉴覆盖 `1600x1000`、`1366x900`、`820x1180`，全部 `body/root` 横向溢出为 0。凡修图鉴首次停在 shell loading，2.5 秒后正常进入邮件清单且控制台无 warn/error。修复后剧院 `820px` 题库为单列。
+- 入口依赖污染：`npm run build --prefix frontend` 后，`dist/index.html` 只预载基础 vendor；`main-Doib7KN9.js` 顶层静态 import 未加载火山公主或 file-viewer/PDF/表格/编辑器/图表/worker 等局部 chunk。生产 preview 的剧院入口离开 shell loading，资源只包含基础 vendor、当前 page 与 `volcanoPrincess` API chunk，控制台无 warn/error。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。巡检前已有 4 个凡修/Pixiv 未提交文件，本轮未触碰。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-19-frontend-design-6421d183/`。
 
 ### 2026-07-17 · `6c2b6d8c`
 

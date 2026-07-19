@@ -112,6 +112,31 @@ def test_course_sheet_documents_inherit_video_refund_rules_from_attendance_templ
     assert video_data_meta["timed_video_rules"] == expected_rules
 
 
+def test_attendance_video_refund_rules_read_merged_note_anchor() -> None:
+    columns = ["姓名", "完成视频数", "视频应返款", "第01课"]
+    note_row = [
+        "",
+        '21课*20元=420元。\n视频在"当堂(直播)/第1天(当天)/第2天/第3天/第4~7天"看完，'
+        '对应返回"20/15/10/5/0"元',
+        "",
+        "",
+    ]
+    document = {
+        "columns": columns,
+        "grid_rows": [[""] * len(columns), columns, note_row],
+        "data_start_row": 3,
+        "merged_cells": [{"row": 2, "col": 1, "rowspan": 1, "colspan": 2}],
+    }
+
+    assert nianzhu_course_sheets._attendance_video_refund_rules_override(document, columns) == {
+        "当堂": 20,
+        "第1天": 15,
+        "第2天": 10,
+        "第3天": 5,
+        "回放": 0,
+    }
+
+
 def test_zen_stage_attendance_schema_adds_50_video_columns_and_caps_refund_formula() -> None:
     document = {
         "schema_version": 1,
@@ -2182,7 +2207,7 @@ def test_rebuild_nianzhu_attendance_repairs_missing_refund_tracking_columns(sess
     assert first_row[repaired_columns.index("规则版本")] == "当前规则"
 
 
-def test_nianzhu_attendance_schema_keeps_existing_tracking_columns_for_jueguan() -> None:
+def test_nianzhu_attendance_schema_removes_existing_tracking_columns_for_jueguan() -> None:
     columns = ["分组", "姓名", "规则版本", "追踪分组", "追踪状态", "冻结时间", "第01课"]
     rows = [["一组", "甲", "当前规则", "一组", "追踪中", "", "当堂完成/98%"]]
     document = {
@@ -2199,14 +2224,14 @@ def test_nianzhu_attendance_schema_keeps_existing_tracking_columns_for_jueguan()
         course_name="d260601第47届觉观",
     )
 
-    assert summary["schema_removed_columns"] == []
+    assert summary["schema_removed_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
     for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
-        assert column in repaired["columns"]
-        assert column in repaired["grid_rows"][1]
-    assert repaired["rows"][0] == rows[0]
+        assert column not in repaired["columns"]
+        assert column not in repaired["grid_rows"][1]
+    assert repaired["rows"][0] == ["一组", "甲", "当堂完成/98%"]
 
 
-def test_nianzhu_attendance_schema_inserts_tracking_columns_for_plain_nianzhu() -> None:
+def test_nianzhu_attendance_schema_does_not_insert_tracking_columns_for_plain_nianzhu() -> None:
     columns = ["分组", "姓名", "第01课"]
     rows = [["一组", "甲", "当堂完成/98%"]]
     document = {
@@ -2223,16 +2248,11 @@ def test_nianzhu_attendance_schema_inserts_tracking_columns_for_plain_nianzhu() 
         course_name="d260601第41届念住",
     )
 
-    assert summary["schema_inserted_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    assert summary["schema_inserted_columns"] == []
     for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
-        assert column in repaired["columns"]
-        assert column in repaired["grid_rows"][1]
-    repaired_columns = repaired["columns"]
-    repaired_row = repaired["rows"][0]
-    assert repaired_row[repaired_columns.index("规则版本")] == "当前规则"
-    assert repaired_row[repaired_columns.index("追踪分组")] == "一组"
-    assert repaired_row[repaired_columns.index("追踪状态")] == "追踪中"
-    assert repaired_row[repaired_columns.index("冻结时间")] == ""
+        assert column not in repaired["columns"]
+        assert column not in repaired["grid_rows"][1]
+    assert repaired["rows"][0] == rows[0]
 
 
 def test_nianzhu_attendance_schema_keeps_tracking_columns_for_chuangguan() -> None:
