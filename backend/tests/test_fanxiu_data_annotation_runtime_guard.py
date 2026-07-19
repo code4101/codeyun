@@ -6203,7 +6203,7 @@ def test_daily_lundao_in_progress_routes_then_returns_through_formal_shape():
     ]
 
 
-def test_daily_lundao_seat_node_starts_with_only_297_298_371_372_373_375_layer0():
+def test_daily_lundao_seat_node_starts_with_only_supported_layer0_scenes():
     runner = create_fanxiu_runtime_runner()
 
     class FakeRuntime:
@@ -6215,10 +6215,10 @@ def test_daily_lundao_seat_node_starts_with_only_297_298_371_372_373_375_layer0(
             return None, 0.0, "unknown"
 
     runtime = FakeRuntime()
-    with pytest.raises(RuntimeError, match="只接受 #297/#298/#371/#372/#373/#375"):
+    with pytest.raises(RuntimeError, match="只接受 #297/#298/#371/#372/#373/#375/#295"):
         _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event()))
 
-    assert runtime.calls == [((297, 298, 371, 372, 373, 375), True)]
+    assert runtime.calls == [((297, 298, 371, 372, 373, 375, 295), True)]
 
 
 def test_daily_xianyuan_duel_is_registered_as_manual_standard_job():
@@ -6401,9 +6401,66 @@ def test_daily_lundao_kick_strategy_without_target_stops_before_any_click():
 
     runtime = FakeRuntime()
     with pytest.raises(RuntimeError, match="缺少上游确定的目标玩家"):
-        _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, FakeStopEvent()))
+        _drain_generator(runner._run_daily_lundao_kick_for_seat_strategy(runtime, FakeStopEvent()))
 
     assert runtime.actions == []
+
+
+def test_daily_lundao_no_beatable_target_returns_world_and_records_thirty_minute_retry(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def current_scene(self, candidates, *, update=False):
+            assert tuple(candidates) == (297, 298, 371, 372, 373, 375, 295)
+            assert update is True
+            return 297, 100.0, "full"
+
+        def goto_view(self, scene_id):
+            actions.append(("goto_view", scene_id))
+            yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    monkeypatch.setattr(
+        runner,
+        "_select_daily_lundao_kick_target",
+        lambda: {
+            "ok": True,
+            "status": "no_target",
+            "target": None,
+            "rejected": {"friendly": 2, "stronger_law": 6},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_lundao_retry",
+        lambda payload, *, message, seconds=1800: actions.append(
+            ("retry", payload, message, seconds)
+        ) or "2026-07-19 14:30:00",
+    )
+
+    result = _drain_generator(
+        runner._run_daily_lundao_seat_and_leave(
+            FakeRuntime(),
+            FakeStopEvent(),
+            payload={"__scheduler_task_id": "daily-lundao-seat"},
+        )
+    )
+
+    assert result == "skipped"
+    assert actions == [
+        ("goto_view", 34),
+        (
+            "retry",
+            {"__scheduler_task_id": "daily-lundao-seat"},
+            "大罗满座且没有可击败的非友军",
+            1800,
+        ),
+    ]
 
 
 def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_item_button():
@@ -6459,7 +6516,11 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
         def wait_scene(self, *scenes, **kwargs):
             self.actions.append(("wait_scene", scenes, kwargs))
             yield BehaviorTreeStatus.RUNNING
-            return 371
+            if scenes == (371,):
+                return 371
+            if scenes == (372,):
+                return 372
+            return 373
 
         def current_scene(self, candidates, **_kwargs):
             if list(candidates) == [52, 375]:
@@ -6540,8 +6601,8 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
     assert runtime.actions[11] == ("click_shape_center", (373, "聊天按钮"), {})
     assert runtime.actions[13] == (
         "wait_scene",
-        (373, 52),
-        {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"},
+        (373, 52, 295),
+        {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"},
     )
     assert runtime.actions[14] == ("click_shape_center", (373, "聊天按钮"), {})
 
@@ -6595,7 +6656,7 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
         ("wait_scene", (372,), {"timeout": 20.0, "label": "论道_座位：等待 #372 请离玩家确认框"}),
         ("click_shape_center", (372, "确定"), {}),
         ("settle", 1.5),
-        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
         ("click_shape_center", (373, "聊天按钮"), {}),
         ("settle", 1.5),
         ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
@@ -6645,7 +6706,7 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_372():
     assert runtime.actions == [
         ("click_shape_center", (372, "确定"), {}),
         ("settle", 1.5),
-        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
         ("click_shape_center", (373, "聊天按钮"), {}),
         ("settle", 1.5),
         ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
@@ -6695,10 +6756,49 @@ def test_daily_lundao_resumes_scene_373_and_clicks_until_375_without_rematching_
     assert runtime.actions == [
         ("click_shape_center", (373, "聊天按钮"), {}),
         ("settle", 1.5),
-        ("wait_scene", (373, 52), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52"}),
+        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
         ("click_shape_center", (373, "聊天按钮"), {}),
         ("settle", 1.5),
         ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    ]
+
+
+def test_daily_lundao_closes_victory_overlay_before_continuing_to_seat_confirmation():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def click_shape_center(self, *args, **kwargs):
+            self.actions.append(("click_shape_center", args, kwargs))
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 329
+
+        def current_scene(self, candidates, **_kwargs):
+            assert list(candidates) == [329, 301, 302, 303, 186]
+            return 329, 100.0, "seat-confirm"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._advance_daily_lundao_kick_dialogue(runtime, start_scene=295))
+
+    assert result["status"] == "battle_won"
+    assert result["scene_id"] == 329
+    assert runtime.actions == [
+        ("click_shape_center", (295, "点击关闭"), {}),
+        ("settle", 1.5),
+        (
+            "wait_scene",
+            (373, 52, 329, 301, 302, 303, 186),
+            {"timeout": 30.0, "label": "论道_座位：关闭胜利浮层后等待战后对话/入座"},
+        ),
     ]
 
 

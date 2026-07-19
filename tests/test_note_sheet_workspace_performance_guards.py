@@ -806,7 +806,8 @@ def test_note_sheet_workspace_uses_embedded_defined_names_context_before_first_m
     assert "defined_names_context?: NoteSheetDefinedNamesResponse | null" in api_source
     assert "function getUsableDefinedNamesContext(" in source
     assert "const embeddedDefinedNamesContext = getUsableDefinedNamesContext(" in restore_body
-    assert "syncDefinedNamesFromResponse(embeddedDefinedNamesContext)" in restore_body
+    assert "const formulaContextChanged = syncDefinedNamesFromResponse(embeddedDefinedNamesContext)" in restore_body
+    assert "normalizedDocumentFormulaDisplayCache.delete(remoteDocument)" in restore_body
     assert "trace?.mark('defined-names-embedded')" in restore_body
     assert "scheduleDefinedNamesSyncAfterSheetLoad(" in restore_body
     assert restore_body.index("syncDefinedNamesFromResponse(embeddedDefinedNamesContext)") < restore_body.index("loadSheetDocument(activeDocument, activeSourceDocument)")

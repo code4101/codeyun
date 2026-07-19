@@ -746,6 +746,66 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         _clear_user_override()
 
 
+def test_abc_attendance_reads_preserve_step3_static_cell_styles(client, session):
+    user = _create_user(session, username="attendance-static-style-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        for workbook_title in ("第42届念住", "禅宗六阶", "梵呗初阶"):
+            workbook_response = client.post(
+                "/api/note-sheets/workbooks",
+                json={"title": workbook_title},
+            )
+            assert workbook_response.status_code == 200
+            workbook_id = workbook_response.json()["id"]
+            document_json = {
+                "schema_version": 1,
+                "columns": ["姓名", "视频应返款", "第01课", "第02课"],
+                "rows": [["学员", 20, "当堂完成/90%", "学习中/10%"]],
+                "grid_rows": [
+                    ["用户信息", "退款总计", "第01课", "第02课"],
+                    ["姓名", "视频应返款", "第01课", "第02课"],
+                    ["", '视频在"当堂/回放"看完，对应返回"20/0"元', "", ""],
+                    ["学员", 20, "当堂完成/90%", "学习中/10%"],
+                ],
+                "data_start_row": 3,
+                "field_row_index": 1,
+                "cell_meta": {
+                    "3:2": {"style": {"background_color": "#123456"}},
+                    "3:3": {"style": {"background_color": "#ABCDEF"}},
+                },
+            }
+            sheet_response = client.post(
+                "/api/note-sheets/sheets",
+                json={
+                    "title": "考勤表",
+                    "workbook_id": workbook_id,
+                    "document_json": document_json,
+                },
+            )
+            assert sheet_response.status_code == 200
+            sheet_id = sheet_response.json()["id"]
+
+            detail_response = client.get(
+                f"/api/note-sheets/sheets/{sheet_id}",
+                params={"workbook_id": workbook_id, "paginate": False},
+            )
+            query_response = client.post(
+                f"/api/note-sheets/sheets/{sheet_id}/query",
+                params={"workbook_id": workbook_id},
+                json={"paginate": False},
+            )
+
+            for response in (detail_response, query_response):
+                assert response.status_code == 200
+                cell_meta = response.json()["document_json"]["cell_meta"]
+                assert cell_meta["3:2"]["style"]["background_color"] == "#123456"
+                assert cell_meta["3:3"]["style"]["background_color"] == "#ABCDEF"
+    finally:
+        _clear_user_override()
+
+
 def test_note_sheet_workbook_reorders_sheets(client, session):
     user = _create_user(session, username="note-sheet-reorder-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
@@ -3459,7 +3519,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=IF(N3>0,MIN(MAX(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),0),N3),0)'
         assert attendance_updated_rows[1][attendance_columns.index("已返款")] == "0"
         assert attendance_updated_rows[1][attendance_columns.index("订单金额")] == "620"
-        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=IF(N3>0,MAX(L3-M3,0),0)'
+        assert attendance_updated_rows[1][attendance_columns.index("当前应返款")] == '=IF(N3>0,L3-M3,0)'
         assert attendance_updated_rows[1][attendance_columns.index("返款配置")] == '=IF(O3>0,TEXTJOIN(",",TRUE,E3,O3,"念住闯关每日返款",E3&"_day"&$O$1),"")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡数")] == ""
         assert attendance_updated_rows[1][attendance_columns.index("第01课")] == ""
@@ -3708,7 +3768,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert repaired_row[attendance_columns.index("已返款")] == "0"
     assert repaired_row[attendance_columns.index("订单金额")] == "620"
     assert repaired_row[attendance_columns.index("关联用户ID")] == "u_linked"
-    assert repaired_row[attendance_columns.index("当前应返款")] == '=IF(N3>0,MAX(L3-M3,0),0)'
+    assert repaired_row[attendance_columns.index("当前应返款")] == '=IF(N3>0,L3-M3,0)'
     assert repaired_row[attendance_columns.index("打卡数")] == ""
     assert "2:0" not in next_doc["cell_meta"]
     assert next_doc["cell_meta"]["3:0"]["style"]["background_color"] == "#F2F2F2"
@@ -3716,6 +3776,16 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert "style" not in next_doc["entity_cells"]["row_new"]["col_1"]
     assert "col_17" not in next_doc["entity_cells"]["row_new"]
     assert next_doc["entity_cells"]["row_archived"]["col_0"]["style"]["background_color"] == "#F2F2F2"
+
+
+def test_attendance_current_refund_formula_exposes_over_refund_without_creating_payment_config():
+    columns = ["商户订单号", "总应返款", "已返款", "订单金额", "当前应返款", "返款配置"]
+
+    current_formula = note_sheets_api._build_attendance_current_refund_formula(columns, row_number=2)
+    payment_formula = note_sheets_api._build_attendance_refund_config_formula(columns, row_number=2)
+
+    assert current_formula == "=IF(D2>0,B2-C2,0)"
+    assert payment_formula == '=IF(E2>0,TEXTJOIN(",",TRUE,A2,E2,"念住闯关每日返款",A2&"_day"&$E$1),"")'
 
 
 def test_note_sheet_registration_user_id_detection_replaces_stale_primary_id(client, session, monkeypatch):

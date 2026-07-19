@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.core.runtime import public_frontend_deploy
-from backend.core.runtime import subprocess_utils
+from backend.core.services import _subprocess as subprocess_utils
 
 
 def test_node_npm_command_avoids_npm_cmd_on_windows(monkeypatch, tmp_path):
@@ -49,7 +49,7 @@ def test_build_frontend_runs_vite_directly_without_npm_script(monkeypatch, tmp_p
         calls.append((command, kwargs))
         return public_frontend_deploy.subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(public_frontend_deploy.subprocess, "run", fake_run)
+    monkeypatch.setattr(public_frontend_deploy, "run_quiet", fake_run)
 
     public_frontend_deploy._build_frontend(timeout_seconds=5)
 
