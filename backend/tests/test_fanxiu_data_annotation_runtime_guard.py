@@ -181,6 +181,65 @@ def test_runtime_wait_click_then_shape_closes_click_with_target_probe(monkeypatc
     ]
 
 
+def test_runtime_advance_dialogue_requires_five_second_quiet_window(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image373 = _scene_image("论道对话", "0373.png")
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {373: image373}},
+        stop_event=threading.Event(),
+    )
+    scenes = iter([(373, 100.0, "first"), (373, 100.0, "second"), *[(None, 0.0, "transition")] * 10])
+    actions: list[tuple] = []
+    clock = [0.0]
+
+    monkeypatch.setattr(runtime_runner_core.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: next(scenes))
+    monkeypatch.setattr(runtime, "click_shape_center", lambda *args, **kwargs: actions.append(("click", args, kwargs)))
+
+    def fake_wait_action_settle(seconds):
+        actions.append(("settle", seconds))
+        clock[0] += seconds
+        yield BehaviorTreeStatus.RUNNING
+
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+
+    result = _drain_generator(runtime.advance_dialogue(373, "聊天按钮"))
+
+    assert result == 2
+    click_actions = [action for action in actions if action[0] == "click"]
+    assert [(action[1][0].id, action[1][1]) for action in click_actions] == [
+        (373, "聊天按钮"),
+        (373, "聊天按钮"),
+    ]
+    assert [action[1] for action in actions if action[0] == "settle"][-10:] == [0.5] * 10
+
+
+def test_runtime_advance_dialogue_stops_after_bounded_clicks(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {373: _scene_image("论道对话", "0373.png")}},
+        stop_event=threading.Event(),
+    )
+    clicks: list[tuple] = []
+    clock = [0.0]
+
+    monkeypatch.setattr(runtime_runner_core.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: (373, 100.0, "dialogue"))
+    monkeypatch.setattr(runtime, "click_shape_center", lambda *args, **kwargs: clicks.append((args, kwargs)))
+
+    def fake_wait_action_settle(seconds):
+        clock[0] += seconds
+        yield BehaviorTreeStatus.RUNNING
+
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+
+    with pytest.raises(RuntimeError, match="连续推进 3 次"):
+        _drain_generator(runtime.advance_dialogue(373, "聊天按钮", max_clicks=3))
+    assert len(clicks) == 3
+
+
 def test_go_scene_payload_normalizes_layer0_wait_aliases():
     from backend.core.fanxiu.data_annotation.jobs import normalize_data_annotation_go_scene_payload
 
@@ -5795,13 +5854,13 @@ def test_daily_lingmai_is_registered_with_daily_1730_scheduler_task():
     assert task["schedule_times"] == ["17:30"]
     assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
-    assert task["payload"] == {"lingmai_no_slot_retry_seconds": 600}
+    assert task["payload"] == {"lingmai_no_target_retry_seconds": 1800}
     assert definition is not None
     assert definition.label == "灵脉_座位"
     assert definition.scheduler_supported is True
 
 
-def test_daily_lingmai_no_slot_records_ten_minute_business_retry(monkeypatch):
+def test_daily_lingmai_no_target_records_thirty_minute_business_retry(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     recorded = []
     monkeypatch.setattr(
@@ -5813,19 +5872,170 @@ def test_daily_lingmai_no_slot_records_ten_minute_business_retry(monkeypatch):
 
     retry_after = runner._record_daily_lingmai_retry(
         {"__scheduler_task_id": "daily-lingmai-seat"},
-        message="#285 剩余空位 0/10",
+        message="#286 没有可驱离目标",
     )
 
-    assert retry_after == "2026-07-16 17:40:00"
+    assert retry_after == "2026-07-16 18:00:00"
     assert recorded == [(
         "daily-lingmai-seat",
-        "2026-07-16 17:40:00",
+        "2026-07-16 18:00:00",
         {
             "task_type": "daily_lingmai",
             "label": "灵脉_座位",
             "last_result": "skipped",
         },
     )]
+
+
+def test_daily_lingmai_already_seated_returns_world_without_occupy_or_kick(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import daily_foundation
+
+    runner = create_fanxiu_runtime_runner()
+    monkeypatch.setattr(
+        daily_foundation,
+        "refresh_and_select_lingmai_seat_action",
+        lambda **_kwargs: {
+            "ok": True,
+            "status": "already_seated",
+            "action": "already_seated",
+            "self_seat": {"seat_id": 3798, "owner": {"role_id": 42, "name": "自己"}},
+        },
+    )
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def goto_view(self, scene_id):
+            self.actions.append(("goto_view", scene_id))
+            yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._continue_daily_lingmai_from_select_slot(
+        {"images": {286: {}}},
+        threading.Event(),
+        {},
+        runtime,
+        "frame",
+        task_label="灵脉_座位",
+    ))
+
+    assert result == "success"
+    assert runtime.actions == [("goto_view", 34)]
+
+
+def test_daily_lingmai_kick_click_uses_name_alignment_and_completes_battle_tail(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    monkeypatch.setattr(
+        runner,
+        "_cached_ocr_tokens",
+        lambda _ctx, frame: (
+            [{"text": "目标玩家", "x": 200, "y": 700, "w": 100, "h": 20}]
+            if frame == "frame"
+            else _ocr_tokens("确认", x=398.0, y=1042.0, w=110.0, h=54.0)
+        ),
+    )
+
+    class FakeGeometry:
+        @staticmethod
+        def _box(raw, _view):
+            return dict(raw)
+
+        @staticmethod
+        def _frame_size(_view):
+            return 900.0, 1600.0
+
+    class FakeRuntime:
+        def __init__(self):
+            self.ctx = {}
+            self.runner = FakeGeometry()
+            self.clicks = []
+            self.actions = []
+
+        @staticmethod
+        def shape(_scene, name):
+            raw = (
+                {"x": 200, "y": 480, "w": 200, "h": 40}
+                if name == "姓名"
+                else {"x": 770, "y": 500, "w": 60, "h": 40}
+            )
+            return SimpleNamespace(raw=raw)
+
+        @staticmethod
+        def view(_scene):
+            return SimpleNamespace(raw={"width": 900, "height": 1600})
+
+        @staticmethod
+        def cur_frame(*, update):
+            assert update is True
+            return "frame"
+
+        def click_frame_point(self, scene, x, y):
+            self.clicks.append((scene, x, y))
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            if scenes == (380,):
+                return 380
+            if scenes == (374, 382):
+                return 374
+            if scenes == (382,):
+                return 382
+            if scenes == (306,):
+                return 306
+            if scenes == (312, 285, 85, 186, 34):
+                return 85
+            raise AssertionError(scenes)
+
+        def current_scene(self, scenes, *, update):
+            assert update is True
+            if list(scenes) == [380]:
+                return 380, 99.0, "frame380"
+            if list(scenes) == [306]:
+                return 306, 100.0, "summary"
+            raise AssertionError(scenes)
+
+        def wait_click_then_view(self, *args, **kwargs):
+            self.actions.append(("wait_click_then_view", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return args[2] if len(args) > 2 else True
+
+        def advance_dialogue(self, *args, **kwargs):
+            self.actions.append(("advance_dialogue", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 1
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def goto_view(self, scene_id):
+            self.actions.append(("goto_view", scene_id))
+            yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+        @staticmethod
+        def ocr_text(_frame):
+            return "驱离确认"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._click_daily_lingmai_kick_target(
+        {},
+        threading.Event(),
+        {},
+        runtime,
+        target_player={"seat_id": 7, "name": "目标玩家", "battle_score": 100},
+        task_label="灵脉_座位",
+    ))
+
+    assert result == "success"
+    assert runtime.clicks == [(286, 800.0, 730.0), (306, 453.0, 1069.0)]
+    assert ("wait_click_then_view", (380, "驱离", 381), {"timeout": 30.0}) in runtime.actions
+    assert ("wait_click_then_view", (381, "确定", 318), {"timeout": 45.0}) in runtime.actions
+    assert ("wait_click_then_view", (382, "关闭", 318), {"timeout": 30.0}) in runtime.actions
+    assert runtime.actions[-1] == ("goto_view", 34)
 
 
 def test_daily_lingmai_manual_instance_migrates_to_enabled_1730_schedule():
@@ -5855,19 +6065,7 @@ def test_daily_lingmai_manual_instance_migrates_to_enabled_1730_schedule():
     assert task["cooldown_seconds"] == 600
     assert task["trigger_kind"] == "daily"
     assert task["template_label"] == "灵脉_座位"
-    assert task["payload"]["lingmai_no_slot_retry_seconds"] == 600
-
-
-def test_daily_lingmai_slot_candidates_keep_positive_rows():
-    runner = create_fanxiu_runtime_runner()
-
-    candidates = runner._daily_lingmai_slot_candidates([
-        {"text": "剩余空位:0/10", "x": 700, "y": 430, "w": 150, "h": 40},
-        {"text": "当前已方阵营:2人 剩余空位:8/20", "x": 610, "y": 790, "w": 250, "h": 40},
-    ])
-
-    assert [(item["remaining"], item["total"]) for item in candidates] == [(0, 10), (8, 20)]
-    assert next(item for item in candidates if item["remaining"] > 0)["y"] == 810
+    assert task["payload"]["lingmai_no_target_retry_seconds"] == 1800
 
 
 def test_daily_lingmai_gather_confirm_uses_scene_305():
@@ -5969,6 +6167,11 @@ def test_daily_lingmai_summary_popup_clicks_ocr_confirm_before_returning_world(m
         def current_scene(self, *_args, **_kwargs):
             return next(self.scenes)
 
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 85
+
         def goto_view(self, scene_id):
             self.actions.append(("goto_view", scene_id))
             yield BehaviorTreeStatus.RUNNING
@@ -6018,6 +6221,11 @@ def test_daily_lingmai_frame_306_clicks_ocr_confirm_before_returning_world(monke
         def current_scene(self, *_args, **_kwargs):
             return next(self.scenes)
 
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 85
+
         def goto_view(self, scene_id):
             self.actions.append(("goto_view", scene_id))
             yield BehaviorTreeStatus.RUNNING
@@ -6060,6 +6268,25 @@ def test_daily_lundao_is_registered_as_manual_standard_job():
     assert task["enabled"] is False
     assert definition is not None
     assert definition.label == "论道_座位"
+    assert definition.scheduler_supported is True
+
+
+def test_daily_daofa_is_registered_with_daily_1900_scheduler_task():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    tasks = {item["id"]: item for item in _default_data_annotation_scheduler_tasks()}
+    definition = fanxiu_api._data_annotation_task_cell_definition("daily_daofa")
+
+    task = tasks["daily-daofa"]
+    assert task["task_type"] == "daily_daofa"
+    assert task["label"] == "道法争锋"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["19:00"]
+    assert task["enabled"] is True
+    assert task["cooldown_seconds"] == 600
+    assert definition is not None
+    assert definition.label == "道法争锋"
     assert definition.scheduler_supported is True
 
 
@@ -6520,7 +6747,20 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
                 return 371
             if scenes == (372,):
                 return 372
-            return 373
+            if scenes == (373, 375, 295, 52):
+                return 373
+            if scenes == (375, 295, 52):
+                return 375
+            if scenes == (373, 52, 295):
+                return 373
+            if scenes == (52, 329, 301, 302, 303, 186):
+                return 52
+            raise AssertionError(scenes)
+
+        def advance_dialogue(self, *args, **kwargs):
+            self.actions.append(("advance_dialogue", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 1
 
         def current_scene(self, candidates, **_kwargs):
             if list(candidates) == [52, 375]:
@@ -6566,22 +6806,9 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
         "score": 100.0,
     }
     assert [action[0] for action in runtime.actions] == [
-        "fresh_frame",
-        "find",
-        "scroll",
-        "fresh_frame",
-        "find",
-        "click_floating_item_field",
-        "wait_scene",
-        "click_shape_center",
-        "wait_scene",
-        "click_shape_center",
-        "settle",
-        "click_shape_center",
-        "settle",
-        "wait_scene",
-        "click_shape_center",
-        "settle",
+        "fresh_frame", "find", "scroll", "fresh_frame", "find", "click_floating_item_field",
+        "wait_scene", "click_shape_center", "wait_scene", "click_shape_center", "settle",
+        "wait_scene", "advance_dialogue", "wait_scene", "wait_scene", "advance_dialogue", "wait_scene",
     ]
     assert runtime.actions[1][2]["frame_data_url"] == "before-scroll"
     assert runtime.actions[4][2]["frame_data_url"] == "after-scroll"
@@ -6598,13 +6825,21 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
     )
     assert runtime.actions[9] == ("click_shape_center", (372, "确定"), {})
     assert runtime.actions[10] == ("settle", 1.5)
-    assert runtime.actions[11] == ("click_shape_center", (373, "聊天按钮"), {})
-    assert runtime.actions[13] == (
+    assert runtime.actions[12] == (
+        "advance_dialogue",
+        (373, "聊天按钮"),
+        {"label": "论道_座位：推进战前对话"},
+    )
+    assert runtime.actions[14] == (
         "wait_scene",
         (373, 52, 295),
         {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"},
     )
-    assert runtime.actions[14] == ("click_shape_center", (373, "聊天按钮"), {})
+    assert runtime.actions[15] == (
+        "advance_dialogue",
+        (373, "聊天按钮"),
+        {"label": "论道_座位：推进战后对话"},
+    )
 
 
 def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
@@ -6632,7 +6867,22 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
         def wait_scene(self, *scenes, **kwargs):
             self.actions.append(("wait_scene", scenes, kwargs))
             yield BehaviorTreeStatus.RUNNING
-            return 372 if scenes == (372,) else 373
+            if scenes == (372,):
+                return 372
+            if scenes == (373, 375, 295, 52):
+                return 373
+            if scenes == (375, 295, 52):
+                return 375
+            if scenes == (373, 52, 295):
+                return 373
+            if scenes == (52, 329, 301, 302, 303, 186):
+                return 52
+            raise AssertionError(scenes)
+
+        def advance_dialogue(self, *args, **kwargs):
+            self.actions.append(("advance_dialogue", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 1
 
         def click_shape_center(self, *args, **kwargs):
             self.actions.append(("click_shape_center", args, kwargs))
@@ -6651,15 +6901,10 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
     runtime = FakeRuntime()
     assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, FakeStopEvent())) == "success"
 
-    assert runtime.actions == [
-        ("click_shape_center", (371, "请他让座"), {}),
-        ("wait_scene", (372,), {"timeout": 20.0, "label": "论道_座位：等待 #372 请离玩家确认框"}),
-        ("click_shape_center", (372, "确定"), {}),
-        ("settle", 1.5),
-        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
-        ("click_shape_center", (373, "聊天按钮"), {}),
-        ("settle", 1.5),
-        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    assert [action[0] for action in runtime.actions] == [
+        "click_shape_center", "wait_scene", "click_shape_center", "settle", "wait_scene",
+        "advance_dialogue", "wait_scene", "wait_scene", "advance_dialogue", "wait_scene",
+        "wait_click_then_view",
     ]
 
 
@@ -6687,7 +6932,20 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_372():
         def wait_scene(self, *scenes, **kwargs):
             self.actions.append(("wait_scene", scenes, kwargs))
             yield BehaviorTreeStatus.RUNNING
-            return 373
+            if scenes == (373, 375, 295, 52):
+                return 373
+            if scenes == (375, 295, 52):
+                return 375
+            if scenes == (373, 52, 295):
+                return 373
+            if scenes == (52, 329, 301, 302, 303, 186):
+                return 52
+            raise AssertionError(scenes)
+
+        def advance_dialogue(self, *args, **kwargs):
+            self.actions.append(("advance_dialogue", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 1
 
         def wait_action_settle(self, seconds):
             self.actions.append(("settle", seconds))
@@ -6703,13 +6961,9 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_372():
     runtime = FakeRuntime()
     assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event())) == "success"
 
-    assert runtime.actions == [
-        ("click_shape_center", (372, "确定"), {}),
-        ("settle", 1.5),
-        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
-        ("click_shape_center", (373, "聊天按钮"), {}),
-        ("settle", 1.5),
-        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    assert [action[0] for action in runtime.actions] == [
+        "click_shape_center", "settle", "wait_scene", "advance_dialogue", "wait_scene",
+        "wait_scene", "advance_dialogue", "wait_scene", "wait_click_then_view",
     ]
 
 
@@ -6737,7 +6991,18 @@ def test_daily_lundao_resumes_scene_373_and_clicks_until_375_without_rematching_
         def wait_scene(self, *scenes, **kwargs):
             self.actions.append(("wait_scene", scenes, kwargs))
             yield BehaviorTreeStatus.RUNNING
-            return 373
+            if scenes == (375, 295, 52):
+                return 375
+            if scenes == (373, 52, 295):
+                return 373
+            if scenes == (52, 329, 301, 302, 303, 186):
+                return 52
+            raise AssertionError(scenes)
+
+        def advance_dialogue(self, *args, **kwargs):
+            self.actions.append(("advance_dialogue", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return 1
 
         def wait_action_settle(self, seconds):
             self.actions.append(("settle", seconds))
@@ -6753,13 +7018,9 @@ def test_daily_lundao_resumes_scene_373_and_clicks_until_375_without_rematching_
     runtime = FakeRuntime()
     assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, threading.Event())) == "success"
 
-    assert runtime.actions == [
-        ("click_shape_center", (373, "聊天按钮"), {}),
-        ("settle", 1.5),
-        ("wait_scene", (373, 52, 295), {"timeout": 180.0, "label": "论道_座位：等待 #375 战斗结束后的对话/#52/#295"}),
-        ("click_shape_center", (373, "聊天按钮"), {}),
-        ("settle", 1.5),
-        ("wait_click_then_view", (52, "确认"), {"wait_leave": True}),
+    assert [action[0] for action in runtime.actions] == [
+        "advance_dialogue", "wait_scene", "wait_scene", "advance_dialogue", "wait_scene",
+        "wait_click_then_view",
     ]
 
 

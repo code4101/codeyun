@@ -44,6 +44,7 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_LAYER0_SCENE_IDS,
 )
 from backend.core.fanxiu.data_annotation.tasks.lundao import refresh_and_select_lundao_kick_target
+from backend.core.fanxiu.data_annotation.tasks.lingmai import refresh_and_select_lingmai_seat_action
 from backend.core.fanxiu.data_annotation.state import (
     next_data_annotation_scheduler_time,
     parse_data_annotation_daily_clock,
@@ -4221,7 +4222,7 @@ class DailyFoundationTaskMixin:
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 373:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime)
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime, start_scene=373)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 375:
@@ -4366,31 +4367,52 @@ class DailyFoundationTaskMixin:
     ) -> dict[str, Any]:
         """推进战前与战后两段对话，并兼容胜利浮层后直接进入入座链路。"""
         pre_battle_clicks = 0
-        if start_scene not in {375, 295}:
-            for click_index in range(12):
-                scene_id, _score, _frame = runtime.current_scene([52, 375], update=True)
-                if scene_id == 52:
-                    return {
-                        "status": "dialogue_finished",
-                        "clicks": click_index,
-                        "pre_battle_clicks": click_index,
-                        "post_battle_clicks": 0,
-                        "scene_id": 52,
-                        "score": _score,
-                    }
-                if scene_id == 375:
-                    pre_battle_clicks = click_index
-                    break
-                # 战前中间台词/过渡帧无需匹配 #373；#375 未出现就点固定聊天按钮。
-                runtime.click_shape_center(373, "聊天按钮")
-                yield from runtime.wait_action_settle(1.5)
-            else:
-                raise RuntimeError("论道_座位：战前连续点击 #373[聊天按钮] 12 次后仍未识别到 #375/#52")
+        battle_scene = start_scene
+        if battle_scene not in {373, 375, 295, 52}:
+            battle_scene = yield from runtime.wait_scene(
+                373,
+                375,
+                295,
+                52,
+                timeout=20.0,
+                label="论道_座位：等待战前对话/战斗/结束",
+            )
+        if battle_scene == 52:
+            return {
+                "status": "dialogue_finished",
+                "clicks": 0,
+                "pre_battle_clicks": 0,
+                "post_battle_clicks": 0,
+                "scene_id": 52,
+                "score": 100.0,
+            }
+        if battle_scene == 373:
+            pre_battle_clicks = yield from runtime.advance_dialogue(
+                373,
+                "聊天按钮",
+                label="论道_座位：推进战前对话",
+            )
+            battle_scene = yield from runtime.wait_scene(
+                375,
+                295,
+                52,
+                timeout=30.0,
+                label="论道_座位：战前对话结束后等待战斗/胜利/入座",
+            )
+            if battle_scene == 52:
+                return {
+                    "status": "dialogue_finished",
+                    "clicks": pre_battle_clicks,
+                    "pre_battle_clicks": pre_battle_clicks,
+                    "post_battle_clicks": 0,
+                    "scene_id": 52,
+                    "score": 100.0,
+                }
 
         # #375 是战斗阶段；不在战斗画面点击。真实胜利链会先落到通用
         # #295「胜利/点击任意位置关闭」浮层，然后才继续战后对话或入座。
         # #295 不能当作普通 unknown，也不能在看见“胜利”后提前报成功。
-        after_battle_scene = start_scene
+        after_battle_scene = battle_scene
         if after_battle_scene != 295:
             after_battle_scene = yield from runtime.wait_scene(
                 373,
@@ -4413,18 +4435,6 @@ class DailyFoundationTaskMixin:
                 timeout=30.0,
                 label="论道_座位：关闭胜利浮层后等待战后对话/入座",
             )
-        if after_battle_scene not in {373, 52}:
-            scene_id, score, _frame = runtime.current_scene([329, 301, 302, 303, 186], update=True)
-            if scene_id is None:
-                raise RuntimeError("论道_座位：关闭 #295 胜利浮层后未确认战后对话或入座落点")
-            return {
-                "status": "battle_won",
-                "clicks": pre_battle_clicks,
-                "pre_battle_clicks": pre_battle_clicks,
-                "post_battle_clicks": 0,
-                "scene_id": scene_id,
-                "score": score,
-            }
         if after_battle_scene == 52:
             return {
                 "status": "dialogue_finished",
@@ -4434,22 +4444,43 @@ class DailyFoundationTaskMixin:
                 "scene_id": 52,
                 "score": 100.0,
             }
-        for post_click_index in range(12):
-            scene_id, _score, _frame = runtime.current_scene([52, 373], update=True)
-            if scene_id == 52:
-                return {
-                    "status": "dialogue_finished",
-                    "clicks": pre_battle_clicks + post_click_index,
-                    "pre_battle_clicks": pre_battle_clicks,
-                    "post_battle_clicks": post_click_index,
-                    "scene_id": 52,
-                    "score": _score,
-                }
-            if scene_id == 373:
-                runtime.click_shape_center(373, "聊天按钮")
-            # 战后过渡帧既不是 #373 也不是 #52 时只等待，不误点。
-            yield from runtime.wait_action_settle(1.5)
-        raise RuntimeError("论道_座位：#375 结束后推进战后对话 12 轮仍未识别到 #52")
+        post_battle_clicks = 0
+        if after_battle_scene == 373:
+            post_battle_clicks = yield from runtime.advance_dialogue(
+                373,
+                "聊天按钮",
+                label="论道_座位：推进战后对话",
+            )
+            after_battle_scene = yield from runtime.wait_scene(
+                52,
+                329,
+                301,
+                302,
+                303,
+                186,
+                timeout=30.0,
+                label="论道_座位：战后对话结束后等待入座",
+            )
+        if after_battle_scene == 52:
+            return {
+                "status": "dialogue_finished",
+                "clicks": pre_battle_clicks + post_battle_clicks,
+                "pre_battle_clicks": pre_battle_clicks,
+                "post_battle_clicks": post_battle_clicks,
+                "scene_id": 52,
+                "score": 100.0,
+            }
+        scene_id, score, _frame = runtime.current_scene([329, 301, 302, 303, 186], update=True)
+        if scene_id is None:
+            raise RuntimeError("论道_座位：关闭胜利浮层后未确认战后对话或入座落点")
+        return {
+            "status": "battle_won",
+            "clicks": pre_battle_clicks + post_battle_clicks,
+            "pre_battle_clicks": pre_battle_clicks,
+            "post_battle_clicks": post_battle_clicks,
+            "scene_id": scene_id,
+            "score": score,
+        }
 
     def _run_daily_lundao_empty_seat_strategy(self, runtime: Any):
         """#298 空位策略；复用既有入座及后续确认落点，不复制收尾。"""
@@ -5695,8 +5726,19 @@ class DailyFoundationTaskMixin:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"{task_label}：处理 #312 确认弹窗后仍未到达 #285")
 
-    def _record_daily_lingmai_retry(self, payload: dict[str, Any], *, message: str, seconds: int = 600) -> str:
-        retry_after = (_runtime_runner._now() + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+    def _record_daily_lingmai_retry(
+        self,
+        payload: dict[str, Any],
+        *,
+        message: str,
+        seconds: int = 1800,
+        retry_at_ms: int | None = None,
+    ) -> str:
+        if retry_at_ms is None:
+            retry_at = _runtime_runner._now() + timedelta(seconds=max(5, int(seconds)))
+        else:
+            retry_at = datetime.fromtimestamp(max(int(retry_at_ms), int(time.time() * 1000) + 5000) / 1000)
+        retry_after = retry_at.strftime("%Y-%m-%d %H:%M:%S")
         self._record_scheduler_task_discovered_retry_after(
             str(payload.get("__scheduler_task_id") or "legacy-daily-lingmai"),
             retry_after,
@@ -5706,32 +5748,6 @@ class DailyFoundationTaskMixin:
         )
         self._log("skip", f"灵脉_座位：{message}，{retry_after} 重试")
         return retry_after
-
-    def _daily_lingmai_slot_candidates(self, lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text")).translate(FULLWIDTH_DIGIT_TRANSLATION)
-            compact = re.sub(r"\s+", "", text)
-            match = re.search(r"(?:剩余空位|余空位|空位)[:：]?(\d+)/(\d+)", compact)
-            if match is None:
-                continue
-            try:
-                remaining = int(match.group(1))
-                total = int(match.group(2))
-            except ValueError:
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            candidates.append({
-                "remaining": remaining,
-                "total": total,
-                "text": text,
-                "x": x + w / 2 if w > 0 else None,
-                "y": y + h / 2 if h > 0 else None,
-            })
-        return candidates
 
     def _confirm_daily_lingmai_gather(
         self,
@@ -5793,7 +5809,24 @@ class DailyFoundationTaskMixin:
         text = runtime.ocr_text(frame) if isinstance(frame, str) and frame else runtime.ocr_text(update=True)
         if scene_id in {302, 306} or ("灵脉" in text and "确认" in text):
             yield from self._confirm_daily_lingmai_summary_popup(runtime, payload, task_label=task_label, scene_id=scene_id, frame=frame)
-            scene_id, _score, frame = runtime.current_scene([34, 59, 285, 286, 287, 288, 289, 302, 306, 318], update=True)
+            landed = yield from runtime.wait_scene(
+                312,
+                285,
+                85,
+                186,
+                34,
+                timeout=float(payload.get("lingmai_summary_landing_timeout") or 30.0),
+                label=f"{task_label}：#306 确认后等待可选 #312 或灵脉内部/世界",
+            )
+            scene_id = int(landed.id if isinstance(landed, View) else landed)
+            if scene_id == 312:
+                yield from runtime.wait_click_then_view(
+                    312,
+                    "确认",
+                    [285, 85, 186, 34],
+                    timeout=float(payload.get("lingmai_summary_312_timeout") or 20.0),
+                )
+                scene_id, _score, frame = runtime.current_scene([285, 85, 186, 34], update=True)
         if scene_id == 34:
             self._log("success", f"{task_label}：已回到 #34 世界")
             return "success"
@@ -5847,78 +5880,24 @@ class DailyFoundationTaskMixin:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image285 = images.get(285)
         if not isinstance(image285, dict):
-            raise RuntimeError(f"{task_label}：缺少 #285「造化灵脉」标注，无法读取空位")
+            raise RuntimeError(f"{task_label}：缺少 #285「造化灵脉」标注，无法进入神脉")
         if self._find_shape(image285, "空位") is None:
-            raise RuntimeError(f"{task_label}：缺少 #285「空位」shape 标注，无法读取剩余空位")
-        if self._find_shape(image285, "返回") is None:
-            raise RuntimeError(f"{task_label}：缺少 #285「返回」shape 标注，无法在无空位时安全返回")
+            raise RuntimeError(f"{task_label}：缺少 #285「空位」shape 标注，无法进入神脉")
 
-        read_retries = max(1, int(payload.get("lingmai_empty_slot_read_retries") or 3))
-        numbers: list[int] = []
-        slot_text = ""
-        for index in range(read_retries):
-            self._raise_if_stopped(stop_event)
-            numbers, slot_text = runtime.ocr_numbers_in_shapes(285, ("空位",), padding=int(payload.get("lingmai_empty_slot_padding") or 16), frame_data_url=frame)
-            self._log("detail", f"{task_label}：读取 #285「空位」 {index + 1}/{read_retries} OCR={slot_text} nums={numbers}")
-            if numbers:
-                break
-            yield from runtime.wait_action_settle(0.8)
-            frame = runtime.cur_frame(update=True)
-        if not numbers:
-            raise RuntimeError(f"{task_label}：#285「空位」未识别到整数，OCR={slot_text[:120]}")
-
-        remaining_slots = int(numbers[0])
-        total_slots = int(numbers[1]) if len(numbers) >= 2 else None
-        lines = self._cached_ocr_fragments(ctx, frame or runtime.cur_frame(update=True))
-        candidates = self._daily_lingmai_slot_candidates(lines)
-        available = next((item for item in candidates if int(item["remaining"]) > 0), None)
-        clicked_slot_label = "「空位」"
-        if remaining_slots <= 0:
-            if available is not None:
-                click_x = available.get("x")
-                click_y = available.get("y")
-                if click_x is None or click_y is None:
-                    raise RuntimeError(
-                        f"{task_label}：#285 标注「空位」为 {remaining_slots}/{total_slots if total_slots is not None else '?'}，"
-                        f"但 OCR 发现可用候选 {available['remaining']}/{available['total']}，缺少可点击坐标；请检查 #285 标注"
-                    )
-                self._log(
-                    "success",
-                    f"{task_label}：#285 标注行无空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，"
-                    f"OCR 发现候选 {available['remaining']}/{available['total']}，点击该候选行",
-                )
-                runtime.click_frame_point(285, float(click_x), float(click_y))
-                clicked_slot_label = "可用候选行"
-            else:
-                yield from runtime.wait_click(285, "返回")
-                yield from runtime.wait_action_settle(float(payload.get("lingmai_return_settle_seconds") or 2.0))
-                retry_after = self._record_daily_lingmai_retry(
-                    payload,
-                    message=f"#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，本次不换位置",
-                    seconds=int(payload.get("lingmai_no_slot_retry_seconds") or 600),
-                )
-                with self._lock:
-                    self._set_status_locked(
-                        "skipped",
-                        f"{task_label}：暂无空位，已返回，{retry_after} 重试",
-                        phase="daily_lingmai_no_slot",
-                        current_scene=285,
-                    )
-                return {"result": "skipped", "message": f"{task_label}：暂无空位，已返回，{retry_after} 重试"}
-        else:
-            self._log("success", f"{task_label}：#285 剩余空位 {remaining_slots}/{total_slots if total_slots is not None else '?'}，点击「空位」进入下一阶段")
-            yield from runtime.wait_click(285, "空位")
+        self._raise_if_stopped(stop_event)
+        self._log("action", f"{task_label}：#285 固定点击「空位」进入神脉，不读取或搜索其它灵脉行")
+        yield from runtime.wait_click(285, "空位")
         if bool(payload.get("stop_after_click_285_empty")):
-            self._log("success", f"{task_label}：试运行已点击 #285{clicked_slot_label}，按 payload 停止")
+            self._log("success", f"{task_label}：试运行已点击 #285「空位」，按 payload 停止")
             return "success"
         yield from runtime.wait_view(
             286,
             timeout=float(payload.get("lingmai_select_slot_timeout") or 12.0),
-            label=f"{task_label}：点击 #285{clicked_slot_label}后等待 #286 选择空位",
+            label=f"{task_label}：点击 #285「空位」后等待 #286 神脉座位页",
         )
         scene_next, score_next, frame_next = runtime.current_scene([286], update=True)
         text_next = runtime.ocr_text(frame_next)
-        self._log("success", f"{task_label}：已到达 #286 选择空位，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:160]}")
+        self._log("success", f"{task_label}：已到达 #286 神脉座位页，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:160]}")
         return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame_next, task_label=task_label))
 
     def _continue_daily_lingmai_from_select_slot(
@@ -5933,10 +5912,65 @@ class DailyFoundationTaskMixin:
     ) -> str:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image286 = images.get(286)
+        if not isinstance(image286, dict):
+            raise RuntimeError(f"{task_label}：缺少 #286 神脉座位页标注，无法选择座位动作")
+
+        self._raise_if_stopped(stop_event)
+        selection = refresh_and_select_lingmai_seat_action(
+            since_seconds=int(payload.get("lingmai_packet_since_seconds") or 1200),
+        )
+        if not selection.get("ok"):
+            raise RuntimeError(
+                f"{task_label}：读取神脉座位或自身战力失败，"
+                f"status={selection.get('status')} reason={selection.get('reason')}"
+            )
+        action = str(selection.get("action") or "")
+        if action == "already_seated":
+            self_seat = selection.get("self_seat") if isinstance(selection.get("self_seat"), dict) else {}
+            self._log(
+                "success",
+                f"{task_label}：抓包确认自己已在神脉座位 {self_seat.get('seat_id')}，不再占空位或驱离玩家",
+            )
+            yield from runtime.goto_view(34)
+            return "success"
+        if action == "retry":
+            retry_at_ms = selection.get("retry_at_ms")
+            retry_reason = str(selection.get("retry_reason") or "no_target")
+            yield from runtime.goto_view(34)
+            retry_after = self._record_daily_lingmai_retry(
+                payload,
+                message=(
+                    "当前无可驱离目标，等待最早可击败目标保护结束"
+                    if retry_reason == "earliest_beatable_protection_end"
+                    else "当前及保护期内均无可击败的非友军"
+                ),
+                seconds=int(payload.get("lingmai_no_target_retry_seconds") or 1800),
+                retry_at_ms=int(retry_at_ms) if retry_at_ms is not None else None,
+            )
+            self._log("skip", f"{task_label}：已返回 #34，{retry_after} 重新抓取座位清单")
+            return "skipped"
+        if action == "kick":
+            target = selection.get("target") if isinstance(selection.get("target"), dict) else None
+            if target is None:
+                raise RuntimeError(f"{task_label}：选人策略返回 kick 但缺少目标，已停止且未点击")
+            self._log(
+                "info",
+                f"{task_label}：选择最低战力可驱离非友军「{target.get('name')}」，"
+                f"战力 {float(target.get('battle_score') or 0):.3e}",
+            )
+            return (yield from self._click_daily_lingmai_kick_target(
+                ctx,
+                stop_event,
+                payload,
+                runtime,
+                target_player=target,
+                task_label=task_label,
+            ))
+        if action != "occupy_empty":
+            raise RuntimeError(f"{task_label}：未知神脉座位动作 {action!r}，已停止且未点击")
+
         image287 = images.get(287)
         image288 = images.get(288)
-        if not isinstance(image286, dict):
-            raise RuntimeError(f"{task_label}：缺少 #286「选择空位」标注，无法进入占领阶段")
         if not isinstance(image287, dict):
             raise RuntimeError(f"{task_label}：缺少 #287「前往灵脉」确认弹窗标注，无法确认占领")
         if not isinstance(image288, dict):
@@ -6005,6 +6039,155 @@ class DailyFoundationTaskMixin:
         text_after = runtime.ocr_text(frame_after)
         self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
         return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+
+    def _click_daily_lingmai_kick_target(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime: FanxiuRuntime,
+        *,
+        target_player: Mapping[str, Any],
+        task_label: str,
+    ):
+        """Find the selected #286 player row and click its aligned kick button.
+
+        The packet-selected seat id is the identity evidence.  The exact player
+        name is used only to find its visible row.  The click point is derived
+        from the user-annotated [姓名] -> [驱离按钮] offset, never from a global
+        fixed coordinate or an OCR-discovered button belonging to another row.
+        """
+
+        target_id = str(target_player.get("seat_id") or target_player.get("id") or "").strip()
+        target_name = _sanitize_ocr_text(target_player.get("name"))
+        if not target_id or not target_name:
+            raise RuntimeError(f"{task_label}：驱离目标缺少稳定座位 ID 或姓名，已停止且未点击")
+        if bool(target_player.get("excluded") or target_player.get("is_ally")):
+            raise RuntimeError(f"{task_label}：驱离目标被标记为同盟/排除，已停止且未点击")
+
+        name_shape = runtime.shape(286, "姓名")
+        button_shape = runtime.shape(286, "驱离按钮")
+        view286 = runtime.view(286)
+        name_box = runtime.runner._box(name_shape.raw, view286.raw)
+        button_box = runtime.runner._box(button_shape.raw, view286.raw)
+        name_center_y = float(name_box.get("y") or 0) + float(name_box.get("h") or 0) / 2
+        button_center_x = float(button_box.get("x") or 0) + float(button_box.get("w") or 0) / 2
+        button_center_y = float(button_box.get("y") or 0) + float(button_box.get("h") or 0) / 2
+        offset_y = button_center_y - name_center_y
+        frame_width, frame_height = runtime.runner._frame_size(view286.raw)
+
+        max_scrolls = max(0, int(payload.get("lingmai_kick_max_scrolls") or 12))
+        for index in range(max_scrolls + 1):
+            self._raise_if_stopped(stop_event)
+            frame = runtime.cur_frame(update=True)
+            tokens = self._cached_ocr_tokens(ctx, frame)
+            matches: list[dict[str, float]] = []
+            for fragment in group_ocr_tokens(tokens):
+                if target_name not in _sanitize_ocr_text(fragment.get("text")):
+                    continue
+                target_box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], target_name)
+                if target_box is not None:
+                    matches.append(target_box)
+            if len(matches) > 1:
+                raise RuntimeError(f"{task_label}：#286 目标姓名「{target_name}」不唯一，已停止且未点击")
+            if len(matches) == 1:
+                target_box = matches[0]
+                target_y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
+                # The button column is fixed by the [驱离按钮] annotation.  OCR
+                # name widths vary with titles and glyphs, so deriving X from
+                # the name center can drift into the page edge.  Only the row
+                # Y follows the matched name; X always stays in the annotated
+                # kick-button column.
+                click_x = button_center_x
+                click_y = target_y + offset_y
+                if not (0 < click_x < frame_width and 0 < click_y < frame_height):
+                    raise RuntimeError(
+                        f"{task_label}：目标「{target_name}」对应驱离按钮中心超出画面，已停止且未点击"
+                    )
+                self._log(
+                    "action",
+                    f"{task_label}：在 #286 第 {index + 1} 屏找到目标「{target_name}」，点击同条目「驱离按钮」",
+                )
+                runtime.click_frame_point(286, click_x, click_y)
+                yield from runtime.wait_scene(
+                    380,
+                    timeout=float(payload.get("lingmai_kick_to_380_timeout") or 60.0),
+                    label=f"{task_label}：点击「{target_name}」驱离按钮后等待 #380",
+                )
+                scene_id, score, frame380 = runtime.current_scene([380], update=True)
+                if scene_id != 380:
+                    raise RuntimeError(f"{task_label}：驱离后未确认到达 #380，已停止后续点击")
+                self._log("success", f"{task_label}：已到达 #380（{score:.0f}%），OCR={runtime.ocr_text(frame380)[:120]}")
+                return (yield from self._complete_daily_lingmai_kick(runtime, payload, task_label=task_label))
+            if index >= max_scrolls:
+                break
+            runtime.drag_shape_to_frame_edge(
+                286,
+                "姓名",
+                direction="up",
+                duration=float(payload.get("lingmai_kick_scroll_seconds") or 0.8),
+            )
+            yield from runtime.wait_action_settle(float(payload.get("lingmai_kick_scroll_settle_seconds") or 1.0))
+            scene_id, _score, _frame = runtime.current_scene([286], update=True)
+            if scene_id != 286:
+                raise RuntimeError(f"{task_label}：滚动寻找目标时离开 #286，已停止且未点击")
+        raise RuntimeError(f"{task_label}：滚动 #286 后仍未找到目标「{target_name}」，已停止且未点击")
+
+    def _complete_daily_lingmai_kick(
+        self,
+        runtime: FanxiuRuntime,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+    ) -> str:
+        """Complete #380 -> battle -> #306 and reuse the normal Lingmai tail."""
+
+        yield from runtime.wait_click_then_view(
+            380,
+            "驱离",
+            381,
+            timeout=float(payload.get("lingmai_kick_confirm_timeout") or 30.0),
+        )
+        yield from runtime.wait_click_then_view(
+            381,
+            "确定",
+            318,
+            timeout=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
+        )
+        yield from runtime.advance_dialogue(318, "确认", label=f"{task_label}：推进战前对话")
+        battle_scene = yield from runtime.wait_scene(
+            374,
+            382,
+            timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
+            label=f"{task_label}：等待 #374 战斗或 #382 胜利",
+        )
+        battle_scene_id = int(battle_scene.id if isinstance(battle_scene, View) else battle_scene)
+        if battle_scene_id == 374:
+            yield from runtime.wait_scene(
+                382,
+                timeout=float(payload.get("lingmai_kick_battle_finish_timeout") or 180.0),
+                label=f"{task_label}：等待战斗结束到 #382",
+            )
+        yield from runtime.wait_click_then_view(
+            382,
+            "关闭",
+            318,
+            timeout=float(payload.get("lingmai_kick_victory_close_timeout") or 30.0),
+        )
+        yield from runtime.advance_dialogue(318, "确认", label=f"{task_label}：推进战后对话")
+        yield from runtime.wait_scene(
+            306,
+            timeout=float(payload.get("lingmai_kick_summary_timeout") or 45.0),
+            label=f"{task_label}：等待 #306 灵脉收益确认",
+        )
+        scene_id, _score, frame = runtime.current_scene([306], update=True)
+        return (yield from self._finish_daily_lingmai_to_world(
+            runtime,
+            payload,
+            task_label=task_label,
+            scene_id=scene_id,
+            frame=frame,
+        ))
 
     def _click_daily_lingmai_go_button(
         self,

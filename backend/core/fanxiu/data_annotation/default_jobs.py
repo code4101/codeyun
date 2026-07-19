@@ -44,6 +44,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_daofa",
     "daily_mojie_raid",
     "daily_weekly_dungeon",
+    "weekly_hanli",
     "daily_vip",
     "daily_dongtian",
     "daily_dongtian_clear",
@@ -483,6 +484,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_weekly_dungeon_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_task_cell("weekly_hanli", "周常_韩立", scheduler_supported=True)
+    def _run_data_annotation_weekly_hanli_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_weekly_hanli_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("daily_vip", "日常_vip", scheduler_supported=True)
     def _run_data_annotation_daily_vip_task_cell(

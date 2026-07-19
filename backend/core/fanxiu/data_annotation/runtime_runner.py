@@ -1554,6 +1554,71 @@ class FanxiuRuntime(Runtime):
         self.clear_frame()
         return result
 
+    def advance_dialogue(
+        self,
+        view: View | int | str,
+        shape: Shape | str,
+        *,
+        quiet_seconds: float = 5.0,
+        poll_seconds: float = 0.5,
+        initial_timeout: float = 20.0,
+        max_clicks: int = 12,
+        label: str = "推进连续对话",
+    ):
+        """连续点击同一对话入口，直到自身场景连续一段时间不再出现。
+
+        对话点击后常有短暂过渡帧，不能把一次 ``unknown`` 当成结束。每次点击
+        都重新开启静默观察窗口；窗口内再次识别到自身场景时立即推进下一句，
+        只有连续 ``quiet_seconds`` 未再次识别到自身场景才返回。
+        """
+        source_view = self.view(view)
+        source_id = source_view.id
+        if source_id is None:
+            raise RuntimeError(f"{label}：对话场景缺少编号")
+        quiet_seconds = float(quiet_seconds)
+        poll_seconds = float(poll_seconds)
+        initial_timeout = float(initial_timeout)
+        max_clicks = int(max_clicks)
+        if quiet_seconds <= 0:
+            raise ValueError("quiet_seconds 必须大于 0")
+        if poll_seconds <= 0:
+            raise ValueError("poll_seconds 必须大于 0")
+        if max_clicks <= 0:
+            raise ValueError("max_clicks 必须大于 0")
+
+        scene_id, _score, _frame = self.current_scene([source_id], update=True)
+        if scene_id != source_id:
+            yield from self.wait_scene(
+                source_view,
+                timeout=initial_timeout,
+                label=f"{label}：等待自身场景 #{source_id}",
+            )
+
+        click_count = 0
+        while click_count < max_clicks:
+            self.click_shape_center(source_view, shape)
+            click_count += 1
+            quiet_deadline = time.monotonic() + quiet_seconds
+            source_reappeared = False
+            while True:
+                remaining_seconds = quiet_deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    break
+                sample_seconds = min(poll_seconds, remaining_seconds)
+                yield from self.wait_action_settle(sample_seconds)
+                scene_id, _score, _frame = self.current_scene([source_id], update=True)
+                if scene_id == source_id:
+                    source_reappeared = True
+                    break
+            if not source_reappeared:
+                self.runner._log(
+                    "success",
+                    f"{label}：#{source_id} 连续 {quiet_seconds:g} 秒未再出现，共推进 {click_count} 次",
+                )
+                return click_count
+
+        raise RuntimeError(f"{label}：连续推进 {max_clicks} 次后 #{source_id} 仍会再次出现")
+
     def long_press_shape(
         self,
         view: View | int | str,
@@ -4148,6 +4213,7 @@ from backend.core.fanxiu.data_annotation.tasks.xianfu import XianfuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mixin
 from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial import XianqiaoTrialTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.weekly_hanli import WeeklyHanliTaskMixin
 
 
 class DataAnnotationRuntimeRunner(
@@ -4161,6 +4227,7 @@ class DataAnnotationRuntimeRunner(
     DailyFoundationTaskMixin,
     DailyResourceTaskMixin,
     DailyChallengeTaskMixin,
+    WeeklyHanliTaskMixin,
     XianqiaoTrialTaskMixin,
     XianfuTaskMixin,
     SignupMiscTaskMixin,
@@ -10060,7 +10127,13 @@ class DataAnnotationRuntimeRunner(
                     token_box = locate_text_box(tokens or [], target_fragment)
                     if token_box is not None:
                         cx = float(token_box["x"]) + float(token_box["w"]) / 2
-            cy = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
+                        cy = float(token_box["y"]) + float(token_box["h"]) / 2
+                    else:
+                        cy = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
+                else:
+                    cy = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
+            else:
+                cy = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
             if left <= cx <= right and top <= cy <= bottom:
                 matches.append((cx, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))

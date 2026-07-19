@@ -217,12 +217,19 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         manual_task("daily-lundao-seat", "daily_lundao", "论道_座位"),
         manual_task("daily-xianyuan-duel", "daily_xianyuan_duel", "仙缘_斗法"),
         runtime_daily_task(
+            "daily-daofa",
+            "daily_daofa",
+            "道法争锋",
+            "19:00",
+            cooldown_seconds=600,
+        ),
+        runtime_daily_task(
             "daily-lingmai-seat",
             "daily_lingmai",
             "灵脉_座位",
             "17:30",
             cooldown_seconds=600,
-            payload={"lingmai_no_slot_retry_seconds": 600},
+            payload={"lingmai_no_target_retry_seconds": 1800},
         ),
         runtime_daily_task(
             "mail-selective-claim",

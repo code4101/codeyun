@@ -2,7 +2,11 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.packet.current_facts import (
     get_latest_fanxiu_faze_show_facts,
+    get_latest_fanxiu_lingmai_scene_seat_facts,
+    get_latest_fanxiu_lingmai_self_seat_facts,
     get_latest_fanxiu_lundao_scene_seat_facts,
+    normalize_fanxiu_lingmai_scene_seat_facts,
+    normalize_fanxiu_lingmai_self_seat_facts,
     normalize_fanxiu_lundao_scene_seat_facts,
 )
 from backend.core.fanxiu.packet.decoded_store import (
@@ -139,6 +143,97 @@ def test_decoder_keeps_full_lundao_seat_roster_but_still_trims_nested_details() 
     assert "_truncated_items" not in trimmed["seats"]
     assert len(trimmed["seats"]["items"][0]["seatOwner"]["hangPoint"]["items"]) == 8
     assert trimmed["seats"]["items"][0]["seatOwner"]["hangPoint"]["_truncated_items"] == 4
+
+
+def test_decoder_keeps_full_lingmai_seat_roster() -> None:
+    trimmed = _trim_value(
+        {
+            "seats": {
+                "_type": "VeinsSeatVO",
+                "items": [{"id": index, "seatOwner": {"name": f"玩家{index}"}} for index in range(10)],
+            }
+        }
+    )
+
+    assert len(trimmed["seats"]["items"]) == 10
+    assert "_truncated_items" not in trimmed["seats"]
+
+
+def test_normalize_lingmai_scene_exposes_room_capacity_and_protection() -> None:
+    record = _scene_record(declared_count=7)
+    record["pro_id"] = 87216
+    record["name"] = "SM_VeinsSeatsNoInScene"
+    record["payload"]["pro_id"] = 87216
+    record["payload"]["name"] = "SM_VeinsSeatsNoInScene"
+    seats = record["payload"]["parsed"]["seats"]
+    seats["_type"] = "VeinsSeatVO"
+    seats["_type_id"] = 87253
+    record["payload"]["parsed"] = {
+        "_class": "SM_VeinsSeatsNoInScene",
+        "roomId": 10,
+        "roomVO": {"id": 10, "left": 3, "npcId": 10109, "themeId": 1},
+        "seats": seats,
+    }
+
+    result = normalize_fanxiu_lingmai_scene_seat_facts(record)
+
+    assert result["room_id"] == 10
+    assert result["available_count"] == 3
+    assert result["capacity"] == 10
+    assert result["seat_type"] == "VeinsSeatVO"
+    assert result["seats"][0]["owner"]["protect_end_time"] == 200
+
+
+def test_get_latest_lingmai_scene_returns_explicit_no_fact_result() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        result = get_latest_fanxiu_lingmai_scene_seat_facts(session)
+
+    assert result["available"] is False
+    assert result["protocol"] == "SM_VeinsSeatsNoInScene"
+    assert result["pro_id"] == 87216
+    assert result["available_count"] is None
+    assert result["complete"] is False
+
+
+def test_normalize_lingmai_self_seat_exposes_current_role() -> None:
+    record = _scene_record(declared_count=1)
+    record["pro_id"] = 87227
+    record["name"] = "SM_VeinsSelfSeat"
+    record["pcap_name"] = "fanxiu_runtime_20260719_190938.pcap"
+    record["payload"]["pro_id"] = 87227
+    record["payload"]["name"] = "SM_VeinsSelfSeat"
+    record["payload"]["parsed"] = {
+        "_class": "SM_VeinsSelfSeat",
+        "seatVO": {
+            "id": 3798,
+            "preOwnerRoleId": 11,
+            "seatOwner": {"roleId": 42, "name": "自己", "battleScore": 1234.5},
+        },
+    }
+
+    result = normalize_fanxiu_lingmai_self_seat_facts(record)
+
+    assert result["available"] is True
+    assert result["seated"] is True
+    assert result["seat"]["seat_id"] == 3798
+    assert result["seat"]["owner"]["role_id"] == 42
+    assert result["evidence"]["pcap_name"] == "fanxiu_runtime_20260719_190938.pcap"
+
+
+def test_get_latest_lingmai_self_seat_returns_explicit_no_fact_result() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        result = get_latest_fanxiu_lingmai_self_seat_facts(session)
+
+    assert result["available"] is False
+    assert result["seated"] is False
+    assert result["protocol"] == "SM_VeinsSelfSeat"
+    assert result["pro_id"] == 87227
 
 
 def test_get_latest_lundao_scene_reads_latest_decoded_record_without_catch_up() -> None:

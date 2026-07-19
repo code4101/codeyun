@@ -1747,7 +1747,7 @@ def _trim_value(value: Any, *, max_items: int = 8, preserve_item_types: set[str]
     # target may sit after the eighth item, so trimming SeatVO would make a
     # deterministic role_id/seat_id selection impossible.  Nested appearance
     # data inside each seat still follows the normal limit.
-    preserve_item_types = preserve_item_types or {"MailVo", "RewardItem", "SeatVO"}
+    preserve_item_types = preserve_item_types or {"MailVo", "RewardItem", "SeatVO", "VeinsSeatVO"}
     if isinstance(value, dict):
         output: dict[str, Any] = {}
         for key, item in value.items():
