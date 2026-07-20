@@ -17,6 +17,13 @@ LUNDAO_SCENE_PROTOCOL_NAME = "SM_SeatsNoInScene"
 LUNDAO_SCENE_PROTOCOL_ID = 59518
 LUNDAO_SCENE_PROTOCOL_NAMES = ("SM_SeatsNoInScene", "SM_SyncLundaoSceneInfo")
 LUNDAO_SCENE_PROTOCOL_IDS = (59518, 59504)
+LUNDAO_STATUS_PROTOCOL_NAMES = (
+    "SM_RoomList",
+    "SM_UpdateLundaoStrength",
+    "SM_SyncLundaoRoleInfo",
+    "SM_SelfSeat",
+)
+LUNDAO_STATUS_PROTOCOL_IDS = (59502, 59508, 59514, 59530)
 LINGMAI_SCENE_PROTOCOL_NAME = "SM_VeinsSeatsNoInScene"
 LINGMAI_SCENE_PROTOCOL_ID = 87216
 LINGMAI_SCENE_PROTOCOL_NAMES = (LINGMAI_SCENE_PROTOCOL_NAME,)
@@ -68,7 +75,7 @@ def _seat_owner_fact(value: Any) -> dict[str, Any] | None:
     }
 
 
-def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, str, float]:
+def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, int, int, int, str, float]:
     """Prefer capture-segment time over the time an old backlog row was inserted."""
     match = _CAPTURE_NAME_TIME_RE.search(str(record.get("pcap_name") or ""))
     capture_epoch = 0.0
@@ -80,7 +87,42 @@ def _decoded_record_capture_sort_key(record: dict[str, Any]) -> tuple[float, str
             ).timestamp()
         except ValueError:
             pass
-    return capture_epoch, str(record.get("captured_at") or ""), float(record.get("updated_at") or 0.0)
+    evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    frame_index = _int_or_none(
+        record.get("frame_index") if record.get("frame_index") is not None else evidence.get("frame_index")
+    ) or 0
+    offset = _int_or_none(record.get("offset") if record.get("offset") is not None else evidence.get("offset")) or 0
+    sn = _int_or_none(record.get("sn") if record.get("sn") is not None else evidence.get("sn")) or 0
+    return (
+        capture_epoch,
+        frame_index,
+        offset,
+        sn,
+        str(record.get("captured_at") or ""),
+        float(record.get("updated_at") or 0.0),
+    )
+
+
+def fanxiu_packet_record_order_key(record: dict[str, Any]) -> tuple[float, int, int, int, str, float]:
+    """Public comparable order key for freshness checks on decoded game events."""
+
+    return _decoded_record_capture_sort_key(record)
+
+
+def _record_evidence(record: dict[str, Any]) -> dict[str, Any]:
+    evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    return {
+        "packet_id": str(record.get("packet_id") or evidence.get("packet_id") or ""),
+        "record_id": str(record.get("record_id") or evidence.get("record_id") or ""),
+        "pcap_name": str(record.get("pcap_name") or evidence.get("pcap_name") or ""),
+        "frame_index": _int_or_none(
+            record.get("frame_index") if record.get("frame_index") is not None else evidence.get("frame_index")
+        ),
+        "offset": _int_or_none(record.get("offset") if record.get("offset") is not None else evidence.get("offset")),
+        "sn": _int_or_none(record.get("sn") if record.get("sn") is not None else evidence.get("sn")),
+        "captured_at": str(record.get("captured_at") or ""),
+        "order_key": list(_decoded_record_capture_sort_key(record)),
+    }
 
 
 def _normalize_fanxiu_scene_seat_facts(
@@ -164,6 +206,7 @@ def _normalize_fanxiu_scene_seat_facts(
             "sn": _int_or_none(record.get("sn") if record.get("sn") is not None else evidence.get("sn")),
             "decoded_path": str(evidence.get("decoded_path") or ""),
             "stored_pcap": str(evidence.get("stored_pcap") or ""),
+            "order_key": list(_decoded_record_capture_sort_key(record)),
         },
     }
 
@@ -250,6 +293,190 @@ def get_latest_fanxiu_lundao_scene_seat_facts(
             "evidence": {},
         }
     return normalize_fanxiu_lundao_scene_seat_facts(max(records, key=_decoded_record_capture_sort_key))
+
+
+def _decoded_record_parsed(record: dict[str, Any]) -> dict[str, Any]:
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    return payload.get("parsed") if isinstance(payload.get("parsed"), dict) else {}
+
+
+def _lundao_rooms_fact(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    value = parsed.get("rooms")
+    if isinstance(value, dict):
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    rooms: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        room_id = _int_or_none(item.get("id"))
+        if room_id is None:
+            continue
+        rooms.append(
+            {
+                "room_id": room_id,
+                "available_count": _int_or_none(item.get("left")),
+                "npc_id": _int_or_none(item.get("npcId")),
+                "theme_id": _int_or_none(item.get("themeId")),
+            }
+        )
+    return rooms
+
+
+def get_latest_fanxiu_lundao_status_facts(
+    session: Session,
+    *,
+    since_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Aggregate the newest authoritative lundao status fields without side effects.
+
+    Different status fields arrive in separate protocols.  They are selected by
+    capture segment and frame order, not by database insertion time, so a late
+    backlog insert cannot roll the live state backwards.
+    """
+
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=list(LUNDAO_STATUS_PROTOCOL_NAMES),
+        pro_ids=list(LUNDAO_STATUS_PROTOCOL_IDS),
+        since_seconds=since_seconds,
+        limit=500,
+    )
+    records = result.get("records") if isinstance(result.get("records"), list) else []
+    usable = [record for record in records if _decoded_record_parsed(record)]
+    if not usable:
+        return {
+            "ok": True,
+            "available": False,
+            "reason": "no_decoded_record",
+            "strength": None,
+            "room_id": None,
+            "seat_id": None,
+            "seated": False,
+            "left_listen_time": None,
+            "sit_down_time": None,
+            "ganwu_start_time": None,
+            "rooms": [],
+            "room_available_counts": {},
+            "evidence": {},
+        }
+
+    def latest(names: set[str]) -> dict[str, Any] | None:
+        candidates = [record for record in usable if str(record.get("name") or "") in names]
+        return max(candidates, key=_decoded_record_capture_sort_key) if candidates else None
+
+    room_list_record = latest({"SM_RoomList"})
+    strength_record = latest({"SM_RoomList", "SM_UpdateLundaoStrength"})
+    role_record = latest({"SM_RoomList", "SM_SyncLundaoRoleInfo"})
+    self_seat_record = latest({"SM_SelfSeat"})
+
+    room_list_parsed = _decoded_record_parsed(room_list_record or {})
+    strength_parsed = _decoded_record_parsed(strength_record or {})
+    role_parsed = _decoded_record_parsed(role_record or {})
+    self_seat_parsed = _decoded_record_parsed(self_seat_record or {})
+    rooms = _lundao_rooms_fact(room_list_parsed)
+
+    room_id = _int_or_none(role_parsed.get("roomId"))
+    seat_id = _int_or_none(role_parsed.get("seatId"))
+    seat_vo = self_seat_parsed.get("seatVO") if isinstance(self_seat_parsed.get("seatVO"), dict) else None
+    if seat_id is None and seat_vo is not None:
+        seat_id = _int_or_none(seat_vo.get("id"))
+    if room_id == 0:
+        room_id = None
+    if seat_id == 0:
+        seat_id = None
+
+    evidence: dict[str, Any] = {}
+    for key, record in (
+        ("room_list", room_list_record),
+        ("strength", strength_record),
+        ("role", role_record),
+        ("self_seat", self_seat_record),
+    ):
+        if record is not None:
+            evidence[key] = _record_evidence(record)
+
+    sit_down_time = _int_or_none(role_parsed.get("sitDownTime"))
+    return {
+        "ok": True,
+        "available": True,
+        "strength": _int_or_none(strength_parsed.get("strength")),
+        "room_id": room_id,
+        "seat_id": seat_id,
+        # SM_RoomList is authoritative for the current room but does not carry
+        # seatId.  A positive roomId plus sitDownTime still means the player is
+        # seated; retain seat_id=None instead of misclassifying the state.
+        "seated": room_id is not None and (seat_id is not None or bool(sit_down_time)),
+        "left_listen_time": _int_or_none(role_parsed.get("leftListenTime")),
+        "sit_down_time": sit_down_time,
+        "ganwu_start_time": _int_or_none(role_parsed.get("ganwuStartTime")),
+        "rooms": rooms,
+        "room_available_counts": {
+            str(room["room_id"]): room.get("available_count")
+            for room in rooms
+        },
+        "evidence": evidence,
+    }
+
+
+def get_latest_fanxiu_lundao_kick_transition_facts(
+    session: Session,
+    *,
+    since_seconds: int = 86400,
+) -> dict[str, Any]:
+    """Detect the newest seated -> unseated server transition from packet history."""
+
+    result = list_fanxiu_packet_decoded_records(
+        session,
+        names=["SM_SyncLundaoRoleInfo"],
+        pro_ids=[59514],
+        since_seconds=max(60, int(since_seconds)),
+        limit=500,
+    )
+    records = [record for record in result.get("records") or [] if _decoded_record_parsed(record)]
+    if not records:
+        return {"ok": True, "available": False, "kicked": False, "reason": "no_role_record"}
+    records.sort(key=_decoded_record_capture_sort_key, reverse=True)
+    latest = records[0]
+    latest_parsed = _decoded_record_parsed(latest)
+    latest_state = (
+        _int_or_none(latest_parsed.get("roomId")) or 0,
+        _int_or_none(latest_parsed.get("seatId")) or 0,
+    )
+    previous = next(
+        (
+            record
+            for record in records[1:]
+            if (
+                _int_or_none(_decoded_record_parsed(record).get("roomId")) or 0,
+                _int_or_none(_decoded_record_parsed(record).get("seatId")) or 0,
+            )
+            != latest_state
+        ),
+        None,
+    )
+    previous_parsed = _decoded_record_parsed(previous or {})
+    kicked = bool(
+        latest_state == (0, 0)
+        and (_int_or_none(previous_parsed.get("roomId")) or 0) > 0
+        and (_int_or_none(latest_parsed.get("leftListenTime")) or 0) > 0
+    )
+    order_key = _decoded_record_capture_sort_key(latest)
+    event_at = datetime.fromtimestamp(order_key[0]).strftime("%Y-%m-%d %H:%M:%S") if order_key[0] else ""
+    return {
+        "ok": True,
+        "available": True,
+        "kicked": kicked,
+        "room_id": latest_state[0] or None,
+        "seat_id": latest_state[1] or None,
+        "left_listen_time": _int_or_none(latest_parsed.get("leftListenTime")),
+        "event_at": event_at,
+        "evidence": _record_evidence(latest),
+        "previous_evidence": _record_evidence(previous) if previous is not None else {},
+    }
 
 
 def get_latest_fanxiu_lingmai_scene_seat_facts(

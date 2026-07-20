@@ -1647,6 +1647,7 @@ def sync_fanxiu_live_capture_backlog(
     pcap_state_updates: list[dict[str, Any]] = []
     decode_attempts = 0
     business_backfill_attempts = 0
+    processed_paths: list[Path] = []
     max_scanned = max(
         max(1, int(limit)) * DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER,
         max(1, int(limit)),
@@ -1709,6 +1710,7 @@ def sync_fanxiu_live_capture_backlog(
     max_decode_attempts = decode_limit * 3
 
     for path in stable_paths:
+        processed_paths.append(path)
         if len(decoded) >= decode_limit or decode_attempts >= max_decode_attempts or scanned >= max_scanned:
             break
         scanned += 1
@@ -1920,7 +1922,7 @@ def sync_fanxiu_live_capture_backlog(
     merged_pcap_states = _merge_pcap_states(previous_state, pcap_state_updates)
     if use_cursor:
         confirmed_cursor_mtime, confirmed_cursor_pcap = _confirmed_cursor_from_contiguous_states(
-            stable_paths,
+            processed_paths,
             merged_pcap_states,
             previous_mtime=previous_cursor_mtime,
             previous_pcap=str(previous_state.get("confirmed_cursor_pcap") or previous_state.get("cursor_pcap") or ""),

@@ -5,6 +5,8 @@ from backend.core.fanxiu.packet.current_facts import (
     get_latest_fanxiu_lingmai_scene_seat_facts,
     get_latest_fanxiu_lingmai_self_seat_facts,
     get_latest_fanxiu_lundao_scene_seat_facts,
+    get_latest_fanxiu_lundao_kick_transition_facts,
+    get_latest_fanxiu_lundao_status_facts,
     normalize_fanxiu_lingmai_scene_seat_facts,
     normalize_fanxiu_lingmai_self_seat_facts,
     normalize_fanxiu_lundao_scene_seat_facts,
@@ -333,6 +335,138 @@ def test_get_latest_lundao_scene_returns_explicit_no_fact_result() -> None:
         "seats": [],
         "evidence": {},
     }
+
+
+def test_lundao_status_uses_frame_order_when_strength_updates_in_same_capture() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    frames = [
+        {
+            "direction": "s2c",
+            "frame_index": 27,
+            "offset": 100,
+            "sn": 1,
+            "pro_id": 59502,
+            "name": "SM_RoomList",
+            "parsed": {
+                "_class": "SM_RoomList",
+                "strength": 0,
+                "roomId": 14,
+                "seatId": 12831,
+                "leftListenTime": 18900000,
+                "sitDownTime": 123,
+                "rooms": {"items": [{"id": 15, "left": 0}, {"id": 14, "left": 5}]},
+            },
+        },
+        {
+            "direction": "s2c",
+            "frame_index": 46,
+            "offset": 200,
+            "sn": 2,
+            "pro_id": 59508,
+            "name": "SM_UpdateLundaoStrength",
+            "parsed": {"_class": "SM_UpdateLundaoStrength", "strength": 1},
+        },
+    ]
+    with Session(engine) as session:
+        rows = decoded_record_rows_from_decode_result(
+            {
+                "record_id": "lundao-status",
+                "created_at": "2026-07-20 16:25:00",
+                "pcap_name": "fanxiu_runtime_20260720_161846.pcap",
+                "capture_sha256": "status-sha",
+                "stream": 0,
+                "frames": frames,
+            }
+        )
+        upsert_fanxiu_packet_decoded_records(session, rows)
+        result = get_latest_fanxiu_lundao_status_facts(session)
+
+    assert result["strength"] == 1
+    assert result["room_id"] == 14
+    assert result["seat_id"] == 12831
+    assert result["seated"] is True
+    assert result["room_available_counts"] == {"15": 0, "14": 5}
+    assert result["evidence"]["strength"]["frame_index"] == 1
+
+
+def test_lundao_room_list_without_seat_id_still_reports_seated() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        rows = decoded_record_rows_from_decode_result(
+            {
+                "record_id": "lundao-room-only",
+                "created_at": "2026-07-20 17:53:37",
+                "pcap_name": "fanxiu_runtime_20260720_174840.pcap",
+                "capture_sha256": "room-only-sha",
+                "stream": 0,
+                "frames": [
+                    {
+                        "direction": "s2c",
+                        "frame_index": 115,
+                        "offset": 2208,
+                        "sn": 0,
+                        "pro_id": 59502,
+                        "name": "SM_RoomList",
+                        "parsed": {
+                            "_class": "SM_RoomList",
+                            "strength": 1,
+                            "roomId": 14,
+                            "leftListenTime": 18900000,
+                            "sitDownTime": 1784535539198,
+                            "rooms": {"items": [{"id": 15, "left": 0}, {"id": 14, "left": 0}]},
+                        },
+                    }
+                ],
+            }
+        )
+        upsert_fanxiu_packet_decoded_records(session, rows)
+        result = get_latest_fanxiu_lundao_status_facts(session)
+
+    assert result["room_id"] == 14
+    assert result["seat_id"] is None
+    assert result["seated"] is True
+
+
+def test_lundao_kick_transition_detects_latest_seated_to_unseated_event() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    frames = [
+        {
+            "direction": "s2c",
+            "offset": 10,
+            "sn": 1,
+            "pro_id": 59514,
+            "name": "SM_SyncLundaoRoleInfo",
+            "parsed": {"roomId": 14, "seatId": 12831, "leftListenTime": 1000},
+        },
+        {
+            "direction": "s2c",
+            "offset": 20,
+            "sn": 2,
+            "pro_id": 59514,
+            "name": "SM_SyncLundaoRoleInfo",
+            "parsed": {"roomId": 0, "seatId": 0, "leftListenTime": 1000},
+        },
+    ]
+    with Session(engine) as session:
+        rows = decoded_record_rows_from_decode_result(
+            {
+                "record_id": "kick-transition",
+                "created_at": "2026-07-20 19:00:00",
+                "pcap_name": "fanxiu_runtime_20260720_190000.pcap",
+                "capture_sha256": "kick-sha",
+                "stream": 0,
+                "frames": frames,
+            }
+        )
+        upsert_fanxiu_packet_decoded_records(session, rows)
+        result = get_latest_fanxiu_lundao_kick_transition_facts(session)
+
+    assert result["kicked"] is True
+    assert result["event_at"] == "2026-07-20 19:00:00"
+    assert result["evidence"]["frame_index"] == 1
 
 
 def test_get_latest_faze_show_prefers_latest_capture_across_both_protocols() -> None:

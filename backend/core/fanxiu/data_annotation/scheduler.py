@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlmodel import Session
+
 from pyxllib.prog import (
     build_scheduled_task_plan,
     first_valid_schedule_time_text,
@@ -24,6 +26,11 @@ from backend.core.fanxiu.data_annotation.state import (
     parse_data_annotation_daily_clock,
     parse_data_annotation_task_time,
 )
+from backend.core.fanxiu.packet.current_facts import (
+    get_latest_fanxiu_lundao_kick_transition_facts,
+    get_latest_fanxiu_lundao_status_facts,
+)
+from backend.db import engine
 
 
 TaskSupported = Callable[[dict[str, Any]], bool]
@@ -38,6 +45,7 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL = {
 _STANDARD_ENABLED_TASK_IDS = {
     "daily-boss",
     "daily-daofa",
+    "daily-lundao-seat",
     "daily-lingmai-seat",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
@@ -47,6 +55,7 @@ _STANDARD_ENABLED_TASK_IDS = {
 _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS: set[str] = set()
 _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "daily-daofa",
+    "daily-lundao-seat",
     "daily-lingmai-seat",
     "legacy-daily-dongtian",
     "legacy-daily-dongtian-clear",
@@ -271,6 +280,34 @@ def _daily_task_success_today(task: dict[str, Any], current_time: datetime) -> b
 def _task_has_synced_world_fact_next_time(task: dict[str, Any]) -> bool:
     scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
     return bool(task.get("next_time") and scheduler_meta.get("world_fact_synced_at") and scheduler_meta.get("world_fact_updated_at"))
+
+
+def _sync_lundao_kick_transition_due(tasks: list[dict[str, Any]], current_time: datetime) -> bool:
+    """Wake lundao promptly when packets show a new seated -> unseated event."""
+
+    if not (current_time.time() >= datetime.strptime("15:55", "%H:%M").time() and current_time.time() < datetime.strptime("22:00", "%H:%M").time()):
+        return False
+    task = next((item for item in tasks if str(item.get("id") or "") == "daily-lundao-seat"), None)
+    if not isinstance(task, dict) or not task.get("enabled") or not task.get("last_run_at"):
+        return False
+    with Session(engine) as session:
+        transition = get_latest_fanxiu_lundao_kick_transition_facts(session)
+        status = get_latest_fanxiu_lundao_status_facts(session, since_seconds=86400)
+    if not transition.get("kicked") or int(status.get("strength") or 0) <= 0:
+        return False
+    event_ts = parse_data_annotation_task_time(transition.get("event_at"))
+    last_run_ts = parse_data_annotation_task_time(task.get("last_run_at"))
+    if event_ts is None or last_run_ts is None or event_ts <= last_run_ts:
+        return False
+    due_text = current_time.strftime("%Y-%m-%d %H:%M:%S")
+    if task.get("next_time") == due_text and not task.get("retry_after"):
+        return False
+    task["next_time"] = due_text
+    task["retry_after"] = None
+    scheduler_meta = task.get("scheduler_meta") if isinstance(task.get("scheduler_meta"), dict) else {}
+    scheduler_meta["lundao_kick_event_at"] = transition.get("event_at")
+    task["scheduler_meta"] = scheduler_meta
+    return True
 
 
 def _daily_audit_row_is_valid_completed(row: dict[str, Any]) -> bool:
@@ -872,6 +909,20 @@ def repair_data_annotation_scheduler_tasks(
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True
+        if str(task.get("id") or "") == "daily-lundao-seat":
+            # One-time product migration from the old manual/14:00 definition.
+            # Other custom schedules remain protected by the normal override flag.
+            old_lundao_schedule = (
+                str(task.get("schedule_kind") or "") == "manual"
+                or list(task.get("schedule_times") or []) == ["14:00"]
+            )
+            if old_lundao_schedule:
+                for key in ("schedule_kind", "schedule_times", "window", "trigger_kind", "cooldown_seconds"):
+                    value = default_task.get(key)
+                    task[key] = list(value) if isinstance(value, list) else value
+                if isinstance(task.get("payload"), dict):
+                    task["payload"].pop(_SCHEDULER_SCHEDULE_OVERRIDE_KEY, None)
+                changed = True
         if str(task.get("id") or "") in _DEFAULT_LABEL_SYNC_TASK_IDS and task.get("label") != default_task.get("label"):
             task["label"] = default_task.get("label")
             changed = True
@@ -917,6 +968,8 @@ def repair_data_annotation_scheduler_tasks(
                 break
     current_time = now or datetime.now()
     current_ts = current_time.timestamp()
+    if _sync_lundao_kick_transition_due(tasks, current_time):
+        changed = True
     for task in tasks:
         daily_retry_deferred = False
         explicit_world_fact_next_time = _task_has_synced_world_fact_next_time(task)
