@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from copy import deepcopy
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -43,6 +44,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 from backend.core.fanxiu.data_annotation.scheduler import (
     build_data_annotation_scheduler_plan,
+    data_annotation_scheduler_dispatch_sort_key,
     merge_data_annotation_scheduler_task_updates,
     preserve_data_annotation_scheduler_runtime_state,
     data_annotation_scheduler_run_now_task,
@@ -698,7 +700,7 @@ def runtime_status(
             status["guard_running"] = False
             terminal = (
                 str(status.get("phase") or "") in {"done", "error", "stopped"}
-                or str(status.get("status") or "") in {"success", "error", "stopped", "skipped", "unsupported"}
+                or str(status.get("status") or "") in {"success", "error", "stopped", "skipped", "unsupported", "preempted"}
             )
             if not terminal:
                 status["status"] = "idle"
@@ -1010,6 +1012,52 @@ def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
     return scheduled_task_payload_with_meta(task)
 
 
+def scheduler_task_dispatch_level(task: dict[str, Any]) -> int:
+    try:
+        return max(0, min(5, int(task.get("dispatch_level") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def sort_scheduler_tasks_for_dispatch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply hard level, trigger cohort, retry policy, then configured soft order."""
+    return sorted(tasks, key=data_annotation_scheduler_dispatch_sort_key)
+
+
+def _higher_level_due_task_for_attempt(
+    running_task_id: str,
+    attempt_id: str,
+    *,
+    scheduler_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the highest newly-due preemptor for one live Scheduler attempt."""
+    tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    running_task = next((item for item in tasks if str(item.get("id") or "") == running_task_id), None)
+    if running_task is None or running_task.get("attempt_id") != attempt_id:
+        return None
+    if str(running_task.get("last_result") or "") != "running":
+        return None
+    running_level = scheduler_task_dispatch_level(running_task)
+    candidates = select_due_scheduled_tasks(
+        tasks,
+        task_due=data_annotation_task_due,
+        task_supported=task_supported,
+    )
+    candidates = [
+        item
+        for item in candidates
+        if str(item.get("id") or "") != running_task_id
+        and not is_deprecated_data_annotation_job_type(str(item.get("task_type") or ""))
+        and scheduler_task_dispatch_level(item) > running_level
+    ]
+    ordered = sort_scheduler_tasks_for_dispatch(candidates)
+    return ordered[0] if ordered else None
+
+
 def _task_result_from_cell(result: dict[str, Any]) -> tuple[str, str]:
     if str(result.get("status") or "error") != "success":
         return "error", str(result.get("error") or result.get("message") or "Cell 执行失败")
@@ -1119,15 +1167,48 @@ def _run_scheduler_task_cell_and_record_terminal(
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path, preserve_runtime_state=False)
     record_scheduler_task_fact(state_task, "running", world_facts_path=world_facts_path)
 
-    try:
-        result = submit_runtime_task_cell(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=str(task.get("task_type") or ""),
-            payload=task_payload_with_meta(task),
-        )
-    except Exception as exc:
-        result = {"status": "error", "phase": "error", "message": str(exc), "error": str(exc)}
+    preempting_task: dict[str, Any] | None = None
+
+    def submit_cell() -> dict[str, Any]:
+        try:
+            return submit_runtime_task_cell(
+                entry=entry,
+                entry_id=entry_id,
+                task_type=str(task.get("task_type") or ""),
+                payload=task_payload_with_meta(task),
+            )
+        except Exception as exc:
+            return {"status": "error", "phase": "error", "message": str(exc), "error": str(exc)}
+
+    # Cell execution remains synchronous from the caller's perspective, but the
+    # external Scheduler must keep observing trigger facts while it waits.  A
+    # higher-level task can therefore become due during this Cell and interrupt
+    # it without introducing any queue or priority state inside the Kernel.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-scheduler-cell") as executor:
+        future = executor.submit(submit_cell)
+        while True:
+            try:
+                result = future.result(timeout=0.5)
+                break
+            except FutureTimeoutError:
+                if preempting_task is not None:
+                    continue
+                candidate = _higher_level_due_task_for_attempt(
+                    str(task.get("id") or ""),
+                    attempt_id,
+                    scheduler_state_path=scheduler_state_path,
+                    world_facts_path=world_facts_path,
+                )
+                if candidate is None:
+                    continue
+                from backend.core.fanxiu.runtime.jupyter_kernel import send_fanxiu_kernel_manager_command
+
+                try:
+                    interrupt_result = send_fanxiu_kernel_manager_command("interrupt", timeout_seconds=5.0)
+                except (OSError, EOFError, TimeoutError):
+                    continue
+                if bool(interrupt_result.get("ok")):
+                    preempting_task = candidate
 
     tasks = read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
@@ -1147,11 +1228,17 @@ def _run_scheduler_task_cell_and_record_terminal(
     if state_task.get("attempt_id") != attempt_id:
         return result
     task_result, task_message = _task_result_from_cell(result)
+    if preempting_task is not None and str(result.get("status") or "error") != "success":
+        task_result = "preempted"
+        task_message = (
+            f"被更高级作业 {preempting_task.get('label') or preempting_task.get('id') or preempting_task.get('task_type')} "
+            f"(级别 {scheduler_task_dispatch_level(preempting_task)}) 打断；保留原触发时间等待整单重跑"
+        )
     synced_result = str(state_task.get("last_result") or "")
     if (
         str(result.get("status") or "error") == "success"
         and not str(result.get("result_text") or "").strip()
-        and synced_result in {"error", "stopped", "skipped", "unsupported"}
+        and synced_result in {"error", "stopped", "skipped", "unsupported", "preempted"}
         and (state_task.get("retry_after") or state_task.get("next_time"))
     ):
         # A disconnected/reloaded HTTP caller can lose the execute_result while
@@ -1178,7 +1265,7 @@ def _run_scheduler_task_cell_and_record_terminal(
         state_task["next_time"] = None
         state_task["retry_after"] = None
     else:
-        state_task["last_result"] = task_result if task_result in {"error", "stopped", "skipped", "unsupported"} else "error"
+        state_task["last_result"] = task_result if task_result in {"error", "stopped", "skipped", "unsupported", "preempted"} else "error"
         state_task["last_run_at"] = started_text
         state_task["last_message"] = task_message or "Cell 执行失败"
         # 触发时间属于业务调度事实。通用失败只结束 attempt；若 Cell 没有显式
@@ -1381,6 +1468,7 @@ def run_due_scheduler_tasks(
             for task in due_tasks
             if not is_deprecated_data_annotation_job_type(str(task.get("task_type") or ""))
         ]
+        due_tasks = sort_scheduler_tasks_for_dispatch(due_tasks)
     if not due_tasks:
         status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         status.update({"message": "没有可执行的到期任务", "updated_at": time.time()})

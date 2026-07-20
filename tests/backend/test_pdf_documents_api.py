@@ -1,11 +1,18 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from pypdf import PdfWriter
+from sqlmodel import Session, create_engine, select, text
 
 from backend.app import app
 from backend.core.access.auth import get_current_active_user, get_current_user_from_token, get_optional_current_user_from_token
-from backend.models import PdfDocument, PdfPageNote, PdfUserState, User, UserDevice
+from backend.models import PdfBookshelfPlacement, PdfDocument, PdfPageNote, PdfUserState, User, UserDevice
+from backend.migrations.manager import (
+    v87_add_pdf_document_metadata,
+    v88_add_pdf_bookshelf_placements,
+    v89_add_pdf_bookshelf_orientation,
+)
+from backend.api import pdf_documents as pdf_documents_api
 
 
 def _create_user(session: Session, username: str, *, superuser: bool = False) -> User:
@@ -43,6 +50,16 @@ def _write_pdf(path: Path) -> Path:
     return path
 
 
+def _write_valid_pdf(path: Path) -> Path:
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=595, height=842)
+    with path.open("wb") as output:
+        writer.write(output)
+    return path
+
+
 def _override_user(user: User | None) -> None:
     if user is None:
         app.dependency_overrides.pop(get_current_active_user, None)
@@ -70,6 +87,45 @@ def _create_pdf_document(client: TestClient, entry: UserDevice, path: Path) -> d
     return response.json()
 
 
+def test_pdf_metadata_migration_adds_cache_column():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text("CREATE TABLE pdfdocument (id INTEGER PRIMARY KEY)"))
+        migration_session.commit()
+        v87_add_pdf_document_metadata(migration_session)
+        columns = {
+            str(row[1])
+            for row in migration_session.exec(text("PRAGMA table_info(pdfdocument)")).all()
+        }
+    assert "metadata_json" in columns
+
+
+def test_pdf_bookshelf_placement_migration_creates_layout_table():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text("CREATE TABLE user (id INTEGER PRIMARY KEY)"))
+        migration_session.commit()
+        v88_add_pdf_bookshelf_placements(migration_session)
+        table = migration_session.exec(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='pdfbookshelfplacement'"
+        )).first()
+    assert table is not None
+
+
+def test_pdf_bookshelf_orientation_migration_adds_default_pose():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text("CREATE TABLE user (id INTEGER PRIMARY KEY)"))
+        migration_session.commit()
+        v88_add_pdf_bookshelf_placements(migration_session)
+        v89_add_pdf_bookshelf_orientation(migration_session)
+        columns = {
+            str(row[1]): str(row[4])
+            for row in migration_session.exec(text("PRAGMA table_info(pdfbookshelfplacement)")).all()
+        }
+    assert columns["orientation"] == "'spine_vertical'"
+
+
 def test_pdf_document_from_device_file_is_idempotent(client: TestClient, session: Session, tmp_path: Path):
     owner = _create_user(session, "pdf-owner")
     entry = _create_local_entry(session, owner)
@@ -86,6 +142,182 @@ def test_pdf_document_from_device_file_is_idempotent(client: TestClient, session
     documents = session.exec(select(PdfDocument)).all()
     assert len(documents) == 1
     assert documents[0].title == "manual.pdf"
+
+
+def test_pdf_document_metadata_is_scanned_once_and_cached(client: TestClient, session: Session, tmp_path: Path):
+    owner = _create_user(session, "pdf-metadata-owner")
+    entry = _create_local_entry(session, owner)
+    pdf_path = _write_valid_pdf(tmp_path / "geometry.pdf")
+
+    _override_user(owner)
+    try:
+        created = _create_pdf_document(client, entry, pdf_path)
+        document = session.exec(select(PdfDocument).where(PdfDocument.numeric_id == created["id"])).one()
+        hosted_path = Path(document.source_absolute_path)
+        hosted_path.unlink()
+        cached_response = client.get(f"/api/pdf-documents/{created['id']}")
+    finally:
+        _clear_user_override()
+
+    assert created["metadata"] == {
+        "status": "ready",
+        "page_count": 3,
+        "page_width_points": 612.0,
+        "page_height_points": 792.0,
+        "unit": "pt",
+        "scanned_at": created["metadata"]["scanned_at"],
+    }
+    assert cached_response.status_code == 200, cached_response.text
+    assert cached_response.json()["metadata"] == created["metadata"]
+    session.refresh(document)
+    assert document.metadata_json["source_fingerprint"].endswith(str(document.content_hash))
+
+
+def test_pdf_display_title_is_ai_normalized_and_cached(client: TestClient, session: Session, tmp_path: Path, monkeypatch):
+    owner = _create_user(session, "pdf-title-owner")
+    entry = _create_local_entry(session, owner)
+    pdf_path = _write_valid_pdf(
+        tmp_path / "200602惟海 五蕴心理学（下册） (z-library.sk, 1lib.sk) .pdf"
+    )
+    calls = []
+
+    def fake_generate(documents):
+        calls.append([document.title for document in documents])
+        return ({int(documents[0].numeric_id): "五蕴心理学（下册）"}, "gpt-5.3-codex-spark")
+
+    monkeypatch.setattr(pdf_documents_api, "_generate_pdf_display_titles", fake_generate)
+    _override_user(owner)
+    try:
+        created = _create_pdf_document(client, entry, pdf_path)
+        first_list = client.get("/api/pdf-documents")
+        second_list = client.get("/api/pdf-documents")
+    finally:
+        _clear_user_override()
+
+    assert created["title"].endswith(".pdf")
+    assert first_list.status_code == 200, first_list.text
+    assert first_list.json()[0]["display_title"] == "惟海 五蕴心理学（下册）"
+    assert first_list.json()[0]["display_title_status"] == "pending"
+    assert second_list.json()[0]["display_title"] == "五蕴心理学（下册）"
+    assert second_list.json()[0]["display_title_status"] == "ready"
+    assert len(calls) == 1
+    document = session.exec(select(PdfDocument).where(PdfDocument.numeric_id == created["id"])).one()
+    assert document.title.endswith(".pdf")
+    assert document.metadata_json["title_naming"]["source"] == "ai"
+
+
+def test_pdf_display_title_falls_back_to_clean_filename_when_ai_fails(
+    client: TestClient,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch,
+):
+    owner = _create_user(session, "pdf-title-fallback-owner")
+    entry = _create_local_entry(session, owner)
+    pdf_path = _write_valid_pdf(tmp_path / "资本论（全三卷） (z-library.sk) .pdf")
+
+    def fail_generate(_documents):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(pdf_documents_api, "_generate_pdf_display_titles", fail_generate)
+    _override_user(owner)
+    try:
+        created = _create_pdf_document(client, entry, pdf_path)
+        response = client.get("/api/pdf-documents")
+    finally:
+        _clear_user_override()
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["display_title"] == "资本论（全三卷）"
+    document = session.exec(select(PdfDocument).where(PdfDocument.numeric_id == created["id"])).one()
+    assert document.metadata_json["title_naming"]["source"] == "fallback"
+
+
+def test_pdf_display_title_recleans_legacy_cached_batch_number():
+    document = PdfDocument(
+        title="200602惟海 五蕴心理学（下册）.pdf",
+        mime_type="application/pdf",
+    )
+    document.metadata_json = {
+        "title_naming": {
+            "schema_version": pdf_documents_api.PDF_TITLE_NAMING_SCHEMA_VERSION,
+            "source_fingerprint": pdf_documents_api._pdf_title_source_fingerprint(document),
+            "display_title": "200602惟海 五蕴心理学（下册）",
+            "status": "ready",
+            "source": "ai",
+        },
+    }
+
+    assert pdf_documents_api._pdf_display_title(document) == "惟海 五蕴心理学（下册）"
+
+
+def test_pdf_bookshelf_layout_is_saved_per_user(client: TestClient, session: Session, tmp_path: Path):
+    owner = _create_user(session, "pdf-layout-owner")
+    viewer = _create_user(session, "pdf-layout-viewer")
+    entry = _create_local_entry(session, owner)
+    first_path = _write_valid_pdf(tmp_path / "layout-first.pdf")
+    second_path = _write_valid_pdf(tmp_path / "layout-second.pdf")
+    second_path.write_bytes(second_path.read_bytes() + b"\n% distinct layout test file")
+
+    _override_user(owner)
+    try:
+        first = _create_pdf_document(client, entry, first_path)
+        second = _create_pdf_document(client, entry, second_path)
+        grant_response = client.put(
+            f"/api/pdf-documents/{first['id']}/access",
+            json={"grants": [{"subject_type": "user", "subject_user_id": viewer.id, "role": "viewer"}]},
+        )
+        owner_layout = client.put(
+            "/api/pdf-documents/bookshelf-layout",
+            json={"placements": [
+                {
+                    "pdf_id": first["id"],
+                    "shelf_index": 2,
+                    "position_index": 1,
+                    "orientation": "cover_front",
+                },
+                {"pdf_id": second["id"], "shelf_index": 0, "position_index": 0},
+            ]},
+        )
+        owner_list = client.get("/api/pdf-documents")
+    finally:
+        _clear_user_override()
+
+    assert grant_response.status_code == 200, grant_response.text
+    assert owner_layout.status_code == 200, owner_layout.text
+    owner_positions = {item["id"]: item["bookshelf_placement"] for item in owner_list.json()}
+    assert owner_positions[first["id"]] == {
+        "pdf_id": first["id"],
+        "shelf_index": 2,
+        "position_index": 1,
+        "orientation": "cover_front",
+    }
+    assert owner_positions[second["id"]] == {
+        "pdf_id": second["id"],
+        "shelf_index": 0,
+        "position_index": 0,
+        "orientation": "spine_vertical",
+    }
+
+    _override_user(viewer)
+    try:
+        viewer_list = client.get("/api/pdf-documents")
+        viewer_layout = client.put(
+            "/api/pdf-documents/bookshelf-layout",
+            json={"placements": [{"pdf_id": first["id"], "shelf_index": 1, "position_index": 0}]},
+        )
+    finally:
+        _clear_user_override()
+
+    assert viewer_list.status_code == 200, viewer_list.text
+    assert viewer_list.json()[0]["bookshelf_placement"] is None
+    assert viewer_layout.status_code == 200, viewer_layout.text
+    placements = session.exec(select(PdfBookshelfPlacement)).all()
+    assert {(placement.user_id, placement.shelf_index) for placement in placements} == {
+        (owner.id, 0),
+        (owner.id, 2),
+        (viewer.id, 1),
+    }
 
 
 def test_pdf_document_is_private_until_shared(client: TestClient, session: Session, tmp_path: Path):

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { QuestionFilled } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
   advanceNextFanxiuDataAnnotationSchedulerTask,
@@ -51,6 +51,12 @@ const contextMenu = ref({
   itemId: '',
   title: '',
   task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
+});
+const schedulerRuleDialog = ref({
+  visible: false,
+  task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
+  dispatchOrder: 0,
+  retryPolicy: 'standard' as 'standard' | 'immediate',
 });
 let pollTimer: number | null = null;
 let pollTick = 0;
@@ -129,6 +135,8 @@ const businessTasks = computed(() => schedulerTasks.value
   .sort((a, b) => (
     Number(!a.enabled) - Number(!b.enabled)
     || taskTriggerValue(a) - taskTriggerValue(b)
+    || (Number(a.dispatch_order) > 0 ? Number(a.dispatch_order) : 10000)
+      - (Number(b.dispatch_order) > 0 ? Number(b.dispatch_order) : 10000)
     || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
   )));
 
@@ -260,6 +268,14 @@ const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.schedule_kind === 'manual') return '手动触发的作业实例没有固定下次触发时间';
   return '';
 };
+
+const taskDispatchLevel = (task: FanxiuDataAnnotationSchedulerTaskItem) => (
+  Math.min(5, Math.max(0, Number(task.dispatch_level) || 0))
+);
+
+const taskDispatchLevelClass = (task: FanxiuDataAnnotationSchedulerTaskItem) => (
+  `is-level-${taskDispatchLevel(task)}`
+);
 
 const canAdvanceTaskNext = (task: FanxiuDataAnnotationSchedulerTaskItem | null) => (
   Boolean(task && ['daily', 'weekly'].includes(task.schedule_kind || ''))
@@ -603,6 +619,59 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
   }
 };
 
+const openContextTaskRules = () => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task) return;
+  schedulerRuleDialog.value = {
+    visible: true,
+    task,
+    dispatchOrder: Math.min(9999, Math.max(0, Number(task.dispatch_order) || 0)),
+    retryPolicy: task.retry_policy === 'immediate' ? 'immediate' : 'standard',
+  };
+};
+
+const saveSchedulerRules = async () => {
+  const task = schedulerRuleDialog.value.task;
+  if (!task) return;
+  const dispatchOrder = Math.min(9999, Math.max(0, Math.trunc(Number(schedulerRuleDialog.value.dispatchOrder) || 0)));
+  const retryPolicy = schedulerRuleDialog.value.retryPolicy === 'immediate' ? 'immediate' : 'standard';
+  actionLoading.value = `rules:${task.id}`;
+  try {
+    const response = await saveFanxiuDataAnnotationSchedulerTasks([{
+      ...task,
+      dispatch_order: dispatchOrder,
+      retry_policy: retryPolicy,
+    }]);
+    schedulerTasks.value = response.tasks || [];
+    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
+    schedulerRuleDialog.value.visible = false;
+    ElMessage.success('调度规则已保存');
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
+const changeTaskDispatchLevel = async (task: FanxiuDataAnnotationSchedulerTaskItem, delta: -1 | 1) => {
+  const previousLevel = taskDispatchLevel(task);
+  const nextLevel = Math.min(5, Math.max(0, previousLevel + delta));
+  if (nextLevel === previousLevel) return;
+  actionLoading.value = `level:${task.id}`;
+  task.dispatch_level = nextLevel;
+  try {
+    const response = await saveFanxiuDataAnnotationSchedulerTasks([{ ...task, dispatch_level: nextLevel }]);
+    schedulerTasks.value = response.tasks || [];
+    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
+  } catch (error: any) {
+    task.dispatch_level = previousLevel;
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
 const startPolling = () => {
   if (pollTimer !== null) return;
   pollTimer = window.setInterval(() => {
@@ -797,6 +866,7 @@ onUnmounted(() => {
               <col class="col-name" />
               <col class="col-exec" />
               <col class="col-enable" />
+              <col class="col-level" />
               <col class="col-trigger" />
             </colgroup>
             <thead>
@@ -805,6 +875,7 @@ onUnmounted(() => {
                 <th>名称</th>
                 <th>触发</th>
                 <th>启用</th>
+                <th>级别</th>
                 <th>下次触发</th>
               </tr>
             </thead>
@@ -827,10 +898,37 @@ onUnmounted(() => {
                     @click="toggleTaskEnabled(task)"
                   />
                 </td>
-                <td :title="nextTriggerTitle(task)">{{ nextTriggerText(task) }}</td>
+                <td>
+                  <span class="dispatch-level-stepper">
+                    <button
+                      class="dispatch-level-button"
+                      type="button"
+                      :disabled="taskDispatchLevel(task) <= 0 || actionLoading === `level:${task.id}`"
+                      title="降低调度级别"
+                      aria-label="降低调度级别"
+                      @click="changeTaskDispatchLevel(task, -1)"
+                    >
+                      <el-icon><ArrowLeft /></el-icon>
+                    </button>
+                    <span class="dispatch-level-value">{{ taskDispatchLevel(task) }}级</span>
+                    <button
+                      class="dispatch-level-button"
+                      type="button"
+                      :disabled="taskDispatchLevel(task) >= 5 || actionLoading === `level:${task.id}`"
+                      title="提高调度级别"
+                      aria-label="提高调度级别"
+                      @click="changeTaskDispatchLevel(task, 1)"
+                    >
+                      <el-icon><ArrowRight /></el-icon>
+                    </button>
+                  </span>
+                </td>
+                <td :title="nextTriggerTitle(task)">
+                  <span class="next-trigger-time" :class="taskDispatchLevelClass(task)">{{ nextTriggerText(task) }}</span>
+                </td>
               </tr>
               <tr v-if="!businessTasks.length">
-                <td colspan="5" class="empty-cell">暂无作业</td>
+                <td colspan="6" class="empty-cell">暂无作业</td>
               </tr>
             </tbody>
           </table>
@@ -904,6 +1002,43 @@ onUnmounted(() => {
       </section>
     </main>
 
+    <el-dialog
+      v-model="schedulerRuleDialog.visible"
+      title="调度规则"
+      width="420px"
+      destroy-on-close
+    >
+      <div class="scheduler-rule-form">
+        <label>
+          <span>软顺序</span>
+          <el-input-number
+            v-model="schedulerRuleDialog.dispatchOrder"
+            :min="0"
+            :max="9999"
+            :step="10"
+            controls-position="right"
+          />
+        </label>
+        <p>同级且同一触发时间的作业按较小数字先运行；0 表示未指定。</p>
+        <label>
+          <span>失败重试</span>
+          <el-select v-model="schedulerRuleDialog.retryPolicy">
+            <el-option label="标准（先让同批其它作业运行）" value="standard" />
+            <el-option label="立即（成功前保持当前顺序）" value="immediate" />
+          </el-select>
+        </label>
+        <p>两种策略都不改原触发时间，也不会自动加入十分钟冷却。</p>
+      </div>
+      <template #footer>
+        <el-button @click="schedulerRuleDialog.visible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="Boolean(schedulerRuleDialog.task && actionLoading === `rules:${schedulerRuleDialog.task.id}`)"
+          @click="saveSchedulerRules"
+        >保存</el-button>
+      </template>
+    </el-dialog>
+
     <div
       v-if="contextMenu.visible"
       class="runtime-context-menu"
@@ -911,6 +1046,7 @@ onUnmounted(() => {
       @click.stop
     >
       <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">触发一次</button>
+      <button v-if="contextMenu.task" type="button" @click="openContextTaskRules">调度规则</button>
       <button
         v-if="canAdvanceTaskNext(contextMenu.task)"
         type="button"
@@ -1081,7 +1217,7 @@ onUnmounted(() => {
 }
 
 .runtime-native-table.is-job-table {
-  width: 516px;
+  width: 636px;
 }
 
 .runtime-native-table th,
@@ -1121,6 +1257,11 @@ onUnmounted(() => {
 
 .runtime-native-table th:nth-child(5),
 .runtime-native-table td:nth-child(5) {
+  width: 120px;
+}
+
+.runtime-native-table.is-job-table th:nth-child(6),
+.runtime-native-table.is-job-table td:nth-child(6) {
   width: 116px;
 }
 
@@ -1156,8 +1297,77 @@ onUnmounted(() => {
 }
 
 .runtime-native-table th:nth-child(4),
-.runtime-native-table td:nth-child(4) {
+.runtime-native-table td:nth-child(4),
+.runtime-native-table.is-job-table th:nth-child(5),
+.runtime-native-table.is-job-table td:nth-child(5) {
   text-align: center;
+}
+
+.dispatch-level-stepper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.dispatch-level-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dispatch-level-button:hover:not(:disabled),
+.dispatch-level-button:focus-visible:not(:disabled) {
+  color: #1d4ed8;
+  background: #eff6ff;
+  outline: none;
+}
+
+.dispatch-level-button:disabled {
+  color: #cbd5e1;
+  cursor: default;
+}
+
+.dispatch-level-value {
+  min-width: 30px;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.next-trigger-time {
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+.next-trigger-time.is-level-1 {
+  color: #475569;
+}
+
+.next-trigger-time.is-level-2 {
+  color: #0369a1;
+}
+
+.next-trigger-time.is-level-3 {
+  color: #6d28d9;
+}
+
+.next-trigger-time.is-level-4 {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.next-trigger-time.is-level-5 {
+  color: #b91c1c;
+  font-weight: 600;
 }
 
 .runtime-native-table strong {
@@ -1214,6 +1424,29 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.scheduler-rule-form {
+  display: grid;
+  gap: 8px;
+}
+
+.scheduler-rule-form label {
+  display: grid;
+  grid-template-columns: 72px max-content;
+  align-items: center;
+  gap: 10px;
+}
+
+.scheduler-rule-form p {
+  margin: 0 0 8px 82px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scheduler-rule-form .el-select {
+  width: 240px;
 }
 
 .runtime-state-section {

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_ocr_lines, query_spatial_ocr
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
 
 
-def _tokens(text: str, *, x: float = 0, y: float = 10, width: float = 20, height: float = 20):
+def _tokens(text: str, *, x: float = 0, y: float = 10, width: float = 20, height: float = 20, line_id: str | None = None, line_order: int = 0):
     return [
-        {"text": char, "x": x + index * width, "y": y, "w": width, "h": height}
+        {
+            "text": char, "x": x + index * width, "y": y, "w": width, "h": height,
+            **({"parent_line_id": line_id, "line_order": line_order, "order": index} if line_id else {}),
+        }
         for index, char in enumerate(text)
     ]
 
@@ -32,19 +35,19 @@ def test_spatial_ocr_uses_real_variable_width_character_boxes():
     result = query_spatial_ocr(tokens, {"x": 10, "y": 0, "w": 68, "h": 40})
 
     assert result["text"] == "乙丙"
-    assert result["fragments"][0]["source"] == "tokens"
+    assert result["fragments"][0]["source"] == "roi_tokens_unlinked"
 
 
 def test_spatial_ocr_groups_rows_by_geometry_without_line_metadata():
-    tokens = _tokens("甲乙", x=10, y=10) + _tokens("丙丁", x=10, y=60)
+    tokens = _tokens("甲乙", x=10, y=10, line_id="line-0") + _tokens("丙丁", x=10, y=60, line_id="line-1", line_order=1)
 
     assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["甲乙", "丙丁"]
 
 
-def test_spatial_ocr_splits_distant_gui_labels_on_the_same_row():
+def test_paddle_parent_lines_keep_distant_gui_labels_separate_on_the_same_row():
     tokens = (
-        _tokens("盟玉清道宗12/12", x=71, y=883, width=30, height=31)
-        + _tokens("太明玉墟", x=638, y=886, width=29, height=31)
+        _tokens("盟玉清道宗12/12", x=71, y=883, width=30, height=31, line_id="line-0")
+        + _tokens("太明玉墟", x=638, y=886, width=29, height=31, line_id="line-1", line_order=1)
     )
 
     fragments = group_ocr_tokens(tokens)
@@ -53,13 +56,21 @@ def test_spatial_ocr_splits_distant_gui_labels_on_the_same_row():
     assert fragments[1]["x"] == 638.0
 
 
-def test_spatial_ocr_splits_location_from_distant_progress_and_timer():
-    tokens = (
-        _tokens("白玉京", x=403, y=625, width=30, height=33)
-        + _tokens("100%01:23:35", x=691, y=622, width=10, height=21)
-    )
+def test_native_lines_keep_location_separate_from_progress_and_timer():
+    lines = [
+        {"line_id": "line-0", "order": 0, "text": "白玉京", "x": 403, "y": 625, "w": 90, "h": 33, "source": "paddle"},
+        {"line_id": "line-1", "order": 1, "text": "100%", "x": 691, "y": 622, "w": 40, "h": 21, "source": "paddle"},
+        {"line_id": "line-2", "order": 2, "text": "01:23:35", "x": 760, "y": 622, "w": 80, "h": 21, "source": "paddle"},
+    ]
 
-    assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["白玉京", "100%01:23:35"]
+    assert [line["text"] for line in query_ocr_lines(lines, {"x": 0, "y": 0, "w": 900, "h": 1600})] == ["白玉京", "100%", "01:23:35"]
+
+
+def test_unlinked_tokens_are_not_guessed_back_into_a_line():
+    fragments = group_ocr_tokens(_tokens("甲乙", x=10, y=10))
+
+    assert [fragment["text"] for fragment in fragments] == ["甲", "乙"]
+    assert all(fragment["source"] == "unlinked_token_fallback" for fragment in fragments)
 
 
 def test_locate_substring_uses_exact_character_boxes():
@@ -71,6 +82,15 @@ def test_locate_substring_uses_exact_character_boxes():
     ]
 
     assert locate_text_box(tokens, "真仙") == {"x": 146.0, "y": 1144.0, "w": 73.0, "h": 49.0}
+
+
+def test_locate_substring_never_crosses_paddle_parent_lines():
+    tokens = (
+        _tokens("白玉", x=400, y=625, line_id="line-0")
+        + _tokens("京100%", x=700, y=622, line_id="line-1", line_order=1)
+    )
+
+    assert locate_text_box(tokens, "白玉京") is None
 
 
 def test_spatial_ocr_includes_character_at_thirty_percent_overlap():
@@ -138,3 +158,18 @@ def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
     assert runner._match_shape(ctx, image, first, "same-frame", condition="ocr")["matched"] is True
     assert runner._match_shape(ctx, image, second, "same-frame", condition="ocr")["matched"] is True
     assert calls == [("same-frame", {"return_word_box": True})]
+
+
+def test_runtime_fragments_use_cached_native_lines_not_token_geometry(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    native_lines = [
+        {"line_id": "line-0", "order": 0, "text": "盟玉清道宗12/12", "x": 71, "y": 883, "w": 359, "h": 31, "source": "paddle"},
+        {"line_id": "line-1", "order": 1, "text": "太明玉墟", "x": 638, "y": 886, "w": 116, "h": 31, "source": "paddle"},
+    ]
+
+    monkeypatch.setattr(runner, "_ocr_frame", lambda *_args, **_kwargs: {"lines": native_lines, "tokens": []})
+    ctx: dict = {}
+
+    assert runner._cached_ocr_fragments(ctx, "dongtian-frame") == native_lines
+    assert ctx["_ocr_tokens_cache"]["version"] == 4
+    assert ctx["_ocr_tokens_cache"]["lines"] == native_lines

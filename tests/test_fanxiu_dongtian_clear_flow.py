@@ -384,8 +384,17 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
 
         def ocr_fragments_in_shapes(self, scene, shapes, *, frame_data_url):
             return [
-                {"text": "\u767d\u7389\u4eac100%", "x": 388, "y": 624, "w": 130, "h": 30},
-                {"text": "\u592a\u660e", "x": 600, "y": 874, "w": 80, "h": 30},
+                {"line_id": "line-0", "text": "\u767d\u7389\u4eac100%", "x": 388, "y": 624, "w": 130, "h": 30},
+                {"line_id": "line-1", "text": "\u592a\u660e", "x": 600, "y": 874, "w": 80, "h": 30},
+            ]
+
+        def ocr_tokens_in_shapes(self, scene, shapes, *, frame_data_url):
+            return [
+                {"text": char, "x": 388 + index * 18, "y": 624, "w": 18, "h": 30, "parent_line_id": "line-0", "line_order": 0, "order": index}
+                for index, char in enumerate("\u767d\u7389\u4eac100%")
+            ] + [
+                {"text": char, "x": 600 + index * 40, "y": 874, "w": 40, "h": 30, "parent_line_id": "line-1", "line_order": 1, "order": index}
+                for index, char in enumerate("\u592a\u660e")
             ]
 
         def click_frame_point(self, scene, x, y):
@@ -437,3 +446,39 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
     assert partial_result == "\u592a\u660e\u7389\u589f"
     assert runtime.clicked
     assert runtime.scrolled is False
+
+
+def test_daily_dongtian_location_uses_only_tokens_linked_to_native_line():
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    lines = [
+        {"line_id": "line-20", "text": "\u7389\u6e05\u9053\u5b9712/12", "x": 103, "y": 898, "w": 191, "h": 28},
+        {"line_id": "line-21", "text": "\u592a\u660e\u7389\u589f", "x": 644, "y": 898, "w": 113, "h": 31},
+    ]
+    tokens = [
+        {"text": char, "x": 644 + index * 28, "y": 898, "w": 28, "h": 31, "parent_line_id": "line-21", "line_order": 21, "order": index}
+        for index, char in enumerate("\u592a\u660e\u7389\u589f")
+    ]
+
+    assert runner._daily_dongtian_location_box(lines[0], tokens, "\u592a\u660e\u7389\u589f") is None
+    assert runner._daily_dongtian_location_box(lines[1], tokens, "\u592a\u660e\u7389\u589f") == {
+        "x": 644.0,
+        "y": 898.0,
+        "w": 112.0,
+        "h": 31.0,
+    }
+
+
+def test_daily_dongtian_location_suffix_uses_real_linked_token_box():
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    line = {"line_id": "line-14", "text": "\u767d\u7389\u4eac100%", "x": 414, "y": 638, "w": 130, "h": 32}
+    tokens = [
+        {"text": char, "x": 414 + index * 20, "y": 638, "w": 20, "h": 32, "parent_line_id": "line-14", "line_order": 14, "order": index}
+        for index, char in enumerate("\u767d\u7389\u4eac100%")
+    ]
+
+    assert runner._daily_dongtian_location_box(line, tokens, "\u767d\u7389\u4eac") == {
+        "x": 414.0,
+        "y": 638.0,
+        "w": 60.0,
+        "h": 32.0,
+    }

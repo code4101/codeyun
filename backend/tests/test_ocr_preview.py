@@ -236,8 +236,27 @@ def test_extract_ocr_tokens_supports_paddlex_3_text_word_fields() -> None:
     )
 
     assert [token["text"] for token in tokens] == ["真", "仙", "试", "炼", "2", "/", "2"]
-    assert tokens[0] == {"text": "真", "x": 10.0, "y": 20.0, "w": 20.0, "h": 30.0}
-    assert tokens[-1] == {"text": "2", "x": 126.0, "y": 80.0, "w": 12.0, "h": 20.0}
+    assert tokens[0] == {"text": "真", "x": 10.0, "y": 20.0, "w": 20.0, "h": 30.0, "parent_line_id": "line-0", "line_order": 0, "order": 0}
+    assert tokens[-1] == {"text": "2", "x": 126.0, "y": 80.0, "w": 12.0, "h": 20.0, "parent_line_id": "line-1", "line_order": 1, "order": 2}
+
+
+def test_extract_ocr_spatial_document_preserves_native_lines_and_parent_links() -> None:
+    from backend.core.ocr.spatial_document import extract_ocr_spatial_document
+
+    result = extract_ocr_spatial_document({
+        "rec_texts": ["盟玉清道宗12/12", "太明玉墟"],
+        "rec_scores": [0.98, 0.96],
+        "rec_boxes": [[71, 883, 430, 914], [638, 886, 754, 917]],
+        "text_word": [["盟", "玉"], ["太", "明"]],
+        "text_word_boxes": [
+            [[71, 883, 101, 914], [102, 883, 132, 914]],
+            [[638, 886, 667, 917], [668, 886, 697, 917]],
+        ],
+    })
+
+    assert [line["text"] for line in result["lines"]] == ["盟玉清道宗12/12", "太明玉墟"]
+    assert result["lines"][0]["score"] == 0.98
+    assert [token["parent_line_id"] for token in result["tokens"]] == ["line-0", "line-0", "line-1", "line-1"]
 
 
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(

@@ -193,6 +193,50 @@ def data_annotation_scheduler_due_timestamp(task: dict[str, Any]) -> float:
     return schedule_task_due_timestamp(task)
 
 
+def data_annotation_scheduler_dispatch_level(task: dict[str, Any]) -> int:
+    try:
+        return max(0, min(5, int(task.get("dispatch_level") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def data_annotation_scheduler_dispatch_order(task: dict[str, Any]) -> int:
+    try:
+        return max(0, min(9999, int(task.get("dispatch_order") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def data_annotation_scheduler_retry_policy(task: dict[str, Any]) -> str:
+    value = str(task.get("retry_policy") or "standard").strip().lower()
+    return value if value in {"standard", "immediate"} else "standard"
+
+
+def data_annotation_scheduler_retry_rank(task: dict[str, Any]) -> int:
+    """Move a standard failed attempt behind fresh peers in the same due cohort."""
+    if data_annotation_scheduler_retry_policy(task) == "immediate":
+        return 0
+    if str(task.get("last_result") or "") not in {"error", "stopped", "skipped", "unsupported"}:
+        return 0
+    due_at = parse_data_annotation_task_time(task.get("retry_after") or task.get("next_time"))
+    last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
+    if due_at is None or last_run_at is None or last_run_at < due_at:
+        return 0
+    return 1
+
+
+def data_annotation_scheduler_dispatch_sort_key(task: dict[str, Any]) -> tuple[int, float, int, int, str]:
+    due_ts = data_annotation_scheduler_due_timestamp(task)
+    order = data_annotation_scheduler_dispatch_order(task)
+    return (
+        -data_annotation_scheduler_dispatch_level(task),
+        due_ts,
+        data_annotation_scheduler_retry_rank(task),
+        order if order > 0 else 10000,
+        str(task.get("id") or ""),
+    )
+
+
 def data_annotation_scheduler_order_key(task: dict[str, Any]) -> tuple[int, float, str]:
     return schedule_task_order_key(task)
 
@@ -412,7 +456,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             fact.pop("discovered_retry_after", None)
             fact.pop("retry_after", None)
             filtered_task_facts[task_id] = fact
-        elif fact_result in {"error", "stopped", "skipped", "unsupported"} and fact_retry_after:
+        elif fact_result in {"error", "stopped", "skipped", "unsupported", "preempted"} and fact_retry_after:
             fact = dict(fact)
             fact.pop("discovered_next_time", None)
             fact.pop("next_time", None)
@@ -446,7 +490,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         fact_last_run_at = parse_data_annotation_task_time(fact.get("last_run_at"))
         if (
             fact_result == "success"
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and fact_last_run_at is not None
             and (last_run_at is None or fact_last_run_at >= last_run_at)
         ):
@@ -466,7 +510,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             continue
         if (
             fact_result == "success"
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and fact_last_run_at is not None
             and last_run_at is not None
             and fact_last_run_at < last_run_at
@@ -474,7 +518,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             continue
         if (
             fact_result in {"queued", "running"}
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and fact_last_run_at is not None
             and last_run_at is not None
             and fact_last_run_at <= last_run_at
@@ -482,7 +526,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
             continue
         fact_retry_after = data_annotation_fact_time_text(fact, "discovered_retry_after", "retry_after")
         if (
-            fact_result in {"error", "stopped", "skipped", "unsupported"}
+            fact_result in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and fact_retry_after
             and fact_last_run_at is not None
             and (last_run_at is None or fact_last_run_at >= last_run_at)
@@ -541,27 +585,30 @@ def merge_data_annotation_scheduler_task_updates(
     *,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    """Apply id-addressed upserts; omission is never an implicit deletion."""
     incoming_by_id = {
         str(task.get("id") or ""): task
         for task in incoming_tasks
         if isinstance(task, dict) and str(task.get("id") or "")
     }
-    if incoming_by_id and len(incoming_by_id) < len([task for task in current_tasks if str(task.get("id") or "")]):
-        merged_input: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for current in current_tasks:
-            task_id = str(current.get("id") or "")
-            if not task_id:
-                continue
-            seen.add(task_id)
-            merged_input.append(incoming_by_id.get(task_id, current))
-        for task_id, incoming in incoming_by_id.items():
-            if task_id not in seen:
-                merged_input.append(incoming)
-        incoming_tasks = merged_input
+    # This JSON is live shared state.  A stale browser snapshot may have the
+    # same length as the current list while containing a different id set.
+    # Length-based replacement would silently erase omitted jobs.  Deletion
+    # must use a future explicit action; this endpoint only updates/adds ids.
+    merged_input: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for current in current_tasks:
+        task_id = str(current.get("id") or "")
+        if not task_id:
+            continue
+        seen.add(task_id)
+        merged_input.append(incoming_by_id.get(task_id, current))
+    for task_id, incoming in incoming_by_id.items():
+        if task_id not in seen:
+            merged_input.append(incoming)
     return merge_scheduled_task_updates(
         current_tasks,
-        incoming_tasks,
+        merged_input,
         normalizer=normalize_data_annotation_scheduler_task,
         next_time_resolver=lambda task, base_time: next_data_annotation_scheduler_time(task, base_time),
         base_time=now or datetime.now(),
@@ -577,6 +624,29 @@ def repair_data_annotation_scheduler_tasks(
     now: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     source = raw if isinstance(raw, list) else default_tasks
+    raw_items = [item for item in source if isinstance(item, dict)]
+    dispatch_level_migration_needed = not isinstance(raw, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("dispatch_level"), int)
+        or isinstance(item.get("dispatch_level"), bool)
+        or not 0 <= int(item.get("dispatch_level")) <= 5
+        for item in source
+    )
+    invalid_dispatch_order_ids = {
+        str(item.get("id") or "")
+        for item in raw_items
+        if not isinstance(item.get("dispatch_order"), int)
+        or isinstance(item.get("dispatch_order"), bool)
+        or not 0 <= int(item.get("dispatch_order")) <= 9999
+    }
+    invalid_retry_policy_ids = {
+        str(item.get("id") or "")
+        for item in raw_items
+        if str(item.get("retry_policy") or "").strip().lower() not in {"standard", "immediate"}
+    }
+    dispatch_policy_migration_needed = bool(
+        not isinstance(raw, list) or invalid_dispatch_order_ids or invalid_retry_policy_ids
+    )
     tasks = [task for item in source if (task := normalize_data_annotation_scheduler_task(item))]
     if not tasks:
         tasks = default_tasks
@@ -812,7 +882,7 @@ def repair_data_annotation_scheduler_tasks(
         and not is_deprecated_data_annotation_job_type(str(task.get("task_type") or ""))
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
-    changed = len(tasks) != before_cleanup_count
+    changed = len(tasks) != before_cleanup_count or dispatch_level_migration_needed or dispatch_policy_migration_needed
     if legacy_mail_selective_claim_task is not None:
         changed = True
     if legacy_daily_boss_task is not None:
@@ -856,6 +926,11 @@ def repair_data_annotation_scheduler_tasks(
         default_task = defaults_by_id.get(str(task.get("id") or ""))
         if not default_task:
             continue
+        task_id = str(task.get("id") or "")
+        if task_id in invalid_dispatch_order_ids:
+            task["dispatch_order"] = default_task.get("dispatch_order", 0)
+        if task_id in invalid_retry_policy_ids:
+            task["retry_policy"] = default_task.get("retry_policy", "standard")
         previous_task_type = str(task.get("task_type") or "")
         default_task_type = str(default_task.get("task_type") or "")
         task_payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
@@ -1012,7 +1087,7 @@ def repair_data_annotation_scheduler_tasks(
                 changed = True
         if (
             task.get("enabled")
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and str(task.get("schedule_kind") or "") == "daily"
             and not explicit_world_fact_next_time
         ):
@@ -1024,7 +1099,7 @@ def repair_data_annotation_scheduler_tasks(
                 changed = True
         if (
             task.get("enabled")
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported", "preempted"}
             and not task.get("next_time")
             and not task.get("retry_after")
             and not daily_retry_deferred
@@ -1060,7 +1135,7 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
-            and str(task.get("last_result") or "") not in {"blocked", "error", "stopped", "skipped", "unsupported", *_UNSCHEDULED_MANUAL_RESULTS}
+            and str(task.get("last_result") or "") not in {"blocked", "error", "stopped", "skipped", "unsupported", "preempted", *_UNSCHEDULED_MANUAL_RESULTS}
             and not task.get("retry_after")
             and not daily_retry_deferred
             and not explicit_world_fact_next_time
@@ -1179,6 +1254,7 @@ def build_data_annotation_scheduler_plan(
         task_facts=task_facts,
         now=current_ts,
     )
+    plan["due_tasks"] = sorted(plan["due_tasks"], key=data_annotation_scheduler_dispatch_sort_key)
     return {
         "next_action": plan["next_action"],
         "message": plan["message"],

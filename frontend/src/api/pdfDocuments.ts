@@ -26,12 +26,37 @@ export interface PdfUserState {
   updated_at?: number | null;
 }
 
+export interface PdfDocumentMetadata {
+  status: 'pending' | 'ready' | 'error';
+  page_count?: number | null;
+  page_width_points?: number | null;
+  page_height_points?: number | null;
+  unit: 'pt';
+  scanned_at?: number | null;
+}
+
+export interface PdfBookshelfPlacement {
+  pdf_id: number;
+  shelf_index: number;
+  position_index: number;
+  orientation: PdfBookshelfOrientation;
+}
+
+export type PdfBookshelfOrientation = 'spine_vertical' | 'spine_horizontal' | 'cover_front';
+
 export interface PdfDocumentDetail {
   id: number;
   title: string;
+  display_title: string;
+  display_title_status: 'pending' | 'ready';
+  owner_user_id?: number | null;
+  source_device_id: string;
+  source_absolute_path: string;
   mime_type: string;
   size_bytes?: number | null;
   content_hash?: string | null;
+  metadata: PdfDocumentMetadata;
+  bookshelf_placement?: PdfBookshelfPlacement | null;
   created_at: number;
   updated_at: number;
   access: PdfResourceAccess;
@@ -93,6 +118,11 @@ export interface PdfPageNoteUpdateRequest {
 
 export async function fetchPdfDocuments() {
   const response = await api.get<PdfDocumentSummary[]>('/pdf-documents');
+  return response.data;
+}
+
+export async function updatePdfBookshelfLayout(placements: PdfBookshelfPlacement[]) {
+  const response = await api.put<PdfBookshelfPlacement[]>('/pdf-documents/bookshelf-layout', { placements });
   return response.data;
 }
 

@@ -5342,6 +5342,68 @@ def v86_add_zaohua_alchemy_drug_tolerance(session: Session):
     print("  Added Zaohua alchemy drug tolerance.")
 
 
+def v87_add_pdf_document_metadata(session: Session):
+    """Migration V87: Cache intrinsic PDF page geometry and page count."""
+    print("Running System Upgrade V87: Add PDF document metadata cache...")
+    if not _table_exists(session, "pdfdocument"):
+        print("  PDF document table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "pdfdocument")
+    if "metadata_json" in columns:
+        print("  Column 'metadata_json' already exists, skipping.")
+        return
+    session.exec(text("ALTER TABLE pdfdocument ADD COLUMN metadata_json JSON NOT NULL DEFAULT '{}'"))
+    session.commit()
+    print("  Added PDF document metadata cache.")
+
+
+def v88_add_pdf_bookshelf_placements(session: Session):
+    """Migration V88: Persist each user's PDF shelf and position ordering."""
+    print("Running System Upgrade V88: Add PDF bookshelf placements...")
+    session.exec(text(
+        """
+        CREATE TABLE IF NOT EXISTS pdfbookshelfplacement (
+            id VARCHAR NOT NULL PRIMARY KEY,
+            pdf_document_id VARCHAR NOT NULL,
+            user_id INTEGER NOT NULL,
+            shelf_index INTEGER NOT NULL DEFAULT 0,
+            position_index INTEGER NOT NULL DEFAULT 0,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_pdfbookshelfplacement_document_user UNIQUE (pdf_document_id, user_id),
+            FOREIGN KEY(user_id) REFERENCES user (id)
+        )
+        """
+    ))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfplacement_pdf_document_id ON pdfbookshelfplacement (pdf_document_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfplacement_user_id ON pdfbookshelfplacement (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfplacement_shelf_index ON pdfbookshelfplacement (shelf_index)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfplacement_position_index ON pdfbookshelfplacement (position_index)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added PDF bookshelf placements.")
+
+
+def v89_add_pdf_bookshelf_orientation(session: Session):
+    """Migration V89: Persist how each book faces the reader on its shelf."""
+    print("Running System Upgrade V89: Add PDF bookshelf orientation...")
+    if not _table_exists(session, "pdfbookshelfplacement"):
+        print("  PDF bookshelf placement table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "pdfbookshelfplacement")
+    if "orientation" in columns:
+        print("  Column 'orientation' already exists, skipping.")
+        return
+    session.exec(text(
+        "ALTER TABLE pdfbookshelfplacement "
+        "ADD COLUMN orientation VARCHAR(32) NOT NULL DEFAULT 'spine_vertical'"
+    ))
+    session.commit()
+    print("  Added PDF bookshelf orientation.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5431,6 +5493,9 @@ MIGRATIONS = [
     (84, "Add Zaohua herb crafting attributes", v84_add_zaohua_herb_crafting_attributes),
     (85, "Add Zaohua alchemy output effects", v85_add_zaohua_alchemy_output_effects),
     (86, "Add Zaohua alchemy drug tolerance", v86_add_zaohua_alchemy_drug_tolerance),
+    (87, "Add PDF document metadata cache", v87_add_pdf_document_metadata),
+    (88, "Add PDF bookshelf placements", v88_add_pdf_bookshelf_placements),
+    (89, "Add PDF bookshelf orientation", v89_add_pdf_bookshelf_orientation),
 ]
 
 def get_current_version(session: Session) -> int:

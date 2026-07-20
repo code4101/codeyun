@@ -6,16 +6,21 @@ import re
 import time
 import html as html_module
 import hashlib
+import json
 import shutil
+import uuid
+from collections import Counter
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
+from pypdf import PdfReader
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -27,11 +32,14 @@ from backend.core.access.auth import (
     get_current_active_user,
     get_optional_current_user_from_token,
 )
+from backend.core.ai.chat import chat_with_provider
 from backend.core.devices.files import ensure_device_file_resource_identity
 from backend.core.settings import get_settings
+from backend.core.temp_paths import codeyun_temp_root
 from backend.db import get_session
 from backend.models import (
     DeviceFile,
+    PdfBookshelfPlacement,
     PdfDocument,
     PdfPageNote,
     PdfUserState,
@@ -50,6 +58,10 @@ PDF_HOSTED_ENTRY_ID = "codeyun-pdf-store"
 PDF_HOSTED_DEVICE_ID = "codeyun-pdf-store"
 PDF_CONTENT_TOKEN_SCOPE = "pdf-document-content"
 PDF_CONTENT_TOKEN_EXPIRE_MINUTES = 15
+PDF_METADATA_SCHEMA_VERSION = 1
+PDF_TITLE_NAMING_SCHEMA_VERSION = 1
+PDF_TITLE_NAMING_MODEL = "gpt-5.3-codex-spark"
+PDF_TITLE_NAMING_PROVIDER_ID = "codex-cli"
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
 RESOURCE_ACCESS_ROLE_RANK = {
@@ -98,12 +110,39 @@ class PdfUserStateUpdateRequest(BaseModel):
     state_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class PdfDocumentMetadata(BaseModel):
+    status: Literal["pending", "ready", "error"] = "pending"
+    page_count: int | None = None
+    page_width_points: float | None = None
+    page_height_points: float | None = None
+    unit: Literal["pt"] = "pt"
+    scanned_at: float | None = None
+
+
+class PdfBookshelfPlacementPayload(BaseModel):
+    pdf_id: int = Field(ge=1)
+    shelf_index: int = Field(ge=0, le=9999)
+    position_index: int = Field(ge=0, le=999999)
+    orientation: Literal["spine_vertical", "spine_horizontal", "cover_front"] = "spine_vertical"
+
+
+class PdfBookshelfLayoutUpdateRequest(BaseModel):
+    placements: list[PdfBookshelfPlacementPayload] = Field(default_factory=list, max_length=10000)
+
+
 class PdfDocumentDetail(BaseModel):
     id: int
     title: str
+    display_title: str
+    display_title_status: Literal["pending", "ready"] = "ready"
+    owner_user_id: int | None = None
+    source_device_id: str = ""
+    source_absolute_path: str = ""
     mime_type: str
     size_bytes: int | None = None
     content_hash: str | None = None
+    metadata: PdfDocumentMetadata = Field(default_factory=PdfDocumentMetadata)
+    bookshelf_placement: PdfBookshelfPlacementPayload | None = None
     created_at: float
     updated_at: float
     access: PdfResourceAccess
@@ -329,6 +368,27 @@ def _get_user_state(session: Session, document: PdfDocument, current_user: User 
     return state
 
 
+def _get_bookshelf_placement(
+    session: Session,
+    document: PdfDocument,
+    current_user: User | None,
+) -> PdfBookshelfPlacement | None:
+    if current_user is None:
+        return None
+    placement = session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+        .where(PdfBookshelfPlacement.user_id == current_user.id)
+    ).first()
+    public_ref = _pdf_resource_id(document)
+    if placement is not None and placement.pdf_document_id != public_ref:
+        placement.pdf_document_id = public_ref
+        session.add(placement)
+        session.commit()
+        session.refresh(placement)
+    return placement
+
+
 def _serialize_pdf_detail(
     session: Session,
     document: PdfDocument,
@@ -336,12 +396,25 @@ def _serialize_pdf_detail(
     current_user: User | None,
     access: PdfResourceAccess,
 ) -> PdfDocumentDetail:
+    bookshelf_placement = _get_bookshelf_placement(session, document, current_user)
     return PdfDocumentDetail(
         id=_require_pdf_numeric_id(document),
         title=document.title or "未命名 PDF",
+        display_title=_pdf_display_title(document),
+        display_title_status=_pdf_display_title_status(document),
+        owner_user_id=document.owner_user_id,
+        source_device_id=document.source_device_id or "",
+        source_absolute_path=document.source_absolute_path or "",
         mime_type=document.mime_type or "application/pdf",
         size_bytes=document.size_bytes,
         content_hash=document.content_hash,
+        metadata=_serialize_pdf_metadata(document),
+        bookshelf_placement=PdfBookshelfPlacementPayload(
+            pdf_id=_require_pdf_numeric_id(document),
+            shelf_index=max(int(bookshelf_placement.shelf_index or 0), 0),
+            position_index=max(int(bookshelf_placement.position_index or 0), 0),
+            orientation=bookshelf_placement.orientation or "spine_vertical",
+        ) if bookshelf_placement is not None else None,
         created_at=document.created_at,
         updated_at=document.updated_at,
         access=access,
@@ -441,6 +514,329 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _pdf_metadata_source_fingerprint(document: PdfDocument) -> str:
+    content_hash = str(document.content_hash or "").strip()
+    if content_hash:
+        return f"{document.hash_algorithm or 'sha256'}:{content_hash}"
+    return "|".join((
+        str(document.source_device_id or ""),
+        str(document.source_absolute_path or ""),
+        str(document.size_bytes or ""),
+    ))
+
+
+def _pdf_title_source_fingerprint(document: PdfDocument) -> str:
+    return hashlib.sha256(str(document.title or "").strip().encode("utf-8")).hexdigest()
+
+
+def _fallback_pdf_display_title(source_title: str) -> str:
+    title = re.sub(r"\.pdf$", "", str(source_title or "").strip(), flags=re.I)
+    title = re.sub(r"^[\d_-]{6,}(?:\s+|(?=[\u4e00-\u9fff]))", "", title)
+    noisy_group = re.compile(
+        r"\s*[\(（\[【][^\)）\]】]*(?:z-?lib|1lib|下载|公众号|微信|电子书|扫描版|影印版|校对版|精校版)[^\)）\]】]*[\)）\]】]",
+        re.I,
+    )
+    title = noisy_group.sub("", title)
+    title = re.sub(r"\s*[-_—]+\s*(?:来自|下载自|整理自).*$", "", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip(" ._-—")
+    return title or "未命名"
+
+
+def _pdf_display_title(document: PdfDocument) -> str:
+    naming = dict((document.metadata_json or {}).get("title_naming") or {})
+    if (
+        int(naming.get("schema_version") or 0) == PDF_TITLE_NAMING_SCHEMA_VERSION
+        and naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
+        and str(naming.get("display_title") or "").strip()
+    ):
+        # Older cached AI results may still contain a filename batch number.
+        # Normalize on read so existing books benefit without another AI call.
+        return _sanitize_pdf_display_title(naming["display_title"], document.title or "")
+    return _fallback_pdf_display_title(document.title or "")
+
+
+def _pdf_display_title_status(document: PdfDocument) -> Literal["pending", "ready"]:
+    naming = dict((document.metadata_json or {}).get("title_naming") or {})
+    if (
+        naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
+        and naming.get("status") == "pending"
+    ):
+        return "pending"
+    return "ready"
+
+
+def _sanitize_pdf_display_title(value: Any, source_title: str) -> str:
+    raw_title = str(value or "").strip()
+    title = _fallback_pdf_display_title(raw_title) if raw_title else _fallback_pdf_display_title(source_title)
+    if len(title) > 80:
+        title = title[:80].rstrip(" ._-—")
+    return title or _fallback_pdf_display_title(source_title)
+
+
+def _extract_pdf_title_naming_payload(text: str) -> dict[int, str]:
+    stripped = str(text or "").strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, re.S)
+        if not match:
+            return {}
+        try:
+            payload = json.loads(match.group())
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("titles"), list):
+        return {}
+    result: dict[int, str] = {}
+    for item in payload["titles"]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            pdf_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        title = str(item.get("title") or "").strip()
+        if title:
+            result[pdf_id] = title
+    return result
+
+
+def _generate_pdf_display_titles(documents: list[PdfDocument]) -> tuple[dict[int, str], str]:
+    source_items = [
+        {"id": _require_pdf_numeric_id(document), "filename": document.title or ""}
+        for document in documents
+    ]
+    prompt = (
+        "请把下面的 PDF 原始文件名整理成真正图书馆书脊上会出现的精髓书名。\n"
+        "规则：去掉 .pdf 等文件类型后缀；去掉网站、下载来源、ISBN、哈希、日期批次、上传者、扫描/精校身份等标识；"
+        "去掉不属于书名的作者/译者/出版社尾注；保留卷册、上中下册、全几卷等属于书名辨识所必需的信息；"
+        "不要擅自改写作品名，不要补充输入中无法确定的信息。\n"
+        "只返回 JSON：{\"titles\":[{\"id\":整数,\"title\":\"标准书名\"}]}。\n"
+        f"输入：{json.dumps(source_items, ensure_ascii=False)}"
+    )
+    response = chat_with_provider(
+        provider_id=PDF_TITLE_NAMING_PROVIDER_ID,
+        model=PDF_TITLE_NAMING_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt="你是电子书图书馆编目员，只输出符合要求的 JSON。",
+        response_format="json",
+        timeout_seconds=120,
+    )
+    return (
+        _extract_pdf_title_naming_payload(str(response.get("content") or "")),
+        str(response.get("model") or PDF_TITLE_NAMING_MODEL),
+    )
+
+
+def _prepare_pdf_display_title_generation(session: Session, documents: list[PdfDocument]) -> list[int]:
+    pending: list[PdfDocument] = []
+    upgraded: list[PdfDocument] = []
+    for document in documents:
+        naming = dict((document.metadata_json or {}).get("title_naming") or {})
+        is_current = (
+            int(naming.get("schema_version") or 0) == PDF_TITLE_NAMING_SCHEMA_VERSION
+            and naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
+            and bool(str(naming.get("display_title") or "").strip())
+        )
+        if is_current and naming.get("status") in {"pending", "ready"}:
+            continue
+        if is_current:
+            metadata = dict(document.metadata_json or {})
+            naming["status"] = "ready"
+            metadata["title_naming"] = naming
+            document.metadata_json = metadata
+            session.add(document)
+            upgraded.append(document)
+            continue
+        pending.append(document)
+
+    if upgraded:
+        session.commit()
+        for document in upgraded:
+            session.refresh(document)
+    if not pending:
+        return []
+
+    now = time.time()
+    pdf_ids: list[int] = []
+    for document in pending:
+        numeric_id = _require_pdf_numeric_id(document)
+        pdf_ids.append(numeric_id)
+        metadata = dict(document.metadata_json or {})
+        metadata["title_naming"] = {
+            "schema_version": PDF_TITLE_NAMING_SCHEMA_VERSION,
+            "source_fingerprint": _pdf_title_source_fingerprint(document),
+            "display_title": _fallback_pdf_display_title(document.title or ""),
+            "status": "pending",
+            "source": "fallback",
+            "model": None,
+            "generated_at": now,
+        }
+        document.metadata_json = metadata
+        session.add(document)
+    session.commit()
+    for document in pending:
+        session.refresh(document)
+    return pdf_ids
+
+
+def _generate_pdf_display_titles_in_background(bind: Any, pdf_ids: list[int]) -> None:
+    with Session(bind) as session:
+        documents = list(session.exec(
+            select(PdfDocument).where(PdfDocument.numeric_id.in_(pdf_ids))
+        ).all())
+        if not documents:
+            return
+
+        generated: dict[int, str] = {}
+        model = PDF_TITLE_NAMING_MODEL
+        source = "fallback"
+        error = ""
+        try:
+            generated, model = _generate_pdf_display_titles(documents)
+            source = "ai"
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:240]}"
+
+        now = time.time()
+        for document in documents:
+            numeric_id = _require_pdf_numeric_id(document)
+            metadata = dict(document.metadata_json or {})
+            metadata["title_naming"] = {
+                "schema_version": PDF_TITLE_NAMING_SCHEMA_VERSION,
+                "source_fingerprint": _pdf_title_source_fingerprint(document),
+                "display_title": _sanitize_pdf_display_title(generated.get(numeric_id), document.title or ""),
+                "status": "ready",
+                "source": source if numeric_id in generated else "fallback",
+                "model": model if numeric_id in generated else None,
+                "generated_at": now,
+                **({"error": error} if error else {}),
+            }
+            document.metadata_json = metadata
+            session.add(document)
+        session.commit()
+
+
+def _serialize_pdf_metadata(document: PdfDocument) -> PdfDocumentMetadata:
+    metadata = dict(document.metadata_json or {})
+    status = str(metadata.get("status") or "pending")
+    if status not in {"pending", "ready", "error"}:
+        status = "pending"
+    return PdfDocumentMetadata(
+        status=status,  # type: ignore[arg-type]
+        page_count=int(metadata["page_count"]) if metadata.get("page_count") is not None else None,
+        page_width_points=float(metadata["page_width_points"])
+        if metadata.get("page_width_points") is not None else None,
+        page_height_points=float(metadata["page_height_points"])
+        if metadata.get("page_height_points") is not None else None,
+        scanned_at=float(metadata["scanned_at"]) if metadata.get("scanned_at") is not None else None,
+    )
+
+
+def _pdf_metadata_needs_scan(document: PdfDocument) -> bool:
+    metadata = dict(document.metadata_json or {})
+    return not (
+        int(metadata.get("schema_version") or 0) == PDF_METADATA_SCHEMA_VERSION
+        and metadata.get("source_fingerprint") == _pdf_metadata_source_fingerprint(document)
+        and metadata.get("status") in {"ready", "error"}
+    )
+
+
+@contextmanager
+def _materialize_pdf_for_metadata(session: Session, document: PdfDocument) -> Iterator[Path]:
+    if document.source_entry_id == PDF_HOSTED_ENTRY_ID:
+        yield _resolve_hosted_pdf_path(document)
+        return
+
+    entry = session.get(UserDevice, document.source_entry_id)
+    if entry is None:
+        raise RuntimeError("PDF 来源设备入口不存在")
+    if entry.mode == "local":
+        yield Path(document.source_absolute_path).expanduser().resolve(strict=True)
+        return
+    if not entry.server_url:
+        raise RuntimeError("PDF 来源设备入口没有地址")
+
+    temp_path = codeyun_temp_root("pdf_metadata") / f"{_require_pdf_numeric_id(document)}-{uuid.uuid4().hex}.pdf"
+    response = requests.get(
+        f"{entry.server_url.rstrip('/')}/api/fs/content",
+        params={"absolute_path": document.source_absolute_path},
+        headers={"Authorization": f"Bearer {entry.token}", "X-Device-Token": entry.token},
+        timeout=60,
+        stream=True,
+    )
+    try:
+        response.raise_for_status()
+        with temp_path.open("wb") as output:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+        yield temp_path
+    finally:
+        response.close()
+        temp_path.unlink(missing_ok=True)
+
+
+def _read_pdf_metadata(path: Path) -> dict[str, Any]:
+    reader = PdfReader(os.fspath(path), strict=False)
+    if reader.is_encrypted:
+        decrypt_result = reader.decrypt("")
+        if not decrypt_result:
+            raise ValueError("PDF 已加密，无法读取页面尺寸")
+    page_count = len(reader.pages)
+    if page_count <= 0:
+        raise ValueError("PDF 没有页面")
+
+    page_sizes: Counter[tuple[float, float]] = Counter()
+    for page in reader.pages:
+        width = abs(float(page.mediabox.width))
+        height = abs(float(page.mediabox.height))
+        rotation = int(page.get("/Rotate", 0) or 0) % 360
+        if rotation in {90, 270}:
+            width, height = height, width
+        if width > 0 and height > 0:
+            page_sizes[(round(width, 2), round(height, 2))] += 1
+    if not page_sizes:
+        raise ValueError("PDF 页面尺寸无效")
+
+    (page_width, page_height), _count = page_sizes.most_common(1)[0]
+    return {
+        "page_count": page_count,
+        "page_width_points": page_width,
+        "page_height_points": page_height,
+    }
+
+
+def _ensure_pdf_metadata(session: Session, documents: list[PdfDocument]) -> None:
+    changed_documents: list[PdfDocument] = []
+    for document in documents:
+        if not _pdf_metadata_needs_scan(document):
+            continue
+        scanned_at = time.time()
+        metadata: dict[str, Any] = {
+            **dict(document.metadata_json or {}),
+            "schema_version": PDF_METADATA_SCHEMA_VERSION,
+            "source_fingerprint": _pdf_metadata_source_fingerprint(document),
+            "scanned_at": scanned_at,
+        }
+        try:
+            with _materialize_pdf_for_metadata(session, document) as pdf_path:
+                metadata.update(_read_pdf_metadata(pdf_path))
+            metadata["status"] = "ready"
+        except Exception as exc:
+            metadata["status"] = "error"
+            metadata["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        document.metadata_json = metadata
+        session.add(document)
+        changed_documents.append(document)
+
+    if not changed_documents:
+        return
+    session.commit()
+    for document in changed_documents:
+        session.refresh(document)
 
 
 def _copy_pdf_to_hosted_storage(source_path: Path, current_user: User) -> tuple[str, int, str]:
@@ -838,6 +1234,7 @@ def create_pdf_document_from_device_file(
         )
         session.commit()
         session.refresh(document)
+        _ensure_pdf_metadata(session, [document])
         access = _resolve_pdf_resource_access(session, document, current_user)
         return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
@@ -886,6 +1283,7 @@ def create_pdf_document_from_device_file(
     session.add(document)
     session.commit()
     session.refresh(document)
+    _ensure_pdf_metadata(session, [document])
     access = _resolve_pdf_resource_access(session, document, current_user)
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
@@ -913,12 +1311,14 @@ def import_pdf_document_from_local_path(
     )
     session.commit()
     session.refresh(document)
+    _ensure_pdf_metadata(session, [document])
     access = _resolve_pdf_resource_access(session, document, current_user)
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 
 @router.get("", response_model=list[PdfDocumentSummary])
 def list_pdf_documents(
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -954,10 +1354,64 @@ def list_pdf_documents(
         key=lambda item: (float(item[0].updated_at or 0.0), float(item[0].created_at or 0.0)),
         reverse=True,
     )
+    _ensure_pdf_metadata(session, [document for document, _access in document_access_items])
+    naming_pdf_ids = _prepare_pdf_display_title_generation(
+        session,
+        [document for document, _access in document_access_items],
+    )
+    if naming_pdf_ids:
+        background_tasks.add_task(
+            _generate_pdf_display_titles_in_background,
+            session.get_bind(),
+            naming_pdf_ids,
+        )
     return [
         _serialize_pdf_summary(session, document, current_user=current_user, access=access)
         for document, access in document_access_items
     ]
+
+
+@router.put("/bookshelf-layout", response_model=list[PdfBookshelfPlacementPayload])
+def update_pdf_bookshelf_layout(
+    payload: PdfBookshelfLayoutUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    pdf_ids = [item.pdf_id for item in payload.placements]
+    if len(pdf_ids) != len(set(pdf_ids)):
+        raise HTTPException(status_code=400, detail="书柜布局包含重复 PDF")
+    slots = [(item.shelf_index, item.position_index) for item in payload.placements]
+    if len(slots) != len(set(slots)):
+        raise HTTPException(status_code=400, detail="书柜布局包含重复位置")
+
+    now = time.time()
+    for item in payload.placements:
+        document, _access = _get_pdf_document_or_404(
+            session,
+            current_user,
+            item.pdf_id,
+            required_role="viewer",
+        )
+        public_ref = _pdf_resource_id(document)
+        placement = session.exec(
+            select(PdfBookshelfPlacement)
+            .where(PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+            .where(PdfBookshelfPlacement.user_id == current_user.id)
+        ).first()
+        if placement is None:
+            placement = PdfBookshelfPlacement(
+                pdf_document_id=public_ref,
+                user_id=current_user.id,
+                created_at=now,
+            )
+        placement.pdf_document_id = public_ref
+        placement.shelf_index = item.shelf_index
+        placement.position_index = item.position_index
+        placement.orientation = item.orientation
+        placement.updated_at = now
+        session.add(placement)
+    session.commit()
+    return payload.placements
 
 
 @router.get("/{pdf_id}", response_model=PdfDocumentDetail)
@@ -967,6 +1421,7 @@ def get_pdf_document(
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     document, access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="viewer")
+    _ensure_pdf_metadata(session, [document])
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 

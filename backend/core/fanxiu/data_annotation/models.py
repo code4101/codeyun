@@ -166,6 +166,9 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     legacy_name: str = ""
     enabled: bool = False
     interruptible: bool = True
+    dispatch_level: int = Field(0, ge=0, le=5)
+    dispatch_order: int = Field(0, ge=0, le=9999)
+    retry_policy: Literal["standard", "immediate"] = "standard"
     next_time: Optional[str] = None
     schedule_times: list[str] = Field(default_factory=list)
     weekdays: list[int] = Field(default_factory=list)
