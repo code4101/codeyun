@@ -77,10 +77,10 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL: dict[str, int] = {
 _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS: dict[str, tuple[int, ...]] = {
     "ready": (294,),
     "in_progress": (304,),
-    "kicked": (),
+    "kicked": (391,),
     "completed": (),
 }
-_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS: tuple[int, ...] = (294, 296, 304)
+_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS: tuple[int, ...] = (294, 296, 304, 391)
 _DAILY_LUNDAO_ENTRY_SETTLE_SECONDS = 5.0
 
 _DONGTIAN_PLACE_LEVELS: tuple[dict[str, Any], ...] = (
@@ -4059,6 +4059,8 @@ class DailyFoundationTaskMixin:
                 entry_label="论道",
             )
             return "skipped"
+        if entry_result["status"] == "kicked":
+            entry_result = yield from self._dismiss_daily_lundao_kicked(runtime)
         scene_id = entry_result.get("scene_id")
         score = float(entry_result.get("score") or 0.0)
         if entry_result["status"] == "in_progress":
@@ -4114,12 +4116,28 @@ class DailyFoundationTaskMixin:
             return {"status": "ready", "stable_state": "ready", "scene_id": scene_id, "score": float(score)}
         if scene_id in _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS["in_progress"]:
             return {"status": "in_progress", "stable_state": "in_progress", "scene_id": scene_id, "score": float(score)}
+        if scene_id in _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS["kicked"]:
+            return {"status": "kicked", "stable_state": "kicked", "scene_id": scene_id, "score": float(score)}
         if scene_id == 296:
             return {"status": "dojo_selection", "scene_id": scene_id, "score": float(score)}
         if scene_id is None:
             return {"status": "unknown", "scene_id": None, "score": float(score)}
         # 新的正式落点先显式失败；待用户给出业务语义后再加入四态映射或独立路由。
         return {"status": "unimplemented", "scene_id": scene_id, "score": float(score)}
+
+    def _dismiss_daily_lundao_kicked(self, runtime: Any) -> dict[str, Any]:
+        """确认 #391「被踢了」提示，再按同一组稳定状态重新路由。"""
+
+        post_kick_scene_ids = [294, 296, 304]
+        yield from runtime.wait_click_then_view(
+            391,
+            "确认",
+            post_kick_scene_ids,
+            settle_seconds=1.5,
+            timeout=20.0,
+        )
+        scene_id, score, frame = runtime.current_scene(post_kick_scene_ids, update=True)
+        return self._route_daily_lundao_entry_scene(scene_id, score, frame)
 
     def _select_daily_lundao_dojo_level(self, runtime: Any, scene_id: int | None) -> dict[str, Any]:
         """节点 2：选择论道道场级别，输出抢座节点的起始场景。
@@ -4409,20 +4427,22 @@ class DailyFoundationTaskMixin:
                     "score": 100.0,
                 }
 
-        # #375 是战斗阶段；不在战斗画面点击。真实胜利链会先落到通用
-        # #295「胜利/点击任意位置关闭」浮层，然后才继续战后对话或入座。
-        # #295 不能当作普通 unknown，也不能在看见“胜利”后提前报成功。
+        # #375 是论道自己的胜利浮层，#295 是兼容的通用胜利浮层；两者都
+        # 必须点击各自正式标注的「关闭」，随后只等待论道战后对话或入座节点。
+        # 看见胜利只能表示战斗结束，不能提前报作业成功。
         after_battle_scene = battle_scene
-        if after_battle_scene != 295:
+        if after_battle_scene not in {375, 295}:
             after_battle_scene = yield from runtime.wait_scene(
                 373,
                 52,
+                375,
                 295,
                 timeout=180.0,
-                label="论道_座位：等待 #375 战斗结束后的对话/#52/#295",
+                label="论道_座位：等待战斗结束后的对话/#52/#375/#295",
             )
-        if after_battle_scene == 295:
-            runtime.click_shape_center(295, "点击关闭")
+        if after_battle_scene in {375, 295}:
+            victory_scene_id = int(after_battle_scene)
+            runtime.click_shape_center(victory_scene_id, "关闭")
             yield from runtime.wait_action_settle(1.5)
             after_battle_scene = yield from runtime.wait_scene(
                 373,
@@ -4508,8 +4528,32 @@ class DailyFoundationTaskMixin:
                 self._log("success", "论道_座位：已进入道场听道中并退出回世界")
                 return "success"
         if scene_id == 303:
-            yield from runtime.wait_click_then_view(303, "对话", [52, 53], settle_seconds=1.5, timeout=30.0)
-            scene_id, score, _frame = runtime.current_scene([52, 53, 303], update=True)
+            yield from runtime.wait_click_then_view(
+                303,
+                "对话",
+                [373, 52, 53, 329, 301, 302, 186],
+                settle_seconds=1.5,
+                timeout=20.0,
+            )
+            scene_id, score, _frame = runtime.current_scene([373, 52, 53, 329, 301, 302, 186], update=True)
+            if scene_id == 373:
+                yield from runtime.advance_dialogue(
+                    373,
+                    "聊天按钮",
+                    label="论道_座位：推进战后对话",
+                )
+                scene_id = yield from runtime.wait_scene(
+                    52,
+                    53,
+                    329,
+                    301,
+                    302,
+                    303,
+                    186,
+                    timeout=30.0,
+                    label="论道_座位：战后对话结束后等待入座",
+                )
+                scene_id, score, _frame = runtime.current_scene([52, 53, 329, 301, 302, 303, 186], update=True)
         if scene_id == 52:
             yield from runtime.wait_click_then_view(52, "确认", wait_leave=True)
             scene_id, score, frame_after = runtime.current_scene([186, 53, 69, 34, 85, 52], update=True)

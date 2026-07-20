@@ -28,7 +28,7 @@
       </template>
 
       <div class="selector-panel">
-        <div class="selector-caption">点击添加/移除分类，已选分类可单独调权重。</div>
+        <div class="selector-caption">每行选择一个分类并设置权重。</div>
         <div class="mix-preview" :title="mixedColorTooltip">
           <span class="mix-preview-label">混色映射</span>
           <div class="mix-preview-value">
@@ -40,7 +40,7 @@
           </div>
         </div>
 
-        <div class="selected-list" v-if="sortedValue.length">
+        <div class="selected-list">
           <div v-for="item in sortedValue" :key="item.key" class="selected-row">
             <el-select
               :model-value="item.key"
@@ -76,28 +76,21 @@
         </div>
 
         <div class="add-section">
-          <el-button size="small" plain :icon="Plus" @click="showAddOptions = !showAddOptions">
-            新增分类
+          <el-button
+            size="small"
+            plain
+            :icon="Plus"
+            :disabled="!canAddCategory"
+            :title="canAddCategory ? '添加一条未分类' : '请先为现有的未分类行选择类别'"
+            class="add-type-button"
+            @click="addCategory"
+          >
+            添加分类
           </el-button>
-          <div v-if="showAddOptions" class="type-grid">
-            <button
-              v-for="item in availableOptions"
-              :key="item.id"
-              type="button"
-              class="type-chip"
-              :style="getChipStyle(item.id)"
-              :title="item.label"
-              @click="addType(item.id)"
-            >
-              <span class="type-chip-label">{{ item.label }}</span>
-              <el-icon class="type-chip-add"><Plus /></el-icon>
-            </button>
-            <div v-if="availableOptions.length === 0" class="add-empty">没有可新增的分类了</div>
-          </div>
         </div>
 
         <div class="panel-footer">
-          <span>颜色会按分类权重自动混合；总权重不足 100 时自动补白色。</span>
+          <span>未分类没有颜色；其他分类颜色按权重混合。</span>
           <el-button size="small" plain @click="managerVisible = true">管理分类</el-button>
         </div>
       </div>
@@ -112,10 +105,10 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { ArrowDown, Close, Plus, QuestionFilled } from '@element-plus/icons-vue';
 import NoteTypeManagerDialog from './NoteTypeManagerDialog.vue';
 import {
-  derivePrimaryNodeType,
   ensureNoteTypePaletteLoaded,
   getNodeTypeConfig,
   getOrderedNodeTypes,
+  NOTE_CATEGORY_UNCATEGORIZED,
   normalizeNoteTypeAssignments,
   normalizeNoteTypeWeight,
   resolveNoteTypesColor,
@@ -142,19 +135,21 @@ const emit = defineEmits<{
 
 const popoverVisible = ref(false);
 const managerVisible = ref(false);
-const showAddOptions = ref(false);
 const replaceDropdownColumns = ref(1);
 const options = computed(() => getOrderedNodeTypes());
-const fallbackType = computed(() => props.legacyType || 'general');
-const normalizedValue = computed(() => normalizeNoteTypeAssignments(props.modelValue, fallbackType.value, { allowEmpty: true }));
+const fallbackType = computed(() => NOTE_CATEGORY_UNCATEGORIZED);
+const normalizedValue = computed(() => normalizeNoteTypeAssignments(props.modelValue, fallbackType.value));
 const sortedValue = computed(() => normalizedValue.value
   .map((item, originalIndex) => ({ ...item, originalIndex }))
   .sort((left, right) => {
     if (right.weight !== left.weight) return right.weight - left.weight;
     return left.originalIndex - right.originalIndex;
   }));
-const primaryType = computed(() => derivePrimaryNodeType(normalizedValue.value, fallbackType.value));
 const availableOptions = computed(() => options.value.filter(item => !isSelected(item.id)));
+const canAddCategory = computed(() => availableOptions.value.some(item => item.id === NOTE_CATEGORY_UNCATEGORIZED));
+const hasColorContribution = computed(() => normalizedValue.value.some(item => (
+  item.key !== NOTE_CATEGORY_UNCATEGORIZED && item.weight > 0
+)));
 const REPLACE_OPTION_ROWS_PER_COLUMN = 10;
 
 const formatSummaryEntry = (item: NoteTypeAssignment) => {
@@ -168,13 +163,16 @@ const mixedColorHex = computed(() => (
   ?? '#FFFFFF'
 ));
 const mixedStandardColor = computed(() => resolveMappedStandardColor(mixedColorHex.value, { range: 2, method: 'cie76' }));
-const mixedColorPrimaryText = computed(() => mixedStandardColor.value.displayName);
+const mixedColorPrimaryText = computed(() => hasColorContribution.value ? mixedStandardColor.value.displayName : '无颜色');
 const mixedColorSecondaryText = computed(() => (
-  mixedStandardColor.value.hex === mixedColorHex.value
+  !hasColorContribution.value
+    ? '未分类'
+    : mixedStandardColor.value.hex === mixedColorHex.value
     ? mixedColorHex.value
     : `${mixedColorHex.value} -> ${mixedStandardColor.value.hex}`
 ));
 const mixedColorTooltip = computed(() => {
+  if (!hasColorContribution.value) return '当前分类没有颜色';
   const color = mixedStandardColor.value;
   const labels = [color.zhNames[0], color.enNames[0]].filter(Boolean);
   return `当前混色：${mixedColorHex.value}；最接近标准色：${labels.join(' / ') || color.displayName} · ${color.hex}`;
@@ -192,7 +190,7 @@ const replaceDropdownStyle = computed(() => {
 
 const triggerStyle = computed(() => {
   const color = mixedColorHex.value;
-  if (normalizedValue.value.length === 0) {
+  if (!hasColorContribution.value) {
     return {
       borderColor: '#dcdfe6',
       color: '#606266',
@@ -222,10 +220,7 @@ onMounted(() => {
 });
 
 watch(popoverVisible, value => {
-  if (!value) {
-    showAddOptions.value = false;
-    return;
-  }
+  if (!value) return;
   // The backend palette is authoritative. Refresh when the user opens the
   // selector so every currently available category and its latest color show.
   ensureNoteTypePaletteLoaded(true).catch(error => {
@@ -243,12 +238,24 @@ const getReplaceOptions = (currentKey: string) => {
   return options.value.filter(item => item.id === currentKey || !occupiedKeys.has(item.id));
 };
 
-const getReplaceOptionColumnCount = (currentKey: string) => (
-  Math.max(1, Math.ceil(getReplaceOptions(currentKey).length / REPLACE_OPTION_ROWS_PER_COLUMN))
+const getOptionColumnCount = (optionCount: number) => (
+  Math.max(1, Math.ceil(optionCount / REPLACE_OPTION_ROWS_PER_COLUMN))
 );
 
+const getReplaceOptionColumnCount = (currentKey: string) => getOptionColumnCount(getReplaceOptions(currentKey).length);
+
 const getChipStyle = (typeKey: string) => {
-  const color = getNodeTypeConfig(typeKey).baseColor;
+  const config = getNodeTypeConfig(typeKey);
+  if (config.colorless) {
+    return {
+      borderColor: '#dcdfe6',
+      color: '#606266',
+      backgroundColor: '#FFFFFF',
+      borderWidth: '1px',
+      borderStyle: 'solid'
+    };
+  }
+  const color = config.baseColor;
   return {
     borderColor: color,
     color: getReadableTextColor(fromHex(color)),
@@ -269,13 +276,11 @@ const getChipSelectStyle = (typeKey: string) => {
   };
 };
 
-const addType = (typeKey: string) => {
-  if (props.disabled) return;
+const addCategory = () => {
+  if (props.disabled || !canAddCategory.value) return;
   const next = [...normalizedValue.value];
-  if (next.some(item => item.key === typeKey)) return;
-  next.push({ key: typeKey, weight: 100 });
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
-  showAddOptions.value = false;
+  next.push({ key: NOTE_CATEGORY_UNCATEGORIZED, weight: 100 });
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
 };
 
 const updateWeight = (typeKey: string, value: unknown) => {
@@ -283,7 +288,7 @@ const updateWeight = (typeKey: string, value: unknown) => {
   const next = normalizedValue.value.map(item => item.key === typeKey
     ? { ...item, weight: normalizeNoteTypeWeight(value) }
     : item);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
 };
 
 const replaceType = (currentKey: string, value: unknown) => {
@@ -293,23 +298,23 @@ const replaceType = (currentKey: string, value: unknown) => {
   const next = normalizedValue.value.map(item => item.key === currentKey
     ? { ...item, key: nextKey }
     : item);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
+  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value));
 };
 
 const removeType = (typeKey: string) => {
   if (props.disabled) return;
   const next = normalizedValue.value.filter(item => item.key !== typeKey);
-  emitValue(normalizeNoteTypeAssignments(next, fallbackType.value, { allowEmpty: true }));
+  emitValue(normalizeNoteTypeAssignments(next, NOTE_CATEGORY_UNCATEGORIZED));
 };
 
 const handlePaletteSaved = () => {
   managerVisible.value = false;
-  showAddOptions.value = false;
 };
 
 const handleReplaceSelectVisibleChange = (currentKey: string, visible: boolean) => {
   replaceDropdownColumns.value = visible ? getReplaceOptionColumnCount(currentKey) : 1;
 };
+
 </script>
 
 <style scoped>
@@ -331,13 +336,7 @@ const handleReplaceSelectVisibleChange = (currentKey: string, visible: boolean) 
 .mix-preview-primary{font-size:12px;line-height:1.25;color:#243046;font-weight:600}
 .mix-preview-secondary{font-size:11px;line-height:1.2;color:#7a8799}
 .add-section{display:flex;flex-direction:column;gap:8px}
-.type-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.type-chip{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px;padding:0 12px;border-radius:6px;background:#fff;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
-.type-chip:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(15,23,42,.08)}
-.type-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.type-chip-weight,.type-chip-add{font-size:11px;opacity:.8}
-.type-chip-add{flex-shrink:0}
-.add-empty{grid-column:1 / -1;font-size:12px;color:#909399;padding:8px 2px}
+.add-type-button{width:100%}
 .selected-list{display:flex;flex-direction:column;gap:8px}
 .selected-row{display:grid;grid-template-columns:minmax(0,1fr) 110px 28px;align-items:center;gap:8px}
 .selected-type-select{width:100%}
@@ -368,6 +367,5 @@ const handleReplaceSelectVisibleChange = (currentKey: string, visible: boolean) 
 
 @media (max-width: 540px) {
   .mix-preview{align-items:flex-start;flex-direction:column}
-  .type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 </style>

@@ -12,11 +12,12 @@ NOTE_WEIGHT_MODE_LINEAR = "linear"
 
 NOTE_TYPE_DEFAULT = "note"
 NOTE_CATEGORY_DEFAULT = "general"
+NOTE_CATEGORY_UNCATEGORIZED = "uncategorized"
 NOTE_TYPE_WEIGHT_DEFAULT = 100
 NOTE_TYPE_WEIGHT_MIN = 0
 NOTE_TYPE_WEIGHT_MAX = 100
 NOTE_TYPE_BUILTIN_KEYS = ("project", "module", "task", "bug", "note", "doc", "memo")
-NOTE_CATEGORY_BUILTIN_KEYS = ("general", "project", "module", "task", "bug")
+NOTE_CATEGORY_BUILTIN_KEYS = (NOTE_CATEGORY_UNCATEGORIZED, "general", "project", "module", "task", "bug")
 NOTE_CATEGORY_PALETTE_SETTING_KEY_PREFIX = "note.category_palette.user"
 NOTE_TYPE_PALETTE_SETTING_KEY_PREFIX = "note.type_palette.user"
 NOTE_TYPE_LEGACY_COLOR_PREFIX = "legacy_color_"
@@ -34,6 +35,7 @@ NOTE_FORM_BOOK = "book"
 NOTE_LIFECYCLE_STAGE_DEFAULT = "idea"
 NOTE_SCENE_DEFAULT = NOTE_KIND_DEFAULT
 NOTE_TYPE_BUILTIN_PALETTE = (
+    {"key": NOTE_CATEGORY_UNCATEGORIZED, "label": "未分类", "color": None, "order": -10, "description": "尚未归入其他分类"},
     {"key": "general", "label": "综合", "color": "#606266", "order": 0},
     {"key": "project", "label": "项目", "color": "#7B1FA2", "order": 10},
     {"key": "module", "label": "模块", "color": "#BA68C8", "order": 20},
@@ -173,7 +175,7 @@ def normalize_note_types(value, fallback_type: str | None = NOTE_TYPE_DEFAULT) -
 
 def normalize_note_categories(
     value,
-    fallback_category: str | None = NOTE_CATEGORY_DEFAULT,
+    fallback_category: str | None = NOTE_CATEGORY_UNCATEGORIZED,
 ) -> list[dict[str, int | str]]:
     items = value if isinstance(value, list) else []
     normalized: list[dict[str, int | str]] = []
@@ -214,11 +216,7 @@ def normalize_note_categories(
     if normalized:
         return normalized
 
-    if fallback_category is None:
-        return []
-    fallback = (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip()
-    if not fallback:
-        return []
+    fallback = (fallback_category or NOTE_CATEGORY_UNCATEGORIZED).strip() or NOTE_CATEGORY_UNCATEGORIZED
     return [{"key": fallback, "weight": NOTE_TYPE_WEIGHT_DEFAULT}]
 
 
@@ -248,12 +246,10 @@ def derive_primary_node_type(note_types, fallback_type: str | None = NOTE_TYPE_D
     return str(key).strip() or ((fallback_type or NOTE_TYPE_DEFAULT or "").strip() or NOTE_TYPE_DEFAULT)
 
 
-def derive_primary_category(note_categories, fallback_category: str | None = NOTE_CATEGORY_DEFAULT) -> str | None:
+def derive_primary_category(note_categories, fallback_category: str | None = NOTE_CATEGORY_UNCATEGORIZED) -> str | None:
     normalized = normalize_note_categories(note_categories, fallback_category=fallback_category)
     if not normalized:
-        if fallback_category is None:
-            return None
-        return (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip() or NOTE_CATEGORY_DEFAULT
+        return (fallback_category or NOTE_CATEGORY_UNCATEGORIZED).strip() or NOTE_CATEGORY_UNCATEGORIZED
 
     best_index = 0
     best_weight = normalize_note_type_weight(normalized[0].get("weight"))
@@ -266,9 +262,7 @@ def derive_primary_category(note_categories, fallback_category: str | None = NOT
     key = normalized[best_index].get("key")
     if key:
         return str(key).strip()
-    if fallback_category is None:
-        return None
-    return (fallback_category or NOTE_CATEGORY_DEFAULT or "").strip() or NOTE_CATEGORY_DEFAULT
+    return (fallback_category or NOTE_CATEGORY_UNCATEGORIZED).strip() or NOTE_CATEGORY_UNCATEGORIZED
 
 
 def derive_note_taxonomy_from_legacy(

@@ -1353,7 +1353,7 @@ class DailyResourceTaskMixin:
                                 retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
                                 return "skipped"
                         elif landed_id == 295:
-                            runtime.click_shape_center(295, "点击关闭")
+                            runtime.click_shape_center(295, "关闭")
                             yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
                             next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, timeout=8.0)
                             if next_id == 317:
@@ -1367,7 +1367,7 @@ class DailyResourceTaskMixin:
                         retry_after = self._record_daily_xianmeng_immunity_cd(runtime, payload)
                         return "skipped"
                 elif scene_id == 295:
-                    runtime.click_shape_center(295, "点击关闭")
+                    runtime.click_shape_center(295, "关闭")
                     yield from runtime.wait_action_settle(float(payload.get("settle_seconds") or 0.5))
                     next_id = yield from self._wait_daily_xianmeng_exact_view(runtime, 317, 293, timeout=8.0)
                     if next_id == 317:

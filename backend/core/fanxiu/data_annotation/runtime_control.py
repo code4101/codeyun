@@ -595,13 +595,21 @@ def update_scheduler_tasks(
     }
     schedule_fields = ("schedule_kind", "schedule_times", "weekdays", "window", "trigger_kind")
     override_key = "__scheduler_schedule_override"
+
+    def schedule_value(task: dict[str, Any], key: str) -> Any:
+        if key in {"schedule_times", "weekdays"}:
+            return list(task.get(key) or [])
+        if key == "window":
+            return list(task.get(key)) if isinstance(task.get(key), list) else None
+        return task.get(key)
+
     normalized_updates: list[dict[str, Any]] = []
     for raw_update in updates:
         update = deepcopy(raw_update)
         default_task = defaults_by_id.get(str(update.get("id") or ""))
         if default_task and any(key in update for key in schedule_fields):
             payload = dict(update.get("payload") or {})
-            if any(update.get(key) != default_task.get(key) for key in schedule_fields):
+            if any(schedule_value(update, key) != schedule_value(default_task, key) for key in schedule_fields):
                 payload[override_key] = True
             else:
                 payload.pop(override_key, None)

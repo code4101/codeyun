@@ -225,7 +225,7 @@ class NoteListRead(BaseModel):
 class NoteCategoryPaletteItem(BaseModel):
     key: str
     label: str
-    color: str
+    color: Optional[str] = None
     description: Optional[str] = None
     order: int = 0
     builtin: bool = False

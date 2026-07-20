@@ -6,7 +6,11 @@ def test_note_type_palette_defaults_include_default_types(client, auth_user):
     assert response.status_code == 200
     payload = response.json()
     keys = [item["key"] for item in payload["items"]]
-    assert keys[:5] == ["general", "project", "module", "task", "bug"]
+    assert keys[:6] == ["uncategorized", "general", "project", "module", "task", "bug"]
+    uncategorized = payload["items"][0]
+    assert uncategorized["label"] == "未分类"
+    assert uncategorized["color"] is None
+    assert uncategorized["builtin"] is True
 
 
 def test_note_type_palette_discovers_legacy_colors_and_persists_rename(client, session, auth_user):
@@ -180,7 +184,7 @@ def test_create_note_backfills_new_taxonomy_fields(client, auth_user):
     assert payload["note_categories"] == [{"key": "general", "weight": 100}]
 
 
-def test_create_note_preserves_explicit_empty_category(client, auth_user):
+def test_create_note_normalizes_explicit_empty_category_to_uncategorized(client, auth_user):
     response = client.post(
         "/api/notes/",
         json={
@@ -197,12 +201,12 @@ def test_create_note_preserves_explicit_empty_category(client, auth_user):
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["note_categories"] == []
-    assert payload["primary_category"] is None
-    assert payload["node_type"] == "note"
+    assert payload["note_categories"] == [{"key": "uncategorized", "weight": 100}]
+    assert payload["primary_category"] == "uncategorized"
+    assert payload["node_type"] == "uncategorized"
 
 
-def test_update_note_form_preserves_existing_empty_category(client, auth_user):
+def test_update_note_form_preserves_uncategorized_default(client, auth_user):
     create_response = client.post(
         "/api/notes/",
         json={
@@ -230,11 +234,11 @@ def test_update_note_form_preserves_existing_empty_category(client, auth_user):
     assert update_response.status_code == 200
     payload = update_response.json()
     assert payload["note_form"] == "document"
-    assert payload["note_categories"] == []
-    assert payload["primary_category"] is None
+    assert payload["note_categories"] == [{"key": "uncategorized", "weight": 100}]
+    assert payload["primary_category"] == "uncategorized"
 
 
-def test_update_note_title_preserves_existing_empty_category(client, auth_user):
+def test_update_note_title_preserves_uncategorized_default(client, auth_user):
     create_response = client.post(
         "/api/notes/",
         json={
@@ -261,8 +265,33 @@ def test_update_note_title_preserves_existing_empty_category(client, auth_user):
     assert update_response.status_code == 200
     payload = update_response.json()
     assert payload["title"] == "Renamed Empty Category Note"
-    assert payload["note_categories"] == []
-    assert payload["primary_category"] is None
+    assert payload["note_categories"] == [{"key": "uncategorized", "weight": 100}]
+    assert payload["primary_category"] == "uncategorized"
+
+
+def test_note_type_palette_keeps_uncategorized_system_item(client, auth_user):
+    response = client.put(
+        "/api/notes/category-palette",
+        json={
+            "items": [
+                {"key": "general", "label": "综合", "color": "#606266", "order": 0, "builtin": True, "source": "builtin"},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    items = {item["key"]: item for item in response.json()["items"]}
+    assert items["uncategorized"]["label"] == "未分类"
+    assert items["uncategorized"]["color"] is None
+
+    delete_check = client.get("/api/notes/category-palette/uncategorized/can-delete")
+    assert delete_check.status_code == 200
+    assert delete_check.json()["can_delete"] is False
+
+    merge_response = client.post(
+        "/api/notes/category-palette/merge",
+        json={"source_key": "uncategorized", "target_key": "general"},
+    )
+    assert merge_response.status_code == 400
 
 
 def test_create_note_accepts_extended_note_forms(client, auth_user):

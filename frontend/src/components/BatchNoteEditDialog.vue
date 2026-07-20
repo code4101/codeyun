@@ -116,6 +116,7 @@ import {
   derivePrimaryCategory,
   normalizeNoteCategories,
   NOTE_CATEGORY_DEFAULT,
+  NOTE_CATEGORY_UNCATEGORIZED,
   NOTE_FORM_DEFAULT,
   NOTE_LIFECYCLE_STAGE_DEFAULT,
   type NoteTypeAssignment
@@ -137,12 +138,12 @@ const noteStore = useNoteStore();
 const selectedCount = computed(() => props.noteIds.length);
 const saving = computed(() => noteStore.loading);
 
-const createDefaultCategories = (): NoteTypeAssignment[] => [{ key: NOTE_CATEGORY_DEFAULT, weight: 100 }];
+const createDefaultCategories = (): NoteTypeAssignment[] => [{ key: NOTE_CATEGORY_UNCATEGORIZED, weight: 100 }];
 
 const form = reactive({
   applyCategories: false,
   noteCategories: createDefaultCategories(),
-  primaryCategory: NOTE_CATEGORY_DEFAULT,
+  primaryCategory: NOTE_CATEGORY_UNCATEGORIZED,
   applyNoteForm: false,
   noteForm: NOTE_FORM_DEFAULT,
   applyLifecycleStage: false,
@@ -157,7 +158,7 @@ const form = reactive({
 const resetForm = () => {
   form.applyCategories = false;
   form.noteCategories = createDefaultCategories();
-  form.primaryCategory = NOTE_CATEGORY_DEFAULT;
+  form.primaryCategory = NOTE_CATEGORY_UNCATEGORIZED;
   form.applyNoteForm = false;
   form.noteForm = NOTE_FORM_DEFAULT;
   form.applyLifecycleStage = false;

@@ -3,7 +3,7 @@ import api from '@/api';
 export interface NoteCategoryPaletteItem {
   key: string;
   label: string;
-  color: string;
+  color: string | null;
   description?: string | null;
   order: number;
   builtin: boolean;

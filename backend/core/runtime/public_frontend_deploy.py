@@ -6,6 +6,7 @@ import json
 import os
 import posixpath
 import shlex
+import socket
 import subprocess
 import tempfile
 import time
@@ -211,9 +212,61 @@ def _ssh_config() -> dict[str, Any]:
     port = int(os.getenv("YUN_SERVER_PORT") or "22")
     username = os.getenv("YUN_USER_CHENKUNZE") or os.getenv("YUN_SERVER_USER") or "chenkunze"
     password = os.getenv("YUN_USER_PASS_CHENKUNZE") or os.getenv("YUN_SERVER_PASS")
+    direct_interface_text = (os.getenv("YUN_SERVER_DIRECT_INTERFACE_INDEX") or "").strip()
     if not host or not password:
         raise PublicFrontendDeployError("缺少 yun 服务器环境变量，无法上传前端 dist。")
-    return {"host": host, "port": port, "username": username, "password": password}
+    direct_interface_index: int | None = None
+    if direct_interface_text:
+        try:
+            direct_interface_index = int(direct_interface_text)
+        except ValueError as exc:
+            raise PublicFrontendDeployError(
+                "YUN_SERVER_DIRECT_INTERFACE_INDEX 必须是 Windows 网络接口索引。"
+            ) from exc
+        if direct_interface_index <= 0:
+            raise PublicFrontendDeployError("YUN_SERVER_DIRECT_INTERFACE_INDEX 必须大于 0。")
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "direct_interface_index": direct_interface_index,
+    }
+
+
+def _open_direct_socket(host: str, port: int, interface_index: int, timeout: float = 15.0) -> socket.socket:
+    """Open an IPv4 TCP socket pinned to a Windows egress interface.
+
+    Paramiko does not use HTTP proxy environment variables, but a system-level
+    TUN adapter can still capture its TCP route. IP_UNICAST_IF (31) makes the
+    route choice explicit for this one SSH connection.
+    """
+    if os.name != "nt":
+        raise PublicFrontendDeployError(
+            "YUN_SERVER_DIRECT_INTERFACE_INDEX 当前只支持 Windows；请移除此配置或实现对应平台路由。"
+        )
+    try:
+        addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        raise PublicFrontendDeployError(f"无法解析 yun 服务器地址：{exc}") from exc
+    if not addresses:
+        raise PublicFrontendDeployError("无法解析 yun 服务器的 IPv4 地址。")
+
+    errors: list[str] = []
+    for family, socktype, protocol, _canonical_name, sockaddr in addresses:
+        direct_socket = socket.socket(family, socktype, protocol)
+        try:
+            direct_socket.settimeout(max(1.0, float(timeout)))
+            direct_socket.setsockopt(socket.IPPROTO_IP, 31, socket.htonl(interface_index))
+            direct_socket.connect(sockaddr)
+            return direct_socket
+        except OSError as exc:
+            errors.append(str(exc))
+            direct_socket.close()
+    detail = errors[-1] if errors else "未知错误"
+    raise PublicFrontendDeployError(
+        f"通过 Windows 网络接口 {interface_index} 直连 yun 服务器失败：{detail}"
+    )
 
 
 def _run_ssh(client: Any, command: str, *, sudo: bool = False, password: str = "", timeout: float = 120.0) -> tuple[str, str]:
@@ -244,16 +297,26 @@ def _deploy_zip_to_yun(zip_path: Path, release_id: str, keep_releases: int = 8) 
     remote_zip = f"/tmp/codeyun-frontend-dist-{release_id}.zip"
     username = str(config["username"])
     password = str(config["password"])
+    direct_socket: socket.socket | None = None
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
+        interface_index = config.get("direct_interface_index")
+        if interface_index is not None:
+            direct_socket = _open_direct_socket(
+                str(config["host"]),
+                int(config["port"]),
+                int(interface_index),
+                timeout=15,
+            )
         client.connect(
             str(config["host"]),
             port=int(config["port"]),
             username=username,
             password=password,
             timeout=15,
+            sock=direct_socket,
         )
         _run_ssh(
             client,
@@ -293,6 +356,8 @@ def _deploy_zip_to_yun(zip_path: Path, release_id: str, keep_releases: int = 8) 
         )
     finally:
         client.close()
+        if direct_socket is not None:
+            direct_socket.close()
     return remote_release
 
 
