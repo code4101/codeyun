@@ -31,6 +31,7 @@ export interface PdfDocumentMetadata {
   page_count?: number | null;
   page_width_points?: number | null;
   page_height_points?: number | null;
+  cover_average_color?: string | null;
   unit: 'pt';
   scanned_at?: number | null;
 }
@@ -42,12 +43,20 @@ export interface PdfBookshelfPlacement {
   orientation: PdfBookshelfOrientation;
 }
 
+export interface PdfLibraryBookshelf {
+  id: string;
+  name: string;
+  sort_index: number;
+  book_count: number;
+}
+
 export type PdfBookshelfOrientation = 'spine_vertical' | 'spine_horizontal' | 'cover_front';
 
 export interface PdfDocumentDetail {
   id: number;
   title: string;
   display_title: string;
+  display_author: string;
   display_title_status: 'pending' | 'ready';
   owner_user_id?: number | null;
   source_device_id: string;
@@ -116,8 +125,32 @@ export interface PdfPageNoteUpdateRequest {
   content_html: string;
 }
 
-export async function fetchPdfDocuments() {
-  const response = await api.get<PdfDocumentSummary[]>('/pdf-documents');
+export async function fetchPdfDocuments(bookshelfId?: string) {
+  const response = await api.get<PdfDocumentSummary[]>('/pdf-documents', {
+    params: bookshelfId ? { bookshelf_id: bookshelfId } : undefined,
+  });
+  return response.data;
+}
+
+export async function fetchPdfBookshelves() {
+  const response = await api.get<PdfLibraryBookshelf[]>('/pdf-documents/bookshelves');
+  return response.data;
+}
+
+export async function createPdfBookshelf(name: string) {
+  const response = await api.post<PdfLibraryBookshelf>('/pdf-documents/bookshelves', { name });
+  return response.data;
+}
+
+export async function renamePdfBookshelf(bookshelfId: string, name: string) {
+  const response = await api.put<PdfLibraryBookshelf>(`/pdf-documents/bookshelves/${bookshelfId}`, { name });
+  return response.data;
+}
+
+export async function movePdfToBookshelf(pdfId: number, bookshelfId: string) {
+  const response = await api.put<PdfBookshelfPlacement>(`/pdf-documents/${pdfId}/bookshelf`, {
+    bookshelf_id: bookshelfId,
+  });
   return response.data;
 }
 
@@ -150,6 +183,14 @@ export async function fetchPdfDocument(pdfId: number) {
 
 export async function fetchPdfContentUrl(pdfId: number) {
   const response = await api.post<PdfContentUrlResponse>(`/pdf-documents/${pdfId}/content-url`);
+  return response.data;
+}
+
+export async function fetchPdfPagePreview(pdfId: number, pageNumber: number, signal?: AbortSignal) {
+  const response = await api.get<Blob>(`/pdf-documents/${pdfId}/pages/${pageNumber}/preview`, {
+    responseType: 'blob',
+    signal,
+  });
   return response.data;
 }
 

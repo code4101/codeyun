@@ -16,9 +16,11 @@ from pathlib import Path
 from typing import Any, Iterator, Literal
 
 import requests
+import pypdfium2 as pdfium
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
+from PIL import Image
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from sqlmodel import Session, select
@@ -41,6 +43,7 @@ from backend.models import (
     DeviceFile,
     PdfBookshelfPlacement,
     PdfDocument,
+    PdfLibraryBookshelf,
     PdfPageNote,
     PdfUserState,
     ResourceAccessGrant,
@@ -58,10 +61,13 @@ PDF_HOSTED_ENTRY_ID = "codeyun-pdf-store"
 PDF_HOSTED_DEVICE_ID = "codeyun-pdf-store"
 PDF_CONTENT_TOKEN_SCOPE = "pdf-document-content"
 PDF_CONTENT_TOKEN_EXPIRE_MINUTES = 15
-PDF_METADATA_SCHEMA_VERSION = 1
-PDF_TITLE_NAMING_SCHEMA_VERSION = 1
+PDF_METADATA_SCHEMA_VERSION = 3
+PDF_TITLE_NAMING_SCHEMA_VERSION = 2
 PDF_TITLE_NAMING_MODEL = "gpt-5.3-codex-spark"
 PDF_TITLE_NAMING_PROVIDER_ID = "codex-cli"
+PDF_PAGE_PREVIEW_MAX_WIDTH = 1280
+PDF_PAGE_PREVIEW_RENDER_VERSION = 1
+DEFAULT_PDF_BOOKSHELF_NAMES = ("1", "2", "4", "5")
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
 RESOURCE_ACCESS_ROLE_RANK = {
@@ -115,6 +121,7 @@ class PdfDocumentMetadata(BaseModel):
     page_count: int | None = None
     page_width_points: float | None = None
     page_height_points: float | None = None
+    cover_average_color: str | None = None
     unit: Literal["pt"] = "pt"
     scanned_at: float | None = None
 
@@ -130,10 +137,30 @@ class PdfBookshelfLayoutUpdateRequest(BaseModel):
     placements: list[PdfBookshelfPlacementPayload] = Field(default_factory=list, max_length=10000)
 
 
+class PdfLibraryBookshelfPayload(BaseModel):
+    id: str
+    name: str
+    sort_index: int
+    book_count: int = 0
+
+
+class PdfLibraryBookshelfCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class PdfLibraryBookshelfUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class PdfMoveToBookshelfRequest(BaseModel):
+    bookshelf_id: str = Field(min_length=1, max_length=64)
+
+
 class PdfDocumentDetail(BaseModel):
     id: int
     title: str
     display_title: str
+    display_author: str = ""
     display_title_status: Literal["pending", "ready"] = "ready"
     owner_user_id: int | None = None
     source_device_id: str = ""
@@ -221,6 +248,15 @@ def _pdf_document_ref_candidates(document: PdfDocument) -> list[str]:
     if legacy_id and legacy_id not in refs:
         refs.append(legacy_id)
     return refs
+
+
+def _normalize_bookshelf_name(value: Any) -> str:
+    name = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="书柜名称不能为空")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="书柜名称不能超过 80 个字符")
+    return name
 
 
 def _normalize_resource_role(value: Any) -> Literal["deny", "viewer", "editor", "manager"] | None:
@@ -339,6 +375,190 @@ def _get_pdf_document_or_404(
     return document, access
 
 
+def _list_accessible_pdf_documents(
+    session: Session,
+    current_user: User,
+) -> list[tuple[PdfDocument, PdfResourceAccess]]:
+    if current_user.is_superuser:
+        candidate_documents = session.exec(select(PdfDocument)).all()
+    else:
+        owned_documents = session.exec(
+            select(PdfDocument).where(PdfDocument.owner_user_id == current_user.id)
+        ).all()
+        subject_keys = _current_user_subject_keys(current_user)
+        grants = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == PDF_RESOURCE_TYPE)
+            .where(ResourceAccessGrant.subject_key.in_(subject_keys))
+        ).all()
+        granted_pdf_ids = sorted(
+            {int(grant.resource_id) for grant in grants if str(grant.resource_id).isdigit()}
+        )
+        granted_documents = (
+            session.exec(
+                select(PdfDocument).where(PdfDocument.numeric_id.in_(granted_pdf_ids))
+            ).all()
+            if granted_pdf_ids
+            else []
+        )
+        document_map = {
+            document.id: document
+            for document in [*owned_documents, *granted_documents]
+        }
+        candidate_documents = list(document_map.values())
+
+    document_access_items = [
+        (document, _resolve_pdf_resource_access(session, document, current_user))
+        for document in candidate_documents
+    ]
+    return [
+        (document, access)
+        for document, access in document_access_items
+        if access.capabilities.can_read
+    ]
+
+
+def _ensure_pdf_library_bookshelves(
+    session: Session,
+    current_user: User,
+) -> list[PdfLibraryBookshelf]:
+    bookshelves = list(
+        session.exec(
+            select(PdfLibraryBookshelf)
+            .where(PdfLibraryBookshelf.user_id == current_user.id)
+            .order_by(PdfLibraryBookshelf.sort_index, PdfLibraryBookshelf.created_at)
+        ).all()
+    )
+    if bookshelves:
+        return bookshelves
+
+    now = time.time()
+    for sort_index, name in enumerate(DEFAULT_PDF_BOOKSHELF_NAMES):
+        session.add(
+            PdfLibraryBookshelf(
+                user_id=current_user.id,
+                name=name,
+                sort_index=sort_index,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    session.commit()
+    return list(
+        session.exec(
+            select(PdfLibraryBookshelf)
+            .where(PdfLibraryBookshelf.user_id == current_user.id)
+            .order_by(PdfLibraryBookshelf.sort_index, PdfLibraryBookshelf.created_at)
+        ).all()
+    )
+
+
+def _get_pdf_library_bookshelf_or_404(
+    session: Session,
+    current_user: User,
+    bookshelf_id: str,
+) -> PdfLibraryBookshelf:
+    bookshelf = session.exec(
+        select(PdfLibraryBookshelf)
+        .where(PdfLibraryBookshelf.id == bookshelf_id)
+        .where(PdfLibraryBookshelf.user_id == current_user.id)
+    ).first()
+    if bookshelf is None:
+        raise HTTPException(status_code=404, detail="书柜不存在")
+    return bookshelf
+
+
+def _ensure_pdf_library_memberships(
+    session: Session,
+    current_user: User,
+    documents: list[PdfDocument],
+    bookshelves: list[PdfLibraryBookshelf],
+) -> dict[str, PdfBookshelfPlacement]:
+    if not bookshelves:
+        return {}
+    placements = list(
+        session.exec(
+            select(PdfBookshelfPlacement).where(
+                PdfBookshelfPlacement.user_id == current_user.id
+            )
+        ).all()
+    )
+    placement_by_ref = {placement.pdf_document_id: placement for placement in placements}
+    valid_bookshelf_ids = {bookshelf.id for bookshelf in bookshelves}
+    default_bookshelf = bookshelves[0]
+    next_position = max(
+        (
+            int(placement.position_index or 0)
+            for placement in placements
+            if placement.bookshelf_id == default_bookshelf.id
+            and int(placement.shelf_index or 0) == 0
+        ),
+        default=-1,
+    ) + 1
+    changed = False
+    result: dict[str, PdfBookshelfPlacement] = {}
+    now = time.time()
+    for document in documents:
+        placement_changed = False
+        public_ref = _pdf_resource_id(document)
+        placement = next(
+            (
+                placement_by_ref[ref]
+                for ref in _pdf_document_ref_candidates(document)
+                if ref in placement_by_ref
+            ),
+            None,
+        )
+        if placement is None:
+            placement = PdfBookshelfPlacement(
+                pdf_document_id=public_ref,
+                user_id=current_user.id,
+                bookshelf_id=default_bookshelf.id,
+                shelf_index=0,
+                position_index=next_position,
+                created_at=now,
+                updated_at=now,
+            )
+            next_position += 1
+            placement_changed = True
+        else:
+            if placement.pdf_document_id != public_ref:
+                placement.pdf_document_id = public_ref
+                placement_changed = True
+            if placement.bookshelf_id not in valid_bookshelf_ids:
+                placement.bookshelf_id = default_bookshelf.id
+                placement.updated_at = now
+                placement_changed = True
+        if placement_changed:
+            session.add(placement)
+            changed = True
+        result[public_ref] = placement
+
+    if changed:
+        session.commit()
+    return result
+
+
+def _serialize_library_bookshelves(
+    bookshelves: list[PdfLibraryBookshelf],
+    placements: dict[str, PdfBookshelfPlacement],
+) -> list[PdfLibraryBookshelfPayload]:
+    counts = Counter(
+        placement.bookshelf_id
+        for placement in placements.values()
+        if placement.bookshelf_id is not None
+    )
+    return [
+        PdfLibraryBookshelfPayload(
+            id=bookshelf.id,
+            name=bookshelf.name,
+            sort_index=bookshelf.sort_index,
+            book_count=counts[bookshelf.id],
+        )
+        for bookshelf in bookshelves
+    ]
+
+
 def _serialize_user_state(state: PdfUserState | None) -> PdfUserStatePayload | None:
     if state is None:
         return None
@@ -401,6 +621,7 @@ def _serialize_pdf_detail(
         id=_require_pdf_numeric_id(document),
         title=document.title or "未命名 PDF",
         display_title=_pdf_display_title(document),
+        display_author=_pdf_display_author(document),
         display_title_status=_pdf_display_title_status(document),
         owner_user_id=document.owner_user_id,
         source_device_id=document.source_device_id or "",
@@ -557,6 +778,27 @@ def _pdf_display_title(document: PdfDocument) -> str:
     return _fallback_pdf_display_title(document.title or "")
 
 
+def _sanitize_pdf_display_author(value: Any) -> str:
+    author = re.sub(r"\s+", " ", str(value or "").strip())
+    author = re.sub(r"^(?:作者|著者|编者|主编)\s*[：:]\s*", "", author)
+    if len(author) > 60:
+        author = author[:60].rstrip(" ._-—")
+    return author
+
+
+def _pdf_display_author(document: PdfDocument) -> str:
+    metadata = dict(document.metadata_json or {})
+    naming = dict(metadata.get("title_naming") or {})
+    if (
+        int(naming.get("schema_version") or 0) == PDF_TITLE_NAMING_SCHEMA_VERSION
+        and naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
+    ):
+        named_author = _sanitize_pdf_display_author(naming.get("display_author"))
+        if named_author:
+            return named_author
+    return _sanitize_pdf_display_author(metadata.get("pdf_author"))
+
+
 def _pdf_display_title_status(document: PdfDocument) -> Literal["pending", "ready"]:
     naming = dict((document.metadata_json or {}).get("title_naming") or {})
     if (
@@ -575,7 +817,7 @@ def _sanitize_pdf_display_title(value: Any, source_title: str) -> str:
     return title or _fallback_pdf_display_title(source_title)
 
 
-def _extract_pdf_title_naming_payload(text: str) -> dict[int, str]:
+def _extract_pdf_title_naming_payload(text: str) -> dict[int, dict[str, str]]:
     stripped = str(text or "").strip()
     try:
         payload = json.loads(stripped)
@@ -589,7 +831,7 @@ def _extract_pdf_title_naming_payload(text: str) -> dict[int, str]:
             return {}
     if not isinstance(payload, dict) or not isinstance(payload.get("titles"), list):
         return {}
-    result: dict[int, str] = {}
+    result: dict[int, dict[str, str]] = {}
     for item in payload["titles"]:
         if not isinstance(item, dict):
             continue
@@ -599,21 +841,29 @@ def _extract_pdf_title_naming_payload(text: str) -> dict[int, str]:
             continue
         title = str(item.get("title") or "").strip()
         if title:
-            result[pdf_id] = title
+            result[pdf_id] = {
+                "title": title,
+                "author": _sanitize_pdf_display_author(item.get("author")),
+            }
     return result
 
 
-def _generate_pdf_display_titles(documents: list[PdfDocument]) -> tuple[dict[int, str], str]:
+def _generate_pdf_display_titles(documents: list[PdfDocument]) -> tuple[dict[int, Any], str]:
     source_items = [
-        {"id": _require_pdf_numeric_id(document), "filename": document.title or ""}
+        {
+            "id": _require_pdf_numeric_id(document),
+            "filename": document.title or "",
+            "pdf_author": str((document.metadata_json or {}).get("pdf_author") or ""),
+        }
         for document in documents
     ]
     prompt = (
         "请把下面的 PDF 原始文件名整理成真正图书馆书脊上会出现的精髓书名。\n"
         "规则：去掉 .pdf 等文件类型后缀；去掉网站、下载来源、ISBN、哈希、日期批次、上传者、扫描/精校身份等标识；"
         "去掉不属于书名的作者/译者/出版社尾注；保留卷册、上中下册、全几卷等属于书名辨识所必需的信息；"
-        "不要擅自改写作品名，不要补充输入中无法确定的信息。\n"
-        "只返回 JSON：{\"titles\":[{\"id\":整数,\"title\":\"标准书名\"}]}。\n"
+        "不要擅自改写作品名。另提取作者：优先使用 PDF 元数据或文件名中明确出现的作者；"
+        "对《资本论》这类作者唯一且高度确定的知名作品可补充作者，不能确定则返回空字符串。\n"
+        "只返回 JSON：{\"titles\":[{\"id\":整数,\"title\":\"标准书名\",\"author\":\"作者\"}]}。\n"
         f"输入：{json.dumps(source_items, ensure_ascii=False)}"
     )
     response = chat_with_provider(
@@ -690,7 +940,7 @@ def _generate_pdf_display_titles_in_background(bind: Any, pdf_ids: list[int]) ->
         if not documents:
             return
 
-        generated: dict[int, str] = {}
+        generated: dict[int, Any] = {}
         model = PDF_TITLE_NAMING_MODEL
         source = "fallback"
         error = ""
@@ -703,11 +953,22 @@ def _generate_pdf_display_titles_in_background(bind: Any, pdf_ids: list[int]) ->
         now = time.time()
         for document in documents:
             numeric_id = _require_pdf_numeric_id(document)
+            generated_entry = generated.get(numeric_id)
+            if isinstance(generated_entry, dict):
+                generated_title = generated_entry.get("title")
+                generated_author = generated_entry.get("author")
+            else:
+                # Keep compatibility with older callers and cached test doubles.
+                generated_title = generated_entry
+                generated_author = ""
             metadata = dict(document.metadata_json or {})
             metadata["title_naming"] = {
                 "schema_version": PDF_TITLE_NAMING_SCHEMA_VERSION,
                 "source_fingerprint": _pdf_title_source_fingerprint(document),
-                "display_title": _sanitize_pdf_display_title(generated.get(numeric_id), document.title or ""),
+                "display_title": _sanitize_pdf_display_title(generated_title, document.title or ""),
+                "display_author": _sanitize_pdf_display_author(
+                    generated_author or metadata.get("pdf_author")
+                ),
                 "status": "ready",
                 "source": source if numeric_id in generated else "fallback",
                 "model": model if numeric_id in generated else None,
@@ -731,6 +992,8 @@ def _serialize_pdf_metadata(document: PdfDocument) -> PdfDocumentMetadata:
         if metadata.get("page_width_points") is not None else None,
         page_height_points=float(metadata["page_height_points"])
         if metadata.get("page_height_points") is not None else None,
+        cover_average_color=str(metadata["cover_average_color"])
+        if metadata.get("cover_average_color") else None,
         scanned_at=float(metadata["scanned_at"]) if metadata.get("scanned_at") is not None else None,
     )
 
@@ -802,11 +1065,78 @@ def _read_pdf_metadata(path: Path) -> dict[str, Any]:
         raise ValueError("PDF 页面尺寸无效")
 
     (page_width, page_height), _count = page_sizes.most_common(1)[0]
+    pdf_author = _sanitize_pdf_display_author(getattr(reader.metadata, "author", ""))
     return {
         "page_count": page_count,
         "page_width_points": page_width,
         "page_height_points": page_height,
+        "pdf_author": pdf_author,
     }
+
+
+def _read_pdf_cover_average_color(path: Path) -> str:
+    pdf = pdfium.PdfDocument(os.fspath(path))
+    try:
+        if len(pdf) <= 0:
+            raise ValueError("PDF 没有封面页")
+        page = pdf[0]
+        try:
+            page_width, page_height = page.get_size()
+            scale = max(0.08, min(1.0, 96 / max(float(page_width), float(page_height), 1.0)))
+            bitmap = page.render(scale=scale, rev_byteorder=True)
+            try:
+                image = bitmap.to_pil().convert("RGB")
+                average = image.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+    finally:
+        pdf.close()
+    red, green, blue = (int(channel) for channel in average)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def _pdf_page_preview_cache_path(
+    document: PdfDocument,
+    page_number: int,
+    max_width: int = PDF_PAGE_PREVIEW_MAX_WIDTH,
+) -> Path:
+    fingerprint = _pdf_metadata_source_fingerprint(document)
+    cache_key = hashlib.sha256(
+        f"v{PDF_PAGE_PREVIEW_RENDER_VERSION}:{fingerprint}:{page_number}:{max_width}".encode("utf-8")
+    ).hexdigest()
+    return codeyun_temp_root("pdf_page_previews") / cache_key[:2] / f"{cache_key}.webp"
+
+
+def _render_pdf_page_preview(
+    pdf_path: Path,
+    page_number: int,
+    target_path: Path,
+    max_width: int = PDF_PAGE_PREVIEW_MAX_WIDTH,
+) -> None:
+    pdf = pdfium.PdfDocument(os.fspath(pdf_path))
+    try:
+        page = pdf[page_number - 1]
+        try:
+            page_width, _page_height = page.get_size()
+            scale = max(0.5, min(4.0, max_width / max(float(page_width), 1.0)))
+            bitmap = page.render(scale=scale, rev_byteorder=True)
+            try:
+                image = bitmap.to_pil()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_path = target_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+                try:
+                    image.save(temporary_path, format="WEBP", quality=84, method=4)
+                    temporary_path.replace(target_path)
+                finally:
+                    temporary_path.unlink(missing_ok=True)
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+    finally:
+        pdf.close()
 
 
 def _ensure_pdf_metadata(session: Session, documents: list[PdfDocument]) -> None:
@@ -824,6 +1154,12 @@ def _ensure_pdf_metadata(session: Session, documents: list[PdfDocument]) -> None
         try:
             with _materialize_pdf_for_metadata(session, document) as pdf_path:
                 metadata.update(_read_pdf_metadata(pdf_path))
+                try:
+                    metadata["cover_average_color"] = _read_pdf_cover_average_color(pdf_path)
+                    metadata.pop("cover_color_error", None)
+                except Exception as exc:
+                    metadata["cover_average_color"] = None
+                    metadata["cover_color_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
             metadata["status"] = "ready"
         except Exception as exc:
             metadata["status"] = "error"
@@ -1316,39 +1652,114 @@ def import_pdf_document_from_local_path(
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 
-@router.get("", response_model=list[PdfDocumentSummary])
-def list_pdf_documents(
-    background_tasks: BackgroundTasks,
+@router.get("/bookshelves", response_model=list[PdfLibraryBookshelfPayload])
+def list_pdf_library_bookshelves(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    if current_user.is_superuser:
-        candidate_documents = session.exec(select(PdfDocument)).all()
-    else:
-        owned_documents = session.exec(
-            select(PdfDocument).where(PdfDocument.owner_user_id == current_user.id)
-        ).all()
-        subject_keys = _current_user_subject_keys(current_user)
-        grants = session.exec(
-            select(ResourceAccessGrant)
-            .where(ResourceAccessGrant.resource_type == PDF_RESOURCE_TYPE)
-            .where(ResourceAccessGrant.subject_key.in_(subject_keys))
-        ).all()
-        granted_pdf_ids = sorted({int(grant.resource_id) for grant in grants if str(grant.resource_id).isdigit()})
-        granted_documents = session.exec(
-            select(PdfDocument).where(PdfDocument.numeric_id.in_(granted_pdf_ids))
-        ).all() if granted_pdf_ids else []
-        document_map = {document.id: document for document in [*owned_documents, *granted_documents]}
-        candidate_documents = list(document_map.values())
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    document_items = _list_accessible_pdf_documents(session, current_user)
+    placements = _ensure_pdf_library_memberships(
+        session,
+        current_user,
+        [document for document, _access in document_items],
+        bookshelves,
+    )
+    return _serialize_library_bookshelves(bookshelves, placements)
 
-    document_access_items = [
-        (document, _resolve_pdf_resource_access(session, document, current_user))
-        for document in candidate_documents
-    ]
+
+@router.post("/bookshelves", response_model=PdfLibraryBookshelfPayload)
+def create_pdf_library_bookshelf(
+    payload: PdfLibraryBookshelfCreateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    name = _normalize_bookshelf_name(payload.name)
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    if any(bookshelf.name == name for bookshelf in bookshelves):
+        raise HTTPException(status_code=409, detail="书柜名称已存在")
+    now = time.time()
+    bookshelf = PdfLibraryBookshelf(
+        user_id=current_user.id,
+        name=name,
+        sort_index=max((bookshelf.sort_index for bookshelf in bookshelves), default=-1) + 1,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(bookshelf)
+    session.commit()
+    session.refresh(bookshelf)
+    return PdfLibraryBookshelfPayload(
+        id=bookshelf.id,
+        name=bookshelf.name,
+        sort_index=bookshelf.sort_index,
+        book_count=0,
+    )
+
+
+@router.put("/bookshelves/{bookshelf_id}", response_model=PdfLibraryBookshelfPayload)
+def rename_pdf_library_bookshelf(
+    bookshelf_id: str,
+    payload: PdfLibraryBookshelfUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf = _get_pdf_library_bookshelf_or_404(
+        session, current_user, bookshelf_id
+    )
+    name = _normalize_bookshelf_name(payload.name)
+    duplicate = session.exec(
+        select(PdfLibraryBookshelf)
+        .where(PdfLibraryBookshelf.user_id == current_user.id)
+        .where(PdfLibraryBookshelf.name == name)
+        .where(PdfLibraryBookshelf.id != bookshelf.id)
+    ).first()
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="书柜名称已存在")
+    bookshelf.name = name
+    bookshelf.updated_at = time.time()
+    session.add(bookshelf)
+    session.commit()
+    session.refresh(bookshelf)
+    document_items = _list_accessible_pdf_documents(session, current_user)
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    placements = _ensure_pdf_library_memberships(
+        session,
+        current_user,
+        [document for document, _access in document_items],
+        bookshelves,
+    )
+    return next(
+        item
+        for item in _serialize_library_bookshelves(bookshelves, placements)
+        if item.id == bookshelf.id
+    )
+
+
+@router.get("", response_model=list[PdfDocumentSummary])
+def list_pdf_documents(
+    background_tasks: BackgroundTasks,
+    bookshelf_id: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    selected_bookshelf = (
+        _get_pdf_library_bookshelf_or_404(session, current_user, bookshelf_id)
+        if bookshelf_id
+        else bookshelves[0]
+    )
+    document_access_items = _list_accessible_pdf_documents(session, current_user)
+    placements = _ensure_pdf_library_memberships(
+        session,
+        current_user,
+        [document for document, _access in document_access_items],
+        bookshelves,
+    )
     document_access_items = [
         (document, access)
         for document, access in document_access_items
-        if access.capabilities.can_read
+        if placements[_pdf_resource_id(document)].bookshelf_id == selected_bookshelf.id
     ]
     document_access_items.sort(
         key=lambda item: (float(item[0].updated_at or 0.0), float(item[0].created_at or 0.0)),
@@ -1369,6 +1780,47 @@ def list_pdf_documents(
         _serialize_pdf_summary(session, document, current_user=current_user, access=access)
         for document, access in document_access_items
     ]
+
+
+@router.put("/{pdf_id}/bookshelf", response_model=PdfBookshelfPlacementPayload)
+def move_pdf_to_library_bookshelf(
+    pdf_id: int,
+    payload: PdfMoveToBookshelfRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, _access = _get_pdf_document_or_404(
+        session, current_user, pdf_id, required_role="viewer"
+    )
+    target_bookshelf = _get_pdf_library_bookshelf_or_404(
+        session, current_user, payload.bookshelf_id
+    )
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    placements = _ensure_pdf_library_memberships(
+        session, current_user, [document], bookshelves
+    )
+    placement = placements[_pdf_resource_id(document)]
+    target_placements = session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.user_id == current_user.id)
+        .where(PdfBookshelfPlacement.bookshelf_id == target_bookshelf.id)
+        .where(PdfBookshelfPlacement.shelf_index == 0)
+    ).all()
+    placement.bookshelf_id = target_bookshelf.id
+    placement.shelf_index = 0
+    placement.position_index = max(
+        (int(item.position_index or 0) for item in target_placements),
+        default=-1,
+    ) + 1
+    placement.updated_at = time.time()
+    session.add(placement)
+    session.commit()
+    return PdfBookshelfPlacementPayload(
+        pdf_id=pdf_id,
+        shelf_index=placement.shelf_index,
+        position_index=placement.position_index,
+        orientation=placement.orientation or "spine_vertical",
+    )
 
 
 @router.put("/bookshelf-layout", response_model=list[PdfBookshelfPlacementPayload])
@@ -1477,6 +1929,38 @@ def get_pdf_content(
         media_type=document.mime_type or "application/pdf",
         filename=document.title or target_path.name,
         content_disposition_type="inline",
+    )
+
+
+@router.get("/{pdf_id}/pages/{page_number}/preview")
+def get_pdf_page_preview(
+    pdf_id: int,
+    page_number: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, _access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="viewer")
+    _ensure_pdf_metadata(session, [document])
+    metadata = _serialize_pdf_metadata(document)
+    if metadata.status != "ready" or not metadata.page_count:
+        raise HTTPException(status_code=422, detail="PDF 页面信息不可用")
+    if page_number < 1 or page_number > metadata.page_count:
+        raise HTTPException(status_code=404, detail="PDF 页面不存在")
+
+    preview_path = _pdf_page_preview_cache_path(document, page_number)
+    if not preview_path.exists():
+        try:
+            with _materialize_pdf_for_metadata(session, document) as pdf_path:
+                _render_pdf_page_preview(pdf_path, page_number, preview_path)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"PDF 页面预览生成失败：{str(exc)[:160]}") from exc
+
+    return FileResponse(
+        path=os.fspath(preview_path),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

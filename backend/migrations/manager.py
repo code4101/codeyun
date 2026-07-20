@@ -5404,6 +5404,40 @@ def v89_add_pdf_bookshelf_orientation(session: Session):
     print("  Added PDF bookshelf orientation.")
 
 
+def v90_add_pdf_library_bookshelves(session: Session):
+    """Migration V90: Add user-named library cabinets above physical shelf rows."""
+    print("Running System Upgrade V90: Add PDF library bookshelves...")
+    session.exec(text(
+        """
+        CREATE TABLE IF NOT EXISTS pdflibrarybookshelf (
+            id VARCHAR NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name VARCHAR(80) NOT NULL DEFAULT '',
+            sort_index INTEGER NOT NULL DEFAULT 0,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_pdflibrarybookshelf_user_name UNIQUE (user_id, name),
+            FOREIGN KEY(user_id) REFERENCES user (id)
+        )
+        """
+    ))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_pdflibrarybookshelf_user_id ON pdflibrarybookshelf (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdflibrarybookshelf_sort_index ON pdflibrarybookshelf (sort_index)",
+    ):
+        session.exec(text(statement))
+    if _table_exists(session, "pdfbookshelfplacement"):
+        columns = _get_table_columns(session, "pdfbookshelfplacement")
+        if "bookshelf_id" not in columns:
+            session.exec(text("ALTER TABLE pdfbookshelfplacement ADD COLUMN bookshelf_id VARCHAR"))
+        session.exec(text(
+            "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfplacement_bookshelf_id "
+            "ON pdfbookshelfplacement (bookshelf_id)"
+        ))
+    session.commit()
+    print("  Added PDF library bookshelves.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5496,6 +5530,7 @@ MIGRATIONS = [
     (87, "Add PDF document metadata cache", v87_add_pdf_document_metadata),
     (88, "Add PDF bookshelf placements", v88_add_pdf_bookshelf_placements),
     (89, "Add PDF bookshelf orientation", v89_add_pdf_bookshelf_orientation),
+    (90, "Add PDF library bookshelves", v90_add_pdf_library_bookshelves),
 ]
 
 def get_current_version(session: Session) -> int:
