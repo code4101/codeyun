@@ -5,7 +5,6 @@ from typing import Any, Iterable
 
 
 MIN_TOKEN_SHAPE_OVERLAP_RATIO = 0.30
-MAX_INLINE_GAP_HEIGHT_RATIO = 1.5
 
 
 def _box(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
@@ -88,55 +87,65 @@ def _group_token_rows(tokens: Iterable[dict[str, Any]]) -> list[list[dict[str, A
 
 
 def order_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [token for row in _group_token_rows(tokens) for token in row]
-
-
-def _split_row_on_horizontal_gaps(row: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Split one visual row into local text fragments.
-
-    Tokens at a similar y coordinate are not necessarily one text line in a GUI.
-    A left-side alliance label and a right-side location name can share the same
-    baseline while being hundreds of pixels apart.  Keep ordinary glyph spacing,
-    but start a new fragment when the horizontal gap is larger than 1.5 times the
-    neighboring glyph height.
-    """
-
-    if not row:
-        return []
-    fragments: list[list[dict[str, Any]]] = [[row[0]]]
-    for token in row[1:]:
-        previous = fragments[-1][-1]
-        previous_right = float(previous.get("x") or 0) + float(previous.get("w") or 0)
-        gap = float(token.get("x") or 0) - previous_right
-        neighboring_height = max(
-            1.0,
-            float(previous.get("h") or 0),
-            float(token.get("h") or 0),
+    candidates = [token for token in tokens if isinstance(token, dict) and _box(token) is not None]
+    if candidates and all(token.get("parent_line_id") is not None for token in candidates):
+        return sorted(
+            candidates,
+            key=lambda item: (
+                int(item.get("line_order") or 0),
+                int(item.get("order") or 0),
+            ),
         )
-        if gap > neighboring_height * MAX_INLINE_GAP_HEIGHT_RATIO:
-            fragments.append([token])
-        else:
-            fragments[-1].append(token)
-    return fragments
+    return [token for row in _group_token_rows(candidates) for token in row]
 
 
 def group_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Derive visual text fragments from tokens at the consumer boundary."""
+    """Group only tokens that explicitly share a Paddle parent line.
+
+    Unlinked legacy tokens stay separate.  This is intentionally conservative:
+    geometry cannot recreate Paddle's detector grouping and must not pretend to.
+    ROI callers should use :func:`query_spatial_ocr`, where local aggregation is
+    an explicit business operation.
+    """
 
     fragments: list[dict[str, Any]] = []
-    for row in _group_token_rows(tokens):
-        for local_fragment in _split_row_on_horizontal_gaps(row):
-            box = _union_boxes(local_fragment)
-            if box is None:
-                continue
-            fragments.append(
-                {
-                    "text": "".join(str(item.get("text") or "") for item in local_fragment),
-                    **box,
-                    "source": "tokens",
-                }
-            )
+    groups: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+    for fallback_index, token in enumerate(order_ocr_tokens(tokens)):
+        parent_id = token.get("parent_line_id")
+        key = str(parent_id) if parent_id is not None else f"legacy-token-{fallback_index}"
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(token)
+    for key in group_order:
+        members = groups[key]
+        box = _union_boxes(members)
+        if box is None:
+            continue
+        linked = not key.startswith("legacy-token-")
+        fragments.append({
+            "text": "".join(str(item.get("text") or "") for item in members),
+            **box,
+            "source": "linked_tokens" if linked else "unlinked_token_fallback",
+            "parent_line_id": key if linked else None,
+            "fallback": not linked,
+        })
     return fragments
+
+
+def query_ocr_lines(lines: list[dict[str, Any]], query: dict[str, Any]) -> list[dict[str, Any]]:
+    """Filter authoritative Paddle lines geometrically without rebuilding them."""
+
+    query_box = _box(query)
+    if query_box is None:
+        return []
+    return [
+        line for line in lines
+        if isinstance(line, dict)
+        and (line_box := _box(line)) is not None
+        and _overlap_ratio(line_box, query_box) >= MIN_TOKEN_SHAPE_OVERLAP_RATIO
+    ]
 
 
 def query_spatial_ocr(tokens: list[dict[str, Any]], query: dict[str, Any]) -> dict[str, Any]:
@@ -153,7 +162,20 @@ def query_spatial_ocr(tokens: list[dict[str, Any]], query: dict[str, Any]) -> di
         and _overlap_ratio(token_box, query_box) >= MIN_TOKEN_SHAPE_OVERLAP_RATIO
     ]
     ordered = order_ocr_tokens(selected)
-    fragments = group_ocr_tokens(ordered)
+    if ordered and all(token.get("parent_line_id") is not None for token in ordered):
+        fragments = group_ocr_tokens(ordered)
+    else:
+        # This aggregation is deliberately confined to an explicit local ROI.
+        fragments = []
+        for row in _group_token_rows(ordered):
+            box = _union_boxes(row)
+            if box is not None:
+                fragments.append({
+                    "text": "".join(str(item.get("text") or "") for item in row),
+                    **box,
+                    "source": "roi_tokens_unlinked",
+                    "fallback": True,
+                })
     return {
         "text": "".join(str(fragment.get("text") or "") for fragment in fragments),
         "fragments": fragments,
@@ -166,9 +188,36 @@ def locate_text_box(tokens: list[dict[str, Any]], target: str) -> dict[str, floa
 
     target = str(target or "")
     ordered = order_ocr_tokens(tokens)
+    if not target:
+        return None
+    groups: list[list[dict[str, Any]]] = []
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for token in ordered:
+        parent_id = token.get("parent_line_id")
+        if parent_id is None:
+            if not groups or groups[-1] is not by_parent.get("__legacy__"):
+                legacy = by_parent.setdefault("__legacy__", [])
+                groups.append(legacy)
+            by_parent["__legacy__"].append(token)
+        else:
+            key = str(parent_id)
+            if key not in by_parent:
+                by_parent[key] = []
+                groups.append(by_parent[key])
+            by_parent[key].append(token)
+    for group in groups:
+        result = _locate_text_box_in_ordered_tokens(group, target)
+        if result is not None:
+            return result
+    return None
+
+
+def _locate_text_box_in_ordered_tokens(
+    ordered: list[dict[str, Any]], target: str,
+) -> dict[str, float] | None:
     text = "".join(str(token.get("text") or "") for token in ordered)
     start = text.find(target)
-    if start < 0 or not target:
+    if start < 0:
         return None
     end = start + len(target)
     cursor = 0

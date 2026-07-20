@@ -122,6 +122,13 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
     skipFeatureAccess: true,
   },
   {
+    scope: 'main',
+    path: '/notes/pdfs',
+    redirect: to => ({ path: '/notes/library', query: to.query }),
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
     scope: 'root',
     path: '/attendance-feedback',
     redirect: '/standalone/attendance/questionnaire/collect',

@@ -2,7 +2,7 @@ import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 const page: AppPageDefinition = {
   routeName: 'PdfDocumentLibrary',
-  canonicalPath: '/notes/pdfs',
+  canonicalPath: '/notes/library',
   component: () => import('./page.vue'),
   permissionKey: 'notes.pdfs',
   requiresAuth: true,

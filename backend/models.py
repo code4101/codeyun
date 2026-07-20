@@ -540,6 +540,7 @@ class PdfDocument(SQLModel, table=True):
     size_bytes: Optional[int] = Field(default=None, index=True)
     content_hash: Optional[str] = Field(default=None, index=True)
     hash_algorithm: str = Field(default="sha256")
+    metadata_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
     owner_user_id: int = Field(foreign_key="user.id", index=True)
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
@@ -561,6 +562,23 @@ class PdfUserState(SQLModel, table=True):
     zoom: str = Field(default="auto")
     sidebar_open: bool = Field(default=True)
     state_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class PdfBookshelfPlacement(SQLModel, table=True):
+    __tablename__ = "pdfbookshelfplacement"
+    __table_args__ = (
+        UniqueConstraint("pdf_document_id", "user_id", name="uq_pdfbookshelfplacement_document_user"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    pdf_document_id: str = Field(index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    shelf_index: int = Field(default=0, index=True)
+    position_index: int = Field(default=0, index=True)
+    orientation: str = Field(default="spine_vertical", max_length=32)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

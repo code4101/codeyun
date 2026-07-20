@@ -54,3 +54,32 @@ def test_ocr_frame_cache_separates_different_options(monkeypatch):
     macro_annotation._recognize_data_annotation_ocr_frame(image_data_url, options={"lang": "en"})
 
     assert calls == 2
+
+
+def test_ocr_frame_preserves_paddle_lines_and_links_tokens(monkeypatch):
+    def fake_preview(*_args, **_kwargs):
+        return {
+            "document": {
+                "flags": {
+                    "paddleocr_payload": {
+                        "rec_texts": ["白玉京", "100%"],
+                        "rec_scores": [0.99, 0.97],
+                        "rec_boxes": [[403, 625, 493, 658], [691, 622, 731, 643]],
+                        "text_word": [["白", "玉", "京"], ["1", "0", "0", "%"]],
+                        "text_word_boxes": [
+                            [[403, 625, 433, 658], [433, 625, 463, 658], [463, 625, 493, 658]],
+                            [[691, 622, 701, 643], [701, 622, 711, 643], [711, 622, 721, 643], [721, 622, 731, 643]],
+                        ],
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(macro_annotation, "run_paddle_ocr_preview", fake_preview)
+    image_data_url = "data:image/png;base64," + base64.b64encode(b"dongtian-frame").decode("ascii")
+
+    response = macro_annotation._recognize_data_annotation_ocr_frame(image_data_url)
+
+    assert [line.text for line in response.lines] == ["白玉京", "100%"]
+    assert response.lines[0].source == "paddle"
+    assert [token.parent_line_id for token in response.tokens] == ["line-0"] * 3 + ["line-1"] * 4

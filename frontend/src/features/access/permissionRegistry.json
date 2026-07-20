@@ -788,12 +788,12 @@
     },
     {
       "key": "notes.pdfs",
-      "title": "PDF 阅读器",
+      "title": "图书馆",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 31,
-      "route_paths": ["/notes/pdfs"],
-      "menu_paths": ["/notes/pdfs"],
+      "route_paths": ["/notes/library", "/notes/pdfs"],
+      "menu_paths": ["/notes/library"],
       "api_scopes": ["note-tools.pdfs"],
       "default_anonymous_allow": false
     },

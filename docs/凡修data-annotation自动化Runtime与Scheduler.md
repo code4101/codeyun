@@ -32,6 +32,12 @@ Scheduler 位于 Kernel 外，持久化：
 
 工程、AI 和人工来源的优先级及模拟器独占仲裁属于 Scheduler / Dispatch Arbiter。Kernel 不保存来源锁，也不消费 Scheduler 队列。当前 Jupyter shell 自身按协议串行执行 Cell；来源仲裁不得被实现为 Kernel 内 JSON queue。
 
+工程作业使用 `dispatch_level=0..5` 表示抢占等级，默认 0。空闲选单优先运行最高等级；等待当前工程 Cell 时，外部 Scheduler 会继续读取最新任务事实，严格更高等级的到期作业可原生 interrupt 当前 Cell。同级不抢占。被抢占作业只结束当前 attempt，保留 `next_time / retry_after`，不持久化 generator 或业务步骤，下一轮从稳定起点整单重跑。
+
+同级作业使用 `dispatch_order=0..9999` 配置软顺序：先按原触发时刻分批，同批中正数越小越先，`0` 表示未指定并排在显式顺序之后。`retry_policy=immediate` 的作业失败后继续占住同批当前顺序；`standard` 失败后会先让同批尚未尝试的作业运行。两种策略都保留原触发时间，不会凭空生成通用十分钟冷却。
+
+当前 21:30 默认顺序是：`灵脉_清体力(10, immediate) -> 洞天_行动力(20, immediate) -> 日常_奇袭魔界(30, standard)`。
+
 ## 作业原子性
 
 工程 Scheduler 的业务作业按原子事务理解：

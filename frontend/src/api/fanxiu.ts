@@ -634,6 +634,9 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
   legacy_name: string;
   enabled: boolean;
   interruptible: boolean;
+  dispatch_level: number;
+  dispatch_order: number;
+  retry_policy: 'standard' | 'immediate';
   next_time?: string | null;
   schedule_times: string[];
   weekdays?: number[];
@@ -776,9 +779,25 @@ export interface FanxiuDataAnnotationOcrFrameToken {
   y: number;
   w: number;
   h: number;
+  parent_line_id?: string | null;
+  line_order?: number | null;
+  order?: number | null;
+}
+
+export interface FanxiuDataAnnotationOcrFrameLine {
+  line_id: string;
+  order: number;
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  score?: number | null;
+  source: 'paddle' | string;
 }
 
 export interface FanxiuDataAnnotationOcrFrameResponse {
+  lines: FanxiuDataAnnotationOcrFrameLine[];
   tokens: FanxiuDataAnnotationOcrFrameToken[];
 }
 

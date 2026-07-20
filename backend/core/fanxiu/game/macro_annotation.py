@@ -16,12 +16,13 @@ from backend.core.fanxiu.game.window_models import (
     FanxiuGameWindow2MatchBox,
     FanxiuDataAnnotationMacroAnnotateRequest,
     FanxiuDataAnnotationMacroAnnotateResponse,
+    FanxiuDataAnnotationOcrFrameLine,
     FanxiuDataAnnotationOcrFrameToken,
     FanxiuDataAnnotationOcrFrameResponse,
 )
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
-from backend.core.ocr.spatial_document import extract_ocr_tokens
+from backend.core.ocr.spatial_document import extract_ocr_spatial_document
 from backend.models import User
 
 
@@ -224,11 +225,16 @@ def _recognize_data_annotation_ocr_frame(
         document = preview.get("document") or {}
         flags = document.get("flags") if isinstance(document, dict) else {}
         payload = flags.get("paddleocr_payload") if isinstance(flags, dict) else None
+        spatial_document = extract_ocr_spatial_document(payload) if isinstance(payload, dict) else {"lines": [], "tokens": []}
+        lines = [
+            FanxiuDataAnnotationOcrFrameLine.model_validate(item)
+            for item in spatial_document["lines"]
+        ]
         tokens = [
             FanxiuDataAnnotationOcrFrameToken.model_validate(item)
-            for item in extract_ocr_tokens(payload)
-        ] if isinstance(payload, dict) else []
-        response = FanxiuDataAnnotationOcrFrameResponse(tokens=tokens)
+            for item in spatial_document["tokens"]
+        ]
+        response = FanxiuDataAnnotationOcrFrameResponse(lines=lines, tokens=tokens)
         _set_cached_ocr_frame(cache_key, response)
         return response
     except OcrPreviewError as exc:

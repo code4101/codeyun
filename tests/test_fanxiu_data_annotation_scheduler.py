@@ -800,6 +800,82 @@ def test_data_annotation_scheduler_response_marks_supported_tasks(tmp_path, monk
     assert "legacy-daily-jianling" not in by_id
 
 
+def test_data_annotation_scheduler_dispatch_level_normalizes_to_zero_through_five():
+    base = {
+        "id": "daily-test",
+        "task_type": "daily_test",
+    }
+
+    assert data_annotation_state.normalize_data_annotation_scheduler_task(base)["dispatch_level"] == 0
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "dispatch_level": -1})["dispatch_level"] == 0
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "dispatch_level": "4"})["dispatch_level"] == 4
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "dispatch_level": 8})["dispatch_level"] == 5
+
+
+def test_data_annotation_scheduler_soft_dispatch_fields_normalize():
+    base = {"id": "daily-test", "task_type": "daily_test"}
+
+    assert data_annotation_state.normalize_data_annotation_scheduler_task(base)["dispatch_order"] == 0
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "dispatch_order": "20"})["dispatch_order"] == 20
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "dispatch_order": -1})["dispatch_order"] == 0
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "retry_policy": "immediate"})["retry_policy"] == "immediate"
+    assert data_annotation_state.normalize_data_annotation_scheduler_task({**base, "retry_policy": "unknown"})["retry_policy"] == "standard"
+
+
+def test_data_annotation_scheduler_defaults_define_2130_soft_sequence():
+    by_id = {item["id"]: item for item in fanxiu._default_data_annotation_scheduler_tasks()}
+
+    assert by_id["legacy-daily-lingmai-clear"]["dispatch_order"] == 10
+    assert by_id["legacy-daily-lingmai-clear"]["retry_policy"] == "immediate"
+    assert by_id["legacy-daily-dongtian-clear"]["dispatch_order"] == 20
+    assert by_id["legacy-daily-dongtian-clear"]["retry_policy"] == "immediate"
+    assert by_id["legacy-daily-mojie-raid"]["dispatch_order"] == 30
+    assert by_id["legacy-daily-mojie-raid"]["retry_policy"] == "standard"
+
+
+def test_data_annotation_scheduler_read_persists_zero_level_for_existing_tasks(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    task = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "gift-code-weekly").copy()
+    task.pop("dispatch_level", None)
+    fanxiu._write_data_annotation_scheduler_tasks([task])
+
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    read_task = next(item for item in tasks if item["id"] == "gift-code-weekly")
+    persisted_task = next(item for item in persisted if item["id"] == "gift-code-weekly")
+
+    assert read_task["dispatch_level"] == 0
+    assert persisted_task["dispatch_level"] == 0
+
+
+def test_data_annotation_scheduler_read_backfills_default_soft_sequence(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    task = next(
+        item for item in fanxiu._default_data_annotation_scheduler_tasks()
+        if item["id"] == "legacy-daily-lingmai-clear"
+    ).copy()
+    task.pop("dispatch_order", None)
+    task.pop("retry_policy", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([task], ensure_ascii=False), encoding="utf-8")
+
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    read_task = next(item for item in tasks if item["id"] == "legacy-daily-lingmai-clear")
+    persisted_task = next(
+        item for item in json.loads(path.read_text(encoding="utf-8"))
+        if item["id"] == "legacy-daily-lingmai-clear"
+    )
+
+    assert read_task["dispatch_order"] == 10
+    assert read_task["retry_policy"] == "immediate"
+    assert persisted_task["dispatch_order"] == 10
+    assert persisted_task["retry_policy"] == "immediate"
+
+
 def test_data_annotation_scheduler_put_does_not_persist_supported_view_field(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     task = fanxiu.FanxiuDataAnnotationSchedulerTaskItem.model_validate({
@@ -812,6 +888,7 @@ def test_data_annotation_scheduler_put_does_not_persist_supported_view_field(tmp
         "enabled": False,
         "priority": 40,
         "interruptible": True,
+        "dispatch_level": 4,
         "next_time": None,
         "schedule_times": [],
         "window": None,
@@ -829,9 +906,22 @@ def test_data_annotation_scheduler_put_does_not_persist_supported_view_field(tmp
         session=object(),
     )
     persisted = json.loads(_scheduler_state_path(tmp_path).read_text(encoding="utf-8"))
+    response_task = next(item for item in response.tasks if item.id == "gift-code-weekly")
+    persisted_task = next(item for item in persisted if item["id"] == "gift-code-weekly")
 
-    assert response.tasks[0].supported is True
-    assert "supported" not in persisted[0]
+    assert response_task.supported is True
+    assert response_task.dispatch_level == 4
+    assert "supported" not in persisted_task
+    assert persisted_task["dispatch_level"] == 4
+
+
+def test_data_annotation_scheduler_api_rejects_dispatch_level_outside_range():
+    with pytest.raises(ValueError):
+        fanxiu.FanxiuDataAnnotationSchedulerTaskItem.model_validate({
+            "id": "daily-test",
+            "task_type": "daily_test",
+            "dispatch_level": 6,
+        })
 
 
 def test_data_annotation_scheduler_put_preserves_runtime_fields(tmp_path, monkeypatch):
@@ -8436,19 +8526,21 @@ def test_daily_youli_selects_youli_from_xiuxianzhuan_menu(monkeypatch):
     assert clicked == [(pytest.approx(560.8333333333), 1492.0)]
 
 
-def test_ocr_substring_center_targets_text_fragment_not_whole_line():
-    runner = create_fanxiu_runtime_runner()
-    line = {"text": "游历道祖逸闻", "x": 507, "y": 1443, "w": 323, "h": 98}
+def test_ocr_substring_box_uses_linked_real_tokens_not_line_width_ratio():
+    from backend.core.fanxiu.data_annotation.ocr_spatial import locate_text_box
 
-    youli = runner._ocr_substring_center(line, "游历")
-    daozu = runner._ocr_substring_center(line, "道祖")
+    tokens = [
+        {"text": "游", "x": 507, "y": 1443, "w": 37, "h": 98, "parent_line_id": "line-0", "line_order": 0, "order": 0},
+        {"text": "历", "x": 549, "y": 1443, "w": 41, "h": 98, "parent_line_id": "line-0", "line_order": 0, "order": 1},
+        {"text": "道", "x": 640, "y": 1443, "w": 35, "h": 98, "parent_line_id": "line-0", "line_order": 0, "order": 2},
+        {"text": "祖", "x": 680, "y": 1443, "w": 44, "h": 98, "parent_line_id": "line-0", "line_order": 0, "order": 3},
+    ]
 
-    assert youli == (pytest.approx(560.8333333333), 1492.0)
-    assert daozu == (pytest.approx(668.5), 1492.0)
-    assert youli != daozu
+    assert locate_text_box(tokens, "游历") == {"x": 507.0, "y": 1443.0, "w": 83.0, "h": 98.0}
+    assert locate_text_box(tokens, "道祖") == {"x": 640.0, "y": 1443.0, "w": 84.0, "h": 98.0}
 
 
-def test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset(monkeypatch):
+def test_runtime_ocr_tokens_in_shapes_requests_word_boxes_and_filters_full_frame_document(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image = {
         "id": 265,
@@ -8459,20 +8551,14 @@ def test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offse
     }
     observed: list[dict[str, object] | None] = []
 
-    monkeypatch.setattr(
-        runner,
-        "_crop_frame_data_url_for_shapes",
-        lambda *_args, **_kwargs: ("crop-frame", 90.0, 320.0),
-    )
-
     def fake_ocr_frame(frame_data_url, *, options=None):
         observed.append(options)
-        assert frame_data_url == "crop-frame"
+        assert frame_data_url == "frame"
         return {
-            "lines": [{"text": "魔道仙弈", "x": 10.0, "y": 20.0, "w": 80.0, "h": 24.0}],
-            "words": [
-                {"text": "魔", "x": 12.0, "y": 20.0, "w": 16.0, "h": 24.0, "line_index": 0},
-                {"text": "道", "x": 30.0, "y": 20.0, "w": 16.0, "h": 24.0, "line_index": 0},
+            "lines": [{"line_id": "line-0", "order": 0, "text": "魔道仙弈", "x": 100.0, "y": 340.0, "w": 80.0, "h": 24.0, "source": "paddle"}],
+            "tokens": [
+                {"text": "魔", "x": 102.0, "y": 340.0, "w": 16.0, "h": 24.0, "parent_line_id": "line-0", "line_order": 0, "order": 0},
+                {"text": "道", "x": 120.0, "y": 340.0, "w": 16.0, "h": 24.0, "parent_line_id": "line-0", "line_order": 0, "order": 1},
             ],
         }
 
@@ -8480,12 +8566,12 @@ def test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offse
     ctx = {"images": {265: image}}
     runtime = runner._fanxiu_runtime(ctx)
 
-    words = runtime.ocr_words_in_shapes(265, ["识别区"], frame_data_url="frame")
+    tokens = runtime.ocr_tokens_in_shapes(265, ["识别区"], frame_data_url="frame")
 
     assert observed == [{"return_word_box": True}]
-    assert words == [
-        {"text": "魔", "x": 102.0, "y": 340.0, "w": 16.0, "h": 24.0, "line_index": 0},
-        {"text": "道", "x": 120.0, "y": 340.0, "w": 16.0, "h": 24.0, "line_index": 0},
+    assert tokens == [
+        {"text": "魔", "x": 102.0, "y": 340.0, "w": 16.0, "h": 24.0, "parent_line_id": "line-0", "line_order": 0, "order": 0},
+        {"text": "道", "x": 120.0, "y": 340.0, "w": 16.0, "h": 24.0, "parent_line_id": "line-0", "line_order": 0, "order": 1},
     ]
 
 

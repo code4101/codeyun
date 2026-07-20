@@ -53,7 +53,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
 from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _image_similarity_percent
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
-from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_spatial_ocr, union_fragment_box
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_ocr_lines, query_spatial_ocr, union_fragment_box
 from backend.core.fanxiu.data_annotation.slider_control import (
     BalancedPointState,
     DiscreteSliderScale,
@@ -408,6 +408,11 @@ class FanxiuRuntime(Runtime):
     def ocr_fragments(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
         return self.runner._cached_ocr_fragments(self.ctx, frame)
+
+    def ocr_lines(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+        """Return authoritative Paddle detector/recognizer lines."""
+
+        return self.ocr_fragments(frame_data_url, update=update)
 
     def ocr_tokens(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
@@ -1729,7 +1734,7 @@ class FanxiuRuntime(Runtime):
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         cached = self.runner._shared_spatial_ocr_result(self.ctx, frame)
         tokens = cached.get("tokens") if isinstance(cached.get("tokens"), list) else []
-        fragments = group_ocr_tokens(tokens)
+        fragments = cached.get("lines") if isinstance(cached.get("lines"), list) else []
         target_shape = self.resolve_shape_selector(target_view, shape_title)
         source_view = target_shape.parent_view if isinstance(target_shape.parent_view, View) and isinstance(target_shape.parent_view.raw, dict) else target_view
         return self.runner._ocr_centers_in_shape(
@@ -1753,6 +1758,25 @@ class FanxiuRuntime(Runtime):
         target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         return self.runner._ocr_fragments_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding, options=options, ctx=self.ctx)
+
+    def ocr_lines_in_shapes(
+        self,
+        view: View | int | str | dict[str, Any],
+        shape_titles: Iterable[str],
+        *,
+        padding: int = 16,
+        frame_data_url: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return native Paddle lines intersecting the requested ROI."""
+
+        return self.ocr_fragments_in_shapes(
+            view,
+            shape_titles,
+            padding=padding,
+            frame_data_url=frame_data_url,
+            options=options,
+        )
 
     def ocr_tokens_in_shapes(
         self,
@@ -9123,18 +9147,21 @@ class DataAnnotationRuntimeRunner(
         options_key = self._ocr_options_cache_key(canonical_options)
         if (
             isinstance(cache, dict)
-            and cache.get("version") == 3
+            and cache.get("version") == 4
             and cache.get("frame") == frame_data_url
             and cache.get("options_key") == options_key
             and isinstance(cache.get("tokens"), list)
+            and isinstance(cache.get("lines"), list)
         ):
             return cache
         response = self._ocr_frame(frame_data_url, options=canonical_options)
+        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
         tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
         cache = {
-            "version": 3,
+            "version": 4,
             "frame": frame_data_url,
             "options_key": options_key,
+            "lines": lines,
             "tokens": tokens,
         }
         ctx["_ocr_tokens_cache"] = cache
@@ -9152,10 +9179,11 @@ class DataAnnotationRuntimeRunner(
             cache = ctx.get("_ocr_tokens_cache")
             if (
                 isinstance(cache, dict)
-                and cache.get("version") == 3
+                and cache.get("version") == 4
                 and cache.get("frame") == frame_data_url
                 and cache.get("options_key") == options_key
                 and isinstance(cache.get("tokens"), list)
+                and isinstance(cache.get("lines"), list)
             ):
                 return cache
             return self._cached_ocr_result(ctx, frame_data_url, options=canonical_options)
@@ -9166,7 +9194,9 @@ class DataAnnotationRuntimeRunner(
         return tokens if isinstance(tokens, list) else []
 
     def _cached_ocr_fragments(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
-        return group_ocr_tokens(self._cached_ocr_tokens(ctx, frame_data_url))
+        result = self._cached_ocr_result(ctx, frame_data_url)
+        lines = result.get("lines")
+        return lines if isinstance(lines, list) else []
 
     def _has_cached_ocr_tokens(self, ctx: dict[str, Any], frame_data_url: str) -> bool:
         cache = ctx.get("_ocr_tokens_cache")
@@ -9909,8 +9939,11 @@ class DataAnnotationRuntimeRunner(
             response = _recognize_data_annotation_ocr_frame(frame_data_url, options=options)
         except Exception as exc:
             self._log("detail", f"OCR 失败：{exc}")
-            return {"tokens": []}
-        return {"tokens": [token.model_dump() for token in response.tokens]}
+            return {"lines": [], "tokens": []}
+        return {
+            "lines": [line.model_dump() for line in response.lines],
+            "tokens": [token.model_dump() for token in response.tokens],
+        }
 
     def _ocr_tokens(self, frame_data_url: str) -> list[dict[str, Any]]:
         response = self._ocr_frame(frame_data_url)
@@ -9918,7 +9951,9 @@ class DataAnnotationRuntimeRunner(
         return tokens if isinstance(tokens, list) else []
 
     def _ocr_fragments(self, frame_data_url: str) -> list[dict[str, Any]]:
-        return group_ocr_tokens(self._ocr_tokens(frame_data_url))
+        response = self._ocr_frame(frame_data_url)
+        lines = response.get("lines")
+        return lines if isinstance(lines, list) else []
 
     def _ocr_fragments_in_shapes(
         self,
@@ -9935,19 +9970,19 @@ class DataAnnotationRuntimeRunner(
             if query_box is None:
                 return []
             cached = self._shared_spatial_ocr_result(ctx, frame_data_url, options=options)
-            spatial = query_spatial_ocr(cached.get("tokens") or [], query_box)
-            return spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
+            return query_ocr_lines(cached.get("lines") or [], query_box)
         crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding, ctx=ctx)
         if crop is None:
             response = self._ocr_frame(frame_data_url, options=options)
-            return group_ocr_tokens(response.get("tokens") or [])
+            lines = response.get("lines")
+            return lines if isinstance(lines, list) else []
         crop_data_url, offset_x, offset_y = crop
         response = self._ocr_frame(crop_data_url, options=options)
-        tokens = response.get("tokens") if isinstance(response.get("tokens"), list) else []
-        for token in tokens:
-            token["x"] = float(token.get("x") or 0) + offset_x
-            token["y"] = float(token.get("y") or 0) + offset_y
-        return group_ocr_tokens(tokens)
+        lines = response.get("lines") if isinstance(response.get("lines"), list) else []
+        for line in lines:
+            line["x"] = float(line.get("x") or 0) + offset_x
+            line["y"] = float(line.get("y") or 0) + offset_y
+        return lines
 
     def _ocr_tokens_in_shapes(
         self,

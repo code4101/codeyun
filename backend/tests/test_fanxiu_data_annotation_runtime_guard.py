@@ -2085,12 +2085,13 @@ def test_shape_ocr_reuses_existing_full_frame_cache(monkeypatch):
     }
     ctx = {
         "entry": type("Entry", (), {"mode": "local"})(),
-        "_ocr_tokens_cache": {
-            "frame": "frame",
-            "version": 3,
-            "options_key": '{"return_word_box": true}',
-            "tokens": _ocr_tokens("邮件", x=100, y=170, w=80, h=30),
-        },
+            "_ocr_tokens_cache": {
+                "frame": "frame",
+                "version": 4,
+                "options_key": '{"return_word_box": true}',
+                "lines": [{"line_id": "line-0", "order": 0, "text": "邮件", "x": 100, "y": 170, "w": 80, "h": 30, "source": "paddle"}],
+                "tokens": _ocr_tokens("邮件", x=100, y=170, w=80, h=30),
+            },
     }
 
     monkeypatch.setattr(runner, "_run_match", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should reuse cached OCR")))
@@ -6177,10 +6178,13 @@ def test_daily_lingmai_summary_popup_clicks_ocr_confirm_before_returning_world(m
             yield BehaviorTreeStatus.RUNNING
             return "success"
 
+    confirm_tokens = _ocr_tokens("确认", x=407.0, y=1042.0, w=100.0, h=54.0)
+    for index, token in enumerate(confirm_tokens):
+        token.update(parent_line_id="line-0", line_order=0, order=index)
     monkeypatch.setattr(
         runner,
         "_cached_ocr_tokens",
-        lambda *_args, **_kwargs: _ocr_tokens("确认", x=407.0, y=1042.0, w=100.0, h=54.0),
+        lambda *_args, **_kwargs: confirm_tokens,
     )
 
     runtime = FakeRuntime()
@@ -6231,10 +6235,13 @@ def test_daily_lingmai_frame_306_clicks_ocr_confirm_before_returning_world(monke
             yield BehaviorTreeStatus.RUNNING
             return "success"
 
+    confirm_tokens = _ocr_tokens("确定", x=398.0, y=1042.0, w=110.0, h=54.0)
+    for index, token in enumerate(confirm_tokens):
+        token.update(parent_line_id="line-0", line_order=0, order=index)
     monkeypatch.setattr(
         runner,
         "_cached_ocr_tokens",
-        lambda *_args, **_kwargs: _ocr_tokens("确定", x=398.0, y=1042.0, w=110.0, h=54.0),
+        lambda *_args, **_kwargs: confirm_tokens,
     )
 
     runtime = FakeRuntime()
@@ -11757,10 +11764,19 @@ def test_baiye_target_box_preserves_real_variable_spacing():
 def test_baiye_target_box_ignores_rule_text():
     runner = create_fanxiu_runtime_runner()
 
+    rule_tokens = _ocr_tokens("魔道法则", x=340.0, y=512.0, w=160.0, h=32.0)
+    target_tokens = _ocr_tokens("魔道", x=840.0, y=746.0, w=56.0, h=39.0)
+    for index, token in enumerate(rule_tokens):
+        token.update(parent_line_id="line-0", line_order=0, order=index)
+    for index, token in enumerate(target_tokens):
+        token.update(parent_line_id="line-1", line_order=1, order=index)
     box = runner._baiye_target_box_from_tokens(
-        _ocr_tokens("魔道法则", x=340.0, y=512.0, w=160.0, h=32.0)
-        + _ocr_tokens("魔道", x=840.0, y=746.0, w=56.0, h=39.0),
+        rule_tokens + target_tokens,
         "魔道",
+        lines=[
+            {"line_id": "line-0", "text": "魔道法则", "x": 340.0, "y": 512.0, "w": 160.0, "h": 32.0},
+            {"line_id": "line-1", "text": "魔道", "x": 840.0, "y": 746.0, "w": 56.0, "h": 39.0},
+        ],
     )
 
     assert box == {"x": 840.0, "y": 746.0, "w": 56.0, "h": 39.0}

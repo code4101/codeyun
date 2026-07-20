@@ -416,9 +416,25 @@ class FanxiuDataAnnotationOcrFrameToken(BaseModel):
     y: float
     w: float
     h: float
+    parent_line_id: str | None = None
+    line_order: int | None = None
+    order: int | None = None
+
+
+class FanxiuDataAnnotationOcrFrameLine(BaseModel):
+    line_id: str
+    order: int
+    text: str
+    x: float
+    y: float
+    w: float
+    h: float
+    score: float | None = None
+    source: str = "paddle"
 
 
 class FanxiuDataAnnotationOcrFrameResponse(BaseModel):
+    lines: list[FanxiuDataAnnotationOcrFrameLine] = Field(default_factory=list)
     tokens: list[FanxiuDataAnnotationOcrFrameToken] = Field(default_factory=list)
 
 

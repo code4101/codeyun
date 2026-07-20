@@ -5989,57 +5989,28 @@ class DailyFoundationTaskMixin:
             yield from runtime.wait_view(279, label="洞天_行动力：等待 #279 洞天福地")
             frame = runtime.cur_frame(update=True)
             lines = runtime.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
+            tokens = (
+                runtime.ocr_tokens_in_shapes(279, ["窗口"], frame_data_url=frame)
+                if hasattr(runtime, "ocr_tokens_in_shapes")
+                else []
+            )
             matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
             visible_enemy_names: set[str] = set()
             for line in lines:
-                text = _sanitize_ocr_text(line.get("text"))
-                location_text = re.sub(r"^\[(?:洞天|福地)\]", "", text).strip()
-                line_center_y = float(line.get("y") or 0) + float(line.get("h") or 0) * 0.5
                 for normalized, original in normalized_targets.items():
                     if not normalized:
                         continue
-                    # 地点 OCR 允许残缺或粘连：完整名、名称前两个字（如
-                    # 「太明」），以及至少两个字的目标名连续片段都可命中。
-                    # 但拒绝明显过长的合并行，避免把整行战报当作地点坐标。
-                    compact_location = re.sub(r"\s+", "", location_text)
-                    compact_target = re.sub(r"\s+", "", normalized)
-                    if not compact_location:
-                        continue
-
-                    match_start = compact_location.find(compact_target)
-                    match_length = len(compact_target)
-                    if (
-                        match_start > 0
-                        and len(compact_location) > len(compact_target) + 8
-                    ):
-                        # 底层已按水平间距断句；这里仍防御异常长的单框结果，
-                        # 不允许从「战报...地点...占领中」一整行推导点击坐标。
-                        match_start = -1
-                    if match_start < 0:
-                        target_hint = compact_target[:2]
-                        match_start = (
-                            compact_location.find(target_hint)
-                            if len(target_hint) >= 2 and len(compact_location) <= len(compact_target) + 8
-                            else -1
-                        )
-                        match_length = len(target_hint)
-                    if match_start < 0 and 2 <= len(compact_location) <= len(compact_target):
-                        if compact_location in compact_target:
-                            match_start = 0
-                            match_length = len(compact_location)
-                    if match_start < 0:
+                    location_box = self._daily_dongtian_location_box(line, tokens, normalized)
+                    if location_box is None:
                         continue
 
                     visible_enemy_names.add(original)
-                    # OCR 可能把地点与联盟、占领进度、倒计时粘成一个长框。
-                    # 点击中心必须按命中子串在长框中的相对位置计算，不能使用
-                    # 整个 OCR 框中心，否则「白玉京...倒计时」会被错算进编队区。
-                    span_center_ratio = (match_start + match_length * 0.5) / len(compact_location)
-                    location_center_x = float(line.get("x") or 0) + float(line.get("w") or 0) * span_center_ratio
+                    location_center_x = float(location_box.get("x") or 0) + float(location_box.get("w") or 0) * 0.5
+                    location_center_y = float(location_box.get("y") or 0) + float(location_box.get("h") or 0) * 0.5
                     click_x = location_center_x + click_offset_x
-                    click_y = line_center_y + click_offset_y
+                    click_y = location_center_y + click_offset_y
                     # 「我的编队」既不能提供地点 OCR 候选，也绝不允许成为最终点击落点。
-                    if point_in_box(location_center_x, line_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
+                    if point_in_box(location_center_x, location_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
                         continue
                     matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y))
                     break
@@ -6068,6 +6039,56 @@ class DailyFoundationTaskMixin:
             if not changed:
                 break
         raise RuntimeError(f"洞天_行动力：#279 窗口未找到敌对地点，candidates={enemy_places}")
+
+    def _daily_dongtian_location_box(
+        self,
+        line: dict[str, Any],
+        tokens: list[dict[str, Any]],
+        target: str,
+    ) -> dict[str, float] | None:
+        """Resolve one place inside one authoritative Paddle line.
+
+        The line decides object identity. Linked word boxes only refine a
+        substring within that same line; tokens from neighboring UI objects are
+        never concatenated or searched together.
+        """
+
+        raw_text = _sanitize_ocr_text(line.get("text"))
+        location_text = re.sub(r"^\[(?:洞天|福地)\]", "", raw_text).strip()
+        compact_location = re.sub(r"\s+", "", location_text)
+        compact_target = re.sub(r"\s+", "", str(target or ""))
+        if not compact_location or not compact_target:
+            return None
+
+        matched_text = ""
+        if compact_target in compact_location:
+            matched_text = compact_target
+        else:
+            target_hint = compact_target[:2]
+            if len(target_hint) >= 2 and target_hint in compact_location:
+                matched_text = target_hint
+            elif 2 <= len(compact_location) <= len(compact_target) and compact_location in compact_target:
+                matched_text = compact_location
+        if not matched_text:
+            return None
+
+        line_id = line.get("line_id")
+        line_tokens = [token for token in tokens if line_id is not None and token.get("parent_line_id") == line_id]
+        token_box = locate_text_box(line_tokens, matched_text)
+        if token_box is not None:
+            return token_box
+
+        # Without linked tokens only an exact/partial standalone native line is
+        # safe. A line containing suffix/prefix text cannot be proportionally
+        # sliced because that would recreate the discarded legacy heuristic.
+        if compact_location == matched_text:
+            return {
+                "x": float(line.get("x") or 0),
+                "y": float(line.get("y") or 0),
+                "w": float(line.get("w") or 0),
+                "h": float(line.get("h") or 0),
+            }
+        return None
 
     def _daily_dongtian_place_icon_offset(self, runtime: Any) -> tuple[float, float]:
         """动态计算地点文字中心到可点击图标中心的像素位移。
@@ -7095,11 +7116,14 @@ class DailyFoundationTaskMixin:
                         current_scene=264,
                     )
                 frame = runtime.cur_frame(update=True)
+                lines = runtime.ocr_fragments_in_shapes(264, ["识别区"], frame_data_url=frame) if hasattr(runtime, "ocr_fragments_in_shapes") else []
                 tokens = runtime.ocr_tokens_in_shapes(264, ["识别区"], frame_data_url=frame)
-                matches = [fragment for fragment in group_ocr_tokens(tokens) if keyword in _sanitize_ocr_text(fragment.get("text"))]
+                matches = [line for line in lines if keyword in _sanitize_ocr_text(line.get("text"))]
                 if matches:
                     fragment = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
-                    target_box = locate_text_box(query_spatial_ocr(tokens, fragment)["tokens"], keyword)
+                    parent_id = fragment.get("line_id")
+                    line_tokens = [token for token in tokens if token.get("parent_line_id") == parent_id]
+                    target_box = locate_text_box(line_tokens, keyword)
                     if target_box is None:
                         continue
                     x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
@@ -7124,13 +7148,28 @@ class DailyFoundationTaskMixin:
                     break
         raise RuntimeError(f"日常_拜谒：#264 识别区未找到包含 {keyword} 的法则")
 
-    def _baiye_target_box_from_tokens(self, tokens: list[dict[str, Any]], target: str) -> dict[str, float] | None:
-        candidate_tokens: list[dict[str, Any]] = []
-        for fragment in group_ocr_tokens(tokens):
-            if "法则" in _sanitize_ocr_text(fragment.get("text")):
-                continue
-            candidate_tokens.extend(query_spatial_ocr(tokens, fragment)["tokens"])
-        return locate_text_box(candidate_tokens, target)
+    def _baiye_target_box_from_tokens(
+        self,
+        tokens: list[dict[str, Any]],
+        target: str,
+        *,
+        lines: list[dict[str, Any]] | None = None,
+    ) -> dict[str, float] | None:
+        if lines:
+            for line in lines:
+                text = _sanitize_ocr_text(line.get("text"))
+                if "法则" in text or target not in text:
+                    continue
+                parent_id = line.get("line_id")
+                line_tokens = [token for token in tokens if token.get("parent_line_id") == parent_id]
+                target_box = locate_text_box(line_tokens, target)
+                if target_box is not None:
+                    return target_box
+            return None
+        # Observable legacy degradation: locate_text_box never crosses an
+        # explicit parent_line_id, and unlinked tokens are accepted only for a
+        # caller-provided local ROI.
+        return locate_text_box(tokens, target)
 
     def _baiye_lord_click_point_from_box(
         self,
@@ -7208,17 +7247,28 @@ class DailyFoundationTaskMixin:
                 else:
                     reason = f"当前详情页已显示可拜谒状态，但 OCR 未稳定包含目标「{target}」"
                 return (yield from self._click_baiye_worship_button(runtime, payload, reason=reason))
+            ocr_options = {
+                "text_det_thresh": float(payload.get("baiye_text_det_thresh") or 0.25),
+                "text_det_box_thresh": float(payload.get("baiye_text_det_box_thresh") or 0.45),
+                "text_det_unclip_ratio": float(payload.get("baiye_text_det_unclip_ratio") or 1.2),
+            }
+            lines = (
+                runtime.ocr_fragments_in_shapes(
+                    265,
+                    ["识别区"],
+                    frame_data_url=frame,
+                    options=ocr_options,
+                )
+                if hasattr(runtime, "ocr_fragments_in_shapes")
+                else []
+            )
             tokens = runtime.ocr_tokens_in_shapes(
                 265,
                 ["识别区"],
                 frame_data_url=frame,
-                options={
-                    "text_det_thresh": float(payload.get("baiye_text_det_thresh") or 0.25),
-                    "text_det_box_thresh": float(payload.get("baiye_text_det_box_thresh") or 0.45),
-                    "text_det_unclip_ratio": float(payload.get("baiye_text_det_unclip_ratio") or 1.2),
-                },
+                options=ocr_options,
             )
-            target_box = self._baiye_target_box_from_tokens(tokens, target)
+            target_box = self._baiye_target_box_from_tokens(tokens, target, lines=lines)
             source_text = "".join(_sanitize_ocr_text(token.get("text")) for token in tokens)
             last_text = source_text or last_text
             if target_box is not None:

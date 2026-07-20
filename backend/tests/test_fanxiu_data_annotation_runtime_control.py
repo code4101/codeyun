@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime as real_datetime
@@ -36,6 +37,35 @@ def test_update_scheduler_tasks_marks_and_preserves_custom_schedule(monkeypatch)
     assert result[0]["trigger_kind"] == "daily"
     assert result[0]["enabled"] is True
     assert result[0]["payload"]["__scheduler_schedule_override"] is True
+
+
+def test_scheduler_task_update_never_deletes_omitted_task_when_counts_match():
+    current = [
+        {"id": "lingmai-clear", "task_type": "daily_lingmai_clear", "label": "灵脉_清体力", "enabled": True},
+        {"id": "dongtian-clear", "task_type": "daily_dongtian_clear", "label": "洞天_行动力", "enabled": True},
+    ]
+    incoming = [
+        {**current[1], "enabled": False},
+        {"id": "new-task", "task_type": "daily_new", "label": "新作业", "enabled": True},
+    ]
+
+    merged = runtime_control.merge_data_annotation_scheduler_task_updates(current, incoming)
+
+    by_id = {task["id"]: task for task in merged}
+    assert list(by_id) == ["lingmai-clear", "dongtian-clear", "new-task"]
+    assert by_id["lingmai-clear"]["enabled"] is True
+    assert by_id["dongtian-clear"]["enabled"] is False
+
+
+def test_scheduler_empty_update_is_noop_instead_of_clearing_tasks():
+    current = [
+        {"id": "lingmai-clear", "task_type": "daily_lingmai_clear", "label": "灵脉_清体力", "enabled": True},
+    ]
+
+    merged = runtime_control.merge_data_annotation_scheduler_task_updates(current, [])
+
+    assert [task["id"] for task in merged] == ["lingmai-clear"]
+    assert merged[0]["enabled"] is True
 
 
 def test_read_doctor_watch_latest_prefers_heartbeat_latest_path_when_stale(monkeypatch, tmp_path):
@@ -242,6 +272,153 @@ def test_scheduler_task_cell_records_terminal_success(monkeypatch):
     assert state[0]["last_message"] == "done"
     assert state[0]["next_time"] == "2026-07-14 12:30:00"
     assert [item[0] for item in facts] == ["running", "success"]
+
+
+def test_scheduler_dispatch_order_prefers_higher_level_and_keeps_same_level_order():
+    tasks = [
+        {"id": "level-1-a", "dispatch_level": 1},
+        {"id": "level-4", "dispatch_level": 4},
+        {"id": "level-1-b", "dispatch_level": 1},
+        {"id": "level-0"},
+    ]
+
+    ordered = runtime_control.sort_scheduler_tasks_for_dispatch(tasks)
+
+    assert [item["id"] for item in ordered] == ["level-4", "level-1-a", "level-1-b", "level-0"]
+
+
+def test_scheduler_soft_order_applies_inside_same_level_and_trigger_cohort():
+    tasks = [
+        {"id": "mojie", "dispatch_level": 0, "dispatch_order": 30, "next_time": "2026-07-20 21:30:00"},
+        {"id": "dongtian", "dispatch_level": 0, "dispatch_order": 20, "next_time": "2026-07-20 21:30:00"},
+        {"id": "lingmai", "dispatch_level": 0, "dispatch_order": 10, "next_time": "2026-07-20 21:30:00"},
+    ]
+
+    ordered = runtime_control.sort_scheduler_tasks_for_dispatch(tasks)
+
+    assert [item["id"] for item in ordered] == ["lingmai", "dongtian", "mojie"]
+
+
+def test_scheduler_immediate_retry_keeps_its_soft_order_before_fresh_peer():
+    tasks = [
+        {
+            "id": "lingmai",
+            "dispatch_order": 10,
+            "retry_policy": "immediate",
+            "next_time": "2026-07-20 21:30:00",
+            "last_run_at": "2026-07-20 21:31:00",
+            "last_result": "error",
+        },
+        {"id": "dongtian", "dispatch_order": 20, "next_time": "2026-07-20 21:30:00", "last_result": ""},
+    ]
+
+    ordered = runtime_control.sort_scheduler_tasks_for_dispatch(tasks)
+
+    assert [item["id"] for item in ordered] == ["lingmai", "dongtian"]
+
+
+def test_scheduler_standard_failure_yields_to_fresh_peer_without_changing_trigger_time():
+    tasks = [
+        {
+            "id": "first",
+            "dispatch_order": 10,
+            "retry_policy": "standard",
+            "next_time": "2026-07-20 21:30:00",
+            "last_run_at": "2026-07-20 21:31:00",
+            "last_result": "error",
+        },
+        {"id": "second", "dispatch_order": 20, "next_time": "2026-07-20 21:30:00", "last_result": ""},
+    ]
+
+    ordered = runtime_control.sort_scheduler_tasks_for_dispatch(tasks)
+
+    assert [item["id"] for item in ordered] == ["second", "first"]
+    assert ordered[1]["next_time"] == "2026-07-20 21:30:00"
+
+
+def test_scheduler_higher_level_due_task_preempts_running_cell_and_preserves_trigger(monkeypatch):
+    state = [
+        {
+            "id": "low",
+            "label": "低级作业",
+            "task_type": "low_task",
+            "enabled": True,
+            "dispatch_level": 1,
+            "next_time": "2026-07-20 20:30:00",
+            "retry_after": None,
+            "last_result": "",
+        },
+        {
+            "id": "high",
+            "label": "窗口作业",
+            "task_type": "high_task",
+            "enabled": True,
+            "dispatch_level": 5,
+            "next_time": "2026-07-20 21:00:00",
+            "retry_after": None,
+            "last_result": "",
+        },
+    ]
+    cell_started = threading.Event()
+    interrupted = threading.Event()
+    interrupt_calls = []
+    facts = []
+
+    def submit_cell(**_kwargs):
+        cell_started.set()
+        assert interrupted.wait(3.0)
+        return {"status": "error", "phase": "error", "error": "KeyboardInterrupt: "}
+
+    def interrupt_cell(command, **_kwargs):
+        interrupt_calls.append(command)
+        interrupted.set()
+        return {"ok": True, "command": command, "execution_state": "idle"}
+
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda task, result, **_kwargs: facts.append((result, deepcopy(task))))
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", submit_cell)
+    monkeypatch.setattr(runtime_control, "sync_scheduler_tasks_from_world_facts", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runtime_control, "task_supported", lambda _task: True)
+    monkeypatch.setattr(runtime_control, "data_annotation_task_due", lambda task: task["id"] == "high")
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "busy" if cell_started.is_set() and not interrupted.is_set() else "idle", "generation": 7},
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.send_fanxiu_kernel_manager_command",
+        interrupt_cell,
+    )
+
+    result = runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    low = next(item for item in state if item["id"] == "low")
+    assert result["status"] == "preempted"
+    assert interrupt_calls == ["interrupt"]
+    assert low["last_result"] == "preempted"
+    assert low["next_time"] == "2026-07-20 20:30:00"
+    assert low["retry_after"] is None
+    assert low["attempt_id"] is None
+    assert "窗口作业" in low["last_message"]
+    assert [item[0] for item in facts] == ["running", "preempted"]
+
+
+def test_scheduler_same_level_due_task_does_not_preempt_live_attempt(monkeypatch):
+    state = [
+        {"id": "running", "task_type": "a", "dispatch_level": 3, "last_result": "running", "attempt_id": "attempt-a"},
+        {"id": "due", "task_type": "b", "dispatch_level": 3, "enabled": True},
+    ]
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "task_supported", lambda _task: True)
+    monkeypatch.setattr(runtime_control, "data_annotation_task_due", lambda task: task["id"] == "due")
+
+    candidate = runtime_control._higher_level_due_task_for_attempt("running", "attempt-a")
+
+    assert candidate is None
 
 
 def test_scheduler_success_advances_schedule_crossed_while_cell_was_running(monkeypatch):

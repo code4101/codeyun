@@ -339,6 +339,29 @@ class PopupGuardMixin:
         self._record_popup_guard_click(355, f"守护处理：#355 点击「取消」 {score:.0f}%", event, "取消")
         return True
 
+    def _handle_auto_close_popup_393(
+        self,
+        runtime: Any,
+        view: View,
+        event: dict[str, Any],
+        *,
+        score: float,
+    ) -> bool:
+        """进入社团大比干扰页时选择分身，释放当前业务流程。"""
+
+        avatar_shape = view.get_shape("分身")
+        if not avatar_shape:
+            self._record_popup_guard_missing(
+                393,
+                f"守护命中：#393 {score:.0f}%，缺少「分身」标注",
+                event,
+                "missing_avatar",
+            )
+            return True
+        runtime.click_shape(view, avatar_shape, frame_data_url=runtime.cur_frame())
+        self._record_popup_guard_click(393, f"守护处理：#393 点击「分身」 {score:.0f}%", event, "分身")
+        return True
+
     def _handle_auto_close_confirm_popup(
         self,
         runtime: Any,
@@ -598,6 +621,13 @@ class PopupGuardMixin:
                 )
             if view.id == 355:
                 return self._handle_auto_close_popup_355(
+                    runtime,
+                    view,
+                    event,
+                    score=matched.score,
+                )
+            if view.id == 393:
+                return self._handle_auto_close_popup_393(
                     runtime,
                     view,
                     event,

@@ -1121,6 +1121,29 @@ def test_fanxiu_bt_watch_doctor_dispatches_run_due_as_one_external_cell(monkeypa
     assert event["auto_run_due"].get("triggered") is True
 
 
+def test_fanxiu_bt_due_snapshot_key_changes_after_terminal_attempt():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    before = {
+        "scheduler": {
+            "due_tasks": [{
+                "id": "window-task",
+                "last_result": "running",
+                "last_run_at": "2026-07-20 21:00:00",
+                "finished_at": None,
+                "next_time": "2026-07-20 21:00:00",
+            }],
+        },
+    }
+    after = json.loads(json.dumps(before))
+    after["scheduler"]["due_tasks"][0].update({
+        "last_result": "error",
+        "finished_at": "2026-07-20 21:00:05",
+    })
+
+    assert fanxiu_bt._watch_due_snapshot_key(before) != fanxiu_bt._watch_due_snapshot_key(after)
+
+
 
 
 

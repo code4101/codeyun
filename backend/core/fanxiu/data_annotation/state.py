@@ -227,7 +227,7 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
         fact["retry_after"] = None
         if task.get("next_time"):
             fact["discovered_next_time"] = task.get("next_time")
-    elif result in {"error", "stopped", "skipped", "unsupported"}:
+    elif result in {"error", "stopped", "skipped", "unsupported", "preempted"}:
         fact.pop("discovered_next_time", None)
         fact["next_time"] = None
         if task.get("retry_after"):
@@ -437,6 +437,18 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
     if isinstance(item, dict) and item.get("last_message"):
         task["last_message"] = str(item["last_message"])
     if isinstance(item, dict):
+        try:
+            dispatch_level = int(item.get("dispatch_level") or 0)
+        except (TypeError, ValueError):
+            dispatch_level = 0
+        task["dispatch_level"] = min(5, max(0, dispatch_level))
+        try:
+            dispatch_order = int(item.get("dispatch_order") or 0)
+        except (TypeError, ValueError):
+            dispatch_order = 0
+        task["dispatch_order"] = min(9999, max(0, dispatch_order))
+        retry_policy = str(item.get("retry_policy") or "standard").strip().lower()
+        task["retry_policy"] = retry_policy if retry_policy in {"standard", "immediate"} else "standard"
         scheduler_meta = item.get("scheduler_meta")
         if not isinstance(scheduler_meta, dict) and isinstance(item.get("checkpoint"), dict):
             scheduler_meta = item.get("checkpoint")

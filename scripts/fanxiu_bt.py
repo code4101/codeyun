@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -838,9 +839,7 @@ def _watch_auto_run_due_batch(
     min_interval = max(1.0, float(min_interval_seconds or 300.0))
 
     while len(auto_run_due_results) < max(1, int(max_runs or 1)) and _watch_should_auto_run_due(report):
-        scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
-        due_ids = sorted(str(item.get("id") or "") for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict))
-        due_key = "|".join(due_ids)
+        due_key = _watch_due_snapshot_key(report)
         if not due_key:
             break
 
@@ -889,6 +888,30 @@ def _watch_auto_run_due_batch(
         if len(auto_run_due_results) >= max(1, int(max_runs or 1)) and _watch_should_auto_run_due(report):
             report["auto_run_due_limit_reached"] = True
     return report, last_due_at, last_due_key
+
+
+def _watch_due_snapshot_key(report: dict[str, Any]) -> str:
+    """Identify one due snapshot, not merely the set of task ids.
+
+    A terminal failure keeps its trigger overdue by design.  Including terminal
+    attempt facts lets the next whole-job retry run immediately while still
+    suppressing duplicate dispatch of an unchanged snapshot.
+    """
+    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+    rows = []
+    for item in scheduler.get("due_tasks") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append((
+            str(item.get("id") or ""),
+            str(item.get("attempt_id") or ""),
+            str(item.get("last_run_at") or ""),
+            str(item.get("finished_at") or ""),
+            str(item.get("last_result") or ""),
+            str(item.get("next_time") or ""),
+            str(item.get("retry_after") or ""),
+        ))
+    return json.dumps(sorted(rows), ensure_ascii=False, separators=(",", ":")) if rows else ""
 
 
 def _asset_tree_signature_for_entry(entry_id: str | None) -> tuple[int, int]:
@@ -1200,16 +1223,39 @@ def _run_doctor_watch(
             code_signature=code_signature,
         )
         if auto_run_due and _watch_should_auto_run_due(report):
-            report, last_auto_run_due_at, last_auto_run_due_key = _watch_auto_run_due_batch(
-                report,
-                log_limit=log_limit,
-                include_screenshot=include_screenshot,
-                take_screenshot=take_screenshot,
-                min_interval_seconds=auto_run_due_min_interval_seconds,
-                last_due_key=last_auto_run_due_key,
-                last_due_at=last_auto_run_due_at,
-                wait_timeout_seconds=auto_run_due_wait_timeout_seconds,
+            heartbeat_stop = threading.Event()
+
+            def keep_dispatch_heartbeat_fresh() -> None:
+                while not heartbeat_stop.wait(30.0):
+                    _write_doctor_watch_heartbeat(
+                        output_path=path,
+                        latest_path=latest_path,
+                        stable_latest_path=stable_latest_path,
+                        iteration=iteration,
+                        event=preliminary_event,
+                        code_signature=code_signature,
+                    )
+
+            heartbeat_thread = threading.Thread(
+                target=keep_dispatch_heartbeat_fresh,
+                name="fanxiu-doctor-watch-heartbeat",
+                daemon=True,
             )
+            heartbeat_thread.start()
+            try:
+                report, last_auto_run_due_at, last_auto_run_due_key = _watch_auto_run_due_batch(
+                    report,
+                    log_limit=log_limit,
+                    include_screenshot=include_screenshot,
+                    take_screenshot=take_screenshot,
+                    min_interval_seconds=auto_run_due_min_interval_seconds,
+                    last_due_key=last_auto_run_due_key,
+                    last_due_at=last_auto_run_due_at,
+                    wait_timeout_seconds=auto_run_due_wait_timeout_seconds,
+                )
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=1.0)
         event = _doctor_watch_event(report, iteration=iteration)
         event["auto_run_due_enabled"] = bool(auto_run_due)
         event["dispatch_mode"] = "auto" if auto_run_due else "observe"
