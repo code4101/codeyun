@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 from backend.core.runtime import public_frontend_deploy
@@ -56,3 +57,46 @@ def test_build_frontend_runs_vite_directly_without_npm_script(monkeypatch, tmp_p
     assert calls
     assert calls[0][0] == ["node.exe", str(vite), "build", "--manifest"]
     assert "npm" not in " ".join(calls[0][0]).lower()
+
+
+def test_ssh_config_reads_direct_interface_index(monkeypatch):
+    monkeypatch.setenv("YUN_SERVER_HOST", "203.0.113.10")
+    monkeypatch.setenv("YUN_USER_PASS_CHENKUNZE", "test-password")
+    monkeypatch.setenv("YUN_SERVER_DIRECT_INTERFACE_INDEX", "8")
+    monkeypatch.setattr(public_frontend_deploy, "_load_env_file", lambda: None)
+
+    config = public_frontend_deploy._ssh_config()
+
+    assert config["direct_interface_index"] == 8
+
+
+def test_open_direct_socket_pins_windows_interface(monkeypatch):
+    calls = []
+
+    class FakeSocket:
+        def settimeout(self, value):
+            calls.append(("timeout", value))
+
+        def setsockopt(self, level, option, value):
+            calls.append(("setsockopt", level, option, value))
+
+        def connect(self, address):
+            calls.append(("connect", address))
+
+        def close(self):
+            calls.append(("close",))
+
+    fake_socket = FakeSocket()
+    monkeypatch.setattr(public_frontend_deploy.os, "name", "nt")
+    monkeypatch.setattr(
+        public_frontend_deploy.socket,
+        "getaddrinfo",
+        lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("203.0.113.10", 22))],
+    )
+    monkeypatch.setattr(public_frontend_deploy.socket, "socket", lambda *args: fake_socket)
+
+    result = public_frontend_deploy._open_direct_socket("yun.example", 22, 8)
+
+    assert result is fake_socket
+    assert ("setsockopt", socket.IPPROTO_IP, 31, socket.htonl(8)) in calls
+    assert ("connect", ("203.0.113.10", 22)) in calls

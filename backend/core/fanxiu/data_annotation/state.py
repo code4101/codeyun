@@ -458,8 +458,8 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
     task["template_source"] = template_source
     task["trigger_kind"] = str(task.get("trigger_kind") or task.get("schedule_kind") or "manual").strip() or "manual"
     weekdays = item.get("weekdays") if isinstance(item, dict) else None
+    parsed_weekdays: list[int] = []
     if isinstance(weekdays, list):
-        parsed_weekdays: list[int] = []
         for value in weekdays:
             try:
                 weekday = int(value)
@@ -467,7 +467,7 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
                 continue
             if 0 <= weekday <= 6 and weekday not in parsed_weekdays:
                 parsed_weekdays.append(weekday)
-        task["weekdays"] = parsed_weekdays
+    task["weekdays"] = parsed_weekdays
     return task
 
 

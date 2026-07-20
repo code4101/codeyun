@@ -826,7 +826,10 @@ def repair_data_annotation_scheduler_tasks(
             task[key] = default_task.get(key)
         if not schedule_overridden:
             for key in ("schedule_kind", "schedule_times", "weekdays", "window", "trigger_kind"):
-                task[key] = default_task.get(key)
+                if key in {"schedule_times", "weekdays"}:
+                    task[key] = list(default_task.get(key) or [])
+                else:
+                    task[key] = default_task.get(key)
         default_payload = default_task.get("payload") if isinstance(default_task.get("payload"), dict) else {}
         definition_marker = "__scheduler_definition_task_type"
         marker_matches = str(task_payload.get(definition_marker) or "") == default_task_type

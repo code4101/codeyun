@@ -10,6 +10,7 @@ export const NOTE_WEIGHT_MODE_EXPONENTIAL = 'exponential';
 export const NOTE_WEIGHT_MODE_LINEAR = 'linear';
 
 export const NOTE_CATEGORY_DEFAULT = 'general';
+export const NOTE_CATEGORY_UNCATEGORIZED = 'uncategorized';
 export const NOTE_FORM_DEFAULT = 'note';
 export const NOTE_FORM_DOCUMENT = 'document';
 export const NOTE_FORM_MEMO = 'memo';
@@ -109,26 +110,26 @@ export const normalizeNoteScene = (value: unknown, fallback: string = NOTE_SCENE
 
 export const normalizeNoteCategories = (
   value: unknown,
-  fallbackCategory: string | null | undefined = NOTE_CATEGORY_DEFAULT
+  fallbackCategory: string | null | undefined = NOTE_CATEGORY_UNCATEGORIZED
 ) => normalizeAssignments(
   value,
-  fallbackCategory,
+  fallbackCategory || NOTE_CATEGORY_UNCATEGORIZED,
   key => (key === 'note' || key === 'doc' || key === 'memo') ? NOTE_CATEGORY_DEFAULT : key,
-  { allowEmpty: fallbackCategory === null }
+  { allowEmpty: false }
 );
 
 export const derivePrimaryCategory = (
   noteCategories: unknown,
-  fallbackCategory: string | null | undefined = NOTE_CATEGORY_DEFAULT
+  fallbackCategory: string | null | undefined = NOTE_CATEGORY_UNCATEGORIZED
 ) => {
   const normalized = normalizeNoteCategories(noteCategories, fallbackCategory);
-  if (!normalized.length) return fallbackCategory ?? null;
+  if (!normalized.length) return fallbackCategory || NOTE_CATEGORY_UNCATEGORIZED;
 
   let best = normalized[0];
   for (const item of normalized.slice(1)) {
     if (item.weight > best.weight) best = item;
   }
-  return best.key || fallbackCategory || null;
+  return best.key || fallbackCategory || NOTE_CATEGORY_UNCATEGORIZED;
 };
 
 const getLegacyGeneralTypeKey = (noteForm: string) => {
@@ -174,14 +175,14 @@ export const deriveNoteTaxonomyFromLegacy = (
 
 export const deriveLegacySemanticsFromTaxonomy = (
   noteCategories: unknown,
-  primaryCategory: string | null | undefined = NOTE_CATEGORY_DEFAULT,
+  primaryCategory: string | null | undefined = NOTE_CATEGORY_UNCATEGORIZED,
   noteForm: string | null | undefined = NOTE_FORM_DEFAULT,
   noteScene: string | null | undefined = NOTE_SCENE_DEFAULT,
   lifecycleStage: string | null | undefined = NOTE_LIFECYCLE_STAGE_DEFAULT
 ) => {
   const normalizedPrimaryCategory = typeof primaryCategory === 'string' && primaryCategory.trim()
     ? primaryCategory.trim()
-    : primaryCategory === null ? null : NOTE_CATEGORY_DEFAULT;
+    : NOTE_CATEGORY_UNCATEGORIZED;
   const normalizedNoteForm = normalizeNoteForm(noteForm, NOTE_FORM_DEFAULT);
   const normalizedNoteScene = normalizeNoteScene(noteScene, NOTE_SCENE_DEFAULT);
   const normalizedLifecycleStage = normalizeLifecycleStage(lifecycleStage, NOTE_LIFECYCLE_STAGE_DEFAULT);

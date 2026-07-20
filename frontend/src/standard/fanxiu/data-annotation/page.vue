@@ -212,6 +212,15 @@
                     @keyup.enter="searchAssetFrame"
                   />
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
+                    size="small"
+                    :icon="Fold"
+                    title="全部折叠"
+                    aria-label="全部折叠资产树"
+                    :disabled="!hasExpandedAssetTreeNodes"
+                    @click="collapseAssetTree"
+                  />
+                  <el-button
                     v-if="assetTreeViewMode === 'business'"
                     size="small"
                     :icon="Plus"
@@ -1312,6 +1321,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { Edge, Node } from '@vue-flow/core';
 import {
+  Fold,
   Folder,
   Picture,
   Plus,
@@ -9211,6 +9221,16 @@ const collectDisplayedAssetFolderIds = () => (
     ? [...LAYER_TREE_ROOT_IDS, ...collectAssetFolderIds(assetTree.value)]
     : collectAssetFolderIds(assetTree.value)
 );
+
+const hasExpandedAssetTreeNodes = computed(() => {
+  const expandedIds = new Set(expandedAssetNodeIds.value);
+  return collectDisplayedAssetFolderIds().some((id) => expandedIds.has(id));
+});
+
+const collapseAssetTree = async () => {
+  expandedAssetNodeIds.value = [];
+  await syncAssetTreeExpansionFromState();
+};
 
 const syncAssetTreeExpansionFromState = async () => {
   await nextTick();

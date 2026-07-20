@@ -75,6 +75,7 @@ from backend.core.notes.access import note_list_mapping_to_response_dict, note_t
 from backend.core.notes.semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
     NOTE_CATEGORY_DEFAULT,
+    NOTE_CATEGORY_UNCATEGORIZED,
     NOTE_FORM_DEFAULT,
     NOTE_FORM_DOCUMENT,
     NOTE_FORM_MEMO,
@@ -4369,6 +4370,18 @@ def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> di
     elif key in {"doc", "memo"}:
         return None
 
+    if key == NOTE_CATEGORY_UNCATEGORIZED:
+        return {
+            "key": NOTE_CATEGORY_UNCATEGORIZED,
+            "label": "未分类",
+            "color": None,
+            "description": "尚未归入其他分类",
+            "order": -10,
+            "builtin": True,
+            "source": "builtin",
+            "generated_from_color": None,
+        }
+
     label = value.get("label")
     label = str(label).strip() if isinstance(label, str) else ""
     if not label:
@@ -4793,7 +4806,12 @@ def _build_note_type_palette_response(user_id: int, session: Session) -> dict[st
         if not _is_imported_script_category_key(item.get("key"))
     ]
     usage = _collect_note_type_usage(user_id, session)
-    merged = {item["key"]: item for item in base_items}
+    uncategorized_item = next(
+        item for item in _default_note_type_palette_items()
+        if item["key"] == NOTE_CATEGORY_UNCATEGORIZED
+    )
+    merged = {NOTE_CATEGORY_UNCATEGORIZED: uncategorized_item}
+    merged.update({item["key"]: item for item in base_items})
     for item in _discover_used_note_type_items(usage):
         merged.setdefault(item["key"], item)
     for item in _discover_legacy_color_palette_items(user_id, session):
@@ -4859,30 +4877,19 @@ def _build_legacy_fields_from_taxonomy(
     note_scene: Any,
     lifecycle_stage: Any,
 ) -> dict[str, Any]:
-    has_empty_category = isinstance(note_categories, list) and len(note_categories) == 0
     normalized_primary_category = str(primary_category or "").strip()
-    allow_empty_category = has_empty_category and not normalized_primary_category
-    if not normalized_primary_category and not allow_empty_category:
-        normalized_primary_category = NOTE_CATEGORY_DEFAULT
+    if not normalized_primary_category:
+        normalized_primary_category = NOTE_CATEGORY_UNCATEGORIZED
     normalized_note_form = normalize_note_form(note_form, default=NOTE_FORM_DEFAULT)
     normalized_note_scene = normalize_note_scene(note_scene, default=NOTE_SCENE_DEFAULT)
     normalized_lifecycle_stage = normalize_lifecycle_stage(lifecycle_stage, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
     legacy = derive_legacy_semantics_from_taxonomy(
         note_categories,
-        primary_category=None if allow_empty_category else normalized_primary_category,
+        primary_category=normalized_primary_category,
         note_form=normalized_note_form,
         note_scene=normalized_note_scene,
         lifecycle_stage=normalized_lifecycle_stage,
     )
-    if allow_empty_category:
-        general_legacy_type = "doc" if normalized_note_form == NOTE_FORM_DOCUMENT else "memo" if normalized_note_form == NOTE_FORM_MEMO else NOTE_TYPE_DEFAULT
-        legacy = {
-            **legacy,
-            "note_categories": [],
-            "primary_category": None,
-            "note_types": [],
-            "node_type": general_legacy_type,
-        }
     return {
         "note_categories": legacy["note_categories"],
         "primary_category": legacy["primary_category"],
@@ -5491,7 +5498,7 @@ def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) 
         if "primary_category" in note_data:
             effective_primary_category = note_data.get("primary_category")
         elif isinstance(effective_categories, list) and len(effective_categories) == 0 and db_note.primary_category is None:
-            effective_primary_category = None
+            effective_primary_category = NOTE_CATEGORY_UNCATEGORIZED
         else:
             effective_primary_category = db_note.primary_category or NOTE_CATEGORY_DEFAULT
         effective_note_form = note_data.get("note_form", db_note.note_form or NOTE_FORM_DEFAULT)
@@ -5553,7 +5560,6 @@ def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) 
             effective_note_kind,
             effective_node_status,
         ))
-
     return note_data
 
 
@@ -7004,7 +7010,10 @@ def can_delete_note_category_palette_item(
     current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
-    return {"can_delete": not _is_note_type_in_use(current_user.id, category_key, session)}
+    return {
+        "can_delete": category_key != NOTE_CATEGORY_UNCATEGORIZED
+        and not _is_note_type_in_use(current_user.id, category_key, session)
+    }
 
 
 @router.put("/category-palette", response_model=NoteCategoryPaletteResponse)
@@ -7015,6 +7024,11 @@ def update_note_category_palette(
     session: Session = Depends(get_session)
 ):
     items = _normalize_note_type_palette_items([item.model_dump() for item in request.items])
+    if not any(item["key"] == NOTE_CATEGORY_UNCATEGORIZED for item in items):
+        items.insert(0, next(
+            item for item in _default_note_type_palette_items()
+            if item["key"] == NOTE_CATEGORY_UNCATEGORIZED
+        ))
     _ensure_note_type_labels_unique(items)
     next_keys = {item["key"] for item in items}
     existing_keys = {item["key"] for item in (_load_note_type_palette_items(current_user.id, session) or _default_note_type_palette_items())}
@@ -7049,6 +7063,8 @@ def merge_note_category_palette_item(
         raise HTTPException(status_code=400, detail="source_key and target_key are required")
     if source_key == target_key:
         raise HTTPException(status_code=400, detail="source_key and target_key must be different")
+    if source_key == NOTE_CATEGORY_UNCATEGORIZED:
+        raise HTTPException(status_code=400, detail="The uncategorized category cannot be merged")
 
     palette_keys = _get_note_type_palette_keys(current_user.id, session)
     if source_key not in palette_keys:
@@ -7528,13 +7544,19 @@ def create_note(
             primary_node_type,
             effective_note_kind,
             effective_node_status,
-        ) if uses_legacy_taxonomy_input else {
-            "note_categories": [],
-            "primary_category": None,
-            "note_form": NOTE_FORM_DEFAULT,
-            "note_scene": effective_note_kind,
-            "lifecycle_stage": effective_node_status,
-        }
+        ) if uses_legacy_taxonomy_input else _build_legacy_fields_from_taxonomy(
+            [],
+            NOTE_CATEGORY_UNCATEGORIZED,
+            NOTE_FORM_DEFAULT,
+            effective_note_kind,
+            effective_node_status,
+        )
+        if not uses_legacy_taxonomy_input:
+            normalized_note_types = normalize_note_types(
+                taxonomy_fields["note_types"],
+                fallback_type=taxonomy_fields["node_type"],
+            )
+            primary_node_type = str(taxonomy_fields["node_type"] or NOTE_TYPE_DEFAULT).strip() or NOTE_TYPE_DEFAULT
     current_time = time.time()
     note_identity = allocate_new_note_identity(session)
     db_note = NoteNode(

@@ -19,6 +19,7 @@ export interface NodeTypeItem {
   builtin?: boolean;
   source?: 'builtin' | 'custom' | 'legacy' | 'import';
   generatedFromColor?: string | null;
+  colorless?: boolean;
 }
 
 export interface NodeStatusItem {
@@ -41,7 +42,7 @@ export interface NoteTypeAssignment {
 export interface NoteTypePaletteItem {
   key: string;
   label: string;
-  color: string;
+  color: string | null;
   description?: string;
   order: number;
   builtin: boolean;
@@ -51,6 +52,7 @@ export interface NoteTypePaletteItem {
 }
 
 export const NODE_TYPES: Record<string, NodeTypeItem> = {
+  uncategorized: { id: 'uncategorized', label: '未分类', description: '尚未归入其他分类', baseColor: '#FFFFFF', lightColor: '#FFFFFF', order: -10, builtin: true, source: 'builtin', colorless: true },
   general: { id: 'general', label: '综合', description: '默认综合分类', baseColor: '#606266', lightColor: '#F4F4F5', order: 0, builtin: true, source: 'builtin' },
   project: { id: 'project', label: '项目', description: '长期性工作，非具体任务容器', baseColor: '#7B1FA2', lightColor: '#F3E5F5', order: 10, builtin: true, source: 'builtin' },
   module: { id: 'module', label: '模块', description: '项目的组成部分', baseColor: '#BA68C8', lightColor: '#FAF4FB', order: 20, builtin: true, source: 'builtin' },
@@ -76,13 +78,14 @@ export const NOTE_FORMS: Record<string, NoteFormItem> = {
   book: { id: 'book', label: '书籍', description: '书籍、电子书或长篇阅读材料' }
 };
 
-export const NODE_TYPE_ORDER = ['general', 'project', 'module', 'task', 'bug'];
+export const NODE_TYPE_ORDER = ['uncategorized', 'general', 'project', 'module', 'task', 'bug'];
 export const NODE_STATUS_ORDER = ['idea', 'todo', 'doing', 'done', 'delete'];
 export const NOTE_FORM_ORDER = ['note', 'document', 'memo', 'music', 'video', 'game', 'book'];
 
 export const NOTE_TYPE_WEIGHT_DEFAULT = 100;
 export const NOTE_TYPE_WEIGHT_MIN = 0;
 export const NOTE_TYPE_WEIGHT_MAX = 100;
+export const NOTE_CATEGORY_UNCATEGORIZED = 'uncategorized';
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const LEGACY_COLOR_TYPE_PREFIX = 'legacy_color_';
@@ -177,7 +180,9 @@ const toPaletteItem = (
   if (key === 'note') key = 'general';
   if (key === 'doc' || key === 'memo') return null;
   const builtin = Boolean(value.builtin) || Boolean(getBuiltinType(key));
-  const color = normalizeNodeColor(value.color) ?? getLegacyColorFromTypeKey(key) ?? getBuiltinType(key)?.baseColor ?? NODE_TYPES.general.baseColor;
+  const color = key === NOTE_CATEGORY_UNCATEGORIZED
+    ? null
+    : normalizeNodeColor(value.color) ?? getLegacyColorFromTypeKey(key) ?? getBuiltinType(key)?.baseColor ?? NODE_TYPES.general.baseColor;
   const label = String(value.label || '').trim() || (isLegacyColorTypeKey(key) ? `旧色${(getLegacyColorFromTypeKey(key) || '#606266').slice(1)}` : getBuiltinType(key)?.label || key);
   const source = builtin ? 'builtin' : isLegacyColorTypeKey(key) ? 'legacy' : (value.source ?? 'custom');
   const generatedFromColor = normalizeNodeColor(value.generatedFromColor) ?? (source === 'legacy' ? getLegacyColorFromTypeKey(key) : null);
@@ -336,7 +341,7 @@ export const normalizeNoteTypeWeight = (value: unknown, fallback: number = NOTE_
 
 export const normalizeNoteTypeAssignments = (
   value: unknown,
-  fallbackType: string | null | undefined = 'general',
+  fallbackType: string | null | undefined = NOTE_CATEGORY_UNCATEGORIZED,
   options: { allowEmpty?: boolean } = {}
 ): NoteTypeAssignment[] => {
   const list = Array.isArray(value) ? value : [];
@@ -372,7 +377,7 @@ export const normalizeNoteTypeAssignments = (
 
   if (options.allowEmpty) return [];
 
-  const fallback = typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
+  const fallback = typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : NOTE_CATEGORY_UNCATEGORIZED;
   return [{ key: fallback, weight: NOTE_TYPE_WEIGHT_DEFAULT }];
 };
 
@@ -396,10 +401,10 @@ export const createEffectiveNoteTypes = (
 
 export const derivePrimaryNodeType = (
   noteTypes: unknown,
-  fallbackType: string | null | undefined = 'general'
+  fallbackType: string | null | undefined = NOTE_CATEGORY_UNCATEGORIZED
 ) => {
   const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
-  if (!normalized.length) return typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
+  if (!normalized.length) return typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : NOTE_CATEGORY_UNCATEGORIZED;
 
   let best = normalized[0];
   for (const item of normalized.slice(1)) {
@@ -505,10 +510,11 @@ export const resolveNoteTypesColor = (
   fallbackType: string | null | undefined = 'general'
 ) => {
   const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
-  if (!normalized.length) return null;
+  const coloredAssignments = normalized.filter(item => !resolvePaletteType(item.key).colorless);
+  if (!coloredAssignments.length) return null;
 
   const mixedColor = mixWeightedColors(
-    normalized.map(item => ({
+    coloredAssignments.map(item => ({
       color: resolvePaletteType(item.key).baseColor,
       weight: item.weight
     })),
@@ -669,7 +675,7 @@ export const getEditableNoteTypePaletteItems = () => {
   return getOrderedNodeTypes().map(type => ({
     key: type.id,
     label: type.label,
-    color: type.baseColor,
+    color: type.colorless ? null : type.baseColor,
     description: type.description,
     order: Number.isFinite(type.order) ? Number(type.order) : 1000,
     builtin: Boolean(type.builtin),

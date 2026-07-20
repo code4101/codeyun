@@ -3142,7 +3142,7 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
         "images": {
             293: {"shapes": [{"title": "攻击"}]},
             294: {"shapes": [{"title": "确定"}]},
-            295: {"shapes": [{"title": "点击关闭"}]},
+            295: {"shapes": [{"title": "关闭"}]},
         },
     }
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
@@ -3204,13 +3204,13 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
 
     assert result == "success"
     attacks = [action for action in actions if action[0:3] == ("click_shape_center", 293, "攻击")]
-    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "点击关闭")]
+    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "关闭")]
     assert len(attacks) == 50
     assert len(closes) == 50
     assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
     assert actions[1] == ("ocr_numbers_in_shapes", 293, ("次数",), {"padding": 16})
     assert actions[2] == ("click_shape_center", 293, "攻击")
-    assert closes[0] == ("click_shape_center", 295, "点击关闭")
+    assert closes[0] == ("click_shape_center", 295, "关闭")
 
 
 def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
@@ -3221,7 +3221,7 @@ def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
         "images": {
             293: {"shapes": [{"title": "攻击"}]},
             294: {"shapes": [{"title": "确定"}]},
-            295: {"shapes": [{"title": "点击关闭"}]},
+            295: {"shapes": [{"title": "关闭"}]},
         },
     }
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
@@ -3280,11 +3280,11 @@ def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
 
     assert result == "success"
     attacks = [action for action in actions if action[0:3] == ("click_shape_center", 293, "攻击")]
-    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "点击关闭")]
+    closes = [action for action in actions if action[0:3] == ("click_shape_center", 295, "关闭")]
     assert len(attacks) == 50
     assert len(closes) == 51
     assert actions[0] == ("wait_view", (293, 295, 294), {"timeout": 5.0})
-    assert actions[1] == ("click_shape_center", 295, "点击关闭")
+    assert actions[1] == ("click_shape_center", 295, "关闭")
 
 
 def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
@@ -3317,7 +3317,7 @@ def test_daily_xianmeng_stops_when_293_count_below_3(tmp_path, monkeypatch):
         "images": {
             293: {"shapes": [{"title": "攻击"}, {"title": "次数"}]},
             294: {"shapes": [{"title": "确定"}]},
-            295: {"shapes": [{"title": "点击关闭"}]},
+            295: {"shapes": [{"title": "关闭"}]},
         },
     }
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")

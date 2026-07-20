@@ -22,9 +22,13 @@
     YUN_SERVER_USER=deploy
     YUN_SERVER_PASS=your_password
     YUN_SERVER_PORT=22
+    # Windows 上启用 TUN/虚拟网卡时，可指定真实出口网卡，避免 SSH 被代理路由接管。
+    # 通过 Get-NetRoute -DestinationPrefix '0.0.0.0/0' 查看 InterfaceIndex。
+    YUN_SERVER_DIRECT_INTERFACE_INDEX=8
     ```
 
     > **注意**：不要将 `.env` 文件提交到版本控制系统。
+    > `YUN_SERVER_DIRECT_INTERFACE_INDEX` 仅影响公网前端发布器的 SSH/SFTP 连接；不配置时保持系统默认路由。
 
 ## 脚本说明
 

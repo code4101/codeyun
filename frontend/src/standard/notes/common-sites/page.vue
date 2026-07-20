@@ -17,12 +17,20 @@ type SiteForm = {
 }
 
 const STORAGE_KEY = 'codeyun.notes.commonSites.v1'
+const DEFAULT_SITES_VERSION_KEY = 'codeyun.notes.commonSites.defaultsVersion'
+const DEFAULT_SITES_VERSION = 2
 const DEFAULT_SITES: CommonSite[] = [
   {
     id: 'codex-usage',
     title: 'codex余额',
     url: 'https://chatgpt.com/codex/cloud/settings/analytics#usage',
     description: 'ChatGPT Codex 云端用量页面',
+  },
+  {
+    id: 'z-library',
+    title: 'Z-Library',
+    url: 'https://zh.z-library.sk/',
+    description: '电子书网站',
   },
 ]
 
@@ -49,6 +57,19 @@ const canUseLocalStorage = () =>
 
 const cloneDefaultSites = () => DEFAULT_SITES.map((site) => ({ ...site }))
 
+const applyDefaultSitesMigration = (savedSites: CommonSite[]) => {
+  const appliedVersion = Number(window.localStorage.getItem(DEFAULT_SITES_VERSION_KEY) ?? 0)
+  if (appliedVersion >= DEFAULT_SITES_VERSION) return savedSites
+
+  const existingIds = new Set(savedSites.map((site) => site.id))
+  const migratedSites = [
+    ...savedSites,
+    ...DEFAULT_SITES.filter((site) => !existingIds.has(site.id)).map((site) => ({ ...site })),
+  ]
+  window.localStorage.setItem(DEFAULT_SITES_VERSION_KEY, String(DEFAULT_SITES_VERSION))
+  return migratedSites
+}
+
 const loadSites = () => {
   if (!canUseLocalStorage()) {
     sites.value = cloneDefaultSites()
@@ -57,11 +78,14 @@ const loadSites = () => {
   const raw = window.localStorage.getItem(STORAGE_KEY)
   if (!raw) {
     sites.value = cloneDefaultSites()
+    window.localStorage.setItem(DEFAULT_SITES_VERSION_KEY, String(DEFAULT_SITES_VERSION))
     return
   }
   try {
     const parsed = JSON.parse(raw) as CommonSite[]
-    sites.value = Array.isArray(parsed) ? parsed : cloneDefaultSites()
+    sites.value = Array.isArray(parsed)
+      ? applyDefaultSitesMigration(parsed)
+      : cloneDefaultSites()
   } catch {
     sites.value = cloneDefaultSites()
   }

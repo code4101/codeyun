@@ -33,6 +33,7 @@ def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypat
     monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0, 1])
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
 
     def fake_decode(path, *, data_dir=None, max_streams=2, sync_business=False):
         calls.append((Path(path), max_streams))
@@ -66,6 +67,7 @@ def test_capture_paths_records_actual_decoded_streams(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0, 1])
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
     monkeypatch.setattr(
         worker,
         "decode_and_sync_fanxiu_runtime_capture",
@@ -99,6 +101,7 @@ def test_capture_paths_skips_only_when_target_streams_are_decoded(monkeypatch, t
     monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0, 1])
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+    monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
     monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda path, **kwargs: calls.append(Path(path)))
 
     result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
@@ -126,12 +129,134 @@ def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_
         "decode_and_sync_fanxiu_runtime_capture",
         lambda path, **kwargs: calls.append(Path(path)) or {"decoded_count": 0, "runtime_protocol_count": 0, "worship_protocol_count": 0, "decoded": []},
     )
+    monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [])
+    monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
 
     result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
 
     assert calls == [pcap.resolve()]
     assert result["ok"] is True
     assert result["new_decode_count"] == 1
+
+
+def test_incremental_decoded_batch_persists_exact_sources(monkeypatch, tmp_path):
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "stream": 2,
+                "frames": [
+                    {
+                        "direction": "s2c",
+                        "offset": 12,
+                        "sn": 7,
+                        "pro_id": 59518,
+                        "name": "SM_SeatsNoInScene",
+                        "parsed": {"roomId": 15},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    persisted: list[dict[str, object]] = []
+
+    def fake_persist(result):
+        persisted.append(result)
+        return {"created": 1, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+
+    monkeypatch.setattr(worker, "persist_fanxiu_packet_decoded_result", fake_persist)
+
+    result = worker._sync_decoded_record_db_after_decoded(
+        [
+            {
+                "decoded_sources": [
+                    {
+                        "decoded_path": str(decoded_path),
+                        "record_id": "record-1",
+                        "pcap_name": "capture.pcap",
+                        "capture_sha256": "sha-1",
+                        "created_at": "2026-07-20 14:26:00",
+                        "stream": 2,
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert result["ok"] is True
+    assert result["source_count"] == 1
+    assert result["persisted_source_count"] == 1
+    assert result["created"] == 1
+    assert persisted[0]["capture_sha256"] == "sha-1"
+    assert persisted[0]["frames"][0]["name"] == "SM_SeatsNoInScene"
+
+
+def test_capture_paths_reports_database_write_failure(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    decoded_path = tmp_path / "decoded.json"
+    pcap.write_bytes(b"x" * 128)
+    decoded_path.write_text(json.dumps({"stream": 0, "frames": []}), encoding="utf-8")
+    monkeypatch.setattr(worker, "_sha256_file", lambda _path: "digest-1")
+    monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0])
+    monkeypatch.setattr(
+        worker,
+        "decode_and_sync_fanxiu_runtime_capture",
+        lambda *_args, **_kwargs: {
+            "decoded_count": 1,
+            "decoded": [{"stream": 0, "output_path": str(decoded_path), "record_id": "r0"}],
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "_sync_decoded_record_db_after_decoded",
+        lambda decoded: {"ok": False, "source_count": 1, "persisted_source_count": 0, "errors": [{"error": "db locked"}]},
+    )
+    monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({"ok": True}, {"ok": True}))
+
+    result = worker.sync_fanxiu_capture_paths([pcap], scan_existing_decoded=False)
+
+    assert result["ok"] is False
+    assert result["decoded_record_db_sync"]["errors"][0]["error"] == "db locked"
+
+
+def test_catch_up_prefers_richer_recent_boundary_over_tiny_flushed_segment(monkeypatch, tmp_path):
+    from backend.core.fanxiu.runtime import capture_runtime
+
+    boundary = tmp_path / "boundary.pcap"
+    flushed = tmp_path / "flushed.pcap"
+    boundary.write_bytes(b"b" * 2048)
+    flushed.write_bytes(b"f" * 24)
+    selected: list[list[str]] = []
+    monkeypatch.setattr(worker, "_latest_recent_sealed_live_pcap", lambda **_kwargs: boundary)
+    monkeypatch.setattr(worker, "_capture_has_current_decoded_record", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        capture_runtime.fanxiu_capture_runtime_service,
+        "flush_recent_capture",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "flushed": False,
+            "pcap_path": str(flushed),
+            "pcap_size": 24,
+        },
+    )
+
+    def fake_sync(paths, **_kwargs):
+        selected.append([str(item) for item in paths])
+        return {
+            "ok": True,
+            "decoded_record_db_sync": {"ok": True, "source_count": 1, "persisted_source_count": 1},
+        }
+
+    monkeypatch.setattr(worker, "sync_fanxiu_capture_paths", fake_sync)
+
+    result = worker.catch_up_fanxiu_packet_facts(reason="test", restart_capture=False)
+
+    assert result["ok"] is True
+    assert result["caught_up"] is True
+    assert selected == [[str(boundary)]]
+    assert result["capture_candidates"][0] == {"path": str(boundary), "size": 2048, "selected": True}
 
 
 def test_packet_decode_pressure_thresholds_match_ocr_guard(monkeypatch):
@@ -230,6 +355,22 @@ def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
     assert result["decoded_record_db_sync"]["skipped"] is True
     assert result["activity_packet_sync"]["skipped"] is True
     assert result["capture_runtime_backstop"]["reason"] == "test_disabled"
+
+
+def test_realtime_scan_skips_while_an_on_demand_ingestion_owns_writer(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", lambda **kwargs: calls.append(kwargs) or {"ok": True})
+    assert service._ingestion_lock.acquire(blocking=False) is True
+    try:
+        result = service.scan_once()
+    finally:
+        service._ingestion_lock.release()
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "packet_ingestion_busy"
+    assert calls == []
 
 
 def test_realtime_scan_runs_capture_runtime_backstop(monkeypatch):

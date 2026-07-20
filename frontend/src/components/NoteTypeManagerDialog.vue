@@ -30,8 +30,16 @@
               placeholder="分类名称"
               class="label-input styled-label-input"
               :style="getLabelInputStyle(item)"
+              :disabled="isUncategorized(item)"
+            />
+            <div
+              v-if="isUncategorized(item)"
+              class="colorless-trigger"
+              title="未分类没有颜色"
+              aria-label="未分类没有颜色"
             />
             <StandardColorPickerPopover
+              v-else
               :model-value="getCommittedColorHex(item)"
               :visible="activeColorPickerKey === item.key"
               @update:model-value="value => handleColorPreview(item, value)"
@@ -52,16 +60,17 @@
             </StandardColorPickerPopover>
             <div class="mapped-name-chip" :title="getCommittedMappedColorTooltip(item)">
               <span
+                v-if="!isUncategorized(item)"
                 class="mapped-color-swatch"
                 :style="{ backgroundColor: getCommittedMappedColorInfo(item).mappedColor.hex }"
               />
-              <span class="mapped-name-text">{{ getCommittedMappedColorPrimaryText(item) }}</span>
+              <span class="mapped-name-text">{{ isUncategorized(item) ? '无颜色' : getCommittedMappedColorPrimaryText(item) }}</span>
             </div>
             <div class="row-actions">
               <el-dropdown
                 trigger="click"
                 placement="bottom-end"
-                :disabled="!hasUsage(item) || !getMergeTargetItems(item).length || Boolean(mergingKeys[item.key])"
+                :disabled="isUncategorized(item) || !hasUsage(item) || !getMergeTargetItems(item).length || Boolean(mergingKeys[item.key])"
                 @command="targetKey => handleMerge(item, String(targetKey))"
               >
                 <el-button
@@ -91,6 +100,7 @@
                 text
                 type="danger"
                 class="icon-btn"
+                :disabled="isUncategorized(item)"
                 @click="removeType(item)"
               >
                 删
@@ -102,6 +112,7 @@
             size="small"
             placeholder="分类说明，用于提升 AI 自动分类准确性"
             class="description-input"
+            :disabled="isUncategorized(item)"
           />
         </div>
       </div>
@@ -133,6 +144,7 @@ import {
   ensureNoteTypePaletteLoaded,
   getDefaultNodeTypeConfig,
   getEditableNoteTypePaletteItems,
+  NOTE_CATEGORY_UNCATEGORIZED,
   normalizeNodeColor,
   saveNoteTypePalette,
   type NoteTypePaletteItem
@@ -197,6 +209,8 @@ const addType = () => {
   draftItems.value.push(createCustomNoteType(`新分类${draftItems.value.length + 1}`));
 };
 
+const isUncategorized = (item: NoteTypePaletteItem) => item.key === NOTE_CATEGORY_UNCATEGORIZED;
+
 const hasUsage = (item: NoteTypePaletteItem) => Number(item.usageCount ?? 0) > 0;
 
 const getUsageDisplayCount = (item: NoteTypePaletteItem) => Math.ceil(Number(item.usageCount ?? 0));
@@ -210,6 +224,7 @@ const getMergeTargetItems = (item: NoteTypePaletteItem) => sortedDraftItems.valu
 
 const removeType = (item: NoteTypePaletteItem) => {
   if (!item.key) return;
+  if (isUncategorized(item)) return;
   if (hasUsage(item)) {
     ElMessage.warning('该分类已被文档使用。可以先合并到其他分类，再删除。');
     return;
@@ -325,7 +340,7 @@ const getCommittedMappedColorPrimaryText = (item: NoteTypePaletteItem) => (
 );
 
 const getCommittedMappedColorTooltip = (item: NoteTypePaletteItem) => (
-  formatMappedColorTooltip(getCommittedMappedColorInfo(item))
+  isUncategorized(item) ? '未分类没有颜色' : formatMappedColorTooltip(getCommittedMappedColorInfo(item))
 );
 
 const handleSave = async () => {
@@ -334,7 +349,7 @@ const handleSave = async () => {
       ...item,
       label: item.label.trim() || item.key,
       description: (item.description || '').trim(),
-      color: normalizeNodeColor(item.color) ?? getDefaultNodeTypeConfig(item.key).baseColor,
+      color: isUncategorized(item) ? null : normalizeNodeColor(item.color) ?? getDefaultNodeTypeConfig(item.key).baseColor,
       order: Number.isFinite(item.order) ? item.order : index * 10
     }));
 
@@ -386,6 +401,7 @@ const handleSave = async () => {
 .color-picker-trigger:focus-visible{outline:none;border-color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.16)}
 .color-picker-trigger__swatch{width:18px;height:18px;border-radius:6px;background:var(--picker-color);border:1px solid rgba(15,23,42,.14);box-shadow:inset 0 0 0 1px rgba(255,255,255,.28)}
 .color-picker-trigger__caret{position:absolute;right:6px;bottom:5px;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid rgba(36,48,70,.7)}
+.colorless-trigger{width:40px;height:32px;border:1px solid #dcdfe6;border-radius:8px;background:#fff}
 .mapped-color-swatch{flex:none;width:12px;height:12px;border-radius:999px;border:1px solid rgba(15,23,42,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}
 .mapped-name-chip{display:flex;align-items:center;gap:6px;min-width:0;width:100%;height:32px;padding:0 8px;border:1px solid #ebeef5;border-radius:8px;background:#f8fafc}
 .mapped-name-text{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.2;color:#243046;font-weight:500}
