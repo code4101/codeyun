@@ -315,13 +315,13 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
         def cur_frame(self, *, update):
             return "frame"
 
-        def ocr_lines_in_shapes(self, scene, shapes, *, frame_data_url):
-                return [
-                    {"text": "\u6211\u7684\u7f16\u961f", "x": 723, "y": 363, "w": 153, "h": 42},
-                    {"text": "\u6218\u62a5\u76df\u7389\u6e05\u9053\u5b9712/12\u5927\u7f57\u5929\u589f\u5360\u9886\u4e2d", "x": 34, "y": 571, "w": 815, "h": 58},
-                    {"text": "\u592a\u660e\u7389\u589f", "x": 750, "y": 691, "w": 99, "h": 29},
-                    {"text": "\u5927\u7f57\u5929\u589f", "x": 116, "y": 935, "w": 118, "h": 31},
-                ]
+        def ocr_fragments_in_shapes(self, scene, shapes, *, frame_data_url):
+            return [
+                {"text": "\u6211\u7684\u7f16\u961f", "x": 723, "y": 363, "w": 153, "h": 42},
+                {"text": "\u6218\u62a5\u76df\u7389\u6e05\u9053\u5b9712/12\u5927\u7f57\u5929\u589f\u5360\u9886\u4e2d", "x": 34, "y": 571, "w": 815, "h": 58},
+                {"text": "\u592a\u660e\u7389\u589f", "x": 750, "y": 691, "w": 99, "h": 29},
+                {"text": "\u5927\u7f57\u5929\u589f", "x": 116, "y": 935, "w": 118, "h": 31},
+            ]
 
         def click_frame_point(self, scene, x, y):
             self.clicked.append((scene, x, y))
@@ -348,3 +348,92 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
 
     assert result == "\u5927\u7f57\u5929\u589f"
     assert runtime.clicked == [(279, 176.5, 850.5)]
+
+
+def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling():
+    class Shape:
+        def __init__(self, box):
+            self._box = box
+
+        def box(self):
+            return self._box
+
+    class Runtime:
+        payload = {}
+
+        def __init__(self):
+            self.clicked = []
+            self.scrolled = False
+
+        def view(self, scene):
+            return scene
+
+        def shape(self, scene, title):
+            return {
+                "窗口": Shape({"x": 13, "y": 160, "w": 872, "h": 1162}),
+                "我的编队": Shape({"x": 662, "y": 355, "w": 222, "h": 405}),
+                "地点名称": Shape({"x": 457, "y": 1187, "w": 237, "h": 36}),
+                "地点图标": Shape({"x": 540, "y": 1080, "w": 74, "h": 50}),
+            }[title]
+
+        def wait_view(self, scene, *, label):
+            yield
+
+        def cur_frame(self, *, update):
+            return "frame"
+
+        def ocr_fragments_in_shapes(self, scene, shapes, *, frame_data_url):
+            return [
+                {"text": "\u767d\u7389\u4eac100%", "x": 388, "y": 624, "w": 130, "h": 30},
+                {"text": "\u592a\u660e", "x": 600, "y": 874, "w": 80, "h": 30},
+            ]
+
+        def click_frame_point(self, scene, x, y):
+            self.clicked.append((scene, x, y))
+
+        def wait_action_settle(self, seconds):
+            yield
+
+        def scroll_shape_content(self, view, shape, *, direction):
+            self.scrolled = True
+            yield
+            return True
+
+    runtime = Runtime()
+    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner._log = lambda *_args, **_kwargs: None
+    action = runner._daily_dongtian_click_first_enemy_place(
+        runtime,
+        threading.Event(),
+        ["\u767d\u7389\u4eac", "\u592a\u660e\u7389\u589f"],
+        max_scrolls=12,
+    )
+
+    while True:
+        try:
+            next(action)
+        except StopIteration as done:
+            result = done.value
+            break
+
+    assert result == "\u767d\u7389\u4eac"
+    assert runtime.clicked
+    assert runtime.scrolled is False
+
+    runtime.clicked.clear()
+    action = runner._daily_dongtian_click_first_enemy_place(
+        runtime,
+        threading.Event(),
+        ["\u592a\u660e\u7389\u589f"],
+        max_scrolls=12,
+    )
+    while True:
+        try:
+            next(action)
+        except StopIteration as done:
+            partial_result = done.value
+            break
+
+    assert partial_result == "\u592a\u660e\u7389\u589f"
+    assert runtime.clicked
+    assert runtime.scrolled is False

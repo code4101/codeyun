@@ -257,7 +257,15 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "12:30",
             window=("12:30", "12:35"),
         ),
-        legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
+        runtime_daily_task(
+            "legacy-daily-lingquan",
+            "daily_lingquan",
+            "日常_灵泉",
+            "20:30",
+            window=("20:30", "20:43"),
+            cooldown_seconds=600,
+            payload={"max_runtime_seconds": 1800},
+        ),
         runtime_daily_task(
             "daily-zhenxie",
             "daily_zhenxie",

@@ -41,6 +41,27 @@ def test_spatial_ocr_groups_rows_by_geometry_without_line_metadata():
     assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["甲乙", "丙丁"]
 
 
+def test_spatial_ocr_splits_distant_gui_labels_on_the_same_row():
+    tokens = (
+        _tokens("盟玉清道宗12/12", x=71, y=883, width=30, height=31)
+        + _tokens("太明玉墟", x=638, y=886, width=29, height=31)
+    )
+
+    fragments = group_ocr_tokens(tokens)
+
+    assert [fragment["text"] for fragment in fragments] == ["盟玉清道宗12/12", "太明玉墟"]
+    assert fragments[1]["x"] == 638.0
+
+
+def test_spatial_ocr_splits_location_from_distant_progress_and_timer():
+    tokens = (
+        _tokens("白玉京", x=403, y=625, width=30, height=33)
+        + _tokens("100%01:23:35", x=691, y=622, width=10, height=21)
+    )
+
+    assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["白玉京", "100%01:23:35"]
+
+
 def test_locate_substring_uses_exact_character_boxes():
     tokens = [
         {"text": "真", "x": 146, "y": 1144, "w": 36, "h": 49},

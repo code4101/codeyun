@@ -63,6 +63,22 @@ def test_lingmai_selector_uses_empty_seat_without_requiring_full_roster(tmp_path
     assert result["available_count"] == 2
 
 
+def test_lingmai_selector_accepts_union_shenmai_room(tmp_path) -> None:
+    facts = _facts(available_count=1, complete=False)
+    facts["room_id"] = lingmai.LINGMAI_UNION_SHENMAI_ROOM_ID
+
+    result = lingmai.select_lingmai_seat_action(
+        facts,
+        self_seat_facts=_self_seat(),
+        player_profile=_profile(),
+        data_dir=tmp_path,
+        now_ms=100,
+    )
+
+    assert result["action"] == "occupy_empty"
+    assert result["room_id"] == 17
+
+
 def test_lingmai_selector_stops_when_self_is_already_seated_even_with_empty_slots(tmp_path) -> None:
     result = lingmai.select_lingmai_seat_action(
         _facts(available_count=3),

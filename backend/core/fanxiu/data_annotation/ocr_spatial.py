@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 
 MIN_TOKEN_SHAPE_OVERLAP_RATIO = 0.30
+MAX_INLINE_GAP_HEIGHT_RATIO = 1.5
 
 
 def _box(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
@@ -90,21 +91,51 @@ def order_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [token for row in _group_token_rows(tokens) for token in row]
 
 
+def _split_row_on_horizontal_gaps(row: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Split one visual row into local text fragments.
+
+    Tokens at a similar y coordinate are not necessarily one text line in a GUI.
+    A left-side alliance label and a right-side location name can share the same
+    baseline while being hundreds of pixels apart.  Keep ordinary glyph spacing,
+    but start a new fragment when the horizontal gap is larger than 1.5 times the
+    neighboring glyph height.
+    """
+
+    if not row:
+        return []
+    fragments: list[list[dict[str, Any]]] = [[row[0]]]
+    for token in row[1:]:
+        previous = fragments[-1][-1]
+        previous_right = float(previous.get("x") or 0) + float(previous.get("w") or 0)
+        gap = float(token.get("x") or 0) - previous_right
+        neighboring_height = max(
+            1.0,
+            float(previous.get("h") or 0),
+            float(token.get("h") or 0),
+        )
+        if gap > neighboring_height * MAX_INLINE_GAP_HEIGHT_RATIO:
+            fragments.append([token])
+        else:
+            fragments[-1].append(token)
+    return fragments
+
+
 def group_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Derive visual text fragments from tokens at the consumer boundary."""
 
     fragments: list[dict[str, Any]] = []
     for row in _group_token_rows(tokens):
-        box = _union_boxes(row)
-        if box is None:
-            continue
-        fragments.append(
-            {
-                "text": "".join(str(item.get("text") or "") for item in row),
-                **box,
-                "source": "tokens",
-            }
-        )
+        for local_fragment in _split_row_on_horizontal_gaps(row):
+            box = _union_boxes(local_fragment)
+            if box is None:
+                continue
+            fragments.append(
+                {
+                    "text": "".join(str(item.get("text") or "") for item in local_fragment),
+                    **box,
+                    "source": "tokens",
+                }
+            )
     return fragments
 
 

@@ -45,6 +45,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_mojie_raid",
     "daily_weekly_dungeon",
     "weekly_hanli",
+    "daily_lingquan",
     "weekly_shengzu",
     "daily_vip",
     "daily_dongtian",
@@ -494,6 +495,20 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_weekly_hanli_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_task_cell(
+        "daily_lingquan",
+        "日常_灵泉",
+        scheduler_supported=True,
+        stable_start_scene_id=None,
+    )
+    def _run_data_annotation_daily_lingquan_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_lingquan_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("weekly_shengzu", "周常_圣祖", scheduler_supported=True)
     def _run_data_annotation_weekly_shengzu_task_cell(

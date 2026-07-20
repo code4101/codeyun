@@ -6491,6 +6491,98 @@ def test_daily_lundao_dynamic_dojo_slot_stops_on_ambiguous_first_title():
         runner._click_daily_lundao_dojo(FakeRuntime(), "大罗")
 
 
+@pytest.mark.parametrize(("text", "expected"), [("剩余次数 1 次", 1), ("0／2", 0), ("次数：１２", 12)])
+def test_daily_lundao_remaining_attempts_uses_first_number_without_requiring_slash(text, expected):
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def ocr_text_in_shapes(self, view, shapes, **kwargs):
+            assert (view, shapes, kwargs) == (296, ["次数"], {"padding": 8})
+            return text
+
+    assert runner._daily_lundao_remaining_attempts(FakeRuntime()) == expected
+
+
+def test_daily_lundao_buys_exactly_one_attempt_and_verifies_counter_increment():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+            self.ocr_values = ["1/2"]
+
+        def click_shape_center(self, scene, shape):
+            self.actions.append(("click", scene, shape))
+
+        def wait_scene(self, *scenes, **kwargs):
+            self.actions.append(("wait_scene", scenes, kwargs.get("timeout")))
+            yield BehaviorTreeStatus.RUNNING
+            return scenes[0]
+
+        def wait_action_settle(self, seconds):
+            self.actions.append(("settle", seconds))
+            yield BehaviorTreeStatus.RUNNING
+
+        def current_scene(self, candidates, *, update=False):
+            self.actions.append(("current_scene", tuple(candidates), update))
+            return runtime_runner_core.View({"id": 392, "title": "0392.png", "shapes": []}), 100.0, "frame"
+
+        def ocr_text_in_shapes(self, view, shapes, **kwargs):
+            assert (view, shapes, kwargs) == (296, ["次数"], {"padding": 8})
+            return self.ocr_values.pop(0)
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._buy_one_daily_lundao_attempt(runtime, before=0))
+
+    assert result == {"ready": True, "purchased": True, "before": 0, "after": 1}
+    assert runtime.actions == [
+        ("click", 296, "购买"),
+        ("wait_scene", (392,), 15.0),
+        ("click", 392, "购买"),
+        ("settle", 1.5),
+        ("current_scene", (392,), True),
+        ("click", 392, "返回"),
+        ("wait_scene", (296,), 15.0),
+    ]
+
+
+def test_daily_lundao_purchase_does_not_repeat_when_counter_does_not_increase():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.purchase_clicks = 0
+
+        def click_shape_center(self, scene, shape):
+            if (scene, shape) == (392, "购买"):
+                self.purchase_clicks += 1
+
+        def wait_scene(self, *scenes, **_kwargs):
+            yield BehaviorTreeStatus.RUNNING
+            return scenes[0]
+
+        def wait_action_settle(self, _seconds):
+            yield BehaviorTreeStatus.RUNNING
+
+        def current_scene(self, _candidates, *, update=False):
+            return 392, 100.0, "frame"
+
+        def ocr_text_in_shapes(self, _view, _shapes, **_kwargs):
+            return "0/2"
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._buy_one_daily_lundao_attempt(runtime, before=0))
+
+    assert result == {
+        "ready": False,
+        "purchased": False,
+        "before": 0,
+        "after": 0,
+        "reason": "purchase_unavailable",
+    }
+    assert runtime.purchase_clicks == 1
+
+
 def test_repeated_template_geometry_uses_live_annotation_centers_not_fixed_pixel_delta():
     from backend.core.fanxiu.data_annotation.runtime_runner import repeated_template_item_box_from_anchor
 
@@ -7216,6 +7308,24 @@ def test_daily_lundao_closes_victory_overlay_before_continuing_to_seat_confirmat
             {"timeout": 30.0, "label": "论道_座位：关闭胜利浮层后等待战后对话/入座"},
         ),
     ]
+
+
+def test_daily_lundao_dialogue_accepts_wait_scene_view_result():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def advance_dialogue(self, *args, **_kwargs):
+            yield BehaviorTreeStatus.RUNNING
+            return 1
+
+        def wait_scene(self, *scenes, **_kwargs):
+            yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View({"id": 52, "title": "0052.png", "shapes": []})
+
+    result = _drain_generator(runner._advance_daily_lundao_kick_dialogue(FakeRuntime(), start_scene=373))
+
+    assert result["status"] == "dialogue_finished"
+    assert result["scene_id"] == 52
 
 
 def test_daily_lundao_scene_303_routes_through_post_battle_dialogue_without_long_retry():

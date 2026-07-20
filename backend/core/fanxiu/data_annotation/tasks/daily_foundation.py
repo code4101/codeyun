@@ -97,6 +97,15 @@ _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS: dict[str, tuple[int, ...]] = {
 }
 _DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS: tuple[int, ...] = (296, 304, 391)
 
+
+def _lundao_waited_scene_id(value: Any) -> int | None:
+    if isinstance(value, View):
+        return int(value.id) if value.id is not None else None
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
 _DONGTIAN_PLACE_LEVELS: tuple[dict[str, Any], ...] = (
     {"level": 1, "prefix": "", "places": ("白玉京",)},
     {"level": 2, "prefix": "", "places": ("大罗天墟", "太明玉墟")},
@@ -4224,6 +4233,49 @@ class DailyFoundationTaskMixin:
         except (TypeError, ValueError):
             return None
 
+    def _daily_lundao_remaining_attempts(self, runtime: Any) -> int:
+        text = runtime.ocr_text_in_shapes(296, ["次数"], padding=8)
+        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        match = re.search(r"\d+", normalized)
+        if match is None:
+            raise RuntimeError(f"论道_座位：未能从 #296[次数] 读取首个数值，OCR={normalized[:80]}")
+        return int(match.group(0))
+
+    def _buy_one_daily_lundao_attempt(
+        self,
+        runtime: Any,
+        *,
+        before: int,
+    ) -> dict[str, Any]:
+        """Buy at most one attempt and verify the #296 counter increased."""
+
+        if before > 0:
+            return {"ready": True, "purchased": False, "before": before, "after": before}
+        self._log("action", "论道_座位：座位动作已确认且次数为 0，点击 #296[购买]")
+        runtime.click_shape_center(296, "购买")
+        yield from runtime.wait_scene(392, timeout=15.0, label="论道_座位：等待购买次数页 #392")
+        self._log("action", "论道_座位：只购买 1 次")
+        runtime.click_shape_center(392, "购买")
+        yield from runtime.wait_action_settle(1.5)
+        scene_id, score, _frame = runtime.current_scene([392], update=True)
+        scene_id = _lundao_waited_scene_id(scene_id)
+        if scene_id != 392:
+            raise RuntimeError(
+                f"论道_座位：点击 #392[购买] 后出现未知结果，scene={scene_id} score={float(score):.0f}%，"
+                "已停止且不会重复购买"
+            )
+        runtime.click_shape_center(392, "返回")
+        yield from runtime.wait_scene(296, timeout=15.0, label="论道_座位：购买后返回 #296")
+        after = self._daily_lundao_remaining_attempts(runtime)
+        if after <= before:
+            self._log(
+                "warning",
+                f"论道_座位：购买后次数未增加（{before}->{after}），按购买额度不足处理，本轮不再购买",
+            )
+            return {"ready": False, "purchased": False, "before": before, "after": after, "reason": "purchase_unavailable"}
+        self._log("success", f"论道_座位：购买 1 次成功，剩余次数 {before}->{after}")
+        return {"ready": True, "purchased": True, "before": before, "after": after}
+
     def _return_daily_lundao_to_selection(self, runtime: Any, scene_id: int) -> None:
         # #298 is the empty-seat variant of the same room list; its full-screen
         # reference has no duplicate return annotation, so use the shared #297
@@ -4262,6 +4314,9 @@ class DailyFoundationTaskMixin:
         runtime: Any,
         stop_event: threading.Event,
         payload: Mapping[str, Any],
+        *,
+        attempt_ready: bool = False,
+        purchase_used: bool = False,
     ) -> str:
         now = _runtime_runner._now()
         # Opening Daluo is read-only and produces both SM_RoomList and the room
@@ -4271,14 +4326,38 @@ class DailyFoundationTaskMixin:
         baseline = initial.get("roster") if isinstance(initial.get("roster"), dict) else {}
         baseline_key = tuple((baseline.get("evidence") or {}).get("order_key") or ())
         self._click_daily_lundao_dojo(runtime, "大罗")
-        yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待大罗座位列表")
+        try:
+            yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待大罗座位列表")
+        except TimeoutError as exc:
+            # A player already seated in Daluo has a `离座` control on their own
+            # row, so the ordinary #297 identity (which expects `请他让座`) can
+            # be only a partial visual match.  Opening the page is still enough
+            # to request fresh room/status packets.  Continue read-only and let
+            # the server facts decide whether to stay/finish; no seat click is
+            # allowed unless the normal actionable list is identified later.
+            self._log("warning", f"论道_座位：大罗名单页未完整匹配，继续只读抓包核对：{exc}")
         refreshed = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-daluo-roster", wait_seconds=120.0)
         status = refreshed.get("status") if isinstance(refreshed.get("status"), dict) else {}
         roster = refreshed.get("roster") if isinstance(refreshed.get("roster"), dict) else {}
         catch_up = refreshed.get("packet_catch_up") if isinstance(refreshed.get("packet_catch_up"), dict) else {}
         roster_key = tuple((roster.get("evidence") or {}).get("order_key") or ())
-        if catch_up.get("status") != "completed":
-            raise RuntimeError("论道_座位：抓包追平未在 120 秒内完成，已停止且未点击座位")
+        if catch_up.get("status") != "completed" or catch_up.get("ok") is False:
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from runtime.goto_view(34)
+            next_time = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_daily_lundao_next_time(payload, next_time, reason="抓包未真正追平，安全短重试")
+            return "success"
+
+        # Completion and an existing Daluo seat need only fresh status facts;
+        # neither branch should be blocked by the seated-row visual variant or
+        # by a roster that is irrelevant to a no-op decision.
+        status_decision = plan_lundao_strategy(status, daluo_opportunity=None, at=now)
+        if status_decision.get("action") in {"done", "stay_daluo"}:
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from runtime.goto_view(34)
+            next_time = status_decision["next_time"].strftime("%Y-%m-%d %H:%M:%S")
+            self._record_daily_lundao_next_time(payload, next_time, reason=str(status_decision.get("reason")))
+            return "success"
         if baseline_key and roster_key and roster_key <= baseline_key:
             raise RuntimeError("论道_座位：进入大罗后未获得更新的座位名单，已停止且未点击座位")
         profile = current_lundao_player_profile()
@@ -4309,11 +4388,41 @@ class DailyFoundationTaskMixin:
             self._record_daily_lundao_next_time(payload, next_time, reason=str(decision.get("reason")))
             return "success"
         if decision.get("action") == "seat_daluo":
+            if not attempt_ready:
+                yield from self._return_daily_lundao_to_selection(runtime, 297)
+                remaining = self._daily_lundao_remaining_attempts(runtime)
+                attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
+                if remaining <= 0:
+                    if purchase_used:
+                        attempt = {"ready": False, "reason": "purchase_already_attempted"}
+                    else:
+                        attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining)
+                if not attempt.get("ready"):
+                    yield from runtime.goto_view(34)
+                    next_at = datetime.combine(now.date(), time_cls(22, 0))
+                    self._record_daily_lundao_next_time(
+                        payload,
+                        next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        reason="确需升级大罗，但今日已无可用次数",
+                    )
+                    return "success"
+                # Purchasing or merely confirming an available attempt is not
+                # permission to use the old roster. Re-open Daluo and rebuild
+                # the decision from a new packet baseline before any seat click.
+                return (
+                    yield from self._run_daily_lundao_dynamic_strategy(
+                        runtime,
+                        stop_event,
+                        payload,
+                        attempt_ready=True,
+                        purchase_used=purchase_used or bool(attempt.get("purchased")),
+                    )
+                )
             result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=opportunity)
             after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-seat", wait_seconds=120.0)
             after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
-            after_strength = after_status.get("strength")
-            next_at = next_lundao_daily_trigger(now) if after_strength is not None and int(after_strength) <= 0 else next_lundao_recheck(now)
+            after_left_time = after_status.get("current_left_listen_time")
+            next_at = next_lundao_daily_trigger(now) if after_left_time is not None and int(after_left_time) <= 0 else next_lundao_recheck(now)
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成大罗入座")
             return result
 
@@ -4344,11 +4453,38 @@ class DailyFoundationTaskMixin:
             next_at = next_lundao_recheck(now, protect_end_time_ms=sanqing.get("earliest_protect_end_time"))
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="三清暂无合法座位")
             return "success"
+        if not attempt_ready:
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            remaining = self._daily_lundao_remaining_attempts(runtime)
+            attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
+            if remaining <= 0:
+                if purchase_used:
+                    attempt = {"ready": False, "reason": "purchase_already_attempted"}
+                else:
+                    attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining)
+            if not attempt.get("ready"):
+                yield from runtime.goto_view(34)
+                next_at = datetime.combine(now.date(), time_cls(22, 0))
+                self._record_daily_lundao_next_time(
+                    payload,
+                    next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    reason="确需三清入座，但今日已无可用次数",
+                )
+                return "success"
+            return (
+                yield from self._run_daily_lundao_dynamic_strategy(
+                    runtime,
+                    stop_event,
+                    payload,
+                    attempt_ready=True,
+                    purchase_used=purchase_used or bool(attempt.get("purchased")),
+                )
+            )
         result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=sanqing)
         after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-sanqing-seat", wait_seconds=120.0)
         after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
-        after_strength = after_status.get("strength")
-        next_at = next_lundao_daily_trigger(now) if after_strength is not None and int(after_strength) <= 0 else next_lundao_recheck(now)
+        after_left_time = after_status.get("current_left_listen_time")
+        next_at = next_lundao_daily_trigger(now) if after_left_time is not None and int(after_left_time) <= 0 else next_lundao_recheck(now)
         self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成三清入座")
         return result
 
@@ -4639,6 +4775,7 @@ class DailyFoundationTaskMixin:
                 timeout=20.0,
                 label="论道_座位：等待战前对话/战斗/结束",
             )
+            battle_scene = _lundao_waited_scene_id(battle_scene)
         if battle_scene == 52:
             return {
                 "status": "dialogue_finished",
@@ -4661,6 +4798,7 @@ class DailyFoundationTaskMixin:
                 timeout=30.0,
                 label="论道_座位：战前对话结束后等待战斗/胜利/入座",
             )
+            battle_scene = _lundao_waited_scene_id(battle_scene)
             if battle_scene == 52:
                 return {
                     "status": "dialogue_finished",
@@ -4684,6 +4822,7 @@ class DailyFoundationTaskMixin:
                 timeout=180.0,
                 label="论道_座位：等待战斗结束后的对话/#52/#375/#295",
             )
+            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
         if after_battle_scene in {375, 295}:
             victory_scene_id = int(after_battle_scene)
             runtime.click_shape_center(victory_scene_id, "关闭")
@@ -4699,6 +4838,7 @@ class DailyFoundationTaskMixin:
                 timeout=30.0,
                 label="论道_座位：关闭胜利浮层后等待战后对话/入座",
             )
+            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
         if after_battle_scene == 52:
             return {
                 "status": "dialogue_finished",
@@ -4725,6 +4865,7 @@ class DailyFoundationTaskMixin:
                 timeout=30.0,
                 label="论道_座位：战后对话结束后等待入座",
             )
+            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
         if after_battle_scene == 52:
             return {
                 "status": "dialogue_finished",
@@ -5849,20 +5990,59 @@ class DailyFoundationTaskMixin:
             frame = runtime.cur_frame(update=True)
             lines = runtime.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
             matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
+            visible_enemy_names: set[str] = set()
             for line in lines:
                 text = _sanitize_ocr_text(line.get("text"))
                 location_text = re.sub(r"^\[(?:洞天|福地)\]", "", text).strip()
-                line_center_x = float(line.get("x") or 0) + float(line.get("w") or 0) * 0.5
                 line_center_y = float(line.get("y") or 0) + float(line.get("h") or 0) * 0.5
-                click_x = line_center_x + click_offset_x
-                click_y = line_center_y + click_offset_y
-                # 「我的编队」既不能提供地点 OCR 候选，也绝不允许成为最终点击落点。
-                if point_in_box(line_center_x, line_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
-                    continue
                 for normalized, original in normalized_targets.items():
-                    if normalized and location_text == normalized:
-                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y))
-                        break
+                    if not normalized:
+                        continue
+                    # 地点 OCR 允许残缺或粘连：完整名、名称前两个字（如
+                    # 「太明」），以及至少两个字的目标名连续片段都可命中。
+                    # 但拒绝明显过长的合并行，避免把整行战报当作地点坐标。
+                    compact_location = re.sub(r"\s+", "", location_text)
+                    compact_target = re.sub(r"\s+", "", normalized)
+                    if not compact_location:
+                        continue
+
+                    match_start = compact_location.find(compact_target)
+                    match_length = len(compact_target)
+                    if (
+                        match_start > 0
+                        and len(compact_location) > len(compact_target) + 8
+                    ):
+                        # 底层已按水平间距断句；这里仍防御异常长的单框结果，
+                        # 不允许从「战报...地点...占领中」一整行推导点击坐标。
+                        match_start = -1
+                    if match_start < 0:
+                        target_hint = compact_target[:2]
+                        match_start = (
+                            compact_location.find(target_hint)
+                            if len(target_hint) >= 2 and len(compact_location) <= len(compact_target) + 8
+                            else -1
+                        )
+                        match_length = len(target_hint)
+                    if match_start < 0 and 2 <= len(compact_location) <= len(compact_target):
+                        if compact_location in compact_target:
+                            match_start = 0
+                            match_length = len(compact_location)
+                    if match_start < 0:
+                        continue
+
+                    visible_enemy_names.add(original)
+                    # OCR 可能把地点与联盟、占领进度、倒计时粘成一个长框。
+                    # 点击中心必须按命中子串在长框中的相对位置计算，不能使用
+                    # 整个 OCR 框中心，否则「白玉京...倒计时」会被错算进编队区。
+                    span_center_ratio = (match_start + match_length * 0.5) / len(compact_location)
+                    location_center_x = float(line.get("x") or 0) + float(line.get("w") or 0) * span_center_ratio
+                    click_x = location_center_x + click_offset_x
+                    click_y = line_center_y + click_offset_y
+                    # 「我的编队」既不能提供地点 OCR 候选，也绝不允许成为最终点击落点。
+                    if point_in_box(location_center_x, line_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
+                        continue
+                    matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y))
+                    break
             if matches:
                 _y, _x, place, line, click_x, click_y = min(matches, key=lambda item: (item[0], item[1]))
                 if click_x <= 0 or click_y <= 0:
@@ -5874,6 +6054,13 @@ class DailyFoundationTaskMixin:
                 runtime.click_frame_point(279, click_x, click_y)
                 yield from runtime.wait_action_settle(float(runtime.payload.get("place_click_settle_seconds") or 2.0))
                 return place
+            if visible_enemy_names:
+                names = "、".join(sorted(visible_enemy_names))
+                preview = [_sanitize_ocr_text(line.get("text")) for line in lines[:20]]
+                raise RuntimeError(
+                    f"洞天_行动力：当前窗口已识别到敌对地点「{names}」，但无法安全定位点击；"
+                    f"禁止滚动，ocr_fragments={preview}"
+                )
             if scroll_index >= max_scrolls:
                 break
             self._log("action", f"洞天_行动力：当前窗口未找到敌对地点，向下滚动 {scroll_index + 1}/{max_scrolls}")
@@ -6211,9 +6398,31 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #286 神脉座位页标注，无法选择座位动作")
 
         self._raise_if_stopped(stop_event)
-        selection = refresh_and_select_lingmai_seat_action(
-            since_seconds=int(payload.get("lingmai_packet_since_seconds") or 1200),
+        threshold = float(payload.get("lingmai_select_empty_slot_threshold") or self.overlay_threshold)
+        if not frame:
+            frame = runtime.cur_frame(update=True)
+        empty_shape = self._find_shape(image286, "选择空位")
+        empty_score = (
+            runtime.shape_score(286, "选择空位", frame_data_url=frame)
+            if empty_shape is not None
+            else 0.0
         )
+        self._log(
+            "detail",
+            f"{task_label}：优先校验 #286「选择空位」score={empty_score:.0f}% threshold={threshold:.0f}%",
+        )
+        if empty_score >= threshold:
+            selection = {
+                "ok": True,
+                "status": "occupy_empty",
+                "action": "occupy_empty",
+                "source": "scene_286_empty_slot",
+            }
+            self._log("success", f"{task_label}：#286 已确认存在空位，跳过座位名单抓包并直接占领")
+        else:
+            selection = refresh_and_select_lingmai_seat_action(
+                since_seconds=int(payload.get("lingmai_packet_since_seconds") or 1200),
+            )
         if not selection.get("ok"):
             raise RuntimeError(
                 f"{task_label}：读取神脉座位或自身战力失败，"
@@ -6283,10 +6492,7 @@ class DailyFoundationTaskMixin:
         if self._find_shape(image288, "占领") is None:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
 
-        threshold = float(payload.get("lingmai_select_empty_slot_threshold") or self.overlay_threshold)
-        if not frame:
-            frame = runtime.cur_frame(update=True)
-        score = runtime.shape_score(286, "选择空位", frame_data_url=frame)
+        score = empty_score
         self._log("detail", f"{task_label}：二次校验 #286「选择空位」score={score:.0f}% threshold={threshold:.0f}%")
         if score < threshold:
             self._log("warning", f"{task_label}：#286「选择空位」匹配不足 {score:.0f}%，点击返回")

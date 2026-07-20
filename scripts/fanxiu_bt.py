@@ -42,6 +42,7 @@ from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_run
 from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
 from backend.core.fanxiu.data_annotation.runtime_control import (
     build_scheduler_plan,
+    doctor_watch_code_signature,
     read_doctor_watch_latest,
     read_scheduler_tasks,
     reset_scheduler_task_runs,
@@ -960,6 +961,7 @@ def _write_doctor_watch_heartbeat(
     stable_latest_path: Path,
     iteration: int,
     event: dict[str, Any],
+    code_signature: str,
 ) -> None:
     path = _doctor_watch_heartbeat_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -973,6 +975,7 @@ def _write_doctor_watch_heartbeat(
         "iteration": iteration,
         "severity": event.get("severity"),
         "auto_run_due_enabled": bool(event.get("auto_run_due_enabled")),
+        "code_signature": code_signature,
         "due_task_count": event.get("due_task_count"),
         "stale_due_count": event.get("stale_due_count"),
         "stale_due_success_count": event.get("stale_due_success_count"),
@@ -1052,11 +1055,14 @@ def _ensure_doctor_watch_background(
     heartbeat = _read_doctor_watch_heartbeat()
     age = heartbeat.get("age_seconds")
     capability_consistent = (not auto_run_due) or bool(heartbeat.get("auto_run_due_enabled"))
+    current_code_signature = doctor_watch_code_signature()
+    code_consistent = bool(heartbeat.get("code_signature")) and heartbeat.get("code_signature") == current_code_signature
     if (
         isinstance(age, (int, float))
         and age <= stale_after_seconds
         and bool(heartbeat.get("runtime_consistent"))
         and capability_consistent
+        and code_consistent
     ):
         return {
             "started": False,
@@ -1129,10 +1135,11 @@ def _ensure_doctor_watch_background(
     finally:
         stdout_fh.close()
         stderr_fh.close()
+    heartbeat_recent = isinstance(age, (int, float)) and age <= stale_after_seconds and bool(heartbeat.get("runtime_consistent"))
     return {
         "started": True,
         "pid": process.pid,
-        "reason": "heartbeat_missing_or_stale",
+        "reason": "code_signature_mismatch" if heartbeat_recent and not code_consistent else "heartbeat_missing_or_stale",
         "previous_heartbeat": heartbeat,
         "stale_owner": stale_owner,
         "output_path": str(output_path),
@@ -1173,6 +1180,7 @@ def _run_doctor_watch(
     worst_code = 0
     last_auto_run_due_at = 0.0
     last_auto_run_due_key = ""
+    code_signature = doctor_watch_code_signature()
     while True:
         iteration += 1
         take_screenshot = bool(include_screenshot) and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
@@ -1189,6 +1197,7 @@ def _run_doctor_watch(
             stable_latest_path=stable_latest_path,
             iteration=iteration,
             event=preliminary_event,
+            code_signature=code_signature,
         )
         if auto_run_due and _watch_should_auto_run_due(report):
             report, last_auto_run_due_at, last_auto_run_due_key = _watch_auto_run_due_batch(
@@ -1215,6 +1224,7 @@ def _run_doctor_watch(
             stable_latest_path=stable_latest_path,
             iteration=iteration,
             event=event,
+            code_signature=code_signature,
         )
         print(
             "watch "

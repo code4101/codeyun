@@ -186,6 +186,30 @@ def test_normalize_lingmai_scene_exposes_room_capacity_and_protection() -> None:
     assert result["seats"][0]["owner"]["protect_end_time"] == 200
 
 
+def test_normalize_union_lingmai_scene_uses_current_protocol_family() -> None:
+    record = _scene_record(declared_count=9, truncated=1)
+    record["pro_id"] = 93517
+    record["name"] = "SM_UnionVeinsSeatsNoInScene"
+    record["payload"]["pro_id"] = 93517
+    record["payload"]["name"] = "SM_UnionVeinsSeatsNoInScene"
+    seats = record["payload"]["parsed"]["seats"]
+    seats["_type"] = "UnionVeinsSeatVO"
+    seats["_type_id"] = 93553
+    record["payload"]["parsed"] = {
+        "_class": "SM_UnionVeinsSeatsNoInScene",
+        "roomId": 17,
+        "roomVO": {"id": 17, "left": 1, "npcId": 10109, "themeId": 1},
+        "seats": seats,
+    }
+
+    result = normalize_fanxiu_lingmai_scene_seat_facts(record)
+
+    assert result["protocol"] == "SM_UnionVeinsSeatsNoInScene"
+    assert result["pro_id"] == 93517
+    assert result["room_id"] == 17
+    assert result["available_count"] == 1
+
+
 def test_get_latest_lingmai_scene_returns_explicit_no_fact_result() -> None:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)

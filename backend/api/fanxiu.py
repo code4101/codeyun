@@ -52,7 +52,7 @@ from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import engine, get_session
-from backend.models import FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
+from backend.models import FanxiuLingquanQuestion, FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.fanxiu.runtime.mumu_control import (
     activate_mumu_window,
@@ -120,6 +120,12 @@ from backend.core.fanxiu.catalog.inventory import load_activity_list, save_activ
 from backend.core.fanxiu.catalog.server_relations import (
     load_fanxiu_server_relations,
     save_fanxiu_server_relations,
+)
+from backend.core.fanxiu.quiz.store import (
+    create_lingquan_question,
+    list_lingquan_questions,
+    serialize_question,
+    update_lingquan_question,
 )
 from backend.core.fanxiu.catalog.inventory import load_modao_invasion_exchange_list, save_modao_invasion_exchange_list
 from backend.core.fanxiu.catalog.inventory import (
@@ -2742,6 +2748,70 @@ def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, An
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+@status_router.get("/lingquan-questions")
+def get_lingquan_questions(
+    query: str = Query(default=""),
+    group_name: str = Query(default=""),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    del current_user
+    items = list_lingquan_questions(session, query=query, group_name=group_name)
+    groups: dict[str, int] = {}
+    for item in list_lingquan_questions(session):
+        groups[item.group_name] = groups.get(item.group_name, 0) + 1
+    return {
+        "items": [serialize_question(item) for item in items],
+        "groups": [{"name": name, "count": count} for name, count in sorted(groups.items())],
+        "total": len(items),
+    }
+
+
+@status_router.post("/lingquan-questions")
+def post_lingquan_question(
+    payload: dict[str, Any],
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return serialize_question(create_lingquan_question(session, payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@status_router.put("/lingquan-questions/{question_id}")
+def put_lingquan_question(
+    question_id: str,
+    payload: dict[str, Any],
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    item = session.get(FanxiuLingquanQuestion, question_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="灵泉题目不存在")
+    try:
+        return serialize_question(update_lingquan_question(session, item, payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@status_router.delete("/lingquan-questions/{question_id}")
+def delete_lingquan_question(
+    question_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, bool]:
+    ensure_fanxiu_write_permission(current_user, session)
+    item = session.get(FanxiuLingquanQuestion, question_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="灵泉题目不存在")
+    session.delete(item)
+    session.commit()
+    return {"ok": True}
+
 
 @status_router.get("/mail-records", response_model=FanxiuMailRecordListResponse)
 def list_fanxiu_mail_records(
@@ -6397,6 +6467,7 @@ def _advance_data_annotation_scheduler_task_to_next_trigger(task_id: str) -> lis
             raise ValueError("该作业没有可计算的下次触发时间")
         item["last_run_at"] = now_text
         item["last_result"] = "success"
+        item["last_message"] = f"已推进至下次触发：{next_time}"
         item["retry_after"] = None
         item["next_time"] = next_time
         scheduler_meta = item.get("scheduler_meta") if isinstance(item.get("scheduler_meta"), dict) else {}

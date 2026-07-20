@@ -1536,6 +1536,7 @@ def test_data_annotation_scheduler_advance_next_marks_success_for_next_daily_cyc
     updated = next(item for item in updated_tasks if item["id"] == "daily-test")
 
     assert updated["last_result"] == "success"
+    assert updated["last_message"] == "已推进至下次触发：2026-07-01 23:55:00"
     assert updated["last_run_at"] == "2026-06-30 23:58:00"
     assert updated["next_time"] == "2026-07-01 23:55:00"
     assert updated["retry_after"] is None
@@ -2059,7 +2060,7 @@ def test_data_annotation_scheduler_read_initializes_enabled_daily_next_time(tmp_
     assert assistant["next_time"] == "2026-06-02 00:00:00"
 
 
-def test_data_annotation_scheduler_read_retries_enabled_failed_runtime_task(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_recovers_missing_failed_trigger_as_overdue(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -2093,11 +2094,11 @@ def test_data_annotation_scheduler_read_retries_enabled_failed_runtime_task(tmp_
     task = next(item for item in tasks if item["id"] == "legacy-daily-signup")
 
     assert task["last_result"] == "stopped"
-    assert task["next_time"] is None
-    assert task["retry_after"] == "2026-06-02 06:10:00"
+    assert task["next_time"] == "2026-06-02 05:58:00"
+    assert task["retry_after"] is None
 
 
-def test_data_annotation_scheduler_read_retries_failed_runtime_task(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_preserves_failed_task_scheduling_fields(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -2131,7 +2132,7 @@ def test_data_annotation_scheduler_read_retries_failed_runtime_task(tmp_path, mo
     task = next(item for item in tasks if item["id"] == "legacy-daily-xianshi")
 
     assert task["last_result"] == "error"
-    assert task["next_time"] is None
+    assert task["next_time"] == "2026-06-03 05:00:00"
     assert task["retry_after"] == "2026-06-02 06:10:00"
 
 
@@ -2181,7 +2182,7 @@ def test_data_annotation_scheduler_windowed_daily_error_defers_to_next_trigger(t
     assert task["retry_after"] is None
 
 
-def test_data_annotation_scheduler_read_retries_stopped_task_with_stale_next_time(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_read_does_not_rewrite_stopped_task_trigger(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -2215,8 +2216,8 @@ def test_data_annotation_scheduler_read_retries_stopped_task_with_stale_next_tim
     mail = next(item for item in tasks if item["id"] == "mail-selective-claim")
 
     assert mail["last_result"] == "stopped"
-    assert mail["next_time"] is None
-    assert mail["retry_after"] == "2026-06-02 06:10:00"
+    assert mail["next_time"] == "2026-06-03 00:05:00"
+    assert mail["retry_after"] is None
 
 
 def test_data_annotation_scheduler_read_keeps_manual_check_pending_unscheduled(tmp_path, monkeypatch):
@@ -2294,7 +2295,6 @@ def test_data_annotation_scheduler_sync_retries_failed_runtime_task(tmp_path, mo
                     "task_type": "daily_xianshi",
                     "last_result": "error",
                     "last_run_at": "2026-06-02 05:58:00",
-                    "discovered_next_time": "2026-06-03 05:00:00",
                     "discovered_retry_after": "2026-06-02 06:10:00",
                     "updated_at": fixed_now.timestamp(),
                 }
@@ -10391,8 +10391,11 @@ def test_daily_lingzu_outer_world_unwinds_assistant_after_leave_confirm(monkeypa
 
 
 
-def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypatch):
+def test_data_annotation_scheduler_migrates_verified_lingquan_task_type(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
+    register_fanxiu_data_annotation_default_runtime_jobs()
     fanxiu._write_data_annotation_scheduler_tasks([
         {
             "id": "legacy-daily-lingquan",
@@ -10416,19 +10419,11 @@ def test_data_annotation_run_now_rejects_unverified_task_type(tmp_path, monkeypa
         }
     ])
 
-    with pytest.raises(fanxiu.HTTPException) as exc_info:
-        fanxiu.run_now_fanxiu_data_annotation_scheduler_task(
-            fanxiu.FanxiuDataAnnotationSchedulerRunNowRequest(
-                entry_id="entry",
-                task_id="legacy-daily-lingquan",
-                payload={},
-            ),
-            current_user=object(),
-            session=object(),
-        )
-
-    assert exc_info.value.status_code == 400
-    assert "尚未纳入当前框架验收" in str(exc_info.value.detail)
+    task = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingquan")
+    assert task["task_type"] == "daily_lingquan"
+    assert task["enabled"] is True
+    assert task["schedule_times"] == ["20:30"]
+    assert get_fanxiu_data_annotation_task_cell_definition("daily_lingquan") is not None
 
 
 def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, monkeypatch):
@@ -12024,7 +12019,7 @@ def test_data_annotation_identify_scene_number_uses_graph_preferred_candidates(m
     assert calls == [("frame", (66, 34), False)]
 
 
-def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_path, monkeypatch):
+def test_data_annotation_mark_scheduler_task_advances_success_and_preserves_error_trigger(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12066,6 +12061,7 @@ def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_p
         "schedule_kind": "dynamic",
         "schedule_times": [],
         "cooldown_seconds": 120,
+        "next_time": "2026-06-02 05:59:00",
         "last_result": "",
         "retry_after": None,
     }
@@ -12078,8 +12074,8 @@ def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_p
     assert daily["next_time"] == "2026-06-03 00:00:00"
     assert daily["retry_after"] is None
     assert error_task["last_result"] == "error"
-    assert error_task["next_time"] is None
-    assert error_task["retry_after"] == "2026-06-02 06:02:00"
+    assert error_task["next_time"] == "2026-06-02 05:59:00"
+    assert error_task["retry_after"] is None
 
 
 def test_data_annotation_mark_scheduler_task_ignores_expired_runtime_next_time(tmp_path, monkeypatch):
@@ -12129,7 +12125,7 @@ def test_data_annotation_mark_scheduler_task_ignores_expired_runtime_next_time(t
     assert task["retry_after"] is None
 
 
-def test_data_annotation_mark_scheduler_task_skipped_retries_without_advancing_daily(tmp_path, monkeypatch):
+def test_data_annotation_mark_scheduler_task_skipped_keeps_original_trigger_due(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12161,8 +12157,48 @@ def test_data_annotation_mark_scheduler_task_skipped_retries_without_advancing_d
 
     assert task["last_result"] == "skipped"
     assert task["last_run_at"] == "2026-06-02 06:00:00"
-    assert task["next_time"] is None
-    assert task["retry_after"] == "2026-06-02 06:10:00"
+    assert task["next_time"] == "2026-06-02 05:00:00"
+    assert task["retry_after"] is None
+
+
+def test_zhenxie_failure_stays_due_inside_window_then_advances_after_window(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    now_holder = [datetime(2026, 7, 20, 21, 4, 41)]
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now_holder[0]
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "daily-zhenxie",
+            "task_type": "daily_zhenxie",
+            "label": "日常_镇邪",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": bool("window-task"),
+            "schedule_times": ["21:00"],
+            "window": ["21:00", "21:05"],
+            "last_result": "error",
+            "last_run_at": "2026-07-20 21:00:51",
+            "next_time": "2026-07-20 21:00:00",
+            "retry_after": None,
+            "payload": {"__scheduler_definition_task_type": "daily_zhenxie"},
+        }
+    ])
+
+    inside = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "daily-zhenxie")
+    assert inside["next_time"] == "2026-07-20 21:00:00"
+    assert inside["retry_after"] is None
+
+    now_holder[0] = datetime(2026, 7, 20, 21, 5, 1)
+    outside = next(item for item in fanxiu._read_data_annotation_scheduler_tasks() if item["id"] == "daily-zhenxie")
+    assert outside["next_time"] == "2026-07-21 21:00:00"
+    assert outside["retry_after"] is None
 
 
 def test_generic_runtime_task_does_not_mutate_external_scheduler_state(tmp_path, monkeypatch):
@@ -12269,7 +12305,7 @@ def test_data_annotation_mark_scheduler_task_skipped_uses_discovered_recheck_tim
 
 
 
-def test_data_annotation_mark_scheduler_task_error_defaults_to_ten_minute_retry(tmp_path, monkeypatch):
+def test_data_annotation_mark_scheduler_task_error_does_not_invent_retry_time(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12298,8 +12334,8 @@ def test_data_annotation_mark_scheduler_task_error_defaults_to_ten_minute_retry(
     runner._mark_scheduler_task([task], "manual-mail", "error")
 
     assert task["last_result"] == "error"
-    assert task["next_time"] is None
-    assert task["retry_after"] == "2026-06-02 06:10:00"
+    assert task.get("next_time") is None
+    assert task["retry_after"] is None
 
 
 def test_daily_weekly_dungeon_326_zero_remaining_marks_week_complete(tmp_path, monkeypatch):
@@ -12352,7 +12388,7 @@ def test_daily_weekly_dungeon_326_zero_remaining_marks_week_complete(tmp_path, m
     assert not any(action[0] == "wait_click_then_view" for action in actions)
 
 
-def test_data_annotation_mark_weekly_dungeon_error_keeps_retry(tmp_path, monkeypatch):
+def test_data_annotation_mark_weekly_dungeon_error_keeps_original_trigger(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12385,11 +12421,11 @@ def test_data_annotation_mark_weekly_dungeon_error_keeps_retry(tmp_path, monkeyp
 
     assert task["last_result"] == "error"
     assert task["last_run_at"] == "2026-07-09 01:39:03"
-    assert task["next_time"] is None
-    assert task["retry_after"] == "2026-07-09 01:49:03"
+    assert task["next_time"] == "2026-07-06 05:00:00"
+    assert task["retry_after"] is None
 
 
-def test_data_annotation_mark_scheduler_task_stopped_sets_retry(tmp_path, monkeypatch):
+def test_data_annotation_mark_scheduler_task_stopped_keeps_original_trigger(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12419,11 +12455,11 @@ def test_data_annotation_mark_scheduler_task_stopped_sets_retry(tmp_path, monkey
     runner._mark_scheduler_task([task], "legacy-daily-yaowang", "stopped")
 
     assert task["last_result"] == "stopped"
-    assert task["next_time"] is None
-    assert task["retry_after"] == "2026-06-02 06:10:00"
+    assert task["next_time"] == "2026-06-02 05:00:00"
+    assert task["retry_after"] is None
 
 
-def test_data_annotation_clear_runtime_tasks_retry_after_five_minutes(tmp_path, monkeypatch):
+def test_data_annotation_clear_runtime_task_failures_do_not_invent_retry_time(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
@@ -12449,8 +12485,8 @@ def test_data_annotation_clear_runtime_tasks_retry_after_five_minutes(tmp_path, 
     runner._mark_scheduler_task(tasks, "legacy-daily-lingmai-clear", "stopped")
 
     by_id = {item["id"]: item for item in tasks}
-    assert by_id["legacy-daily-dongtian-clear"]["retry_after"] == "2026-07-04 21:45:00"
-    assert by_id["legacy-daily-lingmai-clear"]["retry_after"] == "2026-07-04 21:45:00"
+    assert by_id["legacy-daily-dongtian-clear"]["retry_after"] is None
+    assert by_id["legacy-daily-lingmai-clear"]["retry_after"] is None
 
 
 def test_scheduler_failure_cleanup_accepts_reliably_identified_world_after_undeclared_landing(tmp_path, monkeypatch):
@@ -12994,6 +13030,8 @@ def test_daily_assistant_ensure_list_closes_youli_result(tmp_path, monkeypatch):
 
 
 def test_daily_lingmai_clicks_slot_entry_after_region_teleport(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import daily_foundation
+
     runner = create_fanxiu_runtime_runner()
     ctx = {
         "images": {
@@ -13052,6 +13090,11 @@ def test_daily_lingmai_clicks_slot_entry_after_region_teleport(monkeypatch):
 
     monkeypatch.setattr(runner, "_click_daily_lingmai_slot_entry", click_slot_entry)
     monkeypatch.setattr(runner, "_continue_daily_lingmai_from_final_occupy", continue_from_final)
+    monkeypatch.setattr(
+        daily_foundation,
+        "refresh_and_select_lingmai_seat_action",
+        lambda **_kwargs: pytest.fail("#286 已识别到空位时不应读取座位名单抓包"),
+    )
 
     result = _drain_generator(
         runner._continue_daily_lingmai_from_select_slot(

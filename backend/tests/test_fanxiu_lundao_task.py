@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from backend.core.fanxiu.data_annotation.tasks import lundao
 
@@ -219,20 +219,81 @@ def test_lundao_opportunity_does_not_attack_when_cushion_is_only_friendly(monkey
     assert result["actionable"] is False
 
 
-def test_lundao_plan_stays_sanqing_or_completes_from_server_facts() -> None:
+def test_lundao_plan_stays_sanqing_with_zero_strength_and_only_completes_from_reward_time() -> None:
     now = datetime(2026, 7, 20, 19, 30)
     wait = lundao.plan_lundao_strategy(
         {"available": True, "strength": 1, "left_listen_time": 1000, "room_id": 14},
         daluo_opportunity={"ok": True, "actionable": False, "earliest_protect_end_time": None},
         at=now,
     )
-    done = lundao.plan_lundao_strategy(
+    zero_strength = lundao.plan_lundao_strategy(
         {"available": True, "strength": 0, "left_listen_time": 1000, "room_id": 14},
+        daluo_opportunity={"ok": True, "actionable": False, "earliest_protect_end_time": None},
+        at=now,
+    )
+    done = lundao.plan_lundao_strategy(
+        {"available": True, "strength": 0, "left_listen_time": 0, "room_id": 14},
         daluo_opportunity=None,
         at=now,
     )
 
     assert wait["action"] == "stay_sanqing"
     assert wait["next_time"] == datetime(2026, 7, 20, 20, 0)
+    assert zero_strength["action"] == "stay_sanqing"
     assert done["action"] == "done"
     assert done["next_time"] == datetime(2026, 7, 21, 15, 55)
+
+
+def test_lundao_plan_with_zero_strength_still_requests_an_actionable_daluo_seat() -> None:
+    now = datetime(2026, 7, 20, 19, 30)
+
+    decision = lundao.plan_lundao_strategy(
+        {"available": True, "strength": 0, "left_listen_time": 1000, "room_id": 14},
+        daluo_opportunity={"ok": True, "actionable": True, "earliest_protect_end_time": None},
+        at=now,
+    )
+
+    assert decision["action"] == "seat_daluo"
+
+
+def test_lundao_plan_with_zero_strength_keeps_an_existing_daluo_seat_without_purchase() -> None:
+    now = datetime(2026, 7, 20, 19, 30)
+
+    decision = lundao.plan_lundao_strategy(
+        {"available": True, "strength": 0, "left_listen_time": 1000, "room_id": 15},
+        daluo_opportunity=None,
+        at=now,
+    )
+
+    assert decision["action"] == "stay_daluo"
+    assert decision["next_time"] == datetime(2026, 7, 20, 20, 0)
+
+
+def test_lundao_live_remaining_reward_time_subtracts_current_seat_elapsed_time() -> None:
+    sit_down = datetime(2026, 7, 20, 16, 18, 59)
+    now = datetime(2026, 7, 20, 18, 15, 9)
+    status = {
+        "seated": True,
+        "left_listen_time": 18_900_000,
+        "sit_down_time": int(sit_down.timestamp() * 1000),
+    }
+
+    remaining = lundao.current_lundao_left_listen_time(status, at=now)
+
+    assert remaining == 11_930_000
+
+
+def test_lundao_live_remaining_reward_time_is_raw_when_unseated_and_clamped_when_complete() -> None:
+    now = datetime(2026, 7, 20, 18, 0)
+    assert lundao.current_lundao_left_listen_time(
+        {"seated": False, "left_listen_time": 18_900_000, "sit_down_time": 1},
+        at=now,
+    ) == 18_900_000
+    assert lundao.current_lundao_left_listen_time(
+        {
+            "seated": True,
+            "left_listen_time": 1_000,
+            "sit_down_time": int((now - timedelta(seconds=2)).timestamp() * 1000),
+        },
+        at=now,
+    ) == 0

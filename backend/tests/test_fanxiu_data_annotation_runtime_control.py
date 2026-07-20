@@ -104,6 +104,103 @@ def test_ensure_doctor_watch_background_uses_repo_root_script(monkeypatch, tmp_p
     assert "--auto-run-due" in calls[0]["args"]
 
 
+def test_ensure_doctor_watch_background_replaces_live_stale_code(monkeypatch, tmp_path):
+    calls = []
+
+    class TempRoot:
+        def __call__(self, *parts):
+            return tmp_path.joinpath(*parts)
+
+    class ExistingProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def cmdline(self):
+            return ["pythonw.exe", "scripts/fanxiu_bt.py", "watch-doctor", "--auto-run-due"]
+
+        def is_running(self):
+            return True
+
+        def terminate(self):
+            calls.append(("terminate", self.pid))
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+
+    class NewProcess:
+        pid = 456
+
+    monkeypatch.setattr(runtime_control, "codeyun_temp_root", TempRoot())
+    monkeypatch.setattr(
+        runtime_control,
+        "read_doctor_watch_heartbeat",
+        lambda **_kwargs: {
+            "active": True,
+            "pid": 123,
+            "auto_run_due_enabled": True,
+            "code_consistent": False,
+        },
+    )
+    monkeypatch.setattr(runtime_control.psutil, "Process", ExistingProcess)
+    monkeypatch.setattr(runtime_control, "popen_python_script_service", lambda *_args, **_kwargs: NewProcess())
+
+    result = runtime_control.ensure_doctor_watch_background(include_screenshot=False)
+
+    assert result["started"] is True
+    assert result["replaced_pid"] == 123
+    assert result["reason"] == "code_signature_mismatch"
+    assert result["replacement_reasons"] == ["code_signature_mismatch"]
+    assert ("terminate", 123) in calls
+
+
+def test_ensure_doctor_watch_background_replaces_live_stale_heartbeat(monkeypatch, tmp_path):
+    class TempRoot:
+        def __call__(self, *parts):
+            return tmp_path.joinpath(*parts)
+
+    terminated = []
+
+    class ExistingProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def cmdline(self):
+            return ["pythonw.exe", "scripts/fanxiu_bt.py", "watch-doctor"]
+
+        def is_running(self):
+            return True
+
+        def terminate(self):
+            terminated.append(self.pid)
+
+        def wait(self, timeout):
+            return None
+
+    class NewProcess:
+        pid = 789
+
+    monkeypatch.setattr(runtime_control, "codeyun_temp_root", TempRoot())
+    monkeypatch.setattr(
+        runtime_control,
+        "read_doctor_watch_heartbeat",
+        lambda **_kwargs: {
+            "active": False,
+            "pid": 321,
+            "auto_run_due_enabled": True,
+            "code_consistent": True,
+        },
+    )
+    monkeypatch.setattr(runtime_control.psutil, "Process", ExistingProcess)
+    monkeypatch.setattr(runtime_control, "popen_python_script_service", lambda *_args, **_kwargs: NewProcess())
+
+    result = runtime_control.ensure_doctor_watch_background(include_screenshot=False)
+
+    assert result["started"] is True
+    assert result["replaced_pid"] == 321
+    assert result["reason"] == "heartbeat_missing_or_stale"
+    assert terminated == [321]
+
+
 def test_scheduler_task_cell_records_terminal_success(monkeypatch):
     state = [{
         "id": "daily-a",
@@ -193,7 +290,7 @@ def test_scheduler_success_advances_schedule_crossed_while_cell_was_running(monk
     assert state[0]["finished_at"] == "2026-07-15 12:04:00"
 
 
-def test_scheduler_task_cell_without_business_result_retries_instead_of_false_success(monkeypatch):
+def test_scheduler_task_cell_without_business_result_keeps_original_trigger_due(monkeypatch):
     state = [{
         "id": "daily-a",
         "task_type": "daily_a",
@@ -223,8 +320,8 @@ def test_scheduler_task_cell_without_business_result_retries_instead_of_false_su
 
     assert result["status"] == "error"
     assert state[0]["last_result"] == "error"
-    assert state[0]["next_time"] is None
-    assert state[0]["retry_after"]
+    assert state[0]["next_time"] == "2026-07-15 12:00:00"
+    assert state[0].get("retry_after") is None
     assert state[0]["last_message"] == "Task Cell 已结束，但未返回业务终态"
 
 
@@ -262,8 +359,8 @@ def test_scheduler_task_cell_preserves_business_terminal_result(monkeypatch):
 
     assert state[0]["last_result"] == "skipped"
     assert state[0]["last_message"] == "稍后重试"
-    assert state[0]["next_time"] is None
-    assert state[0]["retry_after"]
+    assert state[0]["next_time"] == "2026-07-13 12:30:00"
+    assert state[0].get("retry_after") is None
     assert state[0]["attempt_id"] is None
 
 
@@ -359,13 +456,15 @@ def test_scheduler_terminal_syncs_runtime_discovered_retry_from_world_facts(monk
     assert state[0]["last_result"] == "skipped"
     assert state[0]["next_time"] is None
     assert state[0]["retry_after"] == "2026-07-15 17:08:17"
-    assert state[0]["last_message"] == "Runtime 已记录业务重试时间"
+    assert state[0]["last_message"] == "Runtime 已记录业务调度时间"
 
 
 def test_scheduler_invalidates_orphaned_attempt_for_whole_job_retry(monkeypatch):
     tasks = [{
         "id": "daily-a",
         "last_result": "running",
+        "next_time": "2026-07-14 16:00:00",
+        "retry_after": None,
         "attempt_id": "old-attempt",
         "attempt_kernel_generation": 6,
         "cooldown_seconds": 60,
@@ -384,6 +483,8 @@ def test_scheduler_invalidates_orphaned_attempt_for_whole_job_retry(monkeypatch)
     assert changed is True
     assert tasks[0]["last_result"] == "error"
     assert tasks[0]["attempt_id"] is None
+    assert tasks[0]["next_time"] == "2026-07-14 16:00:00"
+    assert tasks[0]["retry_after"] is None
     assert "整单重试" in tasks[0]["last_message"]
     assert written and facts == [("daily-a", "error")]
 
