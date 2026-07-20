@@ -82,7 +82,10 @@ async function loadCatalog() {
   }
 }
 
-onMounted(loadCatalog)
+onMounted(() => {
+  document.title = '火山的女儿/剧院图鉴 - CodeYun'
+  return loadCatalog()
+})
 </script>
 
 <template>

@@ -642,12 +642,23 @@ const stopPolling = () => {
 };
 
 onMounted(async () => {
-  await taskStore.fetchDevices();
+  const initialEntryId = entryId.value;
+  const [devicesResult] = await Promise.allSettled([
+    taskStore.fetchDevices(),
+    refreshAll(),
+  ]);
+  if (devicesResult.status === 'rejected') {
+    warnRefreshFailure('fetch devices', devicesResult.reason);
+  }
   if (!entryId.value) {
     const mfDevice = devices.value.find((item) => item.name === machineName || item.id === machineName || item.id.includes('codepc_mf'));
     entryId.value = mfDevice?.id || devices.value[0]?.id || '';
   }
-  await refreshAll();
+  if (!initialEntryId && entryId.value) {
+    void refreshStatus().catch((error) => {
+      warnRefreshFailure('refresh resolved device status', error);
+    });
+  }
   startPolling();
   window.addEventListener('click', closeLogMenu);
 });

@@ -108,6 +108,33 @@ def test_background_task_runner_public_frontend_deploy_keeps_interval_schedule()
     }
 
 
+def test_background_task_runner_fanxiu_wechat_reminders_are_registered_optional_jobs():
+    boss_spec = background_tasks.get_background_task_spec(
+        background_tasks.FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY
+    )
+    shengzu_spec = background_tasks.get_background_task_spec(
+        background_tasks.FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY
+    )
+
+    assert boss_spec is not None
+    assert boss_spec.title == "凡修魔狱封阵微信群提醒"
+    assert boss_spec.category == "凡修"
+    assert boss_spec.schedule_label == "每天 17:57"
+    assert boss_spec.default_visible is False
+    boss_policy = background_tasks._default_background_task_schedule_policy(boss_spec.key)
+    assert boss_policy is not None
+    assert boss_policy["trigger"] == {"type": "daily", "time": "17:57"}
+
+    assert shengzu_spec is not None
+    assert shengzu_spec.title == "凡修圣祖微信群提醒"
+    assert shengzu_spec.category == "凡修"
+    assert shengzu_spec.schedule_label == "每周日 19:57"
+    assert shengzu_spec.default_visible is False
+    shengzu_policy = background_tasks._default_background_task_schedule_policy(shengzu_spec.key)
+    assert shengzu_policy is not None
+    assert shengzu_policy["trigger"] == {"type": "weekly", "weekdays": [7], "time": "19:57"}
+
+
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
     _set_enabled(
         monkeypatch,

@@ -31,12 +31,24 @@
 
 ```yaml
 last_audited_commit: "6421d1833078e750a83b41939e85f9cac7700594"
-last_audited_at: "2026-07-19T01:10:21.8705308+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-19-frontend-design-6421d183/report.md"
-last_frontend_commit_summary: "完整关闭历史改写后的 6c2b6d8c..6421d183 共 91 个当前提交身份；火山公主音频/剧院删除构建与重复统计摘要，剧院窄屏题库收敛为单列，生产入口未被局部 chunk 污染。"
+last_audited_at: "2026-07-20T01:11:16.2885306+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-20-frontend-design-532d2574/report.md"
+last_frontend_commit_summary: "6421d183..532d2574 已逐提交巡检并修正剧院浏览器标题；三页三视口与生产入口通过，但 NoteSheet/课程表相关测试 232 通过、17 失败，范围仍 pending。"
 audited_commit_count: 217
-pending_or_skipped_ranges: []
+pending_or_skipped_ranges:
+  - range: "6421d1833078e750a83b41939e85f9cac7700594..532d25748ce22a597f102f9e1c91529e53489354"
+    reason: "前端 typecheck/build、三视口和生产入口资源检查通过，但 NoteSheet/课程表相关 pytest 仍有 17 项失败；完整验证未闭环，游标不得推进。"
 ```
+
+### 2026-07-20 · `532d2574`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..532d25748ce22a597f102f9e1c91529e53489354`；共 3 个提交，按从旧到新归类为 `d2439377 frontend_relevant`、`87f9158b frontend_relevant`、`532d2574 not_frontend_relevant`。
+- 入口与模型：音频保持“筛选/分页列表 → 选中音频 → 播放与必要属性”，剧院保持“题库/剧目/场景”三种资料视图；公开工作簿让嵌入 defined names 在首次公式计算前成为当前上下文，并保留课程 Step3 已落盘样式，不在读取时派生第二份颜色事实。
+- 本轮减法与修复：复验上轮删除音频/剧院 build、engine 和重复统计摘要后的三视口；发现剧院因复用音频权限节点导致浏览器标题仍写“音频图鉴”，仅在剧院页挂载时覆盖正确标题，不拆权限实体、不新增控件或状态。
+- 真实页面：音频、剧院、`/workbook/16?sheet=60370` 覆盖 `1600x1000`、`1366x900`、`820x1180`，页面级横向溢出均为 0；工作簿无 `#NAME?`，考勤样式正常。已登录 Chrome 的部署版真实工作簿正常进入业务内容，控制台无 warn/error。
+- 入口依赖污染：生产 `dist/index.html` 只预载基础 vendor，`main-DGZFrBCK.js` 顶层静态 import 未加载 NoteSheet 或其它高风险局部 chunk；部署入口只加载公开工作簿与 NoteSheet/formula/handsontable/markdown 所需资源，未加载 file-viewer/PDF/编辑器/echarts/worker/wasm。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；相关 pytest 为 `232 passed / 17 failed`，失败覆盖 NoteSheet 初始并行加载护栏、模板/分页/导入及课程表生成和持久化样式等本轮链路。因此不推进游标，范围写入 `pending_or_skipped_ranges`。
+- 现场边界：巡检前已有凡修 Runtime/Scheduler、Pixiv 等未提交文件，本轮未覆盖。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-20-frontend-design-532d2574/`。
 
 ### 2026-07-19 · `6421d183`
 

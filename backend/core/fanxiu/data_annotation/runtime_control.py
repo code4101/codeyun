@@ -588,13 +588,32 @@ def update_scheduler_tasks(
     world_facts_path: Path | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    defaults_by_id = {
+        str(task.get("id") or ""): task
+        for task in default_data_annotation_scheduler_tasks()
+        if str(task.get("id") or "")
+    }
+    schedule_fields = ("schedule_kind", "schedule_times", "weekdays", "window", "trigger_kind")
+    override_key = "__scheduler_schedule_override"
+    normalized_updates: list[dict[str, Any]] = []
+    for raw_update in updates:
+        update = deepcopy(raw_update)
+        default_task = defaults_by_id.get(str(update.get("id") or ""))
+        if default_task and any(key in update for key in schedule_fields):
+            payload = dict(update.get("payload") or {})
+            if any(update.get(key) != default_task.get(key) for key in schedule_fields):
+                payload[override_key] = True
+            else:
+                payload.pop(override_key, None)
+            update["payload"] = payload
+        normalized_updates.append(update)
     tasks = merge_data_annotation_scheduler_task_updates(
         read_scheduler_tasks(
             scheduler_state_path=scheduler_state_path,
             world_facts_path=world_facts_path,
             now=now,
         ),
-        updates,
+        normalized_updates,
         now=now or datetime.now(),
     )
     write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
@@ -956,7 +975,7 @@ def _task_result_from_cell(result: dict[str, Any]) -> tuple[str, str]:
         if isinstance(payload, dict):
             task_result = str(payload.get("result") or "success").strip() or "success"
             return task_result, str(payload.get("message") or result.get("message") or "").strip()
-    return "success", str(result.get("message") or "Cell 执行完成")
+    return "error", "Task Cell 已结束，但未返回业务终态"
 
 
 def reconcile_stale_scheduler_attempts(
@@ -1085,7 +1104,7 @@ def _run_scheduler_task_cell_and_record_terminal(
     task_result, task_message = _task_result_from_cell(result)
     synced_result = str(state_task.get("last_result") or "")
     if (
-        task_result == "success"
+        str(result.get("status") or "error") == "success"
         and not str(result.get("result_text") or "").strip()
         and synced_result in {"error", "stopped", "skipped", "unsupported"}
         and state_task.get("retry_after")

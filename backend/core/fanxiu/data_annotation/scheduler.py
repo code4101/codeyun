@@ -53,6 +53,7 @@ _DEFAULT_LABEL_SYNC_TASK_IDS = {
     "legacy-daily-lingmai-clear",
 }
 _MAIL_SELECTIVE_CLAIM_DONE_PREFIXES = ("邮件_选择性领取：完成", "邮件_清理：完成")
+_SCHEDULER_SCHEDULE_OVERRIDE_KEY = "__scheduler_schedule_override"
 _OBSOLETE_ASSISTANT_COVERED_TASK_IDS = {
     "legacy-daily-dungeon",
     "legacy-daily-lingta",
@@ -819,10 +820,14 @@ def repair_data_annotation_scheduler_tasks(
             continue
         previous_task_type = str(task.get("task_type") or "")
         default_task_type = str(default_task.get("task_type") or "")
-        for key in ("task_type", "source", "schedule_kind", "legacy_name", "schedule_times", "window"):
-            task[key] = default_task.get(key)
-        default_payload = default_task.get("payload") if isinstance(default_task.get("payload"), dict) else {}
         task_payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        schedule_overridden = bool(task_payload.get(_SCHEDULER_SCHEDULE_OVERRIDE_KEY))
+        for key in ("task_type", "source", "legacy_name"):
+            task[key] = default_task.get(key)
+        if not schedule_overridden:
+            for key in ("schedule_kind", "schedule_times", "weekdays", "window", "trigger_kind"):
+                task[key] = default_task.get(key)
+        default_payload = default_task.get("payload") if isinstance(default_task.get("payload"), dict) else {}
         definition_marker = "__scheduler_definition_task_type"
         marker_matches = str(task_payload.get(definition_marker) or "") == default_task_type
         is_migrated_legacy_task = (
@@ -847,6 +852,8 @@ def repair_data_annotation_scheduler_tasks(
                 "legacy-daily-xianyuan",
                 "legacy-daily-assistant",
                 "legacy-daily-dungeon",
+                "legacy-daily-dongtian-clear",
+                "legacy-daily-lingmai-clear",
             }
             and task.get("cooldown_seconds") != default_task.get("cooldown_seconds")
         ):

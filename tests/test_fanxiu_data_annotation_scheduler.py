@@ -654,9 +654,9 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert assistant["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
     assert dongtian["label"] == "洞天_领取"
     assert dongtian_clear["label"] == "洞天_行动力"
-    assert dongtian_clear["cooldown_seconds"] == 300
+    assert dongtian_clear["cooldown_seconds"] == 600
     assert lingmai_clear["label"] == "灵脉_清体力"
-    assert lingmai_clear["cooldown_seconds"] == 300
+    assert lingmai_clear["cooldown_seconds"] == 600
     assert baiye["task_type"] == "daily_baiye"
     assert baiye["source"] == "data_annotation_runtime"
     assert baiye["payload"] == {"args": ["魔道"]}
@@ -676,6 +676,62 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert mojie_raid["enabled"] is True
     assert mojie_raid["schedule_times"] == ["13:00", "21:30"]
     assert not any(item["id"] == "daily-locate" for item in tasks)
+
+
+def test_scheduler_repair_syncs_dongtian_and_lingmai_clear_cooldowns():
+    defaults = fanxiu._default_data_annotation_scheduler_tasks()
+    tasks = [
+        dict(next(item for item in defaults if item["id"] == task_id))
+        for task_id in ("legacy-daily-dongtian-clear", "legacy-daily-lingmai-clear")
+    ]
+    for task in tasks:
+        task["cooldown_seconds"] = 300
+
+    repaired, changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        tasks,
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=datetime(2026, 7, 19, 21, 50, 0),
+    )
+
+    assert changed is True
+    clear_ids = {"legacy-daily-dongtian-clear", "legacy-daily-lingmai-clear"}
+    assert {
+        task["id"]: task["cooldown_seconds"] for task in repaired if task["id"] in clear_ids
+    } == {
+        "legacy-daily-dongtian-clear": 600,
+        "legacy-daily-lingmai-clear": 600,
+    }
+
+
+def test_scheduler_repair_preserves_explicit_custom_schedule_override():
+    defaults = fanxiu._default_data_annotation_scheduler_tasks()
+    lundao = dict(next(item for item in defaults if item["id"] == "daily-lundao-seat"))
+    lundao.update({
+        "schedule_kind": "daily",
+        "schedule_times": ["14:00"],
+        "trigger_kind": "daily",
+        "enabled": True,
+        "payload": {
+            **dict(lundao.get("payload") or {}),
+            "__scheduler_schedule_override": True,
+        },
+    })
+
+    repaired, _changed = scheduler_core.repair_data_annotation_scheduler_tasks(
+        [lundao],
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=datetime(2026, 7, 20, 14, 5, 0),
+    )
+    repaired_lundao = next(task for task in repaired if task["id"] == "daily-lundao-seat")
+
+    assert repaired_lundao["schedule_kind"] == "daily"
+    assert repaired_lundao["schedule_times"] == ["14:00"]
+    assert repaired_lundao["trigger_kind"] == "daily"
+    assert repaired_lundao["enabled"] is True
 
 
 def test_data_annotation_scheduler_read_repairs_structural_fields(tmp_path, monkeypatch):

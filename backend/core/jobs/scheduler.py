@@ -31,6 +31,15 @@ from backend.core.attendance.fanbei_schedule import (
     enqueue_fanbei_attendance_evening_steps,
     enqueue_fanbei_attendance_morning_steps,
 )
+from backend.core.fanxiu_wechat_reminder import (
+    FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME,
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS,
+    enqueue_fanxiu_wechat_boss_reminder,
+    enqueue_fanxiu_wechat_shengzu_reminder,
+)
 from backend.core.runtime.public_frontend_deploy import (
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     run_public_frontend_deploy_check,
@@ -68,6 +77,8 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     MARKET_QUOTE_REFRESH_TASK_KEY,
     MARKET_INTRADAY_PERSIST_TASK_KEY,
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
+    FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+    FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
     DP_BROWSER_TAB_CLEANUP_TASK_KEY,
@@ -185,6 +196,16 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_EVENING_RUN_TIME})
     if task_key == FANBEI_ATTENDANCE_MORNING_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_MORNING_RUN_TIME})
+    if task_key == FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME})
+    if task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "weekly",
+                "weekdays": list(FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS),
+                "time": FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME,
+            }
+        )
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
     if task_key == MARKET_INTRADAY_PERSIST_TASK_KEY:
@@ -594,6 +615,28 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="无额外重试",
         action=enqueue_fanbei_attendance_morning_steps,
         manual_warning="当前仅执行课程数据 step4-step6 空框架，不会修改考勤数据。",
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+        title="凡修魔狱封阵微信群提醒",
+        category="凡修",
+        description="每天在魔狱封阵前通过 xlproject 的微信发送脚本提醒三清道宗微信群。",
+        schedule_label=f"每天 {FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}",
+        retry_label="失败后下次调度重试",
+        action=enqueue_fanxiu_wechat_boss_reminder,
+        manual_warning="会操作本机微信向三清道宗群发送 @所有人 提醒；需要微信登录态和 xlproject 环境可用。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
+        title="凡修圣祖微信群提醒",
+        category="凡修",
+        description="每周在圣祖活动前通过 xlproject 的微信发送脚本提醒三清道宗微信群。",
+        schedule_label=f"每周日 {FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME}",
+        retry_label="失败后下次调度重试",
+        action=enqueue_fanxiu_wechat_shengzu_reminder,
+        manual_warning="会操作本机微信向三清道宗群发送提醒；需要微信登录态和 xlproject 环境可用。",
+        default_visible=False,
     ),
     BackgroundTaskSpec(
         key=MARKET_QUOTE_REFRESH_TASK_KEY,
