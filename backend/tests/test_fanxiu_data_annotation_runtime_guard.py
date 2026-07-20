@@ -6253,7 +6253,7 @@ def test_daily_lingmai_frame_306_clicks_ocr_confirm_before_returning_world(monke
     assert runtime.actions[-1] == ("goto_view", 34)
 
 
-def test_daily_lundao_is_registered_as_manual_standard_job():
+def test_daily_lundao_is_registered_as_daily_dynamic_recheck_job():
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
 
     register_fanxiu_data_annotation_default_runtime_jobs()
@@ -6263,12 +6263,42 @@ def test_daily_lundao_is_registered_as_manual_standard_job():
     task = tasks["daily-lundao-seat"]
     assert task["task_type"] == "daily_lundao"
     assert task["label"] == "论道_座位"
-    assert task["schedule_kind"] == "manual"
-    assert task["schedule_times"] == []
-    assert task["enabled"] is False
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["15:55"]
+    assert task["window"] == ["15:55", "22:00"]
+    assert task["enabled"] is True
     assert definition is not None
     assert definition.label == "论道_座位"
     assert definition.scheduler_supported is True
+
+
+def test_daily_lundao_new_kick_packet_wakes_scheduler_immediately(monkeypatch):
+    from backend.core.fanxiu.data_annotation import scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_latest_fanxiu_lundao_kick_transition_facts",
+        lambda _session: {"kicked": True, "event_at": "2026-07-20 19:10:00"},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "get_latest_fanxiu_lundao_status_facts",
+        lambda _session, **_kwargs: {"strength": 1},
+    )
+    tasks = [{
+        "id": "daily-lundao-seat",
+        "enabled": True,
+        "last_run_at": "2026-07-20 19:00:00",
+        "next_time": "2026-07-20 19:30:00",
+        "retry_after": None,
+        "scheduler_meta": None,
+    }]
+
+    changed = scheduler._sync_lundao_kick_transition_due(tasks, datetime(2026, 7, 20, 19, 10, 5))
+
+    assert changed is True
+    assert tasks[0]["next_time"] == "2026-07-20 19:10:05"
+    assert tasks[0]["scheduler_meta"]["lundao_kick_event_at"] == "2026-07-20 19:10:00"
 
 
 def test_daily_daofa_is_registered_with_daily_1900_scheduler_task():
@@ -6294,14 +6324,14 @@ def test_daily_lundao_entry_stable_state_mapping_keeps_only_confirmed_scene_ids(
     from backend.core.fanxiu.data_annotation.tasks.daily_foundation import _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS
 
     assert _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS == {
-        "ready": (294,),
+        "ready": (),
         "in_progress": (304,),
         "kicked": (391,),
         "completed": (),
     }
 
 
-def test_enter_daily_lundao_waits_five_seconds_then_uses_fresh_layer0_frame(monkeypatch):
+def test_enter_daily_lundao_waits_for_stable_scene_then_uses_fresh_layer0_frame(monkeypatch):
     from backend.core.fanxiu.data_annotation.tasks.daily_foundation import _DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS
 
     runner = create_fanxiu_runtime_runner()
@@ -6313,9 +6343,10 @@ def test_enter_daily_lundao_waits_five_seconds_then_uses_fresh_layer0_frame(monk
         return "open"
 
     class FakeRuntime:
-        def wait_action_settle(self, seconds):
-            actions.append(("settle", seconds))
+        def wait_scene(self, *scenes, **kwargs):
+            actions.append(("wait_scene", scenes, kwargs))
             yield BehaviorTreeStatus.RUNNING
+            return 296
 
         def current_scene(self, candidates, *, update=False):
             actions.append(("layer0", tuple(candidates), update))
@@ -6327,12 +6358,16 @@ def test_enter_daily_lundao_waits_five_seconds_then_uses_fresh_layer0_frame(monk
     assert result == {"status": "dojo_selection", "scene_id": 296, "score": 100.0}
     assert actions == [
         ("click_entry", 69, "论道"),
-        ("settle", 5.0),
+        (
+            "wait_scene",
+            _DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS,
+            {"timeout": 20.0, "label": "论道_座位：等待道场选择/闻道中/被踢状态"},
+        ),
         ("layer0", _DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS, True),
     ]
 
 
-def test_daily_lundao_ready_clicks_confirmed_dojo_without_claiming_success():
+def test_daily_lundao_does_not_reuse_xianmeng_294_as_ready_state():
     runner = create_fanxiu_runtime_runner()
 
     class FakeRuntime:
@@ -6344,11 +6379,8 @@ def test_daily_lundao_ready_clicks_confirmed_dojo_without_claiming_success():
 
     runtime = FakeRuntime()
     route = runner._route_daily_lundao_entry_scene(294, 100.0, "ready")
-    result = _drain_generator(runner._select_daily_lundao_dojo_level(runtime, route["scene_id"]))
-
-    assert route == {"status": "ready", "stable_state": "ready", "scene_id": 294, "score": 100.0}
-    assert result == {"status": "target_pending", "source_scene_id": 294, "scene_id": None, "score": 0.0}
-    assert runtime.actions == [("click_shape_center", (294, "大罗道场"))]
+    assert route == {"status": "unimplemented", "scene_id": 294, "score": 100.0}
+    assert runtime.actions == []
 
 
 def test_daily_lundao_kicked_confirms_popup_then_routes_the_fresh_stable_state():
@@ -6376,10 +6408,10 @@ def test_daily_lundao_kicked_confirms_popup_then_routes_the_fresh_stable_state()
     assert runtime.actions == [
         (
             "wait_click_then_view",
-            (391, "确认", [294, 296, 304]),
+            (391, "确认", [296, 304]),
             {"settle_seconds": 1.5, "timeout": 20.0},
         ),
-        ("current_scene", (294, 296, 304), True),
+        ("current_scene", (296, 304), True),
     ]
 
 
@@ -6410,6 +6442,53 @@ def test_daily_lundao_dojo_selection_real_boundary_is_296_to_297_after_five_seco
         ("settle", 5.0),
         ("layer0", (297,), True),
     ]
+
+
+def test_daily_lundao_dynamic_dojo_slot_uses_only_first_visible_title():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self, title):
+            self.title = title
+            self.actions = []
+
+        def cur_frame(self, *, update=False):
+            return "frame"
+
+        def ocr_tokens_in_shapes(self, view, shapes, **_kwargs):
+            assert (view, shapes) == (296, ["至尊道场"])
+            return [{"text": self.title, "x": 300, "y": 180, "w": 80, "h": 30}]
+
+        def click_shape_center(self, *args):
+            self.actions.append(args)
+
+    shifted = FakeRuntime("大罗")
+    runner._click_daily_lundao_dojo(shifted, "三清")
+    assert shifted.actions == [(296, "大罗道场")]
+
+    standard = FakeRuntime("至尊")
+    runner._click_daily_lundao_dojo(standard, "大罗")
+    assert standard.actions == [(296, "大罗道场")]
+
+
+def test_daily_lundao_dynamic_dojo_slot_stops_on_ambiguous_first_title():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def cur_frame(self, *, update=False):
+            return "frame"
+
+        def ocr_tokens_in_shapes(self, *_args, **_kwargs):
+            return [
+                {"text": "至尊", "x": 300, "y": 180, "w": 80, "h": 30},
+                {"text": "大罗", "x": 400, "y": 180, "w": 80, "h": 30},
+            ]
+
+        def click_shape_center(self, *_args):
+            raise AssertionError("ambiguous OCR must not click")
+
+    with pytest.raises(RuntimeError, match="第一行道场 OCR 不唯一"):
+        runner._click_daily_lundao_dojo(FakeRuntime(), "大罗")
 
 
 def test_repeated_template_geometry_uses_live_annotation_centers_not_fixed_pixel_delta():
@@ -6460,6 +6539,29 @@ def test_daily_lundao_in_progress_routes_then_returns_through_formal_shape():
         ("click_shape_center", (304, "返回")),
         ("settle", 1.5),
     ]
+
+
+def test_daily_lundao_in_progress_accepts_wait_scene_view_result():
+    runner = create_fanxiu_runtime_runner()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.actions = []
+
+        def click_shape_center(self, *args):
+            self.actions.append(("click_shape_center", args))
+
+        def wait_scene(self, *args, **kwargs):
+            self.actions.append(("wait_scene", args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View({"id": 34, "title": "0034.png", "shapes": []})
+
+    runtime = FakeRuntime()
+    result = _drain_generator(runner._finish_daily_lundao_in_progress(runtime, continue_to_selection=True))
+
+    assert result == 34
+    assert runtime.actions[0] == ("click_shape_center", (304, "返回"))
+    assert runtime.actions[1][0] == "wait_scene"
 
 
 def test_daily_lundao_seat_node_starts_with_only_supported_layer0_scenes():
@@ -6750,9 +6852,12 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
             return SimpleNamespace(raw={"loadDirection": "down"})
 
         def cur_frame(self, *, update=False):
-            frame = next(self.frames)
+            frame = next(self.frames, "confirm")
             self.actions.append(("fresh_frame", frame, update))
             return frame
+
+        def ocr_tokens_in_shapes(self, *_args, **_kwargs):
+            return [{"text": "请他让座", "x": 600, "y": 800, "w": 120, "h": 40}]
 
         def find_floating_items_by_anchor_text(self, *args, **kwargs):
             self.actions.append(("find", args, kwargs))
@@ -6839,7 +6944,7 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
     }
     assert [action[0] for action in runtime.actions] == [
         "fresh_frame", "find", "scroll", "fresh_frame", "find", "click_floating_item_field",
-        "wait_scene", "click_shape_center", "wait_scene", "click_shape_center", "settle",
+        "wait_scene", "fresh_frame", "click_frame_point", "wait_scene", "click_shape_center", "settle",
         "wait_scene", "advance_dialogue", "wait_scene", "click_shape_center", "settle",
         "wait_scene", "advance_dialogue", "wait_scene",
     ]
@@ -6850,30 +6955,31 @@ def test_daily_lundao_kick_strategy_scrolls_then_relocates_and_clicks_target_ite
         (371,),
         {"timeout": 20.0, "label": "论道_座位：等待 #371 请他让座确认页"},
     )
-    assert runtime.actions[7] == ("click_shape_center", (371, "请他让座"), {})
-    assert runtime.actions[8] == (
+    assert runtime.actions[7] == ("fresh_frame", "confirm", True)
+    assert runtime.actions[8] == ("click_frame_point", (371, 660.0, 820.0), {})
+    assert runtime.actions[9] == (
         "wait_scene",
         (372,),
         {"timeout": 20.0, "label": "论道_座位：等待 #372 请离玩家确认框"},
     )
-    assert runtime.actions[9] == ("click_shape_center", (372, "确定"), {})
-    assert runtime.actions[10] == ("settle", 1.5)
-    assert runtime.actions[12] == (
+    assert runtime.actions[10] == ("click_shape_center", (372, "确定"), {})
+    assert runtime.actions[11] == ("settle", 1.5)
+    assert runtime.actions[13] == (
         "advance_dialogue",
         (373, "聊天按钮"),
         {"label": "论道_座位：推进战前对话"},
     )
-    assert runtime.actions[14] == (
+    assert runtime.actions[15] == (
         "click_shape_center",
         (375, "关闭"),
         {},
     )
-    assert runtime.actions[16] == (
+    assert runtime.actions[17] == (
         "wait_scene",
         (373, 52, 329, 301, 302, 303, 186),
         {"timeout": 30.0, "label": "论道_座位：关闭胜利浮层后等待战后对话/入座"},
     )
-    assert runtime.actions[17] == (
+    assert runtime.actions[18] == (
         "advance_dialogue",
         (373, "聊天按钮"),
         {"label": "论道_座位：推进战后对话"},
@@ -6901,6 +7007,15 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
             if list(candidates) == [186, 53, 69, 34, 85, 52]:
                 return 34, 100.0, "world"
             return 371, 100.0, "confirm"
+
+        def cur_frame(self, *, update=False):
+            return "confirm"
+
+        def ocr_tokens_in_shapes(self, *_args, **_kwargs):
+            return [{"text": "请他让座", "x": 600, "y": 800, "w": 120, "h": 40}]
+
+        def click_frame_point(self, *args, **kwargs):
+            self.actions.append(("click_frame_point", args, kwargs))
 
         def wait_scene(self, *scenes, **kwargs):
             self.actions.append(("wait_scene", scenes, kwargs))
@@ -6940,7 +7055,7 @@ def test_daily_lundao_kick_confirmation_can_resume_directly_from_371():
     assert _drain_generator(runner._run_daily_lundao_seat_and_leave(runtime, FakeStopEvent())) == "success"
 
     assert [action[0] for action in runtime.actions] == [
-        "click_shape_center", "wait_scene", "click_shape_center", "settle", "wait_scene",
+        "click_frame_point", "wait_scene", "click_shape_center", "settle", "wait_scene",
         "advance_dialogue", "wait_scene", "click_shape_center", "settle", "wait_scene",
         "advance_dialogue", "wait_scene", "wait_click_then_view",
     ]

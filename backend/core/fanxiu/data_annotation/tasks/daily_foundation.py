@@ -43,12 +43,27 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS,
     DAILY_XIANYUAN_LAYER0_SCENE_IDS,
 )
-from backend.core.fanxiu.data_annotation.tasks.lundao import refresh_and_select_lundao_kick_target
+from backend.core.fanxiu.data_annotation.tasks.lundao import (
+    LUNDAO_DALUO_ROOM_ID,
+    LUNDAO_SANQING_ROOM_ID,
+    current_lundao_player_profile,
+    evaluate_lundao_room_opportunity,
+    lundao_safety_threshold,
+    next_lundao_daily_trigger,
+    next_lundao_recheck,
+    plan_lundao_strategy,
+    read_current_lundao_facts,
+    refresh_and_select_lundao_kick_target,
+)
 from backend.core.fanxiu.data_annotation.tasks.lingmai import refresh_and_select_lingmai_seat_action
 from backend.core.fanxiu.data_annotation.state import (
     next_data_annotation_scheduler_time,
     parse_data_annotation_daily_clock,
     parse_data_annotation_task_time,
+)
+from backend.core.fanxiu.packet.service_runtime import (
+    request_fanxiu_packet_service_catch_up,
+    start_fanxiu_packet_service,
 )
 
 
@@ -75,13 +90,12 @@ _DAILY_AUDIT_COMPLETION_MIN_TOTAL: dict[str, int] = {
 # “进入论道”最终要收敛到四种互斥的稳定业务状态。这里只记录用户已经
 # 确认的正式场景；未知编号保持空元组，避免用猜测制造虚假路由。
 _DAILY_LUNDAO_STABLE_STATE_SCENE_IDS: dict[str, tuple[int, ...]] = {
-    "ready": (294,),
+    "ready": (),
     "in_progress": (304,),
     "kicked": (391,),
     "completed": (),
 }
-_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS: tuple[int, ...] = (294, 296, 304, 391)
-_DAILY_LUNDAO_ENTRY_SETTLE_SECONDS = 5.0
+_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS: tuple[int, ...] = (296, 304, 391)
 
 _DONGTIAN_PLACE_LEVELS: tuple[dict[str, Any], ...] = (
     {"level": 1, "prefix": "", "places": ("白玉京",)},
@@ -4025,10 +4039,14 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34, 294, 296, 297, 298, 371, 372, 373, 375, 295, 329, 301, 302, 303, 304, 52, 53, 54], update=True)
+        now = _runtime_runner._now()
+        if lundao_safety_threshold(now) is None:
+            next_time = next_lundao_daily_trigger(now).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_daily_lundao_next_time(payload, next_time, reason="当前不在 15:55-22:00 运行窗口")
+            return "success"
+
+        scene_id, _score, frame = runtime.current_scene([69, 34, 296, 297, 298, 371, 372, 373, 375, 295, 329, 301, 302, 303, 304, 391, 52, 53, 54], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id == 304:
-            return (yield from self._finish_daily_lundao_in_progress(runtime))
         if scene_id == 54 or self._daily_lundao_text_is_exit_confirm(text):
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
         if self._daily_lundao_text_is_reward(text):
@@ -4037,9 +4055,13 @@ class DailyFoundationTaskMixin:
             return (yield from self._run_daily_lundao_seat_and_leave(runtime, stop_event, payload=payload))
         if scene_id in {329, 301, 302, 303, 52, 53}:
             return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id))
-        if scene_id in {294, 296}:
-            selection_result = yield from self._select_daily_lundao_dojo_level(runtime, scene_id)
-            return (yield from self._continue_after_daily_lundao_dojo_selection(runtime, stop_event, selection_result, payload=payload))
+        if scene_id == 391:
+            entry_result = yield from self._dismiss_daily_lundao_kicked(runtime)
+            scene_id = entry_result.get("scene_id")
+        if scene_id == 304:
+            return (yield from self._run_daily_lundao_dynamic_strategy(runtime, stop_event, payload))
+        if scene_id == 296:
+            return (yield from self._run_daily_lundao_dynamic_strategy(runtime, stop_event, payload))
         if scene_id != 69:
             scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="论道_座位")
         if scene_id != 69:
@@ -4064,10 +4086,9 @@ class DailyFoundationTaskMixin:
         scene_id = entry_result.get("scene_id")
         score = float(entry_result.get("score") or 0.0)
         if entry_result["status"] == "in_progress":
-            return (yield from self._finish_daily_lundao_in_progress(runtime))
-        if entry_result["status"] in {"ready", "dojo_selection"}:
-            selection_result = yield from self._select_daily_lundao_dojo_level(runtime, scene_id)
-            return (yield from self._continue_after_daily_lundao_dojo_selection(runtime, stop_event, selection_result, payload=payload))
+            return (yield from self._run_daily_lundao_dynamic_strategy(runtime, stop_event, payload))
+        if entry_result["status"] == "dojo_selection":
+            return (yield from self._run_daily_lundao_dynamic_strategy(runtime, stop_event, payload))
         if entry_result["status"] in {"unknown", "unimplemented"}:
             raise RuntimeError(
                 f"论道_座位：进入后的落点分支尚未实现，当前 "
@@ -4098,11 +4119,11 @@ class DailyFoundationTaskMixin:
         if status != "open":
             return {"status": status, "scene_id": None, "score": 0.0}
 
-        # 临时防过场策略：入口点击后固定等待至少 5 秒，再强制抓取新帧识别。
-        # 最终应删除这段固定等待，改成有界等待四类互斥稳定状态：准备开始、
-        # 论道中、被踢了、已完成。删除条件是用户补齐四类状态的
-        # 正式 scene id 与稳定锚点；在此之前不得猜编号或识别过场中间帧。
-        yield from runtime.wait_action_settle(_DAILY_LUNDAO_ENTRY_SETTLE_SECONDS)
+        yield from runtime.wait_scene(
+            *_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS,
+            timeout=20.0,
+            label="论道_座位：等待道场选择/闻道中/被踢状态",
+        )
         scene_id, score, frame = runtime.current_scene(_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS, update=True)
         return self._route_daily_lundao_entry_scene(scene_id, score, frame)
 
@@ -4128,7 +4149,7 @@ class DailyFoundationTaskMixin:
     def _dismiss_daily_lundao_kicked(self, runtime: Any) -> dict[str, Any]:
         """确认 #391「被踢了」提示，再按同一组稳定状态重新路由。"""
 
-        post_kick_scene_ids = [294, 296, 304]
+        post_kick_scene_ids = [296, 304]
         yield from runtime.wait_click_then_view(
             391,
             "确认",
@@ -4138,6 +4159,198 @@ class DailyFoundationTaskMixin:
         )
         scene_id, score, frame = runtime.current_scene(post_kick_scene_ids, update=True)
         return self._route_daily_lundao_entry_scene(scene_id, score, frame)
+
+    def _record_daily_lundao_next_time(
+        self,
+        payload: Mapping[str, Any],
+        next_time: str,
+        *,
+        reason: str,
+    ) -> str:
+        self._record_scheduler_task_discovered_next_time(
+            str(payload.get("__scheduler_task_id") or "daily-lundao-seat"),
+            next_time,
+            task_type="daily_lundao",
+            label="论道_座位",
+            last_result="success",
+        )
+        self._log("success", f"论道_座位：{reason}，下次 {next_time}")
+        return next_time
+
+    def _daily_lundao_first_visible_dojo(self, runtime: Any) -> str:
+        frame = runtime.cur_frame(update=True)
+        tokens = runtime.ocr_tokens_in_shapes(296, ["至尊道场"], frame_data_url=frame)
+        fragments = group_ocr_tokens(tokens)
+        hits: list[str] = []
+        for fragment in fragments:
+            text = re.sub(r"\s+", "", _sanitize_ocr_text(fragment.get("text")))
+            for name in ("至尊", "大罗", "三清"):
+                if name in text:
+                    hits.append(name)
+        unique = list(dict.fromkeys(hits))
+        if len(unique) != 1:
+            raise RuntimeError(f"论道_座位：#296 第一行道场 OCR 不唯一，命中={unique or '空'}，已停止且未点击")
+        return unique[0]
+
+    def _click_daily_lundao_dojo(self, runtime: Any, target: str) -> None:
+        order = ("至尊", "大罗", "三清", "御界")
+        first = self._daily_lundao_first_visible_dojo(runtime)
+        slot = order.index(target) - order.index(first) + 1
+        slot_shapes = {1: "至尊道场", 2: "大罗道场", 3: "三清道场"}
+        shape = slot_shapes.get(slot)
+        if shape is None:
+            raise RuntimeError(f"论道_座位：#296 当前首行为「{first}」，目标「{target}」不在可见三行，已停止")
+        runtime.click_shape_center(296, shape)
+
+    def _refresh_daily_lundao_packet_facts(self, *, reason: str, wait_seconds: float = 20.0) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        start_result = start_fanxiu_packet_service()
+        catch_up = request_fanxiu_packet_service_catch_up(reason=reason, wait_seconds=max(1.0, float(wait_seconds)))
+        facts = read_current_lundao_facts()
+        facts["packet_start"] = start_result
+        facts["packet_catch_up"] = catch_up
+        facts["elapsed_seconds"] = time.perf_counter() - started_at
+        self._log(
+            "info",
+            f"论道_座位：抓包追平 {reason} 用时 {facts['elapsed_seconds']:.2f}s",
+        )
+        return facts
+
+    def _daily_lundao_room_available_count(self, status: Mapping[str, Any], room_id: int) -> int | None:
+        values = status.get("room_available_counts") if isinstance(status.get("room_available_counts"), Mapping) else {}
+        value = values.get(str(room_id))
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _return_daily_lundao_to_selection(self, runtime: Any, scene_id: int) -> None:
+        # #298 is the empty-seat variant of the same room list; its full-screen
+        # reference has no duplicate return annotation, so use the shared #297
+        # room-list return control already present at the same stable location.
+        runtime.click_shape_center(297, "返回")
+        yield from runtime.wait_scene(296, 304, timeout=15.0, label="论道_座位：返回道场选择")
+
+    def _run_daily_lundao_room_action(
+        self,
+        runtime: Any,
+        stop_event: threading.Event,
+        *,
+        opportunity: Mapping[str, Any],
+    ) -> str:
+        scene_id, score, _frame = runtime.current_scene([297, 298], update=True)
+        action = str(opportunity.get("action") or "")
+        if action == "empty" and scene_id == 298:
+            scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(runtime)
+        elif action == "kick" and scene_id == 297:
+            target = opportunity.get("target") if isinstance(opportunity.get("target"), Mapping) else None
+            if target is None:
+                raise RuntimeError("论道_座位：策略要求踢人但没有合法目标，已停止")
+            kick_result = yield from self._run_daily_lundao_kick_for_seat_strategy(
+                runtime,
+                stop_event,
+                target_player=target,
+            )
+            scene_id = int(kick_result.get("scene_id") or 52)
+            score = float(kick_result.get("score") or 0.0)
+        else:
+            raise RuntimeError(f"论道_座位：策略动作 {action!r} 与当前场景 #{scene_id} 不一致，已停止")
+        return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id, score))
+
+    def _run_daily_lundao_dynamic_strategy(
+        self,
+        runtime: Any,
+        stop_event: threading.Event,
+        payload: Mapping[str, Any],
+    ) -> str:
+        now = _runtime_runner._now()
+        # Opening Daluo is read-only and produces both SM_RoomList and the room
+        # roster.  Capture once after that click; doing a separate catch-up on
+        # the selection page doubled latency and could return before ingestion.
+        initial = read_current_lundao_facts()
+        baseline = initial.get("roster") if isinstance(initial.get("roster"), dict) else {}
+        baseline_key = tuple((baseline.get("evidence") or {}).get("order_key") or ())
+        self._click_daily_lundao_dojo(runtime, "大罗")
+        yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待大罗座位列表")
+        refreshed = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-daluo-roster", wait_seconds=120.0)
+        status = refreshed.get("status") if isinstance(refreshed.get("status"), dict) else {}
+        roster = refreshed.get("roster") if isinstance(refreshed.get("roster"), dict) else {}
+        catch_up = refreshed.get("packet_catch_up") if isinstance(refreshed.get("packet_catch_up"), dict) else {}
+        roster_key = tuple((roster.get("evidence") or {}).get("order_key") or ())
+        if catch_up.get("status") != "completed":
+            raise RuntimeError("论道_座位：抓包追平未在 120 秒内完成，已停止且未点击座位")
+        if baseline_key and roster_key and roster_key <= baseline_key:
+            raise RuntimeError("论道_座位：进入大罗后未获得更新的座位名单，已停止且未点击座位")
+        profile = current_lundao_player_profile()
+        opportunity = evaluate_lundao_room_opportunity(
+            roster,
+            player_profile=profile,
+            available_count=self._daily_lundao_room_available_count(status, LUNDAO_DALUO_ROOM_ID),
+            at=now,
+            room_id=LUNDAO_DALUO_ROOM_ID,
+            require_safety_threshold=True,
+        )
+        decision = plan_lundao_strategy(status, daluo_opportunity=opportunity, at=now)
+        self._log(
+            "info",
+            f"论道_座位：大罗 x={opportunity.get('safety_score')}/{opportunity.get('threshold')}，"
+            f"空位={opportunity.get('available_count')}，合法目标={opportunity.get('eligible_count')}，决策={decision.get('action')}",
+        )
+        if not opportunity.get("ok"):
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from runtime.goto_view(34)
+            next_time = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_daily_lundao_next_time(payload, next_time, reason=f"大罗事实不足：{opportunity.get('reason')}")
+            return "success"
+        if decision.get("action") == "done":
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from runtime.goto_view(34)
+            next_time = decision["next_time"].strftime("%Y-%m-%d %H:%M:%S")
+            self._record_daily_lundao_next_time(payload, next_time, reason=str(decision.get("reason")))
+            return "success"
+        if decision.get("action") == "seat_daluo":
+            result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=opportunity)
+            after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-seat", wait_seconds=120.0)
+            after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
+            after_strength = after_status.get("strength")
+            next_at = next_lundao_daily_trigger(now) if after_strength is not None and int(after_strength) <= 0 else next_lundao_recheck(now)
+            self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成大罗入座")
+            return result
+
+        current_room = int(status.get("room_id") or 0)
+        yield from self._return_daily_lundao_to_selection(runtime, 297)
+        if current_room == LUNDAO_SANQING_ROOM_ID:
+            yield from runtime.goto_view(34)
+            next_at = decision.get("next_time") if isinstance(decision.get("next_time"), datetime) else next_lundao_recheck(now)
+            self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="大罗条件不足，保留三清")
+            return "success"
+
+        self._click_daily_lundao_dojo(runtime, "三清")
+        yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待三清座位列表")
+        sanqing_facts = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-sanqing-roster", wait_seconds=120.0)
+        sanqing_status = sanqing_facts.get("status") if isinstance(sanqing_facts.get("status"), dict) else {}
+        sanqing_roster = sanqing_facts.get("roster") if isinstance(sanqing_facts.get("roster"), dict) else {}
+        sanqing = evaluate_lundao_room_opportunity(
+            sanqing_roster,
+            player_profile=profile,
+            available_count=self._daily_lundao_room_available_count(sanqing_status, LUNDAO_SANQING_ROOM_ID),
+            at=now,
+            room_id=LUNDAO_SANQING_ROOM_ID,
+            require_safety_threshold=False,
+        )
+        if not sanqing.get("actionable"):
+            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from runtime.goto_view(34)
+            next_at = next_lundao_recheck(now, protect_end_time_ms=sanqing.get("earliest_protect_end_time"))
+            self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="三清暂无合法座位")
+            return "success"
+        result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=sanqing)
+        after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-sanqing-seat", wait_seconds=120.0)
+        after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
+        after_strength = after_status.get("strength")
+        next_at = next_lundao_daily_trigger(now) if after_strength is not None and int(after_strength) <= 0 else next_lundao_recheck(now)
+        self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成三清入座")
+        return result
 
     def _select_daily_lundao_dojo_level(self, runtime: Any, scene_id: int | None) -> dict[str, Any]:
         """节点 2：选择论道道场级别，输出抢座节点的起始场景。
@@ -4336,6 +4549,23 @@ class DailyFoundationTaskMixin:
                     raise RuntimeError(f"论道_座位：目标「{target_name}」模板实例位于窗口裁剪边缘，已停止且未点击")
                 if not runtime.floating_item_field_is_inside(item, "按钮", "窗口"):
                     raise RuntimeError(f"论道_座位：目标「{target_name}」预测按钮中心不在窗口内，已停止且未点击")
+                protect_end_time = int(target.get("protect_end_time") or 0)
+                if protect_end_time > int(time.time() * 1000):
+                    raise RuntimeError(f"论道_座位：目标「{target_name}」仍在保护时间，已停止且未点击")
+                role_id = int(target.get("role_id") or 0)
+                if role_id:
+                    latest = read_current_lundao_facts()
+                    latest_roster = latest.get("roster") if isinstance(latest.get("roster"), dict) else {}
+                    target_seat_id = int(target.get("seat_id") or target.get("id") or 0)
+                    still_present = any(
+                        isinstance(seat, dict)
+                        and int(seat.get("seat_id") or 0) == target_seat_id
+                        and isinstance(seat.get("owner"), dict)
+                        and int(seat["owner"].get("role_id") or 0) == role_id
+                        for seat in latest_roster.get("seats") or []
+                    )
+                    if not still_present:
+                        raise RuntimeError(f"论道_座位：目标「{target_name}」已不在原座位，已停止且未点击")
                 runtime.click_floating_item_field(item, "按钮")
                 # 点击条目右侧莲花[按钮]后会经过若干无业务语义的过渡画面。
                 # 这些画面既不能算成功，也不应加入业务状态分支；只在有界时间内
@@ -4362,7 +4592,21 @@ class DailyFoundationTaskMixin:
             )
             start_scene = 371
         if start_scene == 371:
-            runtime.click_shape_center(371, "请他让座")
+            frame = runtime.cur_frame(update=True)
+            tokens = runtime.ocr_tokens_in_shapes(371, ["请他让座"], frame_data_url=frame)
+            candidates: list[dict[str, float]] = []
+            for fragment in group_ocr_tokens(tokens):
+                text = re.sub(r"\s+", "", _sanitize_ocr_text(fragment.get("text")))
+                if text.count("请他让座") != 1:
+                    continue
+                fragment_tokens = query_spatial_ocr(tokens, fragment)["tokens"]
+                box = locate_text_box(fragment_tokens, "请他让座")
+                if box is not None:
+                    candidates.append(box)
+            if len(candidates) != 1:
+                raise RuntimeError(f"论道_座位：#371 未唯一定位「请他让座」文字行，候选={len(candidates)}，已停止且未点击")
+            box = candidates[0]
+            runtime.click_frame_point(371, float(box["x"]) + float(box["w"]) / 2, float(box["y"]) + float(box["h"]) / 2)
             yield from runtime.wait_scene(
                 372,
                 timeout=20.0,
@@ -4573,11 +4817,18 @@ class DailyFoundationTaskMixin:
             return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
         raise RuntimeError(f"论道_座位：抢座或收尾落点尚未实现，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
 
-    def _finish_daily_lundao_in_progress(self, runtime: Any) -> str:
-        """论道中状态共用离场：点击正式 #304[返回] 后完成本轮作业。"""
+    def _finish_daily_lundao_in_progress(self, runtime: Any, *, continue_to_selection: bool = False) -> str | int:
+        """Leave #304; dynamic strategy may continue on the dojo selection page."""
         runtime.click_shape_center(304, "返回")
+        if continue_to_selection:
+            next_scene = yield from runtime.wait_scene(296, 34, 69, timeout=15.0, label="论道_座位：#304 返回后等待道场选择")
+            if isinstance(next_scene, View):
+                if next_scene.id is None:
+                    raise RuntimeError("论道_座位：#304 返回后的 View 缺少场景编号")
+                return int(next_scene.id)
+            return int(next_scene)
         yield from runtime.wait_action_settle(1.5)
-        self._log("success", "论道_座位：#304 论道中，点击「返回」后完成本次作业")
+        self._log("success", "论道_座位：#304 论道中，点击「返回」")
         return "success"
 
     def _daily_lundao_text_is_reward(self, text: Any) -> bool:
