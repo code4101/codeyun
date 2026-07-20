@@ -4214,6 +4214,7 @@ from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mi
 from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial import XianqiaoTrialTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.weekly_hanli import WeeklyHanliTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.weekly_shengzu import WeeklyShengzuTaskMixin
 
 
 class DataAnnotationRuntimeRunner(
@@ -4228,6 +4229,7 @@ class DataAnnotationRuntimeRunner(
     DailyResourceTaskMixin,
     DailyChallengeTaskMixin,
     WeeklyHanliTaskMixin,
+    WeeklyShengzuTaskMixin,
     XianqiaoTrialTaskMixin,
     XianfuTaskMixin,
     SignupMiscTaskMixin,

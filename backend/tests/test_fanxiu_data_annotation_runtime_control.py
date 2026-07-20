@@ -6,6 +6,38 @@ from datetime import datetime as real_datetime
 from backend.core.fanxiu.data_annotation import runtime_control
 
 
+def test_update_scheduler_tasks_marks_and_preserves_custom_schedule(monkeypatch):
+    task = next(
+        item for item in runtime_control.default_data_annotation_scheduler_tasks()
+        if item["id"] == "daily-lundao-seat"
+    )
+    state = [deepcopy(task)]
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(
+        runtime_control,
+        "write_scheduler_tasks",
+        lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)),
+    )
+
+    incoming = deepcopy(task)
+    incoming.update({
+        "schedule_kind": "daily",
+        "schedule_times": ["14:00"],
+        "trigger_kind": "daily",
+        "enabled": True,
+    })
+    result = runtime_control.update_scheduler_tasks(
+        [incoming],
+        now=real_datetime(2026, 7, 20, 14, 5, 0),
+    )
+
+    assert result[0]["schedule_kind"] == "daily"
+    assert result[0]["schedule_times"] == ["14:00"]
+    assert result[0]["trigger_kind"] == "daily"
+    assert result[0]["enabled"] is True
+    assert result[0]["payload"]["__scheduler_schedule_override"] is True
+
+
 def test_read_doctor_watch_latest_prefers_heartbeat_latest_path_when_stale(monkeypatch, tmp_path):
     watch_dir = tmp_path / "fanxiu-watch"
     watch_dir.mkdir()
@@ -90,7 +122,11 @@ def test_scheduler_task_cell_records_terminal_success(monkeypatch):
     monkeypatch.setattr(
         runtime_control,
         "submit_runtime_task_cell",
-        lambda **_kwargs: {"status": "success", "message": "done"},
+        lambda **_kwargs: {
+            "status": "success",
+            "message": "done",
+            "result_text": "{'result': 'success', 'message': 'done'}",
+        },
     )
     monkeypatch.setattr(runtime_control, "next_scheduler_time", lambda task, now=None: "2026-07-14 12:30:00")
     monkeypatch.setattr(
@@ -135,7 +171,11 @@ def test_scheduler_success_advances_schedule_crossed_while_cell_was_running(monk
     monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
     monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runtime_control, "task_payload_with_meta", lambda task: {})
-    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda **_kwargs: {"status": "success"})
+    monkeypatch.setattr(
+        runtime_control,
+        "submit_runtime_task_cell",
+        lambda **_kwargs: {"status": "success", "result_text": "{'result': 'success', 'message': ''}"},
+    )
     monkeypatch.setattr(runtime_control, "next_scheduler_time", lambda task, now=None: "2026-07-15 18:00:00")
     monkeypatch.setattr(
         "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
@@ -151,6 +191,41 @@ def test_scheduler_success_advances_schedule_crossed_while_cell_was_running(monk
     assert state[0]["last_result"] == "success"
     assert state[0]["next_time"] == "2026-07-15 18:00:00"
     assert state[0]["finished_at"] == "2026-07-15 12:04:00"
+
+
+def test_scheduler_task_cell_without_business_result_retries_instead_of_false_success(monkeypatch):
+    state = [{
+        "id": "daily-a",
+        "task_type": "daily_a",
+        "schedule_kind": "daily",
+        "next_time": "2026-07-15 12:00:00",
+        "last_result": "",
+        "cooldown_seconds": 600,
+    }]
+    monkeypatch.setattr(runtime_control, "read_scheduler_tasks", lambda **_kwargs: deepcopy(state))
+    monkeypatch.setattr(runtime_control, "write_scheduler_tasks", lambda tasks, **_kwargs: state.__setitem__(slice(None), deepcopy(tasks)))
+    monkeypatch.setattr(runtime_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_control, "submit_runtime_task_cell", lambda **_kwargs: {
+        "status": "success",
+        "message": "Jupyter cell 执行完成",
+        "result_text": "",
+    })
+    monkeypatch.setattr(
+        "backend.core.fanxiu.runtime.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"execution_state": "idle", "generation": 7},
+    )
+
+    result = runtime_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="entry-a",
+        task=deepcopy(state[0]),
+    )
+
+    assert result["status"] == "error"
+    assert state[0]["last_result"] == "error"
+    assert state[0]["next_time"] is None
+    assert state[0]["retry_after"]
+    assert state[0]["last_message"] == "Task Cell 已结束，但未返回业务终态"
 
 
 def test_scheduler_task_cell_preserves_business_terminal_result(monkeypatch):
