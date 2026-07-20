@@ -566,6 +566,21 @@ class PdfUserState(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class PdfLibraryBookshelf(SQLModel, table=True):
+    __tablename__ = "pdflibrarybookshelf"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_pdflibrarybookshelf_user_name"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    name: str = Field(default="", max_length=80)
+    sort_index: int = Field(default=0, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class PdfBookshelfPlacement(SQLModel, table=True):
     __tablename__ = "pdfbookshelfplacement"
     __table_args__ = (
@@ -576,6 +591,7 @@ class PdfBookshelfPlacement(SQLModel, table=True):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
     pdf_document_id: str = Field(index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
+    bookshelf_id: Optional[str] = Field(default=None, index=True)
     shelf_index: int = Field(default=0, index=True)
     position_index: int = Field(default=0, index=True)
     orientation: str = Field(default="spine_vertical", max_length=32)

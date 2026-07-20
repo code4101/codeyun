@@ -29,6 +29,20 @@
 
 ## 待代码健康优化接手
 
+### UI-HANDOFF-20260721-001
+
+- 状态：open
+- 来源自动化：CodeYun 前端设计巡检
+- 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-21-frontend-design-a81d384d/report.md`
+- 触发范围：`6421d1833078e750a83b41939e85f9cac7700594..a81d384d2f0b2cf1ecfd8a8cd64fed2014e5fbfb` / `/fanxiu/wiki?tab=lingquan_quiz`
+- 表层症状：真实页面一次加载并渲染 112 道题，按 3 个分组建立 3 张完整表格；本轮已删除每行重复“编辑/删除”入口，但列表规模仍完全由前端承接。
+- 非前端根因判断：当前题库 API 缺少按分组、搜索条件和页码的稳定分页投影。继续在前端增加折叠、虚拟滚动或局部筛选，只会让同一数据规模事实产生更多 UI 状态。
+- 涉及对象：`backend/api/fanxiu.py`、凡修玲泉题库 DTO/查询服务、`frontend/src/api/fanxiu.ts`、`frontend/src/standard/fanxiu/wiki/LingquanQuestionBank.vue`
+- 已做前端止血：一级表移除 112 行中的 224 个“编辑/删除”入口，保留双击编辑；删除动作收进编辑对话框。
+- 建议接手动作：先做只读 API/DTO 审计，确认分组是否是服务端权威字段，再提供 `group/query/page/page_size/total` 的分页投影，前端复用现有统一分页模型。
+- 验证建议：为列表 API 补分组、查询、边界页和 total focused pytest；前端运行 `npm run typecheck --prefix frontend`，并在三档视口复验切组、搜索、翻页与双击编辑闭环。
+- 风险和停手条件：如果题目顺序、跨组编辑或运行时抽题依赖“全量一次加载”，不要直接分页改造；先明确运行时抽题是否独立于管理列表查询。
+
 ### UI-HANDOFF-20260629-001
 
 - 状态：needs-human-decision

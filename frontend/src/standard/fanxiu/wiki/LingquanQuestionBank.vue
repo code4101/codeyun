@@ -59,9 +59,11 @@ async function save() {
   await load()
 }
 
-async function remove(item: FanxiuLingquanQuestion) {
-  await ElMessageBox.confirm(`删除“${item.question}”？`, '删除题目', { type: 'warning' })
-  await deleteFanxiuLingquanQuestion(item.id)
+async function removeEditing() {
+  if (!editingId.value) return
+  await ElMessageBox.confirm(`删除“${form.question}”？`, '删除题目', { type: 'warning' })
+  await deleteFanxiuLingquanQuestion(editingId.value)
+  editorVisible.value = false
   ElMessage.success('已删除')
   await load()
 }
@@ -95,12 +97,6 @@ onMounted(load)
         <el-table-column label="状态" width="90">
           <template #default="scope">{{ scope.row.enabled ? '启用' : '停用' }}</template>
         </el-table-column>
-        <el-table-column width="130" align="right">
-          <template #default="scope">
-            <el-button link @click="openEdit(scope.row)">编辑</el-button>
-            <el-button link type="danger" @click="remove(scope.row)">删除</el-button>
-          </template>
-        </el-table-column>
       </el-table>
     </div>
     <el-empty v-if="!loading && !items.length" description="没有匹配题目" />
@@ -112,7 +108,11 @@ onMounted(load)
         <el-form-item label="答案"><el-input v-model="form.answer" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="editorVisible = false">取消</el-button><el-button type="primary" @click="save">保存</el-button></template>
+      <template #footer>
+        <el-button v-if="editingId" type="danger" text @click="removeEditing">删除题目</el-button>
+        <el-button @click="editorVisible = false">取消</el-button>
+        <el-button type="primary" @click="save">保存</el-button>
+      </template>
     </el-dialog>
   </section>
 </template>

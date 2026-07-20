@@ -92,6 +92,12 @@ def _busy_profile_ids(profiles: Iterable[Any]) -> list[int]:
     )
 
 
+def _active_risk_circuit() -> dict[str, Any] | None:
+    from backend.plugins.modules.media_sync.sources import read_pixiv_risk_circuit
+
+    return read_pixiv_risk_circuit()
+
+
 def _run_profile(
     profile: Any,
     *,
@@ -121,6 +127,7 @@ def _empty_remote_audit(max_remote_operations: int) -> dict[str, Any]:
         "retries": 0,
         "stop_reason": None,
         "error": None,
+        "risk_circuit": None,
     }
 
 
@@ -147,6 +154,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
             f"- 远端操作预算/实际：{audit.get('max_remote_operations', 0)}/{audit.get('remote_operations_total', 0)}。",
             f"- 页面/API/详情/下载/重试：{audit.get('page_navigations', 0)}/{audit.get('api_requests', 0)}/"
             f"{audit.get('detail_requests', 0)}/{audit.get('downloads', 0)}/{audit.get('retries', 0)}。",
+            f"- 风控熔断：{(audit.get('risk_circuit') or report.get('persistent_risk_circuit') or {}).get('reason') or '否'}。",
             f"- 开始：{report.get('started_at')}；结束：{report.get('finished_at')}。",
             "",
         ]
@@ -204,6 +212,7 @@ def run_once(
         "busy_profile_ids": [],
         "profile_count": 0,
         "profiles": {},
+        "persistent_risk_circuit": None,
         "remote_audit": _empty_remote_audit(budget),
     }
     report_path: Path | None = None
@@ -214,6 +223,10 @@ def run_once(
             report["legacy_trigger_enabled"] = _legacy_trigger_enabled()
             if report["legacy_trigger_enabled"]:
                 raise PixivIncrementalSafetyError("legacy_media_sync_home_discovery_enabled")
+
+            report["persistent_risk_circuit"] = _active_risk_circuit()
+            if report["persistent_risk_circuit"]:
+                raise PixivIncrementalSafetyError("risk_circuit_open")
 
             profiles = _load_profiles(user_id)
             report["profile_count"] = len(profiles)
@@ -242,14 +255,21 @@ def run_once(
                             target_new_candidates=normalized_target,
                             run_id=actual_run_id,
                         )
+                        if audit.snapshot().get("stop_reason") in {"risk_circuit_open", "risk_circuit_tripped"}:
+                            break
                 report["remote_audit"] = audit.snapshot()
+                audit_stop_reason = str(report["remote_audit"].get("stop_reason") or "")
                 failed_profiles = [
                     profile_id
                     for profile_id, snapshot in report["profiles"].items()
                     if snapshot.get("error") or snapshot.get("stage") == "error"
                 ]
-                report["status"] = "partial_error" if failed_profiles else "completed"
-                report["stop_reason"] = "profile_error" if failed_profiles else "completed"
+                if audit_stop_reason in {"risk_circuit_open", "risk_circuit_tripped"}:
+                    report["status"] = "safety_stopped"
+                    report["stop_reason"] = audit_stop_reason
+                else:
+                    report["status"] = "partial_error" if failed_profiles else "completed"
+                    report["stop_reason"] = "profile_error" if failed_profiles else "completed"
     except Timeout:
         report["status"] = "safety_skipped"
         report["stop_reason"] = "pixiv_incremental_lock_held"

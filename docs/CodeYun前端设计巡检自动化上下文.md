@@ -31,14 +31,24 @@
 
 ```yaml
 last_audited_commit: "6421d1833078e750a83b41939e85f9cac7700594"
-last_audited_at: "2026-07-20T01:11:16.2885306+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-20-frontend-design-532d2574/report.md"
-last_frontend_commit_summary: "6421d183..532d2574 已逐提交巡检并修正剧院浏览器标题；三页三视口与生产入口通过，但 NoteSheet/课程表相关测试 232 通过、17 失败，范围仍 pending。"
+last_audited_at: "2026-07-21T01:17:27.1083292+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-21-frontend-design-a81d384d/report.md"
+last_frontend_commit_summary: "6421d183..a81d384d 已逐提交巡检；Runtime 减少 62 个逐行按钮、玲泉题库减少 224 个行内入口，三视口与生产入口通过，但相关 pytest 仍为 232 通过、17 失败，范围继续 pending。"
 audited_commit_count: 217
 pending_or_skipped_ranges:
-  - range: "6421d1833078e750a83b41939e85f9cac7700594..532d25748ce22a597f102f9e1c91529e53489354"
-    reason: "前端 typecheck/build、三视口和生产入口资源检查通过，但 NoteSheet/课程表相关 pytest 仍有 17 项失败；完整验证未闭环，游标不得推进。"
+  - range: "6421d1833078e750a83b41939e85f9cac7700594..a81d384d2f0b2cf1ecfd8a8cd64fed2014e5fbfb"
+    reason: "前端 typecheck/build、三视口和生产入口资源检查通过，但 NoteSheet/课程表相关 pytest 仍有 17 项失败；PDF 书库空架问题又与用户进行中的同文件改动重叠，完整范围仍未闭环，游标不得推进。"
 ```
+
+### 2026-07-21 · `a81d384d`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..a81d384d2f0b2cf1ecfd8a8cd64fed2014e5fbfb`；共 8 个提交，按从旧到新归类为 `d2439377 frontend_relevant`、`87f9158b frontend_relevant`、`532d2574 not_frontend_relevant`、`8ca1b66d frontend_relevant`、`a51fbf56 frontend_relevant`、`c13581b4 not_frontend_relevant`、`b4e2e06f frontend_relevant`、`a81d384d frontend_relevant`。
+- 入口与模型：Runtime 一级表只投影“作业状态 / 调度级别 / 下次触发”，调度级别、软顺序、重试策略统一进入既有“调度规则”命令；玲泉题库一级表只投影题目、答案和启停事实，修改与删除统一进入双击编辑对话框；PDF 书库保持筛选/视图 → 书架/卡片 → 阅读入口。
+- 本轮减法：Runtime 移除真实 31 行中的 62 个逐行调度级别按钮，把级别并入已有调度规则；玲泉题库移除真实 112 行中的 224 个“编辑/删除”入口，保留双击编辑，并把唯一删除动作后置到编辑对话框。源码两文件 25 行新增、87 行删除，净减 62 行，没有新增业务状态、菜单或持久字段。
+- 真实页面：Runtime、玲泉题库、PDF 书库均覆盖 `1440x1000`、`1180x900`、`820x1180`；修复后 Runtime `.dispatch-level-button = 0`，题库一级“编辑/删除”均为 0，双击编辑对话框仍有唯一删除入口，三页页面级横向溢出均为 0。
+- 入口依赖污染：干净 HEAD 与当前主工作区生产构建均通过（4266 modules）；`dist/index.html` 只预载基础 vendor，`main-*.js` 顶层静态 import 未加载 PDF/file-viewer/编辑器/图表/worker/wasm 等局部高风险 chunk，PDF.js 保持在详情页局部 chunk。
+- 剩余风险：PDF 书库用固定最少四层书架呈现 5 本真实图书，产生大块空架；该文件已有用户未提交的大幅改动，本轮未覆盖。玲泉题库一次加载 112 条且无分页投影，已在协作交接登记 API/DTO 模型债务。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；相关 pytest 仍为 `232 passed / 17 failed / 1 warning`，所以游标保持 `6421d183`。报告与证据：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-21-frontend-design-a81d384d/`。
 
 ### 2026-07-20 · `532d2574`（未闭环）
 

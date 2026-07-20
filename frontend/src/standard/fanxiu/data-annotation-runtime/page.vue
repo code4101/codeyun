@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { ArrowLeft, ArrowRight, QuestionFilled } from '@element-plus/icons-vue';
+import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
   advanceNextFanxiuDataAnnotationSchedulerTask,
@@ -55,6 +55,7 @@ const contextMenu = ref({
 const schedulerRuleDialog = ref({
   visible: false,
   task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
+  dispatchLevel: 0,
   dispatchOrder: 0,
   retryPolicy: 'standard' as 'standard' | 'immediate',
 });
@@ -626,6 +627,7 @@ const openContextTaskRules = () => {
   schedulerRuleDialog.value = {
     visible: true,
     task,
+    dispatchLevel: taskDispatchLevel(task),
     dispatchOrder: Math.min(9999, Math.max(0, Number(task.dispatch_order) || 0)),
     retryPolicy: task.retry_policy === 'immediate' ? 'immediate' : 'standard',
   };
@@ -634,12 +636,14 @@ const openContextTaskRules = () => {
 const saveSchedulerRules = async () => {
   const task = schedulerRuleDialog.value.task;
   if (!task) return;
+  const dispatchLevel = Math.min(5, Math.max(0, Math.trunc(Number(schedulerRuleDialog.value.dispatchLevel) || 0)));
   const dispatchOrder = Math.min(9999, Math.max(0, Math.trunc(Number(schedulerRuleDialog.value.dispatchOrder) || 0)));
   const retryPolicy = schedulerRuleDialog.value.retryPolicy === 'immediate' ? 'immediate' : 'standard';
   actionLoading.value = `rules:${task.id}`;
   try {
     const response = await saveFanxiuDataAnnotationSchedulerTasks([{
       ...task,
+      dispatch_level: dispatchLevel,
       dispatch_order: dispatchOrder,
       retry_policy: retryPolicy,
     }]);
@@ -648,24 +652,6 @@ const saveSchedulerRules = async () => {
     schedulerRuleDialog.value.visible = false;
     ElMessage.success('调度规则已保存');
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
-  } finally {
-    actionLoading.value = '';
-  }
-};
-
-const changeTaskDispatchLevel = async (task: FanxiuDataAnnotationSchedulerTaskItem, delta: -1 | 1) => {
-  const previousLevel = taskDispatchLevel(task);
-  const nextLevel = Math.min(5, Math.max(0, previousLevel + delta));
-  if (nextLevel === previousLevel) return;
-  actionLoading.value = `level:${task.id}`;
-  task.dispatch_level = nextLevel;
-  try {
-    const response = await saveFanxiuDataAnnotationSchedulerTasks([{ ...task, dispatch_level: nextLevel }]);
-    schedulerTasks.value = response.tasks || [];
-    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-  } catch (error: any) {
-    task.dispatch_level = previousLevel;
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
     actionLoading.value = '';
@@ -899,29 +885,7 @@ onUnmounted(() => {
                   />
                 </td>
                 <td>
-                  <span class="dispatch-level-stepper">
-                    <button
-                      class="dispatch-level-button"
-                      type="button"
-                      :disabled="taskDispatchLevel(task) <= 0 || actionLoading === `level:${task.id}`"
-                      title="降低调度级别"
-                      aria-label="降低调度级别"
-                      @click="changeTaskDispatchLevel(task, -1)"
-                    >
-                      <el-icon><ArrowLeft /></el-icon>
-                    </button>
-                    <span class="dispatch-level-value">{{ taskDispatchLevel(task) }}级</span>
-                    <button
-                      class="dispatch-level-button"
-                      type="button"
-                      :disabled="taskDispatchLevel(task) >= 5 || actionLoading === `level:${task.id}`"
-                      title="提高调度级别"
-                      aria-label="提高调度级别"
-                      @click="changeTaskDispatchLevel(task, 1)"
-                    >
-                      <el-icon><ArrowRight /></el-icon>
-                    </button>
-                  </span>
+                  <span class="dispatch-level-value">{{ taskDispatchLevel(task) }}级</span>
                 </td>
                 <td :title="nextTriggerTitle(task)">
                   <span class="next-trigger-time" :class="taskDispatchLevelClass(task)">{{ nextTriggerText(task) }}</span>
@@ -1009,6 +973,15 @@ onUnmounted(() => {
       destroy-on-close
     >
       <div class="scheduler-rule-form">
+        <label>
+          <span>调度级别</span>
+          <el-input-number
+            v-model="schedulerRuleDialog.dispatchLevel"
+            :min="0"
+            :max="5"
+            controls-position="right"
+          />
+        </label>
         <label>
           <span>软顺序</span>
           <el-input-number
@@ -1303,44 +1276,9 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.dispatch-level-stepper {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-}
-
-.dispatch-level-button {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  align-items: center;
-  justify-content: center;
-  color: #475569;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.dispatch-level-button:hover:not(:disabled),
-.dispatch-level-button:focus-visible:not(:disabled) {
-  color: #1d4ed8;
-  background: #eff6ff;
-  outline: none;
-}
-
-.dispatch-level-button:disabled {
-  color: #cbd5e1;
-  cursor: default;
-}
-
 .dispatch-level-value {
-  min-width: 30px;
   color: #475569;
   font-variant-numeric: tabular-nums;
-  text-align: center;
 }
 
 .next-trigger-time {

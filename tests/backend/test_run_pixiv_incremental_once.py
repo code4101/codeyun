@@ -15,6 +15,11 @@ class FakeProfile:
     last_run_status: str | None = None
 
 
+@pytest.fixture(autouse=True)
+def no_active_pixiv_risk_circuit(monkeypatch):
+    monkeypatch.setattr(runner, "_active_risk_circuit", lambda: None)
+
+
 def test_formal_entrypoint_skips_while_legacy_trigger_is_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_legacy_trigger_enabled", lambda: True)
     monkeypatch.setattr(
@@ -61,6 +66,31 @@ def test_formal_entrypoint_check_only_passes_without_network(tmp_path, monkeypat
     assert report["remote_audit"]["remote_operations_total"] == 0
 
 
+def test_formal_entrypoint_skips_when_persistent_risk_circuit_is_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_legacy_trigger_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_active_risk_circuit",
+        lambda: {"blocked_date": "2026-07-21", "reason": "http_rate_limited"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_load_profiles",
+        lambda _user_id: pytest.fail("profiles must not load while the risk circuit is open"),
+    )
+
+    report, _report_path = runner.run_once(
+        max_remote_operations=20,
+        check_only=True,
+        optimizer_root=tmp_path,
+        run_id="risk-open",
+    )
+
+    assert report["status"] == "safety_skipped"
+    assert report["stop_reason"] == "risk_circuit_open"
+    assert report["persistent_risk_circuit"]["reason"] == "http_rate_limited"
+
+
 def test_formal_entrypoint_runs_business_runtime_inside_budget_audit(tmp_path, monkeypatch):
     profile = FakeProfile()
     calls: list[dict[str, object]] = []
@@ -92,6 +122,37 @@ def test_formal_entrypoint_runs_business_runtime_inside_budget_audit(tmp_path, m
             "run_id": "runtime-success",
         }
     ]
+
+
+def test_formal_entrypoint_reports_persistent_risk_circuit_stop(tmp_path, monkeypatch):
+    from backend.plugins.modules.media_sync import sources
+
+    profile = FakeProfile()
+    circuit_path = tmp_path / "pixiv-risk-circuit.json"
+    monkeypatch.setattr(runner, "_legacy_trigger_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_load_profiles", lambda _user_id: [profile])
+    monkeypatch.setattr(sources, "pixiv_risk_circuit_path", lambda: circuit_path)
+
+    def fake_run_profile(_profile, **_kwargs):
+        sources.trip_pixiv_risk_circuit(
+            reason="verification_challenge",
+            signal="captcha",
+            operation_kind="page_navigation",
+            url="https://www.pixiv.net/",
+        )
+        return {"stage": "error", "error": "captcha"}
+
+    monkeypatch.setattr(runner, "_run_profile", fake_run_profile)
+
+    report, _report_path = runner.run_once(
+        max_remote_operations=20,
+        optimizer_root=tmp_path,
+        run_id="risk-stop",
+    )
+
+    assert report["status"] == "safety_stopped"
+    assert report["stop_reason"] == "risk_circuit_tripped"
+    assert report["remote_audit"]["risk_circuit"]["reason"] == "verification_challenge"
 
 
 def test_formal_entrypoint_skips_when_cross_process_lock_is_held(tmp_path, monkeypatch):
