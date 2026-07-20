@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import subprocess
 import sys
 import time
 import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +92,24 @@ def doctor_watch_heartbeat_path() -> Path:
     return codeyun_temp_root("fanxiu-watch") / "doctor_watch_heartbeat.json"
 
 
+@lru_cache(maxsize=1)
+def doctor_watch_code_signature() -> str:
+    """Fingerprint every local Python module the external Fanxiu scheduler can import."""
+
+    repo_root = Path(__file__).resolve().parents[4]
+    source_paths = [repo_root / "scripts" / "fanxiu_bt.py"]
+    source_paths.extend(sorted((repo_root / "backend" / "core" / "fanxiu").rglob("*.py")))
+    digest = hashlib.sha256()
+    for source_path in source_paths:
+        if not source_path.is_file():
+            continue
+        digest.update(source_path.relative_to(repo_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source_path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def read_doctor_watch_heartbeat(path: Path | None = None, *, stale_after_seconds: float = 180.0) -> dict[str, Any]:
     heartbeat_path = path or doctor_watch_heartbeat_path()
     payload = read_data_annotation_json(heartbeat_path, None)
@@ -112,7 +132,15 @@ def read_doctor_watch_heartbeat(path: Path | None = None, *, stale_after_seconds
     runtime_consistent = bool(actual_stable_latest_path) and actual_stable_latest_path == expected_stable_latest_path
     active = isinstance(age_seconds, (int, float)) and age_seconds <= stale_after_seconds and runtime_consistent
     auto_run_due_enabled = bool(payload.get("auto_run_due_enabled"))
-    message = "巡检心跳正常" if active else "巡检心跳过期或路径不一致"
+    current_code_signature = doctor_watch_code_signature()
+    watch_code_signature = str(payload.get("code_signature") or "")
+    code_consistent = bool(watch_code_signature) and watch_code_signature == current_code_signature
+    if active and code_consistent:
+        message = "巡检心跳正常"
+    elif active:
+        message = "巡检进程代码版本已过期"
+    else:
+        message = "巡检心跳过期或路径不一致"
     return {
         "ok": True,
         "exists": True,
@@ -121,6 +149,8 @@ def read_doctor_watch_heartbeat(path: Path | None = None, *, stale_after_seconds
         "age_seconds": age_seconds,
         "stale_after_seconds": stale_after_seconds,
         "runtime_consistent": runtime_consistent,
+        "code_consistent": code_consistent,
+        "current_code_signature": current_code_signature,
         "auto_run_due_enabled": auto_run_due_enabled,
         "expected_stable_latest_path": expected_stable_latest_path,
         "message": message,
@@ -214,9 +244,11 @@ def ensure_doctor_watch_background(
             process_active = process.is_running() and "fanxiu_bt.py" in command_line and "watch-doctor" in command_line
         except (psutil.Error, OSError, ValueError):
             process_active = False
+    heartbeat_active = bool(heartbeat.get("active"))
     capability_consistent = (not auto_run_due) or bool(heartbeat.get("auto_run_due_enabled"))
-    heartbeat_effectively_active = process_active if candidate_pid > 0 else bool(heartbeat.get("active"))
-    if heartbeat_effectively_active and capability_consistent:
+    code_consistent = bool(heartbeat.get("code_consistent"))
+    process_consistent = process_active if candidate_pid > 0 else heartbeat_active
+    if heartbeat_active and process_consistent and capability_consistent and code_consistent:
         return {
             "ok": True,
             "started": False,
@@ -225,8 +257,15 @@ def ensure_doctor_watch_background(
             "latest": read_doctor_watch_latest(),
         }
 
+    replacement_reasons: list[str] = []
+    if not heartbeat_active:
+        replacement_reasons.append("heartbeat_missing_or_stale")
+    if not capability_consistent:
+        replacement_reasons.append("capability_mismatch")
+    if not code_consistent:
+        replacement_reasons.append("code_signature_mismatch")
     replaced_pid: int | None = None
-    if process_active and not capability_consistent:
+    if process_active and replacement_reasons:
         try:
             process = psutil.Process(candidate_pid)
             command_line = " ".join(process.cmdline()).lower()
@@ -284,7 +323,8 @@ def ensure_doctor_watch_background(
         "started": True,
         "replaced_pid": replaced_pid,
         "pid": process.pid,
-        "reason": "heartbeat_missing_or_stale",
+        "reason": replacement_reasons[0] if replacement_reasons else "watch_process_missing",
+        "replacement_reasons": replacement_reasons,
         "previous_heartbeat": heartbeat,
         "output_path": str(output_path),
         "stdout_path": str(stdout_path),
@@ -960,7 +1000,6 @@ def mark_due_scheduler_tasks_blocked(
         if manual_note:
             scheduler_meta["previous_manual_inspection_note"] = manual_note
         task["scheduler_meta"] = {**scheduler_meta, "blocked_message": message, "blocked_at": now_ts}
-        task["retry_after"] = None
         changed = True
         record_scheduler_task_fact(task, "blocked", world_facts_path=world_facts_path)
     if changed:
@@ -1033,11 +1072,9 @@ def reconcile_stale_scheduler_attempts(
             # 先给终态记录器一个租约宽限期；持续 idle 才视为外部调用已丢失。
             if idle_age < 30.0:
                 continue
-        cooldown = max(30, int(task.get("cooldown_seconds") or 300))
         task["last_result"] = "error"
-        task["last_message"] = "先前 Cell/Kernel 执行尝试已作废；等待 Scheduler 整单重试"
+        task["last_message"] = "先前 Cell/Kernel 执行尝试已作废；保留原触发时间等待 Scheduler 整单重试"
         task["finished_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
-        task["retry_after"] = (now + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
         task["attempt_id"] = None
         task["attempt_kernel_generation"] = None
         task["attempt_kernel_idle_since"] = None
@@ -1100,7 +1137,7 @@ def _run_scheduler_task_cell_and_record_terminal(
     # The task Cell publishes dynamic next/retry times to world facts while it
     # runs.  Pull those facts into the freshly-read Scheduler state before the
     # terminal write, otherwise a business-specific retry (for example a boss
-    # refresh CD) is silently replaced by the generic cooldown below.
+    # refresh CD) can be lost. Generic terminal handling must not invent time.
     sync_scheduler_tasks_from_world_facts(
         tasks,
         world_facts_path=world_facts_path,
@@ -1115,13 +1152,13 @@ def _run_scheduler_task_cell_and_record_terminal(
         str(result.get("status") or "error") == "success"
         and not str(result.get("result_text") or "").strip()
         and synced_result in {"error", "stopped", "skipped", "unsupported"}
-        and state_task.get("retry_after")
+        and (state_task.get("retry_after") or state_task.get("next_time"))
     ):
         # A disconnected/reloaded HTTP caller can lose the execute_result while
         # the task's runtime discovery has already been persisted.  Do not turn
-        # that authoritative retry fact into a generic Cell success.
+        # that authoritative scheduling fact into a missing-result error.
         task_result = synced_result
-        task_message = "Runtime 已记录业务重试时间"
+        task_message = "Runtime 已记录业务调度时间"
     if task_result == "success":
         state_task["last_result"] = "success"
         state_task["last_run_at"] = started_text
@@ -1144,18 +1181,8 @@ def _run_scheduler_task_cell_and_record_terminal(
         state_task["last_result"] = task_result if task_result in {"error", "stopped", "skipped", "unsupported"} else "error"
         state_task["last_run_at"] = started_text
         state_task["last_message"] = task_message or "Cell 执行失败"
-        cooldown = max(30, int(state_task.get("cooldown_seconds") or 300))
-        discovered_retry_after = str(state_task.get("retry_after") or "").strip() if task_result == "skipped" else ""
-        try:
-            discovered_retry_at = datetime.strptime(discovered_retry_after, "%Y-%m-%d %H:%M:%S")
-        except (TypeError, ValueError):
-            discovered_retry_at = None
-        state_task["retry_after"] = (
-            discovered_retry_after
-            if discovered_retry_at is not None and discovered_retry_at > finished
-            else (finished + timedelta(seconds=cooldown)).strftime("%Y-%m-%d %H:%M:%S")
-        )
-        state_task["next_time"] = None
+        # 触发时间属于业务调度事实。通用失败只结束 attempt；若 Cell 没有显式
+        # 发布 next_time/retry_after，就保留原时间，使过期任务立即重新变为 due。
     state_task["finished_at"] = finished.strftime("%Y-%m-%d %H:%M:%S")
     state_task["attempt_id"] = None
     state_task["attempt_kernel_generation"] = None

@@ -39,6 +39,7 @@ import {
 } from '../resourceRenderer'
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
+import LingquanQuestionBank from './LingquanQuestionBank.vue'
 import { formatChineseCompactNumber, formatFanxiuGameNumber } from '../numberFormat'
 import { stableHash32 } from '@/utils/stableVisualColor'
 import {
@@ -264,6 +265,7 @@ const WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
   { key: 'mail', label: '邮件' },
   { key: 'player_profile', label: '面板' },
+  { key: 'lingquan_quiz', label: '灵泉题库' },
   { key: 'item', label: '道具' },
   { key: 'visual', label: '图片' },
   { key: 'asset', label: '素材' },
@@ -300,6 +302,7 @@ const TOP_WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
   { key: 'mail', label: '邮件' },
   { key: 'player_profile', label: '面板' },
+  { key: 'lingquan_quiz', label: '灵泉题库' },
   { key: 'item', label: '道具' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
@@ -553,6 +556,7 @@ const searchHistory = ref<Record<WikiTab, string[]>>({
   storage_bag: [],
   mail: [],
   player_profile: [],
+  lingquan_quiz: [],
   item: [],
   visual: [],
   asset: [],
@@ -12484,7 +12488,9 @@ onBeforeUnmount(() => {
       </el-tabs>
     </div>
 
-    <div class="toolbar">
+    <LingquanQuestionBank v-if="activeTab === 'lingquan_quiz'" />
+
+    <div v-if="activeTab !== 'lingquan_quiz'" class="toolbar">
       <el-popover
         v-model:visible="searchHistoryVisible"
         trigger="manual"
@@ -14070,7 +14076,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'packet'"
+      v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'lingquan_quiz' && activeTab !== 'packet'"
       ref="activityWorkspaceRef"
       class="object-workspace"
       :class="{

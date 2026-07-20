@@ -144,6 +144,33 @@ def next_lundao_recheck(
     return next_lundao_daily_trigger(at) if next_at >= close_at else next_at
 
 
+def current_lundao_left_listen_time(
+    status_facts: dict[str, Any],
+    *,
+    at: datetime,
+) -> int | None:
+    """Return the live remaining daily reward time in milliseconds.
+
+    The server sends ``leftListenTime`` as the remaining allowance at the
+    beginning of the current seat.  While the player is still seated, the
+    client subtracts the elapsed time since ``sitDownTime`` locally.  When the
+    player is not seated, the raw value is already the current remainder.
+    """
+
+    left_time = _int_or_none(status_facts.get("left_listen_time"))
+    if left_time is None:
+        return None
+    if left_time <= 0:
+        return 0
+    if not status_facts.get("seated"):
+        return left_time
+    sit_down_time = _int_or_none(status_facts.get("sit_down_time"))
+    if sit_down_time is None or sit_down_time <= 0:
+        return left_time
+    elapsed = max(0, int(at.timestamp() * 1000) - sit_down_time)
+    return max(0, left_time - elapsed)
+
+
 def _lundao_target_fact(
     seat: dict[str, Any],
     *,
@@ -316,14 +343,11 @@ def plan_lundao_strategy(
         return {"action": "done", "reason": "outside_window", "next_time": next_day}
     if not status_facts.get("available"):
         return {"action": "retry", "reason": "status_missing", "next_time": at + timedelta(minutes=5)}
-    strength = _int_or_none(status_facts.get("strength"))
-    left_listen_time = _int_or_none(status_facts.get("left_listen_time"))
-    if strength is not None and strength <= 0:
-        return {"action": "done", "reason": "strength_exhausted", "next_time": next_day}
-    if left_listen_time is not None and left_listen_time <= 0:
+    current_left_listen_time = _int_or_none(status_facts.get("current_left_listen_time"))
+    if current_left_listen_time is None:
+        current_left_listen_time = current_lundao_left_listen_time(status_facts, at=at)
+    if current_left_listen_time is not None and current_left_listen_time <= 0:
         return {"action": "done", "reason": "listen_time_exhausted", "next_time": next_day}
-    if strength is None:
-        return {"action": "retry", "reason": "strength_missing", "next_time": at + timedelta(minutes=5)}
     room_id = _int_or_none(status_facts.get("room_id"))
     if room_id == LUNDAO_DALUO_ROOM_ID:
         return {"action": "stay_daluo", "reason": "already_daluo", "next_time": next_lundao_recheck(at)}
@@ -358,12 +382,18 @@ def plan_lundao_strategy(
     }
 
 
-def read_current_lundao_facts(*, since_seconds: int = 1200) -> dict[str, Any]:
+def read_current_lundao_facts(*, since_seconds: int = 1200, at: datetime | None = None) -> dict[str, Any]:
     """Read current status and last viewed room roster without triggering capture work."""
 
     with Session(engine) as session:
         status = get_latest_fanxiu_lundao_status_facts(session, since_seconds=max(60, int(since_seconds)))
         roster = get_latest_fanxiu_lundao_scene_seat_facts(session, since_seconds=max(60, int(since_seconds)))
+    current_at = at or datetime.now()
+    status = {
+        **status,
+        "current_left_listen_time": current_lundao_left_listen_time(status, at=current_at),
+        "current_left_listen_time_at": current_at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
     if roster.get("room_id") is None:
         npc_id = _int_or_none(roster.get("npc_id"))
         theme_id = _int_or_none(roster.get("theme_id"))

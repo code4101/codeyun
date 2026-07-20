@@ -47,6 +47,7 @@ _STANDARD_ENABLED_TASK_IDS = {
     "daily-daofa",
     "daily-lundao-seat",
     "daily-lingmai-seat",
+    "legacy-daily-lingquan",
     "legacy-daily-assistant",
     "legacy-daily-xianyuan",
     "legacy-daily-vip",
@@ -1024,28 +1025,17 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
-            and task.get("next_time")
-            and str(task.get("id") or "") not in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
-            and not daily_retry_deferred
-            and not explicit_world_fact_next_time
-        ):
-            task["next_time"] = None
-            changed = True
-        if (
-            task.get("enabled")
-            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and not task.get("next_time")
             and not task.get("retry_after")
             and not daily_retry_deferred
-            and not (
-                str(task.get("id") or "") in _DAILY_RETRY_DEFER_TO_NEXT_TRIGGER_TASK_IDS
-                and task.get("next_time")
-            )
             and not explicit_world_fact_next_time
         ):
-            cooldown_seconds = int(task.get("cooldown_seconds") or 600)
-            task["next_time"] = None
-            task["retry_after"] = datetime.fromtimestamp(current_ts + cooldown_seconds).strftime("%Y-%m-%d %H:%M:%S")
-            changed = True
+            # 兼容旧状态：旧实现可能已经在失败时清空了触发时间。恢复到本次
+            # attempt 的开始时刻，令它保持 overdue；今后的正常路径不会再丢时间。
+            overdue_time = str(task.get("last_run_at") or "").strip()
+            if parse_data_annotation_task_time(overdue_time) is not None:
+                task["next_time"] = overdue_time
+                changed = True
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") in {"daily", "weekly"}

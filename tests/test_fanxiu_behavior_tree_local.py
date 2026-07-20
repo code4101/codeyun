@@ -384,6 +384,7 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monk
                 "stable_latest_path": str(stable_path),
                 "latest_path": str(stable_path),
                 "auto_run_due_enabled": False,
+                "code_signature": runtime_control.doctor_watch_code_signature(),
             },
             ensure_ascii=False,
         ),
@@ -465,6 +466,7 @@ def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbea
                 "updated_at": 100.0,
                 "stable_latest_path": str(stable_path),
                 "latest_path": str(stable_path),
+                "code_signature": runtime_control.doctor_watch_code_signature(),
             },
             ensure_ascii=False,
         ),
@@ -1437,6 +1439,7 @@ def test_fanxiu_bt_ensure_watch_doctor_skips_when_heartbeat_recent(monkeypatch, 
                 "stable_latest_path": str(stable_latest_path),
                 "severity": "blocked",
                 "auto_run_due_enabled": True,
+                "code_signature": fanxiu_bt.doctor_watch_code_signature(),
             },
             ensure_ascii=False,
         ),
@@ -1462,7 +1465,7 @@ def test_fanxiu_bt_ensure_watch_doctor_skips_when_heartbeat_recent(monkeypatch, 
     assert result["heartbeat"]["auto_run_due_enabled"] is True
 
 
-def test_fanxiu_bt_ensure_watch_doctor_skips_when_recent_heartbeat_lacks_auto_run_due(monkeypatch, tmp_path, capsys):
+def test_fanxiu_bt_ensure_watch_doctor_replaces_recent_heartbeat_without_code_signature(monkeypatch, tmp_path, capsys):
     import scripts.fanxiu_bt as fanxiu_bt
 
     class FakeProcess:
@@ -1496,10 +1499,9 @@ def test_fanxiu_bt_ensure_watch_doctor_skips_when_recent_heartbeat_lacks_auto_ru
     assert fanxiu_bt.main() == 0
     result = json.loads(capsys.readouterr().out)
 
-    assert result["started"] is False
-    assert result["reason"] == "heartbeat_recent"
-    assert result["heartbeat"].get("auto_run_due_enabled") in {None, False}
-    assert popen_calls == []
+    assert result["started"] is True
+    assert result["reason"] == "code_signature_mismatch"
+    assert len(popen_calls) == 1
 
 
 def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, tmp_path, capsys):

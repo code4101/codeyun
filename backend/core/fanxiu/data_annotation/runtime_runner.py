@@ -4215,6 +4215,7 @@ from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial import XianqiaoTrialTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.weekly_hanli import WeeklyHanliTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.weekly_shengzu import WeeklyShengzuTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.lingquan import LingquanTaskMixin
 
 
 class DataAnnotationRuntimeRunner(
@@ -4230,6 +4231,7 @@ class DataAnnotationRuntimeRunner(
     DailyChallengeTaskMixin,
     WeeklyHanliTaskMixin,
     WeeklyShengzuTaskMixin,
+    LingquanTaskMixin,
     XianqiaoTrialTaskMixin,
     XianfuTaskMixin,
     SignupMiscTaskMixin,
@@ -5685,7 +5687,6 @@ class DataAnnotationRuntimeRunner(
                 continue
             if result == "running":
                 item["last_run_at"] = now_text
-                item["retry_after"] = None
             elif result == "success":
                 fact_retry_after = self._scheduler_task_runtime_discovered_retry_after(item)
                 fact_next_time = self._scheduler_task_runtime_discovered_next_time(item)
@@ -5723,16 +5724,9 @@ class DataAnnotationRuntimeRunner(
                     item["last_result"] = result
                     changed = True
                     break
-                cooldown_seconds = int(item.get("cooldown_seconds") or 600)
-                item["next_time"] = None
-                item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             elif result in {"error", "stopped"}:
                 item["last_run_at"] = now_text
-                cooldown_seconds = int(item.get("cooldown_seconds") or 600)
-                item["next_time"] = None
-                item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-            elif result == "blocked":
-                item["retry_after"] = None
+                # 通用终态不推进业务时间；保留原触发时间即可自然整单重试。
             item["last_result"] = result
             changed = True
             break
@@ -5762,7 +5756,6 @@ class DataAnnotationRuntimeRunner(
             if manual_note:
                 scheduler_meta["previous_manual_inspection_note"] = manual_note
             item["scheduler_meta"] = {**scheduler_meta, "blocked_message": message, "blocked_at": now_ts}
-            item["retry_after"] = None
             _record_data_annotation_scheduler_task_fact(item, "blocked")
             changed = True
         if changed:

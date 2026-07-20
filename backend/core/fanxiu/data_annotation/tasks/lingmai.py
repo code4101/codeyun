@@ -20,6 +20,8 @@ from backend.db import engine
 
 
 LINGMAI_SHENMAI_ROOM_ID = 10
+LINGMAI_UNION_SHENMAI_ROOM_ID = 17
+LINGMAI_SHENMAI_ROOM_IDS = (LINGMAI_SHENMAI_ROOM_ID, LINGMAI_UNION_SHENMAI_ROOM_ID)
 LINGMAI_SAFE_BATTLE_RATIO = 0.90
 LINGMAI_DEFAULT_RETRY_SECONDS = 1800
 LINGMAI_PROTECTION_RETRY_GRACE_MS = 5000
@@ -55,7 +57,8 @@ def select_lingmai_seat_action(
 
     if not seat_facts.get("available"):
         return {"ok": False, "status": "invalid_facts", "reason": "seat_roster_missing", "action": None}
-    if _int_or_none(seat_facts.get("room_id")) != LINGMAI_SHENMAI_ROOM_ID:
+    room_id = _int_or_none(seat_facts.get("room_id"))
+    if room_id not in LINGMAI_SHENMAI_ROOM_IDS:
         return {"ok": False, "status": "invalid_facts", "reason": "not_shenmai_room", "action": None}
 
     if not self_seat_facts.get("available"):
@@ -83,7 +86,7 @@ def select_lingmai_seat_action(
             "action": "already_seated",
             "target": None,
             "self_seat": self_seat,
-            "room_id": LINGMAI_SHENMAI_ROOM_ID,
+            "room_id": room_id,
         }
 
     available_count = _int_or_none(seat_facts.get("available_count"))
@@ -96,7 +99,7 @@ def select_lingmai_seat_action(
             "action": "occupy_empty",
             "target": None,
             "available_count": available_count,
-            "room_id": LINGMAI_SHENMAI_ROOM_ID,
+            "room_id": room_id,
         }
 
     if not seat_facts.get("complete"):
@@ -184,7 +187,7 @@ def select_lingmai_seat_action(
         "safe_battle_ratio": LINGMAI_SAFE_BATTLE_RATIO,
         "safe_battle_max": safe_battle_max,
         "available_count": available_count,
-        "room_id": LINGMAI_SHENMAI_ROOM_ID,
+        "room_id": room_id,
     }
 
 

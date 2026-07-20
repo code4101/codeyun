@@ -241,6 +241,27 @@ class FanxiuPlayerProfileRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class FanxiuLingquanQuestion(SQLModel, table=True):
+    """CodeYun-owned Lingquan question bank entry."""
+
+    __tablename__ = "fanxiulingquanquestion"
+    __table_args__ = (
+        UniqueConstraint("group_name", "normalized_question", name="uq_fanxiulingquanquestion_group_question"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    group_name: str = Field(default="玩法知识", index=True)
+    question: str = Field(sa_column=Column(Text))
+    normalized_question: str = Field(default="", index=True)
+    answer: str = Field(sa_column=Column(Text))
+    enabled: bool = Field(default=True, index=True)
+    order_index: int = Field(default=0, index=True)
+    source: str = Field(default="manual", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class FanxiuPacketBusinessRecord(SQLModel, table=True):
     __tablename__ = "fanxiupacketbusinessrecord"
     __table_args__ = (
