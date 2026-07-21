@@ -986,6 +986,9 @@ def repair_data_annotation_scheduler_tasks(
                     task[key] = default_task.get(key)
                     changed = True
         if str(task.get("id") or "") == "daily-lundao-seat":
+            if task.get("retry_policy") != default_task.get("retry_policy"):
+                task["retry_policy"] = default_task.get("retry_policy")
+                changed = True
             # One-time product migration from the old manual/14:00 definition.
             # Other custom schedules remain protected by the normal override flag.
             old_lundao_schedule = (

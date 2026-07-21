@@ -20,6 +20,7 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
     nickname: str = Field(default="")
+    admin_note: str = Field(default="")
     email: Optional[str] = Field(default=None, index=True)
     phone: Optional[str] = Field(default=None, index=True)
     hashed_password: str
@@ -562,6 +563,62 @@ class PdfUserState(SQLModel, table=True):
     zoom: str = Field(default="auto")
     sidebar_open: bool = Field(default=True)
     state_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class LibraryReadingState(SQLModel, table=True):
+    __tablename__ = "libraryreadingstate"
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", "user_id", name="uq_libraryreadingstate_resource_user"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    resource_type: str = Field(default="rich-text", index=True, max_length=40)
+    resource_id: str = Field(index=True, max_length=160)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    chapter_id: str = Field(default="", max_length=512)
+    character_offset: int = Field(default=0)
+    chapter_revision: str = Field(default="", max_length=128)
+    state_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class LibraryBookAsset(SQLModel, table=True):
+    __tablename__ = "librarybookasset"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "source_kind", name="uq_librarybookasset_owner_source"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    resource_type: str = Field(default="rich-text", index=True, max_length=40)
+    owner_user_id: int = Field(foreign_key="user.id", index=True)
+    source_kind: str = Field(index=True, max_length=80)
+    title: str = Field(default="", max_length=240)
+    author: str = Field(default="", max_length=160)
+    cover_color: str = Field(default="#315f53", max_length=32)
+    metadata_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class LibraryBookPlacement(SQLModel, table=True):
+    __tablename__ = "librarybookplacement"
+    __table_args__ = (
+        UniqueConstraint("book_asset_id", "user_id", name="uq_librarybookplacement_asset_user"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    book_asset_id: str = Field(foreign_key="librarybookasset.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    bookshelf_id: Optional[str] = Field(default=None, index=True)
+    shelf_index: int = Field(default=0, index=True)
+    position_index: int = Field(default=0, index=True)
+    orientation: str = Field(default="spine_vertical", max_length=32)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

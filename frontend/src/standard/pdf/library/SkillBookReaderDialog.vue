@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import RichTextDocumentReader from '@/components/rich-text/RichTextDocumentReader.vue'
 import type { RichTextDocument } from '@/components/rich-text/document'
@@ -7,17 +7,22 @@ import type { RichTextDocument } from '@/components/rich-text/document'
 import {
   fetchLocalSkillBookCatalog,
   fetchLocalSkillBookChapter,
+  fetchLocalSkillBookReadingState,
+  updateLocalSkillBookReadingState,
   type SkillBookCatalog,
   type SkillBookChapter,
+  type SkillBookReadingState,
 } from '@/api/skillBooks'
 
 const props = defineProps<{
   modelValue: boolean
+  bookshelfId: string
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   'catalog-updated': [catalog: SkillBookCatalog]
+  'reading-state-updated': [state: SkillBookReadingState]
 }>()
 
 const LAST_CHAPTER_STORAGE_KEY = 'codeyun.skill-book.local.last-chapter'
@@ -31,7 +36,11 @@ const searchText = ref('')
 const catalogLoading = ref(false)
 const chapterLoading = ref(false)
 const errorMessage = ref('')
+const documentViewportRef = ref<HTMLElement | null>(null)
+const currentCharacterOffset = ref(0)
+const savedReadingPosition = ref<SkillBookReadingState | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+let positionSaveTimer: ReturnType<typeof setTimeout> | null = null
 let catalogLoadSequence = 0
 let chapterLoadSequence = 0
 
@@ -47,6 +56,28 @@ const selectedChapter = computed(() => (
 const selectedChapterIndex = computed(() => allChapters.value.findIndex(
   (chapter) => chapter.id === selectedChapterId.value,
 ))
+const currentChapterPage = computed(() => {
+  const chapter = selectedChapter.value
+  if (!chapter) return 1
+  if (chapter.character_count <= 0) return 1
+  const progress = Math.min(1, Math.max(0, currentCharacterOffset.value / chapter.character_count))
+  return Math.min(
+    chapter.estimated_page_count,
+    Math.floor(progress * chapter.estimated_page_count) + 1,
+  )
+})
+const currentBookPage = computed(() => {
+  const chapter = selectedChapter.value
+  return chapter ? chapter.page_start + currentChapterPage.value - 1 : 1
+})
+const documentPaperStyle = computed(() => {
+  const widthMillimeters = catalog.value?.page_width_mm ?? 210
+  const heightMillimeters = catalog.value?.page_height_mm ?? 297
+  return {
+    '--skill-page-width': `${Math.round(760 * widthMillimeters / 210)}px`,
+    '--skill-page-aspect-ratio': `${widthMillimeters} / ${heightMillimeters}`,
+  }
+})
 const filteredSkills = computed(() => {
   const query = searchText.value.trim().toLowerCase()
   if (!query) {
@@ -98,8 +129,71 @@ function normalizeRelativeMarkdownPath(basePath: string, href: string) {
   return result.join('/')
 }
 
-async function loadChapter(chapterId: string, options: { silent?: boolean } = {}) {
+function calculateCharacterOffset() {
+  const viewport = documentViewportRef.value
+  const chapter = selectedChapter.value
+  if (!viewport || !chapter) return 0
+  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+  if (maxScrollTop <= 0) return 0
+  const progress = Math.min(1, Math.max(0, viewport.scrollTop / maxScrollTop))
+  return Math.round(progress * chapter.character_count)
+}
+
+function persistReadingPosition() {
+  const chapter = selectedChapter.value
+  if (!chapter) return
+  currentCharacterOffset.value = calculateCharacterOffset()
+  savedReadingPosition.value = {
+    book_id: catalog.value?.id ?? 'local-skills',
+    chapter_id: chapter.id,
+    character_offset: currentCharacterOffset.value,
+    chapter_revision: chapter.revision,
+    current_page: currentBookPage.value,
+    pagination_version: catalog.value?.pagination_version ?? 1,
+    page_format: catalog.value?.page_format ?? 'A4',
+    updated_at: Date.now() / 1000,
+  }
+  void updateLocalSkillBookReadingState({
+    chapter_id: chapter.id,
+    character_offset: currentCharacterOffset.value,
+    chapter_revision: chapter.revision,
+  }).then((state) => {
+    savedReadingPosition.value = state
+    emit('reading-state-updated', state)
+  }).catch((error) => {
+    console.warn('Failed to save Skill reading position:', error)
+  })
+  localStorage.setItem(LAST_CHAPTER_STORAGE_KEY, chapter.id)
+}
+
+function handleDocumentScroll() {
+  currentCharacterOffset.value = calculateCharacterOffset()
+  if (positionSaveTimer) clearTimeout(positionSaveTimer)
+  positionSaveTimer = setTimeout(() => {
+    positionSaveTimer = null
+    persistReadingPosition()
+  }, 180)
+}
+
+async function restoreReadingPosition(characterOffset: number) {
+  await nextTick()
+  const viewport = documentViewportRef.value
+  const chapter = selectedChapter.value
+  if (!viewport || !chapter) return
+  currentCharacterOffset.value = Math.min(chapter.character_count, Math.max(0, characterOffset))
+  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+  const progress = chapter.character_count > 0
+    ? currentCharacterOffset.value / chapter.character_count
+    : 0
+  viewport.scrollTop = maxScrollTop * progress
+}
+
+async function loadChapter(
+  chapterId: string,
+  options: { silent?: boolean; restoreOffset?: number } = {},
+) {
   const sequence = ++chapterLoadSequence
+  let loaded = false
   if (!options.silent) {
     chapterLoading.value = true
     errorMessage.value = ''
@@ -111,6 +205,7 @@ async function loadChapter(chapterId: string, options: { silent?: boolean } = {}
     }
     markdown.value = content.markdown
     selectedChapterRevision.value = content.chapter.revision
+    loaded = true
   } catch (error) {
     if (sequence !== chapterLoadSequence || options.silent) {
       return
@@ -122,15 +217,24 @@ async function loadChapter(chapterId: string, options: { silent?: boolean } = {}
       chapterLoading.value = false
     }
   }
+  if (loaded && sequence === chapterLoadSequence) {
+    await restoreReadingPosition(options.restoreOffset ?? 0)
+  }
 }
 
-async function selectChapter(chapterId: string) {
+async function selectChapter(chapterId: string, options: { restoreSaved?: boolean } = {}) {
   if (!chapterId) {
     return
   }
+  if (selectedChapterId.value && selectedChapterId.value !== chapterId) {
+    persistReadingPosition()
+  }
   selectedChapterId.value = chapterId
   localStorage.setItem(LAST_CHAPTER_STORAGE_KEY, chapterId)
-  await loadChapter(chapterId)
+  const savedPosition = options.restoreSaved ? savedReadingPosition.value : null
+  await loadChapter(chapterId, {
+    restoreOffset: savedPosition?.chapter_id === chapterId ? savedPosition.character_offset : 0,
+  })
 }
 
 async function loadCatalog(options: { silent?: boolean } = {}) {
@@ -140,7 +244,7 @@ async function loadCatalog(options: { silent?: boolean } = {}) {
     errorMessage.value = ''
   }
   try {
-    const nextCatalog = await fetchLocalSkillBookCatalog()
+    const nextCatalog = await fetchLocalSkillBookCatalog(props.bookshelfId)
     if (sequence !== catalogLoadSequence || !visible.value) {
       return
     }
@@ -148,7 +252,17 @@ async function loadCatalog(options: { silent?: boolean } = {}) {
     catalog.value = nextCatalog
     emit('catalog-updated', nextCatalog)
 
+    if (!options.silent) {
+      try {
+        savedReadingPosition.value = await fetchLocalSkillBookReadingState()
+      } catch (error) {
+        console.warn('Failed to load Skill reading position:', error)
+      }
+    }
+
+    const savedPosition = savedReadingPosition.value
     const savedChapterId = selectedChapterId.value
+      || savedPosition?.chapter_id
       || localStorage.getItem(LAST_CHAPTER_STORAGE_KEY)
       || ''
     const nextChapter = nextCatalog.skills
@@ -166,9 +280,13 @@ async function loadCatalog(options: { silent?: boolean } = {}) {
     selectedChapterId.value = nextChapter.id
     localStorage.setItem(LAST_CHAPTER_STORAGE_KEY, nextChapter.id)
     if (selectionChanged || !markdown.value) {
-      await loadChapter(nextChapter.id, options)
+      await loadChapter(nextChapter.id, {
+        ...options,
+        restoreOffset: savedPosition?.chapter_id === nextChapter.id ? savedPosition.character_offset : 0,
+      })
     } else if (previousRevision !== nextCatalog.revision && nextChapter.revision !== selectedChapterRevision.value) {
-      await loadChapter(nextChapter.id, { silent: true })
+      const currentOffset = calculateCharacterOffset()
+      await loadChapter(nextChapter.id, { silent: true, restoreOffset: currentOffset })
     }
   } catch (error) {
     if (sequence !== catalogLoadSequence || options.silent) {
@@ -246,12 +364,15 @@ watch(() => props.modelValue, (isVisible) => {
     startLiveRefresh()
     void loadCatalog()
   } else {
+    persistReadingPosition()
     window.removeEventListener('keydown', handleReaderKeydown, true)
     stopLiveRefresh()
   }
 }, { immediate: true })
 
 onBeforeUnmount(() => {
+  persistReadingPosition()
+  if (positionSaveTimer) clearTimeout(positionSaveTimer)
   window.removeEventListener('keydown', handleReaderKeydown, true)
   stopLiveRefresh()
 })
@@ -305,7 +426,10 @@ onBeforeUnmount(() => {
         <header class="skill-book-content-toolbar">
           <div>
             <strong>{{ selectedChapter?.title ?? '未选择章节' }}</strong>
-            <span v-if="catalog">{{ selectedChapterIndex + 1 }} / {{ allChapters.length }}</span>
+            <span v-if="catalog">
+              页码：{{ currentBookPage }}/{{ catalog.estimated_page_count }}
+              · 第 {{ selectedChapterIndex + 1 }}/{{ allChapters.length }} 篇
+            </span>
           </div>
           <div class="skill-book-content-actions">
             <el-button
@@ -328,12 +452,18 @@ onBeforeUnmount(() => {
             重试
           </el-button>
         </div>
-        <RichTextDocumentReader
+        <div
           v-else
+          ref="documentViewportRef"
           class="skill-book-document"
-          :document="currentDocument"
-          @link-activate="handleDocumentLink"
-        />
+          :style="documentPaperStyle"
+          @scroll.passive="handleDocumentScroll"
+        >
+          <RichTextDocumentReader
+            :document="currentDocument"
+            @link-activate="handleDocumentLink"
+          />
+        </div>
       </main>
     </div>
   </el-dialog>
@@ -469,6 +599,13 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 22px clamp(22px, 5vw, 64px) 48px;
   overflow: auto;
+}
+
+.skill-book-document :deep(.rich-text-document-reader) {
+  width: min(100%, var(--skill-page-width));
+  min-height: 100%;
+  aspect-ratio: var(--skill-page-aspect-ratio);
+  margin: 0 auto;
 }
 
 .skill-book-status {

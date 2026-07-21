@@ -5438,6 +5438,21 @@ def v90_add_pdf_library_bookshelves(session: Session):
     print("  Added PDF library bookshelves.")
 
 
+def v91_add_user_admin_note(session: Session):
+    """Migration V91: Add an administrator-only account note."""
+    print("Running System Upgrade V91: Add user admin note...")
+    if not _table_exists(session, "user"):
+        print("  User table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "user")
+    if "admin_note" in columns:
+        print("  Column 'admin_note' already exists, skipping.")
+        return
+    session.exec(text("ALTER TABLE user ADD COLUMN admin_note VARCHAR NOT NULL DEFAULT ''"))
+    session.commit()
+    print("  Added user.admin_note column.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5531,6 +5546,7 @@ MIGRATIONS = [
     (88, "Add PDF bookshelf placements", v88_add_pdf_bookshelf_placements),
     (89, "Add PDF bookshelf orientation", v89_add_pdf_bookshelf_orientation),
     (90, "Add PDF library bookshelves", v90_add_pdf_library_bookshelves),
+    (91, "Add administrator-only user note", v91_add_user_admin_note),
 ]
 
 def get_current_version(session: Session) -> int:

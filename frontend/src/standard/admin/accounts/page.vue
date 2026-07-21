@@ -95,6 +95,14 @@
             </template>
           </el-table-column>
 
+          <el-table-column label="备注" width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :class="row.admin_note ? 'nickname-text' : 'nickname-placeholder'">
+                {{ row.admin_note || '-' }}
+              </span>
+            </template>
+          </el-table-column>
+
           <el-table-column label="权限类型" width="140">
             <template #default="{ row }">
               <el-tag
@@ -152,6 +160,22 @@
             >
               {{ selectedSubjectTagLabel }}
             </el-tag>
+            <el-button-group v-if="expandablePermissionKeys.length">
+              <el-button
+                size="small"
+                :disabled="permissionTreeCollapsedKeys.size === 0"
+                @click="expandAllPermissions"
+              >
+                全部展开
+              </el-button>
+              <el-button
+                size="small"
+                :disabled="collapsedExpandablePermissionCount === expandablePermissionKeys.length"
+                @click="collapseAllPermissions"
+              >
+                全部收起
+              </el-button>
+            </el-button-group>
             <el-button
               size="small"
               @click="loadSelectedFeatureAccessContext"
@@ -186,8 +210,10 @@
               :item="item"
               :depth="0"
               :subject-kind="selectedSubject.kind"
+              :collapsed-keys="permissionTreeCollapsedKeys"
               disabled
               @change-decision="handleFeatureDecisionChange"
+              @toggle-collapse="togglePermissionCollapse"
             />
           </div>
         </div>
@@ -200,7 +226,9 @@
             :depth="0"
             :subject-kind="selectedSubject.kind"
             :disabled="featureAccessSaving"
+            :collapsed-keys="permissionTreeCollapsedKeys"
             @change-decision="handleFeatureDecisionChange"
+            @toggle-collapse="togglePermissionCollapse"
           />
         </div>
       </div>
@@ -248,7 +276,14 @@
         <el-form-item label="昵称">
           <el-input
             v-model="createNicknameValue"
-            placeholder="留空表示不备注"
+            placeholder="留空表示不填写"
+            @keyup.enter="submitCreateAccount"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="createAdminNoteValue"
+            placeholder="仅管理员可见，用于标记账号身份"
             @keyup.enter="submitCreateAccount"
           />
         </el-form-item>
@@ -298,7 +333,14 @@
         <el-form-item label="昵称">
           <el-input
             v-model="profileNicknameValue"
-            placeholder="留空表示不备注"
+            placeholder="留空表示不填写"
+            @keyup.enter="submitProfile"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="profileAdminNoteValue"
+            placeholder="仅管理员可见，用于标记账号身份"
             @keyup.enter="submitProfile"
           />
         </el-form-item>
@@ -365,12 +407,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 
 import FeatureAccessTreeNode from '@/components/admin/FeatureAccessTreeNode.vue';
-import { type FeatureAccessContext, type FeatureAccessDecision } from '@/api/access';
+import {
+  type FeatureAccessContext,
+  type FeatureAccessDecision,
+  type FeatureAccessTreeItem,
+} from '@/api/access';
 import {
   fetchAdminAnonymousFeatureAccessContext,
   fetchAdminUserFeatureAccessContext,
@@ -392,6 +438,26 @@ type FeatureAccessSubjectSelection =
   | { kind: 'anonymous' }
   | { kind: 'user'; userId: number };
 
+const PERMISSION_TREE_COLLAPSED_STORAGE_KEY = 'admin.accounts.permissionTreeCollapsedKeys';
+
+const loadPermissionTreeCollapsedKeys = () => {
+  if (typeof window === 'undefined') {
+    return new Set<string>();
+  }
+  try {
+    const storedValue = JSON.parse(
+      window.localStorage.getItem(PERMISSION_TREE_COLLAPSED_STORAGE_KEY) || '[]',
+    );
+    return new Set<string>(
+      Array.isArray(storedValue)
+        ? storedValue.filter((key): key is string => typeof key === 'string')
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+};
+
 const userStore = useUserStore();
 const featureAccessStore = useFeatureAccessStore();
 const router = useRouter();
@@ -402,12 +468,14 @@ const selectedSubject = ref<FeatureAccessSubjectSelection>({ kind: 'anonymous' }
 const featureAccessContext = ref<FeatureAccessContext | null>(null);
 const featureAccessLoading = ref(false);
 const featureAccessSaving = ref(false);
+const permissionTreeCollapsedKeys = ref<Set<string>>(loadPermissionTreeCollapsedKeys());
 
 const createDialogVisible = ref(false);
 const creatingAccount = ref(false);
 const createUsernameValue = ref('');
 const createPasswordValue = ref('');
 const createNicknameValue = ref('');
+const createAdminNoteValue = ref('');
 const createIsSuperuser = ref(false);
 const createIsActive = ref(true);
 const createEmailValue = ref('');
@@ -417,6 +485,7 @@ const profileDialogVisible = ref(false);
 const savingProfile = ref(false);
 const profileTarget = ref<AdminAccountSummary | null>(null);
 const profileNicknameValue = ref('');
+const profileAdminNoteValue = ref('');
 const profileIsSuperuser = ref(false);
 const profileIsActive = ref(true);
 const profileEmailValue = ref('');
@@ -467,6 +536,61 @@ const selectedSubjectTagLabel = computed(() => {
 const isSelectedSubjectReadonly = computed(
   () => Boolean(selectedSubjectAccount.value?.is_superuser),
 );
+
+const collectExpandablePermissionKeys = (items: FeatureAccessTreeItem[]): string[] => (
+  items.flatMap((item) => (
+    item.children.length
+      ? [item.key, ...collectExpandablePermissionKeys(item.children)]
+      : []
+  ))
+);
+
+const expandablePermissionKeys = computed(() => {
+  return featureAccessContext.value
+    ? collectExpandablePermissionKeys(featureAccessContext.value.items)
+    : [];
+});
+const collapsedExpandablePermissionCount = computed(() => (
+  expandablePermissionKeys.value.filter((key) => permissionTreeCollapsedKeys.value.has(key)).length
+));
+
+watch(permissionTreeCollapsedKeys, (collapsedKeys) => {
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(
+        PERMISSION_TREE_COLLAPSED_STORAGE_KEY,
+        JSON.stringify([...collapsedKeys]),
+      );
+    } catch {
+      // 浏览器禁用本地存储时，折叠功能仍在当前页面内正常工作。
+    }
+  }
+});
+
+const togglePermissionCollapse = (key: string) => {
+  const nextCollapsedKeys = new Set(permissionTreeCollapsedKeys.value);
+  if (nextCollapsedKeys.has(key)) {
+    nextCollapsedKeys.delete(key);
+  } else {
+    nextCollapsedKeys.add(key);
+  }
+  permissionTreeCollapsedKeys.value = nextCollapsedKeys;
+};
+
+const expandAllPermissions = () => {
+  permissionTreeCollapsedKeys.value = new Set<string>();
+};
+
+const collapseAllPermissions = () => {
+  permissionTreeCollapsedKeys.value = new Set(expandablePermissionKeys.value);
+};
+
+const prunePermissionTreeCollapsedKeys = () => {
+  const expandableKeys = new Set(expandablePermissionKeys.value);
+  permissionTreeCollapsedKeys.value = new Set(
+    [...permissionTreeCollapsedKeys.value].filter((key) => expandableKeys.has(key)),
+  );
+};
 const permissionHintText = computed(() => {
   if (selectedSubject.value.kind === 'anonymous') {
     return '左侧勾选表示当前生效权限，右侧可切换“默认 / 开放 / 关闭”。关闭后游客默认不可见，未单独放开的普通用户也会一起关闭。';
@@ -487,6 +611,7 @@ const resetCreateForm = () => {
   createUsernameValue.value = '';
   createPasswordValue.value = '';
   createNicknameValue.value = '';
+  createAdminNoteValue.value = '';
   createIsSuperuser.value = false;
   createIsActive.value = true;
   createEmailValue.value = '';
@@ -515,6 +640,7 @@ const syncCurrentUser = (nextAccount: AdminAccountSummary) => {
 const resetProfileForm = () => {
   profileTarget.value = null;
   profileNicknameValue.value = '';
+  profileAdminNoteValue.value = '';
   profileIsSuperuser.value = false;
   profileIsActive.value = true;
   profileEmailValue.value = '';
@@ -526,6 +652,7 @@ const resetProfileForm = () => {
 const openProfileDialog = (account: AdminAccountSummary) => {
   profileTarget.value = account;
   profileNicknameValue.value = account.nickname || '';
+  profileAdminNoteValue.value = account.admin_note || '';
   profileIsSuperuser.value = account.is_superuser;
   profileIsActive.value = account.is_active;
   profileEmailValue.value = account.email || '';
@@ -569,6 +696,7 @@ const loadSelectedFeatureAccessContext = async () => {
     } else {
       featureAccessContext.value = await fetchAdminUserFeatureAccessContext(selectedSubject.value.userId);
     }
+    prunePermissionTreeCollapsedKeys();
   } catch (error: any) {
     console.error(error);
     featureAccessContext.value = null;
@@ -672,6 +800,7 @@ const submitCreateAccount = async () => {
       username: createUsernameValue.value,
       password: createPasswordValue.value,
       nickname: createNicknameValue.value,
+      adminNote: createAdminNoteValue.value,
       isSuperuser: createIsSuperuser.value,
       isActive: createIsActive.value,
       email: createEmailValue.value,
@@ -697,6 +826,7 @@ const submitProfile = async () => {
     const updatedAccount = await updateAdminAccountProfile(
       targetAccountId,
       profileNicknameValue.value,
+      profileAdminNoteValue.value,
       profileIsSuperuser.value,
       profileIsActive.value,
       profileNewPasswordValue.value,

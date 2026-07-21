@@ -679,7 +679,7 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert not any(item["id"] == "daily-locate" for item in tasks)
 
 
-def test_daily_activity_default_scheduler_template_is_optional_at_eleven():
+def test_daily_activity_default_scheduler_template_is_enabled_at_eleven():
     from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
     from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
 
@@ -695,7 +695,7 @@ def test_daily_activity_default_scheduler_template_is_optional_at_eleven():
     assert definition.scheduler_supported is True
     assert activity["task_type"] == "daily_activity"
     assert activity["source"] == "data_annotation_runtime"
-    assert activity["enabled"] is False
+    assert activity["enabled"] is True
     assert activity["schedule_times"] == ["11:00"]
     assert activity["cooldown_seconds"] == 3600
     assert activity["payload"] == {"fallback_seconds": 3600}

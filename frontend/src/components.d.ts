@@ -11,6 +11,8 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AccountUserSelect: typeof import('./components/AccountUserSelect.vue')['default']
+    AppDirectoryMenuNode: typeof import('./components/layout/AppDirectoryMenuNode.vue')['default']
     AttendanceFeedbackFormCard: typeof import('./components/attendance/AttendanceFeedbackFormCard.vue')['default']
     AttendanceFeedbackHistoryList: typeof import('./components/attendance/AttendanceFeedbackHistoryList.vue')['default']
     BatchNoteEditDialog: typeof import('./components/BatchNoteEditDialog.vue')['default']
@@ -18,6 +20,7 @@ declare module 'vue' {
     DocPage: typeof import('./components/DocPage.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAside: typeof import('element-plus/es')['ElAside']
+    ElAutocomplete: typeof import('element-plus/es')['ElAutocomplete']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElButtonGroup: typeof import('element-plus/es')['ElButtonGroup']
     ElCard: typeof import('element-plus/es')['ElCard']

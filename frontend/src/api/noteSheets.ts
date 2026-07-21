@@ -50,16 +50,6 @@ export interface NoteSheetResourceAccessResponse {
   grants: NoteSheetResourceAccessGrantItem[]
 }
 
-export interface NoteSheetAccessUserOption {
-  id: number
-  username: string
-  nickname: string
-}
-
-export interface NoteSheetAccessUserOptionsResponse {
-  users: NoteSheetAccessUserOption[]
-}
-
 export interface NoteSheetSummary {
   id: number
   title: string
@@ -1131,13 +1121,6 @@ export async function fetchWorkbook(workbookId: number) {
 
 export async function restoreWorkbook(workbookId: number) {
   const response = await api.post<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}/restore`)
-  return response.data
-}
-
-export async function fetchNoteSheetAccessUsers(query = '') {
-  const response = await api.get<NoteSheetAccessUserOptionsResponse>('/note-sheets/access-users', {
-    params: { q: query },
-  })
   return response.data
 }
 

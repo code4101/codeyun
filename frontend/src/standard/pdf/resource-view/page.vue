@@ -308,6 +308,13 @@
       >
         <div v-if="readerErrorText || errorText" class="reader-empty">
           <el-empty :description="readerErrorText || errorText" />
+          <el-button
+            v-if="readerErrorText && documentDetail"
+            type="primary"
+            plain
+            :loading="contentLoading"
+            @click="reloadContentUrl"
+          >重新加载</el-button>
         </div>
         <div v-else class="pdf-page-scroll">
           <div class="pdf-page-shell" :class="{ 'is-rendering': pageRendering }">
@@ -981,9 +988,9 @@ async function loadPdfOutline(documentProxy: PDFDocumentProxy) {
   }
 }
 
-async function loadPdfContent(url: string) {
+async function loadPdfContent(url: string): Promise<boolean> {
   await destroyPdfRuntime();
-  if (!url) return;
+  if (!url) return false;
 
   contentLoading.value = true;
   readerErrorText.value = '';
@@ -1004,9 +1011,10 @@ async function loadPdfContent(url: string) {
     void loadPdfOutline(documentProxy);
     await nextTick();
     await renderCurrentPage({ persist: false });
+    return true;
   } catch (error) {
     console.warn('Failed to load PDF content:', error);
-    readerErrorText.value = 'PDF 内容加载失败';
+    return false;
   } finally {
     contentLoading.value = false;
   }
@@ -1052,17 +1060,25 @@ async function loadPdfDocument() {
 async function reloadContentUrl() {
   if (!documentDetail.value) return;
   contentLoading.value = true;
-  try {
-    const result = await fetchPdfContentUrl(documentDetail.value.id);
-    contentUrl.value = result.url;
-    await loadPdfContent(result.url);
-  } catch (error) {
-    console.warn('Failed to load PDF content URL:', error);
-    readerErrorText.value = 'PDF 内容加载失败';
-    ElMessage.error('PDF 内容加载失败');
-  } finally {
-    contentLoading.value = false;
+  readerErrorText.value = '';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const result = await fetchPdfContentUrl(documentDetail.value.id);
+      contentUrl.value = result.url;
+      if (await loadPdfContent(result.url)) {
+        contentLoading.value = false;
+        return;
+      }
+    } catch (error) {
+      console.warn('Failed to load PDF content URL:', error);
+    }
+    if (attempt < 2) {
+      await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
+    }
   }
+  contentLoading.value = false;
+  readerErrorText.value = 'PDF 内容加载失败，请刷新后重试';
+  ElMessage.error('PDF 内容加载失败');
 }
 
 function scheduleReaderStateSave() {
@@ -1559,8 +1575,10 @@ onBeforeUnmount(() => {
 
 .reader-empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   height: 100%;
 }
 

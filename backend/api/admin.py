@@ -582,6 +582,7 @@ class CreateAccountRequest(BaseModel):
     username: str
     password: str
     nickname: str = ""
+    admin_note: str = ""
     is_superuser: bool = False
     is_active: bool = True
     email: Optional[str] = None
@@ -590,6 +591,7 @@ class CreateAccountRequest(BaseModel):
 
 class UpdateAccountProfileRequest(BaseModel):
     nickname: str
+    admin_note: str = ""
     is_superuser: bool
     is_active: bool = True
     password: Optional[str] = None
@@ -625,6 +627,7 @@ def create_account(
     user = User(
         username=username,
         nickname=payload.nickname.strip(),
+        admin_note=payload.admin_note.strip(),
         email=(payload.email or "").strip() or None,
         phone=(payload.phone or "").strip() or None,
         hashed_password=get_password_hash(payload.password),
@@ -678,6 +681,7 @@ def update_account_profile(
             raise HTTPException(status_code=400, detail="至少保留一个超级管理员账号")
 
     user.nickname = payload.nickname.strip()
+    user.admin_note = payload.admin_note.strip()
     user.is_superuser = payload.is_superuser
     user.is_active = payload.is_active
     if payload.password is not None and payload.password != "":

@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -261,11 +262,24 @@ def _capture_backstop_max_pcap_age_seconds() -> float:
 def _ensure_capture_runtime_from_packet_worker(*, data_dir: str | Path | None = None) -> dict[str, Any]:
     from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
 
-    summary = latest_fanxiu_live_capture_summary(data_dir=data_dir)
     max_age = _capture_backstop_max_pcap_age_seconds()
     local_status = fanxiu_capture_runtime_service.status()
     should_ensure = not bool(local_status.get("running"))
     if not should_ensure:
+        current_path_text = str(local_status.get("current_pcap_path") or "").strip()
+        current_path = Path(current_path_text) if current_path_text else None
+        try:
+            current_stat = current_path.stat() if current_path else None
+        except OSError:
+            current_stat = None
+        summary = {
+            "live_dir": str(resolve_fanxiu_tcp_live_capture_dir(data_dir)),
+            "latest_pcap": str(current_path) if current_path and current_stat else "",
+            "latest_mtime": float(current_stat.st_mtime) if current_stat else 0.0,
+            "latest_age_seconds": round(time.time() - current_stat.st_mtime, 3) if current_stat else None,
+            "latest_size": int(current_stat.st_size) if current_stat else 0,
+            "source": "current_capture",
+        }
         return {
             "ok": True,
             "ensured": False,
@@ -274,6 +288,7 @@ def _ensure_capture_runtime_from_packet_worker(*, data_dir: str | Path | None = 
             "live_capture": summary,
             "capture_runtime": local_status,
         }
+    summary = latest_fanxiu_live_capture_summary(data_dir=data_dir)
     result = ensure_fanxiu_capture_runtime_backstop(
         FANXIU_CAPTURE_RUNTIME_PACKET_WORKER_REASON,
     )
@@ -638,6 +653,18 @@ def _is_transient_capture_access_error(exc: BaseException) -> bool:
     return "[WinError 32]" in text or "另一个程序正在使用此文件" in text
 
 
+def _runtime_pcap_name_epoch(name: str) -> float | None:
+    prefix = "fanxiu_runtime_"
+    value = str(name or "")
+    if not value.startswith(prefix) or value.startswith("fanxiu_runtime_snapshot_"):
+        return None
+    timestamp = value[len(prefix) : len(prefix) + 15]
+    try:
+        return datetime.strptime(timestamp, "%Y%m%d_%H%M%S").timestamp()
+    except ValueError:
+        return None
+
+
 def _iter_stable_live_pcaps(
     *,
     data_dir: str | Path | None = None,
@@ -652,10 +679,23 @@ def _iter_stable_live_pcaps(
         return []
     now_value = time.time() if now is None else now
     active_capture_path = _current_runtime_capture_path()
-    rows: list[Path] = []
-    for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.stat().st_mtime, reverse=bool(newest_first)):
-        if path.name.startswith("fanxiu_runtime_snapshot_"):
+    candidates: list[Path] = []
+    filename_min_epoch = 0.0
+    if max_age_seconds is not None and max_age_seconds > 0:
+        filename_min_epoch = now_value - float(max_age_seconds) - 2.0
+    if min_mtime:
+        filename_min_epoch = max(filename_min_epoch, float(min_mtime) - 2.0)
+    for entry in os.scandir(live_dir):
+        if not entry.name.endswith(".pcap"):
             continue
+        if entry.name.startswith("fanxiu_runtime_snapshot_"):
+            continue
+        name_epoch = _runtime_pcap_name_epoch(entry.name)
+        if name_epoch is not None and filename_min_epoch and name_epoch < filename_min_epoch:
+            continue
+        candidates.append(Path(entry.path))
+    rows: list[Path] = []
+    for path in candidates:
         if active_capture_path and _same_path(path, active_capture_path):
             continue
         try:
@@ -671,7 +711,7 @@ def _iter_stable_live_pcaps(
         if max_age_seconds is not None and max_age_seconds > 0 and now_value - stat.st_mtime > float(max_age_seconds):
             continue
         rows.append(path)
-    return rows
+    return sorted(rows, key=lambda item: item.stat().st_mtime, reverse=bool(newest_first))
 
 
 def _latest_recent_sealed_live_pcap(
@@ -687,9 +727,16 @@ def _latest_recent_sealed_live_pcap(
     now_value = time.time() if now is None else float(now)
     active_capture_path = _current_runtime_capture_path()
     candidates: list[Path] = []
-    for path in live_dir.glob("fanxiu_runtime_*.pcap"):
-        if path.name.startswith("fanxiu_runtime_snapshot_"):
+    filename_min_epoch = now_value - max(1.0, float(max_age_seconds)) - 2.0
+    for entry in os.scandir(live_dir):
+        if not entry.name.endswith(".pcap"):
             continue
+        if entry.name.startswith("fanxiu_runtime_snapshot_"):
+            continue
+        name_epoch = _runtime_pcap_name_epoch(entry.name)
+        if name_epoch is not None and name_epoch < filename_min_epoch:
+            continue
+        path = Path(entry.path)
         if active_capture_path and _same_path(path, active_capture_path):
             continue
         try:
@@ -1505,6 +1552,7 @@ def catch_up_fanxiu_packet_facts(
     writers.
     """
     requested_at = _now_text()
+    started = time.monotonic()
     boundary_pcap = _latest_recent_sealed_live_pcap(data_dir=data_dir)
     if boundary_pcap and _capture_has_current_decoded_record(boundary_pcap, data_dir=data_dir):
         boundary_pcap = None
@@ -1513,6 +1561,7 @@ def catch_up_fanxiu_packet_facts(
         capture_backstop = _ensure_capture_runtime_from_packet_worker(data_dir=data_dir)
     except Exception as exc:
         capture_backstop = {"ok": False, "ensured": False, "error": str(exc)}
+    backstop_completed = time.monotonic()
 
     flush_result: dict[str, Any]
     try:
@@ -1524,6 +1573,7 @@ def catch_up_fanxiu_packet_facts(
         )
     except Exception as exc:
         flush_result = {"ok": False, "flushed": False, "error": str(exc)}
+    flush_completed = time.monotonic()
 
     pcap_path = str(flush_result.get("pcap_path") or "").strip() if isinstance(flush_result, dict) else ""
     decoded_record_db_prune = {
@@ -1575,6 +1625,7 @@ def catch_up_fanxiu_packet_facts(
         max_streams=max(1, int(max_streams)),
         scan_existing_decoded=False,
     )
+    sync_completed = time.monotonic()
     db_sync = sync_result.get("decoded_record_db_sync") if isinstance(sync_result, dict) else {}
     caught_up = bool(
         sync_result.get("ok")
@@ -1595,6 +1646,12 @@ def catch_up_fanxiu_packet_facts(
         "updated_at": _now_text(),
         "requested_at": requested_at,
         "reason": reason,
+        "timings": {
+            "capture_backstop_seconds": round(backstop_completed - started, 3),
+            "flush_seconds": round(flush_completed - backstop_completed, 3),
+            "decode_and_ingest_seconds": round(sync_completed - flush_completed, 3),
+            "elapsed_seconds": round(sync_completed - started, 3),
+        },
         "capture_runtime_backstop": capture_backstop,
         "boundary_pcap": str(boundary_pcap or ""),
         "capture_candidates": [
@@ -1619,17 +1676,40 @@ def sync_fanxiu_live_capture_backlog(
     use_cursor: bool = True,
     limit: int = 8,
     newest_first: bool = False,
+    scan_existing_decoded: bool = True,
 ) -> dict[str, Any]:
     """Decode stable live captures and push decoded facts into business writers.
 
     This worker is the packet service's independent ingestion path. It must not
     depend on UI pages or behavior-tree jobs to refresh mail/bag/activity data.
     """
-    decoded_digests = _decoded_capture_digests(data_dir)
-    decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir)
-    decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
     worker_state_path = Path(state_path) if state_path is not None else _worker_state_path(data_dir)
     previous_state = _load_json(worker_state_path, {})
+    if scan_existing_decoded:
+        decoded_digests = _decoded_capture_digests(data_dir)
+        decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir)
+        decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
+    else:
+        # The persistent realtime cursor is authoritative for its own recent
+        # window. Rebuilding three indexes from every historical meta.json on
+        # each 15-second pass made an idle scan hold the ingestion writer for
+        # tens of seconds. Maintenance still performs the exhaustive scan.
+        decoded_digests: set[str] = set()
+        decoded_streams_by_digest: dict[str, set[int]] = {}
+        decoded_sources_by_digest: dict[str, list[dict[str, Any]]] = {}
+        for item in (previous_state.get("pcap_states") or []) if isinstance(previous_state, dict) else []:
+            if not isinstance(item, dict) or str(item.get("status") or "") not in {"decoded", "already_decoded"}:
+                continue
+            digest = str(item.get("digest") or "").strip()
+            if not digest:
+                continue
+            decoded_digests.add(digest)
+            stream_ids = item.get("decoded_stream_ids") or item.get("target_stream_ids") or []
+            decoded_streams_by_digest[digest] = {
+                int(stream_id)
+                for stream_id in stream_ids
+                if str(stream_id).lstrip("-").isdigit()
+            }
     previous_errors = _prune_resolved_previous_errors(
         _previous_errors_by_digest(previous_state),
         decoded_streams_by_digest,
@@ -2126,6 +2206,7 @@ class FanxiuPacketInsightWorker:
         self.stable_seconds = max(1.0, float(stable_seconds))
         self._lock = threading.RLock()
         self._ingestion_lock = threading.Lock()
+        self._catch_up_waiting = threading.Event()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._maintenance_stop_event = threading.Event()
@@ -2214,6 +2295,14 @@ class FanxiuPacketInsightWorker:
             }
 
     def scan_once(self) -> dict[str, Any]:
+        if self._catch_up_waiting.is_set():
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "packet_catch_up_pending",
+                "mode": "realtime_scan",
+                "updated_at": _now_text(),
+            }
         if not self._ingestion_lock.acquire(blocking=False):
             return {
                 "ok": True,
@@ -2223,6 +2312,14 @@ class FanxiuPacketInsightWorker:
                 "updated_at": _now_text(),
             }
         try:
+            if self._catch_up_waiting.is_set():
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "packet_catch_up_pending",
+                    "mode": "realtime_scan",
+                    "updated_at": _now_text(),
+                }
             return self._scan_once_ingestion()
         finally:
             self._ingestion_lock.release()
@@ -2241,6 +2338,7 @@ class FanxiuPacketInsightWorker:
             use_cursor=True,
             newest_first=True,
             limit=2,
+            scan_existing_decoded=False,
         )
         result["capture_runtime_backstop"] = capture_backstop
         self._mark_realtime_heartbeat(
@@ -2261,13 +2359,19 @@ class FanxiuPacketInsightWorker:
                 if key in result
             },
             mode="realtime_scan",
-            phase="mail_business_backlog",
+            phase="complete",
             capture_runtime_backstop=capture_backstop,
         )
-        result["mail_business_backlog_sync"] = sync_fanxiu_mail_business_backlog(
-            latest_limit=16,
-            historical_limit=0,
-        )
+        # Newly decoded sources have already passed through the incremental
+        # mail writer in _sync_business_after_decoded. Enumerating every
+        # historical decoded source here turns a realtime pass into backlog
+        # maintenance and can hold the single ingestion writer for tens of
+        # seconds. Historical mail repair belongs to maintenance_once().
+        result["mail_business_backlog_sync"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "historical_mail_backlog_runs_in_maintenance",
+        }
         result.setdefault(
             "decoded_record_db_sync",
             {
@@ -2290,6 +2394,14 @@ class FanxiuPacketInsightWorker:
         return result
 
     def maintenance_once(self) -> dict[str, Any]:
+        if self._catch_up_waiting.is_set():
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "packet_catch_up_pending",
+                "mode": "maintenance",
+                "updated_at": _now_text(),
+            }
         if not self._ingestion_lock.acquire(blocking=False):
             return {
                 "ok": True,
@@ -2299,6 +2411,14 @@ class FanxiuPacketInsightWorker:
                 "updated_at": _now_text(),
             }
         try:
+            if self._catch_up_waiting.is_set():
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "packet_catch_up_pending",
+                    "mode": "maintenance",
+                    "updated_at": _now_text(),
+                }
             return self._maintenance_once_ingestion()
         finally:
             self._ingestion_lock.release()
@@ -2337,7 +2457,9 @@ class FanxiuPacketInsightWorker:
         return result
 
     def catch_up_once(self, *, reason: str = "manual") -> dict[str, Any]:
+        self._catch_up_waiting.set()
         if not self._ingestion_lock.acquire(timeout=45.0):
+            self._catch_up_waiting.clear()
             return {
                 "ok": False,
                 "status": "ingestion_busy",
@@ -2347,12 +2469,14 @@ class FanxiuPacketInsightWorker:
                 "updated_at": _now_text(),
             }
         try:
+            self._catch_up_waiting.clear()
             self._mark_realtime_heartbeat(ok=True, mode="packet_facts_catch_up", phase="flush_capture")
             result = catch_up_fanxiu_packet_facts(reason=reason)
             with self._lock:
                 self._last_realtime_result = result
             return result
         finally:
+            self._catch_up_waiting.clear()
             self._ingestion_lock.release()
 
     def _run_loop(self) -> None:

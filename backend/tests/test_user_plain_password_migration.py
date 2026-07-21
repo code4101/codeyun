@@ -149,3 +149,54 @@ def test_v27_add_user_phone_field_backfills_null():
         ).one()[0]
 
     assert phone is None
+
+
+def test_v91_add_user_admin_note_field_backfills_blank():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    with Session(engine) as session:
+        session.exec(
+            text(
+                """
+                CREATE TABLE user (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL,
+                    nickname VARCHAR NOT NULL DEFAULT '',
+                    email VARCHAR,
+                    hashed_password VARCHAR NOT NULL,
+                    password_plain VARCHAR NOT NULL DEFAULT '未知',
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    is_superuser BOOLEAN NOT NULL DEFAULT 0,
+                    created_at FLOAT NOT NULL,
+                    updated_at FLOAT NOT NULL
+                )
+                """
+            )
+        )
+        session.exec(
+            text(
+                """
+                INSERT INTO user (
+                    id, username, nickname, email, hashed_password, password_plain,
+                    is_active, is_superuser, created_at, updated_at
+                ) VALUES (
+                    1, 'legacy', '', NULL, 'hashed', 'legacy-secret', 1, 0, 100.0, 100.0
+                )
+                """
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        migration_manager.v91_add_user_admin_note(session)
+
+    with Session(engine) as session:
+        admin_note = session.exec(
+            text("SELECT admin_note FROM user WHERE id = 1")
+        ).one()[0]
+
+    assert admin_note == ""

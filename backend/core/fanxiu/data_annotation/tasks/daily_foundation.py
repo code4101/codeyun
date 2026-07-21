@@ -4303,12 +4303,18 @@ class DailyFoundationTaskMixin:
         roster = refreshed.get("roster") if isinstance(refreshed.get("roster"), dict) else {}
         catch_up = refreshed.get("packet_catch_up") if isinstance(refreshed.get("packet_catch_up"), dict) else {}
         roster_key = tuple((roster.get("evidence") or {}).get("order_key") or ())
-        if catch_up.get("status") != "completed" or catch_up.get("ok") is False:
+        fresh_status_and_roster = bool(status.get("available")) and bool(roster_key) and (
+            not baseline_key or roster_key > baseline_key
+        )
+        if (catch_up.get("status") != "completed" or catch_up.get("ok") is False) and not fresh_status_and_roster:
             yield from self._return_daily_lundao_to_selection(runtime, 297)
             yield from runtime.goto_view(34)
-            next_time = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-            self._record_daily_lundao_next_time(payload, next_time, reason="抓包未真正追平，安全短重试")
-            return "success"
+            raise RuntimeError(
+                "论道_座位：抓包事实暂未追平，保留原触发时间立即整单重试，"
+                f"status={catch_up.get('status') or 'unknown'}"
+            )
+        if catch_up.get("status") != "completed" or catch_up.get("ok") is False:
+            self._log("warning", "论道_座位：抓包追平命令未完成，但已读到更新后的状态和座位清单，继续决策")
 
         # Completion and an existing Daluo seat need only fresh status facts;
         # neither branch should be blocked by the seated-row visual variant or
@@ -4340,9 +4346,10 @@ class DailyFoundationTaskMixin:
         if not opportunity.get("ok"):
             yield from self._return_daily_lundao_to_selection(runtime, 297)
             yield from runtime.goto_view(34)
-            next_time = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-            self._record_daily_lundao_next_time(payload, next_time, reason=f"大罗事实不足：{opportunity.get('reason')}")
-            return "success"
+            raise RuntimeError(
+                "论道_座位：大罗事实不足，保留原触发时间立即整单重试，"
+                f"reason={opportunity.get('reason') or 'unknown'}"
+            )
         if decision.get("action") == "done":
             yield from self._return_daily_lundao_to_selection(runtime, 297)
             yield from runtime.goto_view(34)
@@ -4384,7 +4391,12 @@ class DailyFoundationTaskMixin:
             after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-seat", wait_seconds=120.0)
             after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
             after_left_time = after_status.get("current_left_listen_time")
-            next_at = next_lundao_daily_trigger(now) if after_left_time is not None and int(after_left_time) <= 0 else next_lundao_recheck(now)
+            completed_at = _runtime_runner._now()
+            next_at = (
+                next_lundao_daily_trigger(completed_at)
+                if after_left_time is not None and int(after_left_time) <= 0
+                else next_lundao_recheck(completed_at)
+            )
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成大罗入座")
             return result
 
@@ -4396,8 +4408,42 @@ class DailyFoundationTaskMixin:
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="大罗条件不足，保留三清")
             return "success"
 
+        if not attempt_ready:
+            remaining = self._daily_lundao_remaining_attempts(runtime)
+            attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
+            if remaining <= 0:
+                if purchase_used:
+                    attempt = {"ready": False, "reason": "purchase_already_attempted"}
+                else:
+                    attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining)
+            if not attempt.get("ready"):
+                yield from runtime.goto_view(34)
+                next_at = datetime.combine(now.date(), time_cls(22, 0))
+                self._record_daily_lundao_next_time(
+                    payload,
+                    next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    reason="确需三清入座，但今日已无可用次数",
+                )
+                return "success"
+            attempt_ready = True
+
         self._click_daily_lundao_dojo(runtime, "三清")
-        yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待三清座位列表")
+        sanqing_scene = _lundao_waited_scene_id(
+            (yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待三清座位列表"))
+        )
+        if sanqing_scene == 298:
+            result = yield from self._run_daily_lundao_room_action(
+                runtime,
+                stop_event,
+                opportunity={"action": "empty"},
+            )
+            next_at = next_lundao_recheck(_runtime_runner._now())
+            self._record_daily_lundao_next_time(
+                payload,
+                next_at.strftime("%Y-%m-%d %H:%M:%S"),
+                reason="三清画面确认有空位，已直接入座",
+            )
+            return result
         sanqing_facts = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-sanqing-roster", wait_seconds=120.0)
         sanqing_status = sanqing_facts.get("status") if isinstance(sanqing_facts.get("status"), dict) else {}
         sanqing_roster = sanqing_facts.get("roster") if isinstance(sanqing_facts.get("roster"), dict) else {}
@@ -4415,38 +4461,16 @@ class DailyFoundationTaskMixin:
             next_at = next_lundao_recheck(now, protect_end_time_ms=sanqing.get("earliest_protect_end_time"))
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="三清暂无合法座位")
             return "success"
-        if not attempt_ready:
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            remaining = self._daily_lundao_remaining_attempts(runtime)
-            attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
-            if remaining <= 0:
-                if purchase_used:
-                    attempt = {"ready": False, "reason": "purchase_already_attempted"}
-                else:
-                    attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining)
-            if not attempt.get("ready"):
-                yield from runtime.goto_view(34)
-                next_at = datetime.combine(now.date(), time_cls(22, 0))
-                self._record_daily_lundao_next_time(
-                    payload,
-                    next_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    reason="确需三清入座，但今日已无可用次数",
-                )
-                return "success"
-            return (
-                yield from self._run_daily_lundao_dynamic_strategy(
-                    runtime,
-                    stop_event,
-                    payload,
-                    attempt_ready=True,
-                    purchase_used=purchase_used or bool(attempt.get("purchased")),
-                )
-            )
         result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=sanqing)
         after = self._refresh_daily_lundao_packet_facts(reason="daily-lundao-after-sanqing-seat", wait_seconds=120.0)
         after_status = after.get("status") if isinstance(after.get("status"), dict) else {}
         after_left_time = after_status.get("current_left_listen_time")
-        next_at = next_lundao_daily_trigger(now) if after_left_time is not None and int(after_left_time) <= 0 else next_lundao_recheck(now)
+        completed_at = _runtime_runner._now()
+        next_at = (
+            next_lundao_daily_trigger(completed_at)
+            if after_left_time is not None and int(after_left_time) <= 0
+            else next_lundao_recheck(completed_at)
+        )
         self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="已完成三清入座")
         return result
 

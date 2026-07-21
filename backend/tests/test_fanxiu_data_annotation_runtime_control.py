@@ -317,6 +317,25 @@ def test_scheduler_immediate_retry_keeps_its_soft_order_before_fresh_peer():
     assert [item["id"] for item in ordered] == ["lingmai", "dongtian"]
 
 
+def test_scheduler_repair_upgrades_lundao_to_immediate_retry_policy():
+    from backend.core.fanxiu.data_annotation import scheduler
+
+    defaults = runtime_control.default_data_annotation_scheduler_tasks()
+    lundao = deepcopy(next(item for item in defaults if item["id"] == "daily-lundao-seat"))
+    lundao["retry_policy"] = "standard"
+
+    repaired, changed = scheduler.repair_data_annotation_scheduler_tasks(
+        [lundao],
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=real_datetime(2026, 7, 21, 15, 55, 0),
+    )
+
+    assert changed is True
+    assert repaired[0]["retry_policy"] == "immediate"
+
+
 def test_scheduler_standard_failure_yields_to_fresh_peer_without_changing_trigger_time():
     tasks = [
         {

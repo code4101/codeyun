@@ -30,7 +30,11 @@ DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 300.0
 DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS = 300.0
 DEFAULT_CAPTURE_SNAPSHOT_INTERVAL_SECONDS = 10.0
 DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
-DEFAULT_CAPTURE_STREAM_TO_LOCAL = False
+# Stream pcap bytes directly to the host so an on-demand seal only has to stop
+# tcpdump and join the writer. Remote-file mode remains the automatic fallback
+# when the adb stdout stream cannot be established; its stop/pull/restart path
+# is too slow for gameplay catch-up on some emulators.
+DEFAULT_CAPTURE_STREAM_TO_LOCAL = True
 MIN_CAPTURE_PCAP_BYTES = 24
 
 
@@ -139,6 +143,7 @@ class FanxiuCaptureRuntimeService:
         packet worker's responsibility.
         """
         normalized_reason = self._normalize_reason(reason)
+        started = time.monotonic()
         with self._lock:
             running = self._tcpdump_process_alive_locked()
             if not running:
@@ -146,7 +151,9 @@ class FanxiuCaptureRuntimeService:
                 return {"ok": True, "flushed": False, "reason": normalized_reason, "status": self.status()}
             self._log(f"flush requested: {normalized_reason}")
             local_path = self._current_pcap_path
+            capture_mode = self._capture_mode
             self._stop_tcpdump_locked(queue_sync=False)
+            sealed_at = time.monotonic()
             local_size = Path(local_path).stat().st_size if local_path and Path(local_path).exists() else 0
             if restart and self._active_reasons:
                 try:
@@ -160,6 +167,10 @@ class FanxiuCaptureRuntimeService:
                 "restarted": bool(restart and self._active_reasons and self._tcpdump_process_alive_locked()),
                 "pcap_path": local_path,
                 "pcap_size": local_size,
+                "capture_mode": capture_mode,
+                "seal_seconds": round(sealed_at - started, 3),
+                "restart_seconds": round(time.monotonic() - sealed_at, 3),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
                 "status": self.status(),
             }
 

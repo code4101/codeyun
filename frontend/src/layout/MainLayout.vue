@@ -3,42 +3,19 @@ import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
-  findPermissionKeyByMenuPath,
-  requirePermissionTitle,
-  requirePermissionTitleByMenuPath,
-} from '@/features/access/permissionRegistry';
-import {
-  findPluginMenuIndex,
-  getDefaultPluginOpeneds,
-  isPluginMenuItemVisible,
-  pluginMenuSections,
-} from '@/plugins';
+  buildVisibleAppDirectory,
+  findDirectoryNodeByMenuPath,
+  getDirectoryOpenKeys,
+  isDirectorySubmenu,
+} from '@/features/access/appDirectory';
+import AppDirectoryMenuNode from '@/components/layout/AppDirectoryMenuNode.vue';
 import {
   getMatchedMenuPath,
-  requirePageCanonicalPath,
-  requirePageMenuPath,
 } from '@/router/pageRegistry';
 import { buildStandaloneRouteLocation } from '@/router/standalone';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
-import {
-  Calendar,
-  Document,
-  Menu as IconMenu,
-  // Location,
-  Monitor,
-  User,
-  SwitchButton,
-  Message,
-  // Cellphone,
-  MagicStick,
-  Box,
-  ChatDotRound,
-  Expand,
-  Fold,
-  InfoFilled,
-  Setting
-} from '@element-plus/icons-vue';
+import { Expand, Fold, InfoFilled, SwitchButton, User } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -67,189 +44,6 @@ const lastMenuPointerIntent = ref<{
   modified: boolean;
   time: number;
 } | null>(null);
-const HOME_PATH = requirePageMenuPath('Home');
-const AUTHOR_CONTACT_PATH = requirePageMenuPath('AuthorContact');
-const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
-const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
-const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
-const MUSIC_TOOLS_PATH = requirePageMenuPath('MusicTools');
-const OPEN_SCORE_STUDY_PATH = requirePageMenuPath('OpenScoreStudy');
-const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
-const AI_CHAT_PATH = requirePageMenuPath('AiChat');
-const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
-const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
-const AI_WECHAT_PATH = requirePageMenuPath('AiWechat');
-const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
-const ATTENDANCE_HEADER_TOOL_PATH = requirePageMenuPath('AttendanceHeaderTool');
-const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
-const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
-const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
-const MYSTIA_WIKI_PATH = requirePageMenuPath('MystiaWiki');
-const VOLCANO_PRINCESS_AUDIO_PATH = requirePageMenuPath('VolcanoPrincessAudioCatalog');
-const VOLCANO_PRINCESS_THEATER_PATH = requirePageMenuPath('VolcanoPrincessTheaterCatalog');
-const ZAOHUA_ALCHEMY_PATH = requirePageMenuPath('ZaohuaAlchemyCatalog');
-const ZAOHUA_FURNACE_PATH = requirePageMenuPath('ZaohuaFurnaceCatalog');
-const ZAOHUA_HERB_PATH = requirePageMenuPath('ZaohuaHerbCatalog');
-const ZAOHUA_PASTURE_PATH = requirePageMenuPath('ZaohuaPasturePlanner');
-const POKEMON_TCG_CATALOG_PATH = requirePageMenuPath('PokemonTcgCatalog');
-const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
-const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
-const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
-const FANXIU_LOTTERY_MODEL_PATH = requirePageMenuPath('FanxiuLotteryModel');
-const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
-const FANXIU_DATA_ANNOTATION_PATH = requirePageMenuPath('FanxiuDataAnnotation');
-const FANXIU_DATA_ANNOTATION_RUNTIME_PATH = requirePageMenuPath('FanxiuDataAnnotationRuntime');
-const FANXIU_WIKI_PATH = requirePageMenuPath('FanxiuWiki');
-const FANXIU_ACTIVITY_LIST_PATH = requirePageMenuPath('FanxiuActivityList');
-const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH = requirePageMenuPath('FanxiuKunlunSecret');
-const FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH = requirePageMenuPath('FanxiuModaoInvasion');
-const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH = requirePageMenuPath('FanxiuShouyuanExploration');
-const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH = requirePageMenuPath('FanxiuDivineResource');
-const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH = requirePageMenuPath('FanxiuQijiZhumo');
-const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH = requirePageMenuPath('FanxiuXianzhouMarathon');
-const FANXIU_WARDROBE_HALL_PATH = requirePageMenuPath('FanxiuWardrobeHall');
-const FANXIU_SPIRIT_BEAST_HALL_PATH = requirePageMenuPath('FanxiuSpiritBeastHall');
-const FANXIU_MAGIC_TREASURE_HALL_PATH = requirePageMenuPath('FanxiuMagicTreasureHall');
-const FANXIU_MAGIC_TREASURE_FORMATIONS_PATH = requirePageMenuPath('FanxiuMagicTreasureFormations');
-const FANXIU_SPIRIT_ARTIFACT_HALL_PATH = requirePageMenuPath('FanxiuSpiritArtifactHall');
-const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
-const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
-const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
-const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
-const NOTES_CENTER_CANONICAL_PATH = requirePageCanonicalPath('NotesCenter');
-const NOTES_CHAT_DATA_PATH = requirePageMenuPath('NotesChatData');
-const NOTES_GITHUB_PROJECTS_PATH = requirePageMenuPath('NotesGithubProjects');
-const NOTES_TASK_SYSTEM_PATH = requirePageMenuPath('NotesTaskSystem');
-const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
-const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
-const EASTMONEY_TRADE_PATH = requirePageMenuPath('EastmoneyTrade');
-const EASTMONEY_CALCULATOR_PATH = requirePageMenuPath('EastmoneyCalculator');
-const FREEBILL_PATH = requirePageMenuPath('Freebill');
-const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
-const PDF_DOCUMENT_LIBRARY_PATH = requirePageMenuPath('PdfDocumentLibrary');
-const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
-const NOTES_QQ_PATH = requirePageMenuPath('NotesQq');
-const NOTES_WECHAT_STORAGE_PATH = requirePageMenuPath('NotesWechatStorage');
-const NOTES_MOBILE_SMS_PATH = requirePageMenuPath('NotesMobileSms');
-const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
-const CLUSTER_TASKS_PATH = requirePageMenuPath('RuntimeManagement');
-const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
-const CLUSTER_SERVICES_PATH = requirePageMenuPath('ClusterServices');
-const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
-const CLUSTER_TREESIZE_PATH = requirePageMenuPath('ClusterTreeSize');
-const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
-const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
-const CLUSTER_VIEW_CHAN_COURSE_PATH = requirePageMenuPath('ClusterViewChanCourse');
-const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
-const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
-const EASTMONEY_SUBMENU_INDEX = 'eastmoney';
-const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
-const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
-const NOTES_CENTER_SUBMENU_INDEX = 'notes-center';
-const NOTES_WECHAT_SUBMENU_INDEX = 'notes-wechat';
-const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
-const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
-const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
-const HOME_TITLE = requirePermissionTitle('home');
-const AUTHOR_CONTACT_TITLE = requirePermissionTitleByMenuPath(AUTHOR_CONTACT_PATH);
-const TOOLS_TITLE = requirePermissionTitle('tools');
-const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
-const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH);
-const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
-const MUSIC_TOOLS_TITLE = requirePermissionTitleByMenuPath(MUSIC_TOOLS_PATH);
-const OPEN_SCORE_STUDY_TITLE = requirePermissionTitleByMenuPath(OPEN_SCORE_STUDY_PATH);
-const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
-const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
-const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
-const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
-const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
-const AI_WECHAT_TITLE = requirePermissionTitleByMenuPath(AI_WECHAT_PATH);
-const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
-const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
-const ATTENDANCE_HEADER_TOOL_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_HEADER_TOOL_PATH);
-const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
-const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDERS_PATH);
-const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
-const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
-const MYSTIA_WIKI_TITLE = requirePermissionTitleByMenuPath(MYSTIA_WIKI_PATH);
-const VOLCANO_PRINCESS_TITLE = requirePermissionTitle('volcano-princess');
-const VOLCANO_PRINCESS_AUDIO_TITLE = requirePermissionTitleByMenuPath(VOLCANO_PRINCESS_AUDIO_PATH);
-const VOLCANO_PRINCESS_THEATER_TITLE = '剧院图鉴';
-const ZAOHUA_TITLE = requirePermissionTitle('zaohua');
-const ZAOHUA_ALCHEMY_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_ALCHEMY_PATH);
-const ZAOHUA_FURNACE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_FURNACE_PATH);
-const ZAOHUA_HERB_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_HERB_PATH);
-const ZAOHUA_PASTURE_TITLE = requirePermissionTitleByMenuPath(ZAOHUA_PASTURE_PATH);
-const POKEMON_TCG_CATALOG_TITLE = requirePermissionTitleByMenuPath(POKEMON_TCG_CATALOG_PATH);
-const MAGIC_CRAFT_TITLE = requirePermissionTitle('magic-craft');
-const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH);
-const FANXIU_TITLE = requirePermissionTitle('fanxiu');
-const FANXIU_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(FANXIU_CALCULATOR_PATH);
-const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC_PATH);
-const FANXIU_LOTTERY_MODEL_TITLE = requirePermissionTitleByMenuPath(FANXIU_LOTTERY_MODEL_PATH);
-const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
-const FANXIU_DATA_ANNOTATION_TITLE = requirePermissionTitleByMenuPath(FANXIU_DATA_ANNOTATION_PATH);
-const FANXIU_DATA_ANNOTATION_RUNTIME_TITLE = requirePermissionTitleByMenuPath(FANXIU_DATA_ANNOTATION_RUNTIME_PATH);
-const FANXIU_WIKI_TITLE = requirePermissionTitleByMenuPath(FANXIU_WIKI_PATH);
-const FANXIU_ACTIVITY_LIST_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_PATH);
-const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH);
-const FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH);
-const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH);
-const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH);
-const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH);
-const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH);
-const FANXIU_INVENTORY_TITLE = requirePermissionTitle('fanxiu.inventory');
-const FANXIU_WARDROBE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_WARDROBE_HALL_PATH);
-const FANXIU_SPIRIT_BEAST_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH);
-const FANXIU_MAGIC_TREASURE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_HALL_PATH);
-const FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_FORMATIONS_PATH);
-const FANXIU_SPIRIT_ARTIFACT_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_ARTIFACT_HALL_PATH);
-const FANXIU_LABELME_TITLE = requirePermissionTitleByMenuPath(FANXIU_LABELME_PATH);
-const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_PATH);
-const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
-const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
-const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
-const NOTES_CHAT_DATA_TITLE = requirePermissionTitleByMenuPath(NOTES_CHAT_DATA_PATH);
-const NOTES_GITHUB_PROJECTS_TITLE = requirePermissionTitleByMenuPath(NOTES_GITHUB_PROJECTS_PATH);
-const NOTES_TASK_SYSTEM_TITLE = requirePermissionTitleByMenuPath(NOTES_TASK_SYSTEM_PATH);
-const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
-const EASTMONEY_TITLE = requirePermissionTitle('notes.eastmoney');
-const EASTMONEY_TRADE_TITLE = '股票操作建议';
-const EASTMONEY_CALCULATOR_TITLE = '计算器';
-const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
-const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
-const PDF_DOCUMENT_LIBRARY_TITLE = requirePermissionTitleByMenuPath(PDF_DOCUMENT_LIBRARY_PATH);
-const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
-const NOTES_QQ_TITLE = requirePermissionTitleByMenuPath(NOTES_QQ_PATH);
-const NOTES_WECHAT_STORAGE_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_STORAGE_PATH);
-const NOTES_MOBILE_SMS_TITLE = requirePermissionTitleByMenuPath(NOTES_MOBILE_SMS_PATH);
-const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
-const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
-const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
-const CLUSTER_RIME_CONTEXT_TITLE = requirePermissionTitleByMenuPath(CLUSTER_RIME_CONTEXT_PATH);
-const CLUSTER_SERVICES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_SERVICES_PATH);
-const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
-const CLUSTER_TREESIZE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TREESIZE_PATH);
-const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
-const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
-const CLUSTER_VIEW_CHAN_COURSE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH);
-const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
-const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
-const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
-const ADMIN_IMAGES_TITLE = requirePermissionTitleByMenuPath(ADMIN_IMAGES_PATH);
-const BUILTIN_MENU_SECTION_KEYS = new Set([
-  'tools',
-  'ai-tools',
-  'attendance-tools',
-  'game-tools',
-  'volcano-princess',
-  'zaohua',
-  'fanxiu',
-  'magic-craft',
-  'note-tools',
-  'cluster-tools',
-  'admin-tools',
-]);
 
 const toggleCollapse = () => {
   collapseForcedByCompactViewport.value = false;
@@ -369,304 +163,37 @@ const scheduleAsideWidthMeasure = () => {
   });
 };
 
+const visibleDirectory = computed(() => buildVisibleAppDirectory({
+  isAllowed: (permissionKey) => featureAccessStore.isAllowed(permissionKey),
+  isAuthenticated: userStore.isAuthenticated,
+  isAdmin: userStore.isAdmin,
+}));
+
+const mainDirectoryNodes = computed(() =>
+  visibleDirectory.value.filter((node) => node.slot === 'main'),
+);
+
+const footerDirectoryNodes = computed(() =>
+  visibleDirectory.value.filter((node) => node.slot === 'footer'),
+);
+
 const activeMenu = computed(() => {
-  const matchedMenuPath = getMatchedMenuPath(route);
-  if (matchedMenuPath === CLUSTER_FILES_PATH) return CLUSTER_FILES_SUBMENU_INDEX;
-  if (matchedMenuPath === FANXIU_ACTIVITY_LIST_PATH) return FANXIU_ACTIVITY_LIST_SUBMENU_INDEX;
-  if (matchedMenuPath === FANXIU_MAGIC_TREASURE_HALL_PATH) return FANXIU_MAGIC_TREASURE_SUBMENU_INDEX;
-  if (matchedMenuPath) return matchedMenuPath;
-  const pluginMenuIndex = findPluginMenuIndex(route.path);
-  if (pluginMenuIndex) return pluginMenuIndex;
-  return route.path;
-});
-
-const canAccessFeature = (key: string) => featureAccessStore.isAllowed(key);
-
-const canAccessMenuPath = (path: string) => {
-  const permissionKey = findPermissionKeyByMenuPath(path);
-  if (!permissionKey) {
-    return false;
+  const matchedMenuPath = getMatchedMenuPath(route) ?? route.path;
+  const matchedNode = findDirectoryNodeByMenuPath(visibleDirectory.value, matchedMenuPath);
+  if (
+    matchedNode
+    && isDirectorySubmenu(matchedNode)
+    && matchedNode.menuItems.some((item) => item.path === matchedMenuPath)
+  ) {
+    return matchedNode.key;
   }
-  return featureAccessStore.isAllowed(permissionKey);
-};
-
-const visiblePluginMenuSections = computed(() =>
-  pluginMenuSections
-    .map((section) => ({
-      ...section,
-      items: section.items.filter((item) =>
-        isPluginMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin)
-        && canAccessMenuPath(item.path),
-      ),
-    }))
-    .filter((section) => canAccessFeature(section.permissionKey ?? section.key) && section.items.length > 0),
-);
-
-const visibleStandalonePluginMenuSections = computed(() =>
-  visiblePluginMenuSections.value.filter((section) => !BUILTIN_MENU_SECTION_KEYS.has(section.key)),
-);
-
-const clusterPluginMenuItems = computed(() =>
-  visiblePluginMenuSections.value
-    .filter((section) => section.key === 'cluster-tools')
-    .flatMap((section) => section.items),
-);
-
-const toolsMenuVisible = computed(() =>
-  canAccessFeature('tools')
-  && [
-    PASSWORD_GENERATOR_PATH,
-    IMAGE_BROWSER_PATH,
-    COLOR_TOOLS_PATH,
-    MUSIC_TOOLS_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const aiToolsMenuVisible = computed(() =>
-  canAccessFeature('ai-tools')
-  && [
-    AI_CONFIG_PATH,
-    CLUSTER_CODEX_PATH,
-    AI_CHAT_PATH,
-    AI_REDUCTION_PATH,
-    AI_GIT_COMMIT_PATH,
-    AI_WECHAT_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const attendanceMenuVisible = computed(() =>
-  canAccessFeature('attendance-tools')
-  && [
-    ATTENDANCE_CONFIGS_PATH,
-    ATTENDANCE_HEADER_TOOL_PATH,
-    ATTENDANCE_WJX_COLLECT_PATH,
-    ATTENDANCE_ORDERS_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const fanxiuMenuVisible = computed(() =>
-  canAccessFeature('fanxiu')
-  && [
-    FANXIU_DATA_ANNOTATION_PATH,
-    FANXIU_WIKI_PATH,
-    FANXIU_ACTIVITY_LIST_PATH,
-    FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
-    FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
-    FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
-    FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
-    FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
-    FANXIU_WARDROBE_HALL_PATH,
-    FANXIU_SPIRIT_BEAST_HALL_PATH,
-    FANXIU_MAGIC_TREASURE_HALL_PATH,
-    FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
-    FANXIU_SPIRIT_ARTIFACT_HALL_PATH,
-    FANXIU_LABELME_PATH,
-    FANXIU_CALCULATOR_PATH,
-    FANXIU_DRAW_CALC_PATH,
-    FANXIU_LOTTERY_MODEL_PATH,
-    FANXIU_DISCOUNT_PATH,
-    FANXIU_RECHARGE_PATH,
-    FANXIU_CUIJIAN_TRIAL_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const fanxiuActivityListMenuVisible = computed(() =>
-  canAccessFeature('fanxiu.activity-list')
-  && [
-    FANXIU_ACTIVITY_LIST_PATH,
-    FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
-    FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
-    FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
-    FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
-    FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH,
-    FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const fanxiuInventoryMenuVisible = computed(() =>
-  canAccessFeature('fanxiu.inventory')
-  && [
-    FANXIU_WARDROBE_HALL_PATH,
-    FANXIU_SPIRIT_BEAST_HALL_PATH,
-    FANXIU_MAGIC_TREASURE_HALL_PATH,
-    FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
-    FANXIU_SPIRIT_ARTIFACT_HALL_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const fanxiuMagicTreasureMenuVisible = computed(() =>
-  [FANXIU_MAGIC_TREASURE_HALL_PATH, FANXIU_MAGIC_TREASURE_FORMATIONS_PATH].some((path) => canAccessMenuPath(path)),
-);
-
-const magicCraftMenuVisible = computed(() =>
-  canAccessFeature('magic-craft')
-  && canAccessMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH),
-);
-
-const zaohuaMenuVisible = computed(() =>
-  canAccessFeature('zaohua')
-  && [ZAOHUA_ALCHEMY_PATH, ZAOHUA_FURNACE_PATH, ZAOHUA_HERB_PATH, ZAOHUA_PASTURE_PATH].some((path) => canAccessMenuPath(path)),
-);
-
-const volcanoPrincessMenuVisible = computed(() =>
-  canAccessFeature('volcano-princess')
-  && [VOLCANO_PRINCESS_AUDIO_PATH, VOLCANO_PRINCESS_THEATER_PATH].some((path) => canAccessMenuPath(path)),
-);
-
-const gameToolsMenuVisible = computed(() =>
-  canAccessFeature('game-tools')
-  && (
-    fanxiuMenuVisible.value
-    || zaohuaMenuVisible.value
-    || volcanoPrincessMenuVisible.value
-    || magicCraftMenuVisible.value
-    || canAccessMenuPath(DSP_CALCULATOR_PATH)
-    || canAccessMenuPath(MYSTIA_WIKI_PATH)
-    || canAccessMenuPath(POKEMON_TCG_CATALOG_PATH)
-  ),
-);
-
-const noteToolsMenuVisible = computed(() =>
-  canAccessFeature('note-tools')
-  && [
-    NOTES_CENTER_MENU_PATH,
-    NOTES_CHAT_DATA_PATH,
-    NOTES_TASK_SYSTEM_PATH,
-    NOTES_COMMON_SITES_PATH,
-    EASTMONEY_TRADE_PATH,
-    EASTMONEY_CALCULATOR_PATH,
-    FREEBILL_PATH,
-    NOTES_SHEETS_MANAGER_PATH,
-    PDF_DOCUMENT_LIBRARY_PATH,
-    NOTES_WECHAT_PATH,
-    NOTES_QQ_PATH,
-    NOTES_WECHAT_STORAGE_PATH,
-    NOTES_MOBILE_SMS_PATH,
-    NOTES_INFINITE_CANVAS_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const notesWechatMenuEntryPath = computed(() =>
-  canAccessMenuPath(NOTES_WECHAT_PATH)
-    ? NOTES_WECHAT_PATH
-    : NOTES_WECHAT_STORAGE_PATH,
-);
-
-const notesCenterMenuEntryPath = computed(() =>
-  canAccessMenuPath(NOTES_CENTER_MENU_PATH)
-    ? NOTES_CENTER_MENU_PATH
-    : NOTES_CHAT_DATA_PATH,
-);
-
-const eastmoneyMenuEntryPath = computed(() =>
-  canAccessMenuPath(EASTMONEY_TRADE_PATH)
-    ? EASTMONEY_TRADE_PATH
-    : EASTMONEY_CALCULATOR_PATH,
-);
-
-const clusterFilesMenuVisible = computed(() =>
-  canAccessMenuPath(CLUSTER_FILES_PATH)
-  || canAccessMenuPath(CLUSTER_VIEW_MN_PATH)
-  || canAccessMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH),
-);
-
-const clusterFilesMenuEntryPath = computed(() =>
-  canAccessMenuPath(CLUSTER_FILES_PATH)
-    ? CLUSTER_FILES_PATH
-    : canAccessMenuPath(CLUSTER_VIEW_MN_PATH)
-      ? CLUSTER_VIEW_MN_PATH
-      : CLUSTER_VIEW_CHAN_COURSE_PATH,
-);
-
-const fanxiuActivityListMenuEntryPath = computed(() =>
-  canAccessMenuPath(FANXIU_ACTIVITY_LIST_PATH)
-    ? FANXIU_ACTIVITY_LIST_PATH
-    : canAccessMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH)
-      ? FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH
-      : canAccessMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH)
-        ? FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH
-        : canAccessMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH)
-          ? FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH
-          : canAccessMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH)
-            ? FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH
-            : canAccessMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH)
-              ? FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH
-              : FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
-);
-
-const fanxiuMagicTreasureMenuEntryPath = computed(() =>
-  canAccessMenuPath(FANXIU_MAGIC_TREASURE_HALL_PATH)
-    ? FANXIU_MAGIC_TREASURE_HALL_PATH
-    : FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
-);
-
-const clusterMenuVisible = computed(() =>
-  canAccessFeature('cluster-tools')
-  && (
-    [
-      CLUSTER_TASKS_PATH,
-      CLUSTER_RIME_CONTEXT_PATH,
-      CLUSTER_SERVICES_PATH,
-      CLUSTER_TREESIZE_PATH,
-      CLUSTER_LABELME_PATH,
-    ].some((path) => canAccessMenuPath(path))
-    || clusterFilesMenuVisible.value
-    || clusterPluginMenuItems.value.length > 0
-  ),
-);
-
-const adminMenuVisible = computed(() =>
-  userStore.isAdmin
-  && canAccessFeature('admin-tools')
-  && [
-    ADMIN_ACCOUNTS_PATH,
-    ADMIN_IMAGES_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
+  return matchedMenuPath;
+});
 
 const defaultOpeneds = computed(() => {
-  const openeds: string[] = [];
-  if (route.path === ATTENDANCE_PATH_PREFIX) return ['attendance-tools'];
-  if (route.path === '/cluster') return ['cluster-tools'];
-  if (route.path === CLUSTER_CODEX_PATH || route.path.startsWith(`${CLUSTER_CODEX_PATH}/`)) {
-    openeds.push('ai-tools');
-  } else if (route.path.startsWith('/cluster/')) {
-    openeds.push('cluster-tools');
-  }
-  if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH, CLUSTER_VIEW_CHAN_COURSE_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
-    openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
-  }
-  if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
-  if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
-  if (route.path.startsWith(ATTENDANCE_PATH_PREFIX)) openeds.push('attendance-tools');
-  if (route.path.startsWith('/tools/')) openeds.push('tools');
-  if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
-  if (route.path === FANXIU_ACTIVITY_LIST_PATH || route.path.startsWith(`${FANXIU_ACTIVITY_LIST_PATH}/`)) {
-    openeds.push(FANXIU_ACTIVITY_LIST_SUBMENU_INDEX);
-  }
-  if (route.path.startsWith('/fanxiu/inventory/')) openeds.push('fanxiu-inventory');
-  if (route.path === FANXIU_MAGIC_TREASURE_HALL_PATH || route.path.startsWith(`${FANXIU_MAGIC_TREASURE_HALL_PATH}/`)) {
-    openeds.push(FANXIU_MAGIC_TREASURE_SUBMENU_INDEX);
-  }
-  if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
-  if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
-  if (route.path.startsWith('/zaohua/')) openeds.push('game-tools', 'zaohua');
-  if (route.path.startsWith('/volcano-princess/')) openeds.push('game-tools', 'volcano-princess');
-  if (route.path.startsWith('/pokemon-tcg/')) openeds.push('game-tools');
-  if (route.path.startsWith('/notes/')) openeds.push('note-tools');
-  if (route.path === NOTES_CENTER_CANONICAL_PATH || route.path === NOTES_CENTER_MENU_PATH || route.path === NOTES_CHAT_DATA_PATH) {
-    openeds.push(NOTES_CENTER_SUBMENU_INDEX);
-  }
-  if (route.path === EASTMONEY_PATH || route.path.startsWith(`${EASTMONEY_PATH}/`)) {
-    openeds.push(EASTMONEY_SUBMENU_INDEX);
-  }
-  if (route.path.startsWith('/notes/wechat')) {
-    openeds.push(NOTES_WECHAT_SUBMENU_INDEX);
-  }
-  openeds.push(...getDefaultPluginOpeneds(route.path));
-  return Array.from(new Set(openeds));
+  const matchedMenuPath = getMatchedMenuPath(route) ?? route.path;
+  return getDirectoryOpenKeys(mainDirectoryNodes.value, matchedMenuPath);
 });
-
 const handleLogout = () => {
   userStore.logout();
   router.push('/login');
@@ -866,7 +393,7 @@ watch(
           <el-icon v-if="isCollapse"><Expand /></el-icon>
           <el-icon v-else><Fold /></el-icon>
         </div>
-        <el-menu
+<el-menu
           :key="menuRenderKey"
           :default-active="activeMenu"
           :default-openeds="defaultOpeneds"
@@ -877,292 +404,12 @@ watch(
           @open="handleMenuStructureChange"
           @close="handleMenuStructureChange"
         >
-          <el-menu-item v-if="canAccessFeature('home')" :index="HOME_PATH">
-            <el-icon><icon-menu /></el-icon>
-            <template #title>{{ HOME_TITLE }}</template>
-          </el-menu-item>
-
-          <el-sub-menu v-if="toolsMenuVisible" index="tools">
-            <template #title>
-              <el-icon><Box /></el-icon>
-              <span>{{ TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(PASSWORD_GENERATOR_PATH)" :index="PASSWORD_GENERATOR_PATH">{{ PASSWORD_GENERATOR_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(IMAGE_BROWSER_PATH)" :index="IMAGE_BROWSER_PATH">{{ IMAGE_BROWSER_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(COLOR_TOOLS_PATH)" :index="COLOR_TOOLS_PATH">{{ COLOR_TOOLS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(MUSIC_TOOLS_PATH)" :index="MUSIC_TOOLS_PATH">{{ MUSIC_TOOLS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(OPEN_SCORE_STUDY_PATH)" :index="OPEN_SCORE_STUDY_PATH">{{ OPEN_SCORE_STUDY_TITLE }}</el-menu-item>
-          </el-sub-menu>
-
-          <el-sub-menu v-if="aiToolsMenuVisible" index="ai-tools">
-            <template #title>
-              <el-icon><ChatDotRound /></el-icon>
-              <span>{{ AI_TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_WECHAT_PATH)" :index="AI_WECHAT_PATH">{{ AI_WECHAT_TITLE }}</el-menu-item>
-          </el-sub-menu>
-
-          <el-sub-menu v-if="attendanceMenuVisible" index="attendance-tools">
-            <template #title>
-              <el-icon><Calendar /></el-icon>
-              <span>{{ ATTENDANCE_TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_CONFIGS_PATH)" :index="ATTENDANCE_CONFIGS_PATH">{{ ATTENDANCE_CONFIGS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_HEADER_TOOL_PATH)" :index="ATTENDANCE_HEADER_TOOL_PATH">{{ ATTENDANCE_HEADER_TOOL_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_COLLECT_PATH)" :index="ATTENDANCE_WJX_COLLECT_PATH">{{ ATTENDANCE_WJX_COLLECT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
-          </el-sub-menu>
-          
-          <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
-            <template #title>
-              <el-icon><MagicStick /></el-icon>
-              <span>{{ GAME_TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(DSP_CALCULATOR_PATH)" :index="DSP_CALCULATOR_PATH">
-              <span>{{ DSP_CALCULATOR_TITLE }}</span>
-            </el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(MYSTIA_WIKI_PATH)" :index="MYSTIA_WIKI_PATH">
-              <span>{{ MYSTIA_WIKI_TITLE }}</span>
-            </el-menu-item>
-            <el-sub-menu v-if="volcanoPrincessMenuVisible" index="volcano-princess">
-              <template #title>
-                <span>{{ VOLCANO_PRINCESS_TITLE }}</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(VOLCANO_PRINCESS_AUDIO_PATH)" :index="VOLCANO_PRINCESS_AUDIO_PATH">
-                {{ VOLCANO_PRINCESS_AUDIO_TITLE }}
-              </el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(VOLCANO_PRINCESS_THEATER_PATH)" :index="VOLCANO_PRINCESS_THEATER_PATH">
-                {{ VOLCANO_PRINCESS_THEATER_TITLE }}
-              </el-menu-item>
-            </el-sub-menu>
-            <el-sub-menu v-if="zaohuaMenuVisible" index="zaohua">
-              <template #title>
-                <span>{{ ZAOHUA_TITLE }}</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_ALCHEMY_PATH)" :index="ZAOHUA_ALCHEMY_PATH">
-                {{ ZAOHUA_ALCHEMY_TITLE }}
-              </el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_FURNACE_PATH)" :index="ZAOHUA_FURNACE_PATH">
-                {{ ZAOHUA_FURNACE_TITLE }}
-              </el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_HERB_PATH)" :index="ZAOHUA_HERB_PATH">
-                {{ ZAOHUA_HERB_TITLE }}
-              </el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(ZAOHUA_PASTURE_PATH)" :index="ZAOHUA_PASTURE_PATH">
-                {{ ZAOHUA_PASTURE_TITLE }}
-              </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath(POKEMON_TCG_CATALOG_PATH)" :index="POKEMON_TCG_CATALOG_PATH">
-              <span>{{ POKEMON_TCG_CATALOG_TITLE }}</span>
-            </el-menu-item>
-            <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
-              <template #title>
-                <span>{{ MAGIC_CRAFT_TITLE }}</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH)" :index="MAGIC_CRAFT_XOR_MATRIX_PATH">{{ MAGIC_CRAFT_XOR_MATRIX_TITLE }}</el-menu-item>
-            </el-sub-menu>
-            <el-sub-menu v-if="fanxiuMenuVisible" index="fanxiu">
-              <template #title>
-                <span>{{ FANXIU_TITLE }}</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_DATA_ANNOTATION_PATH)" :index="FANXIU_DATA_ANNOTATION_PATH">{{ FANXIU_DATA_ANNOTATION_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_DATA_ANNOTATION_RUNTIME_PATH)" :index="FANXIU_DATA_ANNOTATION_RUNTIME_PATH">{{ FANXIU_DATA_ANNOTATION_RUNTIME_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_WIKI_PATH)" :index="FANXIU_WIKI_PATH">{{ FANXIU_WIKI_TITLE }}</el-menu-item>
-              <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">
-                <template #title>
-                  <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath, $event)">
-                    {{ FANXIU_ACTIVITY_LIST_TITLE }}
-                  </span>
-                </template>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH)"
-                  :index="FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH"
-                >
-                  {{ FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE }}
-                </el-menu-item>
-              </el-sub-menu>
-              <el-sub-menu v-if="fanxiuInventoryMenuVisible" index="fanxiu-inventory">
-                <template #title>
-                  <span>{{ FANXIU_INVENTORY_TITLE }}</span>
-                </template>
-                <el-menu-item v-if="canAccessMenuPath(FANXIU_WARDROBE_HALL_PATH)" :index="FANXIU_WARDROBE_HALL_PATH">{{ FANXIU_WARDROBE_HALL_TITLE }}</el-menu-item>
-                <el-menu-item v-if="canAccessMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH)" :index="FANXIU_SPIRIT_BEAST_HALL_PATH">{{ FANXIU_SPIRIT_BEAST_HALL_TITLE }}</el-menu-item>
-                <el-sub-menu v-if="fanxiuMagicTreasureMenuVisible" :index="FANXIU_MAGIC_TREASURE_SUBMENU_INDEX">
-                  <template #title>
-                    <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuMagicTreasureMenuEntryPath, $event)">
-                      {{ FANXIU_MAGIC_TREASURE_HALL_TITLE }}
-                    </span>
-                  </template>
-                  <el-menu-item
-                    v-if="canAccessMenuPath(FANXIU_MAGIC_TREASURE_FORMATIONS_PATH)"
-                    :index="FANXIU_MAGIC_TREASURE_FORMATIONS_PATH"
-                  >
-                    {{ FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE }}
-                  </el-menu-item>
-                </el-sub-menu>
-                <el-menu-item v-if="canAccessMenuPath(FANXIU_SPIRIT_ARTIFACT_HALL_PATH)" :index="FANXIU_SPIRIT_ARTIFACT_HALL_PATH">{{ FANXIU_SPIRIT_ARTIFACT_HALL_TITLE }}</el-menu-item>
-              </el-sub-menu>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_LABELME_PATH)" :index="FANXIU_LABELME_PATH">{{ FANXIU_LABELME_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_CALCULATOR_PATH)" :index="FANXIU_CALCULATOR_PATH">{{ FANXIU_CALCULATOR_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_DRAW_CALC_PATH)" :index="FANXIU_DRAW_CALC_PATH">{{ FANXIU_DRAW_CALC_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_LOTTERY_MODEL_PATH)" :index="FANXIU_LOTTERY_MODEL_PATH">{{ FANXIU_LOTTERY_MODEL_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_DISCOUNT_PATH)" :index="FANXIU_DISCOUNT_PATH">{{ FANXIU_DISCOUNT_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_RECHARGE_PATH)" :index="FANXIU_RECHARGE_PATH">{{ FANXIU_RECHARGE_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_CUIJIAN_TRIAL_PATH)" :index="FANXIU_CUIJIAN_TRIAL_PATH">{{ FANXIU_CUIJIAN_TRIAL_TITLE }}</el-menu-item>
-            </el-sub-menu>
-          </el-sub-menu>
-
-          <el-sub-menu v-if="noteToolsMenuVisible" index="note-tools">
-            <template #title>
-              <el-icon><Document /></el-icon>
-              <span>{{ NOTE_TOOLS_TITLE }}</span>
-            </template>
-            <el-sub-menu
-              v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH) || canAccessMenuPath(NOTES_CHAT_DATA_PATH)"
-              :index="NOTES_CENTER_SUBMENU_INDEX"
-            >
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(notesCenterMenuEntryPath, $event)">
-                  {{ NOTES_CENTER_TITLE }}
-                </span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(NOTES_CHAT_DATA_PATH)" :index="NOTES_CHAT_DATA_PATH">
-                {{ NOTES_CHAT_DATA_TITLE }}
-              </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_GITHUB_PROJECTS_PATH)" :index="NOTES_GITHUB_PROJECTS_PATH">{{ NOTES_GITHUB_PROJECTS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_TASK_SYSTEM_PATH)" :index="NOTES_TASK_SYSTEM_PATH">{{ NOTES_TASK_SYSTEM_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(PDF_DOCUMENT_LIBRARY_PATH)" :index="PDF_DOCUMENT_LIBRARY_PATH">{{ PDF_DOCUMENT_LIBRARY_TITLE }}</el-menu-item>
-            <el-sub-menu
-              v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH) || canAccessMenuPath(EASTMONEY_CALCULATOR_PATH)"
-              :index="EASTMONEY_SUBMENU_INDEX"
-            >
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(eastmoneyMenuEntryPath, $event)">
-                  {{ EASTMONEY_TITLE }}
-                </span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)" :index="EASTMONEY_TRADE_PATH">
-                {{ EASTMONEY_TRADE_TITLE }}
-              </el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_CALCULATOR_PATH)" :index="EASTMONEY_CALCULATOR_PATH">
-                {{ EASTMONEY_CALCULATOR_TITLE }}
-              </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>
-            <el-sub-menu
-              v-if="canAccessMenuPath(NOTES_WECHAT_PATH) || canAccessMenuPath(NOTES_WECHAT_STORAGE_PATH)"
-              :index="NOTES_WECHAT_SUBMENU_INDEX"
-            >
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(notesWechatMenuEntryPath, $event)">
-                  {{ NOTES_WECHAT_TITLE }}
-                </span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(NOTES_WECHAT_STORAGE_PATH)" :index="NOTES_WECHAT_STORAGE_PATH">
-                {{ NOTES_WECHAT_STORAGE_TITLE }}
-              </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_QQ_PATH)" :index="NOTES_QQ_PATH">{{ NOTES_QQ_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_MOBILE_SMS_PATH)" :index="NOTES_MOBILE_SMS_PATH">{{ NOTES_MOBILE_SMS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
-          </el-sub-menu>
-
-          <el-sub-menu
-            v-for="section in visibleStandalonePluginMenuSections"
-            :key="section.key"
-            :index="section.key"
-          >
-            <template #title>
-              <el-icon><Box /></el-icon>
-              <span>{{ section.title }}</span>
-            </template>
-            <el-menu-item
-              v-for="item in section.items"
-              :key="item.key"
-              :index="item.path"
-            >
-              {{ item.title }}
-            </el-menu-item>
-          </el-sub-menu>
-
-          <el-sub-menu v-if="clusterMenuVisible" index="cluster-tools">
-            <template #title>
-              <el-icon><Monitor /></el-icon>
-              <span>{{ CLUSTER_TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_RIME_CONTEXT_PATH)" :index="CLUSTER_RIME_CONTEXT_PATH">{{ CLUSTER_RIME_CONTEXT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_SERVICES_PATH)" :index="CLUSTER_SERVICES_PATH">{{ CLUSTER_SERVICES_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_TREESIZE_PATH)" :index="CLUSTER_TREESIZE_PATH">{{ CLUSTER_TREESIZE_TITLE }}</el-menu-item>
-            <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterFilesMenuEntryPath, $event)">
-                  {{ CLUSTER_FILES_TITLE }}
-                </span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH)" :index="CLUSTER_VIEW_CHAN_COURSE_PATH">{{ CLUSTER_VIEW_CHAN_COURSE_TITLE }}</el-menu-item>
-            </el-sub-menu>
-            <el-menu-item
-              v-for="item in clusterPluginMenuItems"
-              :key="item.key"
-              :index="item.path"
-            >
-              {{ item.title }}
-            </el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_LABELME_PATH)" :index="CLUSTER_LABELME_PATH">{{ CLUSTER_LABELME_TITLE }}</el-menu-item>
-          </el-sub-menu>
-
-          <el-sub-menu v-if="adminMenuVisible" index="admin-tools">
-            <template #title>
-              <el-icon><Setting /></el-icon>
-              <span>{{ ADMIN_TOOLS_TITLE }}</span>
-            </template>
-            <el-menu-item v-if="canAccessMenuPath(ADMIN_ACCOUNTS_PATH)" :index="ADMIN_ACCOUNTS_PATH">
-              <span>{{ ADMIN_ACCOUNTS_TITLE }}</span>
-            </el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(ADMIN_IMAGES_PATH)" :index="ADMIN_IMAGES_PATH">
-              <span>{{ ADMIN_IMAGES_TITLE }}</span>
-            </el-menu-item>
-          </el-sub-menu>
+          <AppDirectoryMenuNode
+            v-for="node in mainDirectoryNodes"
+            :key="node.key"
+            :node="node"
+            @title-navigate="handleMenuTitleNavigate"
+          />
         </el-menu>
 
         <el-menu
@@ -1173,10 +420,12 @@ watch(
           @click.capture="recordMenuPointerIntent"
           @select="handleMenuSelect"
         >
-          <el-menu-item v-if="canAccessMenuPath(AUTHOR_CONTACT_PATH)" :index="AUTHOR_CONTACT_PATH">
-            <el-icon><Message /></el-icon>
-            <template #title>{{ AUTHOR_CONTACT_TITLE }}</template>
-          </el-menu-item>
+          <AppDirectoryMenuNode
+            v-for="node in footerDirectoryNodes"
+            :key="node.key"
+            :node="node"
+            @title-navigate="handleMenuTitleNavigate"
+          />
         </el-menu>
         
         <div class="aside-disclaimer" :class="{ 'collapsed': isCollapse }">

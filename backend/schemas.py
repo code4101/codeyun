@@ -34,11 +34,22 @@ class UserRead(BaseModel):
     is_superuser: bool
 
 
+class AccountUserOption(BaseModel):
+    id: int
+    username: str
+    nickname: str = ""
+
+
+class AccountUserOptionsResponse(BaseModel):
+    users: List[AccountUserOption]
+
+
 class AdminAccountRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     username: str
     nickname: str
+    admin_note: str
     email: Optional[str] = None
     phone: Optional[str] = None
     password_plain: str
