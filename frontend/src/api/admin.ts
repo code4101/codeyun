@@ -158,6 +158,7 @@ export interface AdminAccountSummary {
   id: number;
   username: string;
   nickname: string;
+  admin_note: string;
   email: string | null;
   phone: string | null;
   password_plain: string;
@@ -175,6 +176,7 @@ export const createAdminAccount = async (payload: {
   username: string;
   password: string;
   nickname: string;
+  adminNote: string;
   isSuperuser: boolean;
   isActive: boolean;
   email: string;
@@ -184,6 +186,7 @@ export const createAdminAccount = async (payload: {
     username: payload.username,
     password: payload.password,
     nickname: payload.nickname,
+    admin_note: payload.adminNote,
     is_superuser: payload.isSuperuser,
     is_active: payload.isActive,
     email: payload.email,
@@ -203,6 +206,7 @@ export const resetAdminAccountPassword = async (
 export const updateAdminAccountProfile = async (
   userId: number,
   nickname: string,
+  adminNote: string,
   isSuperuser: boolean,
   isActive: boolean,
   password: string,
@@ -211,6 +215,7 @@ export const updateAdminAccountProfile = async (
 ): Promise<AdminAccountSummary> => {
   const response = await api.post(`/admin/accounts/${userId}/profile`, {
     nickname,
+    admin_note: adminNote,
     is_superuser: isSuperuser,
     is_active: isActive,
     password,

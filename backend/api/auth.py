@@ -1,8 +1,9 @@
 from datetime import timedelta
 import time
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from ..db import get_session
@@ -14,7 +15,14 @@ from backend.core.access.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
 from ..models import User
-from ..schemas import Token, UserCreate, UserRead, UserLogin
+from ..schemas import (
+    AccountUserOption,
+    AccountUserOptionsResponse,
+    Token,
+    UserCreate,
+    UserRead,
+    UserLogin,
+)
 
 router = APIRouter()
 
@@ -121,3 +129,37 @@ def register_user(
 @router.get("/me", response_model=UserRead)
 def read_users_me(current_user: User = Depends(get_current_active_user)):
     return current_user
+
+
+@router.get("/user-options", response_model=AccountUserOptionsResponse)
+def list_account_user_options(
+    q: str = Query(default="", max_length=100),
+    limit: int = Query(default=30, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    query_text = q.strip()
+    statement = (
+        select(User)
+        .where(User.is_active == True)  # noqa: E712
+        .where(User.id != current_user.id)
+    )
+    if query_text:
+        pattern = f"%{query_text}%"
+        statement = statement.where(
+            or_(User.username.like(pattern), User.nickname.like(pattern))
+        )
+    users = session.exec(
+        statement.order_by(User.username.asc(), User.id.asc()).limit(limit)
+    ).all()
+    return AccountUserOptionsResponse(
+        users=[
+            AccountUserOption(
+                id=user.id or 0,
+                username=user.username,
+                nickname=user.nickname or "",
+            )
+            for user in users
+            if user.id is not None
+        ]
+    )

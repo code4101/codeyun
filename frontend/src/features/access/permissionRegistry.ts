@@ -18,12 +18,31 @@ function assertNoDuplicatePermissionKeys(nodes: FeaturePermissionNodeDefinition[
   }
 }
 
+function assertDirectoryMetadataConsistent(nodes: FeaturePermissionNodeDefinition[]) {
+  for (const node of nodes) {
+    if (!node.menu_items) {
+      continue
+    }
+    const itemPaths = node.menu_items.map((item) => item.path)
+    if (new Set(itemPaths).size !== itemPaths.length) {
+      throw new Error(`目录节点存在重复菜单路径：${node.key}`)
+    }
+    if (
+      itemPaths.length !== node.menu_paths.length
+      || itemPaths.some((path, index) => path !== node.menu_paths[index])
+    ) {
+      throw new Error(`目录节点的 menu_items 与 menu_paths 不一致：${node.key}`)
+    }
+  }
+}
+
 const mergedPermissionNodes = [
   ...basePermissionRegistry.nodes,
   ...pluginPermissionNodes,
 ]
 
 assertNoDuplicatePermissionKeys(mergedPermissionNodes)
+assertDirectoryMetadataConsistent(mergedPermissionNodes)
 
 export const permissionRegistry: FeaturePermissionRegistryDefinition = {
   ...basePermissionRegistry,

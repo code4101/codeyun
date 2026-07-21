@@ -352,6 +352,7 @@ def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
     assert calls[0]["use_cursor"] is True
     assert calls[0]["newest_first"] is True
     assert calls[0]["limit"] == 2
+    assert calls[0]["scan_existing_decoded"] is False
     assert result["decoded_record_db_sync"]["skipped"] is True
     assert result["activity_packet_sync"]["skipped"] is True
     assert result["capture_runtime_backstop"]["reason"] == "test_disabled"
@@ -536,7 +537,7 @@ def test_realtime_loop_scans_before_wait(monkeypatch):
     assert calls == 1
 
 
-def test_realtime_scan_runs_latest_mail_business_backlog(monkeypatch):
+def test_realtime_scan_leaves_historical_mail_backlog_to_maintenance(monkeypatch):
     service = worker.FanxiuPacketInsightWorker(maintenance_interval_seconds=60, stable_seconds=1)
     calls: list[dict[str, int]] = []
 
@@ -550,8 +551,37 @@ def test_realtime_scan_runs_latest_mail_business_backlog(monkeypatch):
 
     result = service.scan_once()
 
-    assert calls == [{"latest_limit": 16, "historical_limit": 0}]
-    assert result["mail_business_backlog_sync"] == {"ok": True, "selected_count": 1}
+    assert calls == []
+    assert result["mail_business_backlog_sync"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "historical_mail_backlog_runs_in_maintenance",
+    }
+
+
+def test_realtime_and_maintenance_do_not_compete_with_waiting_catch_up(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(maintenance_interval_seconds=60, stable_seconds=1)
+    realtime_calls: list[dict[str, object]] = []
+    maintenance_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker,
+        "sync_fanxiu_live_capture_backlog",
+        lambda **kwargs: realtime_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_fanxiu_capture_maintenance_backlog",
+        lambda **kwargs: maintenance_calls.append(kwargs) or {"ok": True},
+    )
+
+    service._catch_up_waiting.set()
+    realtime = service.scan_once()
+    maintenance = service.maintenance_once()
+
+    assert realtime["reason"] == "packet_catch_up_pending"
+    assert maintenance["reason"] == "packet_catch_up_pending"
+    assert realtime_calls == []
+    assert maintenance_calls == []
 
 
 def test_realtime_scan_never_runs_historical_maintenance_inline(monkeypatch):

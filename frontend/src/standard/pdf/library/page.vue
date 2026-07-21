@@ -7,30 +7,40 @@ import { Grid, List, Plus, Search } from '@element-plus/icons-vue'
 import {
   createPdfBookshelf,
   deletePdfBookshelf,
+  fetchPdfBookshelfAccess,
   fetchPdfBookshelves,
   fetchPdfDocuments,
   fetchPdfPagePreview,
+  leaveSharedPdfBookshelf,
   movePdfToBookshelf,
   renamePdfBookshelf,
   uploadPdfDocument,
   updatePdfBookshelfLayout,
+  updatePdfBookshelfAccess,
   updatePdfDocumentMetadata,
   updatePdfUserState,
   type PdfBookshelfOrientation,
+  type PdfAccessGrantItem,
+  type PdfAccessGrantUpdate,
   type PdfBookshelfPlacement,
   type PdfDocumentSummary,
   type PdfLibraryBookshelf,
   type PdfResourceRole,
 } from '@/api/pdfDocuments'
 import { useUserStore } from '@/store/userStore'
+import type { AccountUserOption } from '@/api/accountUsers'
+import AccountUserSelect from '@/components/AccountUserSelect.vue'
 import {
   fetchLocalSkillBookCatalog,
+  fetchLocalSkillBookReadingState,
+  updateLocalSkillBookMetadata,
+  updateLocalSkillBookPlacement,
   type SkillBookCatalog,
+  type SkillBookReadingState,
 } from '@/api/skillBooks'
 import { getCachedPreviewPageUrl, loadPreviewPageBlock } from './previewPageCache'
 import SkillBookReaderDialog from './SkillBookReaderDialog.vue'
 
-type PdfFilter = 'all' | 'mine' | 'other'
 type PdfViewMode = 'bookshelf' | 'list'
 
 interface BookContextMenuState {
@@ -45,9 +55,14 @@ interface BookshelfContextMenuState {
   y: number
 }
 
+interface SkillBookContextMenuState {
+  x: number
+  y: number
+}
+
 interface BookshelfBookGroup {
   key: string
-  kind: 'single' | 'horizontal-stack'
+  kind: 'single' | 'horizontal-stack' | 'skill-book'
   documents: PdfDocumentSummary[]
 }
 
@@ -75,7 +90,6 @@ const SPINE_VERTICAL_TEXT_HEIGHT_INSET = 20
 const MAX_COMBINED_VERTICAL_TOKEN_LENGTH = 4
 const COMPACT_VERTICAL_TOKEN_CELL_RATIO = 0.78
 const MIN_TITLE_LENGTH_FOR_SEPARATE_QUALIFIER = 11
-const MAX_HORIZONTAL_STACK_HEIGHT = 286
 const DEFAULT_BOOKSHELF_ROW_COUNT = 12
 const TRAILING_EMPTY_BOOKSHELF_ROW_COUNT = 4
 const BOOK_ORIENTATION_CYCLE: PdfBookshelfOrientation[] = [
@@ -89,12 +103,14 @@ const userStore = useUserStore()
 
 const loading = ref(false)
 const bookshelves = ref<PdfLibraryBookshelf[]>([])
+const ownedBookshelves = computed(() => bookshelves.value.filter((bookshelf) => bookshelf.is_owned))
+const sharedBookshelves = computed(() => bookshelves.value.filter((bookshelf) => !bookshelf.is_owned))
 const selectedBookshelfId = ref('')
 const documents = ref<PdfDocumentSummary[]>([])
 const searchText = ref('')
-const pdfFilter = ref<PdfFilter>('all')
 const viewMode = ref<PdfViewMode>('bookshelf')
 const draggingPdfId = ref<number | null>(null)
+const draggingSkillBook = ref(false)
 const dragOverPdfId = ref<number | null>(null)
 const dragOverShelfIndex = ref<number | null>(null)
 const bookDragOffsetX = ref(0)
@@ -102,8 +118,8 @@ const bookDragOffsetY = ref(0)
 const externalFileDragActive = ref(false)
 const externalPdfDropTarget = ref<ExternalPdfDropTarget | null>(null)
 const importingDroppedPdfs = ref(false)
-const localPdfInput = ref<HTMLInputElement | null>(null)
 const bookContextMenu = ref<BookContextMenuState | null>(null)
+const skillBookContextMenu = ref<SkillBookContextMenuState | null>(null)
 const bookshelfContextMenu = ref<BookshelfContextMenuState | null>(null)
 const metadataEditorVisible = ref(false)
 const metadataEditorSaving = ref(false)
@@ -117,11 +133,22 @@ const previewImageUrl = ref('')
 const previewLoading = ref(false)
 const previewError = ref('')
 const skillBookCatalog = ref<SkillBookCatalog | null>(null)
+const skillBookReadingState = ref<SkillBookReadingState | null>(null)
 const skillBookReaderVisible = ref(false)
+const skillBookMetadataVisible = ref(false)
+const skillBookMetadataSaving = ref(false)
+const skillBookPageFormat = ref('A4')
+const bookshelfShareVisible = ref(false)
+const bookshelfShareLoading = ref(false)
+const bookshelfShareBookshelf = ref<PdfLibraryBookshelf | null>(null)
+const bookshelfShareGrants = ref<PdfAccessGrantItem[]>([])
+const bookshelfShareUsername = ref('')
+const bookshelfShareSelectedUser = ref<AccountUserOption | null>(null)
 const bookCoverImageUrls = ref(new Map<number, string>())
 let titleRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let layoutSaveQueue = Promise.resolve()
 let pointerDragPdfId: number | null = null
+let pointerDragSkillBook = false
 let pointerStartX = 0
 let pointerStartY = 0
 let pointerMoved = false
@@ -135,6 +162,7 @@ const currentUserId = computed(() => userStore.user?.id ?? null)
 const selectedBookshelf = computed(() => bookshelves.value.find(
   (bookshelf) => bookshelf.id === selectedBookshelfId.value,
 ) ?? null)
+const selectedBookshelfIsOwned = computed(() => selectedBookshelf.value?.is_owned !== false)
 const contextBookshelf = computed(() => bookshelves.value.find(
   (bookshelf) => bookshelf.id === bookshelfContextMenu.value?.bookshelfId,
 ) ?? null)
@@ -143,13 +171,6 @@ const normalizedSearchText = computed(() => searchText.value.trim().toLowerCase(
 const filteredDocuments = computed(() => {
   const query = normalizedSearchText.value
   return documents.value.filter((document) => {
-    const isMine = document.owner_user_id != null && document.owner_user_id === currentUserId.value
-    if (pdfFilter.value === 'mine' && !isMine) {
-      return false
-    }
-    if (pdfFilter.value === 'other' && isMine) {
-      return false
-    }
     if (!query) {
       return true
     }
@@ -164,7 +185,7 @@ const filteredDocuments = computed(() => {
 
 const showLocalSkillBook = computed(() => {
   const catalog = skillBookCatalog.value
-  if (!catalog || pdfFilter.value === 'other' || selectedBookshelfId.value !== bookshelves.value[0]?.id) {
+  if (!catalog) {
     return false
   }
   const query = normalizedSearchText.value
@@ -184,10 +205,14 @@ const showLocalSkillBook = computed(() => {
 const hasVisibleLibraryItems = computed(() => showLocalSkillBook.value || filteredDocuments.value.length > 0)
 const skillBookSpineStyle = computed(() => {
   const pages = skillBookCatalog.value?.estimated_page_count ?? 1
+  const currentPage = Math.min(pages, Math.max(1, skillBookReadingState.value?.current_page ?? 1))
+  const readingProgress = pages > 1 ? (currentPage - 1) / (pages - 1) : 0
   const spineWidth = Math.min(104, Math.max(64, Math.round(52 + Math.sqrt(pages) * 2.4)))
+  const pageHeight = skillBookCatalog.value?.page_height_mm ?? 297
+  const bookHeight = Math.round(pageHeight * 286 / 297)
   return {
     '--spine-width': `${spineWidth}px`,
-    '--spine-height': '286px',
+    '--spine-height': `${bookHeight}px`,
     '--book-item-width': `${spineWidth}px`,
     '--spine-font-size': '23px',
     '--book-title-display': 'block',
@@ -196,6 +221,9 @@ const skillBookSpineStyle = computed(() => {
     '--book-cover-color': skillBookCatalog.value?.cover_color ?? '#315f53',
     '--book-cover-ink': '#ffffff',
     '--book-lean': '0deg',
+    '--book-drag-x': draggingSkillBook.value ? `${bookDragOffsetX.value}px` : '0px',
+    '--book-drag-y': draggingSkillBook.value ? `${bookDragOffsetY.value}px` : '0px',
+    '--book-reading-progress': `${(readingProgress * 100).toFixed(2)}%`,
   }
 })
 
@@ -220,16 +248,26 @@ const previewDialogStyle = computed(() => {
 const bookshelfRows = computed(() => {
   return buildBookshelfRows().map((row) => row.filter((document) => filteredDocumentIds.value.has(document.id)))
 })
-const bookshelfDisplayRows = computed(() => bookshelfRows.value.map(buildBookshelfBookGroups))
+const bookshelfDisplayRows = computed(() => bookshelfRows.value.map((row, shelfIndex) => {
+  const groups = buildBookshelfBookGroups(row)
+  const placement = skillBookCatalog.value?.bookshelf_placement
+  if (!showLocalSkillBook.value || !placement || placement.shelf_index !== shelfIndex) {
+    return groups
+  }
+  const insertionIndex = groups.findIndex((group) => (
+    (group.documents[0]?.bookshelf_placement?.position_index ?? Number.MAX_SAFE_INTEGER)
+      >= placement.position_index
+  ))
+  groups.splice(insertionIndex < 0 ? groups.length : insertionIndex, 0, {
+    key: `skill-book-${skillBookCatalog.value?.id ?? 'local'}`,
+    kind: 'skill-book',
+    documents: [],
+  })
+  return groups
+}))
 const externalDropShelfLabel = computed(() => externalPdfDropTarget.value == null
   ? `书柜“${selectedBookshelf.value?.name ?? ''}”`
   : `书柜“${selectedBookshelf.value?.name ?? ''}”第 ${externalPdfDropTarget.value.shelfIndex + 1} 栏`)
-
-const filterOptions: Array<{ value: PdfFilter; label: string }> = [
-  { value: 'all', label: '全部' },
-  { value: 'mine', label: '我创建的' },
-  { value: 'other', label: '其他可访问' },
-]
 
 function accessRoleLabel(role?: PdfResourceRole | null) {
   switch (role) {
@@ -254,25 +292,175 @@ function skillBookTooltip() {
   return [
     tooltipField('书名', catalog.title),
     tooltipField('作者', catalog.author),
+    tooltipField('开本', `${catalog.page_format}（${catalog.page_width_mm} × ${catalog.page_height_mm} mm）`),
     tooltipField('目录', `${catalog.skill_count} 个 Skill / ${catalog.chapter_count} 篇`),
+    tooltipField('页数', `约 ${catalog.estimated_page_count} 页`),
+    ...(skillBookReadingState.value?.updated_at
+      ? [tooltipField('页码', `${skillBookReadingState.value.current_page}/${catalog.estimated_page_count}`)]
+      : []),
     tooltipField('内容', '按需读取本地最新文件'),
   ].join('\n')
 }
 
 function openSkillBookReader() {
+  if (suppressNextBookClick) {
+    return
+  }
   skillBookReaderVisible.value = true
+}
+
+function openSkillBookContextMenu(event: MouseEvent) {
+  if (!skillBookCatalog.value?.is_owned) {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  closeContextMenus()
+  const menuWidth = 128
+  const menuHeight = 42
+  skillBookContextMenu.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+  }
+}
+
+function handleSkillBookPointerDown(event: PointerEvent) {
+  if (event.button !== 0 || !skillBookCatalog.value?.is_owned) {
+    return
+  }
+  pointerDragSkillBook = true
+  pointerStartX = event.clientX
+  pointerStartY = event.clientY
+  pointerMoved = false
+  window.addEventListener('pointermove', handleSkillBookPointerMove, { passive: false })
+  window.addEventListener('pointerup', handleSkillBookPointerUp)
+  window.addEventListener('pointercancel', handleSkillBookPointerCancel, { once: true })
+}
+
+function handleSkillBookPointerMove(event: PointerEvent) {
+  if (!pointerDragSkillBook) {
+    return
+  }
+  if (!pointerMoved && Math.hypot(event.clientX - pointerStartX, event.clientY - pointerStartY) < 6) {
+    return
+  }
+  pointerMoved = true
+  draggingSkillBook.value = true
+  bookDragOffsetX.value = event.clientX - pointerStartX
+  bookDragOffsetY.value = event.clientY - pointerStartY
+  event.preventDefault()
+  const target = document.elementFromPoint(event.clientX, event.clientY)
+  const targetShelf = target?.closest<HTMLElement>('.bookshelf-row')
+  const shelfIndex = Number(targetShelf?.dataset.shelfIndex)
+  if (!Number.isInteger(shelfIndex) || shelfIndex < 0) {
+    dragOverShelfIndex.value = null
+    dragOverPdfId.value = null
+    return
+  }
+  const targetPdfId = Number(target?.closest<HTMLElement>('[data-pdf-id]')?.dataset.pdfId)
+  dragOverShelfIndex.value = shelfIndex
+  dragOverPdfId.value = Number.isInteger(targetPdfId) ? targetPdfId : null
+}
+
+async function handleSkillBookPointerUp(event: PointerEvent) {
+  window.removeEventListener('pointermove', handleSkillBookPointerMove)
+  window.removeEventListener('pointerup', handleSkillBookPointerUp)
+  window.removeEventListener('pointercancel', handleSkillBookPointerCancel)
+  const catalog = skillBookCatalog.value
+  const shelfIndex = dragOverShelfIndex.value
+  if (pointerMoved && catalog && shelfIndex != null) {
+    event.preventDefault()
+    suppressNextBookClick = true
+    const target = documents.value.find((item) => item.id === dragOverPdfId.value)
+    const rowPositions = documents.value
+      .filter((item) => (item.bookshelf_placement?.shelf_index ?? 0) === shelfIndex)
+      .map((item) => item.bookshelf_placement?.position_index ?? 0)
+    const positionIndex = target?.bookshelf_placement?.position_index
+      ?? (Math.max(-1, ...rowPositions) + 1)
+    try {
+      const placement = await updateLocalSkillBookPlacement({
+        bookshelf_id: selectedBookshelfId.value,
+        shelf_index: shelfIndex,
+        position_index: positionIndex,
+        orientation: catalog.bookshelf_placement.orientation,
+      })
+      catalog.bookshelf_placement = placement
+      skillBookCatalog.value = { ...catalog }
+    } catch (error) {
+      console.warn('Failed to move local Skill book:', error)
+      ElMessage.error('保存动态书本位置失败')
+    }
+  }
+  handleSkillBookPointerCancel()
+  setTimeout(() => {
+    suppressNextBookClick = false
+  }, 0)
+}
+
+function handleSkillBookPointerCancel() {
+  window.removeEventListener('pointermove', handleSkillBookPointerMove)
+  window.removeEventListener('pointerup', handleSkillBookPointerUp)
+  pointerDragSkillBook = false
+  pointerMoved = false
+  draggingSkillBook.value = false
+  dragOverShelfIndex.value = null
+  dragOverPdfId.value = null
+  bookDragOffsetX.value = 0
+  bookDragOffsetY.value = 0
+}
+
+function openSkillBookMetadataEditor() {
+  skillBookContextMenu.value = null
+  skillBookPageFormat.value = skillBookCatalog.value?.page_format ?? 'A4'
+  skillBookMetadataVisible.value = true
+}
+
+async function saveSkillBookMetadata() {
+  skillBookMetadataSaving.value = true
+  try {
+    skillBookCatalog.value = await updateLocalSkillBookMetadata({
+      page_format: skillBookPageFormat.value,
+    })
+    skillBookMetadataVisible.value = false
+    skillBookReadingState.value = await fetchLocalSkillBookReadingState()
+    ElMessage.success('动态书本元数据已保存')
+  } catch (error) {
+    console.warn('Failed to update Skill book metadata:', error)
+    ElMessage.error('保存动态书本元数据失败')
+  } finally {
+    skillBookMetadataSaving.value = false
+  }
 }
 
 function handleSkillBookCatalogUpdated(catalog: SkillBookCatalog) {
   skillBookCatalog.value = catalog
 }
 
+function handleSkillBookReadingStateUpdated(state: SkillBookReadingState) {
+  skillBookReadingState.value = state
+}
+
 async function reloadSkillBookCatalog() {
-  try {
-    skillBookCatalog.value = await fetchLocalSkillBookCatalog()
-  } catch (error) {
-    console.warn('Failed to load local Skill book:', error)
+  if (!selectedBookshelfId.value) {
     skillBookCatalog.value = null
+    skillBookReadingState.value = null
+    return
+  }
+  try {
+    skillBookCatalog.value = await fetchLocalSkillBookCatalog(selectedBookshelfId.value)
+  } catch (error) {
+    if ((error as { response?: { status?: number } }).response?.status !== 404) {
+      console.warn('Failed to load local Skill book:', error)
+    }
+    skillBookCatalog.value = null
+    skillBookReadingState.value = null
+    return
+  }
+  try {
+    skillBookReadingState.value = await fetchLocalSkillBookReadingState()
+  } catch (error) {
+    console.warn('Failed to load local Skill reading state:', error)
+    skillBookReadingState.value = null
   }
 }
 
@@ -699,9 +887,13 @@ function bookTooltip(document: PdfDocumentSummary) {
 
 function buildBookshelfRows() {
   const originalOrder = new Map(documents.value.map((document, index) => [document.id, index]))
-  const maxShelfIndex = documents.value.reduce(
+  const maxPdfShelfIndex = documents.value.reduce(
     (maximum, document) => Math.max(maximum, document.bookshelf_placement?.shelf_index ?? 0),
     0,
+  )
+  const maxShelfIndex = Math.max(
+    maxPdfShelfIndex,
+    showLocalSkillBook.value ? (skillBookCatalog.value?.bookshelf_placement.shelf_index ?? 0) : 0,
   )
   const rowCount = Math.max(
     DEFAULT_BOOKSHELF_ROW_COUNT,
@@ -731,12 +923,10 @@ function buildBookshelfRows() {
 function buildBookshelfBookGroups(row: PdfDocumentSummary[]) {
   const groups: BookshelfBookGroup[] = []
   let currentStack: BookshelfBookGroup | null = null
-  let currentStackHeight = 0
 
   for (const document of row) {
     if (bookOrientation(document) !== 'spine_horizontal') {
       currentStack = null
-      currentStackHeight = 0
       groups.push({
         key: `book-${document.id}`,
         kind: 'single',
@@ -745,18 +935,15 @@ function buildBookshelfBookGroups(row: PdfDocumentSummary[]) {
       continue
     }
 
-    const thickness = bookPhysicalGeometry(document).spineWidth
-    if (!currentStack || currentStackHeight + thickness > MAX_HORIZONTAL_STACK_HEIGHT) {
+    if (!currentStack) {
       currentStack = {
         key: `stack-${document.id}`,
         kind: 'horizontal-stack',
         documents: [],
       }
       groups.push(currentStack)
-      currentStackHeight = 0
     }
     currentStack.documents.push(document)
-    currentStackHeight += thickness
   }
 
   return groups
@@ -772,6 +959,7 @@ function clearBookDragState() {
 
 function closeBookContextMenu() {
   bookContextMenu.value = null
+  skillBookContextMenu.value = null
 }
 
 function closeBookshelfContextMenu() {
@@ -784,6 +972,9 @@ function closeContextMenus() {
 }
 
 function openBookContextMenu(event: MouseEvent, pdfId: number) {
+  if (!selectedBookshelfIsOwned.value) {
+    return
+  }
   event.preventDefault()
   event.stopPropagation()
   closeBookshelfContextMenu()
@@ -803,7 +994,9 @@ function openBookshelfContextMenu(event: MouseEvent, bookshelfId: string) {
   closeBookContextMenu()
   const menuWidth = 128
   const bookshelf = bookshelves.value.find((item) => item.id === bookshelfId)
-  const menuHeight = bookshelf?.book_count === 0 ? 79 : 40
+  const menuHeight = bookshelf?.is_owned
+    ? (bookshelf.book_count === 0 ? 116 : 78)
+    : 42
   bookshelfContextMenu.value = {
     bookshelfId,
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -823,6 +1016,9 @@ function nextBookOrientation(orientation: PdfBookshelfOrientation): PdfBookshelf
 }
 
 function rotateBook(pdfId: number) {
+  if (!selectedBookshelfIsOwned.value) {
+    return
+  }
   const document = documents.value.find((item) => item.id === pdfId)
   if (!document) {
     return
@@ -920,7 +1116,7 @@ function handleBookDragOver(pdfId: number, shelfIndex: number) {
 }
 
 function handleBookPointerDown(event: PointerEvent, pdfId: number) {
-  if (event.button !== 0) {
+  if (event.button !== 0 || !selectedBookshelfIsOwned.value) {
     return
   }
   pointerDragPdfId = pdfId
@@ -1144,6 +1340,9 @@ function moveBookToShelf(shelfIndex: number, beforePdfId: number | null = null) 
 }
 
 function queueBookshelfLayoutSave(placements: PdfBookshelfPlacement[]) {
+  if (!selectedBookshelfIsOwned.value) {
+    return
+  }
   layoutSaveQueue = layoutSaveQueue.then(async () => {
     try {
       await updatePdfBookshelfLayout(placements)
@@ -1204,7 +1403,21 @@ function bookshelfSelectionStorageKey() {
 }
 
 async function reloadBookshelves() {
-  const loadedBookshelves = await fetchPdfBookshelves()
+  const [mineResult, sharedResult] = await Promise.allSettled([
+    fetchPdfBookshelves('mine'),
+    fetchPdfBookshelves('shared'),
+  ])
+  if (mineResult.status === 'rejected') {
+    throw mineResult.reason
+  }
+  const mine = mineResult.value
+  const shared = sharedResult.status === 'fulfilled'
+    ? sharedResult.value
+    : sharedBookshelves.value
+  if (sharedResult.status === 'rejected') {
+    console.warn('Failed to refresh shared PDF bookshelves:', sharedResult.reason)
+  }
+  const loadedBookshelves = [...mine, ...shared]
   bookshelves.value = loadedBookshelves
   const savedBookshelfId = localStorage.getItem(bookshelfSelectionStorageKey()) ?? ''
   const preferredBookshelfId = selectedBookshelfId.value || savedBookshelfId
@@ -1212,7 +1425,7 @@ async function reloadBookshelves() {
     (bookshelf) => bookshelf.id === preferredBookshelfId,
   )
     ? preferredBookshelfId
-    : loadedBookshelves[0]?.id ?? ''
+    : mine[0]?.id ?? shared[0]?.id ?? ''
   if (selectedBookshelfId.value) {
     localStorage.setItem(bookshelfSelectionStorageKey(), selectedBookshelfId.value)
   }
@@ -1227,7 +1440,9 @@ async function selectBookshelf(bookshelfId: string) {
   selectedBookshelfId.value = bookshelfId
   localStorage.setItem(bookshelfSelectionStorageKey(), bookshelfId)
   documents.value = []
-  await reloadDocuments()
+  skillBookCatalog.value = null
+  skillBookReadingState.value = null
+  await Promise.all([reloadDocuments(), reloadSkillBookCatalog()])
 }
 
 async function handleCreateBookshelf() {
@@ -1239,7 +1454,7 @@ async function handleCreateBookshelf() {
       inputValidator: (inputValue) => inputValue.trim() ? true : '请输入书柜名称',
     })
     const bookshelf = await createPdfBookshelf(value.trim())
-    bookshelves.value.push(bookshelf)
+    bookshelves.value = [...ownedBookshelves.value, bookshelf, ...sharedBookshelves.value]
     ElMessage.success(`已新建书柜“${bookshelf.name}”`)
   } catch (error) {
     if (error === 'cancel' || error === 'close') {
@@ -1283,6 +1498,111 @@ function renameContextBookshelf() {
   }
 }
 
+async function shareContextBookshelf() {
+  const bookshelf = contextBookshelf.value
+  closeBookshelfContextMenu()
+  if (!bookshelf?.is_owned) {
+    return
+  }
+  bookshelfShareBookshelf.value = bookshelf
+  bookshelfShareVisible.value = true
+  bookshelfShareUsername.value = ''
+  bookshelfShareSelectedUser.value = null
+  bookshelfShareLoading.value = true
+  try {
+    const access = await fetchPdfBookshelfAccess(bookshelf.id)
+    bookshelfShareGrants.value = access.grants.filter((grant) => grant.subject_type === 'user')
+  } catch (error) {
+    console.warn('Failed to load bookshelf access:', error)
+    ElMessage.error('读取书柜分享设置失败')
+    bookshelfShareVisible.value = false
+  } finally {
+    bookshelfShareLoading.value = false
+  }
+}
+
+function addBookshelfShareUser() {
+  const username = bookshelfShareUsername.value.trim()
+  const selectedUser = bookshelfShareSelectedUser.value
+  if (!username || !selectedUser || selectedUser.username !== username) {
+    ElMessage.warning('请从下拉清单中选择账号')
+    return
+  }
+  if (bookshelfShareGrants.value.some((grant) => grant.username.toLowerCase() === username.toLowerCase())) {
+    ElMessage.warning('该账号已在分享清单中')
+    return
+  }
+  bookshelfShareGrants.value.push({
+    subject_type: 'user',
+    subject_key: `draft:${username}`,
+    subject_user_id: selectedUser.id,
+    username,
+    nickname: selectedUser.nickname,
+    role: 'viewer',
+  })
+  bookshelfShareUsername.value = ''
+  bookshelfShareSelectedUser.value = null
+}
+
+function removeBookshelfShareUser(subjectKey: string) {
+  bookshelfShareGrants.value = bookshelfShareGrants.value.filter(
+    (grant) => grant.subject_key !== subjectKey,
+  )
+}
+
+async function saveBookshelfShare() {
+  const bookshelf = bookshelfShareBookshelf.value
+  if (!bookshelf) {
+    return
+  }
+  bookshelfShareLoading.value = true
+  try {
+    const grants: PdfAccessGrantUpdate[] = bookshelfShareGrants.value.map((grant) => ({
+      subject_type: 'user',
+      subject_user_id: grant.subject_user_id ?? null,
+      username: grant.username,
+      role: 'viewer',
+    }))
+    const access = await updatePdfBookshelfAccess(bookshelf.id, grants)
+    bookshelfShareGrants.value = access.grants.filter((grant) => grant.subject_type === 'user')
+    bookshelfShareVisible.value = false
+    ElMessage.success('书柜分享已更新')
+  } catch (error) {
+    console.warn('Failed to update bookshelf access:', error)
+    ElMessage.error('更新分享失败，请确认账号名称')
+  } finally {
+    bookshelfShareLoading.value = false
+  }
+}
+
+async function leaveContextBookshelf() {
+  const bookshelf = contextBookshelf.value
+  closeBookshelfContextMenu()
+  if (!bookshelf || bookshelf.is_owned) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`不再查看 ${bookshelf.owner_username} 分享的“${bookshelf.name}”？`, '退出共享', {
+      confirmButtonText: '退出',
+      cancelButtonText: '取消',
+    })
+    await leaveSharedPdfBookshelf(bookshelf.id)
+    const wasSelected = selectedBookshelfId.value === bookshelf.id
+    await reloadBookshelves()
+    if (wasSelected) {
+      documents.value = []
+      await reloadDocuments()
+    }
+    ElMessage.success('已退出共享书柜')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') {
+      return
+    }
+    console.warn('Failed to leave shared bookshelf:', error)
+    ElMessage.error('退出共享书柜失败')
+  }
+}
+
 async function deleteContextBookshelf() {
   const bookshelf = contextBookshelf.value
   closeBookshelfContextMenu()
@@ -1315,12 +1635,6 @@ async function deleteContextBookshelf() {
   }
 }
 
-function handleImportLocalPdf() {
-  if (!importingDroppedPdfs.value) {
-    localPdfInput.value?.click()
-  }
-}
-
 function hasExternalFiles(event: DragEvent) {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files')
 }
@@ -1349,7 +1663,7 @@ function resolveExternalPdfDropTarget(event: DragEvent): ExternalPdfDropTarget |
 }
 
 function handleExternalFileDragEnter(event: DragEvent) {
-  if (!hasExternalFiles(event) || importingDroppedPdfs.value) {
+  if (!selectedBookshelfIsOwned.value || !hasExternalFiles(event) || importingDroppedPdfs.value) {
     return
   }
   event.preventDefault()
@@ -1359,7 +1673,7 @@ function handleExternalFileDragEnter(event: DragEvent) {
 }
 
 function handleExternalFileDragOver(event: DragEvent) {
-  if (!hasExternalFiles(event) || importingDroppedPdfs.value) {
+  if (!selectedBookshelfIsOwned.value || !hasExternalFiles(event) || importingDroppedPdfs.value) {
     return
   }
   event.preventDefault()
@@ -1419,6 +1733,10 @@ async function importPdfFiles(
   dropTarget: ExternalPdfDropTarget | null = null,
 ) {
   const bookshelfId = selectedBookshelfId.value
+  if (!selectedBookshelfIsOwned.value) {
+    ElMessage.warning('共享书柜为只读')
+    return
+  }
   if (!bookshelfId) {
     ElMessage.error('请先选择书柜')
     return
@@ -1429,22 +1747,32 @@ async function importPdfFiles(
   }
 
   importingDroppedPdfs.value = true
-  let importedCount = 0
+  let uploadedCount = 0
+  let placedCount = 0
   let failedCount = rejectedCount
   const importedPdfIds: number[] = []
   try {
     for (const file of pdfFiles) {
       try {
         const importedDocument = await uploadPdfDocument(file)
-        await movePdfToBookshelf(importedDocument.id, bookshelfId)
+        uploadedCount += 1
+        try {
+          await movePdfToBookshelf(importedDocument.id, bookshelfId)
+          placedCount += 1
+        } catch (error) {
+          console.warn(`Uploaded PDF but failed to place it: ${file.name}`, error)
+        }
         if (!importedPdfIds.includes(importedDocument.id)) {
           importedPdfIds.push(importedDocument.id)
         }
-        importedCount += 1
       } catch (error) {
         failedCount += 1
         console.warn(`Failed to import PDF: ${file.name}`, error)
       }
+    }
+    if (uploadedCount === 0) {
+      ElMessage.error(failedCount > 0 ? 'PDF 均上传失败' : '没有可上传的 PDF')
+      return
     }
     await reloadBookshelves()
     await reloadDocuments()
@@ -1458,33 +1786,24 @@ async function importPdfFiles(
         return
       }
     }
-    if (failedCount === 0) {
-      ElMessage.success(`已导入 ${importedCount} 本图书`)
-    } else if (importedCount > 0) {
-      ElMessage.warning(`已导入 ${importedCount} 本，${failedCount} 个文件失败`)
+    const placementFailedCount = uploadedCount - placedCount
+    if (failedCount === 0 && placementFailedCount === 0) {
+      ElMessage.success(`已导入 ${uploadedCount} 本图书`)
+    } else if (placementFailedCount > 0) {
+      ElMessage.warning(`已上传 ${uploadedCount} 本，其中 ${placementFailedCount} 本暂未放入目标书柜`)
     } else {
-      ElMessage.error('PDF 均导入失败')
+      ElMessage.warning(`已导入 ${uploadedCount} 本，${failedCount} 个文件上传失败`)
     }
   } catch (error) {
     console.warn('Failed to refresh library after dropped PDF import:', error)
-    ElMessage.error('PDF 已上传，但刷新书柜失败')
+    ElMessage.error(`已上传 ${uploadedCount} 本，但刷新本人书柜失败，请重新打开页面`)
   } finally {
     importingDroppedPdfs.value = false
   }
 }
 
-async function handleLocalPdfInputChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const selectedFiles = Array.from(input.files ?? [])
-  input.value = ''
-  const pdfFiles = selectedFiles.filter((file) => (
-    file.type.toLowerCase() === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-  ))
-  await importPdfFiles(pdfFiles, selectedFiles.length - pdfFiles.length)
-}
-
 async function handleExternalFileDrop(event: DragEvent) {
-  if (!hasExternalFiles(event) || importingDroppedPdfs.value) {
+  if (!selectedBookshelfIsOwned.value || !hasExternalFiles(event) || importingDroppedPdfs.value) {
     return
   }
   event.preventDefault()
@@ -1549,7 +1868,7 @@ onBeforeUnmount(() => {
     <header class="library-header">
       <nav class="library-bookshelves" aria-label="书柜">
         <div
-          v-for="bookshelf in bookshelves"
+          v-for="bookshelf in ownedBookshelves"
           :key="bookshelf.id"
           class="library-bookshelf-tab"
           :class="{ active: bookshelf.id === selectedBookshelfId }"
@@ -1574,6 +1893,24 @@ onBeforeUnmount(() => {
         >
           <el-icon><Plus /></el-icon>
         </button>
+        <span v-if="sharedBookshelves.length" class="library-bookshelf-group-label">与我共享</span>
+        <div
+          v-for="bookshelf in sharedBookshelves"
+          :key="bookshelf.id"
+          class="library-bookshelf-tab is-shared"
+          :class="{ active: bookshelf.id === selectedBookshelfId }"
+        >
+          <button
+            type="button"
+            class="library-bookshelf-select"
+            :aria-current="bookshelf.id === selectedBookshelfId ? 'page' : undefined"
+            :title="`${bookshelf.owner_username} 分享的“${bookshelf.name}”（${bookshelf.book_count} 本）`"
+            @click="selectBookshelf(bookshelf.id)"
+            @contextmenu="openBookshelfContextMenu($event, bookshelf.id)"
+          >
+            {{ bookshelf.owner_username }}/{{ bookshelf.name }}
+          </button>
+        </div>
       </nav>
 
       <div class="library-actions">
@@ -1584,16 +1921,6 @@ onBeforeUnmount(() => {
           clearable
           placeholder="搜索图书"
         />
-        <button
-          v-for="option in filterOptions"
-          :key="option.value"
-          type="button"
-          class="filter-button"
-          :class="{ active: pdfFilter === option.value }"
-          @click="pdfFilter = option.value"
-        >
-          {{ option.label }}
-        </button>
         <div class="view-switch" role="group" aria-label="视图方式">
           <button
             type="button"
@@ -1618,20 +1945,6 @@ onBeforeUnmount(() => {
             <el-icon><List /></el-icon>
           </button>
         </div>
-        <input
-          ref="localPdfInput"
-          class="pdf-file-input"
-          type="file"
-          accept="application/pdf,.pdf"
-          multiple
-          @change="handleLocalPdfInputChange"
-        />
-        <el-button
-          type="primary"
-          :icon="Plus"
-          :loading="importingDroppedPdfs"
-          @click="handleImportLocalPdf"
-        >导入本机 PDF</el-button>
       </div>
     </header>
 
@@ -1643,8 +1956,12 @@ onBeforeUnmount(() => {
       @pointerdown.stop
       @contextmenu.prevent
     >
-      <button type="button" role="menuitem" @click="renameContextBookshelf">重命名</button>
-      <template v-if="contextBookshelf?.book_count === 0">
+      <template v-if="contextBookshelf?.is_owned">
+        <button type="button" role="menuitem" @click="renameContextBookshelf">重命名</button>
+        <button type="button" role="menuitem" @click="shareContextBookshelf">分享</button>
+      </template>
+      <button v-else type="button" role="menuitem" @click="leaveContextBookshelf">退出共享</button>
+      <template v-if="contextBookshelf?.is_owned && contextBookshelf.book_count === 0">
         <div class="book-context-menu-separator" role="separator"></div>
         <button class="danger" type="button" role="menuitem" @click="deleteContextBookshelf">删除书柜</button>
       </template>
@@ -1662,7 +1979,7 @@ onBeforeUnmount(() => {
         松开导入到{{ externalDropShelfLabel }}
       </div>
       <div
-        v-if="hasVisibleLibraryItems && viewMode === 'bookshelf'"
+        v-if="viewMode === 'bookshelf' && selectedBookshelfId"
         class="bookshelf-scroll"
         @scroll="closeBookContextMenu"
       >
@@ -1677,23 +1994,6 @@ onBeforeUnmount(() => {
                 || (externalFileDragActive && externalPdfDropTarget?.shelfIndex === shelfIndex),
             }"
           >
-            <button
-              v-if="shelfIndex === 0 && showLocalSkillBook"
-              type="button"
-              class="book-item orientation-spine-vertical skill-book-item"
-              :style="skillBookSpineStyle"
-              :title="skillBookTooltip()"
-              @click="openSkillBookReader"
-            >
-              <span class="book-spine">
-                <span class="book-spine-title">
-                  <span class="book-spine-title-token">本地</span>
-                  <span class="book-spine-title-token is-compact-vertical-token">Skill</span>
-                  <span class="book-spine-title-token">手册</span>
-                </span>
-                <span class="book-spine-author">{{ skillBookCatalog?.author }}</span>
-              </span>
-            </button>
             <div
               v-for="group in row"
               :key="group.key"
@@ -1701,7 +2001,32 @@ onBeforeUnmount(() => {
               :class="{ 'horizontal-book-stack': group.kind === 'horizontal-stack' }"
             >
               <button
-                v-for="document in group.documents"
+                v-if="group.kind === 'skill-book'"
+                type="button"
+                class="book-item orientation-spine-vertical skill-book-item"
+                :class="{ dragging: draggingSkillBook }"
+                :style="skillBookSpineStyle"
+                :title="skillBookTooltip()"
+                @pointerdown="handleSkillBookPointerDown"
+                @click="openSkillBookReader"
+                @contextmenu="openSkillBookContextMenu"
+              >
+                <span
+                  v-if="skillBookReadingState?.updated_at"
+                  class="book-progress-bookmark"
+                  aria-hidden="true"
+                ></span>
+                <span class="book-spine">
+                  <span class="book-spine-title">
+                    <span class="book-spine-title-token">本地</span>
+                    <span class="book-spine-title-token is-compact-vertical-token">Skill</span>
+                    <span class="book-spine-title-token">手册</span>
+                  </span>
+                  <span class="book-spine-author">{{ skillBookCatalog?.author }}</span>
+                </span>
+              </button>
+              <button
+                v-for="document in group.kind === 'skill-book' ? [] : group.documents"
                 :key="document.id"
                 class="book-item"
                 :class="[
@@ -1772,7 +2097,11 @@ onBeforeUnmount(() => {
                 </button>
               </td>
               <td class="pdf-role">本机动态</td>
-              <td class="pdf-current-page">{{ skillBookCatalog.skill_count }} 个 Skill</td>
+              <td class="pdf-current-page">
+                {{ skillBookReadingState?.updated_at
+                  ? `第 ${skillBookReadingState.current_page} / ${skillBookCatalog.estimated_page_count} 页`
+                  : '-' }}
+              </td>
               <td class="pdf-size">{{ skillBookCatalog.chapter_count }} 篇</td>
               <td class="pdf-updated">{{ formatDateTime(skillBookCatalog.updated_at) }}</td>
               <td class="pdf-spacer-cell" aria-hidden="true"></td>
@@ -1811,6 +2140,17 @@ onBeforeUnmount(() => {
       />
 
       <div
+        v-if="skillBookContextMenu && skillBookCatalog?.is_owned"
+        class="book-context-menu"
+        role="menu"
+        :style="{ left: `${skillBookContextMenu.x}px`, top: `${skillBookContextMenu.y}px` }"
+        @pointerdown.stop
+        @contextmenu.prevent
+      >
+        <button type="button" role="menuitem" @click="openSkillBookMetadataEditor">编辑元数据</button>
+      </div>
+
+      <div
         v-if="bookContextMenu"
         class="book-context-menu"
         role="menu"
@@ -1827,6 +2167,49 @@ onBeforeUnmount(() => {
         <button type="button" role="menuitem" @click="rotateContextBook">旋转</button>
       </div>
     </section>
+
+    <el-dialog
+      v-model="bookshelfShareVisible"
+      :title="`分享书柜“${bookshelfShareBookshelf?.name ?? ''}”`"
+      width="min(460px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <div v-loading="bookshelfShareLoading" class="bookshelf-share-editor">
+        <div class="bookshelf-share-picker">
+          <AccountUserSelect
+            v-model="bookshelfShareUsername"
+            class="bookshelf-share-select"
+            placeholder="搜索账号或昵称"
+            :exclude-usernames="bookshelfShareGrants.map(grant => grant.username)"
+            @selected="user => bookshelfShareSelectedUser = user"
+          />
+          <el-button
+            :disabled="!bookshelfShareSelectedUser || bookshelfShareSelectedUser.username !== bookshelfShareUsername"
+            @click="addBookshelfShareUser"
+          >添加</el-button>
+        </div>
+        <div v-if="bookshelfShareGrants.length" class="bookshelf-share-list">
+          <div
+            v-for="grant in bookshelfShareGrants"
+            :key="grant.subject_key"
+            class="bookshelf-share-user"
+          >
+            <span>{{ grant.nickname || grant.username }}</span>
+            <span v-if="grant.nickname && grant.username" class="bookshelf-share-username">{{ grant.username }}</span>
+            <span class="bookshelf-share-role">只读</span>
+            <el-button text type="danger" @click="removeBookshelfShareUser(grant.subject_key)">移除</el-button>
+          </div>
+        </div>
+        <div v-else class="bookshelf-share-empty">尚未分享给其他账号</div>
+      </div>
+      <template #footer>
+        <el-button @click="bookshelfShareVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bookshelfShareLoading" @click="saveBookshelfShare">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="metadataEditorVisible"
@@ -1926,9 +2309,39 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="skillBookMetadataVisible"
+      title="编辑动态书本元数据"
+      width="min(440px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <form class="metadata-editor-form" @submit.prevent="saveSkillBookMetadata">
+        <div class="metadata-editor-field">
+          <label for="skill-book-page-format">纸张规格</label>
+          <el-select id="skill-book-page-format" v-model="skillBookPageFormat">
+            <el-option
+              v-for="option in skillBookCatalog?.page_format_options ?? []"
+              :key="option.value"
+              :label="`${option.label}（${option.width_mm} × ${option.height_mm} mm）`"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+      </form>
+      <template #footer>
+        <el-button @click="skillBookMetadataVisible = false">取消</el-button>
+        <el-button type="primary" :loading="skillBookMetadataSaving" @click="saveSkillBookMetadata">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
     <SkillBookReaderDialog
       v-model="skillBookReaderVisible"
+      :bookshelf-id="selectedBookshelfId"
       @catalog-updated="handleSkillBookCatalogUpdated"
+      @reading-state-updated="handleSkillBookReadingStateUpdated"
     />
   </div>
 </template>
@@ -2030,6 +2443,63 @@ onBeforeUnmount(() => {
   color: #1f5fbe;
 }
 
+.library-bookshelf-group-label {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid #d8dee8;
+  color: #8793a3;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.library-bookshelf-tab.is-shared {
+  color: #65758a;
+}
+
+.bookshelf-share-editor {
+  display: grid;
+  gap: 12px;
+  min-height: 96px;
+}
+
+.bookshelf-share-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bookshelf-share-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.bookshelf-share-list {
+  display: grid;
+  border-top: 1px solid #edf0f4;
+}
+
+.bookshelf-share-user {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.bookshelf-share-username,
+.bookshelf-share-role,
+.bookshelf-share-empty {
+  color: #8793a3;
+  font-size: 12px;
+}
+
+.bookshelf-share-empty {
+  padding: 14px 0;
+  text-align: center;
+}
+
 .library-header {
   flex: 0 0 auto;
   display: flex;
@@ -2049,33 +2519,6 @@ onBeforeUnmount(() => {
 
 .library-search {
   width: 240px;
-}
-
-.pdf-file-input {
-  display: none;
-}
-
-.filter-button {
-  height: 32px;
-  border: 1px solid #d8e0ea;
-  border-radius: 6px;
-  background: #fff;
-  padding: 0 12px;
-  color: #526071;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.filter-button:hover {
-  border-color: #9ab9ee;
-  color: #2f6fd6;
-}
-
-.filter-button.active {
-  border-color: #2f6fd6;
-  background: #edf4ff;
-  color: #1f5fbe;
 }
 
 .pdf-library-content {
@@ -2149,7 +2592,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: grid;
   align-content: start;
-  grid-auto-rows: 312px;
+  grid-auto-rows: auto;
   row-gap: 0;
   width: max-content;
   min-width: 100%;
@@ -2166,8 +2609,8 @@ onBeforeUnmount(() => {
   gap: 3px;
   width: max-content;
   min-width: 100%;
-  height: 312px;
-  padding: 0 0 12px;
+  min-height: 220px;
+  padding: 24px 0 12px;
   transition: background-color 120ms ease;
 }
 
@@ -2191,7 +2634,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 0 0 auto;
   align-items: flex-end;
-  height: 300px;
+  height: auto;
 }
 
 .book-group.horizontal-book-stack {
@@ -2212,7 +2655,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;
   width: var(--book-item-width, var(--spine-width));
-  height: 300px;
+  height: var(--spine-height);
   color: inherit;
   border: 0;
   background: transparent;

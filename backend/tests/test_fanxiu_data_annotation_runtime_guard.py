@@ -6274,6 +6274,7 @@ def test_daily_lundao_is_registered_as_daily_dynamic_recheck_job():
     assert task["schedule_times"] == ["15:55"]
     assert task["window"] == ["15:55", "22:00"]
     assert task["enabled"] is True
+    assert task["retry_policy"] == "immediate"
     assert definition is not None
     assert definition.label == "论道_座位"
     assert definition.scheduler_supported is True
@@ -6476,6 +6477,143 @@ def test_daily_lundao_dynamic_dojo_slot_uses_only_first_visible_title():
     standard = FakeRuntime("至尊")
     runner._click_daily_lundao_dojo(standard, "大罗")
     assert standard.actions == [(296, "大罗道场")]
+
+
+def test_daily_lundao_ingestion_busy_keeps_original_trigger_for_immediate_retry(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import daily_foundation
+
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeRuntime:
+        def wait_scene(self, *scenes, **_kwargs):
+            actions.append(("wait_scene", scenes))
+            yield BehaviorTreeStatus.RUNNING
+            return 297
+
+        def goto_view(self, scene_id):
+            actions.append(("goto_view", scene_id))
+            yield BehaviorTreeStatus.RUNNING
+
+    def fake_return_to_selection(_runtime, scene_id):
+        actions.append(("return_to_selection", scene_id))
+        yield BehaviorTreeStatus.RUNNING
+
+    monkeypatch.setattr(
+        daily_foundation,
+        "read_current_lundao_facts",
+        lambda: {"roster": {"evidence": {"order_key": [1]}}},
+    )
+    monkeypatch.setattr(runner, "_click_daily_lundao_dojo", lambda _runtime, target: actions.append(("click_dojo", target)))
+    monkeypatch.setattr(
+        runner,
+        "_refresh_daily_lundao_packet_facts",
+        lambda **_kwargs: {
+            "status": {"available": True},
+            "roster": {"evidence": {"order_key": [1]}},
+            "packet_catch_up": {"ok": False, "status": "ingestion_busy"},
+        },
+    )
+    monkeypatch.setattr(runner, "_return_daily_lundao_to_selection", fake_return_to_selection)
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_lundao_next_time",
+        lambda *_args, **_kwargs: pytest.fail("temporary ingestion contention must not publish a future next_time"),
+    )
+
+    with pytest.raises(RuntimeError, match="保留原触发时间立即整单重试.*ingestion_busy"):
+        _drain_generator(runner._run_daily_lundao_dynamic_strategy(FakeRuntime(), threading.Event(), {}))
+
+    assert actions == [
+        ("click_dojo", "大罗"),
+        ("wait_scene", (297, 298)),
+        ("return_to_selection", 297),
+        ("goto_view", 34),
+    ]
+
+
+def test_daily_lundao_visible_sanqing_empty_seat_skips_packet_refresh(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import daily_foundation
+
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+    wait_results = iter((297, 298))
+    refresh_count = 0
+    scheduler_times: list[str] = []
+    now_calls = 0
+
+    def fake_now():
+        nonlocal now_calls
+        now_calls += 1
+        return datetime(2026, 7, 21, 16, 0, 0) if now_calls == 1 else datetime(2026, 7, 21, 16, 10, 0)
+
+    monkeypatch.setattr(daily_foundation._runtime_runner, "_now", fake_now)
+
+    class FakeRuntime:
+        def wait_scene(self, *scenes, **_kwargs):
+            result = next(wait_results)
+            actions.append(("wait_scene", scenes, result))
+            yield BehaviorTreeStatus.RUNNING
+            return result
+
+    def fake_refresh(**_kwargs):
+        nonlocal refresh_count
+        refresh_count += 1
+        return {
+            "status": {"available": True, "room_id": None},
+            "roster": {"evidence": {"order_key": [2]}},
+            "packet_catch_up": {"ok": True, "status": "completed"},
+        }
+
+    def fake_return_to_selection(_runtime, scene_id):
+        actions.append(("return_to_selection", scene_id))
+        yield BehaviorTreeStatus.RUNNING
+
+    def fake_room_action(_runtime, _stop_event, *, opportunity):
+        actions.append(("room_action", opportunity))
+        yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(
+        daily_foundation,
+        "read_current_lundao_facts",
+        lambda: {"roster": {"evidence": {"order_key": [1]}}},
+    )
+    monkeypatch.setattr(daily_foundation, "current_lundao_player_profile", lambda: {"available": True})
+    monkeypatch.setattr(
+        daily_foundation,
+        "evaluate_lundao_room_opportunity",
+        lambda *_args, **_kwargs: {"ok": True, "actionable": False},
+    )
+    monkeypatch.setattr(
+        daily_foundation,
+        "plan_lundao_strategy",
+        lambda _status, *, daluo_opportunity, at: (
+            {"action": "retry"} if daluo_opportunity is None else {"action": "seat_sanqing"}
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_daily_lundao_dojo", lambda _runtime, target: actions.append(("click_dojo", target)))
+    monkeypatch.setattr(runner, "_refresh_daily_lundao_packet_facts", fake_refresh)
+    monkeypatch.setattr(runner, "_return_daily_lundao_to_selection", fake_return_to_selection)
+    monkeypatch.setattr(runner, "_daily_lundao_remaining_attempts", lambda _runtime: 1)
+    monkeypatch.setattr(runner, "_run_daily_lundao_room_action", fake_room_action)
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_lundao_next_time",
+        lambda _payload, next_time, *, reason: (
+            scheduler_times.append(next_time),
+            actions.append(("record_next", reason)),
+        ),
+    )
+
+    result = _drain_generator(runner._run_daily_lundao_dynamic_strategy(FakeRuntime(), threading.Event(), {}))
+
+    assert result == "success"
+    assert refresh_count == 1
+    assert ("click_dojo", "三清") in actions
+    assert ("room_action", {"action": "empty"}) in actions
+    assert ("record_next", "三清画面确认有空位，已直接入座") in actions
+    assert scheduler_times == ["2026-07-21 16:40:00"]
 
 
 def test_daily_lundao_dynamic_dojo_slot_stops_on_ambiguous_first_title():

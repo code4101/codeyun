@@ -3,18 +3,18 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import {
-  fetchNoteSheetAccessUsers,
   fetchSheetAccess,
   fetchWorkbookAccess,
   updateSheetAccess,
   updateWorkbookAccess,
-  type NoteSheetAccessUserOption,
   type NoteSheetResourceAccess,
   type NoteSheetResourceAccessGrantItem,
   type NoteSheetResourceAccessGrantUpdate,
   type NoteSheetResourceRole,
   type NoteSheetResourceType,
 } from '@/api/noteSheets'
+import type { AccountUserOption } from '@/api/accountUsers'
+import AccountUserSelect from '@/components/AccountUserSelect.vue'
 
 type AccessAnonymousRole = 'none' | 'viewer'
 
@@ -40,11 +40,8 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const saving = ref(false)
-const accessUserOptionsLoading = ref(false)
-const accessUserOptions = ref<NoteSheetAccessUserOption[]>([])
 const accessAnonymousRole = ref<AccessAnonymousRole>('none')
 const accessUserGrants = ref<AccessUserGrantDraft[]>([])
-let accessUserOptionsRequestId = 0
 
 const resourceLabel = computed(() => (props.resourceType === 'workbook' ? '工作簿' : '工作表'))
 const dialogTitle = computed(() => `设置权限：${props.title || resourceLabel.value}`)
@@ -74,65 +71,10 @@ function createAccessUserGrantDraft(): AccessUserGrantDraft {
   }
 }
 
-function formatAccessUserOptionLabel(user: Pick<NoteSheetAccessUserOption, 'username' | 'nickname'>) {
-  const username = user.username.trim()
-  const nickname = user.nickname.trim()
-  return nickname && nickname !== username ? `${username}（${nickname}）` : username
-}
-
-function mergeAccessUserOptions(users: NoteSheetAccessUserOption[]) {
-  const userMap = new Map<string, NoteSheetAccessUserOption>()
-  for (const user of [...accessUserOptions.value, ...users]) {
-    const username = user.username.trim()
-    if (!username) {
-      continue
-    }
-    userMap.set(username, {
-      id: user.id,
-      username,
-      nickname: user.nickname.trim(),
-    })
-  }
-  accessUserOptions.value = Array.from(userMap.values())
-}
-
-function mergeAccessUserGrantOptions(grants: AccessUserGrantDraft[]) {
-  mergeAccessUserOptions(
-    grants
-      .filter((grant) => grant.username.trim())
-      .map((grant) => ({
-        id: grant.subjectUserId ?? 0,
-        username: grant.username.trim(),
-        nickname: grant.nickname.trim(),
-      })),
-  )
-}
-
-async function loadAccessUserOptions(query = '') {
-  const requestId = accessUserOptionsRequestId + 1
-  accessUserOptionsRequestId = requestId
-  accessUserOptionsLoading.value = true
-  try {
-    const detail = await fetchNoteSheetAccessUsers(query)
-    if (requestId !== accessUserOptionsRequestId) {
-      return
-    }
-    mergeAccessUserOptions(detail.users)
-  } catch (error) {
-    console.warn('Failed to load note sheet access user options:', error)
-  } finally {
-    if (requestId === accessUserOptionsRequestId) {
-      accessUserOptionsLoading.value = false
-    }
-  }
-}
-
-function syncAccessUserGrantSelection(grant: AccessUserGrantDraft) {
-  const username = grant.username.trim()
-  const option = accessUserOptions.value.find((item) => item.username === username)
-  grant.username = username
-  grant.nickname = option?.nickname ?? ''
-  grant.subjectUserId = option?.id ?? null
+function syncAccessUserGrantSelection(grant: AccessUserGrantDraft, user: AccountUserOption | null) {
+  grant.username = user?.username ?? grant.username.trim()
+  grant.nickname = user?.nickname ?? ''
+  grant.subjectUserId = user?.id ?? null
 }
 
 function normalizeAccessDialogFromGrants(grants: NoteSheetResourceAccessGrantItem[]) {
@@ -147,7 +89,6 @@ function normalizeAccessDialogFromGrants(grants: NoteSheetResourceAccessGrantIte
       subjectUserId: grant.subject_user_id ?? null,
       role: grant.role,
     }))
-  mergeAccessUserGrantOptions(accessUserGrants.value)
 }
 
 async function fetchResourceAccess() {
@@ -182,7 +123,6 @@ async function loadAccessDialog() {
       return
     }
     normalizeAccessDialogFromGrants(detail.grants)
-    void loadAccessUserOptions()
   } catch (error) {
     console.warn('Failed to load note sheet resource access grants:', error)
     closeDialog()
@@ -194,9 +134,6 @@ async function loadAccessDialog() {
 
 function addAccessUserGrant() {
   accessUserGrants.value = [...accessUserGrants.value, createAccessUserGrantDraft()]
-  if (accessUserOptions.value.length === 0) {
-    void loadAccessUserOptions()
-  }
 }
 
 function removeAccessUserGrant(key: string) {
@@ -281,34 +218,13 @@ watch(
 
       <div v-if="accessUserGrants.length" class="resource-access-users">
         <div v-for="grant in accessUserGrants" :key="grant.key" class="resource-access-user-row">
-          <el-select
+          <AccountUserSelect
             v-model="grant.username"
             class="resource-access-username"
-            filterable
-            remote
-            clearable
-            allow-create
-            default-first-option
-            reserve-keyword
             placeholder="选择用户"
-            :loading="accessUserOptionsLoading"
-            :remote-method="loadAccessUserOptions"
-            :title="formatAccessUserOptionLabel(grant)"
-            @change="() => syncAccessUserGrantSelection(grant)"
-            @visible-change="visible => visible && loadAccessUserOptions()"
-          >
-            <el-option
-              v-for="user in accessUserOptions"
-              :key="user.username"
-              :value="user.username"
-              :label="formatAccessUserOptionLabel(user)"
-            >
-              <div class="resource-access-user-option">
-                <span class="resource-access-user-option-name">{{ user.username }}</span>
-                <span v-if="user.nickname" class="resource-access-user-option-nickname">{{ user.nickname }}</span>
-              </div>
-            </el-option>
-          </el-select>
+            :exclude-usernames="accessUserGrants.filter(item => item.key !== grant.key).map(item => item.username)"
+            @selected="user => syncAccessUserGrantSelection(grant, user)"
+          />
           <el-select v-model="grant.role" class="resource-access-role">
             <el-option
               v-for="option in userAccessRoleOptions"

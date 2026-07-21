@@ -21,6 +21,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             User(
                 username="root",
                 nickname="主账号",
+                admin_note="服务器所有者",
                 email="root@example.com",
                 phone="13800000001",
                 hashed_password="hashed",
@@ -35,6 +36,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             User(
                 username="alice",
                 nickname="测试用户",
+                admin_note="项目 A 验收账号",
                 email="alice@example.com",
                 phone=None,
                 hashed_password="hashed",
@@ -49,6 +51,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             User(
                 username="bob",
                 nickname="",
+                admin_note="",
                 email=None,
                 phone=None,
                 hashed_password="hashed",
@@ -92,6 +95,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             "id": 1,
             "username": "root",
             "nickname": "主账号",
+            "admin_note": "服务器所有者",
             "email": "root@example.com",
             "phone": "13800000001",
             "password_plain": "root-secret",
@@ -103,6 +107,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             "id": 3,
             "username": "bob",
             "nickname": "",
+            "admin_note": "",
             "email": None,
             "phone": None,
             "password_plain": "未知",
@@ -114,6 +119,7 @@ def test_admin_accounts_lists_all_accounts_for_superuser():
             "id": 2,
             "username": "alice",
             "nickname": "测试用户",
+            "admin_note": "项目 A 验收账号",
             "email": "alice@example.com",
             "phone": None,
             "password_plain": "alice-plain",
@@ -161,6 +167,7 @@ def test_admin_can_create_account():
             "username": "new-admin",
             "password": "new-secret",
             "nickname": "新账号",
+            "admin_note": "运维备用账号",
             "is_superuser": True,
             "email": "new-admin@example.com",
             "phone": "13612345678",
@@ -170,6 +177,7 @@ def test_admin_can_create_account():
     assert response.status_code == 200
     assert response.json()["username"] == "new-admin"
     assert response.json()["nickname"] == "新账号"
+    assert response.json()["admin_note"] == "运维备用账号"
     assert response.json()["is_superuser"] is True
     assert response.json()["email"] == "new-admin@example.com"
     assert response.json()["phone"] == "13612345678"
@@ -180,6 +188,7 @@ def test_admin_can_create_account():
         user = session.exec(select(User).where(User.username == "new-admin")).one()
 
     assert user.nickname == "新账号"
+    assert user.admin_note == "运维备用账号"
     assert user.is_superuser is True
     assert user.email == "new-admin@example.com"
     assert user.phone == "13612345678"
@@ -304,6 +313,7 @@ def test_admin_can_update_account_profile():
         "/api/admin/accounts/1/profile",
         json={
             "nickname": "项目A测试号",
+            "admin_note": "项目 A 的自动化验收身份",
             "is_superuser": True,
             "password": "profile-secret",
             "email": "project-a@example.com",
@@ -313,6 +323,7 @@ def test_admin_can_update_account_profile():
 
     assert response.status_code == 200
     assert response.json()["nickname"] == "项目A测试号"
+    assert response.json()["admin_note"] == "项目 A 的自动化验收身份"
     assert response.json()["is_superuser"] is True
     assert response.json()["password_plain"] == "profile-secret"
     assert response.json()["email"] == "project-a@example.com"
@@ -322,6 +333,7 @@ def test_admin_can_update_account_profile():
         user = session.exec(select(User).where(User.id == 1)).one()
 
     assert user.nickname == "项目A测试号"
+    assert user.admin_note == "项目 A 的自动化验收身份"
     assert user.is_superuser is True
     assert user.password_plain == "profile-secret"
     assert verify_password("profile-secret", user.hashed_password)

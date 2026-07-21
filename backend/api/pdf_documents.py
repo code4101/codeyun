@@ -42,6 +42,8 @@ from backend.core.temp_paths import codeyun_temp_root
 from backend.db import get_session
 from backend.models import (
     DeviceFile,
+    LibraryBookAsset,
+    LibraryBookPlacement,
     PdfBookshelfPlacement,
     PdfDocument,
     PdfLibraryBookshelf,
@@ -58,6 +60,7 @@ from backend.core.resources.identity import RESOURCE_TYPE_PDF, allocate_resource
 router = APIRouter()
 
 PDF_RESOURCE_TYPE = "pdf"
+LIBRARY_BOOKSHELF_RESOURCE_TYPE = "library-bookshelf"
 PDF_HOSTED_ENTRY_ID = "codeyun-pdf-store"
 PDF_HOSTED_DEVICE_ID = "codeyun-pdf-store"
 PDF_CONTENT_TOKEN_SCOPE = "pdf-document-content"
@@ -69,6 +72,8 @@ PDF_TITLE_NAMING_PROVIDER_ID = "codex-cli"
 PDF_PAGE_PREVIEW_MAX_WIDTH = 1280
 PDF_PAGE_PREVIEW_RENDER_VERSION = 2
 PDF_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
+PDF_UPLOAD_CHUNK_BYTES = 512 * 1024
+PDF_UPLOAD_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 DEFAULT_PDF_BOOKSHELF_NAMES = ("1", "2", "4", "5")
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
@@ -89,6 +94,17 @@ class PdfFileSelector(BaseModel):
 
 class PdfLocalImportRequest(BaseModel):
     absolute_path: str
+
+
+class PdfUploadSessionCreateRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=512)
+    size_bytes: int = Field(ge=1, le=PDF_UPLOAD_MAX_BYTES)
+
+
+class PdfUploadSessionPayload(BaseModel):
+    upload_id: str
+    chunk_size: int = PDF_UPLOAD_CHUNK_BYTES
+    received_bytes: int = 0
 
 
 class PdfAccessCapabilities(BaseModel):
@@ -144,6 +160,10 @@ class PdfLibraryBookshelfPayload(BaseModel):
     name: str
     sort_index: int
     book_count: int = 0
+    owner_user_id: int
+    owner_username: str = ""
+    is_owned: bool = True
+    access: PdfResourceAccess = Field(default_factory=PdfResourceAccess)
 
 
 class PdfLibraryBookshelfCreateRequest(BaseModel):
@@ -215,6 +235,13 @@ class PdfAccessUpdateRequest(BaseModel):
 class PdfAccessResponse(BaseModel):
     resource_type: Literal["pdf"] = "pdf"
     resource_id: int
+    access: PdfResourceAccess
+    grants: list[PdfAccessGrantItem] = Field(default_factory=list)
+
+
+class PdfBookshelfAccessResponse(BaseModel):
+    resource_type: Literal["library-bookshelf"] = LIBRARY_BOOKSHELF_RESOURCE_TYPE
+    resource_id: str
     access: PdfResourceAccess
     grants: list[PdfAccessGrantItem] = Field(default_factory=list)
 
@@ -314,10 +341,15 @@ def _current_user_subject_keys(current_user: User | None) -> list[str]:
     ]
 
 
-def _fetch_resource_grants(session: Session, resource_id: str) -> list[ResourceAccessGrant]:
+def _fetch_resource_grants(
+    session: Session,
+    resource_id: str,
+    *,
+    resource_type: str = PDF_RESOURCE_TYPE,
+) -> list[ResourceAccessGrant]:
     return list(session.exec(
         select(ResourceAccessGrant)
-        .where(ResourceAccessGrant.resource_type == PDF_RESOURCE_TYPE)
+        .where(ResourceAccessGrant.resource_type == resource_type)
         .where(ResourceAccessGrant.resource_id == resource_id)
     ).all())
 
@@ -341,7 +373,7 @@ def _is_superuser_or_owner(current_user: User | None, owner_user_id: int | None)
     )
 
 
-def _resolve_pdf_resource_access(
+def _resolve_direct_pdf_resource_access(
     session: Session,
     document: PdfDocument,
     current_user: User | None,
@@ -350,6 +382,71 @@ def _resolve_pdf_resource_access(
         return _build_resource_access("manager", current_user)
     role = _resolve_subject_grant_role(_fetch_resource_grants(session, _pdf_resource_id(document)), current_user)
     return _build_resource_access(role, current_user)
+
+
+def _resolve_bookshelf_resource_access(
+    session: Session,
+    bookshelf: PdfLibraryBookshelf,
+    current_user: User | None,
+) -> PdfResourceAccess:
+    if _is_superuser_or_owner(current_user, bookshelf.user_id):
+        return _build_resource_access("manager", current_user)
+    role = _resolve_subject_grant_role(
+        _fetch_resource_grants(
+            session,
+            bookshelf.id,
+            resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
+        ),
+        current_user,
+    )
+    return _build_resource_access(role, current_user)
+
+
+def _bookshelf_owner_can_reshare_pdf(
+    session: Session,
+    bookshelf: PdfLibraryBookshelf,
+    document: PdfDocument,
+) -> bool:
+    if bookshelf.user_id == document.owner_user_id:
+        return True
+    owner = session.get(User, bookshelf.user_id)
+    if owner is None:
+        return False
+    owner_access = _resolve_direct_pdf_resource_access(session, document, owner)
+    return owner_access.capabilities.can_manage_access
+
+
+def _resolve_pdf_resource_access(
+    session: Session,
+    document: PdfDocument,
+    current_user: User | None,
+) -> PdfResourceAccess:
+    direct_access = _resolve_direct_pdf_resource_access(session, document, current_user)
+    if direct_access.role == "deny" or direct_access.capabilities.can_read:
+        return direct_access
+
+    placements = session.exec(
+        select(PdfBookshelfPlacement).where(
+            PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document))
+        )
+    ).all()
+    if not placements:
+        return direct_access
+    bookshelf_ids = {placement.bookshelf_id for placement in placements if placement.bookshelf_id}
+    if not bookshelf_ids:
+        return direct_access
+    bookshelves = session.exec(
+        select(PdfLibraryBookshelf).where(PdfLibraryBookshelf.id.in_(bookshelf_ids))
+    ).all()
+    bookshelf_map = {bookshelf.id: bookshelf for bookshelf in bookshelves}
+    for placement in placements:
+        bookshelf = bookshelf_map.get(placement.bookshelf_id or "")
+        if bookshelf is None or not _bookshelf_owner_can_reshare_pdf(session, bookshelf, document):
+            continue
+        shelf_access = _resolve_bookshelf_resource_access(session, bookshelf, current_user)
+        if shelf_access.capabilities.can_read:
+            return _build_resource_access("viewer", current_user)
+    return direct_access
 
 
 def _require_resource_access(
@@ -475,6 +572,21 @@ def _get_pdf_library_bookshelf_or_404(
     return bookshelf
 
 
+def _get_accessible_pdf_library_bookshelf_or_404(
+    session: Session,
+    current_user: User,
+    bookshelf_id: str,
+    *,
+    required_role: Literal["viewer", "editor", "manager"] = "viewer",
+) -> tuple[PdfLibraryBookshelf, PdfResourceAccess]:
+    bookshelf = session.get(PdfLibraryBookshelf, bookshelf_id)
+    if bookshelf is None:
+        raise HTTPException(status_code=404, detail="书柜不存在")
+    access = _resolve_bookshelf_resource_access(session, bookshelf, current_user)
+    _require_resource_access(access, required_role)
+    return bookshelf, access
+
+
 def _ensure_pdf_library_memberships(
     session: Session,
     current_user: User,
@@ -547,12 +659,22 @@ def _ensure_pdf_library_memberships(
 
 
 def _serialize_library_bookshelves(
+    session: Session,
     bookshelves: list[PdfLibraryBookshelf],
     placements: dict[str, PdfBookshelfPlacement],
+    *,
+    current_user: User,
 ) -> list[PdfLibraryBookshelfPayload]:
     counts = Counter(
         placement.bookshelf_id
         for placement in placements.values()
+        if placement.bookshelf_id is not None
+    )
+    counts.update(
+        placement.bookshelf_id
+        for placement in session.exec(
+            select(LibraryBookPlacement).where(LibraryBookPlacement.user_id == current_user.id)
+        ).all()
         if placement.bookshelf_id is not None
     )
     return [
@@ -561,9 +683,81 @@ def _serialize_library_bookshelves(
             name=bookshelf.name,
             sort_index=bookshelf.sort_index,
             book_count=counts[bookshelf.id],
+            owner_user_id=bookshelf.user_id,
+            owner_username=current_user.username,
+            is_owned=True,
+            access=_build_resource_access("manager", current_user),
         )
         for bookshelf in bookshelves
     ]
+
+
+def _list_bookshelf_document_rows(
+    session: Session,
+    bookshelf: PdfLibraryBookshelf,
+) -> list[tuple[PdfBookshelfPlacement, PdfDocument]]:
+    placements = list(session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.user_id == bookshelf.user_id)
+        .where(PdfBookshelfPlacement.bookshelf_id == bookshelf.id)
+        .order_by(PdfBookshelfPlacement.shelf_index, PdfBookshelfPlacement.position_index)
+    ).all())
+    numeric_ids = sorted({
+        int(placement.pdf_document_id)
+        for placement in placements
+        if str(placement.pdf_document_id).isdigit()
+    })
+    documents = list(session.exec(
+        select(PdfDocument).where(PdfDocument.numeric_id.in_(numeric_ids))
+    ).all()) if numeric_ids else []
+    document_by_ref: dict[str, PdfDocument] = {}
+    for document in documents:
+        for ref in _pdf_document_ref_candidates(document):
+            document_by_ref[ref] = document
+    return [
+        (placement, document_by_ref[placement.pdf_document_id])
+        for placement in placements
+        if placement.pdf_document_id in document_by_ref
+    ]
+
+
+def _serialize_shared_bookshelf(
+    session: Session,
+    bookshelf: PdfLibraryBookshelf,
+    current_user: User,
+    access: PdfResourceAccess,
+) -> PdfLibraryBookshelfPayload:
+    owner = session.get(User, bookshelf.user_id)
+    book_count = sum(
+        1
+        for _placement, document in _list_bookshelf_document_rows(session, bookshelf)
+        if _bookshelf_owner_can_reshare_pdf(session, bookshelf, document)
+    )
+    dynamic_asset_ids = {
+        asset.id
+        for asset in session.exec(
+            select(LibraryBookAsset).where(LibraryBookAsset.owner_user_id == bookshelf.user_id)
+        ).all()
+    }
+    book_count += sum(
+        1
+        for placement in session.exec(
+            select(LibraryBookPlacement)
+            .where(LibraryBookPlacement.user_id == bookshelf.user_id)
+            .where(LibraryBookPlacement.bookshelf_id == bookshelf.id)
+        ).all()
+        if placement.book_asset_id in dynamic_asset_ids
+    )
+    return PdfLibraryBookshelfPayload(
+        id=bookshelf.id,
+        name=bookshelf.name,
+        sort_index=bookshelf.sort_index,
+        book_count=book_count,
+        owner_user_id=bookshelf.user_id,
+        owner_username=owner.username if owner is not None else "",
+        is_owned=bookshelf.user_id == current_user.id,
+        access=access,
+    )
 
 
 def _serialize_user_state(state: PdfUserState | None) -> PdfUserStatePayload | None:
@@ -599,13 +793,16 @@ def _get_bookshelf_placement(
     session: Session,
     document: PdfDocument,
     current_user: User | None,
+    *,
+    placement_user_id: int | None = None,
 ) -> PdfBookshelfPlacement | None:
-    if current_user is None:
+    resolved_user_id = placement_user_id if placement_user_id is not None else (current_user.id if current_user else None)
+    if resolved_user_id is None:
         return None
     placement = session.exec(
         select(PdfBookshelfPlacement)
         .where(PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
-        .where(PdfBookshelfPlacement.user_id == current_user.id)
+        .where(PdfBookshelfPlacement.user_id == resolved_user_id)
     ).first()
     public_ref = _pdf_resource_id(document)
     if placement is not None and placement.pdf_document_id != public_ref:
@@ -622,8 +819,15 @@ def _serialize_pdf_detail(
     *,
     current_user: User | None,
     access: PdfResourceAccess,
+    placement_user_id: int | None = None,
 ) -> PdfDocumentDetail:
-    bookshelf_placement = _get_bookshelf_placement(session, document, current_user)
+    bookshelf_placement = _get_bookshelf_placement(
+        session,
+        document,
+        current_user,
+        placement_user_id=placement_user_id,
+    )
+    can_see_source = access.capabilities.can_manage_access
     return PdfDocumentDetail(
         id=_require_pdf_numeric_id(document),
         title=document.title or "未命名 PDF",
@@ -631,8 +835,8 @@ def _serialize_pdf_detail(
         display_author=_pdf_display_author(document),
         display_title_status=_pdf_display_title_status(document),
         owner_user_id=document.owner_user_id,
-        source_device_id=document.source_device_id or "",
-        source_absolute_path=document.source_absolute_path or "",
+        source_device_id=(document.source_device_id or "") if can_see_source else "",
+        source_absolute_path=(document.source_absolute_path or "") if can_see_source else "",
         mime_type=document.mime_type or "application/pdf",
         size_bytes=document.size_bytes,
         content_hash=document.content_hash,
@@ -656,8 +860,15 @@ def _serialize_pdf_summary(
     *,
     current_user: User,
     access: PdfResourceAccess,
+    placement_user_id: int | None = None,
 ) -> PdfDocumentSummary:
-    detail = _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+    detail = _serialize_pdf_detail(
+        session,
+        document,
+        current_user=current_user,
+        access=access,
+        placement_user_id=placement_user_id,
+    )
     return PdfDocumentSummary(**detail.model_dump())
 
 
@@ -1446,17 +1657,57 @@ def _create_or_update_hosted_pdf_document(
     return document
 
 
+def _pdf_upload_session_paths(upload_id: str) -> tuple[Path, Path]:
+    if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
+        raise HTTPException(status_code=404, detail="上传任务不存在")
+    session_root = codeyun_temp_root("pdf_upload_sessions")
+    return session_root / f"{upload_id}.json", session_root / f"{upload_id}.part"
+
+
+def _cleanup_stale_pdf_upload_sessions() -> None:
+    session_root = codeyun_temp_root("pdf_upload_sessions")
+    cutoff = time.time() - PDF_UPLOAD_SESSION_MAX_AGE_SECONDS
+    for metadata_path in session_root.glob("*.json"):
+        try:
+            if metadata_path.stat().st_mtime >= cutoff:
+                continue
+            upload_id = metadata_path.stem
+            metadata_path.unlink(missing_ok=True)
+            (session_root / f"{upload_id}.part").unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _load_pdf_upload_session(upload_id: str, current_user: User) -> tuple[dict[str, Any], Path, Path]:
+    metadata_path, content_path = _pdf_upload_session_paths(upload_id)
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="上传任务不存在") from None
+    if metadata.get("user_id") != current_user.id:
+        raise HTTPException(status_code=404, detail="上传任务不存在")
+    return metadata, metadata_path, content_path
+
+
+def _delete_pdf_upload_session(upload_id: str, current_user: User) -> None:
+    _metadata, metadata_path, content_path = _load_pdf_upload_session(upload_id, current_user)
+    metadata_path.unlink(missing_ok=True)
+    content_path.unlink(missing_ok=True)
+
+
 def _save_resource_access_grants(
     session: Session,
     *,
     resource_id: str,
     payload: PdfAccessUpdateRequest,
     current_user: User,
+    resource_type: str = PDF_RESOURCE_TYPE,
+    viewer_only: bool = False,
 ) -> None:
     now = time.time()
     existing = {
         grant.subject_key: grant
-        for grant in _fetch_resource_grants(session, resource_id)
+        for grant in _fetch_resource_grants(session, resource_id, resource_type=resource_type)
     }
     normalized_items: dict[str, tuple[str, int | None, str]] = {}
 
@@ -1473,6 +1724,8 @@ def _save_resource_access_grants(
                 user = session.exec(select(User).where(User.username == item.username.strip())).first()
             if user is None:
                 raise HTTPException(status_code=400, detail="用户不存在")
+            if viewer_only and user.id == current_user.id:
+                raise HTTPException(status_code=400, detail="不能把书柜分享给自己")
             subject_type = RESOURCE_ACCESS_SUBJECT_USER
             subject_user_id = user.id
             subject_key = _build_resource_subject_key(subject_type, subject_user_id)
@@ -1482,6 +1735,10 @@ def _save_resource_access_grants(
         role = _normalize_resource_role(item.role)
         if role is None:
             raise HTTPException(status_code=400, detail="非法权限角色")
+        if viewer_only and role != "viewer":
+            raise HTTPException(status_code=400, detail="书柜当前只支持只读分享")
+        if viewer_only and subject_type != RESOURCE_ACCESS_SUBJECT_USER:
+            raise HTTPException(status_code=400, detail="书柜当前只支持分享给指定账号")
         if subject_type == RESOURCE_ACCESS_SUBJECT_ANONYMOUS and role in {"editor", "manager"}:
             raise HTTPException(status_code=400, detail="游客不能拥有编辑权限")
         normalized_items[subject_key] = (subject_type, subject_user_id, role)
@@ -1494,7 +1751,7 @@ def _save_resource_access_grants(
         grant = existing.get(subject_key)
         if grant is None:
             grant = ResourceAccessGrant(
-                resource_type=PDF_RESOURCE_TYPE,
+                resource_type=resource_type,
                 resource_id=resource_id,
                 subject_key=subject_key,
                 subject_type=subject_type,
@@ -1513,8 +1770,13 @@ def _save_resource_access_grants(
         session.add(grant)
 
 
-def _serialize_access_grants(session: Session, resource_id: str) -> list[PdfAccessGrantItem]:
-    grants = _fetch_resource_grants(session, resource_id)
+def _serialize_access_grants(
+    session: Session,
+    resource_id: str,
+    *,
+    resource_type: str = PDF_RESOURCE_TYPE,
+) -> list[PdfAccessGrantItem]:
+    grants = _fetch_resource_grants(session, resource_id, resource_type=resource_type)
     user_ids = sorted({
         int(grant.subject_user_id)
         for grant in grants
@@ -1547,12 +1809,14 @@ def _build_access_response(session: Session, document: PdfDocument, access: PdfR
     )
 
 
-def _create_pdf_content_token(document: PdfDocument) -> str:
+def _create_pdf_content_token(document: PdfDocument, current_user: User | None) -> str:
     return create_access_token(
         {
             "sub": PDF_CONTENT_TOKEN_SCOPE,
             "scope": PDF_CONTENT_TOKEN_SCOPE,
             "pdf_document_id": document.id,
+            "viewer_user_id": current_user.id if current_user is not None else None,
+            "jti": uuid.uuid4().hex,
         },
         expires_delta=timedelta(minutes=PDF_CONTENT_TOKEN_EXPIRE_MINUTES),
     )
@@ -1569,6 +1833,12 @@ def _decode_pdf_content_token(session: Session, pdf_id: int, token: str) -> PdfD
     document = _get_pdf_by_numeric_id_or_404(session, pdf_id)
     if payload.get("pdf_document_id") != document.id:
         raise credentials_exception
+    viewer_user_id = payload.get("viewer_user_id")
+    viewer = session.get(User, viewer_user_id) if isinstance(viewer_user_id, int) else None
+    if viewer_user_id is not None and viewer is None:
+        raise credentials_exception
+    access = _resolve_pdf_resource_access(session, document, viewer)
+    _require_resource_access(access, "viewer")
     return document
 
 
@@ -1777,11 +2047,144 @@ async def upload_pdf_document(
         temp_path.unlink(missing_ok=True)
 
 
-@router.get("/bookshelves", response_model=list[PdfLibraryBookshelfPayload])
-def list_pdf_library_bookshelves(
+@router.post("/upload-sessions", response_model=PdfUploadSessionPayload)
+def create_pdf_upload_session(
+    payload: PdfUploadSessionCreateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    filename = _basename(payload.filename)
+    if not _looks_like_pdf(filename, "application/pdf"):
+        raise HTTPException(status_code=400, detail="只能上传 PDF 文件")
+    _cleanup_stale_pdf_upload_sessions()
+    upload_id = uuid.uuid4().hex
+    metadata_path, content_path = _pdf_upload_session_paths(upload_id)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "user_id": current_user.id,
+                "filename": filename,
+                "size_bytes": payload.size_bytes,
+                "created_at": time.time(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    content_path.touch(exist_ok=False)
+    return PdfUploadSessionPayload(upload_id=upload_id)
+
+
+@router.put("/upload-sessions/{upload_id}/chunk", response_model=PdfUploadSessionPayload)
+async def append_pdf_upload_chunk(
+    upload_id: str,
+    request: Request,
+    offset: int = Query(ge=0),
+    current_user: User = Depends(get_current_active_user),
+):
+    metadata, _metadata_path, content_path = _load_pdf_upload_session(upload_id, current_user)
+    chunk = await request.body()
+    if not chunk:
+        raise HTTPException(status_code=400, detail="上传分片不能为空")
+    if len(chunk) > PDF_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="上传分片过大")
+    received_bytes = content_path.stat().st_size
+    if offset != received_bytes:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "上传偏移不一致", "received_bytes": received_bytes},
+        )
+    expected_bytes = int(metadata["size_bytes"])
+    if received_bytes + len(chunk) > expected_bytes:
+        raise HTTPException(status_code=400, detail="上传内容超过声明大小")
+    with content_path.open("ab") as output:
+        output.write(chunk)
+    return PdfUploadSessionPayload(
+        upload_id=upload_id,
+        received_bytes=received_bytes + len(chunk),
+    )
+
+
+@router.post("/upload-sessions/{upload_id}/complete", response_model=PdfDocumentDetail)
+def complete_pdf_upload_session(
+    upload_id: str,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    metadata, metadata_path, content_path = _load_pdf_upload_session(upload_id, current_user)
+    expected_bytes = int(metadata["size_bytes"])
+    received_bytes = content_path.stat().st_size
+    if received_bytes != expected_bytes:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "文件尚未上传完整",
+                "received_bytes": received_bytes,
+                "expected_bytes": expected_bytes,
+            },
+        )
+    with content_path.open("rb") as source:
+        if b"%PDF-" not in source.read(1024):
+            raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
+
+    hosted_path, size_bytes, content_hash = _copy_pdf_to_hosted_storage(content_path, current_user)
+    document = _create_or_update_hosted_pdf_document(
+        session,
+        current_user=current_user,
+        title=str(metadata["filename"]),
+        hosted_path=hosted_path,
+        size_bytes=size_bytes,
+        content_hash=content_hash,
+    )
+    session.commit()
+    session.refresh(document)
+    _ensure_pdf_metadata(session, [document])
+    _schedule_pdf_display_title_generation(background_tasks, session, [document])
+    access = _resolve_pdf_resource_access(session, document, current_user)
+    result = _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+    metadata_path.unlink(missing_ok=True)
+    content_path.unlink(missing_ok=True)
+    return result
+
+
+@router.delete("/upload-sessions/{upload_id}", status_code=204)
+def cancel_pdf_upload_session(
+    upload_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    _delete_pdf_upload_session(upload_id, current_user)
+
+
+@router.get("/bookshelves", response_model=list[PdfLibraryBookshelfPayload])
+def list_pdf_library_bookshelves(
+    scope: Literal["mine", "shared"] = Query(default="mine"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    if scope == "shared":
+        subject_keys = _current_user_subject_keys(current_user)
+        grants = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == LIBRARY_BOOKSHELF_RESOURCE_TYPE)
+            .where(ResourceAccessGrant.subject_key.in_(subject_keys))
+        ).all()
+        bookshelf_ids = sorted({
+            grant.resource_id
+            for grant in grants
+            if _resource_role_allows(grant.role, "viewer")
+        })
+        shared_bookshelves = list(session.exec(
+            select(PdfLibraryBookshelf)
+            .where(PdfLibraryBookshelf.id.in_(bookshelf_ids))
+            .where(PdfLibraryBookshelf.user_id != current_user.id)
+            .order_by(PdfLibraryBookshelf.updated_at.desc())
+        ).all()) if bookshelf_ids else []
+        return [
+            _serialize_shared_bookshelf(session, bookshelf, current_user, access)
+            for bookshelf in shared_bookshelves
+            if (access := _resolve_bookshelf_resource_access(session, bookshelf, current_user)).capabilities.can_read
+        ]
+
     bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
     document_items = _list_accessible_pdf_documents(session, current_user)
     placements = _ensure_pdf_library_memberships(
@@ -1790,7 +2193,88 @@ def list_pdf_library_bookshelves(
         [document for document, _access in document_items],
         bookshelves,
     )
-    return _serialize_library_bookshelves(bookshelves, placements)
+    return _serialize_library_bookshelves(session, bookshelves, placements, current_user=current_user)
+
+
+@router.get("/bookshelves/{bookshelf_id}/access", response_model=PdfBookshelfAccessResponse)
+def get_pdf_library_bookshelf_access(
+    bookshelf_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf, access = _get_accessible_pdf_library_bookshelf_or_404(
+        session,
+        current_user,
+        bookshelf_id,
+        required_role="manager",
+    )
+    return PdfBookshelfAccessResponse(
+        resource_id=bookshelf.id,
+        access=access,
+        grants=_serialize_access_grants(
+            session,
+            bookshelf.id,
+            resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
+        ),
+    )
+
+
+@router.put("/bookshelves/{bookshelf_id}/access", response_model=PdfBookshelfAccessResponse)
+def update_pdf_library_bookshelf_access(
+    bookshelf_id: str,
+    payload: PdfAccessUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf, _access = _get_accessible_pdf_library_bookshelf_or_404(
+        session,
+        current_user,
+        bookshelf_id,
+        required_role="manager",
+    )
+    _save_resource_access_grants(
+        session,
+        resource_id=bookshelf.id,
+        resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
+        payload=payload,
+        current_user=current_user,
+        viewer_only=True,
+    )
+    bookshelf.updated_at = time.time()
+    session.add(bookshelf)
+    session.commit()
+    access = _resolve_bookshelf_resource_access(session, bookshelf, current_user)
+    return PdfBookshelfAccessResponse(
+        resource_id=bookshelf.id,
+        access=access,
+        grants=_serialize_access_grants(
+            session,
+            bookshelf.id,
+            resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
+        ),
+    )
+
+
+@router.delete("/bookshelves/{bookshelf_id}/my-access", status_code=204)
+def leave_shared_pdf_library_bookshelf(
+    bookshelf_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+) -> None:
+    bookshelf = session.get(PdfLibraryBookshelf, bookshelf_id)
+    if bookshelf is None or bookshelf.user_id == current_user.id:
+        raise HTTPException(status_code=404, detail="共享书柜不存在")
+    subject_key = _build_resource_subject_key(RESOURCE_ACCESS_SUBJECT_USER, current_user.id)
+    grant = session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == LIBRARY_BOOKSHELF_RESOURCE_TYPE)
+        .where(ResourceAccessGrant.resource_id == bookshelf.id)
+        .where(ResourceAccessGrant.subject_key == subject_key)
+    ).first()
+    if grant is None:
+        raise HTTPException(status_code=404, detail="没有可退出的书柜分享")
+    session.delete(grant)
+    session.commit()
 
 
 @router.post("/bookshelves", response_model=PdfLibraryBookshelfPayload)
@@ -1819,6 +2303,10 @@ def create_pdf_library_bookshelf(
         name=bookshelf.name,
         sort_index=bookshelf.sort_index,
         book_count=0,
+        owner_user_id=current_user.id,
+        owner_username=current_user.username,
+        is_owned=True,
+        access=_build_resource_access("manager", current_user),
     )
 
 
@@ -1856,7 +2344,7 @@ def rename_pdf_library_bookshelf(
     )
     return next(
         item
-        for item in _serialize_library_bookshelves(bookshelves, placements)
+        for item in _serialize_library_bookshelves(session, bookshelves, placements, current_user=current_user)
         if item.id == bookshelf.id
     )
 
@@ -1877,6 +2365,19 @@ def delete_pdf_library_bookshelf(
     ).first()
     if placement is not None:
         raise HTTPException(status_code=409, detail="只能删除空书柜")
+    dynamic_placement = session.exec(
+        select(LibraryBookPlacement)
+        .where(LibraryBookPlacement.user_id == current_user.id)
+        .where(LibraryBookPlacement.bookshelf_id == bookshelf.id)
+    ).first()
+    if dynamic_placement is not None:
+        raise HTTPException(status_code=409, detail="只能删除空书柜")
+    for grant in _fetch_resource_grants(
+        session,
+        bookshelf.id,
+        resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
+    ):
+        session.delete(grant)
     session.delete(bookshelf)
     session.commit()
 
@@ -1889,11 +2390,40 @@ def list_pdf_documents(
     current_user: User = Depends(get_current_active_user),
 ):
     bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
-    selected_bookshelf = (
-        _get_pdf_library_bookshelf_or_404(session, current_user, bookshelf_id)
+    selected_bookshelf, bookshelf_access = (
+        _get_accessible_pdf_library_bookshelf_or_404(session, current_user, bookshelf_id)
         if bookshelf_id
-        else bookshelves[0]
+        else (bookshelves[0], _build_resource_access("manager", current_user))
     )
+    if not bookshelf_access.capabilities.can_manage_access:
+        shared_rows = [
+            (placement, document, _resolve_pdf_resource_access(session, document, current_user))
+            for placement, document in _list_bookshelf_document_rows(session, selected_bookshelf)
+            if _bookshelf_owner_can_reshare_pdf(session, selected_bookshelf, document)
+        ]
+        shared_rows = [
+            (placement, document, access)
+            for placement, document, access in shared_rows
+            if access.capabilities.can_read
+        ]
+        shared_rows.sort(key=lambda row: (row[0].shelf_index, row[0].position_index))
+        _ensure_pdf_metadata(session, [document for _placement, document, _access in shared_rows])
+        _schedule_pdf_display_title_generation(
+            background_tasks,
+            session,
+            [document for _placement, document, _access in shared_rows],
+        )
+        return [
+            _serialize_pdf_summary(
+                session,
+                document,
+                current_user=current_user,
+                access=access,
+                placement_user_id=selected_bookshelf.user_id,
+            )
+            for _placement, document, access in shared_rows
+        ]
+
     document_access_items = _list_accessible_pdf_documents(session, current_user)
     placements = _ensure_pdf_library_memberships(
         session,
@@ -2063,7 +2593,7 @@ def get_pdf_content_url(
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     document, _access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="viewer")
-    token = _create_pdf_content_token(document)
+    token = _create_pdf_content_token(document, current_user)
     return PdfContentUrlResponse(
         url=f"/api/pdf-documents/{_require_pdf_numeric_id(document)}/content?token={token}",
         expires_in=PDF_CONTENT_TOKEN_EXPIRE_MINUTES * 60,

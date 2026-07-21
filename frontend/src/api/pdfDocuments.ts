@@ -48,6 +48,10 @@ export interface PdfLibraryBookshelf {
   name: string;
   sort_index: number;
   book_count: number;
+  owner_user_id: number;
+  owner_username: string;
+  is_owned: boolean;
+  access: PdfResourceAccess;
 }
 
 export type PdfBookshelfOrientation = 'spine_vertical' | 'spine_horizontal' | 'cover_front';
@@ -80,6 +84,12 @@ export interface PdfDocumentFromDeviceFileRequest extends DeviceFileSelector {
 
 export interface PdfDocumentLocalImportRequest {
   absolute_path: string;
+}
+
+interface PdfUploadSession {
+  upload_id: string;
+  chunk_size: number;
+  received_bytes: number;
 }
 
 export interface PdfMetadataUpdateRequest {
@@ -115,6 +125,13 @@ export interface PdfAccessResponse {
   grants: PdfAccessGrantItem[];
 }
 
+export interface PdfBookshelfAccessResponse {
+  resource_type: 'library-bookshelf';
+  resource_id: string;
+  access: PdfResourceAccess;
+  grants: PdfAccessGrantItem[];
+}
+
 export interface PdfPageNote {
   id?: string | null;
   pdf_id: number;
@@ -137,8 +154,10 @@ export async function fetchPdfDocuments(bookshelfId?: string) {
   return response.data;
 }
 
-export async function fetchPdfBookshelves() {
-  const response = await api.get<PdfLibraryBookshelf[]>('/pdf-documents/bookshelves');
+export async function fetchPdfBookshelves(scope: 'mine' | 'shared' = 'mine') {
+  const response = await api.get<PdfLibraryBookshelf[]>('/pdf-documents/bookshelves', {
+    params: { scope },
+  });
   return response.data;
 }
 
@@ -154,6 +173,25 @@ export async function renamePdfBookshelf(bookshelfId: string, name: string) {
 
 export async function deletePdfBookshelf(bookshelfId: string) {
   await api.delete(`/pdf-documents/bookshelves/${bookshelfId}`);
+}
+
+export async function fetchPdfBookshelfAccess(bookshelfId: string) {
+  const response = await api.get<PdfBookshelfAccessResponse>(
+    `/pdf-documents/bookshelves/${bookshelfId}/access`,
+  );
+  return response.data;
+}
+
+export async function updatePdfBookshelfAccess(bookshelfId: string, grants: PdfAccessGrantUpdate[]) {
+  const response = await api.put<PdfBookshelfAccessResponse>(
+    `/pdf-documents/bookshelves/${bookshelfId}/access`,
+    { grants },
+  );
+  return response.data;
+}
+
+export async function leaveSharedPdfBookshelf(bookshelfId: string) {
+  await api.delete(`/pdf-documents/bookshelves/${bookshelfId}/my-access`);
 }
 
 export async function movePdfToBookshelf(pdfId: number, bookshelfId: string) {
@@ -179,12 +217,40 @@ export async function importPdfDocumentFromLocalPath(payload: PdfDocumentLocalIm
 }
 
 export async function uploadPdfDocument(file: File) {
-  const formData = new FormData();
-  formData.append('file', file, file.name);
-  const response = await api.post<PdfDocumentDetail>('/pdf-documents/upload', formData, {
-    timeout: 10 * 60 * 1000,
+  const sessionResponse = await api.post<PdfUploadSession>('/pdf-documents/upload-sessions', {
+    filename: file.name,
+    size_bytes: file.size,
   });
-  return response.data;
+  const uploadSession = sessionResponse.data;
+  let offset = uploadSession.received_bytes;
+  try {
+    while (offset < file.size) {
+      const chunk = file.slice(offset, Math.min(file.size, offset + uploadSession.chunk_size));
+      const chunkResponse = await api.put<PdfUploadSession>(
+        `/pdf-documents/upload-sessions/${uploadSession.upload_id}/chunk`,
+        chunk,
+        {
+          params: { offset },
+          headers: { 'Content-Type': 'application/octet-stream' },
+          timeout: 2 * 60 * 1000,
+        },
+      );
+      offset = chunkResponse.data.received_bytes;
+    }
+    const completeResponse = await api.post<PdfDocumentDetail>(
+      `/pdf-documents/upload-sessions/${uploadSession.upload_id}/complete`,
+      undefined,
+      { timeout: 10 * 60 * 1000 },
+    );
+    return completeResponse.data;
+  } catch (error) {
+    try {
+      await api.delete(`/pdf-documents/upload-sessions/${uploadSession.upload_id}`);
+    } catch {
+      // The server also removes stale upload sessions automatically.
+    }
+    throw error;
+  }
 }
 
 export async function createPdfDocumentFromDeviceFile(payload: PdfDocumentFromDeviceFileRequest) {
