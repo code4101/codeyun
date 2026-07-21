@@ -8407,30 +8407,11 @@ def test_daily_gongfeng_count_fraction_zero_keeps_zero_first_number():
     assert runner._daily_gongfeng_remaining("今日接受供奉次数：0") == 0
 
 
-def test_world_reward_tip_detection_ignores_daily_gongfeng_page():
+def test_generic_world_reward_tip_detection_api_is_removed():
     runner = create_fanxiu_runtime_runner()
 
-    assert runner._world_reward_tip_text_matches("百脉宝魄 点击查看") is True
-    assert runner._world_reward_tip_text_matches(
-        "供奉总览 供奉奖励 接受供奉 今日接受供奉次数：5/1 点击查看"
-    ) is False
-
-
-def test_world_reward_tip_detection_requires_click_hint_inside_menu(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    image35 = _image(
-        "世界下方菜单",
-        "0035.png",
-        [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
-    )
-    ctx = {"images": {35: image35}}
-    monkeypatch.setattr(
-        runner,
-        "_ocr_fragments_in_shapes",
-        lambda *_args, **_kwargs: [{"text": "角色 装备 功法书 邮件 设置", "x": 400, "y": 1400, "w": 300, "h": 40}],
-    )
-
-    assert runner._world_reward_tip_detected(ctx, "frame", "活动奖励 点击查看") is False
+    assert not hasattr(runner, "_world_reward_tip_text_matches")
+    assert not hasattr(runner, "_world_reward_tip_detected")
 
 
 def test_readonly_mail_inventory_comparison_does_not_accept_title_only(monkeypatch):
@@ -10165,7 +10146,7 @@ def test_mail_visible_menu_once_accepts_compound_world_menu_ocr(monkeypatch):
     assert clicked == [(450.0, 1480.0)]
 
 
-def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
+def test_mail_visible_menu_once_ignores_click_use_text(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
@@ -10182,6 +10163,9 @@ def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
         def cur_frame(self, *, update: bool = False):
             return "frame"
 
+        def ocr_centers_in_shape(self, *_args, **_kwargs):
+            return []
+
         def current_scene(self, **_kwargs):
             raise AssertionError("stable menu probe should be able to skip scene identification")
 
@@ -10189,11 +10173,6 @@ def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
             clicked.append((float(x), float(y)))
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(
-        runner,
-        "_shape_score",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("blocked reward tip must not fall through to image matching")),
-    )
     monkeypatch.setattr(runner, "_ocr_fragments_in_shapes", lambda *_args, **_kwargs: [{"text": "点击使用", "x": 420, "y": 1220, "w": 80, "h": 30}])
 
     result = runner._run_direct_runtime_action(
@@ -10202,11 +10181,11 @@ def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
         tick_seconds=0.01,
     )
 
-    assert result == "blocked_reward_tip"
+    assert result == "missing"
     assert clicked == []
 
 
-def test_go_scene_closes_world_click_use_tip_before_world_entry_click(tmp_path, monkeypatch):
+def test_go_scene_ignores_world_click_use_text_and_uses_id_bound_route(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
         {"id": "xianfu", "kind": "rect", "title": "仙府", "sceneJumpTarget": "171", "x": 0.88, "y": 0.68, "w": 0.08, "h": 0.08},
@@ -10214,17 +10193,22 @@ def test_go_scene_closes_world_click_use_tip_before_world_entry_click(tmp_path, 
     image171 = _image("仙府主页", "0171.png", [])
     tree = [image34, image171]
     ctx = {"entry": object(), "asset_tree": tree, "images": {34: image34, 171: image171}}
-    clicked: list[tuple[float, float]] = []
-    scenes = iter([(34, 100.0), (171, 100.0)])
+    clicked: list[str] = []
+    first_probe = True
+
+    def identify_scene(_ctx, _frame, preferred=None):
+        nonlocal first_probe
+        if first_probe:
+            first_probe = False
+            return 34, 100.0
+        if preferred and 171 in preferred:
+            return 171, 100.0
+        return 171, 100.0
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame: next(scenes))
-    monkeypatch.setattr(
-        runner,
-        "_cached_ocr_fragments",
-        lambda *_args, **_kwargs: [{"text": "哪吒兽渊随机匣 点击使用"}] if not clicked else [{"text": "世界 仙府 大地图"}],
-    )
-    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(float(x), 1), round(float(y), 1))))
+    monkeypatch.setattr(runner, "_identify_scene_number", identify_scene)
+    monkeypatch.setattr(runner, "_target_world_scene_ocr_confirmed", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicked.append(str(shape["title"])))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._go_scene_task(ctx, tmp_path / "asset_tree.json", 171, threading.Event()),
@@ -10233,7 +10217,7 @@ def test_go_scene_closes_world_click_use_tip_before_world_entry_click(tmp_path, 
     )
 
     assert result == "success"
-    assert clicked == [(690.3, 968.0)]
+    assert clicked == ["仙府"]
 
 
 def test_mail_stable_entry_clicks_open_shape_center_after_visible_miss(monkeypatch, tmp_path):
@@ -10274,44 +10258,10 @@ def test_mail_stable_entry_clicks_open_shape_center_after_visible_miss(monkeypat
     assert clicked_open == ["801.0,1504.0"]
 
 
-def test_mail_stable_entry_returns_reward_tip_blocker_without_retry(monkeypatch, tmp_path):
-    runner = create_fanxiu_runtime_runner()
-    image34 = _image(
-        "世界",
-        "0034.png",
-        [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.85, "y": 0.9, "w": 0.08, "h": 0.08}],
-    )
-    ctx = {"images": {34: image34}}
-    visible_calls: list[str] = []
-
-    class FakeRuntime:
-        def click_frame_point(self, *_args, **_kwargs):
-            raise AssertionError("blocked reward tip should stop before toggling menu")
-
-        def wait_action_settle(self, _seconds):
-            raise AssertionError("blocked reward tip should not wait through menu retries")
-
-    def fake_visible(_ctx, _stop_event, **_kwargs):
-        visible_calls.append("visible")
-        return "blocked_reward_tip"
-
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_click_mail_from_visible_world_menu_once", fake_visible)
-
-    result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_stable_entry(ctx, threading.Event(), tmp_path / "asset_tree.json"),
-        stop_event=threading.Event(),
-        tick_seconds=0.01,
-    )
-
-    assert result == "blocked_reward_tip"
-    assert visible_calls == ["visible"]
-
-
-def test_mail_selective_claim_entry_reopens_after_reward_tip_blocker(monkeypatch, tmp_path):
+def test_mail_selective_claim_entry_does_not_reopen_after_stable_success(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {34: _image("世界", "0034.png", [])}}
-    stable_results = iter(["blocked_reward_tip"])
+    stable_results = iter(["success"])
     reopened: list[str] = []
 
     class FakeRuntime:
@@ -10346,7 +10296,7 @@ def test_mail_selective_claim_entry_reopens_after_reward_tip_blocker(monkeypatch
     )
 
     assert result == "success"
-    assert reopened == ["reopen"]
+    assert reopened == []
 
 
 def test_mail_selective_claim_green_bottle_recovery_ignores_mail_page_danyao_text(monkeypatch):
@@ -10378,7 +10328,7 @@ def test_mail_selective_claim_green_bottle_recovery_ignores_mail_page_danyao_tex
     assert clicked == []
 
 
-def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_path):
+def test_mail_reopen_uses_stable_entry_without_reward_cleanup(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = _image(
         "世界",
@@ -10386,9 +10336,7 @@ def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_pat
         [{"id": "bottom-menu", "kind": "rect", "title": "下方菜单", "x": 0.36, "y": 0.91, "w": 0.52, "h": 0.07}],
     )
     ctx = {"images": {34: image34}}
-    stable_results = iter(["blocked_reward_tip", "success"])
-    clicked_bottom_menu: list[str] = []
-    settled: list[float] = []
+    stable_results = iter(["success"])
 
     class FakeRuntime:
         def __init__(self):
@@ -10396,25 +10344,9 @@ def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_pat
             self.stop_event = threading.Event()
             self.asset_tree_path = tmp_path / "asset_tree.json"
 
-        def cur_frame(self, *, update: bool = False):
-            return "frame"
-
-        def click_shape_center(self, _image, title):
-            clicked_bottom_menu.append(str(title))
-
-        def wait_action_settle(self, seconds):
-            settled.append(float(seconds))
-            if False:
-                yield None
-
-    def fake_close(_ctx, runtime, _frame, _text):
-        runtime.click_shape_center(image34, "下方菜单")
-        return True
-
     def fake_stable(_ctx, _stop_event, _asset_tree_path, **_kwargs):
         return next(stable_results)
 
-    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_if_present", fake_close)
     monkeypatch.setattr(runner, "_open_mail_stable_entry", fake_stable)
 
     result = runner._run_direct_runtime_action(
@@ -10424,36 +10356,15 @@ def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_pat
     )
 
     assert result == "success"
-    assert clicked_bottom_menu == ["下方菜单", "下方菜单"]
-    assert settled == [0.3, 0.3]
 
 
-def test_mail_reward_tip_close_clicks_reward_card_close_hotspot(monkeypatch):
+def test_generic_mail_reward_tip_cleanup_api_is_removed():
     runner = create_fanxiu_runtime_runner()
-    image34 = _image(
-        "世界",
-        "0034.png",
-        [
-            {"id": "bottom-menu", "kind": "rect", "title": "下方菜单", "x": 0.36, "y": 0.91, "w": 0.52, "h": 0.07},
-            {"id": "storage", "kind": "rect", "title": "储物袋", "x": 0.7, "y": 0.92, "w": 0.12, "h": 0.06},
-        ],
-    )
-    image35 = _image(
-        "世界下方菜单",
-        "0035.png",
-        [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
-    )
-    ctx = {"images": {34: image34, 35: image35}}
-    clicked: list[tuple[float, float]] = []
 
-    class FakeRuntime:
-        def click_frame_point(self, _image, x, y):
-            clicked.append((round(float(x), 1), round(float(y), 1)))
-
-    monkeypatch.setattr(runner, "_ocr_fragments_in_shapes", lambda *_args, **_kwargs: [{"text": "合欢灵玉 点击查看", "x": 420, "y": 1220, "w": 80, "h": 30}])
-
-    assert runner._close_mail_world_reward_tip_if_present(ctx, FakeRuntime(), "frame", "") is True
-    assert clicked == [(690.3, 968.0)]
+    assert not hasattr(runner, "_mail_world_reward_tip_text_matches")
+    assert not hasattr(runner, "_mail_world_reward_tip_detected")
+    assert not hasattr(runner, "_close_mail_world_reward_tip_if_present")
+    assert not hasattr(runner, "_close_mail_world_reward_tip_stack_if_present")
 
 
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):

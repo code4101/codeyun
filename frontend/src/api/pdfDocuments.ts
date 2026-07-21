@@ -147,6 +147,10 @@ export async function renamePdfBookshelf(bookshelfId: string, name: string) {
   return response.data;
 }
 
+export async function deletePdfBookshelf(bookshelfId: string) {
+  await api.delete(`/pdf-documents/bookshelves/${bookshelfId}`);
+}
+
 export async function movePdfToBookshelf(pdfId: number, bookshelfId: string) {
   const response = await api.put<PdfBookshelfPlacement>(`/pdf-documents/${pdfId}/bookshelf`, {
     bookshelf_id: bookshelfId,
@@ -161,6 +165,15 @@ export async function updatePdfBookshelfLayout(placements: PdfBookshelfPlacement
 
 export async function importPdfDocumentFromLocalPath(payload: PdfDocumentLocalImportRequest) {
   const response = await api.post<PdfDocumentDetail>('/pdf-documents/import-local-path', payload);
+  return response.data;
+}
+
+export async function uploadPdfDocument(file: File) {
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  const response = await api.post<PdfDocumentDetail>('/pdf-documents/upload', formData, {
+    timeout: 10 * 60 * 1000,
+  });
   return response.data;
 }
 

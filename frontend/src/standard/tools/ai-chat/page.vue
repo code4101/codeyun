@@ -1053,13 +1053,16 @@ async function loadPersistedChatSession() {
   activeSessionId.value = effectiveSnapshot.active_session_id || effectiveSnapshot.items[0]?.id || createLocalId('session')
 
   const activeItem = effectiveSnapshot.items.find(item => item.id === activeSessionId.value) ?? null
+  const providerIdBeforeSessionRestore = settings.providerId
   applySessionItemToWorkspace(activeItem, {
     hydrateSelection: Boolean(activeItem?.selected_model_option_ids?.length),
   })
 
   if (activeItem?.selected_model_option_ids?.length) {
     syncSelectedChatModelOptions()
-    await refreshStatus(settings.providerId || aiProviderStore.defaultProviderId, true)
+    if (settings.providerId !== providerIdBeforeSessionRestore) {
+      await refreshStatus(settings.providerId || aiProviderStore.defaultProviderId, true)
+    }
   }
 
   if (restored) {

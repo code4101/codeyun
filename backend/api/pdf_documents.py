@@ -17,7 +17,7 @@ from typing import Any, Iterator, Literal
 
 import requests
 import pypdfium2 as pdfium
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from PIL import Image
@@ -67,6 +67,7 @@ PDF_TITLE_NAMING_MODEL = "gpt-5.3-codex-spark"
 PDF_TITLE_NAMING_PROVIDER_ID = "codex-cli"
 PDF_PAGE_PREVIEW_MAX_WIDTH = 1280
 PDF_PAGE_PREVIEW_RENDER_VERSION = 1
+PDF_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_PDF_BOOKSHELF_NAMES = ("1", "2", "4", "5")
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
@@ -980,6 +981,21 @@ def _generate_pdf_display_titles_in_background(bind: Any, pdf_ids: list[int]) ->
         session.commit()
 
 
+def _schedule_pdf_display_title_generation(
+    background_tasks: BackgroundTasks,
+    session: Session,
+    documents: list[PdfDocument],
+) -> list[int]:
+    pdf_ids = _prepare_pdf_display_title_generation(session, documents)
+    if pdf_ids:
+        background_tasks.add_task(
+            _generate_pdf_display_titles_in_background,
+            session.get_bind(),
+            pdf_ids,
+        )
+    return pdf_ids
+
+
 def _serialize_pdf_metadata(document: PdfDocument) -> PdfDocumentMetadata:
     metadata = dict(document.metadata_json or {})
     status = str(metadata.get("status") or "pending")
@@ -1652,6 +1668,54 @@ def import_pdf_document_from_local_path(
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 
+@router.post("/upload", response_model=PdfDocumentDetail)
+async def upload_pdf_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    filename = _basename(file.filename or "未命名.pdf")
+    if not _looks_like_pdf(filename, file.content_type):
+        raise HTTPException(status_code=400, detail="只能上传 PDF 文件")
+
+    temp_path = codeyun_temp_root("pdf_uploads") / f"{uuid.uuid4().hex}.pdf"
+    total_bytes = 0
+    header = b""
+    try:
+        with temp_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > PDF_UPLOAD_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="PDF 文件不能超过 1GB")
+                if len(header) < 1024:
+                    header = (header + chunk)[:1024]
+                output.write(chunk)
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="上传文件不能为空")
+        if b"%PDF-" not in header:
+            raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
+
+        hosted_path, size_bytes, content_hash = _copy_pdf_to_hosted_storage(temp_path, current_user)
+        document = _create_or_update_hosted_pdf_document(
+            session,
+            current_user=current_user,
+            title=filename,
+            hosted_path=hosted_path,
+            size_bytes=size_bytes,
+            content_hash=content_hash,
+        )
+        session.commit()
+        session.refresh(document)
+        _ensure_pdf_metadata(session, [document])
+        _schedule_pdf_display_title_generation(background_tasks, session, [document])
+        access = _resolve_pdf_resource_access(session, document, current_user)
+        return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+    finally:
+        await file.close()
+        temp_path.unlink(missing_ok=True)
+
+
 @router.get("/bookshelves", response_model=list[PdfLibraryBookshelfPayload])
 def list_pdf_library_bookshelves(
     session: Session = Depends(get_session),
@@ -1736,6 +1800,26 @@ def rename_pdf_library_bookshelf(
     )
 
 
+@router.delete("/bookshelves/{bookshelf_id}", status_code=204)
+def delete_pdf_library_bookshelf(
+    bookshelf_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+) -> None:
+    bookshelf = _get_pdf_library_bookshelf_or_404(
+        session, current_user, bookshelf_id
+    )
+    placement = session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.user_id == current_user.id)
+        .where(PdfBookshelfPlacement.bookshelf_id == bookshelf.id)
+    ).first()
+    if placement is not None:
+        raise HTTPException(status_code=409, detail="只能删除空书柜")
+    session.delete(bookshelf)
+    session.commit()
+
+
 @router.get("", response_model=list[PdfDocumentSummary])
 def list_pdf_documents(
     background_tasks: BackgroundTasks,
@@ -1766,16 +1850,11 @@ def list_pdf_documents(
         reverse=True,
     )
     _ensure_pdf_metadata(session, [document for document, _access in document_access_items])
-    naming_pdf_ids = _prepare_pdf_display_title_generation(
+    _schedule_pdf_display_title_generation(
+        background_tasks,
         session,
         [document for document, _access in document_access_items],
     )
-    if naming_pdf_ids:
-        background_tasks.add_task(
-            _generate_pdf_display_titles_in_background,
-            session.get_bind(),
-            naming_pdf_ids,
-        )
     return [
         _serialize_pdf_summary(session, document, current_user=current_user, access=access)
         for document, access in document_access_items

@@ -466,8 +466,6 @@ class MailTaskMixin:
             self._log("info", "邮件_选择性领取：缺少 #121「空白-返回」标注，结束后保留在邮件页")
         if final_scene == 34:
             final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
-            yield from self._close_mail_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_选择性领取")
-            final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
 
         if scanned_to_end and not reached_scroll_limit:
             marked_count = self._mark_pending_packet_mail_actions_not_visible(
@@ -662,8 +660,6 @@ class MailTaskMixin:
         if recovered_green:
             result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
             opened = (yield from result) if isinstance(result, GeneratorType) else result
-            if opened == "blocked_reward_tip":
-                return (yield from self._reopen_mail_from_current_world_like(runtime))
             return opened
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 34, 35, 20, 58, 227], update=True)
         if scene_id == 121:
@@ -678,8 +674,6 @@ class MailTaskMixin:
             yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
         result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=True)
         opened = (yield from result) if isinstance(result, GeneratorType) else result
-        if opened == "blocked_reward_tip":
-            return (yield from self._reopen_mail_from_current_world_like(runtime))
         return opened
 
     def _leave_green_bottle_to_world_if_present(
@@ -974,8 +968,6 @@ class MailTaskMixin:
                 last_ocr_at = now
                 last_text = text or last_text
             if scene_id == 34 or (text and self._daily_assistant_text_is_world_like(text)):
-                if self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, text):
-                    yield from runtime.wait_action_settle(0.3)
                 self._log("info", f"{label}：领取后落到世界页，重新打开邮件列表")
                 yield from runtime.wait_action_settle(0.8)
                 reopened = self._reopen_mail_from_current_world_like(runtime)
@@ -1008,22 +1000,12 @@ class MailTaskMixin:
         ctx = runtime.ctx
         stop_event = runtime.stop_event or threading.Event()
         asset_tree_path = runtime.asset_tree_path
-        frame = runtime.cur_frame(update=True)
-        if self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, ""):
-            yield from runtime.wait_action_settle(0.3)
         if isinstance(asset_tree_path, Path):
             try:
-                for attempt in range(2):
-                    stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=(attempt > 0))
-                    stable_opened = (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
-                    if stable_opened == "success":
-                        return "success"
-                    if stable_opened != "blocked_reward_tip":
-                        break
-                    frame = runtime.cur_frame(update=True)
-                    if not self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, ""):
-                        break
-                    yield from runtime.wait_action_settle(0.3)
+                stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=False)
+                stable_opened = (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+                if stable_opened == "success":
+                    return "success"
             except RuntimeError as exc:
                 self._log("info", f"邮件_历史扫描：#35 稳定入口失败，尝试 #68 动态入口：{exc}")
         visible_result = self._try_open_mail_from_visible_world_menu(ctx, stop_event, timeout=0.2)
@@ -1042,33 +1024,6 @@ class MailTaskMixin:
         has_continue_hint = "点击屏幕继续" in compact or "点击继续" in compact
         has_auto_close = "自动关闭" in compact or bool(re.search(r"\d+秒后.{0,4}关闭", compact))
         return bool(has_reward_title and (has_continue_hint or has_auto_close or "获得" in compact))
-
-    def _mail_world_reward_tip_text_matches(self, text: str) -> bool:
-        return self._world_reward_tip_text_matches(text)
-
-    def _mail_world_reward_tip_detected(
-        self,
-        ctx: dict[str, Any],
-        frame: str,
-        text: str = "",
-        *,
-        menu_ocr_fragments: list[dict[str, Any]] | None = None,
-    ) -> bool:
-        return self._world_reward_tip_detected(ctx, frame, text, menu_ocr_fragments=menu_ocr_fragments)
-
-    def _close_mail_world_reward_tip_if_present(self, ctx: dict[str, Any], runtime: FanxiuRuntime, frame: str, text: str) -> bool:
-        return self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label="邮件_选择性领取")
-
-    def _close_mail_world_reward_tip_stack_if_present(
-        self,
-        ctx: dict[str, Any],
-        runtime: FanxiuRuntime,
-        stop_event: threading.Event,
-        *,
-        label: str,
-        max_attempts: int = 15,
-    ):
-        yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label=label, max_attempts=max_attempts)
 
     def _wait_mail_capture_runtime_ready(
         self,
@@ -1165,8 +1120,6 @@ class MailTaskMixin:
         result = (yield from go_scene_result) if isinstance(go_scene_result, GeneratorType) else go_scene_result
         if result != "success":
             return result
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="邮件_历史扫描")
         if entry_mode in {"stable", "menu", "full", "full_scan", "debug"}:
             stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=False)
             return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
@@ -1245,8 +1198,6 @@ class MailTaskMixin:
                 visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
                 if visible_opened == "success":
                     return "success"
-                if visible_opened == "blocked_reward_tip":
-                    return "blocked_reward_tip"
             box = self._box(open_shape, image34)
             x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
             y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
@@ -1258,15 +1209,11 @@ class MailTaskMixin:
             visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
             if visible_opened == "success":
                 return "success"
-            if visible_opened == "blocked_reward_tip":
-                return "blocked_reward_tip"
             yield from runtime.wait_action_settle(0.8)
             visible_result = self._click_mail_from_visible_world_menu_once(ctx, stop_event, require_world_scene=False)
             visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
             if visible_opened == "success":
                 return "success"
-            if visible_opened == "blocked_reward_tip":
-                return "blocked_reward_tip"
             last_error = RuntimeError("邮件_历史扫描：等待 #35 邮件入口超时，最后 0%")
             if attempt >= 1:
                 break
@@ -1296,9 +1243,6 @@ class MailTaskMixin:
         menu_shape = self._find_shape(image35, "菜单")
         if not require_world_scene and menu_shape:
             ocr_fragments = self._ocr_fragments_in_shapes(frame, image35, ("菜单",), padding=8)
-            if self._mail_world_reward_tip_detected(ctx, frame, menu_ocr_fragments=ocr_fragments):
-                self._log("info", "邮件_历史扫描：#35 菜单区域检测到世界奖励提示，先关闭提示")
-                return "blocked_reward_tip"
             menu_matches = runtime.ocr_centers_in_shape(35, "菜单", include=("邮件",), frame_data_url=frame)
             menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
             if not menu_matches:

@@ -165,6 +165,71 @@ def test_pdf_document_from_device_file_is_idempotent(client: TestClient, session
     assert documents[0].title == "manual.pdf"
 
 
+def test_pdf_document_upload_is_hosted_and_idempotent(
+    client: TestClient,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch,
+):
+    owner = _create_user(session, "pdf-upload-owner")
+    pdf_bytes = _write_valid_pdf(tmp_path / "dropped.pdf").read_bytes()
+    naming_calls: list[list[str]] = []
+
+    def fake_generate(documents):
+        naming_calls.append([document.title for document in documents])
+        return ({
+            int(documents[0].numeric_id): {
+                "title": "标准拖入书名",
+                "author": "测试作者",
+            },
+        }, "gpt-5.3-codex-spark")
+
+    monkeypatch.setattr(pdf_documents_api, "_generate_pdf_display_titles", fake_generate)
+
+    _override_user(owner)
+    try:
+        first_response = client.post(
+            "/api/pdf-documents/upload",
+            files={"file": ("dropped.pdf", pdf_bytes, "application/pdf")},
+        )
+        second_response = client.post(
+            "/api/pdf-documents/upload",
+            files={"file": ("dropped.pdf", pdf_bytes, "application/pdf")},
+        )
+    finally:
+        _clear_user_override()
+
+    assert first_response.status_code == 200, first_response.text
+    assert second_response.status_code == 200, second_response.text
+    first = first_response.json()
+    assert second_response.json()["id"] == first["id"]
+    assert first["source_device_id"] == pdf_documents_api.PDF_HOSTED_DEVICE_ID
+    assert first["metadata"]["page_count"] == 3
+    assert first["display_title_status"] == "pending"
+    assert naming_calls == [["dropped.pdf"]]
+    document = session.exec(select(PdfDocument).where(PdfDocument.numeric_id == first["id"])).one()
+    assert document.metadata_json["title_naming"]["display_title"] == "标准拖入书名"
+    assert document.metadata_json["title_naming"]["status"] == "ready"
+    assert Path(document.source_absolute_path).is_file()
+    assert len(session.exec(select(PdfDocument)).all()) == 1
+
+
+def test_pdf_document_upload_rejects_fake_pdf(client: TestClient, session: Session):
+    owner = _create_user(session, "pdf-upload-invalid-owner")
+    _override_user(owner)
+    try:
+        response = client.post(
+            "/api/pdf-documents/upload",
+            files={"file": ("fake.pdf", b"not-a-pdf", "application/pdf")},
+        )
+    finally:
+        _clear_user_override()
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "文件内容不是有效的 PDF"
+    assert session.exec(select(PdfDocument)).all() == []
+
+
 def test_pdf_document_metadata_is_scanned_once_and_cached(client: TestClient, session: Session, tmp_path: Path):
     owner = _create_user(session, "pdf-metadata-owner")
     entry = _create_local_entry(session, owner)
@@ -450,6 +515,40 @@ def test_pdf_library_bookshelves_group_and_lazy_load_documents(
     assert counts["1"] == 1
     assert counts["理论"] == 1
     assert len(session.exec(select(PdfLibraryBookshelf)).all()) == 5
+
+
+def test_pdf_library_bookshelf_delete_requires_empty(
+    client: TestClient,
+    session: Session,
+    tmp_path: Path,
+):
+    owner = _create_user(session, "pdf-library-bookshelf-delete-owner")
+    entry = _create_local_entry(session, owner)
+    pdf_path = _write_valid_pdf(tmp_path / "occupied-bookshelf.pdf")
+
+    _override_user(owner)
+    try:
+        _create_pdf_document(client, entry, pdf_path)
+        initial_shelves = client.get("/api/pdf-documents/bookshelves")
+        occupied_shelf_id = initial_shelves.json()[0]["id"]
+        empty_shelf = client.post(
+            "/api/pdf-documents/bookshelves",
+            json={"name": "待删除空柜"},
+        )
+        occupied_delete = client.delete(
+            f"/api/pdf-documents/bookshelves/{occupied_shelf_id}"
+        )
+        empty_delete = client.delete(
+            f"/api/pdf-documents/bookshelves/{empty_shelf.json()['id']}"
+        )
+        final_shelves = client.get("/api/pdf-documents/bookshelves")
+    finally:
+        _clear_user_override()
+
+    assert occupied_delete.status_code == 409, occupied_delete.text
+    assert occupied_delete.json()["detail"] == "只能删除空书柜"
+    assert empty_delete.status_code == 204, empty_delete.text
+    assert "待删除空柜" not in {item["name"] for item in final_shelves.json()}
 
 
 def test_pdf_document_is_private_until_shared(client: TestClient, session: Session, tmp_path: Path):

@@ -869,6 +869,7 @@ onUnmounted(() => {
               <tr
                 v-for="(task, index) in businessTasks"
                 :key="task.id"
+                :class="taskDispatchLevelClass(task)"
                 @contextmenu.prevent.stop="openTaskMenu($event, task)"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
@@ -1286,34 +1287,39 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.next-trigger-time.is-level-1 {
-  color: #475569;
-}
-
-.next-trigger-time.is-level-2 {
-  color: #0369a1;
-}
-
-.next-trigger-time.is-level-3 {
-  color: #6d28d9;
-}
-
-.next-trigger-time.is-level-4 {
-  color: #c2410c;
-  font-weight: 600;
-}
-
-.next-trigger-time.is-level-5 {
-  color: #b91c1c;
-  font-weight: 600;
-}
-
 .runtime-native-table strong {
   font-weight: 500;
 }
 
 .runtime-native-table tbody tr {
   cursor: default;
+}
+
+.runtime-native-table.is-job-table tbody tr.is-level-1 {
+  --dispatch-level-color: #b91c1c;
+}
+
+.runtime-native-table.is-job-table tbody tr.is-level-2 {
+  --dispatch-level-color: #c2410c;
+}
+
+.runtime-native-table.is-job-table tbody tr.is-level-3 {
+  --dispatch-level-color: #6d28d9;
+}
+
+.runtime-native-table.is-job-table tbody tr.is-level-4 {
+  --dispatch-level-color: #0369a1;
+}
+
+.runtime-native-table.is-job-table tbody tr.is-level-5 {
+  --dispatch-level-color: #64748b;
+}
+
+.runtime-native-table.is-job-table tbody tr:is(.is-level-1, .is-level-2, .is-level-3, .is-level-4, .is-level-5) td,
+.runtime-native-table.is-job-table tbody tr:is(.is-level-1, .is-level-2, .is-level-3, .is-level-4, .is-level-5) .index-pill,
+.runtime-native-table.is-job-table tbody tr:is(.is-level-1, .is-level-2, .is-level-3, .is-level-4, .is-level-5) .dispatch-level-value,
+.runtime-native-table.is-job-table tbody tr:is(.is-level-1, .is-level-2, .is-level-3, .is-level-4, .is-level-5) .next-trigger-time {
+  color: var(--dispatch-level-color);
 }
 
 .index-pill {

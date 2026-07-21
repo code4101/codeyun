@@ -9914,58 +9914,7 @@ def test_daily_lingzu_can_resume_from_elder_when_default_scene_unknown(tmp_path,
     assert called == [True]
 
 
-def test_daily_lingzu_return_uses_lingzu_scene_fallback_from_boss(tmp_path, monkeypatch):
-    runner = create_fanxiu_runtime_runner()
-    ctx = {
-        "asset_tree_path": tmp_path / "asset-tree.json",
-        "images": {
-            34: {"title": "世界"},
-            69: {"title": "日常", "shapes": [{"title": "退出", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
-            183: {"title": "灵祖活动列表", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
-            184: {"title": "灵祖挑战详情", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
-            187: {"title": "战灵长老", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
-            188: {"title": "圣雷龙妖祖", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
-        },
-    }
-    ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
-    clicked = []
-    current_scenes = iter([(None, 0.0, "boss-frame"), (34, 100.0, "world-frame")])
-
-    def wait_return_scene(ctx, stop_event, scene_ids, **kwargs):
-        if False:
-            yield None
-        return (183, 100.0)
-
-    def wait_settle(*args, **kwargs):
-        if False:
-            yield None
-        return "success"
-
-    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: next(current_scenes))
-    monkeypatch.setattr(
-        runner,
-        "_identify_scene_number",
-        lambda ctx, frame, preferred=None: (preferred[0], 100.0) if preferred else (34, 100.0),
-    )
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "圣雷龙妖祖 剩余奖励次数：0/1 前往 快速挑战"}])
-    monkeypatch.setattr(runner, "_screencap", lambda ctx: "frame")
-    monkeypatch.setattr(runner, "_click_frame_point", lambda ctx, image, *args, **kwargs: clicked.append(image["title"]))
-    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
-    monkeypatch.setattr(runner, "_wait_daily_lingzu_return_scene", wait_return_scene)
-    monkeypatch.setattr(runner, "_wait_runtime_action_settle", wait_settle)
-    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(runner, "_ensure_daily_lingzu_outer_world", lambda *args, **kwargs: iter(()))
-
-    gen = runner._return_daily_lingzu_to_world(ctx, fanxiu.threading.Event())
-    with pytest.raises(StopIteration) as exc_info:
-        while True:
-            next(gen)
-
-    assert exc_info.value.value == "success"
-    assert clicked[:3] == ["圣雷龙妖祖", "战灵长老", "灵祖活动列表"]
-
-
-def test_daily_lingzu_return_fails_when_reward_popup_has_no_close_shape(tmp_path, monkeypatch):
+def test_daily_lingzu_return_fails_when_explicit_scene_186_has_no_close_shape(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {
         "asset_tree_path": tmp_path / "asset-tree.json",
@@ -9980,8 +9929,17 @@ def test_daily_lingzu_return_fails_when_reward_popup_has_no_close_shape(tmp_path
         },
     }
 
-    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: (34, 100.0, "reward-frame"))
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}])
+    class FakeRuntime:
+        def ocr_text(self, _frame):
+            return "灵祖奖励浮层"
+
+    runtime = FakeRuntime()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(
+        runner,
+        "_fanxiu_runtime_scene_text",
+        lambda *_args, **_kwargs: (186, 100.0, "reward-frame", "灵祖奖励浮层"),
+    )
 
     gen = runner._return_daily_lingzu_to_world(ctx, fanxiu.threading.Event())
     with pytest.raises(RuntimeError, match="#186 奖励浮层缺少"):
@@ -10248,7 +10206,7 @@ def test_runtime_clears_known_game_announcement_with_safe_shape(monkeypatch):
     assert clicked == [("游戏公告", "关闭公告")]
 
 
-def test_daily_lingzu_reward_popup_cleanup_failure_is_not_marked_done(tmp_path, monkeypatch):
+def test_daily_lingzu_world_click_view_text_does_not_promote_scene_34_to_186(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {
         "asset_tree_path": tmp_path / "asset-tree.json",
@@ -10264,29 +10222,18 @@ def test_daily_lingzu_reward_popup_cleanup_failure_is_not_marked_done(tmp_path, 
             189: {"title": "灵祖挑战结算"},
         },
     }
-    recorded = []
-
     class FakeRuntime:
         def ocr_text(self, frame=None, **kwargs):
             return "百脉宝魄 点击查看"
 
-        def current_scene(self, views=None, **kwargs):
-            return 34, 100.0, "reward-frame"
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_daily_lingzu_discovered_next_time_is_future", lambda payload: None)
-    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: (34, 100.0, "reward-frame"))
-    monkeypatch.setattr(runner, "_record_daily_lingzu_done", lambda *args, **kwargs: recorded.append(kwargs))
+    scene_id, score, text = runner._daily_lingzu_scene_from_frame(ctx, "reward-frame", 34, 100.0)
 
-    gen = runner._execute_daily_lingzu_task(ctx, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-lingzu"})
-    with pytest.raises(RuntimeError, match="#186 奖励浮层缺少"):
-        while True:
-            next(gen)
-
-    assert recorded == []
+    assert (scene_id, score) == (34, 100.0)
+    assert text == "百脉宝魄 点击查看"
 
 
-def test_daily_lingzu_return_closes_reward_popup_before_success(tmp_path, monkeypatch):
+def test_daily_lingzu_return_closes_explicit_scene_186_before_success(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {
         "asset_tree_path": tmp_path / "asset-tree.json",
@@ -10300,21 +10247,33 @@ def test_daily_lingzu_return_closes_reward_popup_before_success(tmp_path, monkey
             188: {"title": "圣雷龙妖祖", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
         },
     }
-    current_scenes = iter([(34, 100.0, "reward-frame"), (34, 100.0, "clean-frame")])
-    frames = iter(["reward-frame", "clean-frame", "clean-frame"])
-    clicked = []
+    actions = []
 
-    def wait_settle(*args, **kwargs):
-        if False:
-            yield None
-        return "success"
+    class FakeRuntime:
+        def ocr_text(self, _frame):
+            return "灵祖奖励浮层"
 
-    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: next(current_scenes))
-    monkeypatch.setattr(runner, "_screencap", lambda ctx: next(frames))
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}] if frame == "reward-frame" else [{"text": "世界 储物袋 角色"}])
-    monkeypatch.setattr(runner, "_click_frame_point", lambda ctx, image, *args, **kwargs: clicked.append(image["title"]))
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (34, 100.0))
-    monkeypatch.setattr(runner, "_wait_runtime_action_settle", wait_settle)
+        def wait_click(self, view_id, shape):
+            actions.append(("click", view_id, shape))
+            if False:
+                yield None
+
+        def wait_action_settle(self, seconds):
+            actions.append(("settle", seconds))
+            if False:
+                yield None
+
+        def current_scene(self, scene_ids=None, **kwargs):
+            actions.append(("scene", tuple(scene_ids or ()), kwargs))
+            return 34, 100.0, "clean-frame"
+
+    runtime = FakeRuntime()
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(
+        runner,
+        "_fanxiu_runtime_scene_text",
+        lambda *_args, **_kwargs: (186, 100.0, "reward-frame", "灵祖奖励浮层"),
+    )
     monkeypatch.setattr(runner, "_ensure_daily_lingzu_outer_world", lambda *args, **kwargs: iter(()))
 
     gen = runner._return_daily_lingzu_to_world(ctx, fanxiu.threading.Event())
@@ -10323,7 +10282,12 @@ def test_daily_lingzu_return_closes_reward_popup_before_success(tmp_path, monkey
             next(gen)
 
     assert exc_info.value.value == "success"
-    assert clicked == ["灵祖奖励浮层"]
+    assert actions == [
+        ("click", 186, "关闭"),
+        ("settle", 1.0),
+        ("scene", (34, 183, 184, 187, 188), {"update": True}),
+        ("scene", (), {"update": True}),
+    ]
 
 
 def test_daily_lingzu_outer_world_confirms_leave_dialog(monkeypatch):
@@ -11645,14 +11609,8 @@ def test_ensure_clean_world_after_task_exits_green_bottle(monkeypatch):
             yield None
         return "success"
 
-    def fake_close_stack(_ctx, _runtime, _stop_event, *, label, max_attempts=15):
-        calls.append(f"close:{label}:{max_attempts}")
-        if False:
-            yield None
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_leave_green_bottle_to_world", fake_leave)
-    monkeypatch.setattr(runner, "_close_world_reward_tip_stack_if_present", fake_close_stack)
 
     result = _drain_generator(
         runner._ensure_clean_world_after_task(
@@ -11663,7 +11621,7 @@ def test_ensure_clean_world_after_task_exits_green_bottle(monkeypatch):
     )
 
     assert result == 34
-    assert calls == ["邮件_选择性领取", "close:邮件_选择性领取:15"]
+    assert calls == ["邮件_选择性领取"]
 
 
 def test_ensure_clean_world_after_task_confirms_leave_scene(monkeypatch):
@@ -11697,13 +11655,7 @@ def test_ensure_clean_world_after_task_confirms_leave_scene(monkeypatch):
                 yield None
             return "success"
 
-    def fake_close_stack(_ctx, _runtime, _stop_event, *, label, max_attempts=15):
-        actions.append(("close", label, max_attempts))
-        if False:
-            yield None
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_close_world_reward_tip_stack_if_present", fake_close_stack)
 
     result = _drain_generator(
         runner._ensure_clean_world_after_task(
@@ -11721,7 +11673,6 @@ def test_ensure_clean_world_after_task_confirms_leave_scene(monkeypatch):
         ("settle", 2.0),
         ("current_scene", (58, 20, 34), {"update": True}, "world-frame"),
         ("ocr_text", "world-frame"),
-        ("close", "仙府_寻访仙侣", 15),
         ("current_scene", (34,), {"update": True}, "world-frame-2"),
         ("ocr_text", "world-frame-2"),
     ]
@@ -11767,13 +11718,7 @@ def test_ensure_clean_world_after_task_exits_daily_assistant_overview(monkeypatc
             actions.append(("cur_frame", update, self.scene))
             return "world-frame" if self.scene == 34 else "assistant-list"
 
-    def fake_close_stack(_ctx, _runtime, _stop_event, *, label, max_attempts=15):
-        actions.append(("close", label, max_attempts))
-        if False:
-            yield None
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runner, "_close_world_reward_tip_stack_if_present", fake_close_stack)
 
     result = _drain_generator(
         runner._ensure_clean_world_after_task(
@@ -11786,7 +11731,6 @@ def test_ensure_clean_world_after_task_exits_daily_assistant_overview(monkeypatc
     assert result == 34
     assert ("wait_click", 204, "返回") in actions
     assert ("wait_click", 69, "退出") in actions
-    assert ("close", "邮件_选择性领取", 15) in actions
 
 
 def test_ensure_clean_world_after_task_hides_floating_window(monkeypatch):
@@ -11806,14 +11750,8 @@ def test_ensure_clean_world_after_task_hides_floating_window(monkeypatch):
         def ocr_text(self, _frame):
             return "角色 装备 功法书 修为"
 
-    def fake_close_stack(_ctx, _runtime, _stop_event, *, label, max_attempts=15):
-        calls.append(f"close:{label}:{max_attempts}")
-        if False:
-            yield None
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_execute_hide_floating_window", lambda *_args, **_kwargs: calls.append("hide-floating"))
-    monkeypatch.setattr(runner, "_close_world_reward_tip_stack_if_present", fake_close_stack)
 
     result = _drain_generator(
         runner._ensure_clean_world_after_task(
@@ -11824,46 +11762,15 @@ def test_ensure_clean_world_after_task_hides_floating_window(monkeypatch):
     )
 
     assert result == 34
-    assert calls == ["hide-floating", "close:日常_收尾:15"]
+    assert calls == ["hide-floating"]
 
 
-def test_world_reward_tip_stack_closes_multiple_cards(monkeypatch):
+def test_generic_world_reward_tip_cleanup_api_is_removed():
     runner = create_fanxiu_runtime_runner()
-    image34 = {"id": 34, "title": "世界", "width": 900, "height": 1600}
-    ctx = {"images": {34: image34}}
-    clicks: list[tuple[float, float]] = []
-    settles: list[float] = []
-
-    class FakeRuntime:
-        def __init__(self):
-            self.frames = iter(["frame-1", "frame-2", "frame-3"])
-
-        def cur_frame(self, update=False):
-            return next(self.frames)
-
-        def ocr_text(self, frame):
-            return "合欢灵玉 点击查看" if frame != "frame-3" else "角色 装备 功法书"
-
-        def click_frame_point(self, _image, x, y):
-            clicks.append((round(float(x), 1), round(float(y), 1)))
-
-        def wait_action_settle(self, seconds):
-            settles.append(float(seconds))
-            if False:
-                yield None
-
-    _drain_generator(
-        runner._close_world_reward_tip_stack_if_present(
-            ctx,
-            FakeRuntime(),
-            fanxiu.threading.Event(),
-            label="日常_收尾",
-            max_attempts=5,
-        )
-    )
-
-    assert clicks == [(690.3, 968.0), (690.3, 968.0)]
-    assert settles == [0.6, 0.6]
+    assert not hasattr(runner, "_world_reward_tip_text_matches")
+    assert not hasattr(runner, "_world_reward_tip_detected")
+    assert not hasattr(runner, "_close_world_reward_tip_if_present")
+    assert not hasattr(runner, "_close_world_reward_tip_stack_if_present")
 
 
 def test_action_trace_creates_temp_directory(tmp_path, monkeypatch):
@@ -11964,11 +11871,6 @@ def test_mail_selective_claim_detail_timeout_still_runs_delete_read_cleanup(tmp_
             yield None
         return 34
 
-    def no_tip_stack(*_args, **_kwargs):
-        if False:
-            yield None
-        return None
-
     def claim_timeout(*_args, **_kwargs):
         if False:
             yield None
@@ -11976,7 +11878,6 @@ def test_mail_selective_claim_detail_timeout_still_runs_delete_read_cleanup(tmp_
 
     monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", no_green_bottle)
     monkeypatch.setattr(runner, "_ensure_clean_world_after_task", clean_world)
-    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_stack_if_present", no_tip_stack)
     monkeypatch.setattr(runner, "_claim_runtime_mail_row", claim_timeout)
 
     result = _drain_generator(runner._execute_mail_selective_claim_task(ctx, fanxiu.threading.Event(), {"max_scrolls": 1}))
@@ -12071,16 +11972,10 @@ def test_mail_selective_claim_read_mail_probes_detail_delete_before_bulk_cleanup
             yield None
         return 34
 
-    def no_tip_stack(*_args, **_kwargs):
-        if False:
-            yield None
-        return None
-
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", fake_rows)
     monkeypatch.setattr(runner, "_probe_and_maybe_delete_mail_row", fake_probe)
     monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", no_green_bottle)
     monkeypatch.setattr(runner, "_ensure_clean_world_after_task", clean_world)
-    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_stack_if_present", no_tip_stack)
 
     result = _drain_generator(runner._execute_mail_selective_claim_task(ctx, fanxiu.threading.Event(), {"max_scrolls": 1}))
 
