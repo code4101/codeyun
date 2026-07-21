@@ -17081,13 +17081,13 @@ def _sheet_export_color(value: Any) -> str | None:
     return None
 
 
-def _build_sheet_export_workbook_bytes(
+def _populate_sheet_export_worksheet(
+    worksheet: Any,
     table: NoteSheetTableResponse,
     *,
     document_json: dict[str, Any],
-) -> bytes:
+) -> None:
     try:
-        from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
     except ImportError as exc:
@@ -17099,8 +17099,6 @@ def _build_sheet_export_workbook_bytes(
         *[[item.get(column, "") for column in table.columns] for item in table.rows],
     ]
     column_count = len(table.columns)
-    workbook = Workbook()
-    worksheet = workbook.active
     safe_sheet_title = re.sub(r"[\\/*?:\[\]]+", "_", _normalize_sheet_text(table.title)).strip() or "表格"
     worksheet.title = safe_sheet_title[:31]
     cell_meta = normalized.get("cell_meta") if isinstance(normalized.get("cell_meta"), dict) else {}
@@ -17166,6 +17164,47 @@ def _build_sheet_export_workbook_bytes(
             if isinstance(height, int | float) and height > 0:
                 worksheet.row_dimensions[row_index].height = float(height) * 0.75
 
+
+def _build_sheet_export_workbook_bytes(
+    table: NoteSheetTableResponse,
+    *,
+    document_json: dict[str, Any],
+) -> bytes:
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法导出 Excel") from exc
+
+    workbook = Workbook()
+    _populate_sheet_export_worksheet(
+        workbook.active,
+        table,
+        document_json=document_json,
+    )
+
+    stream = io.BytesIO()
+    workbook.save(stream)
+    return stream.getvalue()
+
+
+def _build_workbook_export_bytes(
+    sheets: list[tuple[NoteSheetTableResponse, dict[str, Any]]],
+) -> bytes:
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法导出 Excel") from exc
+
+    workbook = Workbook()
+    default_worksheet = workbook.active
+    for index, (table, document_json) in enumerate(sheets):
+        worksheet = default_worksheet if index == 0 else workbook.create_sheet()
+        _populate_sheet_export_worksheet(
+            worksheet,
+            table,
+            document_json=document_json,
+        )
+
     stream = io.BytesIO()
     workbook.save(stream)
     return stream.getvalue()
@@ -17176,6 +17215,11 @@ def _sheet_export_filename(workbook: WorkbookDocument | None, document: SheetDoc
     sheet_title = _normalize_sheet_text(document.title) or "表格"
     base_title = f"{workbook_title}_{sheet_title}" if workbook_title and workbook_title != sheet_title else sheet_title
     safe_title = re.sub(r'[\\/:*?"<>|]+', "_", base_title).strip() or "表格"
+    return f"{safe_title}.xlsx"
+
+
+def _workbook_export_filename(workbook: WorkbookDocument) -> str:
+    safe_title = re.sub(r'[\\/:*?"<>|]+', "_", _normalize_sheet_text(workbook.title)).strip() or "工作簿"
     return f"{safe_title}.xlsx"
 
 
@@ -20267,6 +20311,62 @@ def get_workbook(
     if timings is not None:
         response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
     return result
+
+
+@router.get("/workbooks/{workbook_id}/export")
+def export_workbook(
+    workbook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    workbook, workbook_access = _get_workbook_or_404(
+        session,
+        current_user,
+        workbook_id,
+        required_role="viewer",
+    )
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    sheet_map = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    export_sheets: list[tuple[NoteSheetTableResponse, dict[str, Any]]] = []
+    exported_sheet_ids: set[str] = set()
+    for link in links:
+        document = sheet_map.get(str(link.sheet_id))
+        if document is None or str(document.id) in exported_sheet_ids:
+            continue
+        sheet_access = _resolve_sheet_resource_access(
+            session,
+            document,
+            current_user,
+            workbook=workbook,
+            workbook_access=workbook_access,
+        )
+        if not sheet_access.capabilities.can_read:
+            continue
+        exported_sheet_ids.add(str(document.id))
+        export_sheets.append((
+            _build_note_sheet_table_response(
+                document,
+                workbook=workbook,
+                include_grid=True,
+                value_mode="text",
+                defined_names=_defined_names_for_formula(session, document, workbook),
+            ),
+            dict(document.document_json or {}),
+        ))
+
+    raw_bytes = _build_workbook_export_bytes(export_sheets)
+    filename = _workbook_export_filename(workbook)
+    return StreamingResponse(
+        io.BytesIO(raw_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
 
 
 @router.post("/workbooks/{workbook_id}/restore", response_model=WorkbookDetailResponse)

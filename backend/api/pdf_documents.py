@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator, Literal
 
 import requests
+import pymupdf
 import pypdfium2 as pdfium
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -66,7 +67,7 @@ PDF_TITLE_NAMING_SCHEMA_VERSION = 2
 PDF_TITLE_NAMING_MODEL = "gpt-5.3-codex-spark"
 PDF_TITLE_NAMING_PROVIDER_ID = "codex-cli"
 PDF_PAGE_PREVIEW_MAX_WIDTH = 1280
-PDF_PAGE_PREVIEW_RENDER_VERSION = 1
+PDF_PAGE_PREVIEW_RENDER_VERSION = 2
 PDF_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_PDF_BOOKSHELF_NAMES = ("1", "2", "4", "5")
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -155,6 +156,11 @@ class PdfLibraryBookshelfUpdateRequest(BaseModel):
 
 class PdfMoveToBookshelfRequest(BaseModel):
     bookshelf_id: str = Field(min_length=1, max_length=64)
+
+
+class PdfMetadataUpdateRequest(BaseModel):
+    display_title: str = Field(min_length=1, max_length=80)
+    display_author: str = Field(default="", max_length=60)
 
 
 class PdfDocumentDetail(BaseModel):
@@ -753,8 +759,17 @@ def _pdf_title_source_fingerprint(document: PdfDocument) -> str:
     return hashlib.sha256(str(document.title or "").strip().encode("utf-8")).hexdigest()
 
 
+def _strip_pdf_title_display_noise(value: Any) -> str:
+    title = str(value or "")
+    return re.sub(
+        r"([（(])\s*原书\s*(?=(?:第\s*)?[0-9一二三四五六七八九十百千万]+\s*版)",
+        r"\1",
+        title,
+    )
+
+
 def _fallback_pdf_display_title(source_title: str) -> str:
-    title = re.sub(r"\.pdf$", "", str(source_title or "").strip(), flags=re.I)
+    title = re.sub(r"\.pdf$", "", _strip_pdf_title_display_noise(source_title).strip(), flags=re.I)
     title = re.sub(r"^[\d_-]{6,}(?:\s+|(?=[\u4e00-\u9fff]))", "", title)
     noisy_group = re.compile(
         r"\s*[\(（\[【][^\)）\]】]*(?:z-?lib|1lib|下载|公众号|微信|电子书|扫描版|影印版|校对版|精校版)[^\)）\]】]*[\)）\]】]",
@@ -773,10 +788,17 @@ def _pdf_display_title(document: PdfDocument) -> str:
         and naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
         and str(naming.get("display_title") or "").strip()
     ):
+        if naming.get("source") == "manual":
+            return _normalize_manual_pdf_display_title(naming["display_title"])
         # Older cached AI results may still contain a filename batch number.
         # Normalize on read so existing books benefit without another AI call.
         return _sanitize_pdf_display_title(naming["display_title"], document.title or "")
     return _fallback_pdf_display_title(document.title or "")
+
+
+def _normalize_manual_pdf_display_title(value: Any) -> str:
+    title = re.sub(r"\s+", " ", _strip_pdf_title_display_noise(value).strip())
+    return title[:80].rstrip()
 
 
 def _sanitize_pdf_display_author(value: Any) -> str:
@@ -795,7 +817,7 @@ def _pdf_display_author(document: PdfDocument) -> str:
         and naming.get("source_fingerprint") == _pdf_title_source_fingerprint(document)
     ):
         named_author = _sanitize_pdf_display_author(naming.get("display_author"))
-        if named_author:
+        if named_author or naming.get("source") == "manual":
             return named_author
     return _sanitize_pdf_display_author(metadata.get("pdf_author"))
 
@@ -1131,6 +1153,51 @@ def _render_pdf_page_preview(
     target_path: Path,
     max_width: int = PDF_PAGE_PREVIEW_MAX_WIDTH,
 ) -> None:
+    try:
+        _render_pdf_page_preview_with_mupdf(pdf_path, page_number, target_path, max_width)
+    except Exception:
+        # PDFium remains a lightweight fallback, but MuPDF is the primary renderer because
+        # it handles malformed or non-standard embedded CJK font maps more reliably.
+        _render_pdf_page_preview_with_pdfium(pdf_path, page_number, target_path, max_width)
+
+
+def _save_pdf_page_preview_image(image: Image.Image, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = target_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        image.save(temporary_path, format="WEBP", quality=84, method=4)
+        temporary_path.replace(target_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _render_pdf_page_preview_with_mupdf(
+    pdf_path: Path,
+    page_number: int,
+    target_path: Path,
+    max_width: int,
+) -> None:
+    pdf = pymupdf.open(os.fspath(pdf_path))
+    try:
+        page = pdf.load_page(page_number - 1)
+        scale = max(0.5, min(4.0, max_width / max(float(page.rect.width), 1.0)))
+        pixmap = page.get_pixmap(
+            matrix=pymupdf.Matrix(scale, scale),
+            colorspace=pymupdf.csRGB,
+            alpha=False,
+        )
+        image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+        _save_pdf_page_preview_image(image, target_path)
+    finally:
+        pdf.close()
+
+
+def _render_pdf_page_preview_with_pdfium(
+    pdf_path: Path,
+    page_number: int,
+    target_path: Path,
+    max_width: int,
+) -> None:
     pdf = pdfium.PdfDocument(os.fspath(pdf_path))
     try:
         page = pdf[page_number - 1]
@@ -1140,13 +1207,7 @@ def _render_pdf_page_preview(
             bitmap = page.render(scale=scale, rev_byteorder=True)
             try:
                 image = bitmap.to_pil()
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary_path = target_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-                try:
-                    image.save(temporary_path, format="WEBP", quality=84, method=4)
-                    temporary_path.replace(target_path)
-                finally:
-                    temporary_path.unlink(missing_ok=True)
+                _save_pdf_page_preview_image(image, target_path)
             finally:
                 bitmap.close()
         finally:
@@ -1900,6 +1961,45 @@ def move_pdf_to_library_bookshelf(
         position_index=placement.position_index,
         orientation=placement.orientation or "spine_vertical",
     )
+
+
+@router.put("/{pdf_id}/metadata", response_model=PdfDocumentDetail)
+def update_pdf_document_metadata(
+    pdf_id: int,
+    payload: PdfMetadataUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access = _get_pdf_document_or_404(
+        session,
+        current_user,
+        pdf_id,
+        required_role="editor",
+    )
+    display_title = _normalize_manual_pdf_display_title(payload.display_title)
+    if not display_title:
+        raise HTTPException(status_code=400, detail="书名不能为空")
+
+    now = time.time()
+    metadata = dict(document.metadata_json or {})
+    metadata["title_naming"] = {
+        "schema_version": PDF_TITLE_NAMING_SCHEMA_VERSION,
+        "source_fingerprint": _pdf_title_source_fingerprint(document),
+        "display_title": display_title,
+        "display_author": _sanitize_pdf_display_author(payload.display_author),
+        "status": "ready",
+        "source": "manual",
+        "model": None,
+        "edited_at": now,
+        "edited_by_user_id": current_user.id,
+    }
+    document.metadata_json = metadata
+    document.updated_at = now
+    document.updated_by_user_id = current_user.id
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+    return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
 
 
 @router.put("/bookshelf-layout", response_model=list[PdfBookshelfPlacementPayload])

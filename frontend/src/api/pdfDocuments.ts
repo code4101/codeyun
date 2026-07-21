@@ -82,6 +82,11 @@ export interface PdfDocumentLocalImportRequest {
   absolute_path: string;
 }
 
+export interface PdfMetadataUpdateRequest {
+  display_title: string;
+  display_author: string;
+}
+
 export interface PdfContentUrlResponse {
   url: string;
   expires_in: number;
@@ -163,6 +168,11 @@ export async function updatePdfBookshelfLayout(placements: PdfBookshelfPlacement
   return response.data;
 }
 
+export async function updatePdfDocumentMetadata(pdfId: number, payload: PdfMetadataUpdateRequest) {
+  const response = await api.put<PdfDocumentDetail>(`/pdf-documents/${pdfId}/metadata`, payload);
+  return response.data;
+}
+
 export async function importPdfDocumentFromLocalPath(payload: PdfDocumentLocalImportRequest) {
   const response = await api.post<PdfDocumentDetail>('/pdf-documents/import-local-path', payload);
   return response.data;
@@ -203,6 +213,9 @@ export async function fetchPdfPagePreview(pdfId: number, pageNumber: number, sig
   const response = await api.get<Blob>(`/pdf-documents/${pdfId}/pages/${pageNumber}/preview`, {
     responseType: 'blob',
     signal,
+    // The library owns a short-lived object-URL cache. Bypass the browser's longer HTTP
+    // cache here so a server-side renderer upgrade cannot keep serving an old broken page.
+    params: { preview_request: Date.now() },
   });
   return response.data;
 }

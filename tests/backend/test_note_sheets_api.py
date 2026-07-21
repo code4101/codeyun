@@ -6127,6 +6127,76 @@ def test_note_sheet_export_allows_anonymous_viewer_and_exports_current_grid(clie
     assert client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export").status_code == 403
 
 
+def test_workbook_export_preserves_sheet_order_and_exports_all_readable_sheets(client, session):
+    owner = _create_user(session, username="workbook-export-owner")
+    workbook_document = WorkbookDocument(
+        numeric_id=9401,
+        title="课程总表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    course_sheet = SheetDocument(
+        numeric_id=9402,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="courses",
+        title="课程",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "columns": ["课程", "人数"],
+            "data_start_row": 1,
+            "grid_rows": [["课程", "人数"], ["念住", 20]],
+            "rows": [["念住", 20]],
+        },
+    )
+    questionnaire_sheet = SheetDocument(
+        numeric_id=9403,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="questionnaires",
+        title="问卷数据",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "columns": ["姓名", "状态"],
+            "data_start_row": 1,
+            "grid_rows": [["姓名", "状态"], ["甲", "完成"]],
+            "rows": [["甲", "完成"]],
+        },
+    )
+    session.add(workbook_document)
+    session.add(course_sheet)
+    session.add(questionnaire_sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook_document.id, sheet_id=questionnaire_sheet.id, order_index=20))
+    session.add(WorkbookSheetLink(workbook_id=workbook_document.id, sheet_id=course_sheet.id, order_index=10))
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=str(workbook_document.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    response = client.get(f"/api/note-sheets/workbooks/{workbook_document.numeric_id}/export")
+
+    assert response.status_code == 200
+    assert "课程总表.xlsx" in unquote(response.headers["content-disposition"])
+    exported = load_workbook(io.BytesIO(response.content), data_only=True)
+    assert exported.sheetnames == ["课程", "问卷数据"]
+    assert exported["课程"]["A2"].value == "念住"
+    assert exported["课程"]["B2"].value == 20
+    assert exported["问卷数据"]["A2"].value == "甲"
+    assert exported["问卷数据"]["B2"].value == "完成"
+
+
 def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(client, session):
     user = _create_user(session, username="note-sheet-attendance-template-skip-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

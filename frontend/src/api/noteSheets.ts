@@ -743,6 +743,17 @@ export async function exportNoteSheet(
   }
 }
 
+export async function exportWorkbook(workbookId: number) {
+  const response = await api.get<Blob>(`/note-sheets/workbooks/${workbookId}/export`, {
+    responseType: 'blob',
+    timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+  })
+  return {
+    blob: response.data,
+    filename: parseContentDispositionFilename(response.headers['content-disposition']) || '工作簿.xlsx',
+  }
+}
+
 export async function updateNoteSheetRegistrationOrderMatch(
   sheetId: number,
   options?: NoteSheetResourceRequestOptions,
