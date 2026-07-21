@@ -11070,19 +11070,6 @@ class DataAnnotationRuntimeRunner(
                     })
                 self._log("success", f"已在目标场景 #{target_scene_id}")
                 return "success"
-            if int(current_scene_id) == 34 and int(target_scene_id) != 34:
-                text = self._ocr_text(self._cached_ocr_fragments(ctx, frame))
-                runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame, stop_event=stop_event)
-                if self._world_reward_tip_detected(ctx, frame, text):
-                    yield from self._close_world_reward_tip_stack_if_present(
-                        ctx,
-                        runtime,
-                        stop_event,
-                        label="场景移动",
-                        max_attempts=30,
-                    )
-                    yield BehaviorTreeStatus.RUNNING
-                    continue
             has_navigation_edge = current_scene_id is not None and self._select_scene_next_edge(
                 tree,
                 int(current_scene_id),

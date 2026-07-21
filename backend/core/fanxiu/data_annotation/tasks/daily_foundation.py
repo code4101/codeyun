@@ -821,12 +821,6 @@ class DailyFoundationTaskMixin:
             return False
         try:
             if scene_id != 69:
-                if scene_id == 34 or self._daily_assistant_text_is_world_like(_text):
-                    try:
-                        yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label="日常_首领")
-                    except Exception as exc:
-                        with self._lock:
-                            self._log_locked("warning", f"日常_首领：离开战斗后清理世界奖励提示失败，继续尝试进入日常：{exc}")
                 with self._lock:
                     self._set_status_locked("running", "日常_首领：离开战斗后重新进入日常 #69", phase="daily_boss_reopen_daily_after_leave")
                     self._log_locked("action", "日常_首领：离开战斗后按场景图跳转到 #69")
@@ -1092,12 +1086,6 @@ class DailyFoundationTaskMixin:
             scene_id = 188
         elif "点击退出" in text or "挑战结算" in text:
             scene_id = 189
-        elif (
-            "点击查看" in text
-            and ("灵环" in text or "宝魄" in text)
-            and not self._daily_assistant_text_is_world_like(text)
-        ):
-            scene_id = 186
         return scene_id, score, text
 
     def _record_daily_lingzu_done(self, payload: dict[str, Any], *, message: str) -> str:
@@ -1124,7 +1112,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_lingzu_cleanup_error_requires_attention(self, exc: Exception) -> bool:
         message = str(exc)
-        return "#186" in message or "奖励浮层" in message or "宝魄" in message or "点击查看" in message
+        return "#186" in message or "奖励浮层" in message
 
     def _safe_daily_done_cleanup(
         self,
@@ -1261,12 +1249,8 @@ class DailyFoundationTaskMixin:
             while True:
                 self._raise_if_stopped(stop_event)
                 yield from runtime.wait_action_settle(1.0)
-                try:
-                    text = runtime.ocr_text(update=True)
-                except TypeError:
-                    text = runtime.ocr_text(runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None)
-                if "点击查看" not in text and "灵环" not in text and "宝魄" not in text:
-                    scene_id, _score, _frame = runtime.current_scene([34, 183, 184, 187, 188])
+                scene_id, _score, _frame = runtime.current_scene([34, 183, 184, 187, 188], update=True)
+                if scene_id is not None:
                     break
                 if time.monotonic() - start >= 12:
                     raise RuntimeError("日常_灵祖：点击 #186 关闭动作后奖励浮层仍未消失")
@@ -1713,92 +1697,6 @@ class DailyFoundationTaskMixin:
             return False
         markers = ("储物袋", "大地图", "仙市", "仙府", "天机阁", "角色", "装备", "功法书")
         return sum(1 for marker in markers if marker in normalized) >= 2
-
-    def _world_reward_tip_text_matches(self, text: str) -> bool:
-        compact = _sanitize_ocr_text(text).replace(" ", "")
-        if any(token in compact for token in ("供奉总览", "接受供奉", "今日接受供奉次数")):
-            return False
-        if "点击查看" not in compact and "点击使用" not in compact:
-            return False
-        return any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励", "灵玉", "天尊", "仙玉", "随机匣", "兽渊"))
-
-    def _world_reward_tip_detected(
-        self,
-        ctx: dict[str, Any],
-        frame: str,
-        text: str = "",
-        *,
-        menu_ocr_fragments: list[dict[str, Any]] | None = None,
-    ) -> bool:
-        full_frame_matches = self._world_reward_tip_text_matches(text)
-        image35 = ctx.get("images", {}).get(35)
-        if not isinstance(image35, dict) or not self._find_shape(image35, "菜单"):
-            return full_frame_matches
-        lines = menu_ocr_fragments
-        if lines is None:
-            try:
-                lines = self._ocr_fragments_in_shapes(frame, image35, ("菜单",), padding=8)
-            except Exception as exc:
-                self._log("detail", f"世界提示清理：#35 菜单 OCR 失败：{exc}")
-                return False
-        menu_text = self._ocr_text(lines or [])
-        # 全屏 OCR 会同时读到世界页活动卡片里的“奖励/点击查看”和
-        # 正常底部菜单；只有点击提示实际覆盖菜单区域时，才把它当成
-        # 挡住菜单的奖励卡。否则会在普通世界页反复点击关闭坐标。
-        menu_compact = _sanitize_ocr_text(menu_text).replace(" ", "")
-        return "点击查看" in menu_compact or "点击使用" in menu_compact
-
-    def _close_world_reward_tip_if_present(
-        self,
-        ctx: dict[str, Any],
-        runtime: FanxiuRuntime,
-        frame: str,
-        text: str,
-        *,
-        label: str,
-    ) -> bool:
-        if not self._world_reward_tip_detected(ctx, frame, text):
-            return False
-        image34 = ctx.get("images", {}).get(34)
-        if not isinstance(image34, dict):
-            return False
-        width, height = self._frame_size(image34)
-        close_x = width * 0.767
-        close_y = height * 0.605
-        with self._lock:
-            self._set_status_locked("running", f"{label}：关闭世界页奖励提示", phase="close_world_reward_tip", current_scene=34)
-            self._log_locked("action", f"{label}：检测到世界页奖励提示，点击奖励卡关闭按钮")
-        runtime.click_frame_point(image34, close_x, close_y)
-        return True
-
-    def _close_world_reward_tip_stack_if_present(
-        self,
-        ctx: dict[str, Any],
-        runtime: FanxiuRuntime,
-        stop_event: threading.Event,
-        *,
-        label: str,
-        max_attempts: int = 15,
-    ):
-        closed_count = 0
-        tip_still_present = False
-        for _attempt in range(max(1, int(max_attempts))):
-            self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            text = runtime.ocr_text(frame)
-            if not self._close_world_reward_tip_if_present(ctx, runtime, frame, text, label=label):
-                tip_still_present = False
-                break
-            tip_still_present = True
-            closed_count += 1
-            yield from runtime.wait_action_settle(0.6)
-        if closed_count:
-            self._log("success", f"{label}：已关闭 {closed_count} 张世界奖励提示")
-        if tip_still_present:
-            frame = runtime.cur_frame(update=True)
-            text = runtime.ocr_text(frame)
-            if self._world_reward_tip_detected(ctx, frame, text):
-                self._log("warning", f"{label}：世界奖励提示关闭达到上限 {max_attempts}，仍可能残留提示 OCR={text[:120]}")
 
     def _world_scene_leave_matches(
         self,
@@ -2433,7 +2331,6 @@ class DailyFoundationTaskMixin:
             scene_id, score, frame = runtime.current_scene([34], update=True)
             text = runtime.ocr_text(frame)
         if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
-            yield from self._close_world_reward_tip_stack_if_present(ctx, runtime, stop_event, label=label)
             scene_id, score, frame = runtime.current_scene([34], update=True)
             text = runtime.ocr_text(frame)
             with self._lock:

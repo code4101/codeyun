@@ -3148,7 +3148,7 @@ class DailyChallengeTaskMixin:
                     self._log_locked("action", "日常_灵祖：点击 #189「点击退出」")
                 yield from action_runtime.wait_click(189, "点击退出")
                 continue
-            if scene_id == 186 or "点击查看" in text or "灵环" in text or "宝魄" in text:
+            if scene_id == 186:
                 self._record_daily_lingzu_done(payload, message="已回到世界并出现灵祖奖励")
                 yield from self._safe_return_daily_lingzu_to_world_after_done(ctx, stop_event)
                 return "success"
