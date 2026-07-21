@@ -366,7 +366,15 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         ),
         runtime_dynamic_task("legacy-daily-xianmeng", "daily_xianmeng", "日常_仙盟", enabled=False, cooldown_seconds=600, payload={"max_runtime_seconds": 7200}),
         runtime_daily_task("legacy-daily-xianyuan", "daily_xianyuan", "日常_挑战仙缘", "05:00", cooldown_seconds=600),
-        legacy_daily_task("legacy-daily-activity", "日常_活跃度", "05:00"),
+        runtime_daily_task(
+            "legacy-daily-activity",
+            "daily_activity",
+            "日常_活跃度",
+            "11:00",
+            enabled=False,
+            cooldown_seconds=3600,
+            payload={"fallback_seconds": 3600},
+        ),
     ]
 
 

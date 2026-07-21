@@ -3,6 +3,7 @@ import { fetchPdfPagePreview } from '@/api/pdfDocuments'
 const PREVIEW_BLOCK_SIZE = 5
 const PREVIEW_CACHE_TTL_MS = 15 * 60 * 1000
 const PREVIEW_CACHE_MAX_PAGES = 60
+const PREVIEW_CACHE_VERSION = 2
 
 interface PreviewPageCacheEntry {
   url: string
@@ -14,7 +15,7 @@ const previewPageCache = new Map<string, PreviewPageCacheEntry>()
 const previewPageRequests = new Map<string, Promise<string>>()
 
 function previewPageKey(pdfId: number, pageNumber: number) {
-  return `${pdfId}:${pageNumber}`
+  return `${PREVIEW_CACHE_VERSION}:${pdfId}:${pageNumber}`
 }
 
 function removePreviewPage(key: string, entry: PreviewPageCacheEntry) {

@@ -280,6 +280,7 @@
                   :current-node-key="selectedAssetId"
                   :allow-drop="allowAssetDrop"
                   :filter-node-method="filterAssetTreeNode"
+                  @keydown="handleAssetTreeDirectionKey"
                   @node-click="selectAssetNode"
                   @node-drop="handleAssetNodeDrop"
                   @node-expand="node => setAssetNodeExpanded(node.id, true)"
@@ -7385,6 +7386,7 @@ const assetContextMenu = ref({
   nodeId: '',
 });
 type AnnotationTreeNodeHandle = {
+  data?: DataAnnotationAssetNode | DataAnnotationShape;
   expanded?: boolean;
   expand?: () => void;
   collapse?: () => void;
@@ -10989,6 +10991,27 @@ const selectAssetNode = (node: DataAnnotationAssetNode, _treeNode?: unknown, _co
     return;
   }
   void refreshEntryAssetTreeIfChanged();
+};
+
+let assetTreeDirectionKeyFrame: number | null = null;
+const handleAssetTreeDirectionKey = (event: KeyboardEvent) => {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (assetTreeDirectionKeyFrame !== null) window.cancelAnimationFrame(assetTreeDirectionKeyFrame);
+  assetTreeDirectionKeyFrame = window.requestAnimationFrame(() => {
+    assetTreeDirectionKeyFrame = null;
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLElement) || !assetTreeScrollRef.value?.contains(activeElement)) return;
+    const treeItem = activeElement.closest<HTMLElement>('[role="treeitem"]');
+    const treeNodeKey = treeItem?.dataset.key;
+    if (!treeNodeKey) return;
+    const node = assetTreeRef.value?.getNode(treeNodeKey)?.data as DataAnnotationAssetNode | undefined;
+    if (!node) return;
+    const actualNode = findAssetNode(assetTree.value, node.id);
+    if (isVirtualAssetTreeNode(node) && !actualNode) return;
+    selectedAssetId.value = actualNode?.id ?? node.id;
+    if (node.type === 'image') void refreshEntryAssetTreeIfChanged();
+  });
 };
 
 const closeAssetContextMenu = () => {

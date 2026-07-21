@@ -8,6 +8,8 @@ import {
   createNoteSheet,
   deleteWorkbook,
   deleteNoteSheet,
+  exportNoteSheet,
+  exportWorkbook,
   fetchNoteSheet,
   fetchWorkbook,
   getNoteSheetApiErrorStatus,
@@ -51,11 +53,11 @@ const NoteSheetWorkspace = defineAsyncComponent(() => preloadNoteSheetWorkspace(
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
-const SHEET_TAB_CONTEXT_MENU_HEIGHT = 280
+const SHEET_TAB_CONTEXT_MENU_HEIGHT = 320
 const RESOURCE_LINK_SUBMENU_WIDTH = 176
 const SHEET_ADVANCED_SUBMENU_WIDTH = 196
 const WORKBOOK_CONTEXT_MENU_WIDTH = 148
-const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
+const WORKBOOK_CONTEXT_MENU_HEIGHT = 340
 
 type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
@@ -69,6 +71,7 @@ type SheetTabContextMenuCommand =
   | 'create'
   | 'rename'
   | 'duplicate'
+  | 'export_xlsx'
   | 'configure'
   | 'advanced'
   | 'hide_empty_columns'
@@ -94,6 +97,7 @@ type WorkbookContextMenuCommand =
   | 'access'
   | 'defined_names'
   | 'save_as'
+  | 'export_xlsx'
   | 'template'
   | 'duplicate'
   | 'delete'
@@ -223,6 +227,7 @@ const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
       label: '复制工作表',
       enabled: !!sheet && canEditWorkbookSheets.value && canEditSheetTabContextMenuSheet.value,
     },
+    { command: 'export_xlsx', label: '另存为 XLSX', enabled: !!sheet },
     { command: 'configure', label: '设置表格', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
     {
       command: 'advanced',
@@ -263,6 +268,7 @@ const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
     { command: 'access', label: '设置权限', enabled: canManageWorkbookSheets.value },
     { command: 'defined_names', label: '名称管理器', enabled: canEditWorkbookSheets.value },
     { command: 'save_as', label: '另存为', saveAsSubmenu: true, enabled: true },
+    { command: 'export_xlsx', label: '另存为 XLSX', enabled: true },
     { command: 'delete', label: '删除工作簿', danger: true, divided: true, enabled: canManageWorkbookSheets.value },
   ]
   return items
@@ -970,6 +976,17 @@ function openWorkbook(targetWorkbook: WorkbookDetail, targetSheetId?: number | n
   window.open(href, '_blank', 'noopener,noreferrer')
 }
 
+function downloadResourceBlob(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.URL.revokeObjectURL(url)
+}
+
 function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
   switch (command) {
     case 'link':
@@ -987,6 +1004,9 @@ function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
     case 'save_as':
       void saveAsWorkbookFromContextMenu('duplicate')
       break
+    case 'export_xlsx':
+      void exportWorkbookFromContextMenu()
+      break
     case 'template':
       void saveAsWorkbookFromContextMenu('template')
       break
@@ -996,6 +1016,22 @@ function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
     case 'delete':
       void deleteWorkbookFromContextMenu()
       break
+  }
+}
+
+async function exportWorkbookFromContextMenu() {
+  const currentWorkbook = workbook.value
+  closeWorkbookContextMenu()
+  if (!currentWorkbook) {
+    return
+  }
+  try {
+    const result = await exportWorkbook(currentWorkbook.id)
+    downloadResourceBlob(result.blob, result.filename || '工作簿.xlsx')
+    ElMessage.success('已导出工作簿')
+  } catch (error) {
+    console.warn('Failed to export workbook', error)
+    ElMessage.error('导出工作簿失败')
   }
 }
 
@@ -1115,6 +1151,9 @@ function handleSheetTabContextMenuCommand(command: SheetTabContextMenuCommand) {
     case 'duplicate':
       void duplicateSheetFromTabContextMenu()
       break
+    case 'export_xlsx':
+      void exportSheetFromTabContextMenu()
+      break
     case 'configure':
       void configureSheetFromTabContextMenu()
       break
@@ -1138,6 +1177,23 @@ function handleSheetTabContextMenuCommand(command: SheetTabContextMenuCommand) {
     case 'delete':
       void deleteSheetFromTabContextMenu()
       break
+  }
+}
+
+async function exportSheetFromTabContextMenu() {
+  const sheet = sheetTabContextMenuSheet.value
+  const currentWorkbook = workbook.value
+  closeSheetTabContextMenu()
+  if (!sheet || !currentWorkbook) {
+    return
+  }
+  try {
+    const result = await exportNoteSheet(sheet.id, { workbookId: currentWorkbook.id })
+    downloadResourceBlob(result.blob, result.filename || '表格.xlsx')
+    ElMessage.success('已导出工作表')
+  } catch (error) {
+    console.warn('Failed to export worksheet', error)
+    ElMessage.error('导出工作表失败')
   }
 }
 

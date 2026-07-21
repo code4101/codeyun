@@ -22,6 +22,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "hide_floating_window",
     "daily_mozu",
     "daily_zhenxie",
+    "daily_activity",
     "daily_signup",
     "daily_boss",
     "daily_jianling",
@@ -253,6 +254,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="\u65e5\u5e38_\u9547\u90aa",
             flow=runner.daily_zhenxie_flow,
         )
+
+    @register_fanxiu_data_annotation_task_cell("daily_activity", "日常_活跃度", scheduler_supported=True)
+    def _run_data_annotation_daily_activity_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_activity_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_task_cell("daily_signup", "日常_报名", scheduler_supported=True)
     def _run_data_annotation_daily_signup_task_cell(

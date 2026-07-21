@@ -14,6 +14,7 @@ import {
   renamePdfBookshelf,
   uploadPdfDocument,
   updatePdfBookshelfLayout,
+  updatePdfDocumentMetadata,
   updatePdfUserState,
   type PdfBookshelfOrientation,
   type PdfBookshelfPlacement,
@@ -22,7 +23,12 @@ import {
   type PdfResourceRole,
 } from '@/api/pdfDocuments'
 import { useUserStore } from '@/store/userStore'
+import {
+  fetchLocalSkillBookCatalog,
+  type SkillBookCatalog,
+} from '@/api/skillBooks'
 import { getCachedPreviewPageUrl, loadPreviewPageBlock } from './previewPageCache'
+import SkillBookReaderDialog from './SkillBookReaderDialog.vue'
 
 type PdfFilter = 'all' | 'mine' | 'other'
 type PdfViewMode = 'bookshelf' | 'list'
@@ -45,6 +51,16 @@ interface BookshelfBookGroup {
   documents: PdfDocumentSummary[]
 }
 
+interface BookTitleSegment {
+  text: string
+  combined: boolean
+}
+
+interface ExternalPdfDropTarget {
+  shelfIndex: number
+  beforePdfId: number | null
+}
+
 const PDF_LIBRARY_VIEW_MODE_KEY = 'codeyun.pdf-library.view-mode'
 const PDF_LIBRARY_BOOKSHELF_KEY_PREFIX = 'codeyun.pdf-library.bookshelf'
 const BOOK_PAGE_SCALE = 0.32
@@ -55,7 +71,13 @@ const MAX_SPINE_WIDTH = 84
 const BOOK_THICKNESS_SCALE = 2
 const MIN_SPINE_FONT_SIZE = 12
 const MAX_SPINE_FONT_SIZE = 36
+const SPINE_VERTICAL_TEXT_HEIGHT_INSET = 20
+const MAX_COMBINED_VERTICAL_TOKEN_LENGTH = 4
+const COMPACT_VERTICAL_TOKEN_CELL_RATIO = 0.78
+const MIN_TITLE_LENGTH_FOR_SEPARATE_QUALIFIER = 11
 const MAX_HORIZONTAL_STACK_HEIGHT = 286
+const DEFAULT_BOOKSHELF_ROW_COUNT = 12
+const TRAILING_EMPTY_BOOKSHELF_ROW_COUNT = 4
 const BOOK_ORIENTATION_CYCLE: PdfBookshelfOrientation[] = [
   'spine_vertical',
   'spine_horizontal',
@@ -78,16 +100,24 @@ const dragOverShelfIndex = ref<number | null>(null)
 const bookDragOffsetX = ref(0)
 const bookDragOffsetY = ref(0)
 const externalFileDragActive = ref(false)
+const externalPdfDropTarget = ref<ExternalPdfDropTarget | null>(null)
 const importingDroppedPdfs = ref(false)
 const localPdfInput = ref<HTMLInputElement | null>(null)
 const bookContextMenu = ref<BookContextMenuState | null>(null)
 const bookshelfContextMenu = ref<BookshelfContextMenuState | null>(null)
+const metadataEditorVisible = ref(false)
+const metadataEditorSaving = ref(false)
+const metadataEditorPdfId = ref<number | null>(null)
+const metadataEditorTitle = ref('')
+const metadataEditorAuthor = ref('')
 const previewVisible = ref(false)
 const previewDocument = ref<PdfDocumentSummary | null>(null)
 const previewPage = ref(1)
 const previewImageUrl = ref('')
 const previewLoading = ref(false)
 const previewError = ref('')
+const skillBookCatalog = ref<SkillBookCatalog | null>(null)
+const skillBookReaderVisible = ref(false)
 const bookCoverImageUrls = ref(new Map<number, string>())
 let titleRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let layoutSaveQueue = Promise.resolve()
@@ -105,9 +135,6 @@ const currentUserId = computed(() => userStore.user?.id ?? null)
 const selectedBookshelf = computed(() => bookshelves.value.find(
   (bookshelf) => bookshelf.id === selectedBookshelfId.value,
 ) ?? null)
-const otherBookshelves = computed(() => bookshelves.value.filter(
-  (bookshelf) => bookshelf.id !== selectedBookshelfId.value,
-))
 const contextBookshelf = computed(() => bookshelves.value.find(
   (bookshelf) => bookshelf.id === bookshelfContextMenu.value?.bookshelfId,
 ) ?? null)
@@ -135,6 +162,43 @@ const filteredDocuments = computed(() => {
   })
 })
 
+const showLocalSkillBook = computed(() => {
+  const catalog = skillBookCatalog.value
+  if (!catalog || pdfFilter.value === 'other' || selectedBookshelfId.value !== bookshelves.value[0]?.id) {
+    return false
+  }
+  const query = normalizedSearchText.value
+  if (!query) {
+    return true
+  }
+  return [
+    catalog.title,
+    catalog.author,
+    ...catalog.skills.flatMap((skill) => [
+      skill.name,
+      skill.description,
+      ...skill.chapters.map((chapter) => chapter.title),
+    ]),
+  ].some((value) => value.toLowerCase().includes(query))
+})
+const hasVisibleLibraryItems = computed(() => showLocalSkillBook.value || filteredDocuments.value.length > 0)
+const skillBookSpineStyle = computed(() => {
+  const pages = skillBookCatalog.value?.estimated_page_count ?? 1
+  const spineWidth = Math.min(104, Math.max(64, Math.round(52 + Math.sqrt(pages) * 2.4)))
+  return {
+    '--spine-width': `${spineWidth}px`,
+    '--spine-height': '286px',
+    '--book-item-width': `${spineWidth}px`,
+    '--spine-font-size': '23px',
+    '--book-title-display': 'block',
+    '--book-author-display': spineWidth >= 76 ? 'block' : 'none',
+    '--book-author-font-size': '10px',
+    '--book-cover-color': skillBookCatalog.value?.cover_color ?? '#315f53',
+    '--book-cover-ink': '#ffffff',
+    '--book-lean': '0deg',
+  }
+})
+
 const filteredDocumentIds = computed(() => new Set(filteredDocuments.value.map((document) => document.id)))
 const previewPageCount = computed(() => Math.max(1, previewDocument.value?.metadata.page_count ?? 1))
 const previewStandaloneHref = computed(() => previewDocument.value
@@ -157,6 +221,9 @@ const bookshelfRows = computed(() => {
   return buildBookshelfRows().map((row) => row.filter((document) => filteredDocumentIds.value.has(document.id)))
 })
 const bookshelfDisplayRows = computed(() => bookshelfRows.value.map(buildBookshelfBookGroups))
+const externalDropShelfLabel = computed(() => externalPdfDropTarget.value == null
+  ? `书柜“${selectedBookshelf.value?.name ?? ''}”`
+  : `书柜“${selectedBookshelf.value?.name ?? ''}”第 ${externalPdfDropTarget.value.shelfIndex + 1} 栏`)
 
 const filterOptions: Array<{ value: PdfFilter; label: string }> = [
   { value: 'all', label: '全部' },
@@ -176,6 +243,36 @@ function accessRoleLabel(role?: PdfResourceRole | null) {
       return '无权限'
     default:
       return '未知'
+  }
+}
+
+function skillBookTooltip() {
+  const catalog = skillBookCatalog.value
+  if (!catalog) {
+    return '本地 Skill 手册'
+  }
+  return [
+    tooltipField('书名', catalog.title),
+    tooltipField('作者', catalog.author),
+    tooltipField('目录', `${catalog.skill_count} 个 Skill / ${catalog.chapter_count} 篇`),
+    tooltipField('内容', '按需读取本地最新文件'),
+  ].join('\n')
+}
+
+function openSkillBookReader() {
+  skillBookReaderVisible.value = true
+}
+
+function handleSkillBookCatalogUpdated(catalog: SkillBookCatalog) {
+  skillBookCatalog.value = catalog
+}
+
+async function reloadSkillBookCatalog() {
+  try {
+    skillBookCatalog.value = await fetchLocalSkillBookCatalog()
+  } catch (error) {
+    console.warn('Failed to load local Skill book:', error)
+    skillBookCatalog.value = null
   }
 }
 
@@ -253,6 +350,141 @@ function bookOrientationClass(document: PdfDocumentSummary) {
   return `orientation-${bookOrientation(document).replace('_', '-')}`
 }
 
+function isSeparateVolumeQualifier(qualifier: string) {
+  const content = qualifier.slice(1, -1)
+  return /^(?:第[一二三四五六七八九十百千万\d]+[卷册]|[上中下](?:卷|册)?|全[一二三四五六七八九十百千万\d]+卷)$/.test(content)
+}
+
+function bookSpineTitleParts(document: PdfDocumentSummary) {
+  const title = document.display_title.trim()
+  if (bookOrientation(document) !== 'spine_vertical') {
+    return { title, qualifier: '' }
+  }
+
+  const verticalTitle = title
+    .replace(/\s+/g, '')
+    .replace(/\(/g, '（')
+    .replace(/\)/g, '）')
+  const qualifierMatch = /^(.*?)(（[^（）]+）)$/.exec(verticalTitle)
+  if (
+    qualifierMatch
+    && Array.from(verticalTitle).length >= MIN_TITLE_LENGTH_FOR_SEPARATE_QUALIFIER
+    && qualifierMatch[1]
+    && isSeparateVolumeQualifier(qualifierMatch[2])
+  ) {
+    return { title: qualifierMatch[1], qualifier: qualifierMatch[2] }
+  }
+  return { title: verticalTitle, qualifier: '' }
+}
+
+function bookSpineTitle(document: PdfDocumentSummary) {
+  return bookSpineTitleParts(document).title
+}
+
+function bookSpineQualifier(document: PdfDocumentSummary) {
+  return bookSpineTitleParts(document).qualifier
+}
+
+function bookSpineTitleSegments(document: PdfDocumentSummary) {
+  const title = bookSpineTitle(document)
+  if (bookOrientation(document) !== 'spine_vertical') {
+    return [{ text: title, combined: false }] satisfies BookTitleSegment[]
+  }
+
+  const segments: BookTitleSegment[] = []
+  const tokenPattern = /[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*/g
+  let cursor = 0
+  for (const match of title.matchAll(tokenPattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) {
+      segments.push({ text: title.slice(cursor, index), combined: false })
+    }
+    const token = match[0]
+    segments.push({
+      text: token,
+      combined: Array.from(token).length <= MAX_COMBINED_VERTICAL_TOKEN_LENGTH,
+    })
+    cursor = index + token.length
+  }
+  if (cursor < title.length) {
+    segments.push({ text: title.slice(cursor), combined: false })
+  }
+  return segments.length ? segments : [{ text: title, combined: false }]
+}
+
+function isCompactVerticalToken(segment: BookTitleSegment) {
+  return !segment.combined && /^[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*$/.test(segment.text)
+}
+
+function bookTitleSegmentCellCount(segment: BookTitleSegment) {
+  if (segment.combined) {
+    return 1
+  }
+  const glyphCount = Array.from(segment.text).length
+  if (!isCompactVerticalToken(segment) || glyphCount <= 1) {
+    return glyphCount
+  }
+  return 1 + (glyphCount - 1) * COMPACT_VERTICAL_TOKEN_CELL_RATIO
+}
+
+function bookTitleCellCount(document: PdfDocumentSummary) {
+  if (bookOrientation(document) !== 'spine_vertical') {
+    return Array.from(document.display_title.replace(/\s+/g, '')).length
+  }
+  return bookSpineTitleSegments(document).reduce(
+    (count, segment) => count + bookTitleSegmentCellCount(segment),
+    0,
+  )
+}
+
+function bookSpineDisplayTitleSegments(document: PdfDocumentSummary) {
+  const segments = bookSpineTitleSegments(document)
+  if (bookOrientation(document) !== 'spine_vertical') {
+    return segments
+  }
+
+  const { bookHeight } = bookPhysicalGeometry(document)
+  const titleFontSize = bookTitleFontSize(document)
+  const maximumCellCount = Math.max(
+    2,
+    Math.floor((bookHeight - SPINE_VERTICAL_TEXT_HEIGHT_INSET) / titleFontSize),
+  )
+  if (bookTitleCellCount(document) <= maximumCellCount) {
+    return segments
+  }
+
+  const visibleCellCount = maximumCellCount - 1
+  const visibleSegments: BookTitleSegment[] = []
+  let usedCellCount = 0
+  for (const segment of segments) {
+    if (usedCellCount >= visibleCellCount) {
+      break
+    }
+    if (segment.combined) {
+      visibleSegments.push(segment)
+      usedCellCount += 1
+      continue
+    }
+    const availableCellCount = visibleCellCount - usedCellCount
+    const segmentGlyphs = Array.from(segment.text)
+    const visibleGlyphCount = isCompactVerticalToken(segment)
+      ? Math.min(
+          segmentGlyphs.length,
+          availableCellCount < 1
+            ? 0
+            : 1 + Math.floor((availableCellCount - 1) / COMPACT_VERTICAL_TOKEN_CELL_RATIO),
+        )
+      : Math.min(segmentGlyphs.length, Math.floor(availableCellCount))
+    const visibleText = segmentGlyphs.slice(0, visibleGlyphCount).join('')
+    if (visibleText) {
+      visibleSegments.push({ text: visibleText, combined: false })
+      usedCellCount += bookTitleSegmentCellCount({ text: visibleText, combined: false })
+    }
+  }
+  visibleSegments.push({ text: '⋮', combined: false })
+  return visibleSegments
+}
+
 function bookPhysicalGeometry(document: PdfDocumentSummary) {
   const metadata = document.metadata
   const pageHeight = metadata?.status === 'ready' && metadata.page_height_points
@@ -282,12 +514,12 @@ function bookTitleFontSize(document: PdfDocumentSummary) {
   const widthRatio = (baseSpineWidth - MIN_SPINE_WIDTH) / (MAX_SPINE_WIDTH - MIN_SPINE_WIDTH)
   const heightRatio = (bookHeight - MIN_BOOK_HEIGHT) / (MAX_BOOK_HEIGHT - MIN_BOOK_HEIGHT)
   const sizeRatio = Math.min(1, Math.max(0, widthRatio * 0.75 + heightRatio * 0.25))
-  const titleGlyphCount = Math.max(4, Array.from(document.display_title.replace(/\s+/g, '')).length)
+  const titleGlyphCount = Math.max(4, bookTitleCellCount(document))
   const widthFontLimit = spineWidth * 0.46
-  const heightFontLimit = (bookHeight - 28) / titleGlyphCount * 0.98
+  const heightFontLimit = (bookHeight - SPINE_VERTICAL_TEXT_HEIGHT_INSET) / titleGlyphCount
   const geometryFontLimit = MIN_SPINE_FONT_SIZE
     + (MAX_SPINE_FONT_SIZE - MIN_SPINE_FONT_SIZE) * (0.45 + sizeRatio * 0.55)
-  let titleFontSize = Math.round(Math.min(
+  let titleFontSize = Math.floor(Math.min(
     MAX_SPINE_FONT_SIZE,
     Math.max(
       MIN_SPINE_FONT_SIZE,
@@ -295,6 +527,16 @@ function bookTitleFontSize(document: PdfDocumentSummary) {
     ),
   ))
   const orientation = bookOrientation(document)
+  if (orientation === 'spine_vertical' && bookSpineQualifier(document)) {
+    const availableWidth = Math.max(0, spineWidth - 13)
+    while (titleFontSize > MIN_SPINE_FONT_SIZE) {
+      const qualifierFontSize = Math.min(14, Math.max(10, Math.round(titleFontSize * 0.58)))
+      if (titleFontSize * 1.35 + qualifierFontSize * 1.2 <= availableWidth) {
+        break
+      }
+      titleFontSize -= 1
+    }
+  }
   if (orientation === 'spine_horizontal') {
     titleFontSize = Math.min(
       titleFontSize,
@@ -313,7 +555,7 @@ function bookSpineStyle(document: PdfDocumentSummary) {
   } = bookPhysicalGeometry(document)
   const metadata = document.metadata
   const titleFontSize = bookTitleFontSize(document)
-  const titleGlyphCount = Math.max(4, Array.from(document.display_title.replace(/\s+/g, '')).length)
+  const titleGlyphCount = Math.max(4, bookTitleCellCount(document))
   const orientation = bookOrientation(document)
   const itemWidth = orientation === 'spine_vertical'
     ? spineWidth
@@ -321,16 +563,21 @@ function bookSpineStyle(document: PdfDocumentSummary) {
       ? bookHeight
       : pageDepth
   const showTitle = orientation === 'cover_front' || pageCount > 1
-  const coverFontSize = Math.min(28, Math.max(16, Math.round(Math.min(pageDepth / 6, bookHeight / 10))))
+  const coverFlatHeight = bookHeight
+  const coverFontSize = Math.min(28, Math.max(16, Math.round(Math.min(pageDepth / 6, coverFlatHeight / 8))))
   const author = document.display_author?.trim() ?? ''
   const authorGlyphCount = Array.from(author.replace(/\s+/g, '')).length
   const authorFontSize = Math.min(15, Math.max(10, Math.round(titleFontSize * 0.48)))
-  const showAuthor = showTitle && authorGlyphCount > 0 && (
+  const qualifier = bookSpineQualifier(document)
+  const qualifierFontSize = Math.min(14, Math.max(10, Math.round(titleFontSize * 0.58)))
+  const horizontalAuthorWidth = authorGlyphCount * authorFontSize * 0.9
+  const horizontalTwoLineHeight = titleFontSize * 1.35 + authorFontSize * 1.25 + 18
+  const showAuthor = showTitle && !qualifier && authorGlyphCount > 0 && (
     orientation === 'spine_vertical'
-      ? spineWidth >= titleFontSize * 1.35 + authorFontSize * 1.25 + 20
+      ? spineWidth >= titleFontSize * 1.35 + authorFontSize * 1.2 + 14
       : orientation === 'spine_horizontal'
-        ? bookHeight - 30 >= titleGlyphCount * titleFontSize * 0.95
-          + authorGlyphCount * authorFontSize * 0.9 + 12
+        ? spineWidth >= horizontalTwoLineHeight
+          && bookHeight - 24 >= horizontalAuthorWidth
         : bookHeight - 40 >= Math.ceil(
           titleGlyphCount * coverFontSize * 0.95 / Math.max(pageDepth - 32, 1),
         ) * coverFontSize * 1.45 + authorFontSize * 1.35 + 12
@@ -349,6 +596,7 @@ function bookSpineStyle(document: PdfDocumentSummary) {
     '--spine-height': `${bookHeight}px`,
     '--spine-font-size': `${titleFontSize}px`,
     '--page-depth': `${pageDepth}px`,
+    '--cover-flat-height': `${coverFlatHeight}px`,
     '--book-item-width': `${itemWidth}px`,
     '--book-title-display': showTitle ? 'block' : 'none',
     '--book-drag-x': document.id === draggingPdfId.value ? `${bookDragOffsetX.value}px` : '0px',
@@ -356,8 +604,10 @@ function bookSpineStyle(document: PdfDocumentSummary) {
     '--cover-font-size': `${coverFontSize}px`,
     '--book-author-font-size': `${authorFontSize}px`,
     '--book-author-display': showAuthor ? 'block' : 'none',
+    '--book-qualifier-font-size': `${qualifierFontSize}px`,
     '--book-lean': `${leanDegrees}deg`,
     '--book-reading-progress': `${(bookmarkPagePosition * 100).toFixed(2)}%`,
+    '--book-cover-bookmark-progress': `${(readingProgress * 100).toFixed(2)}%`,
     '--book-bookmark-tilt': `${bookmarkTilt}deg`,
     '--book-cover-color': metadata.cover_average_color ?? undefined,
     '--book-cover-ink': coverInkColor(metadata.cover_average_color),
@@ -453,7 +703,10 @@ function buildBookshelfRows() {
     (maximum, document) => Math.max(maximum, document.bookshelf_placement?.shelf_index ?? 0),
     0,
   )
-  const rowCount = Math.max(4, maxShelfIndex + 2)
+  const rowCount = Math.max(
+    DEFAULT_BOOKSHELF_ROW_COUNT,
+    maxShelfIndex + 1 + TRAILING_EMPTY_BOOKSHELF_ROW_COUNT,
+  )
   const rows = Array.from({ length: rowCount }, () => [] as PdfDocumentSummary[])
   const orderedDocuments = [...documents.value].sort((left, right) => {
     const leftShelf = left.bookshelf_placement?.shelf_index ?? 0
@@ -535,7 +788,8 @@ function openBookContextMenu(event: MouseEvent, pdfId: number) {
   event.stopPropagation()
   closeBookshelfContextMenu()
   const menuWidth = 176
-  const menuHeight = 42 + otherBookshelves.value.length * 34
+  const document = documents.value.find((item) => item.id === pdfId)
+  const menuHeight = document && canEditBookMetadata(document) ? 76 : 42
   bookContextMenu.value = {
     pdfId,
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -583,6 +837,7 @@ function rotateBook(pdfId: number) {
 function applyBookshelfRows(
   rows: PdfDocumentSummary[][],
   orientationOverrides: ReadonlyMap<number, PdfBookshelfOrientation> = new Map(),
+  persist = true,
 ) {
   const placements: PdfBookshelfPlacement[] = []
   for (const [rowIndex, row] of rows.entries()) {
@@ -598,7 +853,10 @@ function applyBookshelfRows(
     }
   }
   documents.value = [...documents.value]
-  queueBookshelfLayoutSave(placements)
+  if (persist) {
+    queueBookshelfLayoutSave(placements)
+  }
+  return placements
 }
 
 function rotateContextBook() {
@@ -610,30 +868,46 @@ function rotateContextBook() {
   rotateBook(pdfId)
 }
 
-async function moveContextBook(targetBookshelf: PdfLibraryBookshelf) {
+function canEditBookMetadata(document: PdfDocumentSummary) {
+  return document.access.role === 'editor' || document.access.role === 'manager'
+}
+
+function openMetadataEditorFromContext() {
   const pdfId = bookContextMenu.value?.pdfId
-  if (pdfId == null) {
+  const document = documents.value.find((item) => item.id === pdfId)
+  closeBookContextMenu()
+  if (!document || !canEditBookMetadata(document)) {
     return
   }
-  closeBookContextMenu()
+  metadataEditorPdfId.value = document.id
+  metadataEditorTitle.value = document.display_title
+  metadataEditorAuthor.value = document.display_author
+  metadataEditorVisible.value = true
+}
+
+async function saveMetadataEditor() {
+  const pdfId = metadataEditorPdfId.value
+  const displayTitle = metadataEditorTitle.value.trim()
+  if (pdfId == null || !displayTitle) {
+    ElMessage.warning('书名不能为空')
+    return
+  }
+  metadataEditorSaving.value = true
   try {
-    await movePdfToBookshelf(pdfId, targetBookshelf.id)
-    const current = selectedBookshelf.value
-    if (current) {
-      current.book_count = Math.max(0, current.book_count - 1)
-    }
-    targetBookshelf.book_count += 1
-    const coverUrl = bookCoverImageUrls.value.get(pdfId)
-    if (coverUrl) {
-      URL.revokeObjectURL(coverUrl)
-      bookCoverImageUrls.value.delete(pdfId)
-      bookCoverImageUrls.value = new Map(bookCoverImageUrls.value)
-    }
-    documents.value = documents.value.filter((document) => document.id !== pdfId)
-    ElMessage.success(`已移至书柜“${targetBookshelf.name}”`)
+    const updatedDocument = await updatePdfDocumentMetadata(pdfId, {
+      display_title: displayTitle,
+      display_author: metadataEditorAuthor.value.trim(),
+    })
+    documents.value = documents.value.map((document) => (
+      document.id === updatedDocument.id ? updatedDocument : document
+    ))
+    metadataEditorVisible.value = false
+    ElMessage.success('图书元数据已保存')
   } catch (error) {
-    console.warn('Failed to move PDF to bookshelf:', error)
-    ElMessage.error('移动图书失败')
+    console.warn('Failed to update PDF metadata:', error)
+    ElMessage.error('保存图书元数据失败')
+  } finally {
+    metadataEditorSaving.value = false
   }
 }
 
@@ -1051,6 +1325,29 @@ function hasExternalFiles(event: DragEvent) {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files')
 }
 
+function resolveExternalPdfDropTarget(event: DragEvent): ExternalPdfDropTarget | null {
+  if (viewMode.value !== 'bookshelf') {
+    return null
+  }
+  const hitElement = document.elementFromPoint(event.clientX, event.clientY)
+  const targetShelf = hitElement?.closest<HTMLElement>('.bookshelf-row')
+  const shelfIndex = Number(targetShelf?.dataset.shelfIndex)
+  if (!targetShelf || !Number.isInteger(shelfIndex) || shelfIndex < 0) {
+    return null
+  }
+
+  const groups = Array.from(targetShelf.querySelectorAll<HTMLElement>('.book-group'))
+  // The horizontal coordinate selects the gap between physical book groups. This keeps
+  // a horizontal stack intact instead of accidentally inserting into the middle of it.
+  const nextGroup = groups.find((group) => event.clientX < group.getBoundingClientRect().left + group.getBoundingClientRect().width / 2)
+  const nextBook = nextGroup?.querySelector<HTMLElement>('.book-item')
+  const nextPdfId = Number(nextBook?.dataset.pdfId)
+  return {
+    shelfIndex,
+    beforePdfId: Number.isInteger(nextPdfId) ? nextPdfId : null,
+  }
+}
+
 function handleExternalFileDragEnter(event: DragEvent) {
   if (!hasExternalFiles(event) || importingDroppedPdfs.value) {
     return
@@ -1058,6 +1355,7 @@ function handleExternalFileDragEnter(event: DragEvent) {
   event.preventDefault()
   externalFileDragDepth += 1
   externalFileDragActive.value = true
+  externalPdfDropTarget.value = resolveExternalPdfDropTarget(event)
 }
 
 function handleExternalFileDragOver(event: DragEvent) {
@@ -1069,6 +1367,7 @@ function handleExternalFileDragOver(event: DragEvent) {
     event.dataTransfer.dropEffect = 'copy'
   }
   externalFileDragActive.value = true
+  externalPdfDropTarget.value = resolveExternalPdfDropTarget(event)
 }
 
 function handleExternalFileDragLeave() {
@@ -1078,10 +1377,47 @@ function handleExternalFileDragLeave() {
   externalFileDragDepth = Math.max(0, externalFileDragDepth - 1)
   if (externalFileDragDepth === 0) {
     externalFileDragActive.value = false
+    externalPdfDropTarget.value = null
   }
 }
 
-async function importPdfFiles(pdfFiles: File[], rejectedCount = 0) {
+async function placeImportedDocuments(
+  importedPdfIds: number[],
+  target: ExternalPdfDropTarget,
+) {
+  const importedIdSet = new Set(importedPdfIds)
+  const importedById = new Map<number, PdfDocumentSummary>()
+  const rows = buildBookshelfRows().map((row) => row.filter((document) => {
+    if (!importedIdSet.has(document.id)) {
+      return true
+    }
+    importedById.set(document.id, document)
+    return false
+  }))
+  const importedDocuments = importedPdfIds
+    .map((pdfId) => importedById.get(pdfId))
+    .filter((document): document is PdfDocumentSummary => Boolean(document))
+  if (!importedDocuments.length) {
+    return
+  }
+
+  while (rows.length <= target.shelfIndex) {
+    rows.push([])
+  }
+  const targetRow = rows[target.shelfIndex]
+  const beforeIndex = target.beforePdfId == null
+    ? -1
+    : targetRow.findIndex((document) => document.id === target.beforePdfId)
+  targetRow.splice(beforeIndex >= 0 ? beforeIndex : targetRow.length, 0, ...importedDocuments)
+  const placements = applyBookshelfRows(rows, new Map(), false)
+  await updatePdfBookshelfLayout(placements)
+}
+
+async function importPdfFiles(
+  pdfFiles: File[],
+  rejectedCount = 0,
+  dropTarget: ExternalPdfDropTarget | null = null,
+) {
   const bookshelfId = selectedBookshelfId.value
   if (!bookshelfId) {
     ElMessage.error('请先选择书柜')
@@ -1095,11 +1431,15 @@ async function importPdfFiles(pdfFiles: File[], rejectedCount = 0) {
   importingDroppedPdfs.value = true
   let importedCount = 0
   let failedCount = rejectedCount
+  const importedPdfIds: number[] = []
   try {
     for (const file of pdfFiles) {
       try {
         const importedDocument = await uploadPdfDocument(file)
         await movePdfToBookshelf(importedDocument.id, bookshelfId)
+        if (!importedPdfIds.includes(importedDocument.id)) {
+          importedPdfIds.push(importedDocument.id)
+        }
         importedCount += 1
       } catch (error) {
         failedCount += 1
@@ -1108,6 +1448,16 @@ async function importPdfFiles(pdfFiles: File[], rejectedCount = 0) {
     }
     await reloadBookshelves()
     await reloadDocuments()
+    if (dropTarget && importedPdfIds.length) {
+      try {
+        await placeImportedDocuments(importedPdfIds, dropTarget)
+      } catch (error) {
+        console.warn('Failed to place imported PDFs at drop target:', error)
+        await reloadDocuments({ silent: true })
+        ElMessage.error('图书已导入，但保存落点失败')
+        return
+      }
+    }
     if (failedCount === 0) {
       ElMessage.success(`已导入 ${importedCount} 本图书`)
     } else if (importedCount > 0) {
@@ -1138,8 +1488,10 @@ async function handleExternalFileDrop(event: DragEvent) {
     return
   }
   event.preventDefault()
+  const dropTarget = resolveExternalPdfDropTarget(event)
   externalFileDragDepth = 0
   externalFileDragActive.value = false
+  externalPdfDropTarget.value = null
 
   const droppedFiles = Array.from(event.dataTransfer?.files ?? [])
   const pdfFiles = droppedFiles.filter((file) => (
@@ -1149,7 +1501,7 @@ async function handleExternalFileDrop(event: DragEvent) {
     ElMessage.warning('只能拖入 PDF 文件')
     return
   }
-  await importPdfFiles(pdfFiles, droppedFiles.length - pdfFiles.length)
+  await importPdfFiles(pdfFiles, droppedFiles.length - pdfFiles.length, dropTarget)
 }
 
 async function initializeLibraryPage() {
@@ -1158,7 +1510,10 @@ async function initializeLibraryPage() {
   }
   try {
     await reloadBookshelves()
-    await reloadDocuments()
+    await Promise.all([
+      reloadDocuments(),
+      reloadSkillBookCatalog(),
+    ])
   } catch (error) {
     console.warn('Failed to initialize PDF library:', error)
     ElMessage.error('加载图书馆失败')
@@ -1304,10 +1659,10 @@ onBeforeUnmount(() => {
       @drop="handleExternalFileDrop"
     >
       <div v-if="externalFileDragActive" class="pdf-drop-indicator" role="status">
-        松开导入到书柜“{{ selectedBookshelf?.name }}”
+        松开导入到{{ externalDropShelfLabel }}
       </div>
       <div
-        v-if="filteredDocuments.length && viewMode === 'bookshelf'"
+        v-if="hasVisibleLibraryItems && viewMode === 'bookshelf'"
         class="bookshelf-scroll"
         @scroll="closeBookContextMenu"
       >
@@ -1317,8 +1672,28 @@ onBeforeUnmount(() => {
             :key="shelfIndex"
             class="bookshelf-row"
             :data-shelf-index="shelfIndex"
-            :class="{ 'drag-target': dragOverShelfIndex === shelfIndex && dragOverPdfId == null }"
+            :class="{
+              'drag-target': (dragOverShelfIndex === shelfIndex && dragOverPdfId == null)
+                || (externalFileDragActive && externalPdfDropTarget?.shelfIndex === shelfIndex),
+            }"
           >
+            <button
+              v-if="shelfIndex === 0 && showLocalSkillBook"
+              type="button"
+              class="book-item orientation-spine-vertical skill-book-item"
+              :style="skillBookSpineStyle"
+              :title="skillBookTooltip()"
+              @click="openSkillBookReader"
+            >
+              <span class="book-spine">
+                <span class="book-spine-title">
+                  <span class="book-spine-title-token">本地</span>
+                  <span class="book-spine-title-token is-compact-vertical-token">Skill</span>
+                  <span class="book-spine-title-token">手册</span>
+                </span>
+                <span class="book-spine-author">{{ skillBookCatalog?.author }}</span>
+              </span>
+            </button>
             <div
               v-for="group in row"
               :key="group.key"
@@ -1332,7 +1707,8 @@ onBeforeUnmount(() => {
                 :class="[
                   bookOrientationClass(document),
                   {
-                    'insert-before': dragOverPdfId === document.id,
+                    'insert-before': dragOverPdfId === document.id
+                      || (externalFileDragActive && externalPdfDropTarget?.beforePdfId === document.id),
                     dragging: draggingPdfId === document.id,
                     'has-cover-image': bookCoverImageUrls.has(document.id),
                   },
@@ -1352,7 +1728,20 @@ onBeforeUnmount(() => {
                   aria-hidden="true"
                 ></span>
                 <span class="book-spine" :class="spineTone(document)">
-                  <span class="book-spine-title">{{ document.display_title }}</span>
+                  <span class="book-spine-title">
+                    <span
+                      v-for="(segment, segmentIndex) in bookSpineDisplayTitleSegments(document)"
+                      :key="segmentIndex"
+                      class="book-spine-title-token"
+                      :class="{
+                        'is-combined': segment.combined,
+                        'is-compact-vertical-token': isCompactVerticalToken(segment),
+                      }"
+                    >{{ segment.text }}</span>
+                  </span>
+                  <span v-if="bookSpineQualifier(document)" class="book-spine-qualifier">
+                    {{ bookSpineQualifier(document) }}
+                  </span>
                   <span v-if="document.display_author" class="book-spine-author">
                     {{ document.display_author }}
                   </span>
@@ -1363,7 +1752,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-else-if="filteredDocuments.length" class="pdf-table-scroll">
+      <div v-else-if="hasVisibleLibraryItems" class="pdf-table-scroll">
         <table class="pdf-table-inner">
           <thead>
             <tr>
@@ -1376,6 +1765,18 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
+            <tr v-if="showLocalSkillBook && skillBookCatalog" class="pdf-row skill-book-table-row">
+              <td class="pdf-name-cell">
+                <button class="pdf-title-button skill-book-title-button" type="button" @click="openSkillBookReader">
+                  <span class="pdf-title">{{ skillBookCatalog.title }}</span>
+                </button>
+              </td>
+              <td class="pdf-role">本机动态</td>
+              <td class="pdf-current-page">{{ skillBookCatalog.skill_count }} 个 Skill</td>
+              <td class="pdf-size">{{ skillBookCatalog.chapter_count }} 篇</td>
+              <td class="pdf-updated">{{ formatDateTime(skillBookCatalog.updated_at) }}</td>
+              <td class="pdf-spacer-cell" aria-hidden="true"></td>
+            </tr>
             <tr
               v-for="document in filteredDocuments"
               :key="document.id"
@@ -1406,7 +1807,7 @@ onBeforeUnmount(() => {
       <el-empty
         v-else
         class="pdf-empty"
-        :description="documents.length ? '没有匹配的图书' : '暂无藏书'"
+        :description="documents.length || skillBookCatalog ? '没有匹配的图书' : '暂无藏书'"
       />
 
       <div
@@ -1417,19 +1818,50 @@ onBeforeUnmount(() => {
         @pointerdown.stop
         @contextmenu.prevent
       >
-        <button type="button" role="menuitem" @click="rotateContextBook">旋转</button>
-        <div v-if="otherBookshelves.length" class="book-context-menu-separator" role="separator"></div>
         <button
-          v-for="bookshelf in otherBookshelves"
-          :key="bookshelf.id"
+          v-if="documents.find((document) => document.id === bookContextMenu?.pdfId && canEditBookMetadata(document))"
           type="button"
           role="menuitem"
-          @click="moveContextBook(bookshelf)"
-        >
-          移至“{{ bookshelf.name }}”
-        </button>
+          @click="openMetadataEditorFromContext"
+        >编辑元数据</button>
+        <button type="button" role="menuitem" @click="rotateContextBook">旋转</button>
       </div>
     </section>
+
+    <el-dialog
+      v-model="metadataEditorVisible"
+      title="编辑图书元数据"
+      width="min(480px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <form class="metadata-editor-form" @submit.prevent="saveMetadataEditor">
+        <div class="metadata-editor-field">
+          <label for="pdf-metadata-title">书名</label>
+          <el-input
+            id="pdf-metadata-title"
+            v-model="metadataEditorTitle"
+            maxlength="80"
+            autocomplete="off"
+          />
+        </div>
+        <div class="metadata-editor-field">
+          <label for="pdf-metadata-author">作者</label>
+          <el-input
+            id="pdf-metadata-author"
+            v-model="metadataEditorAuthor"
+            maxlength="60"
+            autocomplete="off"
+          />
+        </div>
+      </form>
+      <template #footer>
+        <el-button @click="metadataEditorVisible = false">取消</el-button>
+        <el-button type="primary" :loading="metadataEditorSaving" @click="saveMetadataEditor">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="previewVisible"
@@ -1493,10 +1925,33 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </el-dialog>
+
+    <SkillBookReaderDialog
+      v-model="skillBookReaderVisible"
+      @catalog-updated="handleSkillBookCatalogUpdated"
+    />
   </div>
 </template>
 
 <style scoped>
+.metadata-editor-form {
+  display: grid;
+  gap: 14px;
+}
+
+.metadata-editor-field {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.metadata-editor-field label {
+  color: #4b5563;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .pdf-library-page {
   box-sizing: border-box;
   display: flex;
@@ -1640,10 +2095,11 @@ onBeforeUnmount(() => {
   z-index: 100;
   inset: 8px;
   display: grid;
-  place-items: center;
+  place-items: start center;
+  padding-top: 18px;
   border: 2px dashed #2f6fd6;
   border-radius: 6px;
-  background: rgb(237 244 255 / 88%);
+  background: rgb(237 244 255 / 20%);
   color: #1f5fbe;
   font-size: 16px;
   font-weight: 700;
@@ -1779,6 +2235,24 @@ onBeforeUnmount(() => {
   cursor: grabbing;
 }
 
+.skill-book-item {
+  cursor: pointer;
+}
+
+.skill-book-item .book-spine {
+  border-color: rgb(20 42 36 / 28%);
+}
+
+.skill-book-item .book-spine-title {
+  flex: none;
+}
+
+.skill-book-title-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .book-item.insert-before {
   border-left: 3px solid #2f6fd6;
 }
@@ -1818,22 +2292,36 @@ onBeforeUnmount(() => {
 }
 
 .book-item.orientation-spine-horizontal .book-progress-bookmark {
-  right: -6px;
+  right: auto;
   bottom: clamp(6px, var(--book-reading-progress, 0%), calc(100% - 8px));
-  left: auto;
+  left: -6px;
   width: 13px;
   height: 2px;
-  border-radius: 0 1px 1px 0;
-  transform-origin: left center;
+  border-radius: 1px 0 0 1px;
+  transform-origin: right center;
 }
 
 .book-item.orientation-cover-front .book-progress-bookmark {
-  width: 4px;
+  bottom: calc(var(--cover-flat-height) - 6px);
+  left: clamp(
+    calc(3% + 9px),
+    var(--book-cover-bookmark-progress, 0%),
+    calc(97% - 9px)
+  );
+  width: 18px;
+  height: 12px;
+  border-radius: 2px 2px 0 0;
+  transform: translateX(-50%);
 }
 
 .book-item:hover .book-progress-bookmark,
 .book-item:focus-visible .book-progress-bookmark {
   transform: translateY(-5px) rotateZ(var(--book-bookmark-tilt, 0deg));
+}
+
+.book-item.orientation-cover-front:hover .book-progress-bookmark,
+.book-item.orientation-cover-front:focus-visible .book-progress-bookmark {
+  transform: translateX(-50%);
 }
 
 .book-item:hover .book-spine,
@@ -1867,22 +2355,51 @@ onBeforeUnmount(() => {
   text-orientation: upright;
 }
 
+.book-item.orientation-spine-vertical .book-spine-title {
+  text-overflow: clip;
+}
+
+.book-spine-title-token.is-combined {
+  text-combine-upright: all;
+}
+
+.book-item.orientation-spine-vertical .book-spine-title-token.is-compact-vertical-token {
+  margin-inline-end: 0.22em;
+  letter-spacing: -0.22em;
+}
+
+.book-spine-qualifier {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  margin-left: 3px;
+  color: color-mix(in srgb, var(--book-cover-ink, #fff) 82%, transparent);
+  font-size: var(--book-qualifier-font-size, 11px);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  writing-mode: vertical-lr;
+  text-orientation: upright;
+}
+
 .book-spine-author {
   position: relative;
   z-index: 3;
   display: var(--book-author-display, none);
   flex: none;
-  margin-left: 5px;
+  margin-left: 2px;
   color: color-mix(in srgb, var(--book-cover-ink, #fff) 78%, transparent);
   font-size: var(--book-author-font-size, 11px);
   font-weight: 500;
-  line-height: 1.25;
+  line-height: 1.2;
   writing-mode: vertical-lr;
   text-orientation: upright;
 }
 
 .book-item.orientation-spine-horizontal .book-spine {
+  flex-direction: column;
   justify-content: center;
+  gap: 3px;
   width: var(--spine-height);
   height: var(--spine-width);
   padding: 7px 12px;
@@ -1900,22 +2417,33 @@ onBeforeUnmount(() => {
 }
 
 .book-item.orientation-spine-horizontal .book-spine-author {
-  margin: 0 0 0 10px;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
   white-space: nowrap;
   writing-mode: horizontal-tb;
+}
+
+.book-item.orientation-spine-horizontal .book-spine-qualifier,
+.book-item.orientation-cover-front .book-spine-qualifier {
+  display: none;
 }
 
 .book-item.orientation-cover-front .book-spine {
   flex-direction: column;
   justify-content: center;
   width: var(--page-depth);
-  height: var(--spine-height);
+  height: var(--cover-flat-height);
   padding: 20px 16px;
-  border-width: 2px 1px 2px 5px;
-  border-radius: 5px 2px 2px 5px;
+  border-width: 1px;
+  border-radius: 2px;
   background-image: var(--book-cover-image, none);
   background-position: center;
   background-size: cover;
+  clip-path: polygon(3% 0, 97% 0, 100% 100%, 0 100%);
+  transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

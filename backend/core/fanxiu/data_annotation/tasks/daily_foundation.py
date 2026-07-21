@@ -170,6 +170,71 @@ class DailyFoundationTaskMixin:
             return int(value)
         return int(default)
 
+    def _next_daily_activity_time_text(self) -> str:
+        now = _runtime_runner._now()
+        next_at = (now + timedelta(days=1)).replace(hour=11, minute=0, second=0, microsecond=0)
+        return next_at.strftime("%Y-%m-%d %H:%M:%S")
+
+    def daily_activity_flow(self, runtime: Any):
+        yield from runtime.go_scene(69)
+
+        attempt = 0
+        while True:
+            attempt += 1
+            frame = runtime.cur_frame(update=True)
+            scene_id, score, _frame = runtime.current_scene([69], frame_data_url=frame)
+            if scene_id != 69:
+                raise RuntimeError(f"日常_活跃度：读取总活跃度时已不在 #69：#{scene_id or 'unknown'} {score:.0f}%")
+
+            values, text = runtime.ocr_numbers_in_shapes(
+                69,
+                ["总活跃度"],
+                padding=0,
+                frame_data_url=frame,
+            )
+            if values:
+                total_activity = int(values[0])
+                self._log("detail", f"日常_活跃度：第 {attempt} 次读取总活跃度={total_activity}，OCR={text!r}")
+                break
+
+            self._log("detail", f"日常_活跃度：第 {attempt} 次未读到总活跃度数值，OCR={text!r}，继续识别")
+            yield from runtime.wait_action_settle(0.8)
+
+        if total_activity < 500:
+            yield from runtime.go_scene(34)
+            return {
+                "result": "error",
+                "message": f"日常_活跃度：总活跃度 {total_activity} < 500，已回到世界，1 小时后重试",
+                "current_scene": 34,
+            }
+
+        runtime.click_shape_center(69, "奖励")
+        yield from runtime.wait_action_settle(1.5)
+        yield from runtime.go_scene(34)
+        return {
+            "result": "success",
+            "message": f"日常_活跃度：总活跃度 {total_activity}，已点击奖励并回到世界",
+            "current_scene": 34,
+            "next_time": self._next_daily_activity_time_text(),
+        }
+
+    def _execute_daily_activity_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ):
+        normalized_payload = dict(payload or {})
+        normalized_payload.setdefault("fallback_seconds", 3600)
+        return (yield from self._execute_daily_runtime_task(
+            ctx,
+            stop_event,
+            normalized_payload,
+            task_type="daily_activity",
+            label="日常_活跃度",
+            flow=self.daily_activity_flow,
+        ))
+
     def _execute_daily_boss_task(
         self,
         ctx: dict[str, Any],

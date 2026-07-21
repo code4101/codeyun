@@ -18,6 +18,7 @@ from backend.core.fanxiu.data_annotation import state as data_annotation_state
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.data_annotation.tasks import daily_resources as fanxiu_daily_resources
+from backend.core.fanxiu.data_annotation.tasks import daily_foundation as fanxiu_daily_foundation
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
 from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 
@@ -676,6 +677,28 @@ def test_data_annotation_default_scheduler_imports_legacy_behavior_tree_tasks():
     assert mojie_raid["enabled"] is True
     assert mojie_raid["schedule_times"] == ["13:00", "21:30"]
     assert not any(item["id"] == "daily-locate" for item in tasks)
+
+
+def test_daily_activity_default_scheduler_template_is_optional_at_eleven():
+    from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_data_annotation_default_runtime_jobs
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
+
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    activity = next(
+        item
+        for item in fanxiu._default_data_annotation_scheduler_tasks()
+        if item["id"] == "legacy-daily-activity"
+    )
+    definition = get_fanxiu_data_annotation_task_cell_definition("daily_activity")
+
+    assert definition is not None
+    assert definition.scheduler_supported is True
+    assert activity["task_type"] == "daily_activity"
+    assert activity["source"] == "data_annotation_runtime"
+    assert activity["enabled"] is False
+    assert activity["schedule_times"] == ["11:00"]
+    assert activity["cooldown_seconds"] == 3600
+    assert activity["payload"] == {"fallback_seconds": 3600}
 
 
 def test_scheduler_repair_syncs_dongtian_and_lingmai_clear_cooldowns():
@@ -4576,6 +4599,97 @@ def _drain_generator(gen):
             next(gen)
         except StopIteration as exc:
             return exc.value
+
+
+def test_daily_activity_retries_ocr_then_claims_and_returns_world(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+    readings = iter([([], ""), ([660], "660")])
+
+    class FakeRuntime:
+        def go_scene(self, scene_id):
+            actions.append(("go_scene", scene_id))
+            if False:
+                yield None
+            return "success"
+
+        def cur_frame(self, update=False):
+            actions.append(("cur_frame", update))
+            return f"frame-{len(actions)}"
+
+        def current_scene(self, scene_ids, *, frame_data_url):
+            assert scene_ids == [69]
+            return 69, 98.0, frame_data_url
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, *, padding, frame_data_url):
+            assert (scene_id, shape_titles, padding) == (69, ["总活跃度"], 0)
+            assert frame_data_url.startswith("frame-")
+            return next(readings)
+
+        def wait_action_settle(self, seconds):
+            actions.append(("wait_action_settle", seconds))
+            if False:
+                yield None
+
+        def click_shape_center(self, scene_id, shape_title):
+            actions.append(("click_shape_center", scene_id, shape_title))
+
+    monkeypatch.setattr(
+        fanxiu_daily_foundation._runtime_runner,
+        "_now",
+        lambda: datetime(2026, 7, 21, 13, 0, 0),
+    )
+
+    result = _drain_generator(runner.daily_activity_flow(FakeRuntime()))
+
+    assert result == {
+        "result": "success",
+        "message": "日常_活跃度：总活跃度 660，已点击奖励并回到世界",
+        "current_scene": 34,
+        "next_time": "2026-07-22 11:00:00",
+    }
+    assert actions == [
+        ("go_scene", 69),
+        ("cur_frame", True),
+        ("wait_action_settle", 0.8),
+        ("cur_frame", True),
+        ("click_shape_center", 69, "奖励"),
+        ("wait_action_settle", 1.5),
+        ("go_scene", 34),
+    ]
+
+
+def test_daily_activity_below_threshold_returns_world_for_one_hour_retry():
+    runner = create_fanxiu_runtime_runner()
+    actions = []
+
+    class FakeRuntime:
+        def go_scene(self, scene_id):
+            actions.append(("go_scene", scene_id))
+            if False:
+                yield None
+            return "success"
+
+        def cur_frame(self, update=False):
+            return "frame"
+
+        def current_scene(self, scene_ids, *, frame_data_url):
+            return 69, 98.0, frame_data_url
+
+        def ocr_numbers_in_shapes(self, scene_id, shape_titles, *, padding, frame_data_url):
+            return [499], "499"
+
+        def click_shape_center(self, scene_id, shape_title):
+            raise AssertionError("总活跃度不足 500 时不得点击奖励")
+
+    result = _drain_generator(runner.daily_activity_flow(FakeRuntime()))
+
+    assert result == {
+        "result": "error",
+        "message": "日常_活跃度：总活跃度 499 < 500，已回到世界，1 小时后重试",
+        "current_scene": 34,
+    }
+    assert actions == [("go_scene", 69), ("go_scene", 34)]
 
 
 def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene():

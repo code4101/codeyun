@@ -92,6 +92,7 @@ declare module 'vue' {
     NoteTitleActions: typeof import('./components/NoteTitleActions.vue')['default']
     NoteTypeManagerDialog: typeof import('./components/NoteTypeManagerDialog.vue')['default']
     NoteTypeSelector: typeof import('./components/NoteTypeSelector.vue')['default']
+    RichTextDocumentReader: typeof import('./components/rich-text/RichTextDocumentReader.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     RuntimeSystemMetricsChart: typeof import('./components/RuntimeSystemMetricsChart.vue')['default']
