@@ -954,6 +954,40 @@ def _is_filesystem_root_path(path: Path) -> bool:
     return resolved.parent == resolved
 
 
+def _find_protected_repository_metadata(target_path: Path, *, recursive: bool) -> Path | None:
+    """Return Git metadata that would be removed with ``target_path``."""
+
+    try:
+        resolved = target_path.resolve(strict=False)
+    except Exception:
+        resolved = target_path
+
+    if any(part.casefold() == ".git" for part in resolved.parts):
+        return resolved
+
+    direct_metadata = resolved / ".git"
+    if direct_metadata.exists():
+        return direct_metadata
+
+    if not recursive or not resolved.is_dir():
+        return None
+
+    try:
+        for current_root, directory_names, file_names in os.walk(resolved):
+            git_directory = next((name for name in directory_names if name.casefold() == ".git"), None)
+            if git_directory is not None:
+                return Path(current_root) / git_directory
+            git_file = next((name for name in file_names if name.casefold() == ".git"), None)
+            if git_file is not None:
+                return Path(current_root) / git_file
+    except OSError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot verify recursive delete target for Git metadata: {exc}",
+        ) from exc
+    return None
+
+
 def _iter_scan_files(target_path: Path, *, recursive: bool) -> list[Path]:
     if target_path.is_file():
         return [target_path]
@@ -4793,6 +4827,12 @@ def _resolve_deletable_entry(
         raise HTTPException(status_code=400, detail="Filesystem root cannot be deleted")
     if not resolved["is_absolute"] and target_path == resolve_root_path(resolved["root"]):
         raise HTTPException(status_code=400, detail="Root path cannot be deleted")
+    protected_metadata = _find_protected_repository_metadata(target_path, recursive=recursive)
+    if protected_metadata is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Git repository metadata cannot be deleted: {protected_metadata}",
+        )
     if target_path.is_dir() and not recursive:
         raise HTTPException(status_code=400, detail="Directory deletion requires recursive=true")
 
