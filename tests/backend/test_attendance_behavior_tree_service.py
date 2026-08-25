@@ -2,6 +2,18 @@ import sys
 
 from backend.core.attendance import behavior_tree_service as attendance_service
 from backend.core import attendance_behavior_tree_service as attendance_service_impl
+from backend.core.runtime import management as runtime_management
+
+
+def test_attendance_behavior_tree_defaults_to_mf_host(monkeypatch):
+    monkeypatch.delenv("KQ_BEHAVIOR_TREE_SERVICE_ENABLED", raising=False)
+    monkeypatch.delenv("KQ_BEHAVIOR_TREE_SERVICE_HOSTS", raising=False)
+
+    monkeypatch.setattr(attendance_service_impl, "get_attendance_hostname", lambda: "codepc_mf")
+    assert attendance_service_impl.is_attendance_behavior_tree_service_enabled() is True
+
+    monkeypatch.setattr(attendance_service_impl, "get_attendance_hostname", lambda: "codepc_mi15")
+    assert attendance_service_impl.is_attendance_behavior_tree_service_enabled() is False
 
 
 class _FakeProcess:
@@ -224,7 +236,7 @@ def test_probe_attendance_subprocess_utf8_uses_utf8_env(monkeypatch):
             "cwd": ".",
         },
     )
-    monkeypatch.setattr(attendance_service_impl, "subprocess", type("S", (), {"run": staticmethod(fake_run)}))
+    monkeypatch.setattr(attendance_service_impl, "run_quiet", fake_run)
 
     result = attendance_service_impl.probe_attendance_subprocess_utf8()
 
@@ -322,3 +334,21 @@ def test_log_lines_show_last_error_prompt(monkeypatch):
     lines = attendance_service_impl.build_attendance_behavior_tree_log_lines()
 
     assert "提示：每日早晨课程任务：2 个课程入口失败" in lines
+
+
+def test_codeyun_startup_ensures_attendance_service_on_mf(monkeypatch):
+    called = []
+    monkeypatch.setattr(runtime_management, "is_attendance_behavior_tree_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_attendance_behavior_tree_service",
+        lambda: called.append(True) or {"status": "already_running", "pid": 123},
+    )
+    monkeypatch.setattr(runtime_management, "start_codeyun_watchdog", lambda: {})
+    monkeypatch.setattr(runtime_management, "start_proxy_traffic_audit", lambda: {})
+    monkeypatch.setattr(runtime_management, "_local_builtin_service_autostart_enabled", lambda *_args, **_kwargs: False)
+
+    result = runtime_management.ensure_local_builtin_services_on_startup()
+
+    assert called == [True]
+    assert result["attendance-behavior-tree"] == {"status": "already_running", "pid": 123}

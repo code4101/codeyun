@@ -190,17 +190,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "attendance.header-tool",
-      "title": "表头工具",
-      "node_type": "feature",
-      "parent_key": "attendance-tools",
-      "sort_order": 15,
-      "route_paths": ["/attendance/header-tool"],
-      "menu_paths": ["/attendance/header-tool"],
-      "api_scopes": ["attendance-tools.header-tool"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "attendance.wjx-feedback",
       "title": "问卷采集",
       "node_type": "feature",
@@ -279,6 +268,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "tools.web-outline",
+      "title": "网页目录提取",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 50,
+      "route_paths": ["/tools/web-outline"],
+      "menu_paths": ["/tools/web-outline"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "volcano-princess.theater",
       "title": "剧院图鉴",
       "node_type": "feature",
@@ -308,6 +308,51 @@
       "sort_order": 60,
       "route_paths": ["/fanxiu/calculator"],
       "menu_paths": ["/fanxiu/calculator"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "guigubahuang",
+      "title": "鬼谷八荒",
+      "node_type": "group",
+      "parent_key": "game-tools",
+      "sort_order": 28,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "guigubahuang.guide",
+      "title": "修炼攻略",
+      "node_type": "feature",
+      "parent_key": "guigubahuang",
+      "sort_order": 10,
+      "route_paths": ["/guigubahuang/guide"],
+      "menu_paths": ["/guigubahuang/guide"],
+      "menu_items_inline": true,
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "cluster.hardware-temperature",
+      "title": "设备温度",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 19,
+      "route_paths": ["/cluster/hardware-temperature"],
+      "menu_paths": ["/cluster/hardware-temperature"],
+      "api_scopes": ["cluster-tools.hardware-temperature"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "fanxiu.xianqiao",
+      "title": "仙窍系统",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 65,
+      "route_paths": ["/fanxiu/xianqiao"],
+      "menu_paths": ["/fanxiu/xianqiao"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -357,7 +402,7 @@
     },
     {
       "key": "fanxiu.behavior-tree",
-      "title": "行为树",
+      "title": "行为树 Runtime",
       "node_type": "feature",
       "parent_key": "fanxiu",
       "sort_order": 15,
@@ -396,28 +441,6 @@
       "sort_order": 10,
       "route_paths": ["/fanxiu/activity-list/kunlun-secret"],
       "menu_paths": ["/fanxiu/activity-list/kunlun-secret"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
-      "key": "fanxiu.activity-list.modao-invasion",
-      "title": "魔道入侵",
-      "node_type": "feature",
-      "parent_key": "fanxiu.activity-list",
-      "sort_order": 20,
-      "route_paths": ["/fanxiu/activity-list/modao-invasion"],
-      "menu_paths": ["/fanxiu/activity-list/modao-invasion"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
-      "key": "fanxiu.activity-list.shouyuan-exploration",
-      "title": "兽渊探秘",
-      "node_type": "feature",
-      "parent_key": "fanxiu.activity-list",
-      "sort_order": 25,
-      "route_paths": ["/fanxiu/activity-list/shouyuan-exploration"],
-      "menu_paths": ["/fanxiu/activity-list/shouyuan-exploration"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -489,7 +512,7 @@
     },
     {
       "key": "fanxiu.inventory.magic-treasure-hall",
-      "title": "3 法宝",
+      "title": "法宝殿",
       "node_type": "feature",
       "parent_key": "fanxiu.inventory",
       "sort_order": 30,
@@ -511,7 +534,7 @@
     },
     {
       "key": "fanxiu.inventory.spirit-artifact-hall",
-      "title": "4 灵器",
+      "title": "灵器",
       "node_type": "feature",
       "parent_key": "fanxiu.inventory",
       "sort_order": 40,
@@ -620,6 +643,54 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "fanxiu.inventory.gongfa-atlas",
+      "title": "个人功法",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 35,
+      "route_paths": ["/fanxiu/inventory/gongfa-atlas"],
+      "menu_paths": ["/fanxiu/inventory/gongfa-atlas"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.yunmeng-trial",
+      "title": "玩法榜",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 27,
+      "route_paths": [
+        "/fanxiu/activity-list/top-activity",
+        "/fanxiu/activity-list/yunmeng-trial",
+        "/fanxiu/activity-list/xutian-palace"
+      ],
+      "menu_paths": ["/fanxiu/activity-list/top-activity"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.resource-ranking",
+      "title": "资源榜",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 28,
+      "route_paths": ["/fanxiu/activity-list/resource-ranking"],
+      "menu_paths": ["/fanxiu/activity-list/resource-ranking"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "zaohua.grades",
+      "title": "品阶对照",
+      "node_type": "feature",
+      "parent_key": "zaohua",
+      "sort_order": 40,
+      "route_paths": ["/zaohua/grades"],
+      "menu_paths": ["/zaohua/grades"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "pokemon-tcg.catalog",
       "title": "宝可梦卡牌",
       "node_type": "feature",
@@ -697,37 +768,16 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "notes.task-system",
-      "title": "任务系统",
-      "node_type": "feature",
-      "parent_key": "note-tools",
-      "sort_order": 14,
-      "route_paths": ["/notes/task-system"],
-      "menu_paths": ["/notes/task-system"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
-      "key": "notes.common-sites",
-      "title": "常用网站",
-      "node_type": "feature",
-      "parent_key": "note-tools",
-      "sort_order": 15,
-      "route_paths": ["/notes/common-sites"],
-      "menu_paths": ["/notes/common-sites"],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "notes.eastmoney",
-      "title": "股票操作建议",
+      "title": "计算器",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 35,
-      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/trade", "/notes/eastmoney/calculator", "/notes/eastmoney/robot-history", "/notes/eastmoney/sync"],
-      "menu_paths": ["/notes/eastmoney/trade", "/notes/eastmoney/calculator"],
+      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/trade", "/notes/eastmoney/history", "/notes/eastmoney/calculator", "/notes/eastmoney/robot-history", "/notes/eastmoney/sync"],
+      "menu_paths": ["/notes/eastmoney/trade", "/notes/eastmoney/history", "/notes/eastmoney/calculator"],
       "menu_items": [
-        { "path": "/notes/eastmoney/trade", "title": "股票操作建议" },
+        { "path": "/notes/eastmoney/trade", "title": "操作建议" },
+        { "path": "/notes/eastmoney/history", "title": "历史数据" },
         { "path": "/notes/eastmoney/calculator", "title": "计算器" }
       ],
       "api_scopes": ["note-tools.eastmoney"],

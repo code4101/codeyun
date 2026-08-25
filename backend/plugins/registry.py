@@ -38,6 +38,11 @@ def _load_plugin_module(module_dir: Path) -> ModuleType:
 
     _ensure_plugin_namespace(module_dir.parent)
 
+    existing = sys.modules.get(module_name)
+    existing_file = getattr(existing, "__file__", None) if existing is not None else None
+    if existing_file is not None and Path(existing_file).resolve() == init_file.resolve():
+        return existing
+
     spec = importlib.util.spec_from_file_location(
         module_name,
         init_file,

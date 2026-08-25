@@ -8,11 +8,15 @@ export interface SkillBookChapter {
   kind: 'main' | 'reference'
   revision: string
   character_count: number
+  book_character_start: number
   reading_unit_count: number
   estimated_page_count: number
   page_start: number
   page_end: number
+  created_at: number
+  modified_at: number
   updated_at: number
+  source_language: 'zh' | 'en' | 'mixed'
 }
 
 export interface SkillBookSkill {
@@ -25,8 +29,10 @@ export interface SkillBookSkill {
 
 export interface SkillBookCatalog {
   id: string
+  asset_id: string
   title: string
   author: string
+  start_date: string
   cover_color: string
   revision: string
   skill_count: number
@@ -58,12 +64,30 @@ export interface SkillBookPlacement {
   shelf_index: number
   position_index: number
   orientation: 'spine_vertical' | 'spine_horizontal' | 'cover_front'
+  folder_id?: string | null
 }
 
 export interface SkillBookChapterContent {
   book_id: string
   chapter: SkillBookChapter
   markdown: string
+  translation: {
+    status: 'not_needed' | 'missing' | 'pending' | 'done' | 'error'
+    language: string
+    source_revision: string
+    revision: string
+    markdown: string
+    updated_at: number | null
+    error_message: string
+  }
+}
+
+export interface SkillBookTranslationSync {
+  eligible_count: number
+  ready_count: number
+  queued_count: number
+  task_id: string | null
+  status: 'ready' | 'queued' | 'running'
 }
 
 export interface SkillBookReadingState {
@@ -98,6 +122,11 @@ export async function fetchLocalSkillBookChapter(chapterId: string) {
   return response.data
 }
 
+export async function syncLocalSkillBookTranslations() {
+  const response = await api.post<SkillBookTranslationSync>('/skill-books/local/translations/sync')
+  return response.data
+}
+
 export async function fetchLocalSkillBookReadingState() {
   const response = await api.get<SkillBookReadingState>('/skill-books/local/my-state', noCacheConfig())
   return response.data
@@ -112,7 +141,10 @@ export async function updateLocalSkillBookReadingState(payload: {
   return response.data
 }
 
-export async function updateLocalSkillBookMetadata(payload: { page_format: string }) {
+export async function updateLocalSkillBookMetadata(payload: {
+  page_format: string
+  start_date: string
+}) {
   const response = await api.put<SkillBookCatalog>('/skill-books/local/metadata', payload)
   return response.data
 }
@@ -120,4 +152,8 @@ export async function updateLocalSkillBookMetadata(payload: { page_format: strin
 export async function updateLocalSkillBookPlacement(payload: Omit<SkillBookPlacement, 'book_id'>) {
   const response = await api.put<SkillBookPlacement>('/skill-books/local/placement', payload)
   return response.data
+}
+
+export async function deleteLocalSkillBook() {
+  await api.delete('/skill-books/local')
 }

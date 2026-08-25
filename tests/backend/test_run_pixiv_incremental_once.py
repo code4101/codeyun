@@ -20,6 +20,16 @@ def no_active_pixiv_risk_circuit(monkeypatch):
     monkeypatch.setattr(runner, "_active_risk_circuit", lambda: None)
 
 
+def test_legacy_pinterest_job_does_not_block_after_pixiv_ownership_is_released(monkeypatch):
+    from backend.core.jobs import scheduler
+    from backend.plugins.modules.media_sync import runtime
+
+    monkeypatch.setattr(scheduler, "_is_task_enabled", lambda _task_key: True)
+    monkeypatch.setattr(runtime, "has_scheduled_pixiv_profiles", lambda: False)
+
+    assert runner._legacy_trigger_enabled() is False
+
+
 def test_formal_entrypoint_skips_while_legacy_trigger_is_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_legacy_trigger_enabled", lambda: True)
     monkeypatch.setattr(
@@ -41,6 +51,29 @@ def test_formal_entrypoint_skips_while_legacy_trigger_is_enabled(tmp_path, monke
     assert report_path.exists()
     assert report_path.with_suffix(".md").exists()
     assert (tmp_path / "latest.json").exists()
+
+
+def test_formal_entrypoint_reports_missing_private_media_sync_plugin(tmp_path, monkeypatch):
+    def missing_plugin(**_kwargs):
+        raise ModuleNotFoundError(
+            "No module named 'backend.plugins.modules.media_sync'",
+            name="backend.plugins.modules.media_sync",
+        )
+
+    monkeypatch.setattr(runner, "_pixiv_source_activity_lease", missing_plugin)
+
+    report, report_path = runner.run_once(
+        max_remote_operations=20,
+        check_only=True,
+        optimizer_root=tmp_path,
+        run_id="missing-private-plugin",
+    )
+
+    assert report["status"] == "safety_skipped"
+    assert report["stop_reason"] == "media_sync_plugin_missing"
+    assert report["remote_audit"]["remote_operations_total"] == 0
+    assert report_path.exists()
+    assert "media_sync_plugin_missing" in report_path.with_suffix(".md").read_text(encoding="utf-8")
 
 
 def test_formal_entrypoint_check_only_passes_without_network(tmp_path, monkeypatch):
@@ -99,7 +132,7 @@ def test_formal_entrypoint_runs_business_runtime_inside_budget_audit(tmp_path, m
 
     def fake_run_profile(_profile, **kwargs):
         calls.append(kwargs)
-        return {"stage": "completed", "summary": {"pixiv_collect_ids": {"new_pending_count": 3}}}
+        return {"stage": "completed", "summary": {"pixiv_download": {"new_download_count": 3}}}
 
     monkeypatch.setattr(runner, "_run_profile", fake_run_profile)
 
@@ -117,7 +150,7 @@ def test_formal_entrypoint_runs_business_runtime_inside_budget_audit(tmp_path, m
     assert report["remote_audit"]["remote_operations_total"] == 0
     assert calls == [
         {
-            "sources": ["pixiv_collect_ids"],
+            "sources": ["pixiv_download"],
             "target_new_candidates": 3,
             "run_id": "runtime-success",
         }
@@ -155,7 +188,7 @@ def test_formal_entrypoint_reports_persistent_risk_circuit_stop(tmp_path, monkey
     assert report["remote_audit"]["risk_circuit"]["reason"] == "verification_challenge"
 
 
-def test_formal_entrypoint_skips_when_cross_process_lock_is_held(tmp_path, monkeypatch):
+def test_formal_entrypoint_skips_when_pixiv_source_lease_is_held(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runner,
         "_legacy_trigger_enabled",
@@ -172,11 +205,11 @@ def test_formal_entrypoint_skips_when_cross_process_lock_is_held(tmp_path, monke
         )
 
     assert report["status"] == "safety_skipped"
-    assert report["stop_reason"] == "pixiv_incremental_lock_held"
+    assert report["stop_reason"] == "pixiv_source_activity_lease_held"
     assert report["remote_audit"]["remote_operations_total"] == 0
 
 
-def test_formal_entrypoint_skips_busy_profile(tmp_path, monkeypatch):
+def test_pinterest_only_or_stale_profile_running_state_does_not_block_pixiv(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_legacy_trigger_enabled", lambda: False)
     monkeypatch.setattr(runner, "_load_profiles", lambda _user_id: [FakeProfile(last_run_status="running")])
 
@@ -187,8 +220,8 @@ def test_formal_entrypoint_skips_busy_profile(tmp_path, monkeypatch):
         run_id="busy-profile",
     )
 
-    assert report["status"] == "safety_skipped"
-    assert report["stop_reason"] == "media_sync_profile_running"
+    assert report["status"] == "check_passed"
+    assert report["stop_reason"] == "check_only"
     assert report["busy_profile_ids"] == [2]
 
 

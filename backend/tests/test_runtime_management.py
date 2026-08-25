@@ -1,19 +1,17 @@
 from sqlmodel import Session, SQLModel, create_engine
 
-from backend.api import admin as admin_module
 from backend.api import task_manager as task_manager_module
 from backend.core.devices.device import TaskStatus
 from backend.core.runtime import management
 from backend.models import Task
 
 
-def test_fanxiu_startup_enables_external_scheduler_auto_dispatch(monkeypatch):
+def test_fanxiu_startup_ensures_the_single_external_scheduler(monkeypatch):
     entry = type("Entry", (), {"entry_id": "entry-a"})()
     calls = []
-    monkeypatch.setattr(management, "_resolve_data_annotation_runtime_entry", lambda _session: entry)
+    monkeypatch.setattr(management, "_resolve_behavior_tree_runtime_entry", lambda _session: entry)
     monkeypatch.setattr(management, "ensure_fanxiu_behavior_tree_service", lambda **_kwargs: {})
     monkeypatch.setattr(management, "_get_data_annotation_behavior_tree_status", lambda: {})
-    monkeypatch.setattr(management, "_fanxiu_capture_runtime_service_enabled", lambda: False)
     monkeypatch.setattr(management, "_fanxiu_doctor_watch_autostart_enabled", lambda: True)
     monkeypatch.setattr(
         management,
@@ -24,7 +22,7 @@ def test_fanxiu_startup_enables_external_scheduler_auto_dispatch(monkeypatch):
     result = management.ensure_data_annotation_behavior_tree_service(object())
 
     assert result["doctor_watch"]["started"] is True
-    assert calls == [{"auto_run_due": True}]
+    assert calls == [{}]
 
 
 def test_build_runtime_status_reuses_runtime_device_for_command_status(monkeypatch):
@@ -164,24 +162,25 @@ def test_warm_runtime_status_caches_on_startup_continues_after_errors(monkeypatc
     }
 
 
-def test_collect_builtin_jobs_uses_short_cache(monkeypatch):
+def test_collect_builtin_jobs_returns_stale_payload_while_refreshing(monkeypatch):
     calls: list[str] = []
-    monotonic_values = iter([100.0, 100.1, 106.0])
+    refresh_threads = []
 
-    monkeypatch.setattr(management.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(management, "_builtin_jobs_status_cache", None)
+    class DeferredThread:
+        def __init__(self, *, target, args, **_kwargs):
+            self.target = target
+            self.args = args
 
-    def fake_status(_session):
-        calls.append("status")
+        def start(self):
+            refresh_threads.append(self)
+
+    def fake_build(_session):
+        calls.append("build")
         return {
-            "tasks": [
+            "items": [
                 {
                     "key": "job-a",
                     "title": "Job A",
-                    "category": "默认",
-                    "enabled": True,
-                    "active": False,
-                    "runner_running": True,
                 }
             ],
             "queue": None,
@@ -190,16 +189,93 @@ def test_collect_builtin_jobs_uses_short_cache(monkeypatch):
             "runner_error": None,
         }
 
-    monkeypatch.setattr(admin_module, "get_background_task_status", fake_status)
+    monkeypatch.setattr(management.time, "monotonic", lambda: 131.0)
+    monkeypatch.setattr(
+        management,
+        "_builtin_jobs_status_cache",
+        (
+            100.0,
+            {
+                "items": [{"key": "job-a", "title": "Cached Job"}],
+                "queue": None,
+                "runner_running": True,
+                "next_wake_at": None,
+                "runner_error": None,
+            },
+        ),
+    )
+    monkeypatch.setattr(management, "_builtin_jobs_status_refreshing", False)
+    monkeypatch.setattr(management, "_build_builtin_jobs_status", fake_build)
+    monkeypatch.setattr(management.threading, "Thread", DeferredThread)
 
     first = management._collect_builtin_jobs(object())
-    first["items"][0]["title"] = "mutated"
     second = management._collect_builtin_jobs(object())
-    third = management._collect_builtin_jobs(object())
 
-    assert calls == ["status", "status"]
-    assert second["items"][0]["title"] == "Job A"
-    assert third["items"][0]["title"] == "Job A"
+    assert first["items"][0]["title"] == "Cached Job"
+    assert second["items"][0]["title"] == "Cached Job"
+    assert calls == []
+    assert len(refresh_threads) == 1
+
+    refresh_threads[0].target(*refresh_threads[0].args)
+
+    assert calls == ["build"]
+    assert management._builtin_jobs_status_cache[1]["items"][0]["title"] == "Job A"
+
+
+def test_collect_builtin_services_returns_stale_payload_while_refreshing(monkeypatch):
+    calls: list[str] = []
+    refresh_threads = []
+    enabled_signature = (False, False, False)
+
+    class DeferredThread:
+        def __init__(self, *, target, args, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            refresh_threads.append(self)
+
+    def fake_build(signature):
+        calls.append("build")
+        assert signature == enabled_signature
+        return {"items": [{"key": "service-a", "title": "Fresh Service"}]}
+
+    monkeypatch.setattr(management.time, "monotonic", lambda: 131.0)
+    monkeypatch.setattr(management, "is_attendance_behavior_tree_service_enabled", lambda: False)
+    monkeypatch.setattr(management, "_fanxiu_behavior_tree_service_enabled", lambda: False)
+    monkeypatch.setattr(management, "_fanxiu_game_window_service_enabled", lambda: False)
+    monkeypatch.setattr(
+        management,
+        "_builtin_services_status_cache",
+        (
+            100.0,
+            enabled_signature,
+            {"items": [{"key": "service-a", "title": "Cached Service"}]},
+        ),
+    )
+    monkeypatch.setattr(management, "_builtin_services_status_refreshing", False)
+    monkeypatch.setattr(management, "_build_builtin_services_status", fake_build)
+    monkeypatch.setattr(management.threading, "Thread", DeferredThread)
+
+    first = management._collect_builtin_services()
+    second = management._collect_builtin_services()
+
+    assert first["items"][0]["title"] == "Cached Service"
+    assert second["items"][0]["title"] == "Cached Service"
+    assert calls == []
+    assert len(refresh_threads) == 1
+
+    refresh_threads[0].target(*refresh_threads[0].args)
+
+    assert calls == ["build"]
+    assert management._builtin_services_status_cache[2]["items"][0]["title"] == "Fresh Service"
+
+
+def test_runtime_status_cache_ttls_cover_ten_poll_intervals():
+    poll_window_seconds = 10 * 3.0
+
+    assert management._BUILTIN_JOBS_STATUS_CACHE_TTL_SECONDS >= poll_window_seconds
+    assert management._BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS >= poll_window_seconds
 
 
 def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
@@ -326,58 +402,6 @@ def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
     assert "policy" not in builtin_job
     assert builtin_service["raw"] == {}
     assert "policy" not in builtin_service
-
-
-def test_serialize_fanxiu_capture_runtime_service_item_skips_health_for_runtime_list(monkeypatch):
-    include_health_calls: list[bool] = []
-
-    def fake_status(*, include_health=True):
-        include_health_calls.append(include_health)
-        return {
-            "key": "fanxiu-packet-service",
-            "title": "凡修抓包",
-            "running": True,
-            "state": "running",
-            "state_label": "运行中",
-            "module": "backend.services.fanxiu_packet_daemon",
-            "cwd": "",
-            "log_path": "",
-            "state_path": "",
-            "process_count": 1,
-            "processes": [{"pid": 1234}],
-            "pids": [1234],
-            "updated_at": "2026-07-09 07:00:00",
-            "capture_runtime": {
-                "game_running": True,
-                "adb_connected": True,
-                "root_ready": True,
-                "tcpdump_ready": True,
-                "active_reasons": [],
-                "current_pcap_path": "capture.pcap",
-                "current_pcap_size": 1024,
-                "started_at": "2026-07-09 06:59:00",
-                "last_error": "",
-                "last_recover_at": "",
-                "watchdog_running": True,
-                "watchdog_interval_seconds": 15,
-                "watchdog_last_check_at": "2026-07-09 07:00:00",
-                "watchdog_last_action": "",
-                "watchdog_last_error": "",
-            },
-            "packet_worker": {
-                "realtime_running": True,
-                "maintenance_running": False,
-                "updated_at": "2026-07-09 07:00:00",
-            },
-        }
-
-    monkeypatch.setattr(management, "get_fanxiu_packet_service_status", fake_status)
-
-    item = management._serialize_fanxiu_capture_runtime_service_item()
-
-    assert include_health_calls == [False]
-    assert item["title"] == "凡修抓包"
-    assert item["status"]["current_pcap_path"] == "capture.pcap"
 
 
 def test_serialize_codeyun_watchdog_service_item_uses_lightweight_process_status(monkeypatch):

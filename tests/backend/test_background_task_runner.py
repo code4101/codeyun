@@ -1,6 +1,9 @@
 import json
 import datetime
 
+from sqlmodel import SQLModel, create_engine
+
+from backend.core import fanxiu_wechat_reminder
 from backend.core.jobs import scheduler as background_tasks
 from backend.core.jobs.scheduler import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
 from backend.models import AppSetting
@@ -119,6 +122,9 @@ def test_background_task_runner_fanxiu_wechat_reminders_are_registered_optional_
     assert boss_spec is not None
     assert boss_spec.title == "凡修魔狱封阵微信群提醒"
     assert boss_spec.category == "凡修"
+    assert "微信 iLink" in boss_spec.description
+    assert "xlproject" not in boss_spec.description
+    assert "xlproject" not in boss_spec.manual_warning
     assert boss_spec.schedule_label == "每天 17:57"
     assert boss_spec.default_visible is False
     boss_policy = background_tasks._default_background_task_schedule_policy(boss_spec.key)
@@ -128,11 +134,59 @@ def test_background_task_runner_fanxiu_wechat_reminders_are_registered_optional_
     assert shengzu_spec is not None
     assert shengzu_spec.title == "凡修圣祖微信群提醒"
     assert shengzu_spec.category == "凡修"
+    assert "微信 iLink" in shengzu_spec.description
+    assert "xlproject" not in shengzu_spec.description
+    assert "xlproject" not in shengzu_spec.manual_warning
     assert shengzu_spec.schedule_label == "每周日 19:57"
     assert shengzu_spec.default_visible is False
     shengzu_policy = background_tasks._default_background_task_schedule_policy(shengzu_spec.key)
     assert shengzu_policy is not None
     assert shengzu_policy["trigger"] == {"type": "weekly", "weekdays": [7], "time": "19:57"}
+
+
+def test_fanxiu_wechat_reminder_worker_sends_via_wechat_ilink(monkeypatch):
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    sent_messages = []
+
+    def fake_send_text_message(account_id, *, to_user_id, text, context_token=None, timeout_seconds=120):
+        sent_messages.append(
+            {
+                "account_id": account_id,
+                "to_user_id": to_user_id,
+                "text": text,
+                "context_token": context_token,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {"message_id": "msg-1", "to_user_id": to_user_id, "used_context_token": bool(context_token)}
+
+    monkeypatch.setattr(fanxiu_wechat_reminder, "send_text_message", fake_send_text_message)
+
+    result = fanxiu_wechat_reminder.run_fanxiu_wechat_reminder_worker(
+        fanxiu_wechat_reminder.FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
+        db_bind=engine,
+        account_id="bot@example",
+        to_user_id="group-1",
+        context_token="ctx-1",
+        timeout_seconds=3,
+        require_allowed_host=False,
+    )
+
+    assert result["status"] == "completed"
+    assert result["target"] == "wechat_ilink:send_text_message"
+    assert result["sent"]["message_id"] == "msg-1"
+    assert sent_messages == [
+        {
+            "account_id": "bot@example",
+            "to_user_id": "group-1",
+            "text": "@所有人 准备打魔狱封阵",
+            "context_token": "ctx-1",
+            "timeout_seconds": 3,
+        }
+    ]
+    assert "xlproject_root" not in result
+    assert "python_executable" not in result
 
 
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
@@ -312,6 +366,30 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
 
     assert tree_runner.run_once() == Status.SUCCESS
     assert tree_runner.state["nodes"]["Root/MemorySelector/ruanyf_weekly_note"]["next_run_at"] == "2026-05-22 08:00:00"
+
+
+def test_background_task_runner_continues_after_run_once_exception(tmp_path, monkeypatch):
+    runner = _runner_for_test(tmp_path)
+    calls = []
+    waits = []
+
+    class FakeRunner:
+        def run_once(self):
+            calls.append("run")
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            runner._stop_event.set()
+            return Status.SUCCESS
+
+    monkeypatch.setattr(runner, "build_runner", lambda: FakeRunner())
+    monkeypatch.setattr(runner._stop_event, "wait", lambda seconds: waits.append(seconds) or False)
+
+    runner._run_thread()
+
+    assert calls == ["run", "run"]
+    assert waits == [5, 1]
+    assert runner._last_error == "boom"
+    assert runner._runner is None
 
 
 def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkeypatch):

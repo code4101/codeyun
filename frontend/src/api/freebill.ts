@@ -64,6 +64,9 @@ export interface FreebillCategoryStat {
   name: string
   value: number
   count: number
+  group_count?: number
+  is_remainder?: boolean
+  remainder_items?: FreebillCategoryStat[]
   dimension?: FreebillCategoryDimension | null
   path?: FreebillCategoryPathItem[]
   children?: FreebillCategoryStat[]
@@ -264,6 +267,7 @@ export interface FreebillImportResultItem {
   filename: string
   processed: number
   inserted: number
+  updated: number
   skipped: number
   error?: string
 }
@@ -273,8 +277,36 @@ export interface FreebillImportResult {
   results: FreebillImportResultItem[]
   processed: number
   inserted: number
+  updated: number
   skipped: number
   error_count: number
+}
+
+export interface FreebillWechatLocalSyncResult {
+  filename: string
+  format: string
+  processed: number
+  inserted: number
+  updated: number
+  skipped: number
+  scanned: number
+  parsed: number
+  ignored: number
+  source_modified_at: number
+  source_sync_error?: string | null
+  payment: {
+    scanned: number
+    parsed: number
+    ignored: number
+    reset_tables: number
+  }
+  chat_transfer: {
+    scanned: number
+    parsed: number
+    ignored: number
+    reset_tables: number
+    advanced_tables: number
+  }
 }
 
 export interface FreebillSheetWorkbookSheet {
@@ -376,6 +408,13 @@ export async function importFreebillFiles(source: FreebillImportSource, files: F
   files.forEach((file) => formData.append('files', file))
   const response = await api.post<FreebillImportResult>(`/freebill/import/${source}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export async function syncFreebillFromLocalWechat() {
+  const response = await api.post<FreebillWechatLocalSyncResult>('/freebill/sources/wechat-local/sync', {}, {
     timeout: 120000,
   })
   return response.data

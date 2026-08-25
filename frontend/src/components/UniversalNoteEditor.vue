@@ -28,7 +28,7 @@
 <script setup lang="ts">
 import type { NoteNode } from '@/api/notes';
 import SharedNoteEditor from './SharedNoteEditor.vue';
-import type { EditableNotePatch } from '@/utils/noteAutoSave';
+import type { EditableNoteExpectedFields, EditableNotePatch } from '@/utils/noteAutoSave';
 
 const props = defineProps<{
   modelValue?: NoteNode;
@@ -42,8 +42,8 @@ const props = defineProps<{
   editorLayout?: 'fill' | 'flow';
   editorMinHeight?: number;
   draftStorageKey?: string | null;
-  onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
-  onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
+  onSave?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => Promise<NoteNode | void>;
+  onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => void;
 }>();
 
 const emit = defineEmits<{

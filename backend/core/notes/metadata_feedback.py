@@ -23,7 +23,11 @@ from backend.core.ai.chat import (
     OllamaClientError,
     chat_with_provider,
 )
-from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import (
+    find_active_local_job_run,
+    get_local_job_run,
+    serialize_local_job_run,
+)
 from backend.core.services.launcher import run_quiet
 from backend.core.notes.progress import get_completion_progress_expr, is_note_system_custom_field_key
 from backend.core.settings import ROOT_DIR, get_settings
@@ -430,7 +434,23 @@ def get_note_metadata_feedback_status(session: Session) -> dict[str, Any]:
         "coalesce_seconds": NOTE_METADATA_FEEDBACK_COALESCE_SECONDS,
         "cleanup_retention_days": int(NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS / 86400),
         "latest_run": serialize_note_metadata_feedback_optimization_run(latest_run) if latest_run else None,
-        "queue": background_task_queue.snapshot(),
+        "queue": _metadata_feedback_local_job_projection(latest_run),
+    }
+
+
+def _metadata_feedback_local_job_projection(
+    latest_run: NoteMetadataFeedbackOptimizationRun | None,
+) -> dict[str, Any]:
+    local_run = (
+        get_local_job_run(str(latest_run.queue_task_id))
+        if latest_run is not None and latest_run.queue_task_id
+        else None
+    )
+    projected = serialize_local_job_run(local_run) if local_run is not None else None
+    return {
+        "running": projected if local_run is not None and local_run.status in {"queued", "running"} else None,
+        "pending": [],
+        "recent": [projected] if projected is not None and local_run.status not in {"queued", "running"} else [],
     }
 
 
@@ -521,7 +541,7 @@ def create_note_metadata_feedback_optimization_run(
     if require_auto_conditions:
         if not _is_automatic_window(now_dt):
             return None
-        if not background_task_queue.is_idle() or _has_active_related_runs(session):
+        if find_active_local_job_run("notes.metadata-feedback-optimization") or _has_active_related_runs(session):
             return None
         if _pending_feedback_count(session) < NOTE_METADATA_FEEDBACK_TRIGGER_THRESHOLD:
             return None
@@ -543,13 +563,13 @@ def create_note_metadata_feedback_optimization_run(
     session.refresh(run)
 
     if enqueue:
-        queue_task_id = background_task_queue.enqueue(
-            "note_metadata_feedback_optimization",
-            run_note_metadata_feedback_optimization_worker,
-            session.get_bind(),
-            run.id,
-            metadata={"run_id": run.id, "trigger_reason": trigger_reason},
+        from backend.core.jobs.local_runtime import submit_local_job
+
+        local_run = submit_local_job(
+            job_type="notes.metadata-feedback-optimization",
+            payload={"run_id": run.id, "trigger_reason": trigger_reason},
         )
+        queue_task_id = local_run.id
         run.queue_task_id = queue_task_id
         run.updated_at = time.time()
         session.add(run)

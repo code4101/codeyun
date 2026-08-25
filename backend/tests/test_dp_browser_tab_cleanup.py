@@ -39,7 +39,7 @@ def test_duplicate_tab_is_only_closed_after_second_hourly_observation():
 
     second = plan_dp_browser_tab_cleanup(tabs, first.state, now=1000 + 60 * 60 + 1, config=_config())
     assert second.close_ids == ["old-tab"]
-    assert second.close_reasons["old-tab"].startswith("duplicate url retained")
+    assert second.close_reasons["old-tab"].startswith("duplicate domain retained")
     assert second.kept_domain_tabs == {"pay.weixin.qq.com": "new-tab"}
 
 
@@ -71,7 +71,7 @@ def test_protected_login_or_verify_tab_is_never_closed():
     assert second.skipped["protected_keyword"] == 2
 
 
-def test_unique_urls_on_same_domain_are_not_closed():
+def test_stable_tabs_on_same_domain_are_closed_even_when_urls_differ():
     tabs = [
         _tab("home", "https://pay.weixin.qq.com/index.php/core/info"),
         _tab("trade", "https://pay.weixin.qq.com/index.php/trade/index"),
@@ -80,8 +80,25 @@ def test_unique_urls_on_same_domain_are_not_closed():
     first = plan_dp_browser_tab_cleanup(tabs, {}, now=1000, config=_config())
     second = plan_dp_browser_tab_cleanup(tabs, first.state, now=1000 + 2 * 60 * 60, config=_config())
 
-    assert first.candidate_tabs == 0
+    assert first.candidate_tabs == 1
+    assert second.close_ids == ["home"]
+
+
+def test_changed_tab_observation_resets_candidate_age():
+    first_tabs = [
+        _tab("home", "https://pay.weixin.qq.com/index.php/core/info", title="加载中"),
+        _tab("trade", "https://pay.weixin.qq.com/index.php/trade/index"),
+    ]
+    second_tabs = [
+        _tab("home", "https://pay.weixin.qq.com/index.php/core/info", title="账户中心"),
+        _tab("trade", "https://pay.weixin.qq.com/index.php/trade/index"),
+    ]
+
+    first = plan_dp_browser_tab_cleanup(first_tabs, {}, now=1000, config=_config())
+    second = plan_dp_browser_tab_cleanup(second_tabs, first.state, now=1000 + 2 * 60 * 60, config=_config())
+
     assert second.close_ids == []
+    assert second.state["tabs"]["home"]["candidate_since"] is None
 
 
 def test_background_job_is_hidden_catalog_item_with_hourly_default_schedule():
@@ -93,6 +110,25 @@ def test_background_job_is_hidden_catalog_item_with_hourly_default_schedule():
     policy = scheduler._default_background_task_schedule_policy(DP_BROWSER_TAB_CLEANUP_TASK_KEY)
     assert policy is not None
     assert policy["trigger"] == {"type": "interval", "minutes": 60, "anchor": "last_finish"}
+
+
+def test_rime_runtime_work_is_packaged_as_hidden_builtin_jobs():
+    refresh_spec = scheduler.get_background_task_spec(scheduler.RIME_CONTEXT_REFRESH_TASK_KEY)
+    lint_spec = scheduler.get_background_task_spec(scheduler.RIME_CONTEXT_LINT_TASK_KEY)
+
+    assert refresh_spec is not None
+    assert refresh_spec.default_visible is False
+    assert refresh_spec.category == "输入法"
+    assert lint_spec is not None
+    assert lint_spec.default_visible is False
+    assert lint_spec.category == "输入法"
+
+    refresh_policy = scheduler._default_background_task_schedule_policy(scheduler.RIME_CONTEXT_REFRESH_TASK_KEY)
+    lint_policy = scheduler._default_background_task_schedule_policy(scheduler.RIME_CONTEXT_LINT_TASK_KEY)
+    assert refresh_policy is not None
+    assert refresh_policy["trigger"] == {"type": "interval", "minutes": 360, "anchor": "last_finish"}
+    assert lint_policy is not None
+    assert lint_policy["trigger"] == {"type": "daily", "time": "03:20"}
 
 
 def test_runner_tree_contains_hidden_cleanup_task_for_later_enable(monkeypatch):

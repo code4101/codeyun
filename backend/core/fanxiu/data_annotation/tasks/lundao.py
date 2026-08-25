@@ -6,29 +6,28 @@ from datetime import datetime, time as time_cls, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlmodel import Session
-
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.core.fanxiu.catalog.server_relations import classify_fanxiu_target_relation
-from backend.core.fanxiu.data_annotation.tasks.daofa import current_player_battle_score
-from backend.core.fanxiu.packet.current_facts import (
-    get_latest_fanxiu_faze_show_facts,
-    get_latest_fanxiu_lundao_scene_seat_facts,
-    get_latest_fanxiu_lundao_status_facts,
-)
-from backend.core.fanxiu.packet.service_runtime import (
-    request_fanxiu_packet_service_catch_up,
-    start_fanxiu_packet_service,
-)
-from backend.db import engine
-
-
 LUNDAO_DALUO_ROOM_ID = 15
 LUNDAO_SANQING_ROOM_ID = 14
 LUNDAO_SAFE_BATTLE_RATIO = 0.90
-LUNDAO_FIRST_TRIGGER = time_cls(15, 55)
+LUNDAO_FIRST_TRIGGER = time_cls(15, 30)
+LUNDAO_PURCHASE_CUTOFF = time_cls(21, 0)
 LUNDAO_CLOSE_TIME = time_cls(22, 0)
+LUNDAO_SAFETY_THRESHOLD_CHANGE_TIMES = (
+    time_cls(16, 30),
+    time_cls(17, 0),
+    time_cls(18, 0),
+    time_cls(19, 30),
+    time_cls(21, 0),
+)
 _FAZE_QUALITY_TO_CROSS = {quality: 1 << (quality - 1) for quality in range(1, 8)}
+
+
+def lundao_purchase_allowed(at: datetime) -> bool:
+    """Allow paid attempts only before 21:00 local game time."""
+
+    return at.time() < LUNDAO_PURCHASE_CUTOFF
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -47,6 +46,35 @@ def _number_or_none(value: Any) -> float | None:
         return float(value) if value is not None and str(value).strip() else None
     except (TypeError, ValueError):
         return None
+
+
+def _lundao_owner_faze_id(owner: dict[str, Any]) -> int | None:
+    """Return the owner's equipped law id, treating explicit empty as no law.
+
+    Runtime rosters expose each seat owner's law state.  ``0`` is the normal
+    no-law value, but some projections may keep the key with an empty value
+    for the same state.  A missing key is still incomplete data and must fail
+    closed.
+    """
+
+    if "faze" not in owner:
+        return None
+    raw = owner.get("faze")
+    parsed = _int_or_none(raw)
+    if parsed is not None:
+        return parsed
+    if raw is None or str(raw).strip() == "":
+        return 0
+    return None
+
+
+def _lundao_runtime_faze_id(value: Any) -> int | None:
+    parsed = _int_or_none(value)
+    if parsed is not None:
+        return parsed
+    if value is None or str(value).strip() == "":
+        return 0
+    return None
 
 
 def load_lundao_faze_catalog(*, export_root: str | Path | None = None) -> dict[int, dict[str, Any]]:
@@ -76,32 +104,49 @@ def load_lundao_faze_catalog(*, export_root: str | Path | None = None) -> dict[i
 
 
 def current_lundao_player_profile(*, export_root: str | Path | None = None) -> dict[str, Any]:
-    """Combine the current account power with its latest equipped law fact."""
+    """Read the current account profile from the live Lundao Runtime model."""
 
-    profile = current_player_battle_score()
-    if not profile.get("available"):
-        return {"ok": False, "available": False, "reason": "self_battle_score_missing", "profile": profile}
-    with Session(engine) as session:
-        faze = get_latest_fanxiu_faze_show_facts(session)
-    if not faze.get("available"):
-        return {"ok": False, "available": False, "reason": "self_faze_missing", "profile": profile, "faze": faze}
-    faze_id = _int_or_none(faze.get("faze_id"))
-    faze_fact = load_lundao_faze_catalog(export_root=export_root).get(faze_id if faze_id is not None else -1)
-    if faze_fact is None:
-        return {
-            "ok": False,
-            "available": False,
-            "reason": "self_faze_quality_unknown",
-            "profile": profile,
-            "faze": faze,
-        }
+    from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+    return lundao_player_profile_from_runtime(
+        read_lundao_snapshot(),
+        export_root=export_root,
+    )
+
+
+def lundao_player_profile_from_runtime(
+    snapshot: dict[str, Any],
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build the self comparison profile from the read-only Lundao model."""
+
+    raw_profile = (
+        snapshot.get("self_profile")
+        if isinstance(snapshot.get("self_profile"), dict)
+        else {}
+    )
+    faze_id = (
+        _lundao_runtime_faze_id(raw_profile.get("faze"))
+        if "faze" in raw_profile
+        else None
+    )
+    faze = load_lundao_faze_catalog(export_root=export_root).get(
+        faze_id if faze_id is not None else -1
+    )
+    available = (
+        bool(raw_profile.get("available"))
+        and _int_or_none(raw_profile.get("role_id")) is not None
+        and _number_or_none(raw_profile.get("battle_score")) is not None
+        and faze is not None
+    )
     return {
-        "ok": True,
-        "available": True,
-        **profile,
-        **faze_fact,
-        "faze_captured_at": str(faze.get("captured_at") or ""),
-        "faze_evidence": faze.get("evidence") or {},
+        **raw_profile,
+        **(faze or {}),
+        "ok": available,
+        "available": available,
+        "source": "runtime_memory",
+        "reason": None if available else "runtime_self_profile_incomplete",
     }
 
 
@@ -125,8 +170,12 @@ def lundao_safety_threshold(at: datetime) -> int | None:
 
 
 def next_lundao_daily_trigger(at: datetime) -> datetime:
-    tomorrow = at.date() + timedelta(days=1)
-    return datetime.combine(tomorrow, LUNDAO_FIRST_TRIGGER)
+    """Return the next 15:30 opening that has not already started."""
+
+    today = datetime.combine(at.date(), LUNDAO_FIRST_TRIGGER)
+    if at < today:
+        return today
+    return datetime.combine(at.date() + timedelta(days=1), LUNDAO_FIRST_TRIGGER)
 
 
 def next_lundao_recheck(
@@ -134,14 +183,26 @@ def next_lundao_recheck(
     *,
     protect_end_time_ms: int | None = None,
 ) -> datetime:
-    """Choose the next same-day recheck, clipped to the next daily trigger."""
+    """Recheck at a calm 30-minute cadence, clipped to the next daily trigger."""
 
-    candidates = [at + timedelta(minutes=30)]
-    if protect_end_time_ms and protect_end_time_ms > int(at.timestamp() * 1000):
-        candidates.append(datetime.fromtimestamp(protect_end_time_ms / 1000.0))
-    next_at = min(candidates)
+    # A safety-threshold boundary or one player's protection expiry does not
+    # mean a seat will actually be available.  Using either as an earlier
+    # trigger made a stable Sanqing seat bounce through the GUI repeatedly.
+    del protect_end_time_ms
+    next_at = at + timedelta(minutes=30)
     close_at = datetime.combine(at.date(), LUNDAO_CLOSE_TIME)
     return next_lundao_daily_trigger(at) if next_at >= close_at else next_at
+
+
+def next_lundao_unseated_retry(at: datetime) -> datetime:
+    """Recheck an unseated player every ten minutes during the open window."""
+
+    clock = at.time().replace(tzinfo=None)
+    if LUNDAO_FIRST_TRIGGER <= clock < LUNDAO_CLOSE_TIME:
+        next_at = at + timedelta(minutes=10)
+        close_at = datetime.combine(at.date(), LUNDAO_CLOSE_TIME)
+        return next_lundao_daily_trigger(at) if next_at >= close_at else next_at
+    return next_lundao_daily_trigger(at)
 
 
 def current_lundao_left_listen_time(
@@ -186,7 +247,7 @@ def _lundao_target_fact(
     role_id = _int_or_none(owner.get("role_id"))
     name = str(owner.get("name") or "").strip()
     battle_score = _number_or_none(owner.get("battle_score"))
-    target_faze_id = _int_or_none(owner.get("faze"))
+    target_faze_id = _lundao_owner_faze_id(owner)
     if role_id is None or not name or battle_score is None or target_faze_id is None:
         return "invalid", None
     if role_id == _int_or_none(player_profile.get("role_id")):
@@ -194,14 +255,16 @@ def _lundao_target_fact(
     target_faze = catalog.get(target_faze_id)
     if target_faze is None:
         return "invalid", None
-    self_quality = _int_or_none(player_profile.get("quality"))
     self_battle = _number_or_none(player_profile.get("battle_score"))
     target_quality = int(target_faze["quality"])
-    if self_quality is None or self_battle is None:
+    if self_battle is None:
         return "invalid_profile", None
-    if self_quality < target_quality:
+    self_quality = _int_or_none(player_profile.get("quality"))
+    if target_quality > 0 and self_quality is None:
+        return "invalid_profile", None
+    if target_quality > 0 and self_quality < target_quality:
         return "stronger_law", None
-    if self_quality == target_quality and battle_score > self_battle * LUNDAO_SAFE_BATTLE_RATIO:
+    if target_quality > 0 and self_quality == target_quality and battle_score > self_battle * LUNDAO_SAFE_BATTLE_RATIO:
         return "unsafe_same_law_power", None
 
     relation = classify_fanxiu_target_relation(
@@ -257,14 +320,15 @@ def evaluate_lundao_room_opportunity(
         return {"ok": False, "status": "invalid_facts", "reason": "room_available_count_missing", "target": None}
     if not player_profile.get("available"):
         return {"ok": False, "status": "invalid_profile", "reason": "self_profile_missing", "target": None}
-    if any(_int_or_none(player_profile.get(key)) is None for key in ("role_id", "quality")) or _number_or_none(player_profile.get("battle_score")) is None:
+    if _int_or_none(player_profile.get("role_id")) is None or _number_or_none(player_profile.get("battle_score")) is None:
         return {"ok": False, "status": "invalid_profile", "reason": "self_profile_incomplete", "target": None}
 
     catalog = load_lundao_faze_catalog(export_root=export_root)
     current_ms = int(at.timestamp() * 1000) if now_ms is None else int(now_ms)
     empty_count = max(0, int(available_count or 0))
     contributors: list[dict[str, Any]] = []
-    eligible: list[dict[str, Any]] = []
+    eligible_no_law: list[dict[str, Any]] = []
+    eligible_with_law: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
     rejected = {
         "self": 0,
@@ -288,7 +352,10 @@ def evaluate_lundao_room_opportunity(
         if target is not None:
             contributors.append(target)
         if reason == "eligible" and target is not None:
-            eligible.append(target)
+            if int(target.get("faze_id") or 0) == 0:
+                eligible_no_law.append(target)
+            else:
+                eligible_with_law.append(target)
         elif reason == "protected_weaker" and target is not None:
             protected.append(target)
             rejected["protected"] += 1
@@ -299,14 +366,15 @@ def evaluate_lundao_room_opportunity(
         else:
             rejected["invalid"] += 1
 
-    eligible.sort(key=lambda item: (int(item["faze_quality"]), float(item["battle_score"]), int(item["seat_id"])))
+    eligible_no_law.sort(key=lambda item: (float(item["battle_score"]), int(item["seat_id"])))
+    eligible_with_law.sort(key=lambda item: (int(item["faze_quality"]), float(item["battle_score"]), int(item["seat_id"])))
     protected.sort(key=lambda item: (int(item["protect_end_time"]), int(item["faze_quality"]), float(item["battle_score"])))
     threshold = lundao_safety_threshold(at) if require_safety_threshold else 0
     safety_score = empty_count + len(contributors)
     threshold_met = threshold is not None and safety_score >= int(threshold)
-    has_action = empty_count > 0 or bool(eligible)
+    has_action = empty_count > 0 or bool(eligible_no_law)
     actionable = threshold_met and has_action
-    target = None if empty_count > 0 else (eligible[0] if eligible else None)
+    target = None if empty_count > 0 else (eligible_no_law[0] if eligible_no_law else None)
     return {
         "ok": True,
         "status": "actionable" if actionable else "wait",
@@ -320,7 +388,9 @@ def evaluate_lundao_room_opportunity(
         "actionable": actionable,
         "action": "empty" if actionable and empty_count > 0 else ("kick" if actionable and target else "wait"),
         "target": target,
-        "eligible_count": len(eligible),
+        "eligible_count": len(eligible_no_law),
+        "eligible_no_law_count": len(eligible_no_law),
+        "eligible_with_law_count": len(eligible_with_law),
         "contributors": contributors,
         "protected_candidates": protected,
         "earliest_protect_end_time": protected[0]["protect_end_time"] if protected else None,
@@ -350,7 +420,7 @@ def plan_lundao_strategy(
         return {"action": "done", "reason": "listen_time_exhausted", "next_time": next_day}
     room_id = _int_or_none(status_facts.get("room_id"))
     if room_id == LUNDAO_DALUO_ROOM_ID:
-        return {"action": "stay_daluo", "reason": "already_daluo", "next_time": next_lundao_recheck(at)}
+        return {"action": "stay_daluo", "reason": "already_daluo", "next_time": next_day}
     if not daluo_opportunity or not daluo_opportunity.get("ok"):
         return {"action": "retry", "reason": "daluo_facts_missing", "next_time": at + timedelta(minutes=5)}
     if daluo_opportunity.get("actionable"):
@@ -383,29 +453,33 @@ def plan_lundao_strategy(
 
 
 def read_current_lundao_facts(*, since_seconds: int = 1200, at: datetime | None = None) -> dict[str, Any]:
-    """Read current status and last viewed room roster without triggering capture work."""
+    """Read current status and room roster exclusively from Runtime memory."""
 
-    with Session(engine) as session:
-        status = get_latest_fanxiu_lundao_status_facts(session, since_seconds=max(60, int(since_seconds)))
-        roster = get_latest_fanxiu_lundao_scene_seat_facts(session, since_seconds=max(60, int(since_seconds)))
+    del since_seconds
+    from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+    status = read_lundao_snapshot()
     current_at = at or datetime.now()
     status = {
         **status,
-        "current_left_listen_time": current_lundao_left_listen_time(status, at=current_at),
         "current_left_listen_time_at": current_at.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    if roster.get("room_id") is None:
-        npc_id = _int_or_none(roster.get("npc_id"))
-        theme_id = _int_or_none(roster.get("theme_id"))
-        matches = [
-            room
-            for room in status.get("rooms") or []
-            if isinstance(room, dict)
-            and _int_or_none(room.get("npc_id")) == npc_id
-            and _int_or_none(room.get("theme_id")) == theme_id
-        ]
-        if npc_id is not None and theme_id is not None and len(matches) == 1:
-            roster = {**roster, "room_id": _int_or_none(matches[0].get("room_id")), "room_id_source": "npc_theme_match"}
+    room_id = _int_or_none(status.get("room_id"))
+    if room_id == LUNDAO_DALUO_ROOM_ID:
+        roster = status.get("daluo_roster")
+    elif room_id == LUNDAO_SANQING_ROOM_ID:
+        roster = status.get("sanqing_roster")
+    else:
+        roster = None
+    if not isinstance(roster, dict):
+        roster = {
+            "ok": False,
+            "available": False,
+            "complete": False,
+            "source": "runtime_memory",
+            "reason": "current_room_roster_not_loaded",
+            "room_id": room_id,
+        }
     return {"status": status, "roster": roster}
 
 
@@ -427,10 +501,10 @@ def select_lundao_kick_target(
         return {"ok": False, "status": "invalid_profile", "reason": "self_profile_missing", "target": None}
 
     self_role_id = _int_or_none(player_profile.get("role_id"))
-    self_quality = _int_or_none(player_profile.get("quality"))
     self_battle = _number_or_none(player_profile.get("battle_score"))
-    if self_role_id is None or self_quality is None or self_battle is None:
+    if self_role_id is None or self_battle is None:
         return {"ok": False, "status": "invalid_profile", "reason": "self_profile_incomplete", "target": None}
+    self_quality = _int_or_none(player_profile.get("quality"))
 
     catalog = load_lundao_faze_catalog(export_root=export_root)
     current_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
@@ -455,7 +529,7 @@ def select_lundao_kick_target(
         role_id = _int_or_none(owner.get("role_id"))
         name = str(owner.get("name") or "").strip()
         battle_score = _number_or_none(owner.get("battle_score"))
-        target_faze_id = _int_or_none(owner.get("faze"))
+        target_faze_id = _lundao_owner_faze_id(owner)
         if role_id is None or not name or battle_score is None or target_faze_id is None:
             rejected["invalid"] += 1
             continue
@@ -479,10 +553,13 @@ def select_lundao_kick_target(
             rejected["invalid"] += 1
             continue
         target_quality = int(target_faze["quality"])
-        if self_quality < target_quality:
+        if target_quality > 0 and self_quality is None:
+            rejected["invalid"] += 1
+            continue
+        if target_quality > 0 and self_quality < target_quality:
             rejected["stronger_law"] += 1
             continue
-        if self_quality == target_quality and battle_score > self_battle * LUNDAO_SAFE_BATTLE_RATIO:
+        if target_quality > 0 and self_quality == target_quality and battle_score > self_battle * LUNDAO_SAFE_BATTLE_RATIO:
             rejected["unsafe_same_law_power"] += 1
             continue
         eligible.append(
@@ -504,15 +581,59 @@ def select_lundao_kick_target(
             }
         )
 
-    eligible.sort(key=lambda item: (int(item["faze_quality"]), float(item["battle_score"]), int(item["seat_id"])))
+    eligible_no_law = [item for item in eligible if int(item.get("faze_id") or 0) == 0]
+    eligible_with_law = [item for item in eligible if int(item.get("faze_id") or 0) != 0]
+    eligible_no_law.sort(key=lambda item: (float(item["battle_score"]), int(item["seat_id"])))
+    eligible_with_law.sort(key=lambda item: (int(item["faze_quality"]), float(item["battle_score"]), int(item["seat_id"])))
     return {
         "ok": True,
-        "status": "selected" if eligible else "no_target",
-        "target": eligible[0] if eligible else None,
-        "eligible_count": len(eligible),
+        "status": "selected" if eligible_no_law else "no_target",
+        "target": eligible_no_law[0] if eligible_no_law else None,
+        "eligible_count": len(eligible_no_law),
+        "eligible_no_law_count": len(eligible_no_law),
+        "eligible_with_law_count": len(eligible_with_law),
         "rejected": rejected,
         "safe_battle_ratio": LUNDAO_SAFE_BATTLE_RATIO,
         "room_id": LUNDAO_DALUO_ROOM_ID,
+    }
+
+
+def read_and_select_lundao_runtime_target(
+    *,
+    snapshot: dict[str, Any] | None = None,
+    data_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Read and select a Daluo target without packets or GUI actions."""
+
+    if snapshot is None:
+        from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+        snapshot = read_lundao_snapshot()
+    runtime_snapshot = dict(snapshot)
+    seat_facts = (
+        runtime_snapshot.get("daluo_roster")
+        if isinstance(runtime_snapshot.get("daluo_roster"), dict)
+        else {}
+    )
+    profile = lundao_player_profile_from_runtime(
+        runtime_snapshot,
+        export_root=export_root,
+    )
+    selection = select_lundao_kick_target(
+        seat_facts,
+        player_profile=profile,
+        data_dir=data_dir,
+        export_root=export_root,
+        now_ms=now_ms,
+    )
+    return {
+        **selection,
+        "source": "runtime_memory",
+        "seat_facts": seat_facts,
+        "player_profile": profile,
+        "runtime_snapshot": runtime_snapshot,
     }
 
 
@@ -522,37 +643,10 @@ def refresh_and_select_lundao_kick_target(
     export_root: str | Path | None = None,
     since_seconds: int = 1200,
 ) -> dict[str, Any]:
-    """Catch up the live packet service and select from the current Daluo roster."""
+    """Select exclusively from the live read-only Runtime model."""
 
-    start_result = start_fanxiu_packet_service()
-    catch_up = request_fanxiu_packet_service_catch_up(
-        reason="daily-lundao-select-kick-target",
-        wait_seconds=120.0,
+    del since_seconds
+    return read_and_select_lundao_runtime_target(
+        data_dir=data_dir,
+        export_root=export_root,
     )
-    with Session(engine) as session:
-        seat_facts = get_latest_fanxiu_lundao_scene_seat_facts(
-            session,
-            since_seconds=max(60, int(since_seconds)),
-        )
-    profile = current_lundao_player_profile(export_root=export_root)
-    if not profile.get("available"):
-        selection = {
-            "ok": False,
-            "status": "invalid_profile",
-            "reason": str(profile.get("reason") or "self_profile_missing"),
-            "target": None,
-        }
-    else:
-        selection = select_lundao_kick_target(
-            seat_facts,
-            player_profile=profile,
-            data_dir=data_dir,
-            export_root=export_root,
-        )
-    return {
-        **selection,
-        "start_result": start_result,
-        "catch_up": catch_up,
-        "seat_facts": seat_facts,
-        "player_profile": profile,
-    }

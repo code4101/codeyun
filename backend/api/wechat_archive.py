@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import hashlib
 import inspect
 import ipaddress
 import os
@@ -21,12 +22,31 @@ from sqlalchemy.orm import object_session
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from backend.core.jobs.executor import background_task_queue
-from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
+from backend.core.jobs.local_runtime import (
+    find_active_local_job_run,
+    list_local_job_runs,
+    serialize_local_job_run,
+    submit_local_job_once,
+)
+from backend.core.access.auth import (
+    extract_api_token,
+    get_current_active_user,
+    get_optional_current_user_from_token,
+    validate_api_token_value,
+)
 from backend.core.access.feature_access_guard import ensure_feature_access
+from backend.core.ai.app_config import AI_APP_WECHAT_CHAT_BOOK, resolve_ai_app_runtime_config
 from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
+from backend.core.library.wechat_chat_book import (
+    WeChatChatBookError,
+    book_cache_key,
+    generate_wechat_chat_book,
+    read_snapshot,
+    snapshot_path,
+    write_snapshot,
+)
 from backend.core.settings import get_settings
-from backend.db import get_session
+from backend.db import engine, get_session
 from backend.models import User, UserDevice
 
 
@@ -82,6 +102,21 @@ class WeChatArchiveSyncStartRequest(BaseModel):
     max_scrolls_per_chat: int = Field(default=1, ge=0, le=1000)
     exact: bool = True
     save_media: bool = False
+
+
+class WeChatChatBookStartRequest(BaseModel):
+    chat_username: str = Field(min_length=1, max_length=200)
+    device_id: str | None = Field(default=None, max_length=200)
+    title: str = Field(default="", max_length=240)
+    bookshelf_id: str | None = Field(default=None, max_length=64)
+    start_time: int | None = Field(default=None, ge=1)
+    end_time: int | None = Field(default=None, ge=1)
+    force: bool = False
+
+
+class WeChatSendTextRequest(BaseModel):
+    recipient: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=10000)
 
 
 def _settings_wechat_db_storage_path() -> Path:
@@ -196,10 +231,43 @@ def _is_wechat_sync_task(snapshot: dict[str, Any] | None) -> bool:
 
 
 def _queue_has_wechat_sync_task() -> bool:
-    queue = background_task_queue.snapshot()
-    if _is_wechat_sync_task(queue.get("running")):
-        return True
-    return any(_is_wechat_sync_task(item) for item in queue.get("pending") or [])
+    return find_active_local_job_run("archive.wechat-sync") is not None
+
+
+def _wechat_local_run_as_queue_item(run) -> dict[str, Any]:
+    payload = serialize_local_job_run(run)
+    status_map = {
+        "queued": "pending",
+        "running": "running",
+        "succeeded": "completed",
+        "cancelled": "cancelled",
+        "interrupted": "failed",
+    }
+    return {
+        **payload,
+        "task_id": run.id,
+        "name": WECHAT_ARCHIVE_SYNC_TASK_NAME,
+        "status": status_map.get(run.status, run.status),
+        "metadata": {
+            "mode": (run.input_json or {}).get("mode"),
+            "save_media": (run.input_json or {}).get("save_media"),
+        },
+    }
+
+
+def _wechat_sync_queue_projection() -> dict[str, Any]:
+    runs = [run for run in list_local_job_runs(limit=50) if run.job_type == "archive.wechat-sync"]
+    active = next((run for run in runs if run.status in {"queued", "running"}), None)
+    recent = [
+        _wechat_local_run_as_queue_item(run)
+        for run in runs
+        if run.status not in {"queued", "running"}
+    ][:10]
+    return {
+        "running": _wechat_local_run_as_queue_item(active) if active and active.status == "running" else None,
+        "pending": [_wechat_local_run_as_queue_item(active)] if active and active.status == "queued" else [],
+        "recent": recent,
+    }
 
 
 def _latest_wechat_sync_queue_run(queue: dict[str, Any]) -> dict[str, Any] | None:
@@ -289,12 +357,19 @@ def _run_wechat_db_live_sync_job(payload: dict[str, Any]) -> dict[str, Any]:
     started_at = time.time()
     storage = _open_wechat_db_storage()
     result = storage.sync_from_live(export_media=bool(payload.get("save_media", True)))
+    from backend.core.freebill.wechat_local_db import sync_wechat_local_db_to_freebill
+
+    freebill_result = sync_wechat_local_db_to_freebill(
+        db_storage_root=storage.root,
+        refresh_source=False,
+    )
     _WECHAT_ARCHIVE_LAST_SYNC_RESULT = {
         "mode": payload.get("mode") or "db_storage_live",
         "started_at": started_at,
         "finished_at": time.time(),
         "payload": payload,
         "result": result,
+        "freebill": freebill_result,
     }
     return _WECHAT_ARCHIVE_LAST_SYNC_RESULT
 
@@ -302,17 +377,8 @@ def _run_wechat_db_live_sync_job(payload: dict[str, Any]) -> dict[str, Any]:
 def _enqueue_wechat_archive_sync(payload: dict[str, Any]) -> str:
     if _queue_has_wechat_sync_task():
         raise HTTPException(status_code=409, detail="微信归档同步任务已在队列中")
-    return background_task_queue.enqueue(
-        WECHAT_ARCHIVE_SYNC_TASK_NAME,
-        _run_wechat_archive_sync_job,
-        payload,
-        metadata={
-            "mode": payload.get("mode"),
-            "chat_names": payload.get("chat_names"),
-            "max_runtime": payload.get("max_runtime"),
-            "max_scrolls_total": payload.get("max_scrolls_total"),
-        },
-    )
+    run, _created = submit_local_job_once(job_type="archive.wechat-sync", payload=payload)
+    return run.id
 
 
 def _enqueue_wechat_db_live_sync(payload: dict[str, Any] | None = None) -> str:
@@ -323,16 +389,8 @@ def _enqueue_wechat_db_live_sync(payload: dict[str, Any] | None = None) -> str:
     }
     if _queue_has_wechat_sync_task():
         raise HTTPException(status_code=409, detail="微信数据库同步任务已在队列中")
-    return background_task_queue.enqueue(
-        WECHAT_ARCHIVE_SYNC_TASK_NAME,
-        _run_wechat_db_live_sync_job,
-        task_payload,
-        metadata={
-            "mode": task_payload.get("mode"),
-            "save_media": task_payload.get("save_media"),
-            "source": "db_storage",
-        },
-    )
+    run, _created = submit_local_job_once(job_type="archive.wechat-sync", payload=task_payload)
+    return run.id
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1057,6 +1115,43 @@ def _open_wechat_db_storage(device_id: str | None = None):
     return _choose_wechat_storage_for_device(_resolve_wechat_device_root(device_id))
 
 
+def _wechat_chat_book_source(
+    storage: Any,
+    *,
+    chat_username: str,
+    device_id: str | None,
+) -> tuple[dict[str, Any], str]:
+    items = storage.list_chats(limit=1000, q=chat_username, include_folded_entry=True)
+    chat = next(
+        (item for item in items if str(item.get("username") or "") == chat_username),
+        None,
+    )
+    if chat is None:
+        raise HTTPException(status_code=404, detail="微信会话不存在")
+    if str(chat.get("chat_type") or "") != "chatroom":
+        raise HTTPException(status_code=422, detail="当前成书功能只处理微信群聊")
+    resolved_device_id = device_id or _device_id_for_root(_resolve_wechat_device_root(None))
+    return chat, book_cache_key(
+        device_id=resolved_device_id,
+        chat_username=chat_username,
+        first_time=chat.get("first_time"),
+        last_time=chat.get("last_time"),
+        message_count=int(chat.get("message_count") or 0),
+    )
+
+
+def _public_wechat_chat_book_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not snapshot:
+        return None
+    private_fields = {
+        "leaf_results",
+        "synthesis_results",
+        "monthly_results",
+        "final_payload",
+    }
+    return {key: value for key, value in snapshot.items() if key not in private_fields}
+
+
 def _local_wechat_media_roots(device_id: str | None, kind: str) -> list[Path]:
     device_root = _resolve_wechat_device_root(device_id)
     candidates = [
@@ -1164,6 +1259,17 @@ def sync_wechat_db_from_live(
         raise HTTPException(status_code=502, detail=f"微信数据库同步失败：{exc}") from exc
 
 
+@router.post("/send-text")
+def send_wechat_text(payload: WeChatSendTextRequest):
+    """Send plain text through the version-pinned process API; never use GUI fallback."""
+    try:
+        from pyxllib.autogui.weixin4_instrumentation import send_text
+
+        return send_text(payload.recipient, payload.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信 API 发送失败（已禁止 GUI 回退）：{exc}") from exc
+
+
 @router.get("/db-schema")
 def get_wechat_db_schema(
     device_id: Annotated[str | None, Query(max_length=200)] = None,
@@ -1178,7 +1284,147 @@ def get_wechat_db_schema(
             payload["remote_device_id"] = remote.remote_device_id
             payload["entry_id"] = remote.entry.entry_id
             payload["remote"] = True
-        return payload
+    return payload
+
+
+def _find_wechat_chat_book_run(
+    cache_key: str,
+    *,
+    user_id: int,
+    active_only: bool = False,
+):
+    for run in list_local_job_runs(user_id=user_id, limit=100):
+        if run.job_type != "library.wechat-chat-book":
+            continue
+        if str((run.input_json or {}).get("cache_key") or "") != cache_key:
+            continue
+        if active_only and run.status not in {"queued", "running"}:
+            continue
+        return run
+    return None
+
+
+def _serialize_wechat_chat_book_local_run(run) -> dict[str, Any]:
+    payload = serialize_local_job_run(run)
+    status_map = {
+        "succeeded": "completed",
+        "interrupted": "failed",
+    }
+    inputs = run.input_json or {}
+    return {
+        **payload,
+        "task_id": run.id,
+        "kind": "wechat-chat-book",
+        "status": status_map.get(run.status, run.status),
+        "running": run.status in {"queued", "running"},
+        "created_at": run.queued_at,
+        "metadata": {
+            "cache_key": inputs.get("cache_key"),
+            "chat_username": inputs.get("chat_username"),
+            "chat_name": inputs.get("chat_name"),
+        },
+        "elapsed_ms": int(round(((run.finished_at or time.time()) - run.queued_at) * 1000)),
+    }
+
+
+def run_wechat_chat_book_local_job_payload(context, payload: dict[str, Any]) -> dict[str, Any]:
+    user_id = int(payload.get("user_id") or 0)
+    cache_key = str(payload.get("cache_key") or "").strip()
+    username = str(payload.get("chat_username") or "").strip()
+    chat_name = str(payload.get("chat_name") or username)
+    editor_name = str(payload.get("editor_name") or "")
+    title = str(payload.get("title") or "").strip()
+    device_id = payload.get("device_id")
+    bookshelf_id = payload.get("bookshelf_id")
+    start_time = payload.get("start_time")
+    end_time = payload.get("end_time")
+    if user_id <= 0 or not cache_key or not username or not title:
+        raise ValueError("微信成书任务参数不完整。")
+
+    try:
+        with Session(engine) as task_session:
+            task_user = task_session.get(User, user_id)
+            if task_user is None:
+                raise WeChatChatBookError("成书用户不存在")
+            runtime = resolve_ai_app_runtime_config(
+                session=task_session,
+                current_user=task_user,
+                app_id=AI_APP_WECHAT_CHAT_BOOK,
+            )
+        task_storage = _open_wechat_db_storage(device_id)
+
+        def update_progress(progress: dict[str, Any]) -> None:
+            phase = str(progress.get("phase") or "extracting")
+            if phase == "monthly_editing":
+                current = int(progress.get("month_done_count") or 0)
+                total = int(progress.get("month_target_count") or 0)
+                message = f"正在编辑月度事件 {current}/{total}"
+            else:
+                current = int(progress.get("done_count") or 0)
+                total = int(progress.get("target_count") or 0)
+                message = f"正在识别群聊事件 {current}/{total}" if total else "正在生成群聊事件集"
+            context.heartbeat(
+                stage=phase,
+                message=message,
+                progress_current=current,
+                progress_total=total,
+                metadata={"cache_key": cache_key},
+            )
+
+        document, snapshot = generate_wechat_chat_book(
+            storage=task_storage,
+            user_id=user_id,
+            cache_key=cache_key,
+            chat_username=username,
+            chat_name=chat_name,
+            editor_name=editor_name,
+            title=title,
+            runtime=runtime,
+            start_time=start_time,
+            end_time=end_time,
+            progress_callback=update_progress,
+        )
+        from backend.api.linux_do_books import upsert_derived_rich_text_book
+
+        with Session(engine) as task_session:
+            task_user = task_session.get(User, user_id)
+            if task_user is None:
+                raise WeChatChatBookError("成书用户不存在")
+            book = upsert_derived_rich_text_book(
+                session=task_session,
+                current_user=task_user,
+                document=document,
+                source_kind=f"wechat-chat-book:{hashlib.sha256(username.encode()).hexdigest()[:24]}",
+                book_kind="wechat-chat-book",
+                bookshelf_id=bookshelf_id,
+                cover_color="#526f5d",
+                metadata={
+                    "chat_username": username,
+                    "chat_name": chat_name,
+                    "cache_key": cache_key,
+                    "pipeline_version": snapshot.get("pipeline_version"),
+                    "statistics": snapshot.get("statistics"),
+                },
+            )
+        snapshot["book_id"] = book.id
+        snapshot["library_path"] = "/notes/library"
+        write_snapshot(user_id, cache_key, snapshot)
+        return {
+            "cache_key": cache_key,
+            "book_id": book.id,
+            "title": book.title,
+            "estimated_page_count": book.estimated_page_count,
+            "library_path": "/notes/library",
+        }
+    except Exception as exc:
+        failed = read_snapshot(user_id, cache_key) or {
+            "cache_key": cache_key,
+            "chat_username": username,
+            "chat_name": chat_name,
+        }
+        failed.update({"status": "error", "error": str(exc), "updated_at": time.time()})
+        write_snapshot(user_id, cache_key, failed)
+        raise
     storage = _open_wechat_db_storage(device_id)
     try:
         return {
@@ -1329,6 +1575,134 @@ def count_wechat_db_messages(
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库消息计数失败：{exc}") from exc
+
+
+@router.get("/db-chat-book/status")
+def get_wechat_chat_book_status(
+    chat_username: Annotated[str, Query(min_length=1, max_length=200)],
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    if device_id and device_id.startswith(REMOTE_WECHAT_DEVICE_PREFIX):
+        raise HTTPException(status_code=422, detail="远程微信数据暂不支持直接成书")
+    storage = _open_wechat_db_storage(device_id)
+    chat, cache_key = _wechat_chat_book_source(
+        storage,
+        chat_username=chat_username,
+        device_id=device_id,
+    )
+    local_run = _find_wechat_chat_book_run(cache_key, user_id=int(current_user.id), active_only=True)
+    task = _serialize_wechat_chat_book_local_run(local_run) if local_run is not None else None
+    return {
+        "cache_key": cache_key,
+        "chat_name": chat.get("name") or chat_username,
+        "snapshot": _public_wechat_chat_book_snapshot(read_snapshot(int(current_user.id), cache_key)),
+        "task": task,
+    }
+
+
+@router.get("/db-chat-book/tasks/{task_id}")
+def get_wechat_chat_book_task(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    local_run = next(
+        (
+            run
+            for run in list_local_job_runs(user_id=int(current_user.id), limit=100)
+            if run.id == task_id and run.job_type == "library.wechat-chat-book"
+        ),
+        None,
+    )
+    if local_run is None:
+        raise HTTPException(status_code=404, detail="成书任务不存在或已过期")
+    return _serialize_wechat_chat_book_local_run(local_run)
+
+
+@router.post("/db-chat-book/start")
+def start_wechat_chat_book(
+    payload: WeChatChatBookStartRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.id is None:
+        raise HTTPException(status_code=403, detail="当前用户无效")
+    if payload.device_id and payload.device_id.startswith(REMOTE_WECHAT_DEVICE_PREFIX):
+        raise HTTPException(status_code=422, detail="远程微信数据暂不支持直接成书")
+    if payload.start_time and payload.end_time and payload.start_time >= payload.end_time:
+        raise HTTPException(status_code=422, detail="开始时间必须早于结束时间")
+    storage = _open_wechat_db_storage(payload.device_id)
+    chat, cache_key = _wechat_chat_book_source(
+        storage,
+        chat_username=payload.chat_username,
+        device_id=payload.device_id,
+    )
+    if payload.start_time or payload.end_time:
+        scoped_key = f"{cache_key}|{payload.start_time or 0}|{payload.end_time or 0}"
+        cache_key = hashlib.sha256(scoped_key.encode("utf-8")).hexdigest()[:24]
+    existing = read_snapshot(int(current_user.id), cache_key)
+    if existing and existing.get("status") == "done" and not payload.force:
+        return {
+            "cached": True,
+            "cache_key": cache_key,
+            "snapshot": _public_wechat_chat_book_snapshot(existing),
+            "task": None,
+        }
+    active_run = _find_wechat_chat_book_run(cache_key, user_id=int(current_user.id), active_only=True)
+    if active_run is not None:
+        return {
+            "cached": False,
+            "cache_key": cache_key,
+            "snapshot": _public_wechat_chat_book_snapshot(existing),
+            "task": _serialize_wechat_chat_book_local_run(active_run),
+        }
+    if payload.force:
+        snapshot_path(int(current_user.id), cache_key).unlink(missing_ok=True)
+        existing = None
+
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_WECHAT_CHAT_BOOK,
+    )
+    user_id = int(current_user.id)
+    editor_name = current_user.username
+    username = str(chat.get("username") or payload.chat_username)
+    chat_name = str(chat.get("name") or username)
+    title = payload.title.strip() or (
+        "未来社微信分部群志"
+        if chat_name == "未来社微信分部"
+        else f"{chat_name}群志"
+    )
+    device_id = payload.device_id
+    bookshelf_id = payload.bookshelf_id
+    start_time = payload.start_time
+    end_time = payload.end_time
+
+    del runtime  # Preflight only; the detached worker resolves credentials at execution time.
+    local_run, _created = submit_local_job_once(
+        job_type="library.wechat-chat-book",
+        user_id=user_id,
+        payload={
+            "user_id": user_id,
+            "cache_key": cache_key,
+            "chat_username": username,
+            "chat_name": chat_name,
+            "editor_name": editor_name,
+            "title": title,
+            "device_id": device_id,
+            "bookshelf_id": bookshelf_id,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+        dedup_key=f"wechat-chat-book:{cache_key}",
+    )
+    return {
+        "cached": False,
+        "cache_key": cache_key,
+        "snapshot": _public_wechat_chat_book_snapshot(existing),
+        "task": _serialize_wechat_chat_book_local_run(local_run),
+    }
 
 
 @router.get("/db-message-types")
@@ -1593,12 +1967,13 @@ def get_wechat_archive_sync_plan(
 
 @router.get("/sync-status")
 def get_wechat_archive_sync_status():
-    queue = background_task_queue.snapshot()
+    queue = _wechat_sync_queue_projection()
+    latest_queue_run = _latest_wechat_sync_queue_run(queue)
     return {
         "active": _queue_has_wechat_sync_task(),
         "queue": queue,
-        "latest_queue_run": _latest_wechat_sync_queue_run(queue),
-        "latest_result": _WECHAT_ARCHIVE_LAST_SYNC_RESULT,
+        "latest_queue_run": latest_queue_run,
+        "latest_result": (latest_queue_run or {}).get("result") or _WECHAT_ARCHIVE_LAST_SYNC_RESULT,
         "status": _archive_status_payload(),
     }
 

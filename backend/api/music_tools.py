@@ -11,7 +11,7 @@ import mimetypes
 import re
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -21,7 +21,14 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.jobs.local_runtime import (
+    LocalJobCancelledError,
+    LocalJobContext,
+    get_local_job_run,
+    request_local_job_cancel,
+    serialize_local_job_run,
+    submit_local_job,
+)
 from backend.core.services.launcher import run_quiet
 from backend.core.freebill.open_score_library import MidiParseError, get_open_score_work, list_open_score_works
 from backend.core.settings import get_settings
@@ -74,8 +81,86 @@ PIANO_TRANSCRIPTION_SCRIPT = MUSIC_TOOLS_ROOT / "scripts" / "transcribe-piano-st
 HUMMING_TRANSCRIPTION_TIMEOUT_SECONDS = 20 * 60
 ORPHANED_JOB_GRACE_SECONDS = 120.0
 
-_task_manager = LongTaskManager("music-separation", max_workers=1, max_records=32, record_ttl_seconds=6 * 60 * 60)
 _index_lock = RLock()
+
+
+class MusicTaskContext(Protocol):
+    task_id: str
+
+    def heartbeat(
+        self,
+        *,
+        stage: str | None = None,
+        message: str | None = None,
+        progress_current: int | None = None,
+        progress_total: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+
+
+MUSIC_LOCAL_JOB_TYPE = "music.process"
+
+
+def _serialize_music_local_task(run, *, include_result: bool = True) -> dict[str, Any]:
+    local = serialize_local_job_run(run)
+    status_map = {
+        "queued": "queued",
+        "running": "running",
+        "succeeded": "completed",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "interrupted": "failed",
+    }
+    input_payload = dict(run.input_json or {})
+    metadata = input_payload.get("metadata")
+    created_at = float(run.queued_at or run.updated_at or time.time())
+    finished_at = run.finished_at
+    elapsed_ms = int(max(float(finished_at or time.time()) - created_at, 0) * 1000)
+    return {
+        "task_id": run.id,
+        "kind": "music-separation",
+        "status": status_map.get(run.status, run.status),
+        "running": run.status in {"queued", "running"},
+        "stage": run.stage,
+        "message": run.message,
+        "created_at": run.queued_at,
+        "started_at": run.started_at,
+        "updated_at": run.updated_at,
+        "finished_at": run.finished_at,
+        "progress_current": local.get("progress_current"),
+        "progress_total": local.get("progress_total"),
+        "metadata": dict(metadata) if isinstance(metadata, dict) else {},
+        "result": local.get("result") if include_result and run.status == "succeeded" else None,
+        "error": run.error_message,
+        "error_status_code": None,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _submit_music_local_task(
+    *,
+    operation: str,
+    job_id: str,
+    message: str,
+    metadata: dict[str, Any],
+    engine: str = "",
+    tempo_bpm: float | None = None,
+    beats_per_bar: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "operation": operation,
+        "job_id": job_id,
+        "engine": engine,
+        "metadata": metadata,
+    }
+    if tempo_bpm is not None:
+        payload["tempo_bpm"] = float(tempo_bpm)
+    if beats_per_bar is not None:
+        payload["beats_per_bar"] = int(beats_per_bar)
+    run = submit_local_job(job_type=MUSIC_LOCAL_JOB_TYPE, payload=payload)
+    task = _serialize_music_local_task(run)
+    task["message"] = message
+    return task
 
 
 class MusicToolInfo(BaseModel):
@@ -320,8 +405,13 @@ def _refresh_indexed_job_runtime_state(job: dict[str, Any], *, persist: bool = F
         task_id = str(job.get("task_id") or "")
         if task_id:
             try:
-                task = _task_manager.serialize_task(task_id, include_result=False)
-            except LongTaskNotFoundError:
+                local_run = get_local_job_run(task_id)
+                task = (
+                    _serialize_music_local_task(local_run, include_result=False)
+                    if local_run is not None and local_run.job_type == MUSIC_LOCAL_JOB_TYPE
+                    else None
+                )
+            except Exception:
                 task = None
             if task is None:
                 if now - float(job.get("updated_at") or job.get("created_at") or now) > ORPHANED_JOB_GRACE_SECONDS:
@@ -337,10 +427,10 @@ def _refresh_indexed_job_runtime_state(job: dict[str, Any], *, persist: bool = F
                     "task_message": task.get("message"),
                     "updated_at": task.get("updated_at") or now,
                 })
-            elif task.get("status") == "failed":
+            elif task.get("status") in {"failed", "cancelled"}:
                 job.update({
-                    "status": "failed",
-                    "error": task.get("error") or task.get("message") or "分离失败",
+                    "status": task.get("status"),
+                    "error": task.get("error") or task.get("message") or "分离任务未完成",
                     "updated_at": task.get("updated_at") or now,
                 })
                 changed = True
@@ -2051,7 +2141,7 @@ def _import_multitrack_zip(zip_path: Path, *, filename: str, source_id: str | No
     return _upsert_job(job)
 
 
-def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, Any], context: LongTaskContext) -> bool:
+def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, Any], context: MusicTaskContext) -> bool:
     if not piano_path.exists() or not BASIC_PITCH_PYTHON.exists() or not PIANO_TRANSCRIPTION_SCRIPT.exists():
         return False
 
@@ -2113,7 +2203,7 @@ def _run_humming_transcription(
     job_id: str,
     input_path: Path,
     job: dict[str, Any],
-    context: LongTaskContext,
+    context: MusicTaskContext,
     *,
     tempo_bpm: float,
     beats_per_bar: int,
@@ -2201,7 +2291,7 @@ def _run_humming_transcription(
     return completed_job
 
 
-def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict[str, Any]:
+def _run_demucs(job_id: str, input_path: Path, context: MusicTaskContext) -> dict[str, Any]:
     if not DEMUCS_PYTHON.exists():
         raise HTTPException(
             status_code=503,
@@ -2270,7 +2360,7 @@ def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict
     return job
 
 
-def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskContext) -> dict[str, Any]:
+def _run_audio_separator_6s(job_id: str, input_path: Path, context: MusicTaskContext) -> dict[str, Any]:
     if not AUDIO_SEPARATOR_EXE.exists():
         raise HTTPException(
             status_code=503,
@@ -2506,6 +2596,66 @@ def save_music_job_creative_prompt(job_id: str, payload: MusicCreativePromptSave
     return _save_creative_prompt_record(job_id, payload)
 
 
+def run_music_local_job_payload(context: LocalJobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(payload.get("job_id") or "").strip()
+    operation = str(payload.get("operation") or "").strip()
+    engine = _normalize_engine(str(payload.get("engine") or "demucs")) if operation == "separate" else "basic_pitch_humming"
+    job = _get_indexed_job(job_id)
+    if not job_id or job is None:
+        raise RuntimeError(f"Music job not found: {job_id or '<empty>'}")
+    original_path = _stem_file(job_id, "original")
+    if not original_path.exists():
+        raise RuntimeError("Music job original audio is missing")
+
+    job.update(
+        {
+            "status": "running",
+            "task_id": context.task_id,
+            "updated_at": time.time(),
+            "task_message": "正在分析哼唱旋律" if operation == "humming" else "正在分离音轨",
+        }
+    )
+    _upsert_job(job)
+    try:
+        if operation == "humming":
+            return _run_humming_transcription(
+                job_id,
+                original_path,
+                job,
+                context,
+                tempo_bpm=float(payload.get("tempo_bpm") or 96.0),
+                beats_per_bar=int(payload.get("beats_per_bar") or 4),
+            )
+        if operation != "separate":
+            raise ValueError(f"Unsupported music operation: {operation}")
+        if engine == "audio_separator_6s":
+            return _run_audio_separator_6s(job_id, original_path, context)
+        return _run_demucs(job_id, original_path, context)
+    except LocalJobCancelledError:
+        cancelled = _get_indexed_job(job_id) or dict(job)
+        cancelled.update(
+            {
+                "status": "cancelled",
+                "task_id": context.task_id,
+                "updated_at": time.time(),
+                "task_message": "音乐处理已取消",
+            }
+        )
+        _upsert_job(cancelled)
+        raise
+    except Exception:
+        failed = _get_indexed_job(job_id) or dict(job)
+        failed.update(
+            {
+                "status": "failed",
+                "task_id": context.task_id,
+                "updated_at": time.time(),
+            }
+        )
+        _upsert_job(failed)
+        raise
+
+
 @router.post("/separate")
 async def start_music_separation(file: UploadFile = File(...), engine: str = Form("demucs")):
     raw_extension = Path(file.filename or "").suffix.lower()
@@ -2547,23 +2697,10 @@ async def start_music_separation(file: UploadFile = File(...), engine: str = For
         "log_url": f"/api/music-tools/jobs/{job_id}/log",
     })
 
-    def run(context: LongTaskContext) -> dict[str, Any]:
-        job = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
-        job.update({"status": "running", "updated_at": time.time()})
-        _upsert_job(job)
-        try:
-            if selected_engine == "audio_separator_6s":
-                return _run_audio_separator_6s(job_id, original_path, context)
-            return _run_demucs(job_id, original_path, context)
-        except Exception:
-            failed = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
-            failed.update({"status": "failed", "updated_at": time.time()})
-            _upsert_job(failed)
-            raise
-
-    task_payload = _task_manager.start(
-        run,
-        stage="queued",
+    task_payload = _submit_music_local_task(
+        operation="separate",
+        job_id=job_id,
+        engine=selected_engine,
         message="分轨任务已排队",
         metadata={
             "job_id": job_id,
@@ -2630,33 +2767,11 @@ async def start_humming_transcription(
         "log_url": f"/api/music-tools/jobs/{job_id}/log",
     })
 
-    def run(context: LongTaskContext) -> dict[str, Any]:
-        job = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
-        job.update({
-            "status": "running",
-            "task_id": context.task_id,
-            "updated_at": time.time(),
-            "task_message": "正在分析哼唱旋律",
-        })
-        _upsert_job(job)
-        try:
-            return _run_humming_transcription(
-                job_id,
-                original_path,
-                job,
-                context,
-                tempo_bpm=tempo_bpm,
-                beats_per_bar=beats_per_bar,
-            )
-        except Exception:
-            failed = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
-            failed.update({"status": "failed", "task_id": context.task_id, "updated_at": time.time()})
-            _upsert_job(failed)
-            raise
-
-    task_payload = _task_manager.start(
-        run,
-        stage="queued",
+    task_payload = _submit_music_local_task(
+        operation="humming",
+        job_id=job_id,
+        tempo_bpm=tempo_bpm,
+        beats_per_bar=beats_per_bar,
         message="哼唱转谱任务已排队",
         metadata={
             "job_id": job_id,
@@ -2703,28 +2818,10 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
     })
     _upsert_job(job)
 
-    def run(context: LongTaskContext) -> dict[str, Any]:
-        running_job = _get_indexed_job(job_id) or dict(job)
-        running_job.update({
-            "status": "running",
-            "task_id": context.task_id,
-            "updated_at": time.time(),
-            "task_message": "正在重新解析",
-        })
-        _upsert_job(running_job)
-        try:
-            if selected_engine == "audio_separator_6s":
-                return _run_audio_separator_6s(job_id, original_path, context)
-            return _run_demucs(job_id, original_path, context)
-        except Exception:
-            failed = _get_indexed_job(job_id) or dict(job)
-            failed.update({"status": "failed", "task_id": context.task_id, "updated_at": time.time()})
-            _upsert_job(failed)
-            raise
-
-    task_payload = _task_manager.start(
-        run,
-        stage="queued",
+    task_payload = _submit_music_local_task(
+        operation="separate",
+        job_id=job_id,
+        engine=selected_engine,
         message="重新解析任务已排队",
         metadata={
             "job_id": job_id,
@@ -2741,14 +2838,26 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
 
 @router.get("/tasks/{task_id}")
 def get_music_separation_task(task_id: str):
-    try:
-        payload = _task_manager.serialize_task(task_id)
-    except LongTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Music separation task not found") from exc
+    run = get_local_job_run(task_id)
+    if run is None or run.job_type != MUSIC_LOCAL_JOB_TYPE:
+        raise HTTPException(status_code=404, detail="Music separation task not found")
+    payload = _serialize_music_local_task(run)
     job_id = str(payload.get("metadata", {}).get("job_id") or payload.get("result", {}).get("job_id") or "")
     if job_id:
         payload.setdefault("metadata", {})["files"] = _list_job_files(job_id)
     return payload
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_music_separation_task(task_id: str):
+    run = get_local_job_run(task_id)
+    if run is None or run.job_type != MUSIC_LOCAL_JOB_TYPE:
+        raise HTTPException(status_code=404, detail="Music separation task not found")
+    try:
+        requested = request_local_job_cancel(task_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _serialize_music_local_task(requested)
 
 
 @router.get("/jobs/{job_id}/audio/{stem}")

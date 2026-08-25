@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 
@@ -19,6 +20,7 @@ namespace Code4101.Zaohua.Tiandao
         internal Dictionary<int, int> ItemCounts = new Dictionary<int, int>();
         internal int PlantingDays;
         internal int BasePillCount;
+        // 1=基础解，2=丹方规则驱动的迭代解，3=当前背包可行解。
         internal int SearchStage;
         internal int GlobalCountBonus;
         internal int GlobalQualityBonus;
@@ -30,6 +32,36 @@ namespace Code4101.Zaohua.Tiandao
         internal double PlantingDaysPerPill =>
             (double)PlantingDays / Math.Max(1, BasePillCount + TotalCountBonus);
 
+        internal TbItemCfg ResolveOutputItem(TbDrugRecipeCfg recipe)
+        {
+            if (recipe == null) return null;
+            var quality = QualityRank;
+            var data = Singleton<TbDataImpl>.Instance;
+            return data.itemCfgList
+                       .Where(item => item.id == recipe.itemId || item.groupId == recipe.itemId)
+                       .Where(item => item.drugQuality <= quality)
+                       .OrderByDescending(item => item.drugQuality)
+                       .FirstOrDefault() ?? data.GetItemCfg(recipe.itemId);
+        }
+
+        internal long MaterialValue()
+        {
+            var data = Singleton<TbDataImpl>.Instance;
+            return ItemCounts.Sum(pair =>
+                (long)(data.GetItemCfg(pair.Key)?.price ?? 0) * pair.Value);
+        }
+
+        internal int CraftingDays(
+            TbDrugRecipeCfg recipe,
+            int globalDayBonus,
+            float globalDayMultiplier)
+        {
+            if (recipe == null) return 0;
+            var day = Math.Max(0, recipe.GetCostDay + globalDayBonus + RuleOutcome.DayBonus);
+            var multiplier = globalDayMultiplier + RuleOutcome.DayMultiplierBonus / 100f;
+            return Math.Max(0, (int)Math.Round(day * multiplier, MidpointRounding.AwayFromZero));
+        }
+
         internal bool IsAvailable(IReadOnlyDictionary<int, long> inventory)
         {
             return ItemCounts.All(pair => inventory != null &&
@@ -38,22 +70,17 @@ namespace Code4101.Zaohua.Tiandao
 
         internal TbCraftingTemplateSto ToTemplate(TbDrugRecipeCfg recipe, int index)
         {
-            var quality = QualityRank;
-            var data = Singleton<TbDataImpl>.Instance;
-            var output = data.itemCfgList
-                .Where(item => item.id == recipe.itemId || item.groupId == recipe.itemId)
-                .Where(item => item.drugQuality <= quality)
-                .OrderByDescending(item => item.drugQuality)
-                .FirstOrDefault() ?? data.GetItemCfg(recipe.itemId);
+            var output = ResolveOutputItem(recipe);
             var bonuses = new List<string>();
             if (TotalQualityBonus != 0) bonuses.Add($"品质{TotalQualityBonus:+#;-#;0}");
             if (TotalCountBonus != 0) bonuses.Add($"成丹{TotalCountBonus:+#;-#;0}");
+            var kind = SearchStage == 1 ? "基础解" : SearchStage == 2 ? "迭代解" : "背包解";
             return new TbCraftingTemplateSto
             {
                 id = -100000 - index,
                 type = 0,
                 isFollow = false,
-                name = recipe.GetName +
+                name = $"{kind} · {recipe.GetName}" +
                        (bonuses.Count == 0 ? "" : $"（{string.Join("，", bonuses)}）"),
                 itemId = output.blendId,
                 itemLogStoList = Placements.Select(p => new TbCraftingItemLogSto(
@@ -67,12 +94,16 @@ namespace Code4101.Zaohua.Tiandao
 
     internal static class FiniteInventoryAlchemySolver
     {
-        private const int FormNodeLimit = 160000;
-        private const int QuantityNodeLimit = 240000;
-        private const int QuantityNodesPerForm = 5000;
+        private const int ElementOptionLimit = 32;
+        private const int CompositionLimit = 160;
+        private const int ElementSearchNodeLimit = 80000;
+        private const int CompositionNodeLimit = 50000;
         private const int PackingNodeLimit = 30000;
-        private const int QuantityCandidatesPerForm = 8;
-        private const int RepresentativesPerRuleTier = 3;
+        private const int FastElementSearchNodeLimit = 2048;
+        private const int ParetoAllocationStateLimit = 50000;
+        private const int ElementParetoOptionLimit = 24;
+        private const int JointCompositionBeamLimit = 96;
+        private const int JointCompositionPackingLimit = 32;
         private static readonly int[] PlantingDaysByGrade =
             { 10, 20, 30, 360, 720, 1080, 3600, 7200, 10800, 36000, 72000, 108000 };
 
@@ -81,19 +112,18 @@ namespace Code4101.Zaohua.Tiandao
             internal SmartAlchemyUi.HerbStock Stock;
             internal TbCraftingItemCfg Crafting;
             internal TbDrawCfg Draw;
+            internal string ElementKey;
+            internal int Contribution;
             internal int Side;
             internal int GradeWeight;
             internal int PlantingDays;
-            internal HashSet<string> ExtraKeys;
             internal List<RotationShape> Rotations;
             internal int CellCount;
-            internal double HeuristicScore;
         }
 
         private sealed class RotationShape
         {
             internal int Rotation;
-            internal List<MyVector2Int> Cells;
             internal List<MyVector2Int> Normalized;
             internal int MinX;
             internal int MinY;
@@ -112,590 +142,983 @@ namespace Code4101.Zaohua.Tiandao
             internal int RuleHint;
         }
 
-        private sealed class QuantityProfile
+        private sealed class Composition
         {
-            internal int[] Counts;
-            internal string ExactKey;
-            internal string RuleTierKey;
-            internal int RuleTierScore;
-            internal int PlantingDays;
+            internal List<HerbCandidate> Pieces = new List<HerbCandidate>();
             internal int YangCells;
             internal int YinCells;
-            internal int PieceCount;
+
+            internal string Key => string.Join(";", Pieces
+                .GroupBy(item => $"{item.Stock.ItemId.sedId}:{item.Side}")
+                .OrderBy(group => group.Key)
+                .Select(group => $"{group.Key}:{group.Count()}"));
+
+            internal int MaxGrade => Pieces.Select(item => item.GradeWeight).DefaultIfEmpty(0).Max();
+            internal int GradeSum => Pieces.Sum(item => item.GradeWeight);
+            internal int PlantingDays => Pieces.Sum(item => item.PlantingDays);
         }
 
-        internal static List<AlchemySolution> SolvePhased(
+        private sealed class RuleSearchResult
+        {
+            internal AlchemySolution Solution;
+            internal Composition Composition;
+        }
+
+        private sealed class ElementAllocationState
+        {
+            internal List<HerbCandidate> Pieces = new List<HerbCandidate>();
+            internal int Contribution;
+            internal int YangCells;
+            internal int YinCells;
+            internal int NextCandidateIndex;
+        }
+
+        internal static List<AlchemySolution> SolveStatic(
+            TbDrugRecipeCfg recipe,
+            TbPackSto furnace,
+            int globalCountBonus,
+            int globalQualityBonus,
+            IReadOnlyList<SmartAlchemyUi.HerbStock> catalog,
+            CancellationToken cancellationToken = default,
+            Action<AlchemySolution> onSolution = null)
+        {
+            var result = new List<AlchemySolution>();
+            if (recipe == null || furnace == null || catalog == null) return result;
+            var data = Singleton<TbDataImpl>.Instance;
+            var furnaceCfg = data.GetCraftingItemCfg(furnace.itemId.sedId);
+            if (furnaceCfg == null) return result;
+
+            var targets = recipe.AttrLimitDic
+                .Where(pair => pair.Value != 0)
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            if (targets.Count == 0) return result;
+            var monotoneCandidates = BuildMonotoneCandidates(catalog, targets, furnaceCfg).ToList();
+            if (monotoneCandidates.Count == 0) return result;
+
+            var baseStopwatch = Stopwatch.StartNew();
+            var baseResult = FindCanonicalSolution(recipe, furnaceCfg, monotoneCandidates,
+                targets, null, globalCountBonus, globalQualityBonus, cancellationToken);
+            baseStopwatch.Stop();
+            var baseSolution = baseResult?.Solution;
+            if (baseSolution != null)
+            {
+                baseSolution.SearchStage = 1;
+                onSolution?.Invoke(baseSolution);
+            }
+            if (baseSolution == null) return result;
+            result.Add(baseSolution);
+
+            AlchemySolution optimizedSolution = null;
+            var iterativeStopwatch = Stopwatch.StartNew();
+            if (recipe.StateIds != null && recipe.StateIds.Count > 0)
+            {
+                var baseComposition = baseResult.Composition;
+                if (baseComposition != null)
+                {
+                    optimizedSolution = FindRuleOptimizedSolution(recipe, furnaceCfg,
+                        monotoneCandidates, targets, baseSolution, baseComposition,
+                        globalCountBonus, globalQualityBonus, cancellationToken)?.Solution;
+                    if (optimizedSolution != null)
+                    {
+                        optimizedSolution.SearchStage = 2;
+                        onSolution?.Invoke(optimizedSolution);
+                    }
+                }
+            }
+            iterativeStopwatch.Stop();
+            TiandaoPlugin.LogAlchemy($"alchemy static recipe={recipe.id}, base={baseStopwatch.ElapsedMilliseconds}ms, " +
+                                     $"iterative={iterativeStopwatch.ElapsedMilliseconds}ms, " +
+                                     $"baseFound={baseSolution != null}, iterativeFound={optimizedSolution != null}");
+            if (optimizedSolution != null) result.Add(optimizedSolution);
+            return result.OrderBy(solution => solution.SearchStage).Take(2).ToList();
+        }
+
+        internal static AlchemySolution SolveBackpack(
             TbDrugRecipeCfg recipe,
             TbPackSto furnace,
             int globalCountBonus,
             int globalQualityBonus,
             IReadOnlyList<SmartAlchemyUi.HerbStock> catalog,
             IReadOnlyDictionary<int, long> inventory,
-            int limit,
-            CancellationToken cancellationToken = default,
-            Action<AlchemySolution> onSolution = null,
-            Action<int> onStageCompleted = null)
-        {
-            var combined = new List<AlchemySolution>();
-            for (var stage = 1; stage <= 3; stage++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var availableInStage = new List<AlchemySolution>();
-                var stageSolutions = Solve(recipe, furnace, globalCountBonus, globalQualityBonus,
-                    catalog, limit, stage,
-                    cancellationToken, solution =>
-                    {
-                        solution.SearchStage = stage;
-                        if (solution.IsAvailable(inventory)) availableInStage.Add(solution);
-                        onSolution?.Invoke(solution);
-                    });
-                foreach (var solution in stageSolutions) solution.SearchStage = stage;
-                combined.AddRange(stageSolutions);
-                combined.AddRange(availableInStage);
-                combined = RankAndSelectSolutions(combined, limit);
-                onStageCompleted?.Invoke(stage);
-                // 阶段内必须完整求解；阶段结束后，只要已有背包可用解就短路。
-                if (availableInStage.Count > 0)
-                {
-                    if (!combined.Any(solution => solution.IsAvailable(inventory)))
-                    {
-                        var bestAvailable = RankAndSelectSolutions(availableInStage, 1).First();
-                        if (combined.Count >= limit) combined.RemoveAt(combined.Count - 1);
-                        combined.Add(bestAvailable);
-                    }
-                    break;
-                }
-            }
-            return RankAndSelectSolutions(combined, limit);
-        }
-
-        private static List<AlchemySolution> Solve(
-            TbDrugRecipeCfg recipe,
-            TbPackSto furnace,
-            int globalCountBonus,
-            int globalQualityBonus,
-            IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
-            int limit,
-            int searchStage,
+            AlchemySolution idealSolution,
             CancellationToken cancellationToken = default,
             Action<AlchemySolution> onSolution = null)
         {
-            var stageStopwatch = System.Diagnostics.Stopwatch.StartNew();
-            if (recipe == null || furnace == null || stocks == null || limit <= 0)
-            {
-                return new List<AlchemySolution>();
-            }
-
+            if (recipe == null || furnace == null || catalog == null || idealSolution == null) return null;
             var data = Singleton<TbDataImpl>.Instance;
             var furnaceCfg = data.GetCraftingItemCfg(furnace.itemId.sedId);
-            if (furnaceCfg == null)
+            if (furnaceCfg == null) return null;
+            var targets = recipe.AttrLimitDic
+                .Where(pair => pair.Value != 0)
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            if (targets.Count == 0) return null;
+            var monotoneCandidates = BuildMonotoneCandidates(catalog, targets, furnaceCfg).ToList();
+            if (monotoneCandidates.Count == 0) return null;
+
+            var repaired = FindInventoryRepairSolution(recipe, furnaceCfg, monotoneCandidates,
+                targets, inventory, idealSolution, globalCountBonus, globalQualityBonus,
+                cancellationToken, candidate =>
+                {
+                    candidate.SearchStage = 3;
+                    onSolution?.Invoke(candidate);
+                });
+            if (repaired?.Solution == null) return null;
+            repaired.Solution.SearchStage = 3;
+            return repaired.Solution;
+        }
+
+        private static RuleSearchResult FindCanonicalSolution(
+            TbDrugRecipeCfg recipe,
+            TbCraftingItemCfg furnace,
+            IReadOnlyList<HerbCandidate> candidates,
+            IReadOnlyDictionary<string, int> targets,
+            IReadOnlyDictionary<int, long> inventory,
+            int globalCountBonus,
+            int globalQualityBonus,
+            CancellationToken cancellationToken)
+        {
+            var distinctGrades = candidates.Select(item => item.GradeWeight).Distinct().OrderBy(value => value);
+            foreach (var maximumGrade in distinctGrades)
             {
-                return new List<AlchemySolution>();
+                cancellationToken.ThrowIfCancellationRequested();
+                var gradeCandidates = candidates
+                    .Where(item => item.GradeWeight <= maximumGrade).ToList();
+                var coveredElements = new HashSet<string>(
+                    gradeCandidates.Select(item => item.ElementKey));
+                // 例如普通五行一阶即可、只有异灵根冰需要更高档时，在冰候选尚未
+                // 出现的品阶直接跳过，不能先为金木等元素展开数万条无意义组合。
+                if (targets.Keys.Any(element => !coveredElements.Contains(element))) continue;
+
+                // 常见低阶丹方先走首个严格配平组合。它与完整搜索使用相同的
+                // 五行、炉位、容量和真实形状校验，只省略“先枚举所有候选再排序”。
+                var fastComposition = BuildFastCanonicalComposition(
+                    gradeCandidates, targets, furnace, cancellationToken);
+                if (fastComposition != null &&
+                    TryPack(fastComposition.Pieces, furnace, recipe, true, globalQualityBonus,
+                        out var fastPlacements, out var fastOutcome, cancellationToken))
+                {
+                    return new RuleSearchResult
+                    {
+                        Composition = fastComposition,
+                        Solution = CreateSolution(recipe, fastComposition, fastPlacements, fastOutcome,
+                            globalCountBonus, globalQualityBonus),
+                    };
+                }
+
+                var compositions = GenerateExactCompositions(gradeCandidates,
+                    targets, furnace, inventory, cancellationToken);
+                foreach (var composition in compositions)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!TryPack(composition.Pieces, furnace, recipe, true, globalQualityBonus,
+                            out var placements, out var outcome, cancellationToken)) continue;
+                    return new RuleSearchResult
+                    {
+                        Composition = composition,
+                        Solution = CreateSolution(recipe, composition, placements, outcome,
+                            globalCountBonus, globalQualityBonus),
+                    };
+                }
+            }
+            return null;
+        }
+
+        private static Composition BuildFastCanonicalComposition(
+            IReadOnlyList<HerbCandidate> candidates,
+            IReadOnlyDictionary<string, int> targets,
+            TbCraftingItemCfg furnace,
+            CancellationToken cancellationToken)
+        {
+            var composition = new Composition();
+            foreach (var target in targets.OrderBy(pair => pair.Key))
+            {
+                var elementCandidates = candidates
+                    .Where(item => item.ElementKey == target.Key)
+                    .OrderBy(item => item.GradeWeight)
+                    .ThenBy(item => item.CellCount)
+                    .ThenByDescending(item => item.Contribution)
+                    .ThenBy(item => item.Stock.ItemId.sedId)
+                    .ThenBy(item => item.Side)
+                    .ToList();
+                var option = FindFirstExactElementOption(
+                    elementCandidates, Math.Abs(target.Value), furnace, cancellationToken);
+                if (option == null) return null;
+                composition.Pieces.AddRange(option.Pieces);
+                composition.YangCells += option.YangCells;
+                composition.YinCells += option.YinCells;
+                if (composition.YangCells > furnace.yangGridSize.x * furnace.yangGridSize.y ||
+                    composition.YinCells > furnace.yinGridSize.x * furnace.yinGridSize.y)
+                    return null;
+            }
+            return composition;
+        }
+
+        private static Composition FindFirstExactElementOption(
+            IReadOnlyList<HerbCandidate> candidates,
+            int target,
+            TbCraftingItemCfg furnace,
+            CancellationToken cancellationToken)
+        {
+            var pieces = new List<HerbCandidate>();
+            var yangCapacity = furnace.yangGridSize.x * furnace.yangGridSize.y;
+            var yinCapacity = furnace.yinGridSize.x * furnace.yinGridSize.y;
+            var nodes = 0;
+            Composition found = null;
+
+            bool Search(int start, int remaining, int usedYang, int usedYin)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (nodes++ >= FastElementSearchNodeLimit) return false;
+                if (remaining == 0)
+                {
+                    found = new Composition
+                    {
+                        Pieces = pieces.ToList(),
+                        YangCells = usedYang,
+                        YinCells = usedYin,
+                    };
+                    return true;
+                }
+                for (var index = start; index < candidates.Count; index++)
+                {
+                    var candidate = candidates[index];
+                    if (candidate.Contribution > remaining) continue;
+                    var cellCapacity = candidate.Side == 1
+                        ? (yangCapacity - usedYang) / candidate.CellCount
+                        : (yinCapacity - usedYin) / candidate.CellCount;
+                    var maximum = Math.Min(remaining / candidate.Contribution, cellCapacity);
+                    for (var count = maximum; count >= 1; count--)
+                    {
+                        for (var copy = 0; copy < count; copy++) pieces.Add(candidate);
+                        var solved = Search(index + 1,
+                            remaining - candidate.Contribution * count,
+                            usedYang + (candidate.Side == 1 ? candidate.CellCount * count : 0),
+                            usedYin + (candidate.Side == 2 ? candidate.CellCount * count : 0));
+                        pieces.RemoveRange(pieces.Count - count, count);
+                        if (solved) return true;
+                    }
+                }
+                return false;
             }
 
-            var candidateStopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var candidates = BuildCandidates(stocks, recipe)
-                .Where(candidate => searchStage == 3 || candidate.ExtraKeys.Count <= searchStage - 1)
-                // 先找到能覆盖目标属性的可行形式，再在成品解上比较种植成本。
-                // 若先按种植天数深搜，大量低阶组合会在节点上限前饿死后面的高阶精确药材。
-                .OrderByDescending(candidate => candidate.HeuristicScore)
-                .ThenBy(candidate => candidate.PlantingDays)
-                .ThenBy(candidate => candidate.CellCount)
+            Search(0, target, 0, 0);
+            return found;
+        }
+
+        private static RuleSearchResult FindRuleOptimizedSolution(
+            TbDrugRecipeCfg recipe,
+            TbCraftingItemCfg furnace,
+            IReadOnlyList<HerbCandidate> monotoneCandidates,
+            IReadOnlyDictionary<string, int> targets,
+            AlchemySolution baseline,
+            Composition baselineComposition,
+            int globalCountBonus,
+            int globalQualityBonus,
+            CancellationToken cancellationToken)
+        {
+            var qualityOnlyRules = HasOnlyQualityRuleEffects(recipe);
+            if (qualityOnlyRules && baseline.QualityRank >= 3) return null;
+            var searchWatch = Stopwatch.StartNew();
+            var proposals = BuildJointRuleCompositions(monotoneCandidates, targets, furnace,
+                    recipe, baselineComposition, cancellationToken)
+                .Where(composition => composition.Key != baselineComposition.Key)
+                .OrderByDescending(composition => EstimateCompositionRuleBenefit(
+                    composition, furnace, recipe, globalQualityBonus))
+                .ThenBy(composition => composition,
+                    Comparer<Composition>.Create(CompareGradeProfiles))
+                .ThenBy(composition => composition.Pieces.Count)
+                .ThenBy(composition => composition.PlantingDays)
+                .Take(JointCompositionPackingLimit)
+                .ToList();
+
+            RuleSearchResult best = null;
+            var incumbent = baseline;
+            var packedCount = 0;
+            foreach (var composition in proposals)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryPack(composition.Pieces, furnace, recipe, true, globalQualityBonus,
+                        out var placements, out var outcome, cancellationToken)) continue;
+                packedCount++;
+                var solution = CreateSolution(recipe, composition, placements, outcome,
+                    globalCountBonus, globalQualityBonus);
+                if (!IsBetterRuleSolution(solution, incumbent)) continue;
+                best = new RuleSearchResult { Solution = solution, Composition = composition };
+                incumbent = solution;
+                if (qualityOnlyRules && incumbent.QualityRank >= 3) break;
+            }
+            searchWatch.Stop();
+            TiandaoPlugin.LogAlchemy($"alchemy joint iterative recipe={recipe.id}, " +
+                                     $"proposals={proposals.Count}, packed={packedCount}, " +
+                                     $"elapsed={searchWatch.ElapsedMilliseconds}ms, improved={best != null}");
+            return best;
+        }
+
+        private static List<Composition> BuildJointRuleCompositions(
+            IReadOnlyList<HerbCandidate> candidates,
+            IReadOnlyDictionary<string, int> targets,
+            TbCraftingItemCfg furnace,
+            TbDrugRecipeCfg recipe,
+            Composition baseline,
+            CancellationToken cancellationToken)
+        {
+            var optionSets = new List<List<Composition>>();
+            var yangCapacity = furnace.yangGridSize.x * furnace.yangGridSize.y;
+            var yinCapacity = furnace.yinGridSize.x * furnace.yinGridSize.y;
+            foreach (var target in targets.OrderBy(pair => pair.Key))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var baselineOption = CreateComposition(baseline.Pieces
+                    .Where(piece => piece.ElementKey == target.Key).ToList());
+                var allocations = SolveParetoElementAllocations(
+                    candidates.Where(candidate => candidate.ElementKey == target.Key).ToList(),
+                    Math.Abs(target.Value), yangCapacity, yinCapacity, recipe, cancellationToken);
+                var options = allocations
+                    .Select(allocation => CreateComposition(allocation.Pieces))
+                    .Concat(new[] { baselineOption })
+                    .GroupBy(composition => composition.Key)
+                    .Select(group => group.First())
+                    .OrderByDescending(composition => EstimateCompositionRuleBenefit(
+                        composition, furnace, recipe, 0))
+                    .ThenBy(composition => composition,
+                        Comparer<Composition>.Create(CompareGradeProfiles))
+                    .ThenBy(composition => composition.Pieces.Count)
+                    .ThenBy(composition => composition.PlantingDays)
+                    .Take(ElementParetoOptionLimit)
+                    .ToList();
+                if (options.All(option => option.Key != baselineOption.Key))
+                {
+                    if (options.Count >= ElementParetoOptionLimit) options.RemoveAt(options.Count - 1);
+                    options.Add(baselineOption);
+                }
+                if (options.Count == 0) return new List<Composition>();
+                optionSets.Add(options);
+            }
+
+            // 元素内只保留整数配平的 Pareto 候选；随后一次性联合所有元素。
+            // 因此同行、相邻、双目标等规则可以由多个元素同时改变，不再依赖逐元素爬山。
+            var beam = new List<Composition> { new Composition() };
+            var baselinePrefix = new Composition();
+            for (var optionSetIndex = 0; optionSetIndex < optionSets.Count; optionSetIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var options = optionSets[optionSetIndex];
+                var elementKey = targets.OrderBy(pair => pair.Key).ElementAt(optionSetIndex).Key;
+                baselinePrefix = CreateComposition(baselinePrefix.Pieces.Concat(
+                    baseline.Pieces.Where(piece => piece.ElementKey == elementKey)).ToList());
+                var next = new Dictionary<string, Composition>();
+                foreach (var current in beam)
+                foreach (var option in options)
+                {
+                    var nextYang = current.YangCells + option.YangCells;
+                    var nextYin = current.YinCells + option.YinCells;
+                    if (nextYang > yangCapacity || nextYin > yinCapacity) continue;
+                    var composition = CreateComposition(current.Pieces.Concat(option.Pieces).ToList());
+                    next[composition.Key] = composition;
+                }
+                beam = next.Values
+                    .OrderByDescending(composition => EstimateCompositionRuleBenefit(
+                        composition, furnace, recipe, 0))
+                    .ThenBy(composition => composition,
+                        Comparer<Composition>.Create(CompareGradeProfiles))
+                    .ThenBy(composition => composition.Pieces.Count)
+                    .ThenBy(composition => composition.PlantingDays)
+                    .Take(JointCompositionBeamLimit)
+                    .ToList();
+                if (beam.All(composition => composition.Key != baselinePrefix.Key))
+                {
+                    if (beam.Count >= JointCompositionBeamLimit) beam.RemoveAt(beam.Count - 1);
+                    beam.Add(CloneComposition(baselinePrefix));
+                }
+                if (beam.Count == 0) break;
+            }
+            return beam;
+        }
+
+        private static List<ElementAllocationState> SolveParetoElementAllocations(
+            IReadOnlyList<HerbCandidate> candidates,
+            int targetContribution,
+            int yangCapacity,
+            int yinCapacity,
+            TbDrugRecipeCfg recipe,
+            CancellationToken cancellationToken)
+        {
+            var orderedCandidates = candidates
+                .Where(candidate => candidate.Contribution <= targetContribution)
+                .OrderByDescending(candidate => CalculateCandidateRulePriority(candidate, recipe))
                 .ThenBy(candidate => candidate.GradeWeight)
+                .ThenBy(candidate => candidate.CellCount)
                 .ThenBy(candidate => candidate.Stock.ItemId.sedId)
                 .ThenBy(candidate => candidate.Side)
                 .ToList();
-            candidateStopwatch.Stop();
-            if (candidates.Count == 0)
-            {
-                return new List<AlchemySolution>();
-            }
-
-            var target = recipe.AttrLimitDic
-                .Where(pair => pair.Value != 0)
-                .ToDictionary(pair => pair.Key, pair => pair.Value);
-            var allKeys = new HashSet<string>(target.Keys);
-            foreach (var candidate in candidates)
-            {
-                if (candidate.Crafting.attrDic == null) continue;
-                foreach (var key in candidate.Crafting.attrDic.Keys) allKeys.Add(key);
-            }
-
-            var form = new List<HerbCandidate>();
-            var solutions = new List<AlchemySolution>();
-            var solutionKeys = new HashSet<string>();
-            var poseModelCache = new Dictionary<HerbCandidate, List<PlacementPose>>();
-            var formNodes = 0;
-            var quantityNodes = 0;
-            var solvedForms = 0;
-            var packingAttempts = 0;
-            var balancedQuantityVectors = 0;
-            var quantityRuleTiers = 0;
-            var quantityRepresentatives = 0;
-            var largestFormSizeSearched = 0;
-            long packingMilliseconds = 0;
-            var maxPieces = Math.Min(
-                (furnaceCfg.yangGridSize.x * furnaceCfg.yangGridSize.y) +
-                (furnaceCfg.yinGridSize.x * furnaceCfg.yinGridSize.y),
-                int.MaxValue);
-            var maxFormSize = Math.Min(maxPieces, Math.Max(3, Math.Min(7, allKeys.Count + searchStage + 1)));
-
-            void EvaluateForm()
+            var ruleFeatureKeys = orderedCandidates.ToDictionary(candidate => candidate,
+                candidate => BuildCandidateRuleFeatureKey(candidate, recipe));
+            var initial = new ElementAllocationState();
+            var states = new Dictionary<string, ElementAllocationState> { ["0:0:0:"] = initial };
+            var pending = new Queue<ElementAllocationState>();
+            pending.Enqueue(initial);
+            while (pending.Count > 0 && states.Count < ParetoAllocationStateLimit)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var extraKeyCount = form.SelectMany(candidate => candidate.ExtraKeys).Distinct().Count();
-                var requiredExtraCount = searchStage == 1 ? 0 : searchStage == 2 ? 1 : 2;
-                if ((searchStage < 3 && extraKeyCount != requiredExtraCount) ||
-                    (searchStage == 3 && extraKeyCount < requiredExtraCount) ||
-                    !CanFormReachTarget(form, target, allKeys)) return;
-
-                solvedForms++;
-                var quantityCandidates = SolveQuantitiesForForm(
-                    form, target, allKeys, furnaceCfg, recipe, cancellationToken,
-                    ref quantityNodes, QuantityNodeLimit, QuantityCandidatesPerForm,
-                    out var balancedCount, out var ruleTierCount);
-                balancedQuantityVectors += balancedCount;
-                quantityRuleTiers += ruleTierCount;
-                quantityRepresentatives += quantityCandidates.Count;
-                foreach (var counts in quantityCandidates)
+                var state = pending.Dequeue();
+                if (state.Contribution >= targetContribution) continue;
+                for (var candidateIndex = state.NextCandidateIndex;
+                     candidateIndex < orderedCandidates.Count; candidateIndex++)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var chosen = ExpandForm(form, counts);
-                    var quantityKey = string.Join(";", form.Select((candidate, index) =>
-                        $"{candidate.Stock.ItemId.sedId}:{candidate.Side}:{counts[index]}"));
-                    if (!solutionKeys.Add(quantityKey)) continue;
-                    packingAttempts++;
-                    var packingStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                    var packed = TryPack(chosen, furnaceCfg, recipe, poseModelCache,
-                        out var placements, out var ruleOutcome, cancellationToken);
-                    packingStopwatch.Stop();
-                    packingMilliseconds += packingStopwatch.ElapsedMilliseconds;
-                    if (packed)
+                    var candidate = orderedCandidates[candidateIndex];
+                    var nextContribution = state.Contribution + candidate.Contribution;
+                    if (nextContribution > targetContribution) continue;
+                    var nextYang = state.YangCells + (candidate.Side == 1 ? candidate.CellCount : 0);
+                    var nextYin = state.YinCells + (candidate.Side == 2 ? candidate.CellCount : 0);
+                    if (nextYang > yangCapacity || nextYin > yinCapacity) continue;
+                    var next = new ElementAllocationState
                     {
-                        var solution = new AlchemySolution
-                        {
-                            Placements = placements,
-                            ItemCounts = chosen.GroupBy(c => c.Stock.ItemId.sedId)
-                                .ToDictionary(group => group.Key, group => group.Count()),
-                            PlantingDays = chosen.Sum(c => c.PlantingDays),
-                            BasePillCount = recipe.count,
-                            SearchStage = searchStage,
-                            GlobalCountBonus = globalCountBonus,
-                            GlobalQualityBonus = globalQualityBonus,
-                            RuleOutcome = ruleOutcome,
-                        };
-                        solutions.Add(solution);
-                        onSolution?.Invoke(solution);
-                    }
+                        Pieces = state.Pieces.Concat(new[] { candidate }).ToList(),
+                        Contribution = nextContribution,
+                        YangCells = nextYang,
+                        YinCells = nextYin,
+                        NextCandidateIndex = candidateIndex,
+                    };
+                    // 只按规则可观察特征区分状态：属性、炉位、形状以及每条规则的
+                    // target1/target2 命中情况。相同特征的具体药材只保留品阶更低的代表，
+                    // 避免按 itemId 展开成数万种语义完全相同的组合。
+                    var featureSignature = string.Join(";", next.Pieces
+                        .GroupBy(piece => ruleFeatureKeys[piece])
+                        .OrderBy(group => group.Key)
+                        .Select(group => $"{group.Key}*{group.Count()}"));
+                    var key = $"{nextContribution}:{nextYang}:{nextYin}:" +
+                              featureSignature;
+                    if (states.TryGetValue(key, out var existing) &&
+                        !IsBetterParetoRepresentative(next, existing)) continue;
+                    states[key] = next;
+                    pending.Enqueue(next);
                 }
             }
-
-            void SearchForms(int startIndex, int targetFormSize)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (formNodes++ >= FormNodeLimit || quantityNodes >= QuantityNodeLimit) return;
-
-                if (form.Count == targetFormSize)
-                {
-                    EvaluateForm();
-                    return;
-                }
-
-                var extraKeys = new HashSet<string>(form.SelectMany(candidate => candidate.ExtraKeys));
-                if (searchStage < 3 && extraKeys.Count > searchStage - 1) return;
-
-                var remaining = targetFormSize - form.Count;
-                for (var index = startIndex; index <= candidates.Count - remaining; index++)
-                {
-                    var candidate = candidates[index];
-                    if (form.Any(existing => existing.Stock.ItemId.sedId == candidate.Stock.ItemId.sedId &&
-                                             existing.Side != candidate.Side)) continue;
-                    if (searchStage < 3 && extraKeys.Union(candidate.ExtraKeys).Distinct().Count() > searchStage - 1)
-                        continue;
-                    form.Add(candidate);
-                    SearchForms(index + 1, targetFormSize);
-                    form.RemoveAt(form.Count - 1);
-                    if (formNodes >= FormNodeLimit || quantityNodes >= QuantityNodeLimit) return;
-                }
-            }
-
-            // 迭代加深保证先完整覆盖单药、双药等简单形式，避免传统深搜把节点
-            // 全耗在“第一个候选 + 大量复杂组合”上，导致明显的两味药解也被漏掉。
-            for (var formSize = 1;
-                 formSize <= maxFormSize && formNodes < FormNodeLimit && quantityNodes < QuantityNodeLimit;
-                 formSize++)
-            {
-                largestFormSizeSearched = formSize;
-                SearchForms(0, formSize);
-            }
-            stageStopwatch.Stop();
-            UnityEngine.Debug.Log($"[Code4101 Tiandao] alchemy stage={searchStage}, " +
-                                  $"candidates={candidates.Count}, forms={formNodes}, solvedForms={solvedForms}, " +
-                                  $"largestForm={largestFormSizeSearched}/{maxFormSize}, " +
-                                  $"formLimitReached={formNodes >= FormNodeLimit}, " +
-                                  $"quantityNodes={quantityNodes}, " +
-                                  $"balancedQuantities={balancedQuantityVectors}, " +
-                                  $"quantityTiers={quantityRuleTiers}, " +
-                                  $"quantityRepresentatives={quantityRepresentatives}, " +
-                                  $"packingAttempts={packingAttempts}, solutions={solutions.Count}, " +
-                                  $"candidateMs={candidateStopwatch.ElapsedMilliseconds}, " +
-                                  $"algebraMs={Math.Max(0, stageStopwatch.ElapsedMilliseconds - candidateStopwatch.ElapsedMilliseconds - packingMilliseconds)}, " +
-                                  $"packingMs={packingMilliseconds}, elapsed={stageStopwatch.ElapsedMilliseconds}ms");
-            return RankAndSelectSolutions(solutions, limit);
-        }
-
-        private static bool CanFormReachTarget(
-            IReadOnlyList<HerbCandidate> form,
-            IReadOnlyDictionary<string, int> target,
-            IReadOnlyCollection<string> allKeys)
-        {
-            foreach (var key in allKeys)
-            {
-                var expected = target.TryGetValue(key, out var value) ? value : 0;
-                var contributions = form.Select(candidate => GetContribution(candidate, key)).Where(value => value != 0).ToList();
-                if (expected != 0 && !contributions.Any(value => Math.Sign(value) == Math.Sign(expected))) return false;
-                if (expected == 0 && contributions.Count > 0 &&
-                    !(contributions.Any(value => value > 0) && contributions.Any(value => value < 0))) return false;
-                var gcd = contributions.Aggregate(0, (current, value) => GreatestCommonDivisor(current, Math.Abs(value)));
-                if (gcd != 0 && Math.Abs(expected) % gcd != 0) return false;
-            }
-            return true;
-        }
-
-        private static List<int[]> SolveQuantitiesForForm(
-            IReadOnlyList<HerbCandidate> form,
-            IReadOnlyDictionary<string, int> target,
-            IReadOnlyCollection<string> allKeys,
-            TbCraftingItemCfg furnace,
-            TbDrugRecipeCfg recipe,
-            CancellationToken cancellationToken,
-            ref int totalNodes,
-            int nodeLimit,
-            int resultLimit,
-            out int balancedCount,
-            out int ruleTierCount)
-        {
-            var keys = allKeys.OrderBy(key => key).ToList();
-            var pivotIndex = Enumerable.Range(0, form.Count)
-                .OrderByDescending(index => keys.Count(key => GetContribution(form[index], key) != 0))
-                .ThenByDescending(index => keys.Sum(key => Math.Abs(GetContribution(form[index], key))))
-                .First();
-            var variableIndexes = Enumerable.Range(0, form.Count).Where(index => index != pivotIndex)
-                .OrderBy(index => MaximumCount(form[index], furnace)).ToList();
-            var counts = Enumerable.Repeat(1, form.Count).ToArray();
-            var residual = keys.ToDictionary(key => key, key => target.TryGetValue(key, out var value) ? value : 0);
-            var yangCells = furnace.yangGridSize.x * furnace.yangGridSize.y;
-            var yinCells = furnace.yinGridSize.x * furnace.yinGridSize.y;
-            var results = new List<int[]>();
-            var startNodes = totalNodes;
-            var localNodes = totalNodes;
-            balancedCount = 0;
-            ruleTierCount = 0;
-
-            void SearchCount(int depth, int usedYang, int usedYin)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (localNodes++ >= nodeLimit || localNodes - startNodes >= QuantityNodesPerForm) return;
-                if (depth >= variableIndexes.Count)
-                {
-                    var pivot = form[pivotIndex];
-                    int? pivotCount = null;
-                    foreach (var key in keys)
-                    {
-                        var coefficient = GetContribution(pivot, key);
-                        if (coefficient == 0)
-                        {
-                            if (residual[key] != 0) return;
-                            continue;
-                        }
-                        if (residual[key] % coefficient != 0) return;
-                        var derived = residual[key] / coefficient;
-                        if (derived <= 0 || (pivotCount.HasValue && pivotCount.Value != derived)) return;
-                        pivotCount = derived;
-                    }
-                    if (!pivotCount.HasValue) return;
-                    counts[pivotIndex] = pivotCount.Value;
-                    var finalYang = usedYang + (pivot.Side == 1 ? pivot.CellCount * pivotCount.Value : 0);
-                    var finalYin = usedYin + (pivot.Side == 2 ? pivot.CellCount * pivotCount.Value : 0);
-                    if (finalYang > yangCells || finalYin > yinCells) return;
-                    results.Add((int[])counts.Clone());
-                    return;
-                }
-
-                var variableIndex = variableIndexes[depth];
-                var candidate = form[variableIndex];
-                var availableCells = candidate.Side == 1 ? yangCells - usedYang : yinCells - usedYin;
-                var maximum = availableCells / candidate.CellCount;
-                for (var count = 1; count <= maximum; count++)
-                {
-                    counts[variableIndex] = count;
-                    foreach (var key in keys) residual[key] -= GetContribution(candidate, key) * count;
-                    SearchCount(depth + 1,
-                        usedYang + (candidate.Side == 1 ? candidate.CellCount * count : 0),
-                        usedYin + (candidate.Side == 2 ? candidate.CellCount * count : 0));
-                    foreach (var key in keys) residual[key] += GetContribution(candidate, key) * count;
-                    if (localNodes >= nodeLimit || localNodes - startNodes >= QuantityNodesPerForm) break;
-                }
-            }
-
-            SearchCount(0, 0, 0);
-            totalNodes = localNodes;
-            balancedCount = results.Count;
-            var representatives = SelectQuantityRepresentatives(form, results, recipe, resultLimit);
-            ruleTierCount = representatives.Select(profile => profile.RuleTierKey).Distinct().Count();
-            return representatives.Select(profile => profile.Counts).ToList();
-        }
-
-        private static List<QuantityProfile> SelectQuantityRepresentatives(
-            IReadOnlyList<HerbCandidate> form,
-            IEnumerable<int[]> quantityVectors,
-            TbDrugRecipeCfg recipe,
-            int limit)
-        {
-            var profiles = quantityVectors
-                .Select(counts => BuildQuantityProfile(form, counts, recipe))
-                .GroupBy(profile => profile.ExactKey)
-                .Select(group => group.First())
-                .ToList();
-            if (profiles.Count == 0) return profiles;
-
-            var frontiers = new List<QuantityProfile>();
-            foreach (var tier in profiles.GroupBy(profile => profile.RuleTierKey))
-            {
-                var candidates = tier
-                    .OrderBy(profile => profile.PlantingDays)
-                    .ThenBy(profile => profile.YangCells + profile.YinCells)
-                    .ThenBy(profile => profile.PieceCount)
-                    .ToList();
-                var frontier = candidates
-                    .Where(candidate => !candidates.Any(other =>
-                        !ReferenceEquals(other, candidate) && Dominates(other, candidate)))
-                    .Take(RepresentativesPerRuleTier)
-                    .ToList();
-                frontiers.AddRange(frontier);
-            }
-
-            // 最省种植时间的代表无条件保留；其余优先保留能跨越更多丹方规则阈值、
-            // 且在阴阳占格上不被支配的代表。数量仅 +/-1 但仍处于同一阈值区间时，
-            // 不再各自触发一次几何装箱。
-            var selected = new List<QuantityProfile>();
-            var cheapest = profiles.OrderBy(profile => profile.PlantingDays)
-                .ThenBy(profile => profile.YangCells + profile.YinCells)
-                .ThenBy(profile => profile.PieceCount)
-                .First();
-            selected.Add(cheapest);
-            selected.AddRange(frontiers
-                .Where(profile => profile.ExactKey != cheapest.ExactKey)
-                .OrderByDescending(profile => profile.RuleTierScore)
-                .ThenBy(profile => profile.PlantingDays)
-                .ThenBy(profile => profile.YangCells + profile.YinCells)
-                .ThenBy(profile => profile.PieceCount));
-            return selected.GroupBy(profile => profile.ExactKey)
-                .Select(group => group.First())
-                .Take(limit)
+            return states.Values.Where(state => state.Contribution == targetContribution)
+                .OrderByDescending(state => EstimateAllocationRulePotential(state, recipe))
+                .ThenBy(state => CreateComposition(state.Pieces),
+                    Comparer<Composition>.Create(CompareGradeProfiles))
+                .ThenBy(state => state.Pieces.Count)
+                .ThenBy(state => state.Pieces.Sum(piece => piece.PlantingDays))
+                .Take(ElementParetoOptionLimit * 2)
                 .ToList();
         }
 
-        private static QuantityProfile BuildQuantityProfile(
-            IReadOnlyList<HerbCandidate> form,
-            int[] counts,
+        private static long EstimateAllocationRulePotential(
+            ElementAllocationState state,
+            TbDrugRecipeCfg recipe) => state.Pieces.Sum(candidate =>
+                (long)CalculateCandidateRulePriority(candidate, recipe) * 1000L +
+                Math.Max(0, 20 - candidate.CellCount));
+
+        private static string BuildCandidateRuleFeatureKey(
+            HerbCandidate candidate,
             TbDrugRecipeCfg recipe)
         {
-            var tierParts = new List<string>();
-            var tierScore = 0;
+            var shapeKey = string.Join("/", candidate.Rotations
+                .Select(rotation => rotation.Width + "x" + rotation.Height + ":" +
+                    string.Join(",", rotation.Normalized.Select(cell => cell.x + "." + cell.y)))
+                .OrderBy(value => value));
+            var ruleBits = new List<string>();
             foreach (var stateId in recipe?.StateIds ?? new List<int>())
             {
                 var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
-                if (state == null) continue;
-                var first = 0;
-                var second = 0;
-                var usesSecondTarget = state.relation >= 10 && state.relation <= 16;
-                for (var index = 0; index < form.Count; index++)
+                if (state == null)
                 {
-                    var candidate = form[index];
-                    if (state.poolType != 0 && state.poolType != candidate.Side) continue;
-                    var units = state.stateType == 0
-                        ? candidate.CellCount * counts[index]
-                        : counts[index];
-                    if (TargetMayMatch(candidate.Stock.ItemCfg, state.target1))
-                    {
-                        if (state.relation == 0 && state.stateType >= 11 && state.stateType <= 18)
-                        {
-                            var keys = new[]
-                                { "gold", "water", "wood", "fire", "soil", "ice", "wind", "thunder" };
-                            var key = keys[state.stateType - 11];
-                            if (candidate.Crafting.attrDic.TryGetValue(key, out var contribution))
-                                first += contribution * (candidate.Side == 1 ? 1 : -1) * counts[index];
-                        }
-                        else
-                        {
-                            first += units;
-                        }
-                    }
-                    if (usesSecondTarget && TargetMayMatch(candidate.Stock.ItemCfg, state.target2))
-                        second += units;
+                    ruleBits.Add("0");
+                    continue;
                 }
-                var firstTier = QuantityRuleTier(first, state.calculateType);
-                var secondTier = usesSecondTarget
-                    ? QuantityRuleTier(second, state.calculateType)
-                    : 0;
-                tierParts.Add(usesSecondTarget
-                    ? $"{stateId}:{firstTier}:{secondTier}"
-                    : $"{stateId}:{firstTier}");
-                tierScore += Math.Max(0, firstTier) + Math.Max(0, secondTier);
+                var activePool = state.poolType == 0 || state.poolType == candidate.Side;
+                var first = activePool && TargetMayMatch(candidate.Stock.ItemCfg, state.target1);
+                var second = activePool && !string.IsNullOrEmpty(state.target2) &&
+                             TargetMayMatch(candidate.Stock.ItemCfg, state.target2);
+                ruleBits.Add((first ? "1" : "0") + (second ? "1" : "0"));
+            }
+            return candidate.Side + ":" + candidate.Contribution + ":" + candidate.CellCount +
+                   ":" + shapeKey + ":" + string.Join("", ruleBits);
+        }
+
+        private static bool IsBetterParetoRepresentative(
+            ElementAllocationState left,
+            ElementAllocationState right)
+        {
+            var gradeComparison = CompareGradeProfiles(
+                CreateComposition(left.Pieces), CreateComposition(right.Pieces));
+            if (gradeComparison != 0) return gradeComparison < 0;
+            var leftDays = left.Pieces.Sum(piece => piece.PlantingDays);
+            var rightDays = right.Pieces.Sum(piece => piece.PlantingDays);
+            if (leftDays != rightDays) return leftDays < rightDays;
+            return string.CompareOrdinal(CreateComposition(left.Pieces).Key,
+                       CreateComposition(right.Pieces).Key) < 0;
+        }
+
+        private static long EstimateCompositionRuleBenefit(
+            Composition composition,
+            TbCraftingItemCfg furnace,
+            TbDrugRecipeCfg recipe,
+            int globalQualityBonus)
+        {
+            if (TryCalculateIndependentRuleUpperBound(
+                    composition.Pieces, furnace, recipe, out var upperBound))
+                return CalculateEffectiveRuleBenefit(upperBound, globalQualityBonus);
+            return composition.Pieces.Sum(candidate =>
+                (long)CalculateCandidateRulePriority(candidate, recipe));
+        }
+
+        private static Composition CreateComposition(IReadOnlyList<HerbCandidate> pieces)
+        {
+            var composition = new Composition { Pieces = pieces.ToList() };
+            foreach (var piece in pieces)
+            {
+                if (piece.Side == 1) composition.YangCells += piece.CellCount;
+                else composition.YinCells += piece.CellCount;
+            }
+            return composition;
+        }
+
+        private static bool HasOnlyQualityRuleEffects(TbDrugRecipeCfg recipe)
+        {
+            var found = false;
+            foreach (var stateId in recipe?.StateIds ?? new List<int>())
+            {
+                var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
+                if (state == null || string.IsNullOrEmpty(state.baseEff)) return false;
+                var effect = GenericMethods.GetEffect(state.baseEff);
+                if (effect == null || effect.functionType != EventEnum.UpdateCraftingDrugAttr.ToString() ||
+                    effect.parameter.Count < 1 || !int.TryParse(effect.parameter[0], out var type)) return false;
+                if (type != 4) return false;
+                found = true;
+            }
+            return found;
+        }
+
+        private static RuleSearchResult FindInventoryRepairSolution(
+            TbDrugRecipeCfg recipe,
+            TbCraftingItemCfg furnace,
+            IReadOnlyList<HerbCandidate> candidates,
+            IReadOnlyDictionary<string, int> targets,
+            IReadOnlyDictionary<int, long> inventory,
+            AlchemySolution ideal,
+            int globalCountBonus,
+            int globalQualityBonus,
+            CancellationToken cancellationToken,
+            Action<AlchemySolution> onImproved)
+        {
+            RuleSearchResult best = null;
+            var preferred = ideal.Placements
+                .GroupBy(item => $"{item.ItemId.sedId}:{item.PoolType}")
+                .ToDictionary(group => group.Key, group => group.Count());
+            var compositions = GenerateExactCompositions(candidates, targets, furnace, inventory,
+                cancellationToken, preferred);
+            foreach (var composition in compositions)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryPack(composition.Pieces, furnace, recipe, true, globalQualityBonus,
+                        out var placements, out var outcome, cancellationToken)) continue;
+                var solution = CreateSolution(recipe, composition, placements, outcome,
+                    globalCountBonus, globalQualityBonus);
+                if (best == null || IsBetterRepairSolution(solution, best.Solution, ideal))
+                {
+                    best = new RuleSearchResult { Solution = solution, Composition = composition };
+                    onImproved?.Invoke(solution);
+                }
+            }
+            return best;
+        }
+
+        private static List<Composition> GenerateExactCompositions(
+            IReadOnlyList<HerbCandidate> candidates,
+            IReadOnlyDictionary<string, int> targets,
+            TbCraftingItemCfg furnace,
+            IReadOnlyDictionary<int, long> inventory,
+            CancellationToken cancellationToken,
+            IReadOnlyDictionary<string, int> preferred = null)
+        {
+            var optionSets = new List<List<Composition>>();
+            foreach (var target in targets.OrderBy(pair => pair.Key))
+            {
+                var elementCandidates = candidates
+                    .Where(item => item.ElementKey == target.Key)
+                    .OrderBy(item => item.GradeWeight)
+                    .ThenBy(item => item.CellCount)
+                    .ThenByDescending(item => item.Contribution)
+                    .ThenBy(item => item.Stock.ItemId.sedId)
+                    .ThenBy(item => item.Side)
+                    .ToList();
+                var options = EnumerateElementOptions(elementCandidates, Math.Abs(target.Value),
+                    furnace, inventory, cancellationToken, preferred);
+                if (options.Count == 0) return new List<Composition>();
+                optionSets.Add(options);
             }
 
-            return new QuantityProfile
+            var combined = new List<Composition>();
+            var nodes = 0;
+            var yangCapacity = furnace.yangGridSize.x * furnace.yangGridSize.y;
+            var yinCapacity = furnace.yinGridSize.x * furnace.yinGridSize.y;
+
+            void Combine(int depth, Composition current)
             {
-                Counts = (int[])counts.Clone(),
-                ExactKey = string.Join(",", counts),
-                RuleTierKey = tierParts.Count == 0 ? "base" : string.Join(";", tierParts),
-                RuleTierScore = tierScore,
-                PlantingDays = form.Select((candidate, index) =>
-                    candidate.PlantingDays * counts[index]).Sum(),
-                YangCells = form.Select((candidate, index) => candidate.Side == 1
-                    ? candidate.CellCount * counts[index]
-                    : 0).Sum(),
-                YinCells = form.Select((candidate, index) => candidate.Side == 2
-                    ? candidate.CellCount * counts[index]
-                    : 0).Sum(),
-                PieceCount = counts.Sum(),
+                cancellationToken.ThrowIfCancellationRequested();
+                if (nodes++ >= CompositionNodeLimit) return;
+                if (depth >= optionSets.Count)
+                {
+                    combined.Add(CloneComposition(current));
+                    return;
+                }
+                foreach (var option in optionSets[depth])
+                {
+                    var nextYang = current.YangCells + option.YangCells;
+                    var nextYin = current.YinCells + option.YinCells;
+                    if (nextYang > yangCapacity || nextYin > yinCapacity) continue;
+                    var oldCount = current.Pieces.Count;
+                    current.Pieces.AddRange(option.Pieces);
+                    current.YangCells = nextYang;
+                    current.YinCells = nextYin;
+                    if (FitsInventory(current, inventory)) Combine(depth + 1, current);
+                    current.Pieces.RemoveRange(oldCount, current.Pieces.Count - oldCount);
+                    current.YangCells -= option.YangCells;
+                    current.YinCells -= option.YinCells;
+                    if (combined.Count >= CompositionLimit || nodes >= CompositionNodeLimit) break;
+                }
+            }
+
+            Combine(0, new Composition());
+            return OrderCompositions(combined, preferred).Take(CompositionLimit).ToList();
+        }
+
+        private static List<Composition> EnumerateElementOptions(
+            IReadOnlyList<HerbCandidate> candidates,
+            int target,
+            TbCraftingItemCfg furnace,
+            IReadOnlyDictionary<int, long> inventory,
+            CancellationToken cancellationToken,
+            IReadOnlyDictionary<string, int> preferred = null)
+        {
+            var results = new Dictionary<string, Composition>();
+            var pieces = new List<HerbCandidate>();
+            var yangCapacity = furnace.yangGridSize.x * furnace.yangGridSize.y;
+            var yinCapacity = furnace.yinGridSize.x * furnace.yinGridSize.y;
+            var nodes = 0;
+
+            void Search(int start, int remaining, int usedYang, int usedYin)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (nodes++ >= ElementSearchNodeLimit) return;
+                if (remaining == 0)
+                {
+                    var composition = new Composition
+                    {
+                        Pieces = pieces.ToList(),
+                        YangCells = usedYang,
+                        YinCells = usedYin,
+                    };
+                    if (!results.ContainsKey(composition.Key)) results[composition.Key] = composition;
+                    if (results.Count > ElementOptionLimit * 8)
+                    {
+                        var retained = OrderCompositions(results.Values, preferred)
+                            .Take(ElementOptionLimit * 4).ToList();
+                        results.Clear();
+                        foreach (var item in retained) results[item.Key] = item;
+                    }
+                    return;
+                }
+                if (start >= candidates.Count) return;
+
+                var remainingYang = yangCapacity - usedYang;
+                var remainingYin = yinCapacity - usedYin;
+                var bestYangRatio = candidates.Skip(start).Where(item => item.Side == 1)
+                    .Select(item => (double)item.Contribution / item.CellCount).DefaultIfEmpty(0).Max();
+                var bestYinRatio = candidates.Skip(start).Where(item => item.Side == 2)
+                    .Select(item => (double)item.Contribution / item.CellCount).DefaultIfEmpty(0).Max();
+                if (remaining > remainingYang * bestYangRatio + remainingYin * bestYinRatio + 0.0001) return;
+
+                for (var index = start; index < candidates.Count; index++)
+                {
+                    var candidate = candidates[index];
+                    if (candidate.Contribution > remaining) continue;
+                    var cellCapacity = candidate.Side == 1
+                        ? (yangCapacity - usedYang) / candidate.CellCount
+                        : (yinCapacity - usedYin) / candidate.CellCount;
+                    var stockCapacity = inventory == null
+                        ? int.MaxValue
+                        : inventory.TryGetValue(candidate.Stock.ItemId.sedId, out var owned)
+                            ? (int)Math.Min(int.MaxValue, owned)
+                            : 0;
+                    var maximum = Math.Min(remaining / candidate.Contribution,
+                        Math.Min(cellCapacity, stockCapacity));
+                    // candidates 已按品阶从低到高排列；先尽量多取当前低阶药材，
+                    // 避免“少量低阶 + 高贡献高阶”的分支先把有限候选池占满。
+                    for (var count = maximum; count >= 1; count--)
+                    {
+                        for (var copy = 0; copy < count; copy++) pieces.Add(candidate);
+                        Search(index + 1,
+                            remaining - candidate.Contribution * count,
+                            usedYang + (candidate.Side == 1 ? candidate.CellCount * count : 0),
+                            usedYin + (candidate.Side == 2 ? candidate.CellCount * count : 0));
+                        pieces.RemoveRange(pieces.Count - count, count);
+                        if (nodes >= ElementSearchNodeLimit) return;
+                    }
+                }
+            }
+
+            Search(0, target, 0, 0);
+            return OrderCompositions(results.Values, preferred).Take(ElementOptionLimit).ToList();
+        }
+
+        private static IEnumerable<Composition> OrderCompositions(
+            IEnumerable<Composition> compositions,
+            IReadOnlyDictionary<string, int> preferred = null)
+        {
+            var gradeProfileComparer = Comparer<Composition>.Create(CompareGradeProfiles);
+            if (preferred != null)
+            {
+                return compositions
+                    .OrderBy(item => CompositionDistance(item, preferred))
+                    .ThenBy(item => item, gradeProfileComparer)
+                    .ThenBy(item => item.Pieces.Count)
+                    .ThenBy(item => item.YangCells + item.YinCells)
+                    .ThenBy(item => item.PlantingDays)
+                    .ThenBy(item => item.Key);
+            }
+            return compositions
+                // 基础解按品阶分布逐档比较：先减少最高档药材，再减少次高档。
+                // 因此“两株下品”严格优于“一株中品”，不会再因 1+1=2 而打平。
+                .OrderBy(item => item, gradeProfileComparer)
+                .ThenBy(item => item.Pieces.Count)
+                .ThenBy(item => item.YangCells + item.YinCells)
+                .ThenBy(item => item.PlantingDays)
+                .ThenBy(item => item.Key);
+        }
+
+        private static int CompareGradeProfiles(Composition left, Composition right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left == null) return 1;
+            if (right == null) return -1;
+            var maximumGrade = Math.Max(left.MaxGrade, right.MaxGrade);
+            for (var grade = maximumGrade; grade >= 1; grade--)
+            {
+                var leftCount = left.Pieces.Count(item => item.GradeWeight == grade);
+                var rightCount = right.Pieces.Count(item => item.GradeWeight == grade);
+                if (leftCount != rightCount) return leftCount.CompareTo(rightCount);
+            }
+            return 0;
+        }
+
+        private static int CompositionDistance(
+            Composition composition,
+            IReadOnlyDictionary<string, int> preferred)
+        {
+            var current = composition.Pieces
+                .GroupBy(item => $"{item.Stock.ItemId.sedId}:{item.Side}")
+                .ToDictionary(group => group.Key, group => group.Count());
+            return current.Keys.Union(preferred.Keys)
+                .Sum(key => Math.Abs((current.TryGetValue(key, out var left) ? left : 0) -
+                                    (preferred.TryGetValue(key, out var right) ? right : 0)));
+        }
+
+        private static bool IsBetterRuleSolution(AlchemySolution left, AlchemySolution right)
+        {
+            var leftBenefit = CalculateEffectiveRuleBenefit(left);
+            var rightBenefit = CalculateEffectiveRuleBenefit(right);
+            if (leftBenefit != rightBenefit) return leftBenefit > rightBenefit;
+            if (left.QualityRank != right.QualityRank) return left.QualityRank > right.QualityRank;
+            var leftCount = left.BasePillCount + left.TotalCountBonus;
+            var rightCount = right.BasePillCount + right.TotalCountBonus;
+            if (leftCount != rightCount) return leftCount > rightCount;
+            if (Math.Abs(left.PlantingDaysPerPill - right.PlantingDaysPerPill) > 0.0001)
+                return left.PlantingDaysPerPill < right.PlantingDaysPerPill;
+            if (left.Placements.Count != right.Placements.Count)
+                return left.Placements.Count < right.Placements.Count;
+            return left.PlantingDays < right.PlantingDays;
+        }
+
+        private static long CalculateEffectiveRuleBenefit(AlchemySolution solution) =>
+            CalculateEffectiveRuleBenefit(solution.RuleOutcome, solution.GlobalQualityBonus);
+
+        private static long CalculateEffectiveRuleBenefit(
+            AlchemyRuleOutcome outcome,
+            int globalQualityBonus)
+        {
+            // 品质只按最终可达到的 1~3 档计分；超过极品后的原始品质加成没有收益。
+            var effectiveQuality = Math.Max(1, Math.Min(3,
+                1 + globalQualityBonus + outcome.QualityBonus));
+            return (long)effectiveQuality * 1_000_000L +
+                   (long)outcome.CountBonus * 10_000L +
+                   (long)outcome.FreeRateBonus * 100L -
+                   (long)outcome.DayBonus * 10L -
+                   outcome.DayMultiplierBonus;
+        }
+
+        private static bool IsBetterRepairSolution(
+            AlchemySolution left,
+            AlchemySolution right,
+            AlchemySolution ideal)
+        {
+            if (left.QualityRank != right.QualityRank) return left.QualityRank > right.QualityRank;
+            var leftCount = left.BasePillCount + left.TotalCountBonus;
+            var rightCount = right.BasePillCount + right.TotalCountBonus;
+            if (leftCount != rightCount) return leftCount > rightCount;
+            var idealCounts = ideal.Placements
+                .GroupBy(item => $"{item.ItemId.sedId}:{item.PoolType}")
+                .ToDictionary(group => group.Key, group => group.Count());
+            var leftDistance = PlacementDistance(left, idealCounts);
+            var rightDistance = PlacementDistance(right, idealCounts);
+            if (leftDistance != rightDistance) return leftDistance < rightDistance;
+            if (Math.Abs(left.PlantingDaysPerPill - right.PlantingDaysPerPill) > 0.0001)
+                return left.PlantingDaysPerPill < right.PlantingDaysPerPill;
+            return left.Placements.Count < right.Placements.Count;
+        }
+
+        private static int PlacementDistance(
+            AlchemySolution solution,
+            IReadOnlyDictionary<string, int> preferred)
+        {
+            var current = solution.Placements
+                .GroupBy(item => $"{item.ItemId.sedId}:{item.PoolType}")
+                .ToDictionary(group => group.Key, group => group.Count());
+            return current.Keys.Union(preferred.Keys)
+                .Sum(key => Math.Abs((current.TryGetValue(key, out var left) ? left : 0) -
+                                    (preferred.TryGetValue(key, out var right) ? right : 0)));
+        }
+
+        private static AlchemySolution CreateSolution(
+            TbDrugRecipeCfg recipe,
+            Composition composition,
+            List<AlchemyPlacement> placements,
+            AlchemyRuleOutcome outcome,
+            int globalCountBonus,
+            int globalQualityBonus)
+        {
+            return new AlchemySolution
+            {
+                Placements = placements,
+                ItemCounts = composition.Pieces.GroupBy(item => item.Stock.ItemId.sedId)
+                    .ToDictionary(group => group.Key, group => group.Count()),
+                PlantingDays = composition.PlantingDays,
+                BasePillCount = recipe.count,
+                GlobalCountBonus = globalCountBonus,
+                GlobalQualityBonus = globalQualityBonus,
+                RuleOutcome = outcome ?? new AlchemyRuleOutcome(),
             };
         }
 
-        private static int QuantityRuleTier(int value, string expression)
+        private static Composition RebuildComposition(
+            AlchemySolution solution,
+            IReadOnlyList<HerbCandidate> candidates)
         {
-            if (string.IsNullOrEmpty(expression)) return 0;
-            var parts = expression.Split('#');
-            if (!int.TryParse(parts[0], out var operation)) return 0;
-            var threshold = parts.Length > 1 && int.TryParse(parts[1], out var parsed)
-                ? parsed
-                : 0;
-            return operation switch
+            var byKey = candidates.GroupBy(item => $"{item.Stock.ItemId.sedId}:{item.Side}")
+                .ToDictionary(group => group.Key, group => group.First());
+            var composition = new Composition();
+            foreach (var placement in solution.Placements)
             {
-                0 => value == threshold ? 1 : 0,
-                1 => value > threshold ? 1 : 0,
-                2 => value >= threshold ? 1 : 0,
-                3 => value < threshold ? 1 : 0,
-                4 => value <= threshold ? 1 : 0,
-                5 => threshold == 0 ? 0 : value / threshold,
-                _ => 0,
+                if (!byKey.TryGetValue($"{placement.ItemId.sedId}:{placement.PoolType}", out var candidate))
+                    return null;
+                composition.Pieces.Add(candidate);
+                if (candidate.Side == 1) composition.YangCells += candidate.CellCount;
+                else composition.YinCells += candidate.CellCount;
+            }
+            return composition;
+        }
+
+        private static Composition CloneComposition(Composition source)
+        {
+            return new Composition
+            {
+                Pieces = source.Pieces.ToList(),
+                YangCells = source.YangCells,
+                YinCells = source.YinCells,
             };
         }
 
-        private static bool Dominates(QuantityProfile left, QuantityProfile right)
+        private static bool FitsInventory(Composition composition, IReadOnlyDictionary<int, long> inventory)
         {
-            var noWorse = left.PlantingDays <= right.PlantingDays &&
-                          left.YangCells <= right.YangCells &&
-                          left.YinCells <= right.YinCells &&
-                          left.PieceCount <= right.PieceCount;
-            var strictlyBetter = left.PlantingDays < right.PlantingDays ||
-                                 left.YangCells < right.YangCells ||
-                                 left.YinCells < right.YinCells ||
-                                 left.PieceCount < right.PieceCount;
-            return noWorse && strictlyBetter;
+            if (inventory == null) return true;
+            return composition.Pieces.GroupBy(item => item.Stock.ItemId.sedId)
+                .All(group => inventory.TryGetValue(group.Key, out var owned) && owned >= group.Count());
         }
 
-        private static int MaximumCount(HerbCandidate candidate, TbCraftingItemCfg furnace)
+        private static IEnumerable<HerbCandidate> BuildMonotoneCandidates(
+            IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
+            IReadOnlyDictionary<string, int> targets,
+            TbCraftingItemCfg furnace)
         {
-            var size = candidate.Side == 1 ? furnace.yangGridSize : furnace.yinGridSize;
-            return Math.Max(1, size.x * size.y / Math.Max(1, candidate.CellCount));
+            foreach (var stock in stocks)
+            {
+                if (!TryReadSingleAttribute(stock, out var crafting, out var draw,
+                        out var elementKey, out var rawValue, out var gradeWeight, out var plantingDays,
+                        out var rotations)) continue;
+                if (!targets.TryGetValue(elementKey, out var target) || target == 0) continue;
+                for (var side = 1; side <= 2; side++)
+                {
+                    var effective = rawValue * (side == 1 ? 1 : -1);
+                    if (Math.Sign(effective) != Math.Sign(target) || Math.Abs(effective) > Math.Abs(target))
+                        continue;
+                    var size = side == 1 ? furnace.yangGridSize : furnace.yinGridSize;
+                    if (!rotations.Any(shape => shape.Width <= size.x && shape.Height <= size.y)) continue;
+                    yield return new HerbCandidate
+                    {
+                        Stock = stock,
+                        Crafting = crafting,
+                        Draw = draw,
+                        ElementKey = elementKey,
+                        Contribution = Math.Abs(effective),
+                        Side = side,
+                        GradeWeight = gradeWeight,
+                        PlantingDays = plantingDays,
+                        Rotations = rotations,
+                        CellCount = draw.Coordinates.Count,
+                    };
+                }
+            }
         }
 
-        private static int GetContribution(HerbCandidate candidate, string key)
+        private static bool TryReadSingleAttribute(
+            SmartAlchemyUi.HerbStock stock,
+            out TbCraftingItemCfg crafting,
+            out TbDrawCfg draw,
+            out string elementKey,
+            out int rawValue,
+            out int gradeWeight,
+            out int plantingDays,
+            out List<RotationShape> rotations)
         {
-            return candidate.Crafting.attrDic.TryGetValue(key, out var value)
-                ? value * (candidate.Side == 1 ? 1 : -1)
-                : 0;
-        }
-
-        private static List<HerbCandidate> ExpandForm(IReadOnlyList<HerbCandidate> form, IReadOnlyList<int> counts)
-        {
-            var chosen = new List<HerbCandidate>();
-            for (var index = 0; index < form.Count; index++)
-            for (var count = 0; count < counts[index]; count++)
-                chosen.Add(form[index]);
-            return chosen;
+            var data = Singleton<TbDataImpl>.Instance;
+            crafting = data.GetCraftingItemCfg(stock.ItemId.sedId);
+            draw = null;
+            elementKey = null;
+            rawValue = 0;
+            gradeWeight = 0;
+            plantingDays = 0;
+            rotations = null;
+            if (crafting?.attrDic == null) return false;
+            var attributes = crafting.attrDic.Where(pair => pair.Value != 0).ToList();
+            // A族相生与C族转换均在当前简化模型中排除；求解器只接收B族单属性药材。
+            if (attributes.Count != 1) return false;
+            draw = data.GetDrawCfg(crafting.drawId);
+            if (draw?.Coordinates == null || draw.Coordinates.Count == 0) return false;
+            elementKey = attributes[0].Key;
+            rawValue = attributes[0].Value;
+            var grade = data.GetGradeCfg(stock.ItemCfg.gradeId);
+            gradeWeight = grade?.weight ?? 0;
+            plantingDays = gradeWeight >= 1 && gradeWeight <= PlantingDaysByGrade.Length
+                ? PlantingDaysByGrade[gradeWeight - 1]
+                : int.MaxValue / 1000;
+            rotations = BuildRotations(draw.Coordinates);
+            return rotations.Count > 0;
         }
 
         internal static List<AlchemySolution> RankAndSelectSolutions(
             IEnumerable<AlchemySolution> solutions,
             int limit)
         {
-            var orderedSolutions = solutions
+            return solutions.Where(solution => solution != null)
                 .OrderBy(solution => solution.SearchStage)
                 .ThenByDescending(solution => solution.QualityRank)
                 .ThenBy(solution => solution.PlantingDaysPerPill)
-                .ThenBy(solution => solution.PlantingDays)
-                .ThenBy(solution => solution.Placements.Count)
-                .ThenBy(solution => string.Join(",", solution.ItemCounts.Keys.OrderBy(id => id)))
-                .ToList();
-            // 同一组药材种类只保留价值最高的数量/阴阳/布局变体。
-            return orderedSolutions
-                .GroupBy(solution => string.Join(",", solution.ItemCounts.Keys.OrderBy(id => id)))
+                .GroupBy(solution => solution.SearchStage)
                 .Select(group => group.First())
-                .Take(limit)
+                .Take(Math.Min(3, limit))
                 .ToList();
-        }
-
-        private static IEnumerable<HerbCandidate> BuildCandidates(
-            IReadOnlyList<SmartAlchemyUi.HerbStock> stocks,
-            TbDrugRecipeCfg recipe)
-        {
-            var data = Singleton<TbDataImpl>.Instance;
-            var targetKeys = new HashSet<string>(recipe.AttrLimitDic.Where(p => p.Value != 0).Select(p => p.Key));
-            foreach (var stock in stocks)
-            {
-                var crafting = data.GetCraftingItemCfg(stock.ItemId.sedId);
-                if (crafting?.attrDic == null || crafting.attrDic.Count == 0) continue;
-                var draw = data.GetDrawCfg(crafting.drawId);
-                if (draw?.Coordinates == null || draw.Coordinates.Count == 0) continue;
-                var grade = data.GetGradeCfg(stock.ItemCfg.gradeId);
-                var gradeWeight = grade?.weight ?? 0;
-                var plantingDays = gradeWeight >= 1 && gradeWeight <= PlantingDaysByGrade.Length
-                    ? PlantingDaysByGrade[gradeWeight - 1]
-                    : int.MaxValue / 1000;
-                var extraKeys = new HashSet<string>(crafting.attrDic
-                    .Where(pair => pair.Value != 0 && !targetKeys.Contains(pair.Key))
-                    .Select(pair => pair.Key));
-                var rotations = BuildRotations(draw.Coordinates);
-                for (var side = 1; side <= 2; side++)
-                {
-                    var sign = side == 1 ? 1 : -1;
-                    var alignedContribution = crafting.attrDic.Sum(pair =>
-                    {
-                        var expected = recipe.AttrLimitDic.TryGetValue(pair.Key, out var value) ? value : 0;
-                        var contribution = pair.Value * sign;
-                        return Math.Sign(expected) == Math.Sign(contribution)
-                            ? Math.Min(Math.Abs(expected), Math.Abs(contribution))
-                            : -Math.Abs(contribution) * 0.35;
-                    });
-                    yield return new HerbCandidate
-                    {
-                        Stock = stock,
-                        Crafting = crafting,
-                        Draw = draw,
-                        Side = side,
-                        GradeWeight = gradeWeight,
-                        PlantingDays = plantingDays,
-                        ExtraKeys = extraKeys,
-                        Rotations = rotations,
-                        CellCount = draw.Coordinates.Count,
-                        HeuristicScore = alignedContribution / Math.Max(1.0, draw.Coordinates.Count),
-                    };
-                }
-            }
-        }
-
-        private static int GreatestCommonDivisor(int left, int right)
-        {
-            while (right != 0)
-            {
-                var remainder = left % right;
-                left = right;
-                right = remainder;
-            }
-            return Math.Abs(left);
         }
 
         private static List<RotationShape> BuildRotations(List<MyVector2Int> source)
@@ -714,7 +1137,6 @@ namespace Code4101.Zaohua.Tiandao
                 result.Add(new RotationShape
                 {
                     Rotation = rotation,
-                    Cells = cells,
                     Normalized = normalized,
                     MinX = minX,
                     MinY = minY,
@@ -740,22 +1162,25 @@ namespace Code4101.Zaohua.Tiandao
             List<HerbCandidate> chosen,
             TbCraftingItemCfg furnace,
             TbDrugRecipeCfg recipe,
-            Dictionary<HerbCandidate, List<PlacementPose>> sharedPoseCache,
+            bool optimizeRules,
+            int globalQualityBonus,
             out List<AlchemyPlacement> placements,
             out AlchemyRuleOutcome ruleOutcome,
             CancellationToken cancellationToken)
         {
             placements = new List<AlchemyPlacement>();
             ruleOutcome = new AlchemyRuleOutcome();
-            foreach (var candidate in chosen.Distinct())
-            {
-                if (!sharedPoseCache.ContainsKey(candidate))
-                    sharedPoseCache[candidate] = BuildPoses(candidate, furnace, recipe);
-            }
-            var poseCache = chosen.Distinct().ToDictionary(candidate => candidate, candidate => sharedPoseCache[candidate]);
+            var poseCache = chosen.Distinct().ToDictionary(candidate => candidate,
+                candidate => BuildPoses(candidate, furnace, optimizeRules ? recipe : null));
             if (poseCache.Any(pair => pair.Value.Count == 0)) return false;
             var pieces = chosen
-                .OrderBy(candidate => poseCache[candidate].Count)
+                // 先放置真正参与丹方位置规则的药材，避免普通配平药材抢占底部、边缘或中心。
+                // 这只是通用搜索顺序，不改变规则得分，也不绑定具体丹方或五行。
+                .OrderByDescending(candidate => optimizeRules
+                    ? CalculateCandidateRulePriority(candidate, recipe)
+                    : 0)
+                .ThenByDescending(candidate => poseCache[candidate].Max(pose => pose.RuleHint))
+                .ThenBy(candidate => poseCache[candidate].Count)
                 .ThenByDescending(candidate => candidate.CellCount)
                 .ThenBy(candidate => candidate.Stock.ItemId.sedId)
                 .ThenBy(candidate => candidate.Side)
@@ -764,19 +1189,23 @@ namespace Code4101.Zaohua.Tiandao
             var occupiedHigh = new ulong[3];
             var packed = new List<PlacementPose>();
             var lastPoseByCandidate = new Dictionary<HerbCandidate, int>();
-            var seenCompleteLayouts = new HashSet<string>();
             var bestPlacements = new List<AlchemyPlacement>();
             AlchemyRuleOutcome bestOutcome = null;
             var nodes = 0;
-            var hasRules = recipe.StateIds != null && recipe.StateIds.Count > 0;
+            AlchemyRuleOutcome simpleUpperBound = null;
+            var hasSimpleUpperBound = optimizeRules &&
+                                      TryCalculateIndependentRuleUpperBound(
+                                          chosen, furnace, recipe, out simpleUpperBound);
+            var simpleUpperBenefit = hasSimpleUpperBound
+                ? CalculateEffectiveRuleBenefit(simpleUpperBound, globalQualityBonus)
+                : long.MaxValue;
 
             List<AlchemyPlacement> MakePlacements()
             {
-                var result = new List<AlchemyPlacement>();
-                foreach (var item in packed)
+                return packed.Select(item =>
                 {
                     var size = item.Candidate.Side == 1 ? furnace.yangGridSize : furnace.yinGridSize;
-                    result.Add(new AlchemyPlacement
+                    return new AlchemyPlacement
                     {
                         ItemId = item.Candidate.Stock.ItemId,
                         PoolType = item.Candidate.Side,
@@ -784,9 +1213,8 @@ namespace Code4101.Zaohua.Tiandao
                         Position = new MyVector2Int(
                             (1 - size.x) / 2 + item.X - item.Shape.MinX,
                             (1 - size.y) / 2 + item.Y - item.Shape.MinY),
-                    });
-                }
-                return result;
+                    };
+                }).ToList();
             }
 
             bool PackAt(int pieceIndex)
@@ -796,18 +1224,17 @@ namespace Code4101.Zaohua.Tiandao
                 if (pieceIndex >= pieces.Count)
                 {
                     var candidatePlacements = MakePlacements();
-                    var layoutKey = string.Join(";", candidatePlacements
-                        .OrderBy(item => item.ItemId.sedId).ThenBy(item => item.PoolType)
-                        .ThenBy(item => item.Position.x).ThenBy(item => item.Position.y)
-                        .Select(item => $"{item.ItemId.sedId}:{item.PoolType}:{item.Position.x},{item.Position.y}:{item.Rotation}"));
-                    if (!seenCompleteLayouts.Add(layoutKey)) return false;
                     var candidateOutcome = AlchemyRuleEvaluator.Evaluate(recipe, candidatePlacements, furnace);
-                    if (bestOutcome == null || candidateOutcome.Score > bestOutcome.Score)
+                    if (bestOutcome == null ||
+                        CalculateEffectiveRuleBenefit(candidateOutcome, globalQualityBonus) >
+                        CalculateEffectiveRuleBenefit(bestOutcome, globalQualityBonus))
                     {
                         bestOutcome = candidateOutcome;
                         bestPlacements = candidatePlacements;
                     }
-                    return !hasRules;
+                    if (!optimizeRules) return true;
+                    return hasSimpleUpperBound &&
+                           CalculateEffectiveRuleBenefit(bestOutcome, globalQualityBonus) >= simpleUpperBenefit;
                 }
                 var piece = pieces[pieceIndex];
                 var poses = poseCache[piece];
@@ -822,7 +1249,7 @@ namespace Code4101.Zaohua.Tiandao
                     packed.Add(pose);
                     var hadPrevious = lastPoseByCandidate.TryGetValue(piece, out previousPose);
                     lastPoseByCandidate[piece] = poseIndex;
-                    if (PackAt(pieceIndex + 1) && (!hasRules || nodes >= PackingNodeLimit)) return true;
+                    if (PackAt(pieceIndex + 1)) return true;
                     if (hadPrevious) lastPoseByCandidate[piece] = previousPose;
                     else lastPoseByCandidate.Remove(piece);
                     packed.RemoveAt(packed.Count - 1);
@@ -836,6 +1263,36 @@ namespace Code4101.Zaohua.Tiandao
             if (bestOutcome == null) return false;
             placements = bestPlacements;
             ruleOutcome = bestOutcome;
+            return true;
+        }
+
+        private static bool TryCalculateIndependentRuleUpperBound(
+            IReadOnlyList<HerbCandidate> chosen,
+            TbCraftingItemCfg furnace,
+            TbDrugRecipeCfg recipe,
+            out AlchemyRuleOutcome outcome)
+        {
+            outcome = new AlchemyRuleOutcome();
+            if (recipe?.StateIds == null || recipe.StateIds.Count == 0) return false;
+            foreach (var stateId in recipe.StateIds)
+            {
+                var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
+                // 仅对“指定区域内每株目标药材独立计数”的规则使用上界。
+                // 属性求和、空格计数、相邻、同行等复杂规则继续完整搜索。
+                if (state == null || state.relation != 0 || state.stateType == 0 ||
+                    (state.stateType >= 11 && state.stateType <= 18)) return false;
+                var measured = 0;
+                for (var side = 1; side <= 2; side++)
+                {
+                    if (state.poolType != 0 && state.poolType != side) continue;
+                    var size = side == 1 ? furnace.yangGridSize : furnace.yinGridSize;
+                    var areaCapacity = AlchemyRuleEvaluator.CountAreaCells(size, state.area);
+                    var matchingCount = chosen.Count(candidate => candidate.Side == side &&
+                        TargetMayMatch(candidate.Stock.ItemCfg, state.target1));
+                    measured += Math.Min(matchingCount, areaCapacity);
+                }
+                AlchemyRuleEvaluator.ApplyMeasuredState(outcome, state, measured);
+            }
             return true;
         }
 
@@ -875,6 +1332,24 @@ namespace Code4101.Zaohua.Tiandao
             return poses.OrderByDescending(pose => pose.RuleHint).ThenBy(pose => pose.Y).ThenBy(pose => pose.X).ToList();
         }
 
+        private static int CalculateCandidateRulePriority(
+            HerbCandidate candidate,
+            TbDrugRecipeCfg recipe)
+        {
+            var priority = 0;
+            foreach (var stateId in recipe?.StateIds ?? new List<int>())
+            {
+                var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
+                if (state == null || (state.poolType != 0 && state.poolType != candidate.Side)) continue;
+                var matchesFirst = string.IsNullOrEmpty(state.target1) ||
+                                   TargetMayMatch(candidate.Stock.ItemCfg, state.target1);
+                var matchesSecond = !string.IsNullOrEmpty(state.target2) &&
+                                    TargetMayMatch(candidate.Stock.ItemCfg, state.target2);
+                if (matchesFirst || matchesSecond) priority++;
+            }
+            return priority;
+        }
+
         private static int CalculatePoseRuleHint(
             HerbCandidate candidate,
             RotationShape shape,
@@ -884,12 +1359,12 @@ namespace Code4101.Zaohua.Tiandao
             TbDrugRecipeCfg recipe)
         {
             var score = 0;
-            foreach (var stateId in recipe.StateIds)
+            foreach (var stateId in recipe?.StateIds ?? new List<int>())
             {
                 var state = Singleton<TbDataImpl>.Instance.GetDrugRecipeStateCfg(stateId);
                 if (state == null || (state.poolType != 0 && state.poolType != candidate.Side)) continue;
                 if (!TargetMayMatch(candidate.Stock.ItemCfg, state.target1)) continue;
-                var areaCodes = state.area.Split('&').SelectMany(stage => stage.Split('|'))
+                var areaCodes = (state.area ?? "").Split('&').SelectMany(stage => stage.Split('|'))
                     .Select(raw => int.TryParse(raw, out var code) ? code : -1).ToList();
                 var minX = x;
                 var maxX = x + shape.Width - 1;

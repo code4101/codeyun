@@ -5,7 +5,12 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 
-from backend.core.devices.files import DeviceFileSyncSnapshot, reconcile_device_file_batch
+from backend.core.devices.files import (
+    DeviceFileSyncSnapshot,
+    canonicalize_tiered_media_path,
+    reconcile_device_file_batch,
+    reconcile_tiered_media_weight_aliases,
+)
 from backend.migrations.manager import run_migrations
 from backend.models import DeviceFile, ResourceIdentity
 
@@ -31,6 +36,64 @@ def test_device_file_defaults_support_rematching(session):
     assert record.height_px is None
     assert record.media_kind is None
     assert record.mime_type is None
+
+
+def test_tiered_media_path_aliases_cover_all_m2510mn_sources():
+    assert canonicalize_tiered_media_path(
+        r"D:\home\chenkunze\data\m2510mn\pinterest\home\123456789_image.jpg"
+    ) == canonicalize_tiered_media_path(
+        r"E:\data\m2510mn\1、pinterest\home\123456789_image.jpg"
+    )
+    assert canonicalize_tiered_media_path(
+        r"D:\home\chenkunze\data\m2510mn\pixiv\068_artist\42904052_image.jpg"
+    ) == canonicalize_tiered_media_path(
+        r"E:\data\m2510mn\1、pixi\artist\42904052_image.jpg"
+    )
+    assert canonicalize_tiered_media_path(
+        r"D:\home\chenkunze\data\m2510mn\video\6771508_title.mp4"
+    ) == canonicalize_tiered_media_path(
+        r"E:\data\m2510mn\3、video\6771508_title.mp4"
+    )
+
+
+def test_reconcile_tiered_media_weight_aliases_preserves_weights_for_all_sources(session):
+    root = r"E:\data\m2510mn"
+    fixtures = (
+        ("pinterest", "home\\123456789_image.jpg", 2, 0),
+        ("pixiv", "068_artist\\42904052_image.jpg", 1, 0),
+        ("video", "6771508_title.mp4", 1, 0),
+    )
+    current_records = []
+    for source, relative_path, old_weight, current_weight in fixtures:
+        current_source = "pixi" if source == "pixiv" else source
+        current_relative = relative_path.replace("068_artist", "artist")
+        session.add(
+            DeviceFile(
+                device_id="device-tiered",
+                absolute_path=None,
+                last_known_path=rf"D:\home\chenkunze\data\m2510mn\{source}\{relative_path}",
+                weight=old_weight,
+                match_status="dangling",
+            )
+        )
+        current = DeviceFile(
+            device_id="device-tiered",
+            absolute_path=rf"{root}\1、{current_source}\{current_relative}",
+            last_known_path=rf"{root}\1、{current_source}\{current_relative}",
+            weight=current_weight,
+        )
+        session.add(current)
+        current_records.append(current)
+    session.commit()
+
+    result = reconcile_tiered_media_weight_aliases(
+        session,
+        "device-tiered",
+        root_dir=root,
+    )
+
+    assert result["restored_count"] == 3
+    assert [record.weight for record in current_records] == [2, 1, 1]
 
 
 def test_device_file_requires_unique_live_absolute_path(session):

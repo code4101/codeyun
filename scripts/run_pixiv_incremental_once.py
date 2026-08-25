@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +18,9 @@ if os.fspath(REPO_ROOT) not in sys.path:
 
 DEFAULT_MAX_REMOTE_OPERATIONS = 50
 MAX_REMOTE_OPERATIONS = 500
-DEFAULT_SOURCES = ("pixiv_collect_ids",)
+DEFAULT_SOURCES = ("pixiv_download",)
 PIXIV_SOURCES = {
     "pixiv",
-    "pixiv_collect_ids",
     "pixiv_download",
     "pixiv_home",
     "pixiv_related",
@@ -48,6 +47,8 @@ def _normalize_sources(values: Iterable[str]) -> list[str]:
     result: list[str] = []
     for raw_value in values:
         value = str(raw_value or "").strip().lower().replace("-", "_")
+        if value == "pixiv_collect_ids":
+            value = "pixiv_download"
         if value not in PIXIV_SOURCES:
             raise ValueError(f"不支持的 Pixiv 来源：{raw_value}")
         if value not in result:
@@ -65,8 +66,9 @@ def _optimizer_root() -> Path:
 
 def _legacy_trigger_enabled() -> bool:
     from backend.core.jobs.scheduler import MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _is_task_enabled
+    from backend.plugins.modules.media_sync.runtime import has_scheduled_pixiv_profiles
 
-    return bool(_is_task_enabled(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY))
+    return bool(_is_task_enabled(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY) and has_scheduled_pixiv_profiles())
 
 
 def _load_profiles(user_id: int | None) -> list[Any]:
@@ -96,6 +98,12 @@ def _active_risk_circuit() -> dict[str, Any] | None:
     from backend.plugins.modules.media_sync.sources import read_pixiv_risk_circuit
 
     return read_pixiv_risk_circuit()
+
+
+def _pixiv_source_activity_lease(*, lock_path: Path, timeout: float):
+    from backend.plugins.modules.media_sync.runtime import pixiv_source_activity_lease
+
+    return pixiv_source_activity_lease(lock_path=lock_path, timeout=timeout)
 
 
 def _run_profile(
@@ -216,10 +224,11 @@ def run_once(
         "remote_audit": _empty_remote_audit(budget),
     }
     report_path: Path | None = None
-    lock = FileLock(os.fspath(root / "pixiv-incremental.lock"))
-
     try:
-        with lock.acquire(timeout=0):
+        with _pixiv_source_activity_lease(
+            lock_path=root / "pixiv-incremental.lock",
+            timeout=0,
+        ):
             report["legacy_trigger_enabled"] = _legacy_trigger_enabled()
             if report["legacy_trigger_enabled"]:
                 raise PixivIncrementalSafetyError("legacy_media_sync_home_discovery_enabled")
@@ -231,8 +240,6 @@ def run_once(
             profiles = _load_profiles(user_id)
             report["profile_count"] = len(profiles)
             report["busy_profile_ids"] = _busy_profile_ids(profiles)
-            if report["busy_profile_ids"]:
-                raise PixivIncrementalSafetyError("media_sync_profile_running")
             if not profiles:
                 raise PixivIncrementalSafetyError("no_enabled_pixiv_profile")
 
@@ -272,10 +279,22 @@ def run_once(
                     report["stop_reason"] = "profile_error" if failed_profiles else "completed"
     except Timeout:
         report["status"] = "safety_skipped"
-        report["stop_reason"] = "pixiv_incremental_lock_held"
+        report["stop_reason"] = "pixiv_source_activity_lease_held"
     except PixivIncrementalSafetyError as exc:
         report["status"] = "safety_skipped"
         report["stop_reason"] = str(exc)
+    except ModuleNotFoundError as exc:
+        missing_module = str(exc.name or "")
+        if missing_module == "backend.plugins.modules.media_sync" or missing_module.startswith(
+            "backend.plugins.modules.media_sync."
+        ):
+            report["status"] = "safety_skipped"
+            report["stop_reason"] = "media_sync_plugin_missing"
+            report["error"] = f"Missing required private plugin module: {missing_module}"
+        else:
+            report["status"] = "failed"
+            report["stop_reason"] = report["stop_reason"] or "error"
+            report["error"] = str(exc)
     except Exception as exc:
         report["status"] = "failed"
         report["stop_reason"] = report["stop_reason"] or "error"

@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.core.fanxiu.data_annotation.frame_structure_organizer import organize_frame_structure_file
-from backend.core.fanxiu.runtime.behavior_tree import DEFAULT_FANXIU_ENTRY_ID, data_annotation_asset_tree_path
+from backend.core.fanxiu.behavior_tree.runtime import DEFAULT_FANXIU_ENTRY_ID, data_annotation_asset_tree_path
 from pyxllib.autogui import View, image_number
 
 

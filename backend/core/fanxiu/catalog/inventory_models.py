@@ -17,6 +17,23 @@ class FanxiuWardrobeItem(BaseModel):
     acquisition: str = ""
     date: date
     note_id: Optional[str] = None
+    fashion_id: int = 0
+    item_id: int = 0
+    owned: bool = True
+    category: str = ""
+    type_id: int = 0
+    max_level: int = 0
+    show_max_level: int = 0
+    is_max_level: bool = False
+    is_forever: bool = False
+    dress: bool = False
+    condition: str = ""
+    knowledge_source: str = "runtime_memory"
+    catalog_icon: str = ""
+    catalog_description: str = ""
+    catalog_effect_description: str = ""
+    catalog_quality_name: str = ""
+    catalog_quality_color: str = ""
 
 
 class FanxiuWardrobeHallSnapshot(BaseModel):
@@ -25,6 +42,13 @@ class FanxiuWardrobeHallSnapshot(BaseModel):
     huanshen: List[FanxiuWardrobeItem] = Field(default_factory=list)
     beishi: List[FanxiuWardrobeItem] = Field(default_factory=list)
     yuqi: List[FanxiuWardrobeItem] = Field(default_factory=list)
+    runtime_source: str = ""
+    runtime_complete: bool = False
+    runtime_error: str = ""
+    runtime_updated_at: float = 0
+    runtime_item_count: int = 0
+    runtime_owned_count: int = 0
+    runtime_debug: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuSpiritBeastHallSnapshot(BaseModel):
@@ -32,10 +56,83 @@ class FanxiuSpiritBeastHallSnapshot(BaseModel):
     shengshou: List[FanxiuWardrobeItem] = Field(default_factory=list)
 
 
+class FanxiuGameRichTextSegment(BaseModel):
+    text: str = ""
+    color: str = ""
+    role: str = ""
+
+
+class FanxiuMagicTreasureGradient(BaseModel):
+    pin: int = 0
+    level: int = 0
+    pin_label: str = ""
+    unlock_label: str = ""
+    skill_name: str = ""
+    summary_description: str = ""
+    summary_segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    effect_description: str = ""
+    effect_segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    schedule_description: str = ""
+    schedule_segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    active: bool = False
+    current: bool = False
+
+
+class FanxiuMagicTreasureUpgradeEffect(BaseModel):
+    stage: int = 0
+    description: str = ""
+    segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    unlocked: bool = False
+    current: bool = False
+
+
+class FanxiuMagicTreasureItem(FanxiuWardrobeItem):
+    talisman_id: int = 0
+    owned: bool = True
+    category: str = "法宝"
+    wujing_level: int = 0
+    mix_level: int = 0
+    bind_id: int = 0
+    num: int = 0
+    knowledge_source: str = "runtime_memory"
+    catalog_item_id: Optional[int] = None
+    catalog_name: str = ""
+    catalog_icon: str = ""
+    catalog_description: str = ""
+    catalog_effect_description: str = ""
+    catalog_quality: Optional[int] = None
+    catalog_quality_name: str = ""
+    catalog_quality_color: str = ""
+    catalog_refine_item_id: Optional[int] = None
+    catalog_refine_name: str = ""
+    original_effect: str = ""
+    upgrade_effects: List[FanxiuMagicTreasureUpgradeEffect] = Field(default_factory=list)
+    shenlian_effect: str = ""
+    shenlian_effect_segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    shenlian_schedule: str = ""
+    shenlian_schedule_segments: List[FanxiuGameRichTextSegment] = Field(default_factory=list)
+    shenlian_pin: int = 0
+    shenlian_pin_label: str = ""
+    shenlian_progress_nodes: int = 0
+    shenlian_remaining_nodes: int = 0
+    shenlian_next_pin: int = 0
+    shenlian_next_level: int = 0
+    shenlian_next_label: str = ""
+    shenlian_next_skill_name: str = ""
+    shenlian_max_pin: int = 0
+    shenlian_gradients: List[FanxiuMagicTreasureGradient] = Field(default_factory=list)
+
+
 class FanxiuMagicTreasureHallSnapshot(BaseModel):
-    fabao: List[FanxiuWardrobeItem] = Field(default_factory=list)
-    xiantiangubao: List[FanxiuWardrobeItem] = Field(default_factory=list)
-    houtiangubao: List[FanxiuWardrobeItem] = Field(default_factory=list)
+    fabao: List[FanxiuMagicTreasureItem] = Field(default_factory=list)
+    xiantiangubao: List[FanxiuMagicTreasureItem] = Field(default_factory=list)
+    houtiangubao: List[FanxiuMagicTreasureItem] = Field(default_factory=list)
+    runtime_source: str = ""
+    runtime_complete: bool = False
+    runtime_error: str = ""
+    runtime_updated_at: float = 0
+    runtime_item_count: int = 0
+    runtime_debug: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuSpiritArtifactPartRow(BaseModel):
@@ -53,6 +150,13 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     spirit_power: str = ""
     health: str = ""
     defense: str = ""
+    runtime_base_id: int = 0
+    runtime_item_id: str = ""
+    runtime_ware_id: int = 0
+    runtime_part: int = 0
+    runtime_refine_num: int = 0
+    runtime_is_break: bool = False
+    runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -96,6 +200,13 @@ class FanxiuSpiritArtifactHallSnapshot(BaseModel):
     market_currency_count: int = 0
     market_items: List[FanxiuSpiritArtifactMarketItem] = Field(default_factory=list)
     storage_bag_items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
+    runtime_source: str = ""
+    runtime_complete: bool = False
+    runtime_error: str = ""
+    runtime_updated_at: float = 0
+    runtime_item_count: int = 0
+    runtime_equipped_count: int = 0
+    runtime_debug: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuActivityItem(BaseModel):
@@ -109,82 +220,6 @@ class FanxiuActivityItem(BaseModel):
 
 class FanxiuActivityListSnapshot(BaseModel):
     items: List[FanxiuActivityItem] = Field(default_factory=list)
-
-
-class FanxiuModaoInvasionExchangeItem(BaseModel):
-    id: str
-    name: str = ""
-    magic_crystal_cost: int = 0
-    purchase_limit: int = 0
-    checked: bool = False
-
-
-class FanxiuModaoInvasionPersonalRankingItem(BaseModel):
-    id: str
-    rank: int = 0
-    name: str = ""
-    plane: str = ""
-    merit: int = 0
-
-
-class FanxiuModaoInvasionRecord(BaseModel):
-    id: str
-    activity_id: str = ""
-    label: str = ""
-    personal_rankings: List[FanxiuModaoInvasionPersonalRankingItem] = Field(default_factory=list)
-    items: List[FanxiuModaoInvasionExchangeItem] = Field(default_factory=list)
-
-
-class FanxiuModaoInvasionSnapshot(BaseModel):
-    records: List[FanxiuModaoInvasionRecord] = Field(default_factory=list)
-
-
-class FanxiuShouyuanExplorationExchangeItem(BaseModel):
-    id: str
-    name: str = ""
-    magic_crystal_cost: int = 0
-    purchase_limit: int = 0
-    checked: bool = False
-
-
-class FanxiuShouyuanExplorationPersonalRankingItem(BaseModel):
-    id: str
-    rank: int = 0
-    name: str = ""
-    plane: str = ""
-    merit: int = 0
-
-
-class FanxiuShouyuanExplorationIncomeSpeedItem(BaseModel):
-    id: str
-    captured_date: str = ""
-    search_count: int = 0
-    beast_crystal: int = 0
-    score: int = 0
-    merit: int = 0
-    remark: str = ""
-
-
-class FanxiuShouyuanExplorationConsumptionEvaluationItem(BaseModel):
-    id: str
-    label: str = ""
-    current: float = 0
-    target: float = 0
-    speed: float = 0
-
-
-class FanxiuShouyuanExplorationRecord(BaseModel):
-    id: str
-    activity_id: str = ""
-    label: str = ""
-    personal_rankings: List[FanxiuShouyuanExplorationPersonalRankingItem] = Field(default_factory=list)
-    income_speeds: List[FanxiuShouyuanExplorationIncomeSpeedItem] = Field(default_factory=list)
-    consumption_evaluations: List[FanxiuShouyuanExplorationConsumptionEvaluationItem] = Field(default_factory=list)
-    items: List[FanxiuShouyuanExplorationExchangeItem] = Field(default_factory=list)
-
-
-class FanxiuShouyuanExplorationSnapshot(BaseModel):
-    records: List[FanxiuShouyuanExplorationRecord] = Field(default_factory=list)
 
 
 class FanxiuMagicTreasureOcrImportResponse(BaseModel):
@@ -244,31 +279,6 @@ class FanxiuSpiritArtifactStorageBagRecognitionResponse(BaseModel):
     reason: str = ""
     lines: List[str] = Field(default_factory=list)
     items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
-
-
-class FanxiuModaoInvasionOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuModaoInvasionExchangeItem] = Field(default_factory=list)
-
-
-class FanxiuModaoInvasionPersonalRankingOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuModaoInvasionPersonalRankingItem] = Field(default_factory=list)
-
-
-class FanxiuShouyuanExplorationOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuShouyuanExplorationExchangeItem] = Field(default_factory=list)
-
-
-class FanxiuShouyuanExplorationPersonalRankingOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuShouyuanExplorationPersonalRankingItem] = Field(default_factory=list)
-
-
-class FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    item: FanxiuShouyuanExplorationIncomeSpeedItem
 
 
 class FanxiuFormationRequirementImportItem(BaseModel):

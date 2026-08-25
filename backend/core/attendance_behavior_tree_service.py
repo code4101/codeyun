@@ -13,7 +13,7 @@ from typing import Any
 import psutil
 
 from backend.core.device import process_candidates_by_name
-from backend.core.services.launcher import popen_service, run_quiet
+from backend.core.services.launcher import run_quiet
 from backend.core.settings import ROOT_DIR
 
 
@@ -21,7 +21,7 @@ ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY = "attendance-behavior-tree"
 ATTENDANCE_BEHAVIOR_TREE_TITLE = "考勤行为树"
 ATTENDANCE_MODULE_NAME = "xlsln.kq5034.kqmain"
 ATTENDANCE_MODULE_NAMES = {ATTENDANCE_MODULE_NAME, "kq5034.kqmain"}
-DEFAULT_ATTENDANCE_SERVICE_HOSTS = {"codepc_mi15", "mi15"}
+DEFAULT_ATTENDANCE_SERVICE_HOSTS = {"codepc_mf", "mf"}
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
 
 
@@ -124,10 +124,6 @@ def _status_paths() -> dict[str, str]:
         "python_path": os.fspath(get_attendance_python()),
         "cwd": os.fspath(get_attendance_package_root()),
     }
-
-
-def _now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
@@ -516,6 +512,12 @@ def probe_attendance_subprocess_utf8(text: str = "考勤中文探针", timeout: 
 
 
 def get_attendance_behavior_tree_status() -> dict[str, Any]:
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.db import database_path as attendance_database_path
+    from xlsln.kq5034.engine.job_runs import latest_job_run
+
     paths = _status_paths()
     state_path = Path(paths["state_path"])
     lock_path = Path(paths["lock_path"])
@@ -539,6 +541,11 @@ def get_attendance_behavior_tree_status() -> dict[str, Any]:
         next_run_at = None
 
     state_last_error = str(state.get("last_error") or "").strip()
+    independent_database_path = attendance_database_path()
+    try:
+        latest_midnight_run = latest_job_run() if independent_database_path.exists() else None
+    except Exception as exc:
+        latest_midnight_run = {"status": "unavailable", "error_message": str(exc)}
     last_error = ""
     if process_count > 1:
         last_error = "检测到多个考勤行为树根进程；下一次启动会先终止旧进程。"
@@ -571,51 +578,48 @@ def get_attendance_behavior_tree_status() -> dict[str, Any]:
         "state_updated_at": _safe_mtime_text(state_path),
         "behavior_tree_log_updated_at": _safe_mtime_text(behavior_tree_log_path),
         "service_log_updated_at": _safe_mtime_text(service_log_path),
+        "independent_database_path": os.fspath(independent_database_path),
+        "independent_database_exists": independent_database_path.exists(),
+        "latest_midnight_run": latest_midnight_run,
         **paths,
     }
 
 
 def start_attendance_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:
-    stop_result = (
-        terminate_attendance_behavior_tree_processes(timeout=5.0)
-        if replace_existing
-        else {"matched": [], "terminated": [], "remaining": [], "errors": []}
-    )
-    paths = _status_paths()
-    python_path = Path(paths["python_path"])
-    script_path = Path(paths["script_path"])
-    cwd = Path(paths["cwd"])
-    service_log_path = Path(paths["service_log_path"])
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
 
-    if not python_path.exists():
-        raise RuntimeError(f"考勤 Python 不存在：{python_path}")
-    if not script_path.exists():
-        raise RuntimeError(f"考勤入口脚本不存在：{script_path}")
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034 import service as attendance_service
 
-    service_log_path.parent.mkdir(parents=True, exist_ok=True)
-    env = _attendance_subprocess_env(paths)
-
-    with service_log_path.open("ab") as log_file:
-        log_file.write(f"\n[{_now_text()}] CodeYun start attendance behavior tree\n".encode("utf-8"))
-        proc = popen_service(
-            [os.fspath(python_path), os.fspath(script_path)],
-            cwd=os.fspath(cwd),
-            env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
-
-    time.sleep(0.5)
+    stop_result = attendance_service.stop() if replace_existing else None
+    result = attendance_service.start()
     return {
-        "status": "started",
-        "pid": proc.pid,
+        "status": "started" if result.get("started") else "already_running",
+        "pid": (result.get("pids") or [None])[0],
         "stop_result": stop_result,
         "service": get_attendance_behavior_tree_status(),
     }
 
 
+def ensure_attendance_behavior_tree_service() -> dict[str, Any]:
+    """Idempotently ensure the single attendance runtime and supervisor."""
+    service = get_attendance_behavior_tree_status()
+    if service.get("running"):
+        return {
+            "status": "already_running",
+            "pid": service.get("pid"),
+            "service": service,
+        }
+    return start_attendance_behavior_tree_service(replace_existing=False)
+
+
 def stop_attendance_behavior_tree_service(timeout: float = 5.0) -> dict[str, Any]:
-    result = terminate_attendance_behavior_tree_processes(timeout=timeout)
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034 import service as attendance_service
+
+    result = attendance_service.stop(wait_seconds=timeout)
     return {
         "status": "stopped",
         "stop_result": result,
@@ -688,7 +692,17 @@ def build_attendance_behavior_tree_log_lines(limit: int = 500) -> list[str]:
         f"锁文件：{status.get('lock_path')}",
         f"行为树日志：{status.get('behavior_tree_log_path')}",
         f"入口脚本：{status.get('script_path')}",
+        f"独立数据库：{status.get('independent_database_path')}",
     ]
+    latest_midnight_run = status.get("latest_midnight_run")
+    if isinstance(latest_midnight_run, dict):
+        lines.extend([
+            f"最近 0 点作业：{latest_midnight_run.get('status') or '-'}",
+            f"最近 0 点作业日期：{latest_midnight_run.get('scheduled_date') or '-'}",
+            f"最近 0 点作业进度：{latest_midnight_run.get('completed_item_count') or 0}/"
+            f"{latest_midnight_run.get('planned_item_count') or 0}，失败 "
+            f"{latest_midnight_run.get('failed_item_count') or 0}",
+        ])
     if status.get("last_error"):
         lines.extend(["", f"提示：{status['last_error']}"])
     if status.get("processes"):

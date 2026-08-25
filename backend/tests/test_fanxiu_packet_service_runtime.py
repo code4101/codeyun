@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.core.fanxiu.packet import service_runtime
+from backend.core.fanxiu.history_museum.packet_capture import service_runtime
 
 
 def test_packet_service_status_reads_state_file(monkeypatch, tmp_path):
@@ -99,6 +101,42 @@ def test_request_fanxiu_packet_service_capture_ready_submits_readiness_action(mo
     assert captured == {"action": "ensure_capture_ready", "reason": "before-entry", "wait_seconds": 12}
 
 
+def test_catch_up_request_projects_business_readiness(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "submit_fanxiu_packet_service_command",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "completed",
+            "result": {"ok": True, "result": {"status": "caught_up", "caught_up": True}},
+        },
+    )
+
+    result = service_runtime.request_fanxiu_packet_service_catch_up(reason="test", wait_seconds=3)
+
+    assert result["completed"] is True
+    assert result["facts_ready"] is True
+    assert result["service_status"] == "caught_up"
+
+
+def test_capture_ready_request_projects_business_readiness(monkeypatch):
+    monkeypatch.setattr(
+        service_runtime,
+        "submit_fanxiu_packet_service_command",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "completed",
+            "result": {"ok": True, "result": {"status": "ready", "capture_ready": True}},
+        },
+    )
+
+    result = service_runtime.request_fanxiu_packet_service_capture_ready(reason="test", wait_seconds=3)
+
+    assert result["completed"] is True
+    assert result["capture_ready"] is True
+    assert result["service_status"] == "ready"
+
+
 def test_packet_service_action_timeout_uses_longer_budget_for_maintenance(monkeypatch):
     monkeypatch.delenv("FX_PACKET_SERVICE_COMMAND_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", raising=False)
@@ -113,6 +151,33 @@ def test_packet_service_action_timeout_respects_global_floor_for_maintenance(mon
     monkeypatch.setenv("FX_PACKET_SERVICE_MAINTENANCE_TIMEOUT_SECONDS", "180")
 
     assert service_runtime._packet_service_action_timeout_seconds("maintenance") == 240.0
+
+
+def test_local_stream_capture_is_ready_without_remote_pcap_path():
+    assert service_runtime._capture_runtime_is_ready(
+        {
+            "running": True,
+            "tcpdump_ready": True,
+            "capture_mode": "local-stream",
+            "current_pcap_path": "capture.pcap",
+            "current_remote_pcap_path": "",
+            "stream_writer_alive": True,
+            "stream_writer_error": "",
+        }
+    ) is True
+
+
+def test_local_stream_capture_is_not_ready_when_writer_failed():
+    assert service_runtime._capture_runtime_is_ready(
+        {
+            "running": True,
+            "tcpdump_ready": True,
+            "capture_mode": "local-stream",
+            "current_pcap_path": "capture.pcap",
+            "stream_writer_alive": False,
+            "stream_writer_error": "writer stopped",
+        }
+    ) is False
 
 
 def test_process_packet_service_command_runs_maintenance(monkeypatch, tmp_path):
@@ -134,6 +199,44 @@ def test_process_packet_service_command_runs_maintenance(monkeypatch, tmp_path):
     assert payload["result"]["updated_at"] == "2026-07-10 17:40:00"
     assert not command_path.exists()
     assert (result_dir / "maintenance-test.json").exists()
+
+
+def test_pending_maintenance_does_not_block_later_foreground_command(monkeypatch, tmp_path):
+    maintenance_path = tmp_path / "maintenance.json"
+    foreground_path = tmp_path / "foreground.json"
+    maintenance_path.write_text(
+        '{"command_id":"maintenance-test","action":"maintenance","reason":"test"}',
+        encoding="utf-8",
+    )
+    foreground_path.write_text(
+        '{"command_id":"foreground-test","action":"packet_facts_catch_up","reason":"test"}',
+        encoding="utf-8",
+    )
+    maintenance_started = threading.Event()
+    release_maintenance = threading.Event()
+    calls: list[str] = []
+
+    def fake_process(path: Path):
+        action = "maintenance" if path == maintenance_path else "packet_facts_catch_up"
+        calls.append(action)
+        if action == "maintenance":
+            maintenance_started.set()
+            assert release_maintenance.wait(timeout=2)
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr(service_runtime, "_process_packet_service_command", fake_process)
+    monkeypatch.setattr(service_runtime, "_iter_pending_packet_service_commands", lambda: [maintenance_path])
+
+    first = service_runtime.process_pending_fanxiu_packet_service_commands()
+    assert first[0]["accepted"] is True
+    assert maintenance_started.wait(timeout=1)
+
+    monkeypatch.setattr(service_runtime, "_iter_pending_packet_service_commands", lambda: [maintenance_path, foreground_path])
+    second = service_runtime.process_pending_fanxiu_packet_service_commands()
+
+    assert second == [{"ok": True, "action": "packet_facts_catch_up"}]
+    assert calls == ["maintenance", "packet_facts_catch_up"]
+    release_maintenance.set()
 
 
 def test_packet_service_health_flags_stale_maintenance_substate(monkeypatch):
@@ -717,8 +820,196 @@ def test_start_packet_service_uses_no_window_module_launcher(monkeypatch, tmp_pa
     assert kwargs["cwd"] == str(service_runtime.ROOT_DIR)
     assert kwargs["stderr"] == subprocess.STDOUT
     assert kwargs["env"]["FX_PACKET_SERVICE_LOG"] == str(log_path)
+    assert kwargs["env"]["OMP_NUM_THREADS"] == "2"
+    assert kwargs["env"]["OPENBLAS_NUM_THREADS"] == "2"
     assert kwargs["env"]["FX_PACKET_SERVICE_STATE"] == str(state_path)
     assert Path(kwargs["stdout"].name) == log_path
+
+
+def test_start_packet_service_restarts_stale_decoder_process(monkeypatch, tmp_path):
+    calls: list[object] = []
+    log_path = tmp_path / "packet_service.log"
+    state_path = tmp_path / "packet_service_state.json"
+    monkeypatch.setenv("FX_PACKET_SERVICE_LOG", str(log_path))
+    monkeypatch.setenv("FX_PACKET_SERVICE_STATE", str(state_path))
+    statuses = iter(
+        [
+            {
+                "running": True,
+                "decoder_schema_version": service_runtime.FANXIU_TCP_DECODE_SCHEMA_VERSION - 1,
+                "process_count": 1,
+                "pids": [1234],
+            },
+            {
+                "running": True,
+                "decoder_schema_version": service_runtime.FANXIU_TCP_DECODE_SCHEMA_VERSION,
+                "process_count": 1,
+                "pids": [4321],
+            },
+        ]
+    )
+    monkeypatch.setattr(service_runtime, "get_fanxiu_packet_service_status", lambda: next(statuses))
+    monkeypatch.setattr(
+        service_runtime,
+        "stop_fanxiu_packet_service",
+        lambda: calls.append("stop") or {"status": "stopped"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "popen_python_module_service",
+        lambda *_args, **_kwargs: calls.append("start") or SimpleNamespace(pid=4321, poll=lambda: None),
+    )
+
+    result = service_runtime.start_fanxiu_packet_service(wait_seconds=0.1)
+
+    assert result["status"] == "started"
+    assert calls == ["stop", "start"]
+
+
+def test_start_packet_service_recovers_old_stale_realtime_worker(monkeypatch, tmp_path):
+    calls: list[object] = []
+    log_path = tmp_path / "packet_service.log"
+    state_path = tmp_path / "packet_service_state.json"
+    monkeypatch.setenv("FX_PACKET_SERVICE_LOG", str(log_path))
+    monkeypatch.setenv("FX_PACKET_SERVICE_STATE", str(state_path))
+    statuses = iter(
+        [
+            {
+                "running": True,
+                "decoder_schema_version": service_runtime.FANXIU_TCP_DECODE_SCHEMA_VERSION,
+                "process_count": 1,
+                "processes": [{"pid": 1234, "started_at": time.time() - 600}],
+                "pids": [1234],
+                "health": {"issues": ["realtime_result_stale"]},
+            },
+            {
+                "running": True,
+                "decoder_schema_version": service_runtime.FANXIU_TCP_DECODE_SCHEMA_VERSION,
+                "process_count": 1,
+                "processes": [{"pid": 4321, "started_at": time.time()}],
+                "pids": [4321],
+                "health": {"issues": []},
+            },
+        ]
+    )
+    monkeypatch.setattr(service_runtime, "get_fanxiu_packet_service_status", lambda: next(statuses))
+    monkeypatch.setattr(
+        service_runtime,
+        "stop_fanxiu_packet_service",
+        lambda: calls.append("stop") or {"status": "stopped"},
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "popen_python_module_service",
+        lambda *_args, **_kwargs: calls.append("start") or SimpleNamespace(pid=4321, poll=lambda: None),
+    )
+
+    result = service_runtime.start_fanxiu_packet_service(wait_seconds=0.1)
+
+    assert result["status"] == "started"
+    assert result["recovered_from"] == "realtime_result_stale"
+    assert calls == ["stop", "start"]
+
+
+def test_start_packet_service_does_not_restart_new_daemon_with_old_snapshot(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        service_runtime,
+        "get_fanxiu_packet_service_status",
+        lambda: {
+            "running": True,
+            "decoder_schema_version": service_runtime.FANXIU_TCP_DECODE_SCHEMA_VERSION,
+            "process_count": 1,
+            "processes": [{"pid": 4321, "started_at": time.time() - 10}],
+            "pids": [4321],
+            "health": {"issues": ["realtime_result_stale"]},
+        },
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "stop_fanxiu_packet_service",
+        lambda: calls.append("stop") or {"status": "stopped"},
+    )
+
+    result = service_runtime.start_fanxiu_packet_service(wait_seconds=0.1)
+
+    assert result["status"] == "started"
+    assert calls == []
+
+
+def test_packet_service_health_flags_excessive_private_memory(monkeypatch):
+    monkeypatch.setenv(service_runtime.FANXIU_PACKET_SERVICE_MAX_PRIVATE_MB_ENV, "2048")
+    health = service_runtime.build_fanxiu_packet_service_health(
+        {
+            "running": True,
+            "processes": [{"pid": 1234, "private_mb": 3072.0}],
+            "capture_runtime": {"game_running": False},
+            "packet_worker": {},
+        }
+    )
+
+    assert "daemon_memory_exhausted" in health["issues"]
+    assert health["process_private_mb"] == 3072.0
+    assert health["max_private_mb"] == 2048.0
+
+
+def test_packet_service_recovery_includes_stale_maintenance_and_memory_pressure():
+    reason = service_runtime._packet_service_recovery_reason(
+        {
+            "running": True,
+            "processes": [{"pid": 1234, "started_at": time.time() - 600}],
+            "health": {
+                "issues": [
+                    "maintenance_result_stale",
+                    "daemon_memory_exhausted",
+                ]
+            },
+        }
+    )
+
+    assert reason == "daemon_memory_exhausted,maintenance_result_stale"
+
+
+def test_packet_service_memory_recovery_ignores_new_process_snapshot_grace():
+    reason = service_runtime._packet_service_recovery_reason(
+        {
+            "running": True,
+            "processes": [{"pid": 1234, "started_at": time.time() - 10}],
+            "health": {"issues": ["daemon_memory_exhausted"]},
+        }
+    )
+
+    assert reason == "daemon_memory_exhausted"
+
+
+def test_packet_service_does_not_replay_expired_command_after_restart(monkeypatch, tmp_path):
+    command_id = "expired-command"
+    command_path = tmp_path / "commands" / f"{command_id}.json"
+    result_path = tmp_path / "results" / f"{command_id}.json"
+    command_path.parent.mkdir()
+    command_path.write_text(
+        (
+            '{"command_id":"expired-command","action":"maintenance",'
+            '"reason":"test","created_at_epoch":1}'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_packet_service_result_path",
+        lambda _command_id: result_path,
+    )
+    monkeypatch.setattr(
+        service_runtime,
+        "_run_packet_service_command_action",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("expired command replayed")),
+    )
+
+    result = service_runtime._process_packet_service_command(command_path)
+
+    assert result["expired"] is True
+    assert result_path.is_file()
+    assert not command_path.exists()
 
 
 def test_write_json_retries_replace_on_windows_permission_error(monkeypatch, tmp_path):

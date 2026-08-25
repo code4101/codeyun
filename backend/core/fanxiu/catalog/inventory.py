@@ -19,12 +19,6 @@ _MAGIC_TREASURE_HALL_KEY = "magic_treasure_hall"
 _MAGIC_TREASURE_SECTION_KEYS = ("fabao", "xiantiangubao", "houtiangubao")
 _SPIRIT_ARTIFACT_HALL_KEY = "spirit_artifact_hall"
 _ACTIVITY_LIST_KEY = "activity_list"
-_MODAO_INVASION_EXCHANGE_LIST_KEY = "modao_invasion_exchange_list"
-_SHOUYUAN_EXPLORATION_EXCHANGE_LIST_KEY = "shouyuan_exploration_exchange_list"
-_DEFAULT_MODAO_INVASION_LABEL = "32跨"
-_DEFAULT_MODAO_INVASION_RECORD_ID = "modao-invasion-record-32"
-_DEFAULT_SHOUYUAN_EXPLORATION_LABEL = "8跨"
-_DEFAULT_SHOUYUAN_EXPLORATION_RECORD_ID = "shouyuan-exploration-record-8"
 _ACTIVITY_CROSS_COUNT_OPTIONS = {0, 1, 2, 4, 8, 16, 32, 64}
 _ACTIVITY_CROSS_SUFFIX_RE = re.compile(r"^(?P<name>.*?)\s*(?<!\d)(?P<cross>64|32|16|8|4|2|1|0)\s*跨$")
 _INVENTORY_TYPE_OPTIONS = {"攻击", "防御", "灵力", "辅助"}
@@ -44,6 +38,7 @@ _SPIRIT_ARTIFACT_SEEDS = (
     ("青暝岁月灯", ("盏", "芯", "穗", "杆", "纹", "荧")),
     ("苍烟神火炉", ("饰", "盖", "身", "柄", "光", "座")),
     ("御海镇神图", ("卷", "瑚", "海", "轴", "灵", "山")),
+    ("六界轮回盘", ("珠", "盘", "焰", "环", "荧", "晶")),
 )
 _SPIRIT_ARTIFACT_NAME_ALIASES = {
     "青冥岁月灯": "青暝岁月灯",
@@ -58,6 +53,7 @@ _SPIRIT_ARTIFACT_EXCLUSIVE_STAT_KEYS = {
     "青暝岁月灯": ("灵宝抵御", "功法抵御", "全技能减伤"),
     "苍烟神火炉": ("招架", "灵兽附伤", "法宝附伤"),
     "御海镇神图": ("仙语附伤", "灵暴附伤", "灵暴"),
+    "六界轮回盘": ("神识全技能增伤", "神识暴击", "神识暴击附伤", "神识最终增伤"),
 }
 _SPIRIT_ARTIFACT_PEERLESS_STEPS = {0, 25, 30}
 
@@ -96,30 +92,6 @@ def load_activity_list() -> list[dict[str, Any]]:
         collections = {}
     activity_list = collections.get(_ACTIVITY_LIST_KEY, [])
     return _normalize_activity_list(activity_list)
-
-
-def load_modao_invasion_exchange_list() -> dict[str, Any]:
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-    exchange_list = collections.get(_MODAO_INVASION_EXCHANGE_LIST_KEY, [])
-    return _normalize_modao_invasion_exchange_snapshot(exchange_list)
-
-
-def load_shouyuan_exploration_exchange_list() -> dict[str, Any]:
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-    exchange_list = collections.get(_SHOUYUAN_EXPLORATION_EXCHANGE_LIST_KEY)
-    return _normalize_modao_invasion_exchange_snapshot(
-        exchange_list,
-        default_label=_DEFAULT_SHOUYUAN_EXPLORATION_LABEL,
-        default_record_id=_DEFAULT_SHOUYUAN_EXPLORATION_RECORD_ID,
-        include_income_speeds=True,
-        include_consumption_evaluations=True,
-    )
 
 
 def save_wardrobe_hall(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -178,54 +150,6 @@ def save_activity_list(payload: list[dict[str, Any]] | dict[str, Any]) -> list[d
 
     normalized = _normalize_activity_list(payload)
     collections[_ACTIVITY_LIST_KEY] = normalized
-    storage["version"] = _storage_version(storage)
-    storage["collections"] = collections
-
-    storage_path.write_text(
-        json.dumps(storage, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return normalized
-
-
-def save_modao_invasion_exchange_list(payload: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
-    storage_path = get_inventory_storage_path()
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-
-    normalized = _normalize_modao_invasion_exchange_snapshot(payload)
-    collections[_MODAO_INVASION_EXCHANGE_LIST_KEY] = normalized
-    storage["version"] = _storage_version(storage)
-    storage["collections"] = collections
-
-    storage_path.write_text(
-        json.dumps(storage, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return normalized
-
-
-def save_shouyuan_exploration_exchange_list(payload: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
-    storage_path = get_inventory_storage_path()
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-
-    normalized = _normalize_modao_invasion_exchange_snapshot(
-        payload,
-        default_label=_DEFAULT_SHOUYUAN_EXPLORATION_LABEL,
-        default_record_id=_DEFAULT_SHOUYUAN_EXPLORATION_RECORD_ID,
-        include_income_speeds=True,
-        include_consumption_evaluations=True,
-    )
-    collections[_SHOUYUAN_EXPLORATION_EXCHANGE_LIST_KEY] = normalized
     storage["version"] = _storage_version(storage)
     storage["collections"] = collections
 
@@ -654,145 +578,6 @@ def _normalize_activity_list(raw_payload: Any) -> list[dict[str, Any]]:
     return sorted(normalized_items, key=_activity_sort_key)
 
 
-def _default_modao_invasion_record(
-    *,
-    label: str = _DEFAULT_MODAO_INVASION_LABEL,
-    record_id: str = _DEFAULT_MODAO_INVASION_RECORD_ID,
-) -> dict[str, Any]:
-    return {
-        "id": record_id,
-        "activity_id": "",
-        "label": label,
-        "personal_rankings": [],
-        "items": [],
-    }
-
-
-def _default_modao_invasion_snapshot() -> dict[str, Any]:
-    return {"records": []}
-
-
-def _normalize_modao_invasion_exchange_snapshot(
-    raw_payload: Any,
-    *,
-    default_label: str = _DEFAULT_MODAO_INVASION_LABEL,
-    default_record_id: str = _DEFAULT_MODAO_INVASION_RECORD_ID,
-    include_income_speeds: bool = False,
-    include_consumption_evaluations: bool = False,
-) -> dict[str, Any]:
-    raw_records: Any = None
-    if isinstance(raw_payload, dict):
-        raw_records = raw_payload.get("records")
-        if not isinstance(raw_records, list) and "items" in raw_payload:
-            raw_records = [
-                {
-                    "id": raw_payload.get("id") or default_record_id,
-                    "activity_id": raw_payload.get("activity_id") or raw_payload.get("activityId") or "",
-                    "label": raw_payload.get("label") or raw_payload.get("title") or default_label,
-                    "personal_rankings": raw_payload.get("personal_rankings", []),
-                    "income_speeds": raw_payload.get("income_speeds", []),
-                    "consumption_evaluations": raw_payload.get("consumption_evaluations", []),
-                    "items": raw_payload.get("items", []),
-                }
-            ]
-    elif isinstance(raw_payload, list):
-        raw_records = [
-            {
-                "id": default_record_id,
-                "activity_id": "",
-                "label": default_label,
-                "items": raw_payload,
-            }
-        ]
-
-    if not isinstance(raw_records, list):
-        return _default_modao_invasion_snapshot()
-
-    normalized_records: list[dict[str, Any]] = []
-    for index, raw_record in enumerate(raw_records):
-        fallback_label = default_label if index == 0 else f"record-{index + 1}"
-        fallback_id = default_record_id if index == 0 else str(uuid.uuid4())
-        normalized_record = _normalize_modao_invasion_record(
-            raw_record,
-            fallback_label=fallback_label,
-            fallback_id=fallback_id,
-            include_income_speeds=include_income_speeds,
-            include_consumption_evaluations=include_consumption_evaluations,
-        )
-        if normalized_record is not None:
-            normalized_records.append(normalized_record)
-
-    if not normalized_records:
-        return _default_modao_invasion_snapshot()
-    return {"records": normalized_records}
-
-
-def _normalize_modao_invasion_record(
-    raw_record: Any,
-    *,
-    fallback_label: str,
-    fallback_id: str,
-    include_income_speeds: bool = False,
-    include_consumption_evaluations: bool = False,
-) -> dict[str, Any] | None:
-    if not isinstance(raw_record, dict):
-        return None
-
-    record_id = str(raw_record.get("id") or "").strip() or fallback_id
-    activity_id = str(raw_record.get("activity_id") or raw_record.get("activityId") or "").strip()
-    label = str(raw_record.get("label") or raw_record.get("title") or "").strip() or fallback_label
-    raw_personal_rankings = raw_record.get("personal_rankings", [])
-    if not isinstance(raw_personal_rankings, list):
-        raw_personal_rankings = []
-    raw_income_speeds = raw_record.get("income_speeds", [])
-    if not isinstance(raw_income_speeds, list):
-        raw_income_speeds = []
-    raw_consumption_evaluations = raw_record.get("consumption_evaluations", [])
-    if not isinstance(raw_consumption_evaluations, list):
-        raw_consumption_evaluations = []
-    raw_items = raw_record.get("items", [])
-    if not isinstance(raw_items, list):
-        raw_items = []
-
-    normalized_personal_rankings: list[dict[str, Any]] = []
-    for item in raw_personal_rankings:
-        normalized_item = _normalize_modao_invasion_personal_ranking_item(item)
-        if normalized_item is not None:
-            normalized_personal_rankings.append(normalized_item)
-
-    normalized_items: list[dict[str, Any]] = []
-    for item in raw_items:
-        normalized_item = _normalize_modao_invasion_exchange_item(item)
-        if normalized_item is not None:
-            normalized_items.append(normalized_item)
-
-    normalized_record = {
-        "id": record_id,
-        "activity_id": activity_id,
-        "label": label,
-        "personal_rankings": sorted(normalized_personal_rankings, key=_modao_invasion_personal_ranking_sort_key),
-        "items": normalized_items,
-    }
-    if include_income_speeds:
-        normalized_income_speeds: list[dict[str, Any]] = []
-        for item in raw_income_speeds:
-            normalized_item = _normalize_shouyuan_exploration_income_speed_item(item)
-            if normalized_item is not None:
-                normalized_income_speeds.append(normalized_item)
-        normalized_record["income_speeds"] = sorted(
-            normalized_income_speeds,
-            key=_shouyuan_exploration_income_speed_sort_key,
-        )
-    if include_consumption_evaluations:
-        normalized_consumption_evaluations: list[dict[str, Any]] = []
-        for item in raw_consumption_evaluations:
-            normalized_item = _normalize_shouyuan_exploration_consumption_evaluation_item(item)
-            if normalized_item is not None:
-                normalized_consumption_evaluations.append(normalized_item)
-        normalized_record["consumption_evaluations"] = normalized_consumption_evaluations
-    return normalized_record
-
-
 def _normalize_inventory_item(
     raw_item: Any,
     *,
@@ -881,110 +666,6 @@ def _normalize_activity_cross_count(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return numeric if numeric in _ACTIVITY_CROSS_COUNT_OPTIONS else 0
-
-
-def _normalize_modao_invasion_exchange_item(raw_item: Any) -> dict[str, Any] | None:
-    if not isinstance(raw_item, dict):
-        return None
-
-    item_id = str(raw_item.get("id") or "").strip() or str(uuid.uuid4())
-    name = str(raw_item.get("name") or "").strip()
-    magic_crystal_cost = _normalize_nonnegative_int(raw_item.get("magic_crystal_cost"))
-    purchase_limit = _normalize_nonnegative_int(raw_item.get("purchase_limit"))
-    checked = _normalize_bool(raw_item.get("checked"))
-
-    return {
-        "id": item_id,
-        "name": name,
-        "magic_crystal_cost": magic_crystal_cost,
-        "purchase_limit": purchase_limit,
-        "checked": checked,
-    }
-
-
-def _normalize_modao_invasion_personal_ranking_item(raw_item: Any) -> dict[str, Any] | None:
-    if not isinstance(raw_item, dict):
-        return None
-
-    item_id = str(raw_item.get("id") or "").strip() or str(uuid.uuid4())
-    rank = _normalize_nonnegative_int(raw_item.get("rank"))
-    name = str(raw_item.get("name") or "").strip()
-    plane = str(raw_item.get("plane") or "").strip()
-    merit = _normalize_nonnegative_int(raw_item.get("merit"))
-
-    return {
-        "id": item_id,
-        "rank": rank,
-        "name": name,
-        "plane": plane,
-        "merit": merit,
-    }
-
-
-def _normalize_shouyuan_exploration_income_speed_item(raw_item: Any) -> dict[str, Any] | None:
-    if not isinstance(raw_item, dict):
-        return None
-
-    item_id = str(raw_item.get("id") or "").strip() or str(uuid.uuid4())
-    captured_date = _normalize_date(raw_item.get("captured_date", raw_item.get("capturedDate")))
-    search_count = _normalize_nonnegative_int(raw_item.get("search_count", raw_item.get("searchCount")))
-    beast_crystal = _normalize_nonnegative_int(raw_item.get("beast_crystal", raw_item.get("beastCrystal")))
-    score = _normalize_nonnegative_int(raw_item.get("score"))
-    merit = _normalize_nonnegative_int(raw_item.get("merit"))
-    remark = str(raw_item.get("remark") or raw_item.get("note") or "").strip()
-
-    return {
-        "id": item_id,
-        "captured_date": captured_date.isoformat(),
-        "search_count": search_count,
-        "beast_crystal": beast_crystal,
-        "score": score,
-        "merit": merit,
-        "remark": remark,
-    }
-
-
-def _normalize_shouyuan_number(value: Any) -> float:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return 0
-    if not numeric or numeric < 0:
-        return 0
-    return numeric
-
-
-def _normalize_shouyuan_exploration_consumption_evaluation_item(raw_item: Any) -> dict[str, Any] | None:
-    if not isinstance(raw_item, dict):
-        return None
-
-    item_id = str(raw_item.get("id") or "").strip() or str(uuid.uuid4())
-    label = str(raw_item.get("label") or raw_item.get("name") or "").strip()
-    current = _normalize_shouyuan_number(raw_item.get("current", raw_item.get("current_value")))
-    target = _normalize_shouyuan_number(raw_item.get("target", raw_item.get("target_value")))
-    speed = _normalize_shouyuan_number(raw_item.get("speed"))
-
-    return {
-        "id": item_id,
-        "label": label,
-        "current": current,
-        "target": target,
-        "speed": speed,
-    }
-
-
-def _shouyuan_exploration_income_speed_sort_key(item: dict[str, Any]) -> tuple[int, str]:
-    captured_date = _normalize_date(item.get("captured_date")).toordinal()
-    item_id = str(item.get("id") or "")
-    return (-captured_date, item_id)
-
-
-def _modao_invasion_personal_ranking_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
-    rank = _normalize_nonnegative_int(item.get("rank"))
-    normalized_rank = rank if rank > 0 else 10**9
-    name = str(item.get("name") or "")
-    item_id = str(item.get("id") or "")
-    return (normalized_rank, 0 if rank > 0 else 1, name, item_id)
 
 
 def _activity_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:

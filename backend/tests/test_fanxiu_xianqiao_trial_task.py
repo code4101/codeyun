@@ -8,8 +8,8 @@ from backend.core.fanxiu.data_annotation.default_jobs import (
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.runtime.behavior_tree import (
-    create_fanxiu_runtime_runner,
+from backend.core.fanxiu.behavior_tree.runtime import (
+    create_behavior_tree_runtime_runner,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import (
     default_data_annotation_scheduler_tasks,
@@ -24,14 +24,14 @@ def _finish(generator):
             return stop.value
 
 
-def test_xianqiao_trial_is_registered_as_enabled_daily_five_task():
+def test_xianqiao_trial_is_registered_as_daily_five_task():
     register_fanxiu_data_annotation_default_runtime_jobs()
 
     definition = get_fanxiu_data_annotation_task_cell_definition("xianqiao_trial")
     assert definition is not None
     assert definition.label == "仙窍_试炼"
     assert definition.scheduler_supported is True
-    assert definition.stable_start_scene_id == 34
+    assert not hasattr(definition, "lifecycle")
 
     task = next(
         item
@@ -40,16 +40,15 @@ def test_xianqiao_trial_is_registered_as_enabled_daily_five_task():
     )
     assert task["task_type"] == "xianqiao_trial"
     assert task["label"] == "仙窍_试炼"
-    assert task["schedule_kind"] == "daily"
-    assert task["schedule_times"] == ["05:00"]
-    assert task["enabled"] is True
-    assert task["payload"]["target_daily_purchases"] == 3
+    assert task["trigger_description"] == "每日"
+    assert task["next_time"]
+    assert task["payload"]["target_daily_purchases"] == 0
 
 
 def test_xianqiao_trial_task_flow_enters_then_runs_complete_daily(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     runtime = runner._fanxiu_runtime({"images": {}, "attrs": {"payload": {}}}, stop_event=threading.Event())
-    events: list[str] = []
+    events: list[object] = []
 
     def enter(**_kwargs):
         events.append("enter")
@@ -57,8 +56,8 @@ def test_xianqiao_trial_task_flow_enters_then_runs_complete_daily(monkeypatch):
             yield None
         return {"terminal_scene": 357}
 
-    def daily(**_kwargs):
-        events.append("daily")
+    def daily(**kwargs):
+        events.append(("daily", kwargs["target_daily_purchases"]))
         if False:
             yield None
         return {
@@ -72,13 +71,49 @@ def test_xianqiao_trial_task_flow_enters_then_runs_complete_daily(monkeypatch):
 
     result = _finish(runner.xianqiao_trial_flow(runtime))
 
-    assert events == ["enter", "daily"]
+    assert events == ["enter", ("daily", 0)]
     assert result["entry"] == {"terminal_scene": 357}
     assert result["current_scene"] == 34
 
 
+def test_registered_xianqiao_trial_cell_consumes_business_generator():
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition("xianqiao_trial")
+    assert definition is not None
+    events: list[object] = []
+
+    class FakeRuntime:
+        def goto_view(self, view):
+            events.append(("goto", int(view)))
+            if False:
+                yield None
+
+    class FakeRunner:
+        def _fanxiu_runtime(self, _ctx, *, stop_event):
+            assert isinstance(stop_event, threading.Event)
+            return FakeRuntime()
+
+        def _execute_xianqiao_trial_task(self, _ctx, _stop_event, payload):
+            events.append(("business", payload["target_daily_purchases"]))
+            if False:
+                yield None
+            return {"result": "success", "current_scene": 34}
+
+    result = _finish(
+        definition.handler(
+            FakeRunner(),
+            {},
+            {"target_daily_purchases": 0},
+            threading.Event(),
+        )
+    )
+
+    assert events == [("goto", 34), ("business", 0), ("goto", 34)]
+    assert result == {"result": "success", "current_scene": 34}
+
+
 def test_enter_xianqiao_trial_uses_daily_entry_then_unique_zhenxian_ocr(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     runtime = runner._fanxiu_runtime(
         {
             "images": {
@@ -104,13 +139,13 @@ def test_enter_xianqiao_trial_uses_daily_entry_then_unique_zhenxian_ocr(monkeypa
         return "success"
 
     def open_entry(**kwargs):
-        events.append(("entry", kwargs["title_pattern"]))
+        events.append(("entry", kwargs["title_pattern"], kwargs.get("initial_checks")))
         if False:
             yield None
         return "open"
 
-    def wait_view(view, **_kwargs):
-        events.append(("wait", int(view)))
+    def wait_view(view, **kwargs):
+        events.append(("wait", int(view), kwargs.get("timeout")))
         if False:
             yield None
         return runtime.view(view)
@@ -139,9 +174,9 @@ def test_enter_xianqiao_trial_uses_daily_entry_then_unique_zhenxian_ocr(monkeypa
 
     assert events == [
         ("goto", 69),
-        ("entry", r"仙\s*窍"),
-        ("wait", 356),
+        ("entry", r"仙\s*窍", 3),
+        ("wait", 356, 15.0),
         ("click", 356, 450.0, 1160.0),
-        ("wait", 357),
+        ("wait", 357, 120.0),
     ]
     assert result["terminal_scene"] == 357

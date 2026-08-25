@@ -250,6 +250,7 @@ def test_attendance_course_data_flow_config_supports_course_devices_and_step_run
                 "browser_device_entry_id": execution_device.entry_id,
                 "data_device_entry_id": data_device.entry_id,
                 "step_device_entry_ids": {
+                    "0": custom_device.entry_id,
                     "1": "",
                     "2": custom_device.entry_id,
                     "6": execution_device.entry_id,
@@ -265,11 +266,15 @@ def test_attendance_course_data_flow_config_supports_course_devices_and_step_run
         assert payload["current_browser_device"]["entry_id"] == execution_device.entry_id
         assert payload["current_data_device"]["entry_id"] == data_device.entry_id
         assert payload["course_data_flow"]["step_device_entry_ids"] == {
+            "0": custom_device.entry_id,
             "2": custom_device.entry_id,
             "6": execution_device.entry_id,
         }
 
         step_runners = {item["step"]: item for item in payload["course_data_flow"]["step_runners"]}
+        assert step_runners[0]["default_role"] == "browser_device"
+        assert step_runners[0]["effective_role"] == "custom_device"
+        assert step_runners[0]["effective_device_entry_id"] == custom_device.entry_id
         assert step_runners[1]["default_role"] == "browser_device"
         assert step_runners[1]["effective_role"] == "browser_device"
         assert step_runners[1]["effective_device_entry_id"] == execution_device.entry_id
@@ -289,6 +294,7 @@ def test_attendance_course_data_flow_config_supports_course_devices_and_step_run
         assert data_flow_config["browser_device_entry_id"] == execution_device.entry_id
         assert data_flow_config["data_device_entry_id"] == data_device.entry_id
         assert data_flow_config["step_device_entry_ids"] == {
+            "0": custom_device.entry_id,
             "2": custom_device.entry_id,
             "6": execution_device.entry_id,
         }
@@ -319,7 +325,7 @@ def test_attendance_course_data_flow_config_rejects_invalid_step_runner_key(clie
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "课程数据 step_device_entry_ids 只支持 step1-step6"
+        assert response.json()["detail"] == "课程数据 step_device_entry_ids 只支持 step0-step6"
     finally:
         _clear_user_override()
 
@@ -409,98 +415,6 @@ def test_attendance_feedback_form_meta_reads_links_from_grid_row_inline_cells(cl
         {"name": "20260601梵呗初阶", "attendance_sheet_url": ""},
         {"name": "20260308禅宗1至3期五阶", "attendance_sheet_url": "https://www.kdocs.cn/l/zen-five"},
     ]
-
-
-def test_attendance_header_tool_builds_zen_week_headers(monkeypatch):
-    monkeypatch.setattr(
-        attendance_api,
-        "_query_attendance_header_clockins",
-        lambda course_name: [
-            {"clockin_id": 201, "name": f"{course_name}-共学打卡", "url": "https://example.com/clockin-study"},
-            {"clockin_id": 202, "name": f"{course_name}-共修打卡", "url": "https://example.com/clockin-practice"},
-        ],
-    )
-    monkeypatch.setattr(
-        attendance_api,
-        "_query_attendance_header_lessons",
-        lambda course_name: [
-            {
-                "lesson_id": 11,
-                "lesson_name": f"{course_name}-第1周=佛教史1",
-                "lesson_id2": "lesson-token-1",
-            },
-            {
-                "lesson_id": 12,
-                "lesson_name": f"{course_name}-第1周=佛教史2",
-                "lesson_id2": "https://example.com/lesson2",
-            },
-            {
-                "lesson_id": 13,
-                "lesson_name": f"{course_name}-第2周=心经",
-                "lesson_id2": "",
-            },
-        ],
-    )
-
-    payload = attendance_api._build_attendance_header_tool_response("d260308禅宗1至3期五阶")
-
-    assert [group.label for group in payload.groups] == ["打卡数据", "第1周", "第2周"]
-    assert [group.colspan for group in payload.groups] == [2, 2, 1]
-    assert payload.rows == [
-        ["打卡数据", "", "第1周", "", "第2周"],
-        ["共学打卡", "共修打卡", "佛教史1", "佛教史2", "心经"],
-    ]
-    assert payload.cells[2].url == (
-        "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=lesson-token-1&tabName=UserManage"
-    )
-    assert payload.cells[3].url == "https://example.com/lesson2"
-    assert payload.document_json["merged_cells"] == [
-        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
-        {"row": 0, "col": 2, "rowspan": 1, "colspan": 2},
-    ]
-    assert payload.document_json["grid_rows"][1][2]["link"]["url"] == payload.cells[2].url
-    assert not any("link" in entry for entry in payload.document_json.get("cell_meta", {}).values() if isinstance(entry, dict))
-
-
-def test_attendance_header_tool_accepts_plain_date_prefix(monkeypatch):
-    queried_course_names: list[str] = []
-
-    def fake_query_clockins(course_name: str):
-        queried_course_names.append(course_name)
-        return []
-
-    def fake_query_lessons(course_name: str):
-        queried_course_names.append(course_name)
-        return [
-            {
-                "lesson_id": 11,
-                "lesson_name": f"{course_name}-第1周=佛教史1",
-                "lesson_id2": "lesson-token-1",
-            },
-        ]
-
-    monkeypatch.setattr(attendance_api, "_query_attendance_header_clockins", fake_query_clockins)
-    monkeypatch.setattr(attendance_api, "_query_attendance_header_lessons", fake_query_lessons)
-
-    payload = attendance_api._build_attendance_header_tool_response("20260308禅宗1至3期五阶")
-
-    assert payload.course_name == "d260308禅宗1至3期五阶"
-    assert queried_course_names == ["d260308禅宗1至3期五阶", "d260308禅宗1至3期五阶"]
-    assert payload.rows == [
-        ["第1周"],
-        ["佛教史1"],
-    ]
-
-
-def test_attendance_header_tool_rejects_unsupported_course_type():
-    try:
-        attendance_api._build_attendance_header_tool_response("d260501第40届念住")
-    except Exception as exc:
-        assert isinstance(exc, HTTPException)
-        assert exc.status_code == 400
-        assert "暂不支持" in exc.detail
-    else:
-        raise AssertionError("unsupported course type should fail")
 
 
 def test_attendance_feedback_form_meta_exposes_public_readonly_data_sheet_link(client: TestClient, session):

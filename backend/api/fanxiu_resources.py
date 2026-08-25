@@ -100,7 +100,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_gongfa_special_faze_reason_probe,
     build_fanxiu_gongfa_special_faze_reason_reuse_index_probe,
     build_fanxiu_gongfa_special_faze_reason_reuse_probe,
-    build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_sample_probe,
     build_fanxiu_gongfa_homemake_detail_view_probe,
@@ -111,7 +110,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_gongfa_homemake_buff_parameter_semantics_probe,
     build_fanxiu_gongfa_homemake_mechanism_ownership_probe,
     build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe,
-    build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_producer_probe,
     build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe,
     build_fanxiu_buff_change_result_decoder_probe,
@@ -121,8 +119,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_typed_pool_runtime_observation_probe,
     build_fanxiu_socket_raw_decoder_probe,
     build_fanxiu_socket_compressed_int_codec_probe,
-    build_fanxiu_socket_capture_fixture_codec_calibration_probe,
-    build_fanxiu_socket_result_sample_coverage_probe,
     build_fanxiu_combat_formula_authority_contrast_probe,
     build_fanxiu_cpp2il_main_combat_formula_surface_probe,
     get_fanxiu_gongfa_homemake_buff_parameter_semantics,
@@ -167,6 +163,7 @@ from backend.core.fanxiu.catalog.item import (
     search_fanxiu_item_cards,
 )
 from backend.core.fanxiu.catalog.item_icon_quality import load_item_icon_quality_review
+from backend.core.fanxiu.catalog.xianqiao import build_fanxiu_xianqiao_mechanics
 from backend.core.fanxiu.catalog.doupotd import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
@@ -181,46 +178,10 @@ from backend.core.fanxiu.catalog.doupotd import (
     build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe,
     build_fanxiu_doupotd_pvp_report_netlogic_family_probe,
     build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe,
-    build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
-    build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
     build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe,
     build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe,
     build_fanxiu_doupotd_pvp_report_trigger_delta_probe,
     build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe,
-    build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
     build_fanxiu_doupotd_pvp_report_scene_payload_probe,
     build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe,
     build_fanxiu_doupotd_pvp_report_shape_alias_probe,
@@ -244,7 +205,6 @@ from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_door_gain_buff_flow_probe,
     build_fanxiu_digitdoor_door_refresh_projection_probe,
     build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe,
-    build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
     build_fanxiu_digitdoor_gameplayer_settlement_probe,
     build_fanxiu_digitdoor_info_snapshot_probe,
     build_fanxiu_digitdoor_monster_effect_class_flow_probe,
@@ -270,18 +230,15 @@ from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_readyfight_partnerlist_probe,
     build_fanxiu_digitdoor_readyfight_request_levelid_probe,
-    build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
     build_fanxiu_digitdoor_report_gmbattle_probe,
-    build_fanxiu_digitdoor_runtime_packet_coverage_probe,
     build_fanxiu_digitdoor_skip_level_probe,
     build_fanxiu_digitdoor_skill_enhance_application_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
     build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_startgame_response_boundary_probe,
-    build_fanxiu_digitdoor_startgame_runtime_sample_probe,
     build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
     build_fanxiu_digitdoor_unlock_state_probe,
     build_fanxiu_digitdoor_uplevel_state_probe,
@@ -317,7 +274,6 @@ from backend.core.fanxiu.catalog.lua_logic_index import (
 )
 from backend.core.fanxiu.catalog.lua_packet_index import (
     build_fanxiu_lua_lscript_module_netlogic_flow_probe,
-    build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
     build_fanxiu_lua_lscript_module_protocol_schema_probe,
     build_fanxiu_lua_lscript_module_surface_probe,
     build_fanxiu_lua_lscript_surface_inventory_probe,
@@ -336,7 +292,6 @@ from backend.core.fanxiu.catalog.lua_packet_index import (
     build_fanxiu_lua_login_socket_send_flow_probe,
     build_fanxiu_lua_sm_login_nested_vo_depth2_probe,
     build_fanxiu_lua_sm_login_nested_vo_probe,
-    build_fanxiu_lua_packet_index,
 )
 from backend.core.fanxiu.catalog.protocol_semantics import load_fanxiu_protocol_semantics
 from backend.core.fanxiu.catalog.resources import (
@@ -646,13 +601,6 @@ class FanxiuLuaLscriptModuleProtocolSchemaProbeRequest(BaseModel):
     group: str = "gamesystem/game"
 
 
-class FanxiuLuaLscriptModulePacketPairFlowProbeRequest(BaseModel):
-    export_root: str | None = None
-    module: str = Field(min_length=1)
-    request_packet: str = Field(min_length=1)
-    response_packet: str | None = None
-    group: str = "gamesystem/game"
-    max_source_lines: int = Field(default=80, ge=1, le=500)
 
 
 class FanxiuLuaLoginPostSyncCpp2IlManagerSurfaceProbeRequest(BaseModel):
@@ -979,9 +927,6 @@ class FanxiuHotUpdateGongfaHomeMakeMechanismFormulaSurfaceProbeRequest(BaseModel
     jie: int | None = None
 
 
-class FanxiuHotUpdateGongfaHomeMakeMechanismResultPacketProbeRequest(BaseModel):
-    export_root: str | None = None
-    buff_id: str | int | None = None
 
 
 class FanxiuHotUpdateGongfaHomeMakeMechanismResultProducerProbeRequest(BaseModel):
@@ -1022,13 +967,8 @@ class FanxiuHotUpdateSocketCompressedIntCodecProbeRequest(BaseModel):
     export_root: str | None = None
 
 
-class FanxiuHotUpdateSocketCaptureFixtureCodecCalibrationProbeRequest(BaseModel):
-    export_root: str | None = None
-    decoded_json: str | None = None
 
 
-class FanxiuHotUpdateSocketResultSampleCoverageProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
 class FanxiuHotUpdateCombatFormulaAuthorityContrastProbeRequest(BaseModel):
@@ -1237,171 +1177,76 @@ class FanxiuDoupoTDPvpReportSenderAliasGapProbeRequest(BaseModel):
     export_root: str | None = None
 
 
-class FanxiuDoupoTDPvpReportRuntimeCoverageProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPvpReportFocusedCaptureReadinessProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPvpReportPcapStreamReadinessProbeRequest(BaseModel):
-    export_root: str | None = None
-    server_host: str | None = None
-    tshark_path: str | None = None
 
 
-class FanxiuDoupoTDPvpReportPcapDecodeMetadataProbeRequest(BaseModel):
-    export_root: str | None = None
-    server_host: str | None = None
-    text_assets: str | None = None
-    max_streams_per_capture: int = 4
-    tshark_path: str | None = None
 
 
-class FanxiuDoupoTDPvpReportPcapProtocolScopeProbeRequest(BaseModel):
-    export_root: str | None = None
-    server_host: str | None = None
-    text_assets: str | None = None
-    max_streams_per_capture: int = 4
-    tshark_path: str | None = None
-    use_existing_metadata: bool = True
 
 
-class FanxiuDoupoTDPvpReportPcapObservedSchemaCoverageProbeRequest(BaseModel):
-    export_root: str | None = None
-    server_host: str | None = None
-    text_assets: str | None = None
-    max_streams_per_capture: int = 4
-    tshark_path: str | None = None
-    use_existing_metadata: bool = True
 
 
-class FanxiuDoupoTDPvpReportPcapObservedLuaHandlerCoverageProbeRequest(BaseModel):
-    export_root: str | None = None
-    server_host: str | None = None
-    text_assets: str | None = None
-    max_streams_per_capture: int = 4
-    tshark_path: str | None = None
-    use_existing_metadata: bool = True
-    max_evidence_per_protocol: int = 16
 
 
-class FanxiuDoupoTDPcapObservedSmRewardResultChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmPracticeCollectChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmActivityRankSyncChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSyncTimeChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmNoticeChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedBlldSyncChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSelfSeatChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedLundaoRoleInfoChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedLundaoLastLeaveSeatChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedUnionVeinsUnionListChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSetClientDataChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedActivityBaseSyncChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedYunmengPkChallengeRecordChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSceneMapLifecycleChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedYunmengPkInfoSyncChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmFazeShowChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmAllBuffChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmSyncUnitChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmRestrictStatusChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmChangePeaceStateChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmIsCrossChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmCampFlagPanelChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmVeinsSelectSortChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmCrossBossInfoUpdateChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedSmPartnerArenaPlayInfoChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedLandContendInfoRoleChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedQuanFDrawSynChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPcapObservedVenisUnionSeatRoleChainProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
-class FanxiuDoupoTDPvpReportDecoderReadinessProbeRequest(BaseModel):
-    text_assets: str | None = None
-    export_root: str | None = None
 
 
 class FanxiuDoupoTDPvpReportTriggerLifecycleProbeRequest(BaseModel):
@@ -1602,8 +1447,6 @@ class FanxiuPvpReportFamilyReuseProbeRequest(BaseModel):
     export_root: str | None = None
 
 
-class FanxiuDigitDoorRuntimePacketCoverageProbeRequest(BaseModel):
-    export_root: str | None = None
 
 
 class FanxiuDigitDoorBuffEffectUsageProbeRequest(BaseModel):
@@ -1765,9 +1608,6 @@ class FanxiuLuaLogicIndexRequest(BaseModel):
     export_root: str | None = None
 
 
-class FanxiuLuaPacketIndexRequest(BaseModel):
-    source_dir: str | None = None
-    export_root: str | None = None
 
 
 class FanxiuLingjieGongfaRuntimeReportRequest(BaseModel):
@@ -2419,6 +2259,16 @@ def get_fanxiu_doupotd_reward_config_detail(
         get_fanxiu_doupotd_reward_config,
         source_table=source_table,
         config_id=config_id,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/xianqiao/mechanics")
+def get_fanxiu_xianqiao_mechanics(
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_xianqiao_mechanics,
         export_root=export_root,
     )
 
@@ -4138,25 +3988,6 @@ def post_fanxiu_hot_update_socket_compressed_int_codec_probe(
     )
 
 
-@router.post("/resources/hot-update/socket-capture-fixture-codec-calibration-probe")
-def post_fanxiu_hot_update_socket_capture_fixture_codec_calibration_probe(
-    req: FanxiuHotUpdateSocketCaptureFixtureCodecCalibrationProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_socket_capture_fixture_codec_calibration_probe,
-        export_root=req.export_root,
-        decoded_json=req.decoded_json,
-    )
-
-
-@router.post("/resources/hot-update/socket-result-sample-coverage-probe")
-def post_fanxiu_hot_update_socket_result_sample_coverage_probe(
-    req: FanxiuHotUpdateSocketResultSampleCoverageProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_socket_result_sample_coverage_probe,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/hot-update/combat-formula-authority-contrast-probe")
@@ -4283,15 +4114,6 @@ def post_fanxiu_hot_update_gongfa_homemake_mechanism_formula_surface_probe(
     )
 
 
-@router.post("/resources/hot-update/gongfa-homemake-mechanism-result-packet-probe")
-def post_fanxiu_hot_update_gongfa_homemake_mechanism_result_packet_probe(
-    req: FanxiuHotUpdateGongfaHomeMakeMechanismResultPacketProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
-        export_root=req.export_root,
-        buff_id=req.buff_id or "386001010",
-    )
 
 
 @router.post("/resources/hot-update/gongfa-homemake-mechanism-result-producer-probe")
@@ -4461,15 +4283,6 @@ def post_fanxiu_hot_update_gongfa_special_faze_payload_summary_probe(
     )
 
 
-@router.post("/resources/hot-update/gongfa-special-faze-runtime-sample-audit-probe")
-def post_fanxiu_hot_update_gongfa_special_faze_runtime_sample_audit_probe(
-    req: FanxiuHotUpdateGongfaSpecialFazeRuntimeSampleAuditProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
-        focus_effect_type=req.focus_effect_type,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/hot-update/gongfa-special-faze-reason-probe")
@@ -4664,14 +4477,6 @@ def post_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe(
     )
 
 
-@router.post("/resources/digitdoor/readyfight-runtime-sample-probe")
-def post_fanxiu_digitdoor_readyfight_runtime_sample_probe(
-    req: FanxiuDigitDoorReadyFightRuntimeSampleProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/digitdoor/readyfight-request-levelid-probe")
@@ -4718,14 +4523,6 @@ def post_fanxiu_digitdoor_startgame_skillvos_shape_probe(
     )
 
 
-@router.post("/resources/digitdoor/startgame-runtime-sample-probe")
-def post_fanxiu_digitdoor_startgame_runtime_sample_probe(
-    req: FanxiuDigitDoorStartGameRuntimeSampleProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_digitdoor_startgame_runtime_sample_probe,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/digitdoor/startgame-cpp2il-consumer-probe")
@@ -4771,14 +4568,6 @@ def post_fanxiu_digitdoor_gameplayer_settlement_probe(
     )
 
 
-@router.post("/resources/digitdoor/gameplayer-runtime-sample-probe")
-def post_fanxiu_digitdoor_gameplayer_runtime_sample_probe(
-    req: FanxiuDigitDoorGamePlayerRuntimeSampleProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/digitdoor/gameplayer-cpp2il-consumer-probe")
@@ -4936,14 +4725,6 @@ def post_fanxiu_pvp_report_family_reuse_probe(
     )
 
 
-@router.post("/resources/digitdoor/runtime-packet-coverage-probe")
-def post_fanxiu_digitdoor_runtime_packet_coverage_probe(
-    req: FanxiuDigitDoorRuntimePacketCoverageProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_digitdoor_runtime_packet_coverage_probe,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/digitdoor/buff-effect-usage-probe")
@@ -5344,387 +5125,76 @@ def post_fanxiu_doupotd_pvp_report_sender_alias_gap_probe(
     )
 
 
-@router.post("/resources/doupotd/pvp-report-runtime-coverage-probe")
-def post_fanxiu_doupotd_pvp_report_runtime_coverage_probe(
-    req: FanxiuDoupoTDPvpReportRuntimeCoverageProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-focused-capture-readiness-probe")
-def post_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe(
-    req: FanxiuDoupoTDPvpReportFocusedCaptureReadinessProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-pcap-stream-readiness-probe")
-def post_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe(
-    req: FanxiuDoupoTDPvpReportPcapStreamReadinessProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
-        export_root=req.export_root,
-        server_host=req.server_host,
-        tshark_path=req.tshark_path,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-pcap-decode-metadata-probe")
-def post_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(
-    req: FanxiuDoupoTDPvpReportPcapDecodeMetadataProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
-        export_root=req.export_root,
-        server_host=req.server_host,
-        text_assets=req.text_assets,
-        max_streams_per_capture=req.max_streams_per_capture,
-        tshark_path=req.tshark_path,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-pcap-protocol-scope-probe")
-def post_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe(
-    req: FanxiuDoupoTDPvpReportPcapProtocolScopeProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
-        export_root=req.export_root,
-        server_host=req.server_host,
-        text_assets=req.text_assets,
-        max_streams_per_capture=req.max_streams_per_capture,
-        tshark_path=req.tshark_path,
-        use_existing_metadata=req.use_existing_metadata,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-pcap-observed-schema-coverage-probe")
-def post_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe(
-    req: FanxiuDoupoTDPvpReportPcapObservedSchemaCoverageProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
-        export_root=req.export_root,
-        server_host=req.server_host,
-        text_assets=req.text_assets,
-        max_streams_per_capture=req.max_streams_per_capture,
-        tshark_path=req.tshark_path,
-        use_existing_metadata=req.use_existing_metadata,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-pcap-observed-lua-handler-coverage-probe")
-def post_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe(
-    req: FanxiuDoupoTDPvpReportPcapObservedLuaHandlerCoverageProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
-        export_root=req.export_root,
-        server_host=req.server_host,
-        text_assets=req.text_assets,
-        max_streams_per_capture=req.max_streams_per_capture,
-        tshark_path=req.tshark_path,
-        use_existing_metadata=req.use_existing_metadata,
-        max_evidence_per_protocol=req.max_evidence_per_protocol,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-reward-result-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmRewardResultChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
-        export_root=req.export_root,
-    )
-
 
-@router.post("/resources/doupotd/pcap-observed-sm-practice-collect-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmPracticeCollectChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-activity-rank-sync-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmActivityRankSyncChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sync-time-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sync_time_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSyncTimeChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-notice-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmNoticeChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-blld-sync-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe(
-    req: FanxiuDoupoTDPcapObservedBlldSyncChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-self-seat-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_self_seat_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSelfSeatChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-lundao-role-info-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe(
-    req: FanxiuDoupoTDPcapObservedLundaoRoleInfoChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-lundao-last-leave-seat-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe(
-    req: FanxiuDoupoTDPcapObservedLundaoLastLeaveSeatChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-union-veins-union-list-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe(
-    req: FanxiuDoupoTDPcapObservedUnionVeinsUnionListChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-set-client-data-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSetClientDataChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-activity-base-sync-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe(
-    req: FanxiuDoupoTDPcapObservedActivityBaseSyncChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-yunmengpk-challenge-record-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe(
-    req: FanxiuDoupoTDPcapObservedYunmengPkChallengeRecordChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-scene-map-lifecycle-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSceneMapLifecycleChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-yunmengpk-info-sync-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe(
-    req: FanxiuDoupoTDPcapObservedYunmengPkInfoSyncChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-faze-show-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmFazeShowChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-all-buff-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmAllBuffChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-sync-unit-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmSyncUnitChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-restrict-status-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmRestrictStatusChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-change-peace-state-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmChangePeaceStateChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-is-cross-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmIsCrossChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-camp-flag-panel-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmCampFlagPanelChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-veins-select-sort-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmVeinsSelectSortChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-cross-boss-info-update-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmCrossBossInfoUpdateChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-sm-partner-arena-play-info-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe(
-    req: FanxiuDoupoTDPcapObservedSmPartnerArenaPlayInfoChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-land-contend-info-role-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe(
-    req: FanxiuDoupoTDPcapObservedLandContendInfoRoleChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-quanf-draw-syn-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe(
-    req: FanxiuDoupoTDPcapObservedQuanFDrawSynChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pcap-observed-venis-union-seat-role-chain-probe")
-def post_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe(
-    req: FanxiuDoupoTDPcapObservedVenisUnionSeatRoleChainProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
-        export_root=req.export_root,
-    )
-
-
-@router.post("/resources/doupotd/pvp-report-decoder-readiness-probe")
-def post_fanxiu_doupotd_pvp_report_decoder_readiness_probe(
-    req: FanxiuDoupoTDPvpReportDecoderReadinessProbeRequest,
-) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
-        text_assets=req.text_assets,
-        export_root=req.export_root,
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @router.post("/resources/doupotd/pvp-report-trigger-lifecycle-probe")
@@ -5870,13 +5340,6 @@ def post_fanxiu_lua_logic_index(req: FanxiuLuaLogicIndexRequest) -> dict[str, An
     )
 
 
-@router.post("/resources/lua-packet-index")
-def post_fanxiu_lua_packet_index(req: FanxiuLuaPacketIndexRequest) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_lua_packet_index,
-        source_dir=req.source_dir,
-        export_root=req.export_root,
-    )
 
 
 @router.post("/resources/lua/login-socket-send-flow-probe")
@@ -5970,17 +5433,6 @@ def post_fanxiu_lua_lscript_module_protocol_schema_probe(req: FanxiuLuaLscriptMo
     )
 
 
-@router.post("/resources/lua/lscript-module-packet-pair-flow-probe")
-def post_fanxiu_lua_lscript_module_packet_pair_flow_probe(req: FanxiuLuaLscriptModulePacketPairFlowProbeRequest) -> dict[str, Any]:
-    return _run_resource_operation(
-        build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
-        export_root=req.export_root,
-        module=req.module,
-        request_packet=req.request_packet,
-        response_packet=req.response_packet,
-        group=req.group,
-        max_source_lines=req.max_source_lines,
-    )
 
 
 @router.post("/resources/lua/login-post-sync-cpp2il-manager-surface-probe")

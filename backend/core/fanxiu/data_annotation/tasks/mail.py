@@ -4,6 +4,7 @@ import difflib
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from pathlib import Path
@@ -11,36 +12,40 @@ from types import GeneratorType
 
 from sqlalchemy.exc import OperationalError
 
-from backend.core.fanxiu.runtime.capture_runtime import (
-    FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON,
-    ensure_fanxiu_capture_runtime_backstop,
-    fanxiu_capture_runtime_service,
-)
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_reward_name_known,
     fanxiu_mail_rewards_from_payload,
-    fanxiu_mail_visible_group_action_policy,
+    fanxiu_mail_rewards_unresolved,
+    fanxiu_mail_title_force_claim_allowed,
 )
 from backend.core.fanxiu.mail.runtime_store import (
-    align_packet_mail_records_claimable_between_visible_neighbors,
-    find_packet_mail_record_by_raw_title,
-    find_packet_mail_record_exact,
-    mark_packet_mail_record_missing_from_list,
-    packet_mail_records_by_normalized_title,
-    packet_mail_records_for_visible_row_exact,
-    packet_mail_records_for_visible_row_same_time,
-    packet_mail_records_same_time,
-    packet_mail_records_same_title,
-    pending_packet_mail_action_candidates,
-    pending_packet_mail_records,
-    recent_packet_mail_records,
-    trace_packet_mail_gap,
-    update_packet_mail_action,
+    align_runtime_mail_records_claimable_between_visible_neighbors,
+    find_runtime_mail_record_by_raw_title,
+    find_runtime_mail_record_exact,
+    mark_runtime_mail_record_missing_from_list,
+    runtime_mail_records_by_normalized_title,
+    runtime_mail_records_for_visible_row_exact,
+    runtime_mail_records_for_visible_row_same_time,
+    runtime_mail_records_same_time,
+    runtime_mail_records_same_title,
+    pending_runtime_mail_action_candidates,
+    pending_runtime_mail_records,
+    recent_runtime_mail_records,
+    trace_runtime_mail_gap,
+    update_runtime_mail_action,
+    current_runtime_mail_sequence_snapshot,
 )
+from backend.core.fanxiu.mail.visual_alignment import (
+    build_mail_visual_observations,
+    diagnose_mail_window,
+    mail_window_geometry_from_asset,
+)
+from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import runtime_runner as _runtime_runner
-from backend.core.fanxiu.data_annotation.runtime_runner import (
+from backend.core.fanxiu.data_annotation import behavior_tree_runtime as _behavior_tree_runtime
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
     _RuntimeMailRow,
     _data_annotation_mail_scan_state_path,
     _db_engine,
@@ -51,12 +56,22 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_json as _read_data_annotation_json,
     write_data_annotation_json as _write_data_annotation_json,
 )
+from backend.core.fanxiu.data_annotation.effective_time import job_now
 from pyxllib.autogui import Shape, View, image_number as _runtime_image_number
 from pyxllib.prog import BehaviorTreeStatus
 
 
+@dataclass(frozen=True)
+class _RuntimeMailActionOutcome:
+    policy: str
+    wait_result: str
+    visual_confirmed: bool
+
+
 class MailTaskMixin:
-    _FORCE_CLAIM_MAIL_TITLE_KEYWORDS = ("宗门灵泉", "宗门镇邪")
+    # 邮件详情偶尔会在服务器结算或连续翻页后延迟二十余秒才稳定为
+    # #122/#123。12 秒会把仍在加载的真实详情误判成 unknown。
+    _MAIL_DETAIL_READY_TIMEOUT_SECONDS = 30.0
 
     def _execute_mail_legacy_scan_task(
         self,
@@ -64,17 +79,17 @@ class MailTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        _runtime_runner.ensure_fanxiu_mail_table()
+        _behavior_tree_runtime.ensure_fanxiu_mail_table()
         payload = dict(payload or {})
+        self._mail_selective_claim_terminal_message = ""
         entry_mode = str(payload.get("entry_mode") or payload.get("mail_entry_mode") or "dynamic").strip().lower()
         observe_only = bool(payload.get("observe_only") or payload.get("scan_only"))
         scan_mode = str(payload.get("scan_mode") or ("full" if payload.get("full_scan") else "incremental")).strip().lower()
         use_current_page = bool(payload.get("use_current_page"))
         target_title = str(payload.get("target_title") or payload.get("mail_title") or "").strip()
         target_time_text = self._normalize_mail_time_text(str(payload.get("target_time_text") or payload.get("mail_time_text") or "").strip())
-        capture_enabled = not bool(payload.get("skip_capture") or payload.get("no_capture"))
         game_first = bool(payload.get("game_first") or payload.get("ui_first"))
-        fail_on_packet_gap = bool(payload.get("fail_on_packet_gap"))
+        fail_on_runtime_gap = bool(payload.get("fail_on_runtime_gap"))
         try:
             max_actions = int(payload.get("max_actions") or 0)
         except (TypeError, ValueError):
@@ -89,38 +104,26 @@ class MailTaskMixin:
             action_policies = {"claim", "delete"}
         if observe_only and not payload.get("scan_mode") and not payload.get("full_scan"):
             scan_mode = "full"
-        capture_reason = f"mail-full-scan:{'observe' if observe_only else 'action'}"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少邮件_历史扫描资产树路径，无法执行邮件作业")
-        try:
-            if capture_enabled:
-                fanxiu_capture_runtime_service.ensure_running(capture_reason)
-                with self._lock:
-                    self._log_locked("info", f"邮件_抓包：已请求抓包服务 {capture_reason}")
-                self._refresh_recent_mail_packets_for_runtime_log("启动抓包后", flush_capture=False)
-            else:
-                with self._lock:
-                    self._log_locked("info", "邮件_历史扫描：本轮跳过抓包协作，仅使用当前页与既有邮件事实")
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"邮件_抓包：启动抓包服务失败：{exc}")
-            raise
+        with self._lock:
+            self._log_locked("info", "邮件_历史扫描：仅使用 Runtime 与当前画面")
         try:
             if observe_only:
                 with self._lock:
                     self._log_locked("info", "邮件_全量遍历：只观察并滚动加载邮件，不领取、不删除")
             elif game_first:
                 with self._lock:
-                    self._log_locked("info", "邮件_历史扫描：游戏画面优先模式，缺 packet 的可见邮件按详情页按钮处理")
+                    self._log_locked("info", "邮件_历史扫描：游戏画面优先模式，缺 Runtime 记录的可见邮件按详情页按钮处理")
             runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
             scene_id, score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
             force_reopen_mail = observe_only or scan_mode in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}
-            if scene_id == 121 and not use_current_page and (force_reopen_mail or (not observe_only and self._pending_packet_mail_action_count() > 0)):
+            if scene_id == 121 and not use_current_page and (force_reopen_mail or (not observe_only and self._pending_runtime_mail_action_count() > 0)):
                 image121 = ctx.get("images", {}).get(121)
                 back_shape = self._find_shape(image121, "空白-返回") if isinstance(image121, dict) else None
                 if isinstance(image121, dict) and back_shape:
-                    reason = "刷新邮件 packet 列表" if force_reopen_mail else "重置列表顶部"
+                    reason = "刷新邮件 Runtime 列表" if force_reopen_mail else "重置列表顶部"
                     with self._lock:
                         self._set_status_locked(
                             "running",
@@ -161,19 +164,11 @@ class MailTaskMixin:
                 target_title=target_title,
                 target_time_text=target_time_text,
                 game_first=game_first,
-                fail_on_packet_gap=fail_on_packet_gap,
+                fail_on_runtime_gap=fail_on_runtime_gap,
             )
             return (yield from scan_result) if isinstance(scan_result, GeneratorType) else scan_result
         finally:
-            if capture_enabled:
-                self._refresh_recent_mail_packets_for_runtime_log("释放抓包前", flush_capture=True)
-                try:
-                    fanxiu_capture_runtime_service.release(capture_reason)
-                    with self._lock:
-                        self._log_locked("info", f"邮件_抓包：已释放抓包服务 {capture_reason}")
-                except Exception as exc:
-                    with self._lock:
-                        self._log_locked("error", f"邮件_抓包：释放抓包服务失败：{exc}")
+            pass
 
     def _execute_mail_selective_claim_task(
         self,
@@ -181,25 +176,17 @@ class MailTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        _runtime_runner.ensure_fanxiu_mail_table()
+        _behavior_tree_runtime.ensure_fanxiu_mail_table()
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少邮件_选择性领取资产树路径，无法执行邮件作业")
-        try:
-            capture_status = ensure_fanxiu_capture_runtime_backstop(FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON)
-            with self._lock:
-                self._log_locked(
-                    "info",
-                    "邮件_抓包：清理入口兜底 "
-                    f"ensured={bool(capture_status.get('ensured'))} "
-                    f"state={((capture_status.get('status') or {}).get('state') if isinstance(capture_status, dict) else '')}",
-                )
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"邮件_抓包：清理入口兜底失败：{exc}")
-            raise
-        self._wait_mail_capture_runtime_ready("清理入口", stop_event=stop_event)
+        if not self._refresh_runtime_mail_snapshot("任务开始", force_refresh=True):
+            raise RuntimeError("邮件_选择性领取：动态邮件模型不可用，拒绝基于过期记录处理")
+        initial_snapshot = current_runtime_mail_sequence_snapshot(_db_engine)
+        if not initial_snapshot.get("complete"):
+            raise RuntimeError("邮件_选择性领取：任务开始未得到完整 Runtime 邮件序列")
+        self._validate_precise_mail_policy_snapshot(initial_snapshot, reason="任务开始")
         raw_max_actions = int(payload.get("max_actions") or 0)
         max_actions = raw_max_actions if raw_max_actions > 0 else None
         # 上限只负责防失控，不能承担“到底”判断。200 封邮件叠加半页滚动时仍可能
@@ -225,21 +212,35 @@ class MailTaskMixin:
             scene_id = reward_result_view.id if isinstance(reward_result_view, View) else None
             score = 100.0 if scene_id in {121, 34} else 0.0
             frame = runtime.cur_frame(update=True)
-            text = self._ocr_text(self._ocr_fragments(frame))
+            text = runtime.ocr_text(frame)
         if scene_id not in {121, 122, 123} and (
             yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_选择性领取")
         ):
             scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 227, 34, 35, 69], update=True)
         if scene_id == 121:
+            overlay_scene = self._mail_detail_overlay_scene(ctx, frame)
+            if overlay_scene is not None:
+                self._log(
+                    "info",
+                    f"邮件_选择性领取：底层命中 #121，但独立详情动作确认浮层 #{overlay_scene}",
+                )
+                scene_id = overlay_scene
+        if scene_id == 121:
             with self._lock:
                 self._status.update({"current_scene": 121, "updated_at": time.time()})
-                self._log_locked("info", f"邮件_选择性领取：当前已在邮件 #121 {score:.0f}%，先退出重进刷新邮件抓包")
+                self._log_locked("info", f"邮件_选择性领取：当前已在邮件 #121 {score:.0f}%，先退出重进刷新列表")
             image121_for_reset = ctx.get("images", {}).get(121) if isinstance(ctx.get("images"), dict) else None
             if isinstance(image121_for_reset, dict) and self._find_shape(image121_for_reset, "空白-返回") is not None:
-                yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_选择性领取")
+                yield from self._leave_mail_scene_to_world(
+                    ctx,
+                    stop_event,
+                    runtime,
+                    121,
+                    label="邮件_选择性领取",
+                )
                 yield from self._open_mail_selective_claim_entry(runtime)
             else:
-                self._log("error", "邮件_选择性领取：缺少 #121「空白-返回」标注，无法重进刷新邮件抓包，保留当前页扫描")
+                self._log("error", "邮件_选择性领取：缺少 #121「空白-返回」标注，无法重进刷新列表，保留当前页扫描")
         elif scene_id in {122, 123}:
             with self._lock:
                 self._set_status_locked(
@@ -254,10 +255,20 @@ class MailTaskMixin:
                 )
             detail_image = ctx.get("images", {}).get(scene_id) if isinstance(ctx.get("images"), dict) else None
             back_shape = View(detail_image).get_shape("空白-返回") if isinstance(detail_image, dict) else None
-            if back_shape is None:
-                raise RuntimeError(f"邮件_选择性领取：本轮入口位于 #{scene_id}，缺少「空白-返回」标注，拒绝盲目处理")
-            back_shape.click(runtime)
+            if back_shape is not None:
+                back_shape.click(runtime)
+            else:
+                self._log("warning", f"邮件_选择性领取：#{scene_id} 缺少返回标注，使用已验证的左上空白返回")
+                runtime.click_frame_point(scene_id, 1, 1)
             yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：详情页安全返回邮件 #121")
+            yield from self._leave_mail_scene_to_world(
+                ctx,
+                stop_event,
+                runtime,
+                121,
+                label="邮件_选择性领取",
+            )
+            yield from self._open_mail_selective_claim_entry(runtime)
         else:
             raise RuntimeError(f"邮件_选择性领取：从稳定起点进入邮件后落点异常 #{scene_id or 'unknown'}")
         image121 = ctx.get("images", {}).get(121)
@@ -268,9 +279,82 @@ class MailTaskMixin:
         if list_shape is None:
             raise RuntimeError("缺少 #121「邮件清单2」标注，无法遍历邮件清单")
 
-        self._refresh_recent_mail_packets_for_runtime_log("进入邮件列表后", flush_capture=True)
+        claimed_visible_count = sum(
+            1
+            for item in initial_snapshot.get("items") or []
+            if bool(item.get("present_in_runtime"))
+            and not bool(item.get("locked"))
+            and str(item.get("runtime_status") or "") == "claimed"
+        )
+        if claimed_visible_count >= 20:
+            self._log(
+                "info",
+                "邮件_选择性领取：跨 Cell 新批次检测到 "
+                f"{claimed_visible_count} 封已领取邮件；先一键删除缩短列表，再重读 Runtime",
+            )
+            checkpoint_cleanup = yield from self._delete_read_mail_until_clean(
+                runtime,
+                view121,
+                stop_event,
+                reason=f"新批次已有 {claimed_visible_count} 封已领取邮件",
+                initial_snapshot=initial_snapshot,
+            )
+            initial_snapshot = checkpoint_cleanup["snapshot"]
+
+        geometry = mail_window_geometry_from_asset(image121)
+        ordered_result = yield from self._execute_ordered_runtime_claim_batch(
+            ctx,
+            stop_event,
+            runtime=runtime,
+            image121=image121,
+            view121=view121,
+            list_shape=list_shape,
+            geometry=geometry,
+            snapshot=initial_snapshot,
+            target_mail_ids={
+                str(value)
+                for value in payload.get("target_mail_ids") or []
+                if str(value)
+            },
+        )
+        target_count = len(
+            self._select_precise_mail_claim_targets(
+                initial_snapshot,
+                {
+                    str(value)
+                    for value in payload.get("target_mail_ids") or []
+                    if str(value)
+                },
+            )
+        )
+        self._validate_precise_mail_terminal_result(
+            ordered_result,
+            target_count=target_count,
+        )
+        message = (
+            "邮件_选择性领取：完整闭环，"
+            f"领取 {int(ordered_result.get('claimed_count') or 0)} 封，"
+            f"删除前 {int(ordered_result.get('garbage_before') or 0)} 封，"
+            f"删除 {int(ordered_result.get('deleted_count') or 0)} 封，"
+            f"剩余垃圾 {int(ordered_result.get('garbage_after') or 0)} 封，"
+            f"保留 {int(ordered_result.get('protected_count') or 0)} 封，"
+            f"批次目标 {target_count} 封"
+        )
+        self._mail_selective_claim_terminal_message = message
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                message,
+                phase="mail_selective_claim_done",
+                current_scene=34,
+            )
+            self._log_locked("success", message)
+        return "success"
+
+        self._refresh_runtime_mail_snapshot("进入邮件列表后", force_refresh=True)
 
         processed_count = 0
+        unconfirmed_count = 0
         seen_count = 0
         scroll_count = 0
         scanned_to_end = False
@@ -312,17 +396,17 @@ class MailTaskMixin:
             action_row: _RuntimeMailRow | None = None
             detail_probe_row: _RuntimeMailRow | None = None
             delete_probe_row: _RuntimeMailRow | None = None
-            page_packet_counts: dict[str, int] = {}
+            page_runtime_counts: dict[str, int] = {}
             page_rows_summary: list[str] = []
             for mail in rows:
                 seen_count += 1
                 self._prepare_mail_row_policy(mail.raw, action_enabled=True, action_policies={"claim", "delete"})
-                packet_match = str(mail.raw.get("packet_match") or "-")
-                page_packet_counts[packet_match] = page_packet_counts.get(packet_match, 0) + 1
+                runtime_match = str(mail.raw.get("runtime_match") or "-")
+                page_runtime_counts[runtime_match] = page_runtime_counts.get(runtime_match, 0) + 1
                 if len(page_rows_summary) < 5:
                     page_rows_summary.append(
                         f"{mail.title[:16]}|{mail.raw.get('time_text') or '-'}|"
-                        f"{mail.raw.get('policy') or '-'}|{packet_match}"
+                        f"{mail.raw.get('policy') or '-'}|{runtime_match}"
                     )
                 if mail.raw.get("policy") in {"claim", "delete"}:
                     action_row = mail
@@ -332,7 +416,7 @@ class MailTaskMixin:
                     continue
                 if (
                     detail_probe_row is None
-                    and str(mail.raw.get("packet_match") or "") in {"missing", "title_only"}
+                    and str(mail.raw.get("runtime_match") or "") in {"missing", "title_only"}
                     and str(mail.raw.get("title") or "").strip()
                     and str(mail.raw.get("time_text") or "").strip()
                 ):
@@ -340,7 +424,7 @@ class MailTaskMixin:
             if action_row is not None:
                 action_started_at = time.monotonic()
                 try:
-                    actual_policy = yield from self._claim_runtime_mail_row(runtime, action_row)
+                    outcome = yield from self._claim_runtime_mail_row(runtime, action_row)
                 except TimeoutError as exc:
                     action_elapsed = time.monotonic() - action_started_at
                     self._log(
@@ -349,19 +433,35 @@ class MailTaskMixin:
                     )
                 else:
                     action_elapsed = time.monotonic() - action_started_at
-                    self._log("detail", f"邮件_选择性领取：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
-                    self._update_packet_mail_action_for_row(
+                    actual_policy = outcome.policy
+                    self._update_runtime_mail_action_for_row(
                         action_row.raw,
                         status=f"{actual_policy}_requested",
                         evidence={
                             "runtime_requested_action": actual_policy,
-                            "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "runtime_action_requested_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                             "runtime_action_source": "mail_selective_claim",
+                            "runtime_action_wait_result": outcome.wait_result,
+                            "runtime_action_visual_confirmed": outcome.visual_confirmed,
                         },
                     )
-                    processed_count += 1
-                    self._refresh_recent_mail_packets_for_runtime_log("领取后同步", flush_capture=True)
-                    continue
+                    self._refresh_runtime_mail_snapshot("领取后同步", force_refresh=True)
+                    runtime_confirmed = self._runtime_mail_action_confirmed_for_row(action_row.raw, actual_policy)
+                    confirmed = outcome.visual_confirmed or runtime_confirmed
+                    self._log(
+                        "detail",
+                        f"邮件_选择性领取：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，"
+                        f"动作 {actual_policy}，画面确认={outcome.visual_confirmed}，回包确认={runtime_confirmed}",
+                    )
+                    if confirmed:
+                        processed_count += 1
+                        continue
+                    unconfirmed_count += 1
+                    self._log(
+                        "warning",
+                        f"邮件_选择性领取：「{action_row.title}」未可靠返回邮件列表且未见服务器成功回包，"
+                        "本轮不计为已领取，稍后重试",
+                    )
 
             if detail_probe_row is not None:
                 probe_started_at = time.monotonic()
@@ -387,7 +487,7 @@ class MailTaskMixin:
                     )
                     if status == "processed":
                         processed_count += 1
-                        self._refresh_recent_mail_packets_for_runtime_log("详情页处理后同步", flush_capture=True)
+                        self._refresh_runtime_mail_snapshot("详情页处理后同步", force_refresh=True)
                         continue
 
             if delete_probe_row is not None:
@@ -408,14 +508,14 @@ class MailTaskMixin:
                     )
                     if status == "processed":
                         processed_count += 1
-                        self._refresh_recent_mail_packets_for_runtime_log("详情页删除后同步", flush_capture=True)
+                        self._refresh_runtime_mail_snapshot("详情页删除后同步", force_refresh=True)
                         continue
 
             if rows:
-                counts_text = ",".join(f"{key}={value}" for key, value in sorted(page_packet_counts.items()))
+                counts_text = ",".join(f"{key}={value}" for key, value in sorted(page_runtime_counts.items()))
                 self._log(
                     "detail",
-                    f"邮件_选择性领取：当前页无可领取，packet {counts_text}；"
+                    f"邮件_选择性领取：当前页无可领取，模型 {counts_text}；"
                     + "；".join(page_rows_summary),
                 )
 
@@ -467,34 +567,30 @@ class MailTaskMixin:
         if final_scene == 34:
             final_scene = yield from self._ensure_clean_world_after_task(ctx, stop_event, label="邮件_选择性领取")
 
-        if scanned_to_end and not reached_scroll_limit:
-            marked_count = self._mark_pending_packet_mail_actions_not_visible(
+        if scanned_to_end and not reached_scroll_limit and not unconfirmed_count:
+            marked_count = self._mark_pending_runtime_mail_actions_not_visible(
                 reason=f"mail_selective_claim_full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
                 allowed_policies={"claim"},
             )
             if marked_count:
                 self._log(
                     "success",
-                    f"邮件_选择性领取：完整扫到底未见 packet 待领取项，标记 {marked_count} 封为 missing_from_list",
+                    f"邮件_选择性领取：完整扫到底未见模型待领取项；视觉缺失不再改写动态事实",
                 )
 
-        result = "success"
-        if reached_scroll_limit:
-            result = "skipped"
-            retry_after = (datetime.now() + timedelta(seconds=max(60, int(payload.get("retry_seconds") or 600)))).strftime("%Y-%m-%d %H:%M:%S")
-            self._record_scheduler_task_discovered_retry_after(
+        if reached_scroll_limit or unconfirmed_count:
+            next_time = (datetime.now() + timedelta(seconds=max(60, int(payload.get("retry_seconds") or 600)))).strftime("%Y-%m-%d %H:%M:%S")
+            self._persist_scheduler_task_next_time(
                 str(payload.get("__scheduler_task_id") or "mail-selective-claim"),
-                retry_after,
-                task_type="mail_selective_claim",
-                label="邮件_选择性领取",
-                last_result="skipped",
+                next_time,
             )
             message = (
-                f"邮件_选择性领取：未确认到底，见到 {seen_count} 封，领取 {processed_count} 封，"
-                f"滚动 {scroll_count} 次，{retry_after} 重试"
+                f"邮件_选择性领取：见到 {seen_count} 封，确认领取 {processed_count} 封，"
+                f"未确认 {unconfirmed_count} 封，滚动 {scroll_count} 次，{next_time} 重试"
             )
         else:
             message = f"邮件_选择性领取：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次"
+            message = self._finish_mail_selective_claim_schedule(payload, message)
 
         with self._lock:
             self._set_status_locked(
@@ -503,10 +599,1522 @@ class MailTaskMixin:
                 phase="mail_selective_claim_done",
                 current_scene=final_scene,
             )
-            self._log_locked("success" if result == "success" else "skip", self._status["message"])
-        if result != "success":
-            return {"result": result, "message": message}
+            self._log_locked("success", self._status["message"])
         return "success"
+
+    @staticmethod
+    def _precise_mail_claim_targets(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        items = snapshot.get("items")
+        if not isinstance(items, list):
+            return []
+        return [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("runtime_status") or "") == "unclaimed"
+            and bool(item.get("present_in_runtime"))
+            and not bool(item.get("locked"))
+            and str(item.get("action_policy") or "") == "claim"
+        ]
+
+    @staticmethod
+    def _runtime_mail_identity(item: dict[str, Any]) -> str:
+        return str(item.get("id") or item.get("mail_id") or "").strip()
+
+    @classmethod
+    def _deletable_runtime_mail_garbage(
+        cls,
+        snapshot: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """Return the exact unlocked Runtime mails covered by one-key delete."""
+
+        items = snapshot.get("items")
+        if not isinstance(items, list):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mail_id = cls._runtime_mail_identity(item)
+            if (
+                mail_id
+                and bool(item.get("present_in_runtime"))
+                and not bool(item.get("locked"))
+                and (
+                    str(item.get("runtime_status") or "") == "claimed"
+                    or (
+                        str(item.get("runtime_status") or "") == "no_attachment"
+                        and cls._runtime_mail_read_state(item) is True
+                    )
+                )
+            ):
+                result[mail_id] = item
+        return result
+
+    @staticmethod
+    def _runtime_mail_read_state(item: dict[str, Any]) -> bool | None:
+        """Return Runtime's authoritative read flag when projection preserved it."""
+
+        direct = item.get("read")
+        if isinstance(direct, bool):
+            return direct
+        payload = item.get("payload")
+        runtime_payload = payload.get("runtime") if isinstance(payload, dict) else None
+        nested = runtime_payload.get("read") if isinstance(runtime_payload, dict) else None
+        return nested if isinstance(nested, bool) else None
+
+    @classmethod
+    def _protected_runtime_mail_ids(cls, snapshot: dict[str, Any]) -> set[str]:
+        """Return locked or policy-retained mails that deletion must preserve."""
+
+        return {
+            cls._runtime_mail_identity(item)
+            for item in snapshot.get("items") or []
+            if isinstance(item, dict)
+            and bool(item.get("present_in_runtime"))
+            and cls._runtime_mail_identity(item)
+            and (
+                bool(item.get("locked"))
+                or (
+                    bool(item.get("has_attachment"))
+                    and str(item.get("runtime_status") or "") == "unclaimed"
+                )
+            )
+        }
+
+    @staticmethod
+    def _validate_precise_mail_policy_snapshot(
+        snapshot: dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        """Fail closed unless every live attachment has an explicit safe policy."""
+
+        failures: list[str] = []
+        for item in snapshot.get("items") or []:
+            if not isinstance(item, dict) or not bool(item.get("present_in_runtime")):
+                continue
+            if str(item.get("runtime_status") or "") != "unclaimed" or not bool(
+                item.get("has_attachment")
+            ):
+                continue
+            mail_id = str(item.get("id") or item.get("mail_id") or "?")
+            desired = str(item.get("desired_status") or "").strip()
+            policy = str(item.get("action_policy") or "").strip()
+            locked = bool(item.get("locked"))
+            # Reward-name completeness is an authority requirement for a
+            # positive claim action, not for an explicit no-op.  A retained
+            # or locked mail is already fail-closed: this task will not click
+            # it, so a newly introduced item id must not block unrelated,
+            # fully classified claim targets forever.
+            if locked:
+                if desired != "锁定" or policy:
+                    failures.append(f"{mail_id}:锁定邮件策略不一致")
+                continue
+            if desired == "留存" and not policy:
+                continue
+            payload = item.get("payload")
+            rewards = fanxiu_mail_rewards_from_payload(payload)
+            if fanxiu_mail_rewards_unresolved(payload) or not rewards:
+                failures.append(f"{mail_id}:奖励未解析")
+                continue
+            if any(not fanxiu_mail_reward_name_known(reward) for reward in rewards):
+                failures.append(f"{mail_id}:存在未知道具")
+                continue
+            if desired == "可领" and policy == "claim":
+                continue
+            failures.append(f"{mail_id}:desired={desired or '-'} policy={policy or '-'}")
+        if failures:
+            raise RuntimeError(
+                f"邮件_选择性领取：{reason}存在 {len(failures)} 封未完成安全分类的附件邮件，"
+                f"拒绝领取并拒绝顺延到次日；details={failures[:8]}"
+            )
+
+    @staticmethod
+    def _validate_precise_mail_terminal_result(
+        result: dict[str, Any],
+        *,
+        target_count: int,
+    ) -> None:
+        """Validate the count contract before exposing a successful summary."""
+
+        if str(result.get("result") or "") != "success":
+            raise RuntimeError("邮件_选择性领取：批次没有形成 success 业务终态")
+        claimed_count = int(result.get("claimed_count") or 0)
+        garbage_before = int(result.get("garbage_before") or 0)
+        garbage_after = int(result.get("garbage_after") or 0)
+        deleted_count = int(result.get("deleted_count") or 0)
+        protected_count = int(result.get("protected_count") or 0)
+        if claimed_count != int(target_count):
+            raise RuntimeError(
+                "邮件_选择性领取：批次仍有待领取目标或领取计数不一致，"
+                f"target={target_count} claimed={claimed_count}"
+            )
+        if garbage_after != 0 or deleted_count != garbage_before:
+            raise RuntimeError(
+                "邮件_选择性领取：可删除垃圾未形成归零闭环，"
+                f"before={garbage_before} deleted={deleted_count} after={garbage_after}"
+            )
+        if min(claimed_count, garbage_before, garbage_after, deleted_count, protected_count) < 0:
+            raise RuntimeError("邮件_选择性领取：业务终态计数非法，拒绝报告成功")
+
+    @classmethod
+    def _select_precise_mail_claim_targets(
+        cls,
+        snapshot: dict[str, Any],
+        target_mail_ids: set[str] | None,
+    ) -> list[dict[str, Any]]:
+        targets = cls._precise_mail_claim_targets(snapshot)
+        wanted = {str(value) for value in target_mail_ids or set() if str(value)}
+        if not wanted:
+            return targets
+        return [
+            item
+            for item in targets
+            if str(item.get("id") or item.get("mail_id") or "") in wanted
+        ]
+
+    @classmethod
+    def _runtime_mail_target_still_requires_claim(
+        cls,
+        snapshot: dict[str, Any],
+        mail_id: str,
+    ) -> bool:
+        """Return whether one exact Runtime identity still needs a claim.
+
+        A claim request is irreversible and the detail sheet may already have
+        switched from #122 (claim) to #123 (delete) before the batch's stable
+        snapshot is refreshed.  Only a new complete MailMgr read may classify
+        that case as already completed; title similarity is insufficient when
+        several adjacent mails look identical.
+        """
+
+        target_id = str(mail_id or "")
+        return any(
+            str(item.get("id") or item.get("mail_id") or "") == target_id
+            for item in cls._precise_mail_claim_targets(snapshot)
+        )
+
+    @staticmethod
+    def _plan_precise_mail_window_action(
+        mappings: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Choose a visible claim before permitting any forward scroll."""
+
+        if not mappings:
+            raise RuntimeError("邮件_选择性领取：当前窗口没有 Runtime 行映射，禁止滚动绕过")
+        target_by_id = {
+            str(item.get("id") or item.get("mail_id") or ""): item
+            for item in targets
+        }
+        visible = [
+            mapping
+            for mapping in mappings
+            if str(mapping.get("mail_id") or "") in target_by_id
+        ]
+        if visible:
+            mapping = min(visible, key=lambda item: int(item.get("slot_index") or 0))
+            return {
+                "action": "claim",
+                "mapping": mapping,
+                "target": target_by_id[str(mapping.get("mail_id") or "")],
+            }
+        target_indices = [int(item.get("runtime_index") or 0) for item in targets]
+        last_visible_index = max(int(item.get("runtime_index") or 0) for item in mappings)
+        if min(target_indices) <= last_visible_index:
+            raise RuntimeError(
+                "邮件_选择性领取：当前窗口包含应领 Runtime 目标却没有生成点击映射，"
+                f"window={[(item.get('slot_index'), item.get('runtime_index'), item.get('mail_id')) for item in mappings]} "
+                f"targets={target_indices}；禁止滚动绕过"
+            )
+        return {"action": "scroll"}
+
+    @staticmethod
+    def _first_screen_runtime_mapping(
+        snapshot: dict[str, Any],
+        image121: dict[str, Any],
+        fragments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Infer Runtime #0 exclusively from the ordered OCR rows 2/3/4."""
+
+        items = snapshot.get("items")
+        if (
+            not snapshot.get("complete")
+            or not isinstance(items, list)
+            or int(snapshot.get("decoded_count") or -1) != len(items)
+            or len(items) < 4
+        ):
+            raise RuntimeError("邮件_选择性领取：首屏领取缺少完整 Runtime #0..#3 序列")
+        geometry = mail_window_geometry_from_asset(image121)
+        observations = build_mail_visual_observations(
+            fragments,
+            geometry,
+            visible_slots=(1, 2, 3),
+        )
+        by_slot = {item.slot_index: item for item in observations}
+        evidence: list[dict[str, Any]] = []
+        for slot in (1, 2, 3):
+            observation = by_slot.get(slot)
+            runtime_item = items[slot]
+            if observation is None:
+                raise RuntimeError(f"邮件_选择性领取：首屏第 {slot + 1} 行 OCR 缺失，不能反推第1行")
+            expected_title = str(runtime_item.get("title") or "")
+            title_score = max(
+                (
+                    ocr_name_similarity(expected_title, candidate)
+                    for candidate in observation.title_candidates
+                ),
+                default=0.0,
+            )
+            expected_time = re.sub(
+                r"\D+",
+                "",
+                str(
+                    runtime_item.get("create_time_text")
+                    or runtime_item.get("create_time")
+                    or runtime_item.get("create_time_ms")
+                    or ""
+                ),
+            )
+            time_matched = any(
+                len(candidate_digits) >= 4
+                and len(expected_time) >= 4
+                and candidate_digits[-4:] == expected_time[-4:]
+                for candidate in observation.time_candidates
+                if (candidate_digits := re.sub(r"\D+", "", candidate))
+            )
+            if title_score < 0.68 or not time_matched:
+                raise RuntimeError(
+                    f"邮件_选择性领取：首屏第 {slot + 1} 行未按序匹配 Runtime #{slot}；"
+                    f"title_score={title_score:.2f} time_matched={time_matched} "
+                    f"ocr_titles={list(observation.title_candidates)} "
+                    f"ocr_times={list(observation.time_candidates)} "
+                    f"runtime_title={expected_title} runtime_time={expected_time}"
+                )
+            evidence.append(
+                {
+                    "slot_index": slot,
+                    "runtime_index": slot,
+                    "title_score": round(title_score, 4),
+                    "time_matched": True,
+                }
+            )
+        first = items[0]
+        return {
+            "slot_index": 0,
+            "runtime_index": int(first.get("runtime_index") or 0),
+            "mail_id": str(first.get("id") or first.get("mail_id") or ""),
+            "title": str(first.get("title") or ""),
+            "create_time_text": str(first.get("create_time_text") or ""),
+            "evidence": evidence,
+        }
+
+    def _execute_first_screen_runtime_claim(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        runtime: BehaviorTreeRuntime,
+        image121: dict[str, Any],
+        view121: View,
+        list_shape: Shape,
+        geometry: Any,
+        snapshot: dict[str, Any],
+        target_mail_ids: set[str] | None = None,
+    ):
+        """Claim inferred Runtime #0 before any list scroll or drag."""
+
+        self._raise_if_stopped(stop_event)
+        frame = runtime.cur_frame(update=True)
+        fragments = runtime.ocr_fragments_in_shapes(
+            image121,
+            ("第1封", "邮件清单2"),
+            padding=0,
+            frame_data_url=frame,
+        )
+        mapping = self._first_screen_runtime_mapping(snapshot, image121, fragments)
+        click_x, click_y = self._precise_mail_click_point(
+            image121,
+            list_shape,
+            geometry,
+            slot_index=0,
+        )
+        title = str(mapping.get("title") or "")
+        row_shape = self._mail_row_title_shape(
+            view121,
+            {
+                "title": title,
+                "time_text": str(mapping.get("create_time_text") or ""),
+                "x": click_x,
+                "y": click_y,
+            },
+        )
+        if row_shape is None:
+            raise RuntimeError("邮件_选择性领取：无法构造首屏第1行正式点击区域")
+        self._log(
+            "action",
+            "邮件_选择性领取：第2/3/4行已按序匹配 Runtime #1/#2/#3；"
+            f"反推第1行为 Runtime #0「{title}」，在任何滚动前立即打开",
+        )
+        outcome = yield from self._claim_runtime_mail_row(
+            runtime,
+            _RuntimeMailRow(
+                {
+                    "title": title,
+                    "time_text": str(mapping.get("create_time_text") or ""),
+                    "mail_key": str(mapping.get("mail_id") or ""),
+                },
+                row_shape,
+            ),
+            delete_after_reward=False,
+            require_claim=True,
+        )
+        if not outcome.visual_confirmed:
+            raise RuntimeError(
+                f"邮件_选择性领取：首屏 Runtime #0「{title}」未完成打开→领取→返回 #121 闭环；"
+                f"wait_result={outcome.wait_result}"
+            )
+        self._log(
+            "success",
+            f"邮件_选择性领取：首屏 Runtime #0「{title}」已打开详情、点击领取并返回 #121；"
+            "本轮最小验收到此结束，未调用 scroll/drag",
+        )
+        return "success"
+
+    @staticmethod
+    def _ordered_runtime_window_mapping(
+        snapshot: dict[str, Any],
+        image121: dict[str, Any],
+        fragments: list[dict[str, Any]],
+        *,
+        previous_offset: int,
+        known_top: bool,
+    ) -> dict[str, Any]:
+        """Map one freshly OCRed GUI window to the ordered Runtime sequence."""
+
+        items = list(snapshot.get("items") or [])
+        geometry = mail_window_geometry_from_asset(image121)
+        # The footer overlays the fifth lattice row on the real #121 screen.
+        # Only rows 1..4 (slots 0..3) are fully actionable; a partially visible
+        # fifth title must trigger a downward scroll, never a click.
+        visible_slots = [slot for slot in geometry.visible_slot_indices() if int(slot) <= 3]
+        observations = []
+        if known_top:
+            MailTaskMixin._first_screen_runtime_mapping(snapshot, image121, fragments)
+            offset = 0
+            anchor_count = 3
+        else:
+            observations = build_mail_visual_observations(
+                fragments,
+                geometry,
+                visible_slots=visible_slots,
+            )
+            candidates: list[tuple[int, int, list[dict[str, Any]]]] = []
+            # Returning from a claimed detail can restore the list at the
+            # previous pre-scroll offset, or one row above it after the list
+            # settles.  A strictly increasing lower bound then rejects a fully
+            # aligned window and aborts the batch.  Accept that one-row rebound;
+            # the caller only scrolls again when every remaining target is
+            # beyond this verified visible window.
+            for offset_candidate in range(max(0, int(previous_offset) - 1), len(items)):
+                evidence: list[dict[str, Any]] = []
+                for observation in observations:
+                    runtime_index = offset_candidate + int(observation.slot_index)
+                    if not 0 <= runtime_index < len(items):
+                        continue
+                    runtime_item = items[runtime_index]
+                    expected_title = str(runtime_item.get("title") or "")
+                    title_score = max(
+                        (
+                            ocr_name_similarity(expected_title, candidate)
+                            for candidate in observation.title_candidates
+                        ),
+                        default=0.0,
+                    )
+                    expected_time = re.sub(
+                        r"\D+",
+                        "",
+                        str(
+                            runtime_item.get("create_time_text")
+                            or runtime_item.get("create_time")
+                            or runtime_item.get("create_time_ms")
+                            or ""
+                        ),
+                    )
+                    time_matched = any(
+                        len(candidate_digits) >= 4
+                        and len(expected_time) >= 4
+                        and candidate_digits[-4:] == expected_time[-4:]
+                        for candidate in observation.time_candidates
+                        if (candidate_digits := re.sub(r"\D+", "", candidate))
+                    )
+                    runtime_title_unknown = expected_title.startswith("未知邮件类型")
+                    if time_matched and (title_score >= 0.68 or runtime_title_unknown):
+                        evidence.append(
+                            {
+                                "slot_index": int(observation.slot_index),
+                                "runtime_index": runtime_index,
+                                "title_score": round(title_score, 4),
+                                "runtime_title_unknown": runtime_title_unknown,
+                            }
+                        )
+                if (
+                    len(evidence) >= 2
+                    and any(float(item["title_score"]) >= 0.68 for item in evidence)
+                ):
+                    candidates.append((len(evidence), offset_candidate, evidence))
+            if not candidates:
+                raise RuntimeError(
+                    "邮件_选择性领取：滚动后当前窗口没有至少两行按序匹配 Runtime，拒绝继续滚动"
+                )
+            strongest = max(item[0] for item in candidates)
+            strongest_candidates = [item for item in candidates if item[0] == strongest]
+            _count, offset, _evidence = min(strongest_candidates, key=lambda item: item[1])
+            anchor_count = strongest
+        mappings = []
+        for slot in visible_slots:
+            runtime_index = offset + int(slot)
+            if not 0 <= runtime_index < len(items):
+                continue
+            item = items[runtime_index]
+            observation = next(
+                (
+                    candidate
+                    for candidate in observations
+                    if int(candidate.slot_index) == int(slot)
+                ),
+                None,
+            )
+            observed_title = ""
+            if observation is not None and observation.title_candidates:
+                runtime_title = str(item.get("title") or "")
+                if runtime_title.startswith("未知邮件类型"):
+                    observed_title = max(
+                        observation.title_candidates,
+                        key=lambda candidate: len(re.sub(r"\s+", "", candidate)),
+                    )
+                else:
+                    observed_title = max(
+                        observation.title_candidates,
+                        key=lambda candidate: ocr_name_similarity(runtime_title, candidate),
+                    )
+            mappings.append(
+                {
+                    "slot_index": int(slot),
+                    "runtime_index": int(item.get("runtime_index") or runtime_index),
+                    "mail_id": str(item.get("id") or item.get("mail_id") or ""),
+                    "title": str(item.get("title") or ""),
+                    "observed_title": observed_title,
+                    "create_time_text": str(item.get("create_time_text") or ""),
+                }
+            )
+        return {
+            "runtime_offset": offset,
+            "anchor_count": anchor_count,
+            "mappings": mappings,
+        }
+
+    def _execute_ordered_runtime_claim_batch(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        runtime: BehaviorTreeRuntime,
+        image121: dict[str, Any],
+        view121: View,
+        list_shape: Shape,
+        geometry: Any,
+        snapshot: dict[str, Any],
+        target_mail_ids: set[str] | None = None,
+    ):
+        """Claim the one Runtime target batch, then delete once and verify once."""
+
+        targets = self._select_precise_mail_claim_targets(
+            snapshot,
+            target_mail_ids,
+        )
+        target_by_id = {
+            str(item.get("id") or item.get("mail_id") or ""): item
+            for item in targets
+        }
+        claimed_ids: set[str] = set()
+        open_attempts: dict[str, int] = {}
+        previous_offset = -1
+        known_top = True
+        scroll_calls = 0
+        wrong_detail_recoveries: dict[str, int] = {}
+        while len(claimed_ids) < len(target_by_id):
+            self._raise_if_stopped(stop_event)
+            window: dict[str, Any] | None = None
+            last_mapping_error: RuntimeError | None = None
+            for ocr_attempt in range(4):
+                frame = runtime.cur_frame(update=True)
+                fragments = runtime.ocr_fragments_in_shapes(
+                    image121,
+                    ("第1封", "邮件清单2"),
+                    padding=0,
+                    frame_data_url=frame,
+                )
+                try:
+                    window = self._ordered_runtime_window_mapping(
+                        snapshot,
+                        image121,
+                        fragments,
+                        previous_offset=previous_offset,
+                        known_top=known_top,
+                    )
+                    break
+                except RuntimeError as exc:
+                    last_mapping_error = exc
+                    if ocr_attempt >= 3:
+                        raise
+                    self._log(
+                        "info",
+                        f"邮件_选择性领取：{'首屏第2/3/4行' if known_top else '滚动稳定窗口'}"
+                        f"第 {ocr_attempt + 1}/4 帧暂未齐全；原地等待重取，禁止 scroll/drag",
+                    )
+                    yield from runtime.wait_action_settle(0.6 if known_top else 1.0)
+                    runtime.clear_frame()
+            if window is None:
+                raise last_mapping_error or RuntimeError("邮件_选择性领取：首屏映射失败")
+            mappings = list(window["mappings"])
+            visible_targets = [
+                mapping
+                for mapping in mappings
+                if str(mapping.get("mail_id") or "") in target_by_id
+                and str(mapping.get("mail_id") or "") not in claimed_ids
+            ]
+            if visible_targets:
+                mapping = min(visible_targets, key=lambda item: int(item.get("slot_index") or 0))
+                slot_index = int(mapping.get("slot_index") or 0)
+                click_x, click_y = self._precise_mail_click_point(
+                    image121,
+                    list_shape,
+                    geometry,
+                    slot_index=slot_index,
+                )
+                title = str(mapping.get("title") or "")
+                observed_title = str(mapping.get("observed_title") or "")
+                repeated_visible_signature = sum(
+                    1
+                    for visible_mapping in mappings
+                    if str(visible_mapping.get("title") or "") == title
+                    and str(visible_mapping.get("create_time_text") or "")
+                    == str(mapping.get("create_time_text") or "")
+                ) > 1
+                if not known_top:
+                    geometry_title = (
+                        observed_title
+                        if title.startswith("未知邮件类型") and observed_title
+                        else title
+                    )
+                    observed_point = self._precise_mail_observed_title_point(
+                        fragments,
+                        title=geometry_title,
+                        fallback_y=click_y,
+                        geometry=geometry,
+                        # A drag may stop well between two asset lattice rows.
+                        # Runtime already selected the row; OCR only refines
+                        # its position on this stable new frame.
+                        # A wide correction is useful for a uniquely named row
+                        # after an inertial drag.  It is unsafe for adjacent
+                        # identical mails: the neighbouring title can be closer
+                        # than the intended row and opens an already-claimed
+                        # #123 detail.  Keep repeated groups inside half a row.
+                        max_row_distance_ratio=(
+                            0.48 if repeated_visible_signature else 0.8
+                        ),
+                    )
+                    if observed_point is not None:
+                        click_x, click_y = observed_point
+                        self._log(
+                            "detail",
+                            f"邮件_选择性领取：滚动稳定帧重新定位 Runtime "
+                            f"#{mapping.get('runtime_index')}「{title}」"
+                            f"（画面标题「{geometry_title}」）到 "
+                            f"({click_x:.0f},{click_y:.0f})",
+                        )
+                row_shape = self._mail_row_title_shape(
+                    view121,
+                    {
+                        "title": title,
+                        "time_text": str(mapping.get("create_time_text") or ""),
+                        "x": click_x,
+                        "y": click_y,
+                    },
+                )
+                if row_shape is None:
+                    raise RuntimeError(f"邮件_选择性领取：无法构造 Runtime #{mapping.get('runtime_index')} 点击区域")
+                self._log(
+                    "action",
+                    f"邮件_选择性领取：当前窗口 Runtime #{mapping.get('runtime_index')}「{title}」可见；"
+                    "立即打开领取，禁止先滚动",
+                )
+                outcome = yield from self._claim_runtime_mail_row(
+                    runtime,
+                    _RuntimeMailRow(
+                        {
+                            "title": title,
+                            "time_text": str(mapping.get("create_time_text") or ""),
+                            "mail_key": str(mapping.get("mail_id") or ""),
+                        },
+                        row_shape,
+                    ),
+                    delete_after_reward=False,
+                    require_claim=True,
+                )
+                if outcome.wait_result == "claim_action_absent":
+                    mail_id = str(mapping.get("mail_id") or "")
+                    refreshed = self._read_complete_precise_mail_snapshot(
+                        stop_event,
+                        reason=f"#{mapping.get('runtime_index')} 详情无领取动作后只读复验",
+                    )
+                    if not self._runtime_mail_target_still_requires_claim(
+                        refreshed,
+                        mail_id,
+                    ):
+                        snapshot = refreshed
+                        claimed_ids.add(mail_id)
+                        self._log(
+                            "success",
+                            f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                            "详情已无领取动作，刷新 MailMgr 确认该精确邮件已结算；"
+                            "按幂等完成继续，不重复点击",
+                        )
+                        continue
+                    wrong_detail_recoveries[mail_id] = (
+                        wrong_detail_recoveries.get(mail_id, 0) + 1
+                    )
+                    if wrong_detail_recoveries[mail_id] >= 2:
+                        raise RuntimeError(
+                            f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                            "连续打开无领取动作的相邻详情，但只读 MailMgr 仍判该精确邮件可领"
+                        )
+                    self._log(
+                        "warning",
+                        f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                        "详情无领取动作，且只读 MailMgr 仍判目标可领；判定本次落到相邻已领行，"
+                        "返回世界并从邮件顶部重建一次窗口，不执行删除或领取",
+                    )
+                    yield from self._leave_mail_scene_to_world(
+                        ctx,
+                        stop_event,
+                        runtime,
+                        121,
+                        label="邮件_选择性领取",
+                    )
+                    yield from self._open_mail_selective_claim_entry(runtime)
+                    snapshot = refreshed
+                    previous_offset = -1
+                    known_top = True
+                    runtime.clear_frame()
+                    continue
+                if not outcome.visual_confirmed:
+                    mail_id = str(mapping.get("mail_id") or "")
+                    open_attempts[mail_id] = open_attempts.get(mail_id, 0) + 1
+                    if (
+                        outcome.wait_result == "detail_not_found"
+                        and open_attempts[mail_id] < 2
+                    ):
+                        self._log(
+                            "warning",
+                            f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                            "首次点击未打开详情；丢弃旧坐标，原地重新 OCR/定位后重试一次",
+                        )
+                        yield from runtime.wait_action_settle(1.5)
+                        runtime.clear_frame()
+                        continue
+                    raise RuntimeError(
+                        f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                        f"未完成领取返回闭环；wait_result={outcome.wait_result}"
+                    )
+                claimed_ids.add(str(mapping.get("mail_id") or ""))
+                self._log(
+                    "success",
+                    f"邮件_选择性领取：Runtime #{mapping.get('runtime_index')}「{title}」"
+                    f"领取完成并返回 #121；批次进度 {len(claimed_ids)}/{len(target_by_id)}",
+                )
+                continue
+
+            remaining_indices = [
+                int(item.get("runtime_index") or 0)
+                for mail_id, item in target_by_id.items()
+                if mail_id not in claimed_ids
+            ]
+            last_visible_index = max(int(item.get("runtime_index") or 0) for item in mappings)
+            if min(remaining_indices) <= last_visible_index:
+                raise RuntimeError(
+                    "邮件_选择性领取：当前窗口存在应领目标却没有生成点击映射，禁止滚动；"
+                    f"remaining={remaining_indices} window={[(m.get('slot_index'), m.get('runtime_index')) for m in mappings]}"
+                )
+            loaded = yield from runtime.scroll_shape_content(list_shape, settle_seconds=2.0)
+            scroll_calls += 1
+            if not loaded:
+                raise RuntimeError(
+                    f"邮件_选择性领取：单向到底仍有 Runtime 目标 {remaining_indices}，拒绝回顶"
+                )
+            # Content-change detection can fire while the inertial drag is
+            # still settling.  Never OCR/click that transition frame.
+            yield from runtime.wait_action_settle(3.0)
+            runtime.clear_frame()
+            previous_offset = int(window["runtime_offset"])
+            known_top = False
+
+        cleanup = yield from self._delete_read_mail_until_clean(
+            runtime,
+            view121,
+            stop_event,
+            reason="批量领取完成后统一删除",
+        )
+        yield from self._leave_mail_scene_to_world(
+            ctx,
+            stop_event,
+            runtime,
+            121,
+            label="邮件_选择性领取",
+        )
+        final_snapshot = cleanup["snapshot"]
+        self._validate_precise_mail_policy_snapshot(final_snapshot, reason="任务完成复查")
+        remaining = self._select_precise_mail_claim_targets(
+            final_snapshot,
+            target_mail_ids,
+        )
+        if remaining:
+            raise RuntimeError(
+                "邮件_选择性领取：一键删除后 Runtime 终检仍有必领目标："
+                f"{[int(item.get('runtime_index') or 0) for item in remaining]}"
+            )
+        self._log(
+            "success",
+            f"邮件_选择性领取完整闭环：领取 {len(claimed_ids)} 封，"
+            f"删除 {cleanup['deleted_count']}/{cleanup['before_count']} 封，"
+            "Runtime 终检无必领目标且可删除垃圾为 0",
+        )
+        return {
+            "result": "success",
+            "claimed_count": len(claimed_ids),
+            "garbage_before": int(cleanup["before_count"]),
+            "garbage_after": int(cleanup["after_count"]),
+            "deleted_count": int(cleanup["deleted_count"]),
+            "delete_batches": int(cleanup["batch_count"]),
+            "protected_count": int(cleanup["protected_count"]),
+        }
+
+    @staticmethod
+    def _safe_ambiguous_claim_mapping(
+        snapshot: dict[str, Any],
+        targets: list[dict[str, Any]],
+        diagnosis: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return one safe row when every competitive offset means the same claim.
+
+        MailMgr can contain several adjacent mails with identical title and time.
+        Their internal IDs are intentionally invisible in the UI, so OCR cannot
+        choose one unique offset.  Clicking is nevertheless safe when *all*
+        competitive offsets map a visible slot to an unlocked ``claim`` target
+        with the same visible title/time.  This does not weaken ordinary
+        alignment: mixed claim/retain/locked candidates still fail closed.
+        """
+
+        if str(diagnosis.get("status") or "") != "ambiguous":
+            return None
+        alignment = diagnosis.get("alignment") or {}
+        scored_offsets = sorted({int(value) for value in alignment.get("competitive_offsets") or []})
+        if len(scored_offsets) < 2:
+            return None
+        hypotheses = list(alignment.get("hypotheses") or [])
+        competitive = [
+            item
+            for item in hypotheses
+            if int(item.get("runtime_offset") or 0) in scored_offsets
+        ]
+        if len(competitive) != len(scored_offsets):
+            return None
+        # The sequence scorer intentionally keeps every near-score hypothesis
+        # for diagnostics.  A hypothesis with no exact OCR anchors is not an
+        # equal business competitor to one supported by several exact anchors,
+        # even when repeated mail titles make their aggregate scores close.
+        # First retain the strongest evidence cohort; only then ask whether the
+        # remaining GUI ambiguity crosses a Runtime action boundary.
+        strongest_exact_count = max(
+            int(item.get("exact_anchor_count") or 0) for item in competitive
+        )
+        if strongest_exact_count > 0:
+            competitive = [
+                item
+                for item in competitive
+                if int(item.get("exact_anchor_count") or 0) == strongest_exact_count
+            ]
+        else:
+            strongest_anchor_count = max(
+                int(item.get("anchor_count") or 0) for item in competitive
+            )
+            competitive = [
+                item
+                for item in competitive
+                if int(item.get("anchor_count") or 0) == strongest_anchor_count
+            ]
+        offsets = sorted({int(item.get("runtime_offset") or 0) for item in competitive})
+        if len(offsets) < 2:
+            return None
+        items = list(snapshot.get("items") or [])
+        observations_by_slot = {
+            int(item.get("slot_index") or 0): item
+            for item in diagnosis.get("observations") or []
+            if isinstance(item, dict)
+        }
+        target_by_id = {
+            str(item.get("id") or item.get("mail_id") or ""): item
+            for item in targets
+        }
+        for slot in (int(value) for value in diagnosis.get("visible_slots") or []):
+            # Action equivalence removes the need to distinguish internal IDs,
+            # but it does not remove the need to identify the visible repeated
+            # group.  A repeated title without the current row's OCR timestamp
+            # can still be a neighbouring locked group, so it is navigation
+            # evidence only and may never authorize a click.
+            observation = observations_by_slot.get(slot) or {}
+            if not observation.get("time_candidates"):
+                continue
+            if any(
+                slot not in {int(value) for value in item.get("matched_slots") or []}
+                for item in competitive
+            ):
+                continue
+            candidates: list[dict[str, Any]] = []
+            for offset in offsets:
+                runtime_index = offset + slot
+                if not 0 <= runtime_index < len(items):
+                    candidates = []
+                    break
+                item = items[runtime_index]
+                mail_id = str(item.get("id") or item.get("mail_id") or "")
+                target = target_by_id.get(mail_id)
+                if target is None:
+                    candidates = []
+                    break
+                candidates.append(target)
+            if not candidates:
+                continue
+            visible_keys = {
+                (
+                    str(item.get("title") or "").strip(),
+                    str(item.get("create_time_text") or "").strip(),
+                    str(item.get("action_policy") or "").strip(),
+                )
+                for item in candidates
+            }
+            if len(visible_keys) != 1 or next(iter(visible_keys))[2] != "claim":
+                continue
+            representative = candidates[0]
+            return {
+                "slot_index": slot,
+                "runtime_index": int(representative.get("runtime_index") or 0),
+                "mail_id": str(representative.get("id") or representative.get("mail_id") or ""),
+                "title": str(representative.get("title") or ""),
+                "create_time": representative.get("create_time_ms"),
+                "observed": True,
+                "inferred": False,
+                "equivalent_candidate_ids": [
+                    str(item.get("id") or item.get("mail_id") or "") for item in candidates
+                ],
+            }
+        return None
+
+    def _read_complete_precise_mail_snapshot(
+        self,
+        stop_event: threading.Event,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        self._raise_if_stopped(stop_event)
+        if not self._refresh_runtime_mail_snapshot(reason, force_refresh=True):
+            raise RuntimeError(f"邮件_选择性领取：{reason} Runtime 读取失败")
+        current = current_runtime_mail_sequence_snapshot(_db_engine)
+        items = current.get("items")
+        if (
+            not current.get("complete")
+            or not isinstance(items, list)
+            or int(current.get("decoded_count") or -1) != len(items)
+        ):
+            raise RuntimeError(f"邮件_选择性领取：{reason}未得到完整 Runtime 邮件序列")
+        return current
+
+    @staticmethod
+    def _precise_mail_click_point(
+        image121: dict[str, Any],
+        list_shape: Shape,
+        geometry: Any,
+        *,
+        slot_index: int,
+    ) -> tuple[float, float]:
+        width = float(image121.get("width") or geometry.frame_width)
+        raw = list_shape.raw
+        click_x = (float(raw.get("x") or 0) + float(raw.get("w") or 0) * 0.43) * width
+        click_y = float(geometry.row_center_y(slot_index))
+        if int(slot_index) > 0 and geometry.list_bottom > geometry.list_top:
+            row_top = click_y - float(geometry.row_half_height)
+            row_bottom = click_y + float(geometry.row_half_height)
+            edge_tolerance = min(12.0, float(geometry.row_half_height) * 0.2)
+            if (
+                row_top < geometry.list_top - edge_tolerance
+                or row_bottom > geometry.list_bottom + edge_tolerance
+            ):
+                raise RuntimeError(
+                    "邮件_选择性领取：目标行只有中心落入清单，但整行未进入可点击窗口，必须继续滚动"
+                )
+        return click_x, click_y
+
+    @staticmethod
+    def _precise_mail_observed_title_point(
+        fragments: list[dict[str, Any]],
+        *,
+        title: str,
+        fallback_y: float,
+        geometry: Any,
+        max_row_distance_ratio: float = 0.48,
+    ) -> tuple[float, float] | None:
+        """Use the stable frame's title box when OCR observed the target row.
+
+        MailMgr decides *which* mail is actionable and the global alignment
+        decides *which visible row* represents it.  A list may nevertheless
+        stop between the asset's integer row lattice after a nudge.  In that
+        case the observed OCR title is a more accurate click coordinate than
+        the nominal slot centre.  OCR never chooses the business target here;
+        it only refines the pixel position of an already aligned MailMgr item.
+        """
+
+        expected = re.sub(r"\s+", "", _sanitize_ocr_text(title))
+        if not expected:
+            return None
+        expected_title_y = float(fallback_y) + float(geometry.title_center_offset)
+        # OCR is only allowed to refine the pixel position of the row already
+        # selected by the global sequence alignment.  Adjacent mails can have
+        # exactly the same title (and even the same minute); when OCR misses the
+        # intended row, accepting a same-title fragment from a neighbouring row
+        # would silently turn slot N into slot N-1/N+1.
+        row_pitch = float(getattr(geometry, "row_pitch", 0.0) or 0.0)
+        max_row_distance = (
+            row_pitch * max(0.0, float(max_row_distance_ratio))
+            if row_pitch > 0
+            else None
+        )
+        candidates: list[tuple[float, float, float]] = []
+        for fragment in fragments:
+            text = re.sub(r"\s+", "", _sanitize_ocr_text(fragment.get("text")))
+            if not text:
+                continue
+            similarity = difflib.SequenceMatcher(None, text, expected).ratio()
+            if text != expected and similarity < 0.92:
+                continue
+            width = float(fragment.get("w") or 0)
+            height = float(fragment.get("h") or 0)
+            if width <= 0 or height <= 0:
+                continue
+            cx = float(fragment.get("x") or 0) + width / 2
+            cy = float(fragment.get("y") or 0) + height / 2
+            if (
+                max_row_distance is not None
+                and abs(cy - expected_title_y) > max_row_distance
+            ):
+                continue
+            candidates.append((similarity, cx, cy))
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (item[0], -abs(item[2] - expected_title_y)),
+            reverse=True,
+        )
+        _similarity, click_x, click_y = candidates[0]
+        return click_x, click_y
+
+    def _execute_precise_mail_claim_loop(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        *,
+        runtime: BehaviorTreeRuntime,
+        image121: dict[str, Any],
+        view121: View,
+        list_shape: Shape,
+        geometry: Any,
+        initial_snapshot: dict[str, Any] | None = None,
+    ):
+        """Use the complete MailMgr sequence as truth and OCR only for window alignment."""
+
+        # A precise run can legitimately traverse the same part of the list more
+        # than once: newly arrived mails force us back to the earliest target and
+        # an ambiguous OCR window forces a clean reset.  The old budget of 150
+        # counted those safety moves as if they were forward progress and could
+        # abort a healthy run halfway through a large mailbox.  Keep a generous
+        # runaway guard here; the task-wide runtime limit remains the primary
+        # bound for normal standard-job execution.
+        max_scrolls = max(1, int(payload.get("max_scrolls") or 600))
+        raw_max_actions = int(payload.get("max_actions") or 0)
+        max_actions = raw_max_actions if raw_max_actions > 0 else None
+        processed_count = 0
+        scroll_count = 0
+        target_open_attempts: dict[str, int] = {}
+        visually_confirmed_claim_ids: set[str] = set()
+        workflow_error: Exception | None = None
+        at_known_top = True
+        alignment_reference_offset = 0
+        expected_alignment_offset: int | None = 0
+        stable_snapshot = initial_snapshot or current_runtime_mail_sequence_snapshot(_db_engine)
+
+        try:
+            while True:
+                self._raise_if_stopped(stop_event)
+                snapshot = stable_snapshot
+                target_mail_ids = {str(value) for value in payload.get("target_mail_ids") or [] if str(value)}
+                targets = [
+                    item
+                    for item in self._precise_mail_claim_targets(snapshot)
+                    if str(item.get("id") or item.get("mail_id") or "")
+                    not in visually_confirmed_claim_ids
+                    and (not target_mail_ids or str(item.get("id") or item.get("mail_id") or "") in target_mail_ids)
+                ]
+                if not targets:
+                    self._log("success", "邮件_选择性领取：动态模型已无可领取目标，提前结束遍历")
+                    break
+                if max_actions is not None and processed_count >= max_actions:
+                    raise RuntimeError(
+                        f"邮件_选择性领取：达到 max_actions={max_actions}，但仍有 {len(targets)} 封必须领取"
+                    )
+
+                diagnosis: dict[str, Any] | None = None
+                frame = ""
+                # OCR is refreshed for the current frame.  If that frame cannot
+                # map its visible Runtime fragment, scrolling would risk
+                # skipping an actionable row, so fail in place instead of
+                # gathering a shifted frame.
+                local_nudges: tuple[str, ...] = ()
+                for alignment_attempt in range(len(local_nudges) + 1):
+                    frame = runtime.cur_frame(update=True)
+                    fragments = runtime.ocr_fragments_in_shapes(
+                        image121,
+                        ("第1封", "邮件清单2"),
+                        padding=0,
+                        frame_data_url=frame,
+                    )
+                    diagnosis = diagnose_mail_window(
+                        snapshot,
+                        image121,
+                        fragments,
+                        expected_runtime_offset=expected_alignment_offset,
+                    )
+                    safe_ambiguous_mapping = self._safe_ambiguous_claim_mapping(
+                        snapshot,
+                        targets,
+                        diagnosis,
+                    )
+                    if (
+                        str(diagnosis.get("status") or "") == "ambiguous"
+                        and safe_ambiguous_mapping is None
+                    ):
+                        alignment_debug = diagnosis.get("alignment") or {}
+                        self._log(
+                            "detail",
+                            "邮件_选择性领取：歧义动作边界诊断 "
+                            f"targets={[int(item.get('runtime_index') or 0) for item in targets]} "
+                            f"competitive_offsets={alignment_debug.get('competitive_offsets') or []} "
+                            "hypotheses="
+                            f"{[(item.get('runtime_offset'), item.get('anchor_count'), item.get('exact_anchor_count'), item.get('matched_slots')) for item in (alignment_debug.get('hypotheses') or [])[:12]]}",
+                        )
+                    if safe_ambiguous_mapping is not None:
+                        diagnosis = {
+                            **diagnosis,
+                            "ok": True,
+                            "status": "equivalent_claim_ambiguity",
+                            "reason": "竞争偏移均映射到同标题、同时间、同领取策略邮件",
+                            "alignment": {
+                                **(diagnosis.get("alignment") or {}),
+                                "runtime_offset": int(safe_ambiguous_mapping["runtime_index"])
+                                - int(safe_ambiguous_mapping["slot_index"]),
+                                "mappings": [safe_ambiguous_mapping],
+                            },
+                        }
+                        self._log(
+                            "info",
+                            "邮件_选择性领取：视觉偏移不唯一，但当前行全部竞争候选均为"
+                            f"同一领取等价类，共 {len(safe_ambiguous_mapping['equivalent_candidate_ids'])} 封；"
+                            "允许点击并继续用详情页与 MailMgr 复核",
+                        )
+                    if (
+                        diagnosis.get("ok")
+                        and at_known_top
+                        and int((diagnosis.get("alignment") or {}).get("runtime_offset") or 0) != 0
+                    ):
+                        diagnosis = {
+                            **diagnosis,
+                            "ok": False,
+                            "status": "top_offset_conflict",
+                            "reason": "刚从 #34 重进，首屏只能对应动态序列 offset=0",
+                        }
+                    if diagnosis.get("ok"):
+                        candidate_offset = int(
+                            (diagnosis.get("alignment") or {}).get("runtime_offset") or 0
+                        )
+                        if abs(candidate_offset - alignment_reference_offset) > 6:
+                            diagnosis = {
+                                **diagnosis,
+                                "ok": False,
+                                "status": "offset_discontinuity",
+                                "reason": (
+                                    f"窗口偏移从 {alignment_reference_offset} 跳到 {candidate_offset}，"
+                                    "超过单次滚动连续性边界"
+                                ),
+                            }
+                    if not diagnosis.get("ok") and expected_alignment_offset is not None:
+                        visible_slots = [int(slot) for slot in geometry.visible_slot_indices()]
+                        earliest_target_index = min(
+                            int(item.get("runtime_index") or 0) for item in targets
+                        )
+                        predicted_offset = int(expected_alignment_offset)
+                        # Opening #121 from #34 is a structural top anchor.  The
+                        # first title is frequently hidden by banners, so OCR can
+                        # have too little evidence even though the list origin is
+                        # known exactly.  Keep offset=0 and let the detail page
+                        # verify the dynamic MailMgr title/action; nudging down here
+                        # loses the top anchor and can strand target #0 forever.
+                        if at_known_top and predicted_offset == 0 and visible_slots:
+                            snapshot_items = list(snapshot.get("items") or [])
+                            predicted_mappings = []
+                            for slot in visible_slots:
+                                runtime_index = slot
+                                if not 0 <= runtime_index < len(snapshot_items):
+                                    continue
+                                item = snapshot_items[runtime_index]
+                                predicted_mappings.append(
+                                    {
+                                        "slot_index": slot,
+                                        "runtime_index": int(item.get("runtime_index") or runtime_index),
+                                        "mail_id": str(item.get("id") or item.get("mail_id") or ""),
+                                        "title": str(item.get("title") or ""),
+                                        "create_time": item.get("create_time_ms"),
+                                        "observed": False,
+                                        "inferred": True,
+                                    }
+                                )
+                            diagnosis = {
+                                **diagnosis,
+                                "ok": True,
+                                "status": "known_top_runtime_mapping",
+                                "reason": (
+                                    "#121 从 #34 重进后列表顶部已知；"
+                                    "使用 MailMgr 顺序映射，并在详情页复核标题与动作"
+                                ),
+                                "alignment": {
+                                    "runtime_offset": 0,
+                                    "anchor_count": 0,
+                                    "exact_anchor_count": 0,
+                                    "score_margin": 0.0,
+                                    "mappings": predicted_mappings,
+                                },
+                            }
+                            self._log(
+                                "info",
+                                "邮件_选择性领取：首屏 OCR 证据不足，但 #121 顶部已知；"
+                                "保持 offset=0，交由详情页联合验证",
+                            )
+                        if (
+                            not diagnosis.get("ok")
+                            and
+                            visible_slots
+                            and earliest_target_index > predicted_offset + max(visible_slots)
+                        ):
+                            snapshot_items = list(snapshot.get("items") or [])
+                            predicted_mappings = []
+                            for slot in visible_slots:
+                                runtime_index = predicted_offset + slot
+                                if not 0 <= runtime_index < len(snapshot_items):
+                                    continue
+                                item = snapshot_items[runtime_index]
+                                predicted_mappings.append(
+                                    {
+                                        "slot_index": slot,
+                                        "runtime_index": int(item.get("runtime_index") or runtime_index),
+                                        "mail_id": str(item.get("id") or item.get("mail_id") or ""),
+                                        "title": str(item.get("title") or ""),
+                                        "create_time": item.get("create_time_ms"),
+                                        "observed": False,
+                                        "inferred": True,
+                                    }
+                                )
+                            diagnosis = {
+                                **diagnosis,
+                                "ok": True,
+                                "status": "predicted_offset_navigation",
+                                "reason": "固定滚动给出连续预测偏移；目标仍在窗口之后，仅用于安全向下导航",
+                                "alignment": {
+                                    "runtime_offset": predicted_offset,
+                                    "anchor_count": 0,
+                                    "exact_anchor_count": 0,
+                                    "score_margin": 0.0,
+                                    "mappings": predicted_mappings,
+                                },
+                            }
+                            self._log(
+                                "info",
+                                f"邮件_选择性领取：预测 offset={predicted_offset}；"
+                                f"最早目标 #{earliest_target_index} 尚未进入窗口，跳过点击配准，仅向下导航",
+                            )
+                    if diagnosis.get("ok"):
+                        break
+                    self._log(
+                        "warning",
+                        "邮件_选择性领取：窗口配准第 "
+                        f"{alignment_attempt + 1}/{len(local_nudges) + 1} 次未通过：{diagnosis.get('status')} "
+                        f"{diagnosis.get('reason')}",
+                    )
+                    if alignment_attempt < len(local_nudges):
+                        direction = local_nudges[alignment_attempt]
+                        self._log(
+                            "action",
+                            f"邮件_选择性领取：小幅向{direction}移动清单，重新布置第2/3/4封可信锚点",
+                        )
+                        yield from runtime.scroll_shape_content(
+                            list_shape,
+                            direction=direction,
+                            ratio=0.12,
+                            settle_seconds=1.5,
+                            # Mail banners and floating notices may keep changing
+                            # forever.  The fixed post-drag delay is the hard gate;
+                            # do not make whole-frame visual stability a prerequisite.
+                            stable_sample_count=1,
+                        )
+                        at_known_top = False
+                        expected_alignment_offset = None
+                    else:
+                        stop_event.wait(0.35)
+
+                if not diagnosis or not diagnosis.get("ok"):
+                    raise RuntimeError(
+                        "邮件_选择性领取：当前可见 Runtime 连续片段跨越不同业务动作边界；"
+                        "已追加一帧向下证据，仍不能安全选择领取行"
+                    )
+
+                alignment = diagnosis["alignment"]
+                mappings = list(alignment.get("mappings") or [])
+                if not mappings:
+                    raise RuntimeError("邮件_选择性领取：配准成功但没有生成可见槽位映射")
+                runtime_offset = int(alignment.get("runtime_offset") or 0)
+                alignment_reference_offset = runtime_offset
+                expected_alignment_offset = runtime_offset
+                target_indices = [int(item.get("runtime_index") or 0) for item in targets]
+                earliest_target_index = min(target_indices)
+                if earliest_target_index < runtime_offset:
+                    raise RuntimeError(
+                        f"邮件_选择性领取：最早目标 #{earliest_target_index} 已落在当前窗口 "
+                        f"#{runtime_offset} 上方；稳定批次只允许单向向下，拒绝回滚或回顶"
+                    )
+                window_action = self._plan_precise_mail_window_action(mappings, targets)
+
+                if window_action["action"] == "claim":
+                    mapping = window_action["mapping"]
+                    slot_index = int(mapping.get("slot_index") or 0)
+                    if slot_index == 0 and (
+                        int(alignment.get("anchor_count") or 0) < 3
+                        and float(alignment.get("score_margin") or 0) < 2.0
+                    ):
+                        self._log(
+                            "info",
+                            "邮件_选择性领取：首行由当前 Runtime 连续片段推导；"
+                            "不回顶，进入详情页动作复核",
+                        )
+
+                    mail_id = str(mapping.get("mail_id") or "")
+                    target = window_action["target"]
+                    click_x, click_y = self._precise_mail_click_point(
+                        image121,
+                        list_shape,
+                        geometry,
+                        slot_index=slot_index,
+                    )
+                    title = str(target.get("title") or "")
+                    time_text = str(target.get("create_time_text") or "")
+                    if bool(mapping.get("observed")):
+                        observed_point = self._precise_mail_observed_title_point(
+                            fragments,
+                            title=title,
+                            fallback_y=click_y,
+                            geometry=geometry,
+                        )
+                        if observed_point is not None:
+                            click_x, click_y = observed_point
+                            self._log(
+                                "detail",
+                                f"邮件_选择性领取：稳定帧已观察到「{title}」，"
+                                f"使用 OCR 标题中心精确落点 ({click_x:.0f},{click_y:.0f})",
+                            )
+                    row_shape = self._mail_row_title_shape(
+                        view121,
+                        {"title": title, "time_text": time_text, "x": click_x, "y": click_y},
+                    )
+                    if row_shape is None:
+                        raise RuntimeError(f"邮件_选择性领取：无法构造 {mail_id} 的精确点击区域")
+                    self._log(
+                        "action",
+                        f"邮件_选择性领取：模型 #{mapping.get('runtime_index')} → 槽位 {slot_index}，"
+                        f"点击 {time_text}「{title}」[{mail_id}]",
+                    )
+                    outcome = yield from self._claim_runtime_mail_row(
+                        runtime,
+                        _RuntimeMailRow(
+                            {
+                                "title": title,
+                                "time_text": time_text,
+                                "mail_key": str(target.get("mail_key") or ""),
+                            },
+                            row_shape,
+                        ),
+                        delete_after_reward=False,
+                        require_claim=True,
+                    )
+                    if outcome.wait_result in {"detail_not_found", "timeout", "detail_still_open"}:
+                        target_open_attempts[mail_id] = target_open_attempts.get(mail_id, 0) + 1
+                        if target_open_attempts[mail_id] < 2:
+                            self._log(
+                                "warning",
+                                f"邮件_选择性领取：「{title}」首次点击后仍在列表；"
+                                "等待稳定并重新读取当前窗口，不终止整轮遍历",
+                            )
+                            yield from runtime.wait_action_settle(1.5)
+                            expected_alignment_offset = runtime_offset
+                            continue
+                        raise RuntimeError(
+                            f"邮件_选择性领取：{time_text}「{title}」点击后未完成可靠的领取闭环"
+                        )
+                    if outcome.visual_confirmed:
+                        visually_confirmed_claim_ids.add(mail_id)
+                        processed_count += 1
+                        # Claiming a single mail changes only its claim state;
+                        # list membership and order remain stable until the
+                        # final one-key delete.  Keep this batch's Runtime
+                        # sequence/offset and exclude the confirmed ID in memory.
+                        expected_alignment_offset = runtime_offset
+                        self._log(
+                            "success",
+                            f"邮件_选择性领取：「{title}」点击领取后已可靠返回邮件 #121；"
+                            "本轮记录已领取，保持 Runtime 稳定序列继续处理后续目标",
+                        )
+                        continue
+                    raise RuntimeError(
+                        f"邮件_选择性领取：{time_text}「{title}」未得到可靠的详情领取返回证据"
+                    )
+
+                if scroll_count >= max_scrolls:
+                    raise RuntimeError(
+                        f"邮件_选择性领取：达到 max_scrolls={max_scrolls}，仍有 {len(targets)} 封必须领取"
+                    )
+                loaded = yield from runtime.scroll_shape_content(
+                    list_shape,
+                    settle_seconds=2.0,
+                )
+                scroll_count += 1
+                at_known_top = False
+                list_height = float(list_shape.raw.get("h") or 0) * float(geometry.frame_height)
+                expected_alignment_offset = alignment_reference_offset + max(
+                    1,
+                    int(round((list_height * 0.5) / geometry.row_pitch)),
+                )
+                if not loaded:
+                    raise RuntimeError(
+                        "邮件_选择性领取：单向遍历已到底但稳定 Runtime 批次仍有必领目标，拒绝回顶重试"
+                    )
+        except Exception as exc:
+            workflow_error = exc
+
+        # 一键删除是统一收尾动作；即使严格配准失败，也只会删除已领取或无附件邮件。
+        try:
+            scene_id, _score, _frame = runtime.current_scene([121, 122, 123, 34], update=True)
+            if scene_id in {122, 123}:
+                detail_view = runtime.view(scene_id)
+                back_shape = detail_view.get_shape("空白-返回")
+                if back_shape is not None:
+                    back_shape.click(runtime)
+                else:
+                    runtime.click_frame_point(scene_id, 1, 1)
+                yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：收尾返回邮件 #121")
+                scene_id = 121
+            if scene_id == 34:
+                yield from self._open_mail_selective_claim_entry(runtime)
+                yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：收尾重新进入邮件 #121")
+                scene_id = 121
+            if scene_id != 121:
+                raise RuntimeError(f"邮件_选择性领取：收尾前无法确认邮件 #121，当前 #{scene_id or 'unknown'}")
+            delete_scene = yield from self._delete_read_mail_once(runtime, view121, reason="任务统一收尾")
+            if delete_scene != 34:
+                yield from self._leave_mail_scene_to_world(
+                    ctx,
+                    stop_event,
+                    runtime,
+                    121,
+                    label="邮件_选择性领取",
+                )
+            final_scene = yield from self._ensure_clean_world_after_task(
+                ctx,
+                stop_event,
+                label="邮件_选择性领取",
+            )
+        except Exception as cleanup_exc:
+            if workflow_error is None:
+                workflow_error = cleanup_exc
+            else:
+                self._log("error", f"邮件_选择性领取：主流程失败后收尾也失败：{cleanup_exc}")
+            final_scene = None
+
+        final_snapshot = self._read_complete_precise_mail_snapshot(
+            stop_event,
+            reason="任务完成复查",
+        )
+        remaining = self._precise_mail_claim_targets(final_snapshot)
+        if remaining and workflow_error is None:
+            workflow_error = RuntimeError(
+                "邮件_选择性领取：最终一键删除并刷新 Runtime 后仍有 "
+                f"{len(remaining)} 封应领邮件，拒绝回顶重试或报告成功；"
+                f"remaining={[int(item.get('runtime_index') or 0) for item in remaining]}"
+            )
+        if workflow_error is not None:
+            raise workflow_error
+
+        message = (
+            f"邮件_选择性领取：完成，精确领取 {processed_count} 封，滚动 {scroll_count} 次，"
+            f"最终清单 {int(final_snapshot.get('decoded_count') or 0)} 封"
+        )
+        message = self._finish_mail_selective_claim_schedule(payload, message)
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                message,
+                phase="mail_selective_claim_done",
+                current_scene=final_scene,
+            )
+            self._log_locked("success", message)
+        return "success"
+
+    def _finish_mail_selective_claim_schedule(
+        self,
+        payload: dict[str, Any],
+        message: str,
+    ) -> str:
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or "").strip()
+        if not scheduler_task_id:
+            return message
+        # Respect Scheduler's planned business clock during an early run.
+        # datetime.now() would advance a midnight job back to the very same
+        # upcoming midnight, leaving a successfully completed job due again.
+        now = job_now()
+        next_time = (now + timedelta(days=1)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+        return f"{message}，下次 {next_time}"
 
     def _click_confirmed_mail_delete_prompt(
         self,
@@ -519,7 +2127,93 @@ class MailTaskMixin:
 
         runtime.click_shape(int(scene_id), "确认", frame_data_url=frame_data_url)
 
-    def _delete_read_mail_once(self, runtime: FanxiuRuntime, mail_view: View, *, reason: str):
+    def _delete_read_mail_until_clean(
+        self,
+        runtime: BehaviorTreeRuntime,
+        mail_view: View,
+        stop_event: threading.Event,
+        *,
+        reason: str,
+        initial_snapshot: dict[str, Any] | None = None,
+        max_batches: int = 8,
+    ):
+        """Delete eligible mail in bounded batches with fresh Runtime proof."""
+
+        snapshot = initial_snapshot or self._read_complete_precise_mail_snapshot(
+            stop_event,
+            reason=f"{reason}删除前读取",
+        )
+        eligible = self._deletable_runtime_mail_garbage(snapshot)
+        protected_ids = self._protected_runtime_mail_ids(snapshot)
+        before_count = len(eligible)
+        deleted_count = 0
+        batches = 0
+        while eligible:
+            self._raise_if_stopped(stop_event)
+            if batches >= max(1, int(max_batches)):
+                raise RuntimeError(
+                    f"邮件_选择性领取：{reason}达到 {max_batches} 批后仍有 "
+                    f"{len(eligible)} 封可删除垃圾"
+                )
+            previous_ids = set(eligible)
+            result_scene = yield from self._delete_read_mail_once(
+                runtime,
+                mail_view,
+                reason=f"{reason}（第 {batches + 1} 批，删除前 {len(previous_ids)} 封）",
+            )
+            if result_scene == 34:
+                yield from self._open_mail_selective_claim_entry(runtime)
+                yield from runtime.wait_view(
+                    121,
+                    timeout=12.0,
+                    label="邮件_选择性领取：批量删除后重新进入邮件 #121",
+                )
+            elif result_scene != 121:
+                raise RuntimeError(
+                    f"邮件_选择性领取：确认删除后落点异常 #{result_scene or 'unknown'}"
+                )
+            snapshot = self._read_complete_precise_mail_snapshot(
+                stop_event,
+                reason=f"{reason}第 {batches + 1} 批删除后强制刷新",
+            )
+            current_ids = {
+                self._runtime_mail_identity(item)
+                for item in snapshot.get("items") or []
+                if isinstance(item, dict)
+                and bool(item.get("present_in_runtime"))
+                and self._runtime_mail_identity(item)
+            }
+            missing_protected = protected_ids - current_ids
+            if missing_protected:
+                raise RuntimeError(
+                    "邮件_选择性领取：一键删除后锁定或策略保留邮件消失，拒绝继续；"
+                    f"missing={sorted(missing_protected)[:8]}"
+                )
+            eligible = self._deletable_runtime_mail_garbage(snapshot)
+            current_eligible_ids = set(eligible)
+            if not current_eligible_ids < previous_ids:
+                raise RuntimeError(
+                    "邮件_选择性领取：一键删除后可删除垃圾集合没有严格减少，拒绝误报成功；"
+                    f"before={len(previous_ids)} after={len(current_eligible_ids)}"
+                )
+            removed = len(previous_ids - current_eligible_ids)
+            deleted_count += removed
+            batches += 1
+            self._log(
+                "success",
+                f"邮件_选择性领取：{reason}第 {batches} 批严格减少 {removed} 封，"
+                f"剩余 {len(current_eligible_ids)} 封",
+            )
+        return {
+            "before_count": before_count,
+            "after_count": 0,
+            "deleted_count": deleted_count,
+            "batch_count": batches,
+            "protected_count": len(protected_ids),
+            "snapshot": snapshot,
+        }
+
+    def _delete_read_mail_once(self, runtime: BehaviorTreeRuntime, mail_view: View, *, reason: str):
         """在已确认位于邮件列表时执行一次安全的一键删除闭环。"""
 
         delete_read_shape = mail_view.get_shape("一键删除")
@@ -534,14 +2228,26 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_选择性领取：{reason}，点击 #121「一键删除」")
         delete_read_shape.click(runtime)
-        result_view = yield from runtime.wait_view(
-            348,
-            210,
-            278,
-            121,
-            timeout=12.0,
-            label="邮件_选择性领取：一键删除后等待确认弹窗或邮件页",
-        )
+        # A modal is rendered above #121 while the underlying mail scene stays
+        # fully recognizable.  Waiting for modal and base scene in one call
+        # lets #121 win immediately and leaves the real confirmation untouched.
+        # Give formal modal scenes an exclusive bounded gate first; only when
+        # all of them are absent may the base mail page prove an idempotent
+        # no-op.
+        try:
+            result_view = yield from runtime.wait_view(
+                348,
+                210,
+                278,
+                timeout=6.0,
+                label="邮件_选择性领取：一键删除后优先等待确认弹窗",
+            )
+        except TimeoutError:
+            result_view = yield from runtime.wait_view(
+                121,
+                timeout=6.0,
+                label="邮件_选择性领取：未见确认弹窗后复核邮件页",
+            )
         result_scene = result_view.id if isinstance(result_view, View) else None
         if result_scene in {348, 210, 278}:
             with self._lock:
@@ -560,7 +2266,6 @@ class MailTaskMixin:
                 label="邮件_选择性领取：确认一键删除后等待邮件页",
             )
             result_scene = result_view.id if isinstance(result_view, View) else None
-            self._refresh_recent_mail_packets_for_runtime_log("一键删除已阅后同步", flush_capture=True)
         elif result_scene == 121:
             self._log("info", "邮件_选择性领取：没有可删除邮件，继续当前流程")
         else:
@@ -648,8 +2353,8 @@ class MailTaskMixin:
 
 
 
-    def _open_mail_selective_claim_entry(self, runtime: FanxiuRuntime):
-        """按清理邮件伪代码进入邮件页：#34 -> #68 或 #34 -> #35。"""
+    def _open_mail_selective_claim_entry(self, runtime: BehaviorTreeRuntime):
+        """从当前已识别场景恢复到世界，再走稳定的 #34 -> #35 邮件入口。"""
 
         asset_tree_path = runtime.asset_tree_path
         if not isinstance(asset_tree_path, Path):
@@ -680,7 +2385,7 @@ class MailTaskMixin:
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
-        runtime: FanxiuRuntime,
+        runtime: BehaviorTreeRuntime,
         *,
         label: str,
     ):
@@ -739,7 +2444,7 @@ class MailTaskMixin:
         matched = 0
         for interval in intervals:
             try:
-                result = align_packet_mail_records_claimable_between_visible_neighbors(
+                result = align_runtime_mail_records_claimable_between_visible_neighbors(
                     _db_engine,
                     newer_time_text=str(interval.get("newer_time_text") or ""),
                     older_time_text=str(interval.get("older_time_text") or ""),
@@ -766,7 +2471,7 @@ class MailTaskMixin:
             "results": results,
         }
 
-    def _runtime_mail_rows_from_frame(self, runtime: FanxiuRuntime, view121: View, frame: str) -> list[_RuntimeMailRow]:
+    def _runtime_mail_rows_from_frame(self, runtime: BehaviorTreeRuntime, view121: View, frame: str) -> list[_RuntimeMailRow]:
         if not isinstance(view121.raw, dict):
             return []
         rows = self._recognize_visible_mail_rows(runtime.ctx, view121.raw, frame)
@@ -817,7 +2522,14 @@ class MailTaskMixin:
         }
         return Shape(raw, parent_view=view)
 
-    def _claim_runtime_mail_row(self, runtime: FanxiuRuntime, mail: _RuntimeMailRow):
+    def _claim_runtime_mail_row(
+        self,
+        runtime: BehaviorTreeRuntime,
+        mail: _RuntimeMailRow,
+        *,
+        delete_after_reward: bool = True,
+        require_claim: bool = False,
+    ):
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -827,9 +2539,34 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_选择性领取：点击标题「{mail.title}」")
         mail.title_shape.click(runtime)
-        detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_选择性领取：等待「{mail.title}」详情")
+        action_point: tuple[float, float] | None = None
+        if require_claim:
+            detail_view, action_point = yield from self._wait_precise_mail_detail(
+                runtime,
+                mail.title,
+                timeout=self._MAIL_DETAIL_READY_TIMEOUT_SECONDS,
+            )
+        else:
+            detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_选择性领取：等待「{mail.title}」详情")
         if not isinstance(detail_view, View) or detail_view.id not in {122, 123}:
-            return "claim"
+            return _RuntimeMailActionOutcome("claim", "detail_not_found", False)
+        if require_claim and detail_view.id != 122:
+            back_shape = detail_view.get_shape("空白-返回")
+            if back_shape is not None:
+                back_shape.click(runtime)
+            else:
+                runtime.click_frame_point(detail_view.id, 1, 1)
+            yield from runtime.wait_view(
+                121,
+                timeout=12.0,
+                label="邮件_选择性领取：模型与详情不一致，安全返回邮件 #121",
+            )
+            self._log(
+                "warning",
+                f"邮件_选择性领取：模型判定「{mail.title}」可领，但详情页 "
+                f"#{detail_view.id} 已无领取动作；先返回列表，交由新鲜 MailMgr 精确身份复验",
+            )
+            return _RuntimeMailActionOutcome("claim", "claim_action_absent", False)
         actual_policy = "claim" if detail_view.id == 122 else "delete"
         action_title = "领取" if detail_view.id == 122 else "删除"
         action_shape = detail_view.get_shape(action_title)
@@ -845,18 +2582,26 @@ class MailTaskMixin:
                 current_scene=detail_view.id,
             )
             self._log_locked("action", f"邮件_选择性领取：点击 #{detail_view.id}「{action_shape.title}」")
-        action_shape.click(runtime)
+        if action_point is not None:
+            self._log(
+                "detail",
+                f"邮件_选择性领取：标题与动作词联合确认后，点击详情页「{action_title}」动作区域中心 {action_point}",
+            )
+            runtime.click_frame_point(detail_view.id, *action_point)
+        else:
+            action_shape.click(runtime)
         wait_result = yield from self._wait_mail_list_or_reopen_from_world_after_action(
             runtime,
             detail_view,
             timeout=18.0,
             label="邮件_选择性领取：返回邮件 #121",
         )
-        if wait_result in {"list_after_reward", "reopened_after_reward"}:
+        confirmed_list_results = {"list", "reopened", "list_after_reward", "reopened_after_reward"}
+        if delete_after_reward and wait_result in confirmed_list_results:
             image121 = (runtime.ctx.get("images") or {}).get(121)
             if not isinstance(image121, dict):
-                raise RuntimeError("缺少 #121 邮件帧标注，无法在 #347 奖励后执行一键删除")
-            yield from self._delete_read_mail_once(runtime, View(image121), reason="#347 奖励后")
+                raise RuntimeError("缺少 #121 邮件帧标注，无法在领取返回后执行一键删除")
+            yield from self._delete_read_mail_once(runtime, View(image121), reason="领取返回 #121 后")
         if wait_result in {"timeout", "detail_still_open"}:
             back_shape = detail_view.get_shape("空白-返回")
             if back_shape is None:
@@ -864,13 +2609,175 @@ class MailTaskMixin:
             self._log("info", f"邮件_选择性领取：{action_title}后未自动回列表，点击详情页返回")
             back_shape.click(runtime)
             yield from runtime.wait_view(121, timeout=12.0, label="邮件_选择性领取：详情页返回邮件 #121")
-        return actual_policy
+        return _RuntimeMailActionOutcome(
+            actual_policy,
+            wait_result,
+            actual_policy == "claim"
+            and wait_result in confirmed_list_results,
+        )
+
+    def _wait_precise_mail_detail(
+        self,
+        runtime: BehaviorTreeRuntime,
+        expected_title: str,
+        *,
+        timeout: float,
+    ):
+        """Confirm a mail detail by its title and action button, not a rigid body template."""
+
+        expected = re.sub(r"\s+", "", _sanitize_ocr_text(expected_title))
+        started_at = time.monotonic()
+        last_frame = ""
+        last_texts: list[str] = []
+        last_scene_hint: int | None = None
+        stable_scene_reads = 0
+        while time.monotonic() - started_at < max(1.0, float(timeout)):
+            frame = runtime.cur_frame(update=True)
+            last_frame = frame
+            scene_id, _score, _current = runtime.current_scene(
+                [122, 123],
+                frame_data_url=frame,
+            )
+            if scene_id not in {122, 123}:
+                # ``current_scene`` also evaluates active business/popup nodes.
+                # A full-screen mail sheet can therefore lose that combined
+                # graph even though the formal #122/#123 subgraph identifies it
+                # unambiguously (the SDK floating ball is a common overlay).
+                # Reuse the strict detail-only graph as an observation fallback;
+                # the existing two-consecutive-frame gate below still prevents
+                # one noisy template match from authorizing a claim click.
+                scene_id = self._mail_detail_overlay_scene(runtime.ctx, frame)
+            action_scene = self._mail_detail_action_shape_scene(runtime, frame)
+            if action_scene in {122, 123}:
+                scene_id = action_scene
+            if scene_id in {122, 123} and scene_id == last_scene_hint:
+                stable_scene_reads += 1
+            elif scene_id in {122, 123}:
+                last_scene_hint = scene_id
+                stable_scene_reads = 1
+            else:
+                last_scene_hint = None
+                stable_scene_reads = 0
+            fragments = runtime.ocr_fragments(frame)
+            texts = [
+                re.sub(r"\s+", "", _sanitize_ocr_text(item.get("text")))
+                for item in fragments
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ]
+            last_texts = texts
+            claim_fragments = [
+                item
+                for item in fragments
+                if re.sub(r"\s+", "", _sanitize_ocr_text(item.get("text"))) == "领取"
+                and float(item.get("w") or 0) > 0
+                and float(item.get("h") or 0) > 0
+            ]
+            delete_fragments = [
+                item
+                for item in fragments
+                if re.sub(r"\s+", "", _sanitize_ocr_text(item.get("text"))) == "删除"
+                and float(item.get("w") or 0) > 0
+                and float(item.get("h") or 0) > 0
+            ]
+            # The list window has already been aligned against the ordered MailMgr
+            # sequence.  A row identity may therefore be inferred from adjacent
+            # OCR anchors (for example, seeing c/d also fixes the preceding b);
+            # do not require the detail title to OCR perfectly a second time.
+            if len(claim_fragments) == 1 and not delete_fragments:
+                detail_view = runtime.view(122)
+                action_shape = detail_view.get_shape("领取")
+                if action_shape is None:
+                    return None, None
+                raw_action = action_shape.raw
+                frame_width = float(detail_view.raw.get("width") or 900)
+                frame_height = float(detail_view.raw.get("height") or 1600)
+                action_point = (
+                    (float(raw_action.get("x") or 0) + float(raw_action.get("w") or 0) / 2) * frame_width,
+                    (float(raw_action.get("y") or 0) + float(raw_action.get("h") or 0) / 2) * frame_height,
+                )
+                self._log(
+                    "info",
+                    f"邮件_选择性领取：清单序列已定位「{expected_title}」，详情唯一动作「领取」确认 #122",
+                )
+                return detail_view, action_point
+            if len(delete_fragments) == 1 and not claim_fragments:
+                detail_view = runtime.view(123)
+                action_shape = detail_view.get_shape("删除") or detail_view.get_shape("领取")
+                if action_shape is None:
+                    return None, None
+                raw_action = action_shape.raw
+                frame_width = float(detail_view.raw.get("width") or 900)
+                frame_height = float(detail_view.raw.get("height") or 1600)
+                return detail_view, (
+                    (float(raw_action.get("x") or 0) + float(raw_action.get("w") or 0) / 2) * frame_width,
+                    (float(raw_action.get("y") or 0) + float(raw_action.get("h") or 0) / 2) * frame_height,
+                )
+            if stable_scene_reads >= 2 and scene_id in {122, 123}:
+                # OCR can miss a stylised button.  Two consecutive scene reads are
+                # an independent fallback; a single image match is not enough to
+                # override the MailMgr/list-window plan.
+                return runtime.view(scene_id), None
+            yield from runtime.wait_action_settle(0.6)
+        if last_frame:
+            try:
+                evidence = _behavior_tree_runtime.build_unknown_evidence(
+                    self,
+                    runtime.ctx,
+                    last_frame,
+                    label=f"mail_detail_{expected_title}",
+                    expected_scene_ids=[122, 123],
+                    last_scene_id=None,
+                    last_score=0.0,
+                )
+                self._log(
+                    "warning",
+                    f"邮件_选择性领取：详情联合确认超时，目标「{expected_title}」，"
+                    f"OCR={last_texts}，截图={evidence.frame_path}，证据={evidence.report_path}",
+                )
+            except Exception as exc:
+                self._log(
+                    "warning",
+                    f"邮件_选择性领取：详情联合确认超时，目标「{expected_title}」，OCR={last_texts}；"
+                    f"保存证据失败：{exc}",
+                )
+        return None, None
+
+    @staticmethod
+    def _mail_detail_action_shape_scene(
+        runtime: BehaviorTreeRuntime,
+        frame_data_url: str,
+    ) -> int | None:
+        """Resolve a detail overlay from its formal action Shapes."""
+
+        try:
+            claim_score = float(
+                runtime.shape_score(122, "领取", frame_data_url=frame_data_url)
+            )
+        except Exception:
+            claim_score = 0.0
+        try:
+            delete_score = float(
+                runtime.shape_score(123, "删除", frame_data_url=frame_data_url)
+            )
+        except Exception:
+            delete_score = 0.0
+        if claim_score >= 90.0 and claim_score > delete_score + 10.0:
+            return 122
+        if delete_score >= 90.0 and delete_score > claim_score + 10.0:
+            return 123
+        return None
+
+    def _mail_detail_overlay_scene(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
+        """Resolve the overlay through the formal #122/#123 graph nodes."""
+
+        scene_id, _score = self._identify_scene_number(ctx, frame_data_url, [122, 123])
+        return scene_id if scene_id in {122, 123} else None
 
     def _wait_mail_list_after_detail_action(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
-        runtime: FanxiuRuntime,
+        runtime: BehaviorTreeRuntime,
         scene_id: int,
         *,
         timeout: float,
@@ -904,7 +2811,7 @@ class MailTaskMixin:
 
     def _wait_mail_list_or_reopen_from_world_after_action(
         self,
-        runtime: FanxiuRuntime,
+        runtime: BehaviorTreeRuntime,
         detail_view: View,
         *,
         timeout: float,
@@ -921,18 +2828,67 @@ class MailTaskMixin:
         last_ocr_at = 0.0
         last_text = ""
         saw_reward_transition = False
+        reward_continue_clicked = False
+        reward_item_detail_close_count = 0
         while True:
             self._raise_if_stopped(stop_event)
             runtime.clear_frame() if hasattr(runtime, "clear_frame") else self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
             elapsed = time.monotonic() - start
             detail_scene_id = detail_view.id if isinstance(detail_view.id, int) else None
-            candidates = [scene for scene in [121, 347, 34, detail_scene_id] if isinstance(scene, int)]
+            candidates = [scene for scene in [121, 347, 250, 34, detail_scene_id] if isinstance(scene, int)]
             scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, candidates, update=True)
             last_scene_id, last_score = scene_id, score
             marker_score = 0.0
             marker_matched = False
+            if scene_id == 250:
+                if reward_item_detail_close_count >= 2:
+                    raise RuntimeError(f"{label}：奖励后连续打开 #250 道具详情，已停止避免循环")
+                self._log("info", f"{label}：奖励点击后打开 #250 道具详情，使用正式「返回」标注关闭")
+                yield from runtime.wait_click(250, "返回", timeout=8.0, label=f"{label}：关闭奖励道具详情")
+                reward_item_detail_close_count += 1
+                yield from runtime.wait_action_settle(0.8)
+                continue
+            if (
+                scene_id != 347
+                and self._mail_continue_hint_text_matches(text)
+            ):
+                if not saw_reward_transition:
+                    compact_transition_text = _sanitize_ocr_text(text).replace("\n", " | ")
+                    self._log(
+                        "info",
+                        f"{label}：奖励继续帧 OCR={compact_transition_text[:600] or '<empty>'}",
+                    )
+                saw_reward_transition = True
+                with self._lock:
+                    self._status.update(
+                        {
+                            "phase": "mail_selective_claim_wait_reward_transition",
+                            "current_scene": scene_id,
+                            "message": f"{label}：检测到领取奖励继续提示，等待回到邮件 #121",
+                            "updated_at": time.time(),
+                        }
+                    )
+                if not reward_continue_clicked:
+                    continue_point = self._mail_continue_hint_click_point(runtime, frame)
+                    if continue_point is not None:
+                        image347 = (ctx.get("images") or {}).get(347)
+                        click_view = image347 if isinstance(image347, dict) else detail_view
+                        self._log(
+                            "info",
+                            f"{label}：领取结果明确提示「点击屏幕继续」，点击提示文字关闭过场",
+                        )
+                        runtime.click_frame_point(click_view, *continue_point)
+                        reward_continue_clicked = True
+                        yield from runtime.wait_action_settle(0.8)
+                continue
             if scene_id == 347 or self._mail_reward_transition_text_matches(text):
+                if not saw_reward_transition:
+                    compact_transition_text = _sanitize_ocr_text(text).replace("\n", " | ")
+                    self._log(
+                        "info",
+                        f"{label}：奖励过场 OCR={compact_transition_text[:600] or '<empty>'}",
+                    )
                 saw_reward_transition = True
                 with self._lock:
                     self._status.update(
@@ -967,7 +2923,7 @@ class MailTaskMixin:
             if scene_id == 34 or now - last_ocr_at >= 1.2:
                 last_ocr_at = now
                 last_text = text or last_text
-            if scene_id == 34 or (text and self._daily_assistant_text_is_world_like(text)):
+            if scene_id == 34:
                 self._log("info", f"{label}：领取后落到世界页，重新打开邮件列表")
                 yield from runtime.wait_action_settle(0.8)
                 reopened = self._reopen_mail_from_current_world_like(runtime)
@@ -975,10 +2931,6 @@ class MailTaskMixin:
                 if result == "success":
                     return "reopened_after_reward" if saw_reward_transition else "reopened"
                 self._log("info", f"{label}：从世界页重新打开邮件失败 result={result}，继续等待")
-            if self._close_mail_wait_popup_once(ctx, frame):
-                runtime.clear_frame()
-                yield BehaviorTreeStatus.RUNNING
-                continue
             with self._lock:
                 self._status.update(
                     {
@@ -996,7 +2948,7 @@ class MailTaskMixin:
                 self._log("info", f"{label}：等待列表或世界页超时，最后 {scene_text} {last_score:.0f}%，邮件标识 {last_marker_score:.0f}% OCR={last_text}")
                 return "timeout"
 
-    def _reopen_mail_from_current_world_like(self, runtime: FanxiuRuntime):
+    def _reopen_mail_from_current_world_like(self, runtime: BehaviorTreeRuntime):
         ctx = runtime.ctx
         stop_event = runtime.stop_event or threading.Event()
         asset_tree_path = runtime.asset_tree_path
@@ -1025,81 +2977,62 @@ class MailTaskMixin:
         has_auto_close = "自动关闭" in compact or bool(re.search(r"\d+秒后.{0,4}关闭", compact))
         return bool(has_reward_title and (has_continue_hint or has_auto_close or "获得" in compact))
 
-    def _wait_mail_capture_runtime_ready(
-        self,
-        label: str,
-        *,
-        stop_event: threading.Event | None = None,
-        timeout: float = 20.0,
-        settle_seconds: float = 1.5,
-    ) -> bool:
-        deadline = time.monotonic() + max(1.0, float(timeout))
-        last_state = ""
-        while time.monotonic() < deadline:
-            if stop_event is not None:
-                self._raise_if_stopped(stop_event)
-            status = fanxiu_capture_runtime_service.status()
-            if bool(status.get("running")):
-                time.sleep(max(0.0, float(settle_seconds)))
-                with self._lock:
-                    self._log_locked(
-                        "info",
-                        f"邮件_抓包协作：{label} 已运行 "
-                        f"pcap_size={int(status.get('current_pcap_size') or 0)}",
-                    )
-                return True
-            state = str(status.get("state") or "")
-            if state != last_state:
-                last_state = state
-                with self._lock:
-                    self._log_locked("detail", f"邮件_抓包协作：{label} 等待运行 state={state or '-'}")
-            time.sleep(0.5)
-        status = fanxiu_capture_runtime_service.status()
-        with self._lock:
-            self._log_locked(
-                "error",
-                f"邮件_抓包协作：{label} 未等到运行 "
-                f"state={status.get('state') or '-'} error={status.get('last_error') or ''}",
-            )
-        return False
+    def _mail_continue_hint_text_matches(self, text: str) -> bool:
+        compact = _sanitize_ocr_text(text).replace(" ", "")
+        return "点击屏幕继续" in compact or "点击继续" in compact
 
-    def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
+    def _mail_continue_hint_click_point(
+        self,
+        runtime: BehaviorTreeRuntime,
+        frame: str,
+    ) -> tuple[float, float] | None:
+        for fragment in runtime.ocr_fragments(frame):
+            text = _sanitize_ocr_text(fragment.get("text")).replace(" ", "")
+            if "点击屏幕继续" not in text and "点击继续" not in text:
+                continue
+            x = float(fragment.get("x") or 0)
+            y = float(fragment.get("y") or 0)
+            width = float(fragment.get("w") or 0)
+            height = float(fragment.get("h") or 0)
+            if width > 0 and height > 0:
+                return x + width / 2, y + height / 2
+        return None
+
+    def _refresh_runtime_mail_snapshot(self, label: str, *, force_refresh: bool) -> bool:
+        del force_refresh
         try:
-            pcap_paths: list[str] = []
-            if flush_capture:
-                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-selective-claim:{label}", restart=True)
-                pcap_path = str(flush.get("pcap_path") or "").strip() if isinstance(flush, dict) else ""
-                if pcap_path and bool(flush.get("flushed")):
-                    pcap_paths.append(pcap_path)
-                with self._lock:
-                    self._log_locked(
-                        "info",
-                        "邮件_抓包协作："
-                        f"{label} flush={bool(flush.get('flushed')) if isinstance(flush, dict) else False} "
-                        f"pcap_size={flush.get('pcap_size', 0) if isinstance(flush, dict) else 0}",
-                    )
-            if pcap_paths:
-                result = _runtime_runner.sync_fanxiu_capture_paths(pcap_paths, max_streams=4)
-            else:
-                result = {"decoded_count": 0, "mail_packet_sync": {}}
-            mail_sync = result.get("mail_packet_sync") or {}
-            if not mail_sync:
-                for decoded_item in result.get("decoded") or []:
-                    if isinstance(decoded_item, dict) and isinstance(decoded_item.get("batch_mail_packet_sync"), dict):
-                        mail_sync = decoded_item["batch_mail_packet_sync"]
-                        break
+            from sqlmodel import Session
+
+            from backend.core.fanxiu.mail.runtime_sync import sync_fanxiu_mail_from_runtime
+
+            with Session(_db_engine()) as session:
+                result = sync_fanxiu_mail_from_runtime(session)
+            runtime_timings = result.get("runtime_timings") or {}
+            stage_text = "/".join(
+                f"{key}={float(runtime_timings.get(key) or 0.0):.2f}s"
+                for key in (
+                    "process_discovery",
+                    "lua_state",
+                    "manager_resolve",
+                    "snapshot_decode",
+                )
+            )
             with self._lock:
                 self._log_locked(
                     "info",
-                    "邮件_抓包协作："
-                    f"{label} decoded={result.get('decoded_count', 0)} "
-                    f"updated={mail_sync.get('updated', 0)} inserted={mail_sync.get('inserted', 0)} "
-                    f"source_packets={mail_sync.get('source_packets', 0)} action_packets={mail_sync.get('action_packets', 0)}"
-                    + (f" skipped={mail_sync.get('reason')}" if mail_sync.get("skipped") else ""),
+                    "邮件_动态模型："
+                    f"{label} current={result.get('record_count', 0)} "
+                    f"updated={result.get('updated', 0)} inserted={result.get('inserted', 0)} "
+                    f"absent={result.get('absent', 0)} "
+                    f"runtime={float(result.get('runtime_elapsed_seconds') or 0.0):.2f}s "
+                    f"projection={float(result.get('projection_elapsed_seconds') or 0.0):.2f}s "
+                    f"root_cache_hit={result.get('root_cache_hit')} stages={stage_text}",
                 )
+            return bool(result.get("ok"))
         except Exception as exc:
             with self._lock:
-                self._log_locked("error", f"邮件_抓包协作：{label}失败：{exc}")
+                self._log_locked("error", f"邮件_动态模型：{label}失败：{exc}")
+            return False
 
     def _open_mail_scene(
         self,
@@ -1424,19 +3357,12 @@ class MailTaskMixin:
         except RuntimeError as restore_error:
             if restore_error is original_error:
                 raise
-            image34 = ctx.get("images", {}).get(34)
-            if not isinstance(image34, dict):
-                raise original_error from restore_error
             with self._lock:
-                self._log_locked("warning", f"{label}：场景图恢复失败，点击左下返回兜底：{restore_error}")
-            runtime.click_frame_point(image34, 70, 1490)
-            try:
-                yield from runtime.wait_view(34, timeout=18.0, label="邮件_历史扫描：恢复世界 #34")
-                raise original_error
-            except RuntimeError as fallback_error:
-                if fallback_error is original_error:
-                    raise
-                raise original_error from fallback_error
+                self._log_locked(
+                    "warning",
+                    f"{label}：场景图恢复失败，保留当前现场并停止，不执行猜测坐标：{restore_error}",
+                )
+            raise original_error from restore_error
 
     def _try_open_mail_from_visible_world_menu(
         self,
@@ -1528,7 +3454,7 @@ class MailTaskMixin:
         target_title: str = "",
         target_time_text: str = "",
         game_first: bool = False,
-        fail_on_packet_gap: bool = False,
+        fail_on_runtime_gap: bool = False,
     ) -> str:
         image121 = ctx.get("images", {}).get(121)
         if not isinstance(image121, dict):
@@ -1555,7 +3481,7 @@ class MailTaskMixin:
         target_time_text = self._normalize_mail_time_text(str(target_time_text or "").strip())
         target_requested = bool(target_title or target_time_text)
         allowed_policies = (set(action_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-        pending_actions = self._pending_packet_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
+        pending_actions = self._pending_runtime_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
         if action_enabled and (pending_actions > 0 or full_scan):
             max_scrolls = min(max_scrolls, 24)
             max_scan_seconds = 420.0 if full_scan else 300.0
@@ -1569,11 +3495,11 @@ class MailTaskMixin:
         top_time = ""
         crossed_watermark = not bool(watermark_time)
         scan_truncated = False
-        packet_missing_rows: list[dict[str, str]] = []
-        packet_missing_traces: list[dict[str, Any]] = []
+        runtime_missing_rows: list[dict[str, str]] = []
+        runtime_missing_traces: list[dict[str, Any]] = []
         if action_enabled:
             with self._lock:
-                self._log_locked("info", f"邮件_历史扫描：packet 待处理邮件 {pending_actions} 封")
+                self._log_locked("info", f"邮件_历史扫描：runtime 待处理邮件 {pending_actions} 封")
                 if target_requested:
                     target_parts = []
                     if target_title:
@@ -1583,7 +3509,7 @@ class MailTaskMixin:
                     self._log_locked("info", f"邮件_历史扫描：本轮只处理目标邮件：{'，'.join(target_parts)}")
             if pending_actions <= 0 and not full_scan and not target_requested:
                 with self._lock:
-                    self._log_locked("success", "邮件_历史扫描：packet 无待处理邮件，跳过动作扫描")
+                    self._log_locked("success", "邮件_历史扫描：runtime 无待处理邮件，跳过动作扫描")
                 return "success"
         if watermark_time:
             with self._lock:
@@ -1608,17 +3534,17 @@ class MailTaskMixin:
             game_first_candidate: dict[str, Any] | None = None
             for row in rows:
                 self._prepare_mail_row_policy(row, action_enabled=action_enabled, action_policies=allowed_policies)
-                if row.get("packet_match") == "missing" and len(packet_missing_rows) < 20:
+                if row.get("runtime_match") == "missing" and len(runtime_missing_rows) < 20:
                     missing_item = {
                         "title": str(row.get("title") or ""),
                         "time_text": str(row.get("time_text") or ""),
-                        "reason": str(row.get("packet_missing_reason") or ""),
+                        "reason": str(row.get("runtime_missing_reason") or ""),
                     }
-                    packet_missing_rows.append(
+                    runtime_missing_rows.append(
                         missing_item
                     )
-                    if len(packet_missing_traces) < 8:
-                        packet_missing_traces.append(self._trace_mail_packet_gap(missing_item))
+                    if len(runtime_missing_traces) < 8:
+                        runtime_missing_traces.append(self._trace_mail_runtime_gap(missing_item))
                 if target_requested and not self._mail_row_matches_target(row, target_title=target_title, target_time_text=target_time_text):
                     row["policy"] = ""
                 seen_count += 1
@@ -1631,13 +3557,13 @@ class MailTaskMixin:
                     game_first
                     and action_enabled
                     and game_first_candidate is None
-                    and row.get("packet_match") == "missing"
+                    and row.get("runtime_match") == "missing"
                     and not row.get("policy")
                 ):
                     game_first_candidate = row
             if rows:
                 row_summary = "；".join(
-                    f"{str(row.get('title') or '')[:18]}|{row.get('time_text') or '-'}|{row.get('policy') or '-'}|{row.get('packet_match') or '-'}|lock={row.get('list_lock_score', '-')}"
+                    f"{str(row.get('title') or '')[:18]}|{row.get('time_text') or '-'}|{row.get('policy') or '-'}|{row.get('runtime_match') or '-'}|lock={row.get('list_lock_score', '-')}"
                     for row in rows[:6]
                 )
                 with self._lock:
@@ -1649,9 +3575,9 @@ class MailTaskMixin:
                     processed_count += 1
                     if target_requested:
                         break
-                    if not full_scan and self._pending_packet_mail_action_count(allowed_policies=allowed_policies) <= 0:
+                    if not full_scan and self._pending_runtime_mail_action_count(allowed_policies=allowed_policies) <= 0:
                         with self._lock:
-                            self._log_locked("success", "邮件_历史扫描：packet 待处理邮件已清零，停止扫描")
+                            self._log_locked("success", "邮件_历史扫描：runtime 待处理邮件已清零，停止扫描")
                         break
                     continue
             if game_first_candidate is not None:
@@ -1668,7 +3594,7 @@ class MailTaskMixin:
                     if target_requested:
                         break
                     continue
-            if action_enabled and not full_scan and not target_requested and self._pending_packet_mail_action_count(allowed_policies=allowed_policies) <= 0:
+            if action_enabled and not full_scan and not target_requested and self._pending_runtime_mail_action_count(allowed_policies=allowed_policies) <= 0:
                 break
 
             if watermark_time and crossed_watermark:
@@ -1717,9 +3643,9 @@ class MailTaskMixin:
                 )
                 self._log_locked("success", f"邮件_历史扫描：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封")
             return "success"
-        pending_after_scan = self._pending_packet_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
+        pending_after_scan = self._pending_runtime_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
         if action_enabled and full_scan and pending_after_scan > 0 and not scan_truncated:
-            marked_count = self._mark_pending_packet_mail_actions_not_visible(
+            marked_count = self._mark_pending_runtime_mail_actions_not_visible(
                 reason=f"full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
                 allowed_policies=allowed_policies,
             )
@@ -1734,42 +3660,42 @@ class MailTaskMixin:
                     "info",
                     f"邮件_历史扫描：本轮扫描被时间预算截断，仍有 {pending_after_scan} 封待处理邮件，不标记 missing_from_list",
                 )
-        if action_enabled and full_scan and packet_missing_rows:
+        if action_enabled and full_scan and runtime_missing_rows:
             sample_text = "；".join(
                 f"{item['title']}|{item['time_text']}|{item['reason']}"
-                for item in packet_missing_rows[:8]
+                for item in runtime_missing_rows[:8]
             )
             self._write_mail_scan_state(
                 {
                     **scan_state,
-                    "status": "packet_gap",
-                    "last_scan_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "runtime_gap",
+                    "last_scan_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                     "last_seen_top_time": top_time,
                     "last_seen_count": seen_count,
                     "last_processed_count": processed_count,
-                    "packet_missing_count": len(packet_missing_rows),
-                    "packet_missing_rows": packet_missing_rows,
-                    "packet_missing_traces": packet_missing_traces,
-                    "packet_gap_history": self._mail_packet_gap_history(scan_state, packet_missing_rows, packet_missing_traces),
-                    "message": "可见邮件缺可用 packet 事实，标题+时间和标题降级均未匹配",
+                    "runtime_missing_count": len(runtime_missing_rows),
+                    "runtime_missing_rows": runtime_missing_rows,
+                    "runtime_missing_traces": runtime_missing_traces,
+                    "runtime_gap_history": self._mail_runtime_gap_history(scan_state, runtime_missing_rows, runtime_missing_traces),
+                    "message": "可见邮件缺可用 Runtime 事实，标题+时间和标题降级均未匹配",
                 }
             )
             with self._lock:
                 self._log_locked(
-                    "error" if fail_on_packet_gap else "info",
+                    "error" if fail_on_runtime_gap else "info",
                     (
-                        f"邮件_历史扫描：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，"
-                        f"{'本轮不能证明已清干净' if fail_on_packet_gap else '已按游戏画面优先策略记录并继续'}：{sample_text}"
+                        f"邮件_历史扫描：发现 {len(runtime_missing_rows)} 个可见邮件缺 Runtime 事实，"
+                        f"{'本轮不能证明已清干净' if fail_on_runtime_gap else '已按游戏画面优先策略记录并继续'}：{sample_text}"
                     ),
                 )
-            if fail_on_packet_gap:
-                raise RuntimeError(f"邮件_历史扫描：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，请先修复抓包/解析缺口：{sample_text}")
+            if fail_on_runtime_gap:
+                raise RuntimeError(f"邮件_历史扫描：发现 {len(runtime_missing_rows)} 个可见邮件缺 Runtime 事实，请先修复 Runtime 解析缺口：{sample_text}")
         if action_enabled and watermark_time and not crossed_watermark:
             self._write_mail_scan_state(
                 {
                     **scan_state,
                     "status": "gap_risk",
-                    "last_scan_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "last_scan_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                     "last_seen_top_time": top_time,
                     "last_seen_count": seen_count,
                     "last_processed_count": processed_count,
@@ -1780,10 +3706,10 @@ class MailTaskMixin:
         if top_time:
             self._write_mail_scan_state(
                 {
-                    "packet_gap_history": scan_state.get("packet_gap_history") or [],
+                    "runtime_gap_history": scan_state.get("runtime_gap_history") or [],
                     "status": "confirmed",
                     "confirmed_time_bucket": top_time,
-                    "confirmed_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "confirmed_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                     "last_scan_mode": "full" if full_scan else "incremental",
                     "last_seen_count": seen_count,
                     "last_processed_count": processed_count,
@@ -1794,16 +3720,16 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封",
+                f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，Runtime 缺失 {len(runtime_missing_rows)} 封",
                 phase="mail_claim_done",
                 current_scene=121,
             )
-            self._log_locked("success", f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封")
+            self._log_locked("success", f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，Runtime 缺失 {len(runtime_missing_rows)} 封")
         return "success"
 
-    def _trace_mail_packet_gap(self, row: dict[str, str]) -> dict[str, Any]:
+    def _trace_mail_runtime_gap(self, row: dict[str, str]) -> dict[str, Any]:
         try:
-            return trace_packet_mail_gap(
+            return trace_runtime_mail_gap(
                 _db_engine,
                 title=str(row.get("title") or ""),
                 time_text=str(row.get("time_text") or ""),
@@ -1839,12 +3765,12 @@ class MailTaskMixin:
         self._log("detail", f"邮件_历史扫描：当前页 OCR+行解析耗时 {elapsed:.1f}s，识别 {len(rows)} 行")
         return rows
 
-    def _compare_visible_mail_row_with_packet_store(self, row: dict[str, Any]) -> dict[str, Any]:
-        """只读判断一封游戏可见邮件是否存在对应 packet 事实。
+    def _compare_visible_mail_row_with_runtime_store(self, row: dict[str, Any]) -> dict[str, Any]:
+        """只读判断一封游戏可见邮件是否存在对应 runtime 事实。
 
-        完整性口径是 A - B：游戏当前可见邮件为 A，packet 数据库为 B。
+        完整性口径是 A - B：游戏当前可见邮件为 A，runtime 数据库为 B。
         同标题的历史邮件不能证明当前这封已入库，因此这里明确禁用
-        title-only 降级；必须在相同分钟内找到标题相符的 packet 记录。
+        title-only 降级；必须在相同分钟内找到标题相符的 runtime 记录。
         """
 
         title = str(row.get("title") or "").strip()
@@ -1854,13 +3780,13 @@ class MailTaskMixin:
         if not title or not self._is_valid_mail_time_text(time_text):
             compared.update(
                 {
-                    "packet_match": "unresolved_visible_key",
-                    "packet_missing_reason": "invalid_title_or_time",
+                    "runtime_match": "unresolved_visible_key",
+                    "runtime_missing_reason": "invalid_title_or_time",
                     "mail_key": "",
                 }
             )
             return compared
-        records = self._find_packet_mail_records_for_visible_row(
+        records = self._find_runtime_mail_records_for_visible_row(
             title,
             time_text,
             allow_title_only=False,
@@ -1869,16 +3795,16 @@ class MailTaskMixin:
         if records:
             compared.update(
                 {
-                    "packet_match": "matched",
-                    "packet_missing_reason": "",
+                    "runtime_match": "matched",
+                    "runtime_missing_reason": "",
                     "mail_key": str(records[0].mail_key or ""),
                 }
             )
             return compared
         compared.update(
             {
-                "packet_match": "missing",
-                "packet_missing_reason": self._mail_row_packet_missing_reason(title, time_text),
+                "runtime_match": "missing",
+                "runtime_missing_reason": self._mail_row_runtime_missing_reason(title, time_text),
                 "mail_key": "",
             }
         )
@@ -1934,10 +3860,10 @@ class MailTaskMixin:
             self._raise_if_stopped(stop_event)
             frame = runtime.cur_frame(update=True)
             visible_rows = self._recognize_visible_mail_rows(ctx, image121, frame)
-            compared_rows = [self._compare_visible_mail_row_with_packet_store(row) for row in visible_rows]
+            compared_rows = [self._compare_visible_mail_row_with_runtime_store(row) for row in visible_rows]
             valid_times: list[tuple[str, Any]] = []
             for row in compared_rows:
-                title = _runtime_runner.normalize_fanxiu_mail_title(str(row.get("title") or ""))
+                title = _behavior_tree_runtime.normalize_fanxiu_mail_title(str(row.get("title") or ""))
                 time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
                 key = (title, time_text)
                 if title and key not in seen_observation_keys:
@@ -1977,25 +3903,25 @@ class MailTaskMixin:
                 break
 
         # A 只包含具备“标题+时间”身份的游戏邮件。滚动重叠区可能用不同
-        # OCR 标题再次读到同一封邮件；匹配成功时优先用 packet mail_key
+        # OCR 标题再次读到同一封邮件；匹配成功时优先用 runtime mail_key
         # 去重，缺包项才退回标题+时间。无时间文本只保留为 OCR 诊断观察，
         # 不能擅自放进 A-B。
         inventory: list[dict[str, Any]] = []
         inventory_keys: set[tuple[str, str]] = set()
         for row in observations:
-            if row.get("packet_match") == "unresolved_visible_key":
+            if row.get("runtime_match") == "unresolved_visible_key":
                 continue
             mail_key = str(row.get("mail_key") or "").strip()
             key = (
-                "mail_key" if mail_key else _runtime_runner.normalize_fanxiu_mail_title(str(row.get("title") or "")),
+                "mail_key" if mail_key else _behavior_tree_runtime.normalize_fanxiu_mail_title(str(row.get("title") or "")),
                 mail_key or self._normalize_mail_time_text(str(row.get("time_text") or "")),
             )
             if key in inventory_keys:
                 continue
             inventory_keys.add(key)
             inventory.append(row)
-        missing = [row for row in inventory if row.get("packet_match") == "missing"]
-        unresolved = [row for row in observations if row.get("packet_match") == "unresolved_visible_key"]
+        missing = [row for row in inventory if row.get("runtime_match") == "missing"]
+        unresolved = [row for row in observations if row.get("runtime_match") == "unresolved_visible_key"]
         unresolved = [
             row
             for row in unresolved
@@ -2017,7 +3943,7 @@ class MailTaskMixin:
             "reached_end": reached_end,
             "window_count": len(windows),
             "inventory_count": len(inventory),
-            "matched_count": sum(1 for row in inventory if row.get("packet_match") == "matched"),
+            "matched_count": sum(1 for row in inventory if row.get("runtime_match") == "matched"),
             "a_minus_b_count": len(missing),
             "a_minus_b": missing,
             "unresolved_visible_key_count": len(unresolved),
@@ -2037,25 +3963,25 @@ class MailTaskMixin:
     def _write_mail_scan_state(self, payload: dict[str, Any]) -> None:
         _write_data_annotation_json(_data_annotation_mail_scan_state_path(), payload)
 
-    def _mail_packet_gap_history(
+    def _mail_runtime_gap_history(
         self,
         scan_state: dict[str, Any],
         rows: list[dict[str, str]],
         traces: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        history = [item for item in scan_state.get("packet_gap_history") or [] if isinstance(item, dict)]
+        history = [item for item in scan_state.get("runtime_gap_history") or [] if isinstance(item, dict)]
         history.append(
             {
-                "recorded_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                "recorded_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                 "rows": rows,
                 "traces": traces,
             }
         )
         return history[-20:]
 
-    def _pending_packet_mail_action_count(self, *, allowed_policies: set[str] | None = None) -> int:
+    def _pending_runtime_mail_action_count(self, *, allowed_policies: set[str] | None = None) -> int:
         policies = (set(allowed_policies or {"claim"}) & {"claim"}) or {"claim"}
-        records = pending_packet_mail_records(_db_engine)
+        records = pending_runtime_mail_records(_db_engine)
         groups: dict[tuple[str, str], list[Any]] = {}
         for record in records:
             key = (str(record.normalized_title or record.title or "").strip(), str(record.create_time_text or "").strip())
@@ -2064,20 +3990,39 @@ class MailTaskMixin:
         return sum(
             1
             for group in groups.values()
-            if any(fanxiu_mail_action_policy_for_record(record) in policies for record in group)
-            and fanxiu_mail_visible_group_action_policy(group) in policies
+            if self._visible_runtime_mail_group_action_policy(group) in policies
         )
 
-    def _mark_pending_packet_mail_actions_not_visible(self, *, reason: str, allowed_policies: set[str] | None = None) -> int:
-        now_text = _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S")
+    def _runtime_mail_action_confirmed_for_row(self, row: dict[str, Any], policy: str) -> bool:
+        """只用服务端动作事实确认一次邮件操作，不把 UI 点击当作成功。"""
+        if policy not in {"claim", "delete"}:
+            return False
+        record = self._find_runtime_mail_record(
+            str(row.get("title") or ""),
+            str(row.get("time_text") or ""),
+        )
+        if record is None:
+            return False
+        expected_status = "claimed" if policy == "claim" else "deleted"
+        if str(getattr(record, "status", "") or "").strip().lower() == expected_status:
+            return True
+        expected_protocol = "SM_GetMailReward" if policy == "claim" else "SM_DeleteMail"
+        evidence = record.evidence if isinstance(record.evidence, dict) else {}
+        return any(
+            isinstance(event, dict) and str(event.get("protocol") or "") == expected_protocol
+            for event in evidence.get("mail_actions") or []
+        )
+
+    def _mark_pending_runtime_mail_actions_not_visible(self, *, reason: str, allowed_policies: set[str] | None = None) -> int:
+        now_text = _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S")
         marked = 0
         policies = (set(allowed_policies or {"claim"}) & {"claim"}) or {"claim"}
-        records = pending_packet_mail_action_candidates(_db_engine, policies)
+        records = pending_runtime_mail_action_candidates(_db_engine, policies)
         for record in records:
             if fanxiu_mail_action_policy_for_record(record) not in policies:
                 continue
             try:
-                mark_packet_mail_record_missing_from_list(_db_engine, record, reason=reason, marked_at=now_text)
+                mark_runtime_mail_record_missing_from_list(_db_engine, record, reason=reason, marked_at=now_text)
             except OperationalError as exc:
                 if "database is locked" not in str(exc).lower():
                     raise
@@ -2090,8 +4035,8 @@ class MailTaskMixin:
         return marked
 
     def _mail_time_is_older_than(self, current_time_text: str, watermark_time_text: str) -> bool:
-        current = parse_data_annotation_task_time(_runtime_runner.normalize_fanxiu_mail_time_text(current_time_text))
-        watermark = parse_data_annotation_task_time(_runtime_runner.normalize_fanxiu_mail_time_text(watermark_time_text))
+        current = parse_data_annotation_task_time(_behavior_tree_runtime.normalize_fanxiu_mail_time_text(current_time_text))
+        watermark = parse_data_annotation_task_time(_behavior_tree_runtime.normalize_fanxiu_mail_time_text(watermark_time_text))
         return current is not None and watermark is not None and current < watermark
 
     def _prepare_and_maybe_process_mail_row(
@@ -2143,141 +4088,167 @@ class MailTaskMixin:
         if ui_status == "已阅":
             row["mail_key"] = ""
             row["policy"] = ""
-            row["packet_match"] = "ui_skipped"
-            row["packet_missing_reason"] = ""
+            row["runtime_match"] = "ui_skipped"
+            row["runtime_missing_reason"] = ""
             return
         if not self._is_valid_mail_time_text(time_text):
             row["time_text"] = ""
             row["mail_key"] = ""
             return
         row["time_text"] = time_text
-        records = self._find_packet_mail_records_for_visible_row(title, time_text)
-        record = records[0] if records else None
+        records = self._find_runtime_mail_records_for_visible_row(title, time_text)
+        active_records = [
+            record
+            for record in records
+            if not self._mail_runtime_record_is_terminal(record)
+        ]
+        # Same-title/same-minute mails are common. A terminal runtime may refer
+        # to a duplicate that already disappeared from the UI; bind the
+        # visible row to the next active runtime instead of repeatedly rewriting
+        # the newest terminal record.
+        record = active_records[0] if active_records else (records[0] if records else None)
         row["mail_key"] = str(record.mail_key or "") if record else ""
         if records:
-            row["packet_match"] = "matched" if any(self._mail_record_matches_visible_time(record, time_text) for record in records) else "title_only"
-            row["packet_missing_reason"] = ""
+            row["runtime_match"] = "matched" if any(self._mail_record_matches_visible_time(record, time_text) for record in records) else "title_only"
+            row["runtime_missing_reason"] = ""
         else:
-            row["packet_match"] = "missing"
-            row["packet_missing_reason"] = self._mail_row_packet_missing_reason(title, time_text)
+            row["runtime_match"] = "missing"
+            row["runtime_missing_reason"] = self._mail_row_runtime_missing_reason(title, time_text)
         if action_enabled:
             # These recurring sect activity mails are known reward mails.  Their
-            # packet state can lag behind the visible list, so title recognition
+            # runtime state can lag behind the visible list, so title recognition
             # is the authoritative claim rule for them.
             policy = (
                 "claim"
-                if self._mail_title_forces_claim(title)
-                else self._mail_row_packet_action_policy(title, time_text, records=records)
+                if self._mail_title_forces_claim(title, records)
+                else self._mail_row_runtime_action_policy(title, time_text, records=records)
             )
             allowed_policies = (set(action_policies or {"claim"}) & {"claim"}) or {"claim"}
             row["policy"] = policy if policy in allowed_policies else ""
 
-    def _mail_title_forces_claim(self, title: str) -> bool:
-        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
-        compact_title = re.sub(r"\s+", "", normalized_title)
-        return any(keyword in compact_title for keyword in self._FORCE_CLAIM_MAIL_TITLE_KEYWORDS)
+    def _mail_title_forces_claim(self, title: str, records: list[Any]) -> bool:
+        active_records = [record for record in records if not self._mail_runtime_record_is_terminal(record)]
+        if not active_records:
+            return False
+        return all(
+            fanxiu_mail_title_force_claim_allowed(
+                title,
+                fanxiu_mail_rewards_from_payload(getattr(record, "payload", None)),
+            )
+            for record in active_records
+        )
 
-    def _mail_row_packet_action_policy(self, title: str, time_text: str, *, records: list[Any] | None = None) -> str:
+    def _mail_row_runtime_action_policy(self, title: str, time_text: str, *, records: list[Any] | None = None) -> str:
         if records is None:
-            records = self._find_packet_mail_records_for_visible_row(title, time_text)
-        return self._visible_packet_mail_group_action_policy(records, time_text=time_text)
+            records = self._find_runtime_mail_records_for_visible_row(title, time_text)
+        return self._visible_runtime_mail_group_action_policy(records, time_text=time_text)
 
-    def _mail_row_packet_missing_reason(self, title: str, time_text: str) -> str:
-        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
-        normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
+    def _mail_row_runtime_missing_reason(self, title: str, time_text: str) -> str:
+        normalized_title = _behavior_tree_runtime.normalize_fanxiu_mail_title(title)
+        normalized_time = _behavior_tree_runtime.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
             return "invalid_title_or_time"
-        same_title = packet_mail_records_same_title(_db_engine, normalized_title, limit=5)
-        same_time = packet_mail_records_same_time(_db_engine, normalized_time, limit=5)
+        same_title = runtime_mail_records_same_title(_db_engine, normalized_title, limit=5)
+        same_time = runtime_mail_records_same_time(_db_engine, normalized_time, limit=5)
         if same_title:
             times = ",".join(str(record.create_time_text or "") for record in same_title[:3])
             return f"same_title_without_time:{times}"
         if same_time:
             titles = ",".join(str(record.title or record.normalized_title or "") for record in same_time[:3])
             return f"same_time_without_title:{titles}"
-        return "no_packet_fact"
+        return "no_runtime_fact"
 
-    def _visible_packet_mail_group_action_policy(self, records: list[Any], *, time_text: str = "") -> str:
-        if not records:
+    def _visible_runtime_mail_group_action_policy(self, records: list[Any], *, time_text: str = "") -> str:
+        active_records = [
+            record
+            for record in records
+            if not self._mail_runtime_record_is_terminal(record)
+        ]
+        if not active_records:
             return ""
-        policies = {self._visible_packet_mail_action_policy(record) for record in records}
+        policies = {self._visible_runtime_mail_action_policy(record) for record in active_records}
         policies.discard("")
         if len(policies) != 1:
             return ""
         policy = next(iter(policies))
-        for record in records:
-            if self._visible_packet_mail_action_policy(record) != policy:
+        for record in active_records:
+            if self._visible_runtime_mail_action_policy(record) != policy:
                 return ""
         return policy
 
-    def _packet_mail_record_initially_claimable(self, record: Any | None) -> bool:
+    @staticmethod
+    def _mail_runtime_record_is_terminal(record: Any | None) -> bool:
+        status = str(getattr(record, "status", "") or "").strip().lower()
+        return status in {"claimed", "deleted", "missing_from_list"}
+
+    def _runtime_mail_record_initially_claimable(self, record: Any | None) -> bool:
         if record is None:
             return False
         return str(getattr(record, "status", "") or "").strip() == "可领"
 
-    def _find_packet_mail_records_for_visible_row(
+    def _find_runtime_mail_records_for_visible_row(
         self,
         title: str,
         time_text: str,
         *,
         allow_title_only: bool = True,
     ) -> list[Any]:
-        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
-        normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
+        normalized_title = _behavior_tree_runtime.normalize_fanxiu_mail_title(title)
+        normalized_time = _behavior_tree_runtime.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
             return []
         try:
-            exact = packet_mail_records_for_visible_row_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
+            exact = runtime_mail_records_for_visible_row_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
             if exact:
                 return list(exact)
-            same_time = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+            same_time = runtime_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
         except OperationalError as exc:
-            if not self._mail_packet_store_operational_error_is_transient(exc):
+            if not self._mail_runtime_store_operational_error_is_transient(exc):
                 raise
-            self._log("warning", f"邮件_历史扫描：packet 查找遇到瞬态数据库异常，跳过本行匹配：{exc}")
+            self._log("warning", f"邮件_历史扫描：runtime 查找遇到瞬态数据库异常，跳过本行匹配：{exc}")
             return []
         observed_key = self._mail_title_similarity_key(title)
         if len(observed_key) < 3:
-            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
+            return self._find_runtime_mail_records_by_title_only(title) if allow_title_only else []
         scored: list[tuple[float, Any]] = []
         for record in same_time:
             score = self._mail_title_similarity(title, str(record.title or record.normalized_title or ""))
             if score > 0:
                 scored.append((score, record))
         if not scored:
-            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
+            return self._find_runtime_mail_records_by_title_only(title) if allow_title_only else []
         scored.sort(key=lambda item: item[0], reverse=True)
         best_score = scored[0][0]
         threshold = 0.58 if len(observed_key) >= 5 else 0.72
         if best_score < threshold:
-            return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
+            return self._find_runtime_mail_records_by_title_only(title) if allow_title_only else []
         fuzzy_matches = [record for score, record in scored if score >= best_score - 0.06]
         if fuzzy_matches:
             return fuzzy_matches
-        return self._find_packet_mail_records_by_title_only(title) if allow_title_only else []
+        return self._find_runtime_mail_records_by_title_only(title) if allow_title_only else []
 
-    def _find_packet_mail_records_by_title_only(self, title: str) -> list[Any]:
-        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
+    def _find_runtime_mail_records_by_title_only(self, title: str) -> list[Any]:
+        normalized_title = _behavior_tree_runtime.normalize_fanxiu_mail_title(title)
         if not normalized_title:
             return []
         try:
-            exact = packet_mail_records_by_normalized_title(_db_engine, normalized_title, limit=20)
+            exact = runtime_mail_records_by_normalized_title(_db_engine, normalized_title, limit=20)
             if exact:
                 return list(exact)
         except OperationalError as exc:
-            if not self._mail_packet_store_operational_error_is_transient(exc):
+            if not self._mail_runtime_store_operational_error_is_transient(exc):
                 raise
-            self._log("warning", f"邮件_历史扫描：packet 标题查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
+            self._log("warning", f"邮件_历史扫描：runtime 标题查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
             return []
         observed_key = self._mail_title_similarity_key(title)
         if len(observed_key) < 5:
             return []
         try:
-            recent = recent_packet_mail_records(_db_engine, limit=200)
+            recent = recent_runtime_mail_records(_db_engine, limit=200)
         except OperationalError as exc:
-            if not self._mail_packet_store_operational_error_is_transient(exc):
+            if not self._mail_runtime_store_operational_error_is_transient(exc):
                 raise
-            self._log("warning", f"邮件_历史扫描：packet 近期记录查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
+            self._log("warning", f"邮件_历史扫描：runtime 近期记录查找遇到瞬态数据库异常，跳过标题匹配：{exc}")
             return []
         scored: list[tuple[float, Any]] = []
         for record in recent:
@@ -2290,31 +4261,31 @@ class MailTaskMixin:
         best_score = scored[0][0]
         return [record for score, record in scored if score >= best_score - 0.03]
 
-    def _find_packet_mail_record(
+    def _find_runtime_mail_record(
         self,
         title: str,
         time_text: str,
         *,
         action_policies: set[str] | None = None,
     ) -> Any | None:
-        normalized_title = _runtime_runner.normalize_fanxiu_mail_title(title)
-        normalized_time = _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
+        normalized_title = _behavior_tree_runtime.normalize_fanxiu_mail_title(title)
+        normalized_time = _behavior_tree_runtime.normalize_fanxiu_mail_time_text(time_text)
         if not normalized_title or not normalized_time:
             return None
         try:
-            record = find_packet_mail_record_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
+            record = find_runtime_mail_record_exact(_db_engine, normalized_title=normalized_title, normalized_time=normalized_time)
             if record:
                 return record
-            record = find_packet_mail_record_by_raw_title(_db_engine, title=title, normalized_time=normalized_time)
+            record = find_runtime_mail_record_by_raw_title(_db_engine, title=title, normalized_time=normalized_time)
             if record:
                 return record
-            time_candidates = packet_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
+            time_candidates = runtime_mail_records_for_visible_row_same_time(_db_engine, normalized_time)
         except OperationalError as exc:
-            if not self._mail_packet_store_operational_error_is_transient(exc):
+            if not self._mail_runtime_store_operational_error_is_transient(exc):
                 raise
-            self._log("warning", f"邮件_历史扫描：packet 记录查找遇到瞬态数据库异常，跳过状态回写匹配：{exc}")
+            self._log("warning", f"邮件_历史扫描：runtime 记录查找遇到瞬态数据库异常，跳过状态回写匹配：{exc}")
             return None
-        fuzzy = self._select_packet_mail_record_by_fuzzy_title(
+        fuzzy = self._select_runtime_mail_record_by_fuzzy_title(
             title,
             time_candidates,
             action_policies=action_policies,
@@ -2324,14 +4295,16 @@ class MailTaskMixin:
         return None
 
     @staticmethod
-    def _mail_packet_store_operational_error_is_transient(exc: OperationalError) -> bool:
+    def _mail_runtime_store_operational_error_is_transient(exc: OperationalError) -> bool:
         message = str(exc).lower()
         return "database is locked" in message or "database schema has changed" in message
 
-    def _visible_packet_mail_action_policy(self, record: Any | None) -> str:
+    def _visible_runtime_mail_action_policy(self, record: Any | None) -> str:
         if record is None:
             return ""
         status = str(record.status or "").strip().lower()
+        if self._mail_runtime_record_is_terminal(record):
+            return ""
         if status in {"claim_requested", "delete_requested"}:
             retry_policy = status.removesuffix("_requested")
             if not self._mail_requested_action_retryable(record, retry_policy):
@@ -2370,7 +4343,7 @@ class MailTaskMixin:
     def _mail_row_has_attachment_hint(self, row: dict[str, Any]) -> bool:
         return bool(row.get("list_has_lock") or row.get("has_attachment_hint"))
 
-    def _select_packet_mail_record_by_fuzzy_title(
+    def _select_runtime_mail_record_by_fuzzy_title(
         self,
         observed_title: str,
         candidates: list[Any],
@@ -2386,7 +4359,7 @@ class MailTaskMixin:
             score = self._mail_title_similarity(observed_title, candidate_title)
             if score <= 0:
                 continue
-            scored.append((score, candidate, self._visible_packet_mail_action_policy(candidate)))
+            scored.append((score, candidate, self._visible_runtime_mail_action_policy(candidate)))
         if not scored:
             return None
         scored.sort(key=lambda item: (item[0], float(item[1].last_seen_at or item[1].updated_at or 0)), reverse=True)
@@ -2410,7 +4383,7 @@ class MailTaskMixin:
         return best_record
 
     def _mail_title_similarity_key(self, value: str) -> str:
-        text = _runtime_runner.normalize_fanxiu_mail_title(value)
+        text = _behavior_tree_runtime.normalize_fanxiu_mail_title(value)
         return re.sub(r"[^\u4e00-\u9fff0-9A-Za-z]", "", text)
 
     def _mail_title_similarity(self, left: str, right: str) -> float:
@@ -2427,23 +4400,23 @@ class MailTaskMixin:
         return float(base)
 
     def _mail_record_matches_visible_time(self, record: Any, time_text: str) -> bool:
-        return _runtime_runner.normalize_fanxiu_mail_time_text(str(record.create_time_text or "")) == _runtime_runner.normalize_fanxiu_mail_time_text(time_text)
+        return _behavior_tree_runtime.normalize_fanxiu_mail_time_text(str(record.create_time_text or "")) == _behavior_tree_runtime.normalize_fanxiu_mail_time_text(time_text)
 
-    def _find_packet_mail_key(self, title: str, time_text: str) -> str:
-        record = self._find_packet_mail_record(title, time_text)
+    def _find_runtime_mail_key(self, title: str, time_text: str) -> str:
+        record = self._find_runtime_mail_record(title, time_text)
         return str(record.mail_key or "") if record else ""
 
-    def _update_packet_mail_action_for_row(self, row: dict[str, Any], *, status: str, evidence: dict[str, Any]) -> None:
+    def _update_runtime_mail_action_for_row(self, row: dict[str, Any], *, status: str, evidence: dict[str, Any]) -> None:
         mail_key = str(row.get("mail_key") or "").strip()
         if not mail_key:
-            mail_key = self._find_packet_mail_key(
+            mail_key = self._find_runtime_mail_key(
                 str(row.get("title") or ""),
                 str(row.get("time_text") or ""),
             )
         if not mail_key:
             return
         try:
-            update_packet_mail_action(_db_engine, mail_key=mail_key, status=status, evidence=evidence)
+            update_runtime_mail_action(_db_engine, mail_key=mail_key, status=status, evidence=evidence)
         except OperationalError as exc:
             if "database is locked" not in str(exc).lower():
                 raise
@@ -2468,9 +4441,14 @@ class MailTaskMixin:
                 phase="mail_claim_open_game_first",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_历史扫描：缺 packet，打开「{title}」按详情页判断")
+            self._log_locked("action", f"邮件_历史扫描：缺 runtime，打开「{title}」按详情页判断")
         self._open_mail_row(ctx, stop_event, row)
-        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
+        scene_result = self._wait_mail_detail_or_list_scene(
+            ctx,
+            stop_event,
+            timeout=self._MAIL_DETAIL_READY_TIMEOUT_SECONDS,
+            label=f"邮件_历史扫描：等待「{title}」详情",
+        )
         scene_id, _score = yield from scene_result
         if scene_id == 121:
             return "seen"
@@ -2501,12 +4479,12 @@ class MailTaskMixin:
             timeout=18.0,
             label="邮件_历史扫描：返回邮件 #121",
         )
-        self._update_packet_mail_action_for_row(
+        self._update_runtime_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
             evidence={
                 "runtime_requested_action": actual_policy,
-                "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                "runtime_action_requested_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                 "runtime_action_source": "game_first_detail",
             },
         )
@@ -2533,7 +4511,12 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_历史扫描：打开「{title}」准备{action_label}")
         self._open_mail_row(ctx, stop_event, row)
-        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
+        scene_result = self._wait_mail_detail_or_list_scene(
+            ctx,
+            stop_event,
+            timeout=self._MAIL_DETAIL_READY_TIMEOUT_SECONDS,
+            label=f"邮件_历史扫描：等待「{title}」详情",
+        )
         scene_id, _score = yield from scene_result
         if scene_id == 121:
             return "seen"
@@ -2578,10 +4561,10 @@ class MailTaskMixin:
             timeout=18.0,
             label="邮件_历史扫描：返回邮件 #121",
         )
-        self._update_packet_mail_action_for_row(
+        self._update_runtime_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
-            evidence={"runtime_requested_action": actual_policy, "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S")},
+            evidence={"runtime_requested_action": actual_policy, "runtime_action_requested_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S")},
         )
         return "processed"
 
@@ -2606,7 +4589,12 @@ class MailTaskMixin:
             )
             self._log_locked("action", f"邮件_历史扫描：打开「{title}」探测无附件删除")
         self._open_mail_row(ctx, stop_event, row)
-        scene_id, score = yield from self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：探测「{title}」详情")
+        scene_id, score = yield from self._wait_mail_detail_or_list_scene(
+            ctx,
+            stop_event,
+            timeout=self._MAIL_DETAIL_READY_TIMEOUT_SECONDS,
+            label=f"邮件_历史扫描：探测「{title}」详情",
+        )
         if scene_id == 121:
             return "seen"
         if scene_id == 122:
@@ -2634,12 +4622,12 @@ class MailTaskMixin:
             timeout=18.0,
             label="邮件_历史扫描：返回邮件 #121",
         )
-        self._update_packet_mail_action_for_row(
+        self._update_runtime_mail_action_for_row(
             row,
             status="delete_requested",
             evidence={
                 "runtime_requested_action": "delete",
-                "runtime_action_requested_at": _runtime_runner._now().strftime("%Y-%m-%d %H:%M:%S"),
+                "runtime_action_requested_at": _behavior_tree_runtime._now().strftime("%Y-%m-%d %H:%M:%S"),
                 "runtime_action_source": "ui_delete_probe",
             },
         )
@@ -2654,10 +4642,10 @@ class MailTaskMixin:
         status = self._normalize_mail_row_status(str(row.get("status") or ""))
         if status == "锁定" or bool(row.get("list_has_lock")):
             return False
-        packet_match = str(row.get("packet_match") or "")
+        runtime_match = str(row.get("runtime_match") or "")
         if status == "已阅":
             return True
-        return packet_match in {"missing", "title_only", "ui_skipped"}
+        return runtime_match in {"missing", "title_only", "ui_skipped"}
 
     def _open_mail_row(
         self,
@@ -2706,9 +4694,6 @@ class MailTaskMixin:
                     self._status.update({"current_scene": scene_id, "updated_at": time.time()})
                 self._log("success", f"{label}：识别到 #{scene_id} {score:.0f}%")
                 return scene_id, score
-            if self._close_mail_wait_popup_once(ctx, frame):
-                yield BehaviorTreeStatus.RUNNING
-                continue
             with self._lock:
                 self._status.update({
                     "phase": "wait_mail_detail",
@@ -2757,7 +4742,7 @@ class MailTaskMixin:
                 continue
             if not self._looks_like_mail_title(text):
                 continue
-            title = re.sub(r"[0-9A-Za-z]+$", "", _runtime_runner.normalize_fanxiu_mail_title(text)).strip()
+            title = re.sub(r"[0-9A-Za-z]+$", "", _behavior_tree_runtime.normalize_fanxiu_mail_title(text)).strip()
             if not title or not self._looks_like_mail_title(title):
                 continue
             candidates.append({"title": title, "x": cx, "y": cy, "raw_text": text})
@@ -2785,11 +4770,13 @@ class MailTaskMixin:
         template_shape: dict[str, Any],
         shape_title: str,
     ) -> None:
-        template_box = self._box(template_shape, image)
-        row_pitch = float(template_box.get("h") or 0)
-        if row_pitch < 24:
+        del template_shape
+        try:
+            geometry = mail_window_geometry_from_asset(image)
+        except (TypeError, ValueError):
             return
-        origin_y = float(template_box.get("y") or 0)
+        row_pitch = geometry.row_pitch
+        origin_y = geometry.first_center_y + geometry.title_center_offset
         for row in rows:
             try:
                 row_y = float(row.get("y") or 0)
@@ -2909,7 +4896,7 @@ class MailTaskMixin:
                     continue
                 if not self._looks_like_mail_title(text):
                     continue
-                title = _runtime_runner.normalize_fanxiu_mail_title(text).strip()
+                title = _behavior_tree_runtime.normalize_fanxiu_mail_title(text).strip()
                 if not title or not self._looks_like_mail_title(title):
                     continue
                 candidates.append({"title": title, "x": cx, "y": cy, "raw_text": text})
@@ -2952,10 +4939,10 @@ class MailTaskMixin:
         return rows
 
     def _normalize_mail_time_text(self, text: str) -> str:
-        return _runtime_runner.normalize_fanxiu_mail_time_text(_sanitize_ocr_text(text))
+        return _behavior_tree_runtime.normalize_fanxiu_mail_time_text(_sanitize_ocr_text(text))
 
     def _is_valid_mail_time_text(self, text: str) -> bool:
-        return bool(_runtime_runner.normalize_fanxiu_mail_time_text(text))
+        return bool(_behavior_tree_runtime.normalize_fanxiu_mail_time_text(text))
 
     def _looks_like_mail_time(self, text: str) -> bool:
         return bool(re.search(r"\d{4}年|\d{1,2}月\d{1,2}(?:日)?|\d{1,2}:\d{2}", text))
@@ -2983,7 +4970,7 @@ class MailTaskMixin:
         return ""
 
     def _looks_like_mail_title(self, text: str) -> bool:
-        normalized = _runtime_runner.normalize_fanxiu_mail_title(text)
+        normalized = _behavior_tree_runtime.normalize_fanxiu_mail_title(text)
         if len(normalized) < 2:
             return False
         if any(token in normalized for token in ("邮件", "已锁定", "一键删除", "一键领取", "年月日", "已阅", "未阅", "已读")):
@@ -3000,7 +4987,7 @@ class MailTaskMixin:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str, int]] = set()
         for row in sorted([*first_rows, *list_rows], key=lambda item: float(item.get("y") or 0)):
-            title = _runtime_runner.normalize_fanxiu_mail_title(str(row.get("title") or ""))
+            title = _behavior_tree_runtime.normalize_fanxiu_mail_title(str(row.get("title") or ""))
             time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
             y_bucket = int(round(float(row.get("y") or 0) / 16.0))
             key = (title, time_text, y_bucket)

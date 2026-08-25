@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
+
+from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.core.codex import sessions as codex_sessions
-from backend.models import CodexTextCacheThread, CodexTextCacheTurn
+from backend.models import CodexTextCacheRoot, CodexTextCacheThread, CodexTextCacheTurn
 
 
 TEST_DAY_START = 1_700_000_000.0
@@ -135,3 +138,116 @@ def test_build_codex_workload_compact_uses_dirty_rollout_refresh(monkeypatch):
 
     assert payload["root_dir"] == "/tmp/codex"
     assert captured == ["dirty"]
+
+
+def test_assign_thread_summary_can_leave_unchanged_cache_row_untouched():
+    row = CodexTextCacheThread(
+        root_key="root",
+        thread_id="thread-a",
+        title="A",
+        preview="preview",
+        cwd="C:/repo",
+        original_cwd="C:/repo",
+        rollout_path="C:/tmp/thread-a.jsonl",
+        created_at_source=1.0,
+        updated_at_source=2.0,
+        archived=False,
+        project_label="repo",
+        workspace_root="C:/repo",
+        refreshed_at=10.0,
+        updated_at=10.0,
+    )
+    summary = {
+        "id": "thread-a",
+        "title": "A",
+        "preview": "preview",
+        "cwd": "C:/repo",
+        "original_cwd": "C:/repo",
+        "rollout_path": "C:/tmp/thread-a.jsonl",
+        "created_at": 1.0,
+        "updated_at": 2.0,
+        "archived": False,
+        "project_label": "repo",
+        "project_secondary_label": None,
+        "workspace_root": "C:/repo",
+    }
+
+    changed = codex_sessions._assign_thread_summary_to_cache_row(
+        row,
+        summary,
+        now=20.0,
+        touch_unchanged=False,
+    )
+
+    assert changed is False
+    assert row.refreshed_at == 10.0
+    assert row.updated_at == 10.0
+
+
+def test_initial_codex_cache_refresh_persists_new_threads_and_commits_once(tmp_path):
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir()
+    with sqlite3.connect(codex_root / "state_5.sqlite") as connection:
+        connection.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT,
+                created_at REAL,
+                updated_at REAL,
+                cwd TEXT,
+                title TEXT,
+                archived INTEGER,
+                first_user_message TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, archived, first_user_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "new-thread",
+                str(codex_root / "new-thread.jsonl"),
+                100.0,
+                200.0,
+                str(tmp_path / "repo"),
+                "New thread",
+                0,
+                "new work",
+            ),
+        )
+
+    engine = _create_engine()
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            CodexTextCacheRoot.__table__,
+            CodexTextCacheThread.__table__,
+            CodexTextCacheTurn.__table__,
+        ],
+    )
+    commit_count = 0
+
+    def count_commit(_session):
+        nonlocal commit_count
+        commit_count += 1
+
+    event.listen(Session, "after_commit", count_commit)
+    try:
+        with Session(engine) as session:
+            codex_sessions._ensure_codex_text_cache(
+                str(codex_root),
+                session=session,
+                refresh_rollouts=False,
+            )
+            cached_thread = session.exec(
+                select(CodexTextCacheThread).where(CodexTextCacheThread.thread_id == "new-thread")
+            ).one()
+    finally:
+        event.remove(Session, "after_commit", count_commit)
+
+    assert commit_count == 1
+    assert cached_thread is not None
+    assert cached_thread.title == "New thread"

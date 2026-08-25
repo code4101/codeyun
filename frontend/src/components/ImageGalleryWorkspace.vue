@@ -414,6 +414,33 @@
           >
             {{ deleteButtonText }}
           </el-button>
+          <div
+            v-if="shouldShowWeightPanel(previewImage)"
+            class="preview-weight-control"
+            aria-label="调整当前文件权重"
+          >
+            <el-button
+              class="preview-weight-button"
+              :disabled="isWeightUpdating(previewImage.id)"
+              title="权重加一（↑）"
+              aria-label="权重加一"
+              @click="handleAdjustImageWeight(previewImage.id, 1)"
+            >
+              <el-icon><ArrowUp /></el-icon>
+            </el-button>
+            <span class="preview-weight-value" title="当前权重">
+              {{ getImageWeight(previewImage) }}
+            </span>
+            <el-button
+              class="preview-weight-button"
+              :disabled="isWeightUpdating(previewImage.id)"
+              title="权重减一（↓）"
+              aria-label="权重减一"
+              @click="handleAdjustImageWeight(previewImage.id, -1)"
+            >
+              <el-icon><ArrowDown /></el-icon>
+            </el-button>
+          </div>
           <el-button
             v-if="openPdfDocument && isPdf(previewImage)"
             plain
@@ -430,10 +457,17 @@
     <div v-if="previewImage" class="preview-layout">
       <div class="preview-stage">
         <template v-if="previewImage.url">
-          <img
+          <el-image
             v-if="!isVideo(previewImage) && !isPdf(previewImage)"
+            class="preview-image"
             :src="previewImage.url"
             :alt="previewImage.name"
+            :preview-src-list="[previewImage.url]"
+            :initial-index="0"
+            fit="contain"
+            hide-on-click-modal
+            preview-teleported
+            title="点击放大查看原图"
             @load="handleImageLoad(previewImage.id, $event)"
           />
           <video
@@ -441,6 +475,8 @@
             ref="previewVideoRef"
             class="preview-video"
             :src="previewVideoSource"
+            @keydown.up.capture="handlePreviewVideoWeightKey(1, $event)"
+            @keydown.down.capture="handlePreviewVideoWeightKey(-1, $event)"
             controls
             playsinline
             preload="metadata"
@@ -556,6 +592,7 @@ import {
   estimateMasonryReferenceWidth,
   getKnownMasonryAspectRatio,
   getMasonryBatchSize as getMasonryBatchSizeBase,
+  getUnresolvedMasonryImages,
   isMasonryRenderable,
 } from '@/utils/imageGalleryMasonry';
 
@@ -663,6 +700,7 @@ const summaryTotalBytes = computed(() =>
     ? props.summaryTotalBytes
     : totalBytes.value
 );
+const previewVideoRef = ref<HTMLVideoElement | null>(null);
 
 const {
   galleryScrollRef,
@@ -695,6 +733,8 @@ const {
   allItemsLabel: allItemsLabel.value,
   enableFolderFilter: toRef(props, 'showFolderFilter'),
   preserveOrder: toRef(props, 'preserveOrder'),
+  onPreviewArrowKey: handlePreviewArrowKey,
+  onPreviewVerticalArrowKey: handlePreviewWeightArrowKey,
 });
 
 watch(
@@ -717,9 +757,54 @@ const pendingFocusRestoreImageId = ref<string | null>(null);
 let mediaVisibilityObserver: IntersectionObserver | null = null;
 let masonryLoadMoreObserver: IntersectionObserver | null = null;
 const lastPreviewedVideoId = ref<string | null>(null);
-const previewVideoRef = ref<HTMLVideoElement | null>(null);
 const previewClip = ref<PreviewClipRange | null>(null);
 const previewClipStatus = ref<PreviewClipStatus>('idle');
+
+function handlePreviewArrowKey(direction: -1 | 1) {
+  if (!previewImage.value || !isVideo(previewImage.value)) {
+    return false;
+  }
+  const video = previewVideoRef.value;
+  if (!video) {
+    return true;
+  }
+  const nextTime = video.currentTime + direction * 10;
+  const maximumTime = Number.isFinite(video.duration) ? video.duration : nextTime;
+  video.currentTime = Math.max(0, Math.min(nextTime, maximumTime));
+  if (direction > 0 && video.paused) {
+    void video.play().catch(() => undefined);
+  }
+  previewClip.value = null;
+  previewClipStatus.value = 'idle';
+  return true;
+}
+
+function handlePreviewWeightArrowKey(direction: -1 | 1) {
+  const image = previewImage.value;
+  if (!image || !props.updateImageWeight) {
+    return false;
+  }
+  if (!isWeightUpdating(image.id)) {
+    void handleAdjustImageWeight(image.id, direction);
+  }
+  return true;
+}
+
+function handlePreviewVideoWeightKey(direction: -1 | 1, event: KeyboardEvent) {
+  if (event.defaultPrevented) {
+    return;
+  }
+  const image = previewImage.value;
+  if (!image || !props.updateImageWeight) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (isWeightUpdating(image.id)) {
+    return;
+  }
+  void handleAdjustImageWeight(image.id, direction);
+}
 
 const handleThumbnailScaleChange = (value: number) => {
   thumbnailScale.value = value;
@@ -1025,6 +1110,18 @@ const ensureMasonryBatches = () => {
 
   const session = masonryBatchSession;
   masonryBatchPromise = (async () => {
+    const unresolvedRenderedImages = getUnresolvedMasonryImages(
+      masonryRenderedColumnIds.value,
+      visibleImages.value,
+    );
+    if (unresolvedRenderedImages.length) {
+      isMasonryBatchLoading.value = true;
+      await warmMasonryBatch(unresolvedRenderedImages, session);
+      if (session !== masonryBatchSession) {
+        return;
+      }
+    }
+
     while (session === masonryBatchSession) {
       const targetCount = Math.min(masonryTargetCount.value, visibleImages.value.length);
       if (masonryLoadedSourceCount.value >= targetCount) {
@@ -1146,6 +1243,11 @@ const maybeLoadMoreMasonry = () => {
 
   const hasScrollableOverflow = galleryElement.scrollHeight > galleryElement.clientHeight + 1;
   if (!hasScrollableOverflow) {
+    const galleryRect = galleryElement.getBoundingClientRect();
+    const isVisibleInViewport = galleryRect.bottom >= 0 && galleryRect.top <= window.innerHeight;
+    if (!isVisibleInViewport) {
+      return;
+    }
     if (masonryAutoFillBatchCount.value >= MAX_MASONRY_AUTOFILL_BATCHES) {
       return;
     }
@@ -1236,7 +1338,7 @@ const rebuildMediaVisibilityObserver = async () => {
       }
     },
     {
-      root: galleryScrollRef.value,
+      root: null,
       rootMargin: '240px 0px 240px 0px',
       threshold: 0.01,
     }
@@ -1273,7 +1375,7 @@ const rebuildMasonryLoadMoreObserver = async () => {
       }
     },
     {
-      root: galleryScrollRef.value,
+      root: null,
       rootMargin: '0px 0px 480px 0px',
       threshold: 0.01,
     }
@@ -2383,20 +2485,23 @@ defineExpose({
   color: #64748b;
 }
 
-.preview-dialog :deep(.el-dialog) {
+:global(.preview-dialog.el-dialog) {
   max-width: 1240px;
   border-radius: 24px;
-  max-height: 96vh;
+  height: 92vh;
+  height: 92dvh;
+  max-height: 92vh;
+  max-height: 92dvh;
   display: flex;
   flex-direction: column;
 }
 
-.preview-dialog :deep(.el-dialog__body) {
+:global(.preview-dialog .el-dialog__body) {
   padding-top: 8px;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  height: calc(96vh - 118px);
+  flex: 1 1 0;
+  height: auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -2447,16 +2552,41 @@ defineExpose({
   overflow: hidden;
 }
 
-.preview-stage img,
 .preview-video {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
+  object-fit: contain;
+}
+
+.preview-image {
+  position: absolute;
+  inset: 16px;
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  cursor: zoom-in;
+}
+
+.preview-image :deep(.el-image__inner) {
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 
 .preview-video {
   width: 100%;
   background: #000000;
+}
+
+.preview-video:focus,
+.preview-video:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .preview-clip-status {
@@ -2495,12 +2625,11 @@ defineExpose({
   padding-right: 4px;
 }
 
-.preview-dialog.is-pdf-preview :deep(.el-dialog) {
+:global(.preview-dialog.is-pdf-preview.el-dialog) {
   max-width: none;
-  height: 92vh;
 }
 
-.preview-dialog.is-pdf-preview :deep(.el-dialog__body) {
+:global(.preview-dialog.is-pdf-preview .el-dialog__body) {
   height: auto;
 }
 
@@ -2557,8 +2686,39 @@ defineExpose({
 
 .preview-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.preview-weight-control {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--el-border-radius-base);
+  background: var(--el-fill-color-blank);
+}
+
+.preview-weight-button.el-button {
+  width: 32px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.preview-weight-value {
+  min-width: 30px;
+  padding: 0 6px;
+  color: var(--el-text-color-regular);
+  text-align: center;
+  font-size: 13px;
+  line-height: 30px;
+  border-right: 1px solid var(--el-border-color-lighter);
+  border-left: 1px solid var(--el-border-color-lighter);
 }
 
 .preview-actions-top {
@@ -2584,11 +2744,7 @@ defineExpose({
     max-height: 280px;
   }
 
-  .preview-dialog :deep(.el-dialog__body) {
-    height: calc(96vh - 132px);
-  }
-
-  .preview-dialog.is-pdf-preview :deep(.el-dialog__body) {
+  :global(.preview-dialog.is-pdf-preview .el-dialog__body) {
     height: auto;
   }
 
@@ -2659,8 +2815,5 @@ defineExpose({
     max-height: min(28vh, 320px);
   }
 
-  .preview-dialog :deep(.el-dialog__body) {
-    height: calc(96vh - 148px);
-  }
 }
 </style>

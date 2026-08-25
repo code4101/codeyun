@@ -66,8 +66,8 @@ CHECKS = [
     EndpointCheck("audio", "/fanxiu/resources/wwise/mp3-manifest", {"limit": 3}, min_count=1, required_item_fields=("source_bank", "wem_id", "media_url")),
     EndpointCheck("protocol", "/fanxiu/resources/protocol-semantics", {"limit": 3, "edge_limit": 3}, min_count=1, required_item_fields=("id", "packet", "operation")),
     EndpointCheck("mail", "/fanxiu/mail-records", {"limit": 3, "source": "all"}, auth_expected=True),
-    EndpointCheck("storage_bag", "/fanxiu/packet-capture/tcp/storage-bag", {}, auth_expected=True),
-    EndpointCheck("player_profile", "/fanxiu/packet-capture/tcp/player-profiles", {"limit": 3}, auth_expected=True),
+    EndpointCheck("storage_bag", "/fanxiu/business-data/storage-bag", {}, auth_expected=True),
+    EndpointCheck("player_profile", "/fanxiu/business-data/player-profiles", {"limit": 3}, auth_expected=True),
 ]
 
 

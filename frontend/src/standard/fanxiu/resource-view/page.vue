@@ -76,6 +76,11 @@ const resourceTypeLabel = computed(() => {
 
 const resourceName = computed(() => String(card.value?.name || resourceId.value || '凡修资源'))
 const resourceIconUrl = computed(() => getFanxiuResourceIconUrl((card.value as { icon?: string } | null)?.icon))
+const resourceQualityStyle = computed(() => {
+  if (resourceType.value !== 'item') return undefined
+  const value = String((card.value as FanxiuItemCard | null)?.quality_color || '').trim().replace(/^#/, '')
+  return /^[0-9a-fA-F]{6}$/.test(value) ? { color: `#${value}` } : undefined
+})
 const wikiBackHref = computed(() => {
   const tab = resourceType.value || 'item'
   const query = new URLSearchParams()
@@ -285,7 +290,7 @@ onMounted(() => {
           <img v-if="resourceIconUrl" :src="resourceIconUrl" :alt="resourceName" loading="lazy">
         </span>
         <div class="detail-title">
-          <h3>{{ resourceName }}</h3>
+          <h3 :style="resourceQualityStyle">{{ resourceName }}</h3>
           <div class="detail-meta">
             <span>ID {{ resourceId }}</span>
             <span>{{ resourceTypeLabel }}</span>
@@ -307,7 +312,7 @@ onMounted(() => {
         <ul class="effect-list">
           <li v-for="row in resourceMetaRows" :key="row.label">
             <span>{{ row.label }}</span>
-            <strong>{{ row.value }}</strong>
+            <strong :style="row.label === '品质' ? resourceQualityStyle : undefined">{{ row.value }}</strong>
           </li>
         </ul>
       </section>

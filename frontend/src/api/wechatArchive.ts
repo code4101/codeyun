@@ -316,6 +316,53 @@ export interface WeChatDbMessageType {
   count: number
 }
 
+export interface WeChatChatBookSnapshot {
+  cache_key: string
+  status: 'running' | 'done' | 'error'
+  phase?: 'extracting' | 'monthly_editing' | 'completed'
+  title?: string
+  target_count?: number
+  done_count?: number
+  synthesis_target_count?: number
+  synthesis_done_count?: number
+  error?: string
+  book_id?: string
+  library_path?: string
+  statistics?: {
+    scanned_message_count: number
+    kept_message_count: number
+    discarded_message_count: number
+    source_chunk_count: number
+    month_count?: number
+  }
+  book?: {
+    title: string
+    author: string
+    revision: string
+    chapter_count: number
+    month_count?: number
+    estimated_page_count: number
+  }
+}
+
+export interface WeChatChatBookTask {
+  task_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  running: boolean
+  stage: string
+  message: string
+  progress_current: number | null
+  progress_total: number | null
+  error?: string | null
+  result?: {
+    cache_key: string
+    book_id: string
+    title: string
+    estimated_page_count: number
+    library_path: string
+  }
+}
+
 export interface WeChatDbTableInfo {
   name: string
   count: number
@@ -451,6 +498,39 @@ export async function fetchWeChatDbMessageTypes(params: { device_id?: string; ch
   const response = await api.get<{ items: WeChatDbMessageType[] }>('/wechat-archive/db-message-types', {
     params,
   })
+  return response.data
+}
+
+export async function fetchWeChatChatBookStatus(params: { device_id?: string; chat_username: string }) {
+  const response = await api.get<{
+    cache_key: string
+    chat_name: string
+    snapshot: WeChatChatBookSnapshot | null
+    task: WeChatChatBookTask | null
+  }>('/wechat-archive/db-chat-book/status', { params })
+  return response.data
+}
+
+export async function startWeChatChatBook(payload: {
+  device_id?: string
+  chat_username: string
+  title?: string
+  bookshelf_id?: string
+  force?: boolean
+}) {
+  const response = await api.post<{
+    cached: boolean
+    cache_key: string
+    snapshot: WeChatChatBookSnapshot | null
+    task: WeChatChatBookTask | null
+  }>('/wechat-archive/db-chat-book/start', payload)
+  return response.data
+}
+
+export async function fetchWeChatChatBookTask(taskId: string) {
+  const response = await api.get<WeChatChatBookTask>(
+    `/wechat-archive/db-chat-book/tasks/${encodeURIComponent(taskId)}`,
+  )
   return response.data
 }
 

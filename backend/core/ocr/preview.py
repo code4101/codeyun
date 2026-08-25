@@ -41,15 +41,17 @@ _OCR_DLL_DIRECTORY_HANDLES: list[Any] = []
 class PaddleOcrRuntimeConfig:
     device: str
     lang: str
+    ocr_version: str | None
     use_doc_orientation_classify: bool
     use_doc_unwarping: bool
     use_textline_orientation: bool
 
     @property
-    def key(self) -> tuple[str, str, bool, bool, bool]:
+    def key(self) -> tuple[str, str, str | None, bool, bool, bool]:
         return (
             self.device,
             self.lang,
+            self.ocr_version,
             self.use_doc_orientation_classify,
             self.use_doc_unwarping,
             self.use_textline_orientation,
@@ -350,9 +352,11 @@ def _build_runtime_config(options: dict[str, Any] | None = None) -> PaddleOcrRun
     options = options or {}
     device = str(options.get("device") or options.get("ocr_device") or settings.ocr_device).strip().lower() or settings.ocr_device
     lang = str(options.get("lang") or options.get("ocr_lang") or settings.ocr_lang).strip() or settings.ocr_lang
+    ocr_version = str(options.get("ocr_version") or "").strip() or None
     return PaddleOcrRuntimeConfig(
         device=device,
         lang=lang,
+        ocr_version=ocr_version,
         use_doc_orientation_classify=_coerce_bool_option(
             options.get("use_doc_orientation_classify", options.get("ocr_use_doc_orientation_classify")),
             settings.ocr_use_doc_orientation_classify,
@@ -377,12 +381,17 @@ def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
     except Exception as exc:  # pragma: no cover - depends on runtime env
         raise OcrPreviewError(f"PaddleOCR 不可用，请先完成 codeyun backend 的 OCR 依赖安装：{exc}") from exc
 
+    kwargs: dict[str, Any] = {
+        "lang": config.lang,
+        "device": config.device,
+        "use_doc_orientation_classify": config.use_doc_orientation_classify,
+        "use_doc_unwarping": config.use_doc_unwarping,
+        "use_textline_orientation": config.use_textline_orientation,
+    }
+    if config.ocr_version:
+        kwargs["ocr_version"] = config.ocr_version
     return PaddleOCR(
-        lang=config.lang,
-        device=config.device,
-        use_doc_orientation_classify=config.use_doc_orientation_classify,
-        use_doc_unwarping=config.use_doc_unwarping,
-        use_textline_orientation=config.use_textline_orientation,
+        **kwargs,
     )
 
 

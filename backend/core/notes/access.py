@@ -12,8 +12,8 @@ from backend.core.notes.semantics import (
     derive_note_taxonomy_from_legacy,
 )
 from backend.core.notes.progress import (
-    evaluate_completion_progress_expr,
     get_completion_progress_expr,
+    resolve_completion_progress,
 )
 from backend.core.notes.yuque_html import normalize_legacy_yuque_lake_html
 
@@ -99,7 +99,10 @@ def note_to_response_dict(
     if not isinstance(payload.get("history"), list):
         payload["history"] = []
     payload["completion_progress_expr"] = get_completion_progress_expr(payload.get("custom_fields"))
-    payload["completion_progress"] = evaluate_completion_progress_expr(payload.get("completion_progress_expr"))
+    payload["completion_progress"] = resolve_completion_progress(
+        payload.get("lifecycle_stage") or payload.get("node_status"),
+        payload.get("completion_progress_expr"),
+    )
     return payload
 
 
@@ -189,5 +192,8 @@ def note_list_mapping_to_response_dict(note: Any, current_user: Optional[User]) 
         )
     payload.update(normalized)
     payload["completion_progress_expr"] = get_completion_progress_expr(payload.get("custom_fields"))
-    payload["completion_progress"] = evaluate_completion_progress_expr(payload.get("completion_progress_expr"))
+    payload["completion_progress"] = resolve_completion_progress(
+        payload.get("lifecycle_stage") or payload.get("node_status"),
+        payload.get("completion_progress_expr"),
+    )
     return payload

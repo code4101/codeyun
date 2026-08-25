@@ -18,7 +18,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 
 
-class DataAnnotationRuntimeDebugContext:
+class BehaviorTreeRuntimeDebugContext:
     """Stable facade injected as ``ctx`` for ``debug_eval`` code cells."""
 
     def __init__(
@@ -41,7 +41,7 @@ class DataAnnotationRuntimeDebugContext:
         stop_event: threading.Event,
         *,
         readonly: bool | None = None,
-    ) -> "DataAnnotationRuntimeDebugContext":
+    ) -> "BehaviorTreeRuntimeDebugContext":
         """Keep the public Jupyter ``ctx`` identity stable across cells."""
         self._ctx = ctx
         self._stop_event = stop_event
@@ -104,7 +104,10 @@ class DataAnnotationRuntimeDebugContext:
 
     def ocr(self, frame: str | None = None) -> list[dict[str, Any]]:
         self.check_stop()
-        return self._runner._ocr_fragments(frame or self.frame())
+        return self._runner._recognized_scene_ocr_fragments(
+            self._ctx,
+            frame or self.frame(),
+        )
 
     def ocr_tokens_in_shapes(
         self,
@@ -115,16 +118,18 @@ class DataAnnotationRuntimeDebugContext:
         frame_data_url: str | None = None,
         padding: int = 0,
         options: dict[str, Any] | None = None,
+        crop: bool = False,
     ) -> list[dict[str, Any]]:
         self.check_stop()
         runtime = self._bound_runtime()
-        return runtime.ocr_tokens_in_shapes(
-            scene,
-            tuple(shape_titles),
-            frame_data_url=frame_data_url or frame or self.frame(),
-            padding=padding,
-            options=options,
-        )
+        kwargs = {
+            "frame_data_url": frame_data_url or frame or self.frame(),
+            "padding": padding,
+            "options": options,
+        }
+        if crop:
+            kwargs["crop"] = True
+        return runtime.ocr_tokens_in_shapes(scene, tuple(shape_titles), **kwargs)
 
     def image(self, scene: int | str) -> dict[str, Any] | None:
         images: dict[int, dict[str, Any]] = self._ctx.get("images") or {}
@@ -327,6 +332,36 @@ class DataAnnotationRuntimeDebugContext:
         runtime = self._bound_runtime()
         return (yield from runtime.wait_view(*views, **options))
 
+    def world_realm(self) -> dict[str, Any]:
+        """Read the current #425 人/灵/魔/仙 realm by first character."""
+
+        from backend.core.fanxiu.data_annotation.world_map import (
+            read_world_realm,
+        )
+
+        return read_world_realm(self._bound_runtime())
+
+    def ensure_world_realm(
+        self,
+        target: str,
+        *,
+        max_attempts: int = 3,
+    ):
+        """Idempotently switch #425 to 人界、灵界、魔界 or 仙界."""
+
+        self._require_act()
+        from backend.core.fanxiu.data_annotation.world_map import (
+            ensure_world_realm,
+        )
+
+        return (
+            yield from ensure_world_realm(
+                self._bound_runtime(),
+                target,
+                max_attempts=max_attempts,
+            )
+        )
+
     def go_scene(self, scene: int | str, **options: Any):
         self._require_act()
         runtime = self._bound_runtime()
@@ -408,7 +443,7 @@ def run_data_annotation_debug_eval(
     stop_event: threading.Event,
 ) -> Any:
     payload = normalize_data_annotation_debug_eval_payload(payload)
-    debug_ctx = DataAnnotationRuntimeDebugContext(runner, ctx, stop_event, readonly=payload["mode"] != "act")
+    debug_ctx = BehaviorTreeRuntimeDebugContext(runner, ctx, stop_event, readonly=payload["mode"] != "act")
     namespace: dict[str, Any] = {
         "ctx": debug_ctx,
         "payload": payload,

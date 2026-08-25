@@ -947,6 +947,9 @@ namespace Code4101.Zaohua.Tiandao
 
     internal sealed class BagNameSortUi : MonoBehaviour
     {
+        private const int NativeVisibleSortCount = 4;
+        private const int MaxRowsPerColumn = 7;
+
         private enum ExtraSortKind
         {
             None,
@@ -960,6 +963,15 @@ namespace Code4101.Zaohua.Tiandao
             Shield,
             Speed,
             Fate,
+        }
+
+        private sealed class SuitSortItem
+        {
+            internal TbPackSto Item;
+            internal TbItemCfg ItemCfg;
+            internal TbSuitCfg SuitCfg;
+            internal int GradeWeight;
+            internal int MemberIndex;
         }
 
         private static readonly (ExtraSortKind Kind, ArtAttrEnum Attribute, string Label)[] EquipmentSorts =
@@ -976,6 +988,7 @@ namespace Code4101.Zaohua.Tiandao
         };
 
         private BagPanel _panel;
+        private Toggle _nativeTypeToggle;
         private Toggle _nameToggle;
         private TextPro _nameLabel;
         private readonly Dictionary<ExtraSortKind, Toggle> _attributeToggles =
@@ -984,7 +997,11 @@ namespace Code4101.Zaohua.Tiandao
         private Toggle[] _nativeToggles;
         private Vector2 _rowStep;
         private Vector2 _nativePopupPosition;
+        private float _nativePopupWidth;
         private float _nativePopupHeight;
+        private Vector2 _nativeRowSize;
+        private float _nativeTopInset;
+        private float _nativeRightInset;
         private Quaternion _nativeDescendingArrowRotation;
         private Vector3 _nativeArrowScale = Vector3.one;
         private string _nativeArrowText = "▼";
@@ -1005,6 +1022,7 @@ namespace Code4101.Zaohua.Tiandao
             var view = Traverse.Create(panel).Field<BagPanelView>("view").Value;
             var fields = Traverse.Create(view);
             var typeToggle = fields.Field<Toggle>("togSortType").Value;
+            _nativeTypeToggle = typeToggle;
             var levelToggle = fields.Field<Toggle>("togSortLevel").Value;
             var timeToggle = fields.Field<Toggle>("togSortTime").Value;
             var timeTexts = timeToggle.GetComponentsInChildren<TextPro>(true);
@@ -1018,7 +1036,9 @@ namespace Code4101.Zaohua.Tiandao
             _sortPopup = typeToggle.transform.parent.gameObject;
             var sortGroup = _sortPopup.GetComponent<ToggleGroup>() ?? _sortPopup.AddComponent<ToggleGroup>();
             sortGroup.allowSwitchOff = true;
-            _nameToggle = Instantiate(typeToggle, typeToggle.transform.parent);
+            // 新版游戏的“类别排序”不再带升降序箭头；扩展排序必须复用真正具有
+            // 方向语义的原生排序项，不能继续假设类别项和时间项结构相同。
+            _nameToggle = Instantiate(timeToggle, typeToggle.transform.parent);
             _nameToggle.gameObject.name = "Code4101SortByName";
             ConfigureToggle(_nameToggle, out _nameLabel);
             _nameToggle.group = sortGroup;
@@ -1033,12 +1053,21 @@ namespace Code4101.Zaohua.Tiandao
             typeToggle.gameObject.SetActive(false);
             var popupRect = (RectTransform)_sortPopup.transform;
             _nativePopupPosition = popupRect.anchoredPosition;
+            _nativePopupWidth = popupRect.sizeDelta.x;
             _nativePopupHeight = popupRect.sizeDelta.y;
+            var timeRect = (RectTransform)timeToggle.transform;
+            _nativeRowSize = timeRect.rect.size;
+            if (_nativeRowSize.x <= 0f) _nativeRowSize.x = _nativePopupWidth;
+            if (_nativeRowSize.y <= 0f) _nativeRowSize.y = Mathf.Abs(_rowStep.y);
+            _nativeTopInset = _nativePopupHeight * (1f - popupRect.pivot.y)
+                              - (timeRect.localPosition.y + _nativeRowSize.y * 0.5f);
+            _nativeRightInset = _nativePopupWidth * (1f - popupRect.pivot.x)
+                                - (timeRect.localPosition.x + _nativeRowSize.x * 0.5f);
 
             for (var index = 0; index < EquipmentSorts.Length; index++)
             {
                 var definition = EquipmentSorts[index];
-                var toggle = Instantiate(typeToggle, typeToggle.transform.parent);
+                var toggle = Instantiate(timeToggle, typeToggle.transform.parent);
                 toggle.gameObject.name = "Code4101SortBy" + definition.Kind;
                 ConfigureToggle(toggle, out var label);
                 toggle.group = sortGroup;
@@ -1092,6 +1121,7 @@ namespace Code4101.Zaohua.Tiandao
         internal void UpdateContext(int parentId)
         {
             if (!_initialized) return;
+            HideNativeTypeSort();
             _equipmentContext = parentId == 1;
             foreach (var toggle in _attributeToggles.Values) toggle.gameObject.SetActive(_equipmentContext);
             if (!_equipmentContext)
@@ -1102,15 +1132,60 @@ namespace Code4101.Zaohua.Tiandao
             RefreshLabel();
         }
 
+        private void LateUpdate()
+        {
+            // 新版游戏会在打开排序菜单时重新激活原生“套装排序”。
+            // Mod 已用唯一的“名称排序”入口接管该位置，因此持续隐藏原生重复项。
+            HideNativeTypeSort();
+        }
+
+        private void HideNativeTypeSort()
+        {
+            if (_nativeTypeToggle != null && _nativeTypeToggle.gameObject.activeSelf)
+                _nativeTypeToggle.gameObject.SetActive(false);
+        }
+
         private void ResizePopup(int addedRows)
         {
             var popupRect = (RectTransform)_sortPopup.transform;
-            var addedHeight = addedRows * Mathf.Abs(_rowStep.y);
-            popupRect.sizeDelta = new Vector2(popupRect.sizeDelta.x, _nativePopupHeight + addedHeight);
-            // 原生面板的 pivot 位于中部。只增加高度会同时向上、向下扩张，导致顶部溢出屏幕。
-            // 抵消向上的增量，保持原菜单顶部不变，让扩展行只沿清单方向向下增长。
+            var totalRows = NativeVisibleSortCount + addedRows;
+            var rowsPerColumn = Mathf.Min(MaxRowsPerColumn, totalRows);
+            var columnCount = Mathf.CeilToInt(totalRows / (float)rowsPerColumn);
+            var addedVisibleRows = Mathf.Max(0, rowsPerColumn - NativeVisibleSortCount);
+            var addedHeight = addedVisibleRows * Mathf.Abs(_rowStep.y);
+            var addedWidth = (columnCount - 1) * _nativePopupWidth;
+            var width = _nativePopupWidth + addedWidth;
+            var height = _nativePopupHeight + addedHeight;
+            popupRect.sizeDelta = new Vector2(width, height);
+            // 固定原生菜单的右边缘和顶部；扩展列向左、扩展行向下生长。
             popupRect.anchoredPosition = _nativePopupPosition
+                                         + Vector2.left * (addedWidth * (1f - popupRect.pivot.x))
                                          + Vector2.down * (addedHeight * (1f - popupRect.pivot.y));
+
+            var orderedToggles = _nativeToggles
+                .Concat(new[] { _nameToggle })
+                .Concat(EquipmentSorts.Take(addedRows)
+                    .Select(definition => _attributeToggles[definition.Kind]))
+                .ToArray();
+            var rightEdge = width * (1f - popupRect.pivot.x);
+            var topEdge = height * (1f - popupRect.pivot.y);
+            for (var index = 0; index < orderedToggles.Length; index++)
+            {
+                var row = index % rowsPerColumn;
+                var column = index / rowsPerColumn;
+                var rect = (RectTransform)orderedToggles[index].transform;
+                var z = rect.localPosition.z;
+                rect.anchorMin = new Vector2(0.5f, 0.5f);
+                rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0.5f, 0.5f);
+                rect.sizeDelta = _nativeRowSize;
+                rect.localPosition = new Vector3(
+                    rightEdge - _nativeRightInset - _nativeRowSize.x * 0.5f
+                    - column * _nativePopupWidth,
+                    topEdge - _nativeTopInset - _nativeRowSize.y * 0.5f
+                    - row * Mathf.Abs(_rowStep.y),
+                    z);
+            }
         }
 
         internal List<TbPackSto> Sort(IEnumerable<TbPackSto> items)
@@ -1130,6 +1205,8 @@ namespace Code4101.Zaohua.Tiandao
                     return compared * direction;
                 })).ToList();
             }
+            if (_equipmentContext) return SortBySuit(items, direction);
+
             var nameItems = items.ToList();
             var gradeWeights = nameItems.ToDictionary(item => item.id, item =>
             {
@@ -1147,6 +1224,63 @@ namespace Code4101.Zaohua.Tiandao
                 if (compared == 0) compared = (left?.id ?? 0).CompareTo(right?.id ?? 0);
                 return compared;
             })).ToList();
+        }
+
+        private static List<TbPackSto> SortBySuit(IEnumerable<TbPackSto> items, int direction)
+        {
+            var projected = items.Select(item =>
+            {
+                var itemCfg = item?.itemCfg;
+                var suitCfg = itemCfg != null && itemCfg.suitId > 0
+                    ? Singleton<TbSuitImpl>.Instance.GetSuitCfg(itemCfg.suitId)
+                    : null;
+                var grade = itemCfg == null
+                    ? null
+                    : Singleton<TbDataImpl>.Instance.GetGradeCfg(itemCfg.gradeId);
+                var memberIndex = suitCfg?.ItemList?.IndexOf(itemCfg.id) ?? -1;
+                return new SuitSortItem
+                {
+                    Item = item,
+                    ItemCfg = itemCfg,
+                    SuitCfg = suitCfg,
+                    GradeWeight = grade?.weight ?? itemCfg?.gradeId ?? 0,
+                    MemberIndex = memberIndex >= 0 ? memberIndex : int.MaxValue,
+                };
+            }).ToList();
+
+            projected.Sort((left, right) =>
+            {
+                var leftHasSuit = left.SuitCfg != null;
+                var rightHasSuit = right.SuitCfg != null;
+                if (leftHasSuit != rightHasSuit) return leftHasSuit ? -1 : 1;
+                if (leftHasSuit)
+                {
+                    var compared = left.SuitCfg.layerId.CompareTo(right.SuitCfg.layerId) * direction;
+                    if (compared == 0)
+                        compared = string.Compare(left.SuitCfg.GetName, right.SuitCfg.GetName,
+                            StringComparison.CurrentCulture) * direction;
+                    if (compared == 0)
+                        compared = left.SuitCfg.id.CompareTo(right.SuitCfg.id) * direction;
+                    if (compared != 0) return compared;
+
+                    // 套装内部始终使用游戏配置的成员顺序，切换升降序只反转套装组。
+                    compared = left.MemberIndex.CompareTo(right.MemberIndex);
+                    if (compared != 0) return compared;
+                }
+                else
+                {
+                    var compared = left.GradeWeight.CompareTo(right.GradeWeight) * direction;
+                    if (compared != 0) return compared;
+                }
+
+                var nameCompared = string.Compare(left.Item?.name, right.Item?.name,
+                    StringComparison.CurrentCulture);
+                if (nameCompared != 0) return nameCompared;
+                var cfgCompared = (left.ItemCfg?.id ?? 0).CompareTo(right.ItemCfg?.id ?? 0);
+                if (cfgCompared != 0) return cfgCompared;
+                return (left.Item?.id ?? 0).CompareTo(right.Item?.id ?? 0);
+            });
+            return projected.Select(entry => entry.Item).ToList();
         }
 
         private void RefreshLabel()
@@ -1199,17 +1333,19 @@ namespace Code4101.Zaohua.Tiandao
             toggle.SetIsOnWithoutNotify(false);
             foreach (var localization in toggle.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
             var labels = toggle.GetComponentsInChildren<TextPro>(true);
-            label = labels.FirstOrDefault();
-            var arrow = labels.Skip(1).FirstOrDefault();
+            var arrow = labels.FirstOrDefault(candidate =>
+                string.Equals(candidate.text, _nativeArrowText, StringComparison.Ordinal));
+            label = labels.FirstOrDefault(candidate => candidate != arrow);
+            if (arrow == null) arrow = labels.Skip(1).FirstOrDefault();
             if (arrow != null)
             {
                 arrow.text = _nativeArrowText;
                 arrow.gameObject.SetActive(false);
                 _sortArrowTexts[toggle] = arrow;
             }
-            for (var i = 2; i < labels.Length; i++)
+            foreach (var extra in labels)
             {
-                labels[i].text = string.Empty;
+                if (extra != label && extra != arrow) extra.text = string.Empty;
             }
         }
 

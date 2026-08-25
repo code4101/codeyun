@@ -146,6 +146,9 @@ class NoteCreate(BaseModel):
 
 class NoteUpdate(BaseModel):
     base_version: Optional[int] = Field(default=None, ge=1)
+    expected_fields: Optional[Dict[str, Any]] = None
+    mutation_id: Optional[str] = Field(default=None, max_length=128)
+    client_instance_id: Optional[str] = Field(default=None, max_length=128)
     title: Optional[str] = None
     content: Optional[str] = None
     weight: Optional[int] = None

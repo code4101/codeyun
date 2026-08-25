@@ -1,4 +1,6 @@
-from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+import pytest
+
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 from pyxllib.autogui import ActionPlanner
 
 
@@ -56,9 +58,39 @@ def test_action_planner_clamps_direct_click_and_drag_points():
 
 
 def test_runner_action_helpers_delegate_to_action_planner():
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     image = _image()
     shape = {"title": "按钮", "x": 0.5, "y": 0.9, "w": 0.1, "h": 0.06}
 
     assert runner._box(shape, image) == ActionPlanner().shape_box(image, shape)
     assert runner._shape_center(shape, image) == ActionPlanner().shape_center(image, shape)
+
+
+def test_runner_strict_live_shape_center_never_falls_back_to_reference(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    image = _image()
+    shape = {
+        "title": "浮动游标",
+        "x": 0.25,
+        "y": 0.55,
+        "w": 0.04,
+        "h": 0.04,
+        "floating": True,
+    }
+    monkeypatch.setattr(runner, "_match_shape", lambda *_args: {"matched": False})
+
+    with pytest.raises(RuntimeError, match="未唯一匹配实时中心"):
+        runner._shape_center(
+            shape,
+            image,
+            "data:image/png;base64,frame",
+            {},
+            strict_live=True,
+        )
+
+    assert runner._shape_center(
+        shape,
+        image,
+        "data:image/png;base64,frame",
+        {},
+    ) == ActionPlanner().shape_center(image, shape)

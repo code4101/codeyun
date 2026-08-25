@@ -33,6 +33,36 @@ def test_node_status_unauthorized(client: TestClient, test_device):
     response = client.get("/api/device-control/status", headers=headers)
     assert response.status_code == 401
 
+
+def test_attendance_master_data_file_is_ingested_on_mf(client: TestClient, test_device):
+    token = test_device["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    content = (
+        "用户ID,昵称,姓名,账户绑定手机号,账号状态\n"
+        "u_api_1,昵称一,姓名一,13800000001,正常\n"
+    ).encode("utf-8-sig")
+
+    response = client.post(
+        "/api/device-control/attendance/master-data/import",
+        headers=headers,
+        data={
+            "dataset_type": "xiaoe_users",
+            "scope_key": "shop:1",
+            "collector_device": "codepc_mi15",
+        },
+        files={"file": ("用户列表导出.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["inserted_rows"] == 1
+    status = client.get(
+        "/api/device-control/attendance/master-data/status",
+        headers=headers,
+    )
+    assert status.status_code == 200
+    assert status.json()["users"] == 1
+
+
 def test_exec_cmd(client: TestClient, test_device):
     """Test executing a command on the node"""
     token = test_device["token"]
@@ -111,103 +141,6 @@ def test_attendance_user_match_lookup_uses_shared_api(client: TestClient, test_d
     ]
 
 
-def test_attendance_fanbei_step1_uses_shared_api(client: TestClient, test_device, monkeypatch):
-    """Device-control Fanbei step1 should delegate to the shared kq5034 service API."""
-
-    from backend.api import device_control
-
-    calls = []
-
-    def fake_sync_fanbei_attendance_step1(**kwargs):
-        calls.append(kwargs)
-        return {
-            "course_name": kwargs["course_name"],
-            "shop_id": kwargs["shop_id"],
-            "lesson_update_count": 3,
-            "clockin_update_count": 1,
-        }
-
-    monkeypatch.setattr(
-        device_control,
-        "sync_fanbei_attendance_step1",
-        fake_sync_fanbei_attendance_step1,
-    )
-
-    token = test_device["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.post(
-        "/api/device-control/attendance/fanbei/step1",
-        headers=headers,
-        json={
-            "course_name": "d260509梵呗初阶",
-            "shop_id": 1,
-            "update_lessons": True,
-            "update_clockins": True,
-            "clockin_pattern": "d260509梵呗初阶-*",
-            "close_browser": True,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["lesson_update_count"] == 3
-    assert calls == [
-        {
-            "course_name": "d260509梵呗初阶",
-            "shop_id": 1,
-            "update_lessons": True,
-            "update_clockins": True,
-            "clockin_pattern": "d260509梵呗初阶-*",
-            "close_browser": True,
-        }
-    ]
-
-
-def test_attendance_fanbei_step2_data_uses_shared_api(client: TestClient, test_device, monkeypatch):
-    """Device-control Fanbei step2 data should delegate to the shared kq5034 service API."""
-
-    from backend.api import device_control
-
-    calls = []
-
-    def fake_build_fanbei_attendance_step2_data(**kwargs):
-        calls.append(kwargs)
-        return {
-            "course_name": kwargs["course_name"],
-            "columns": ["user_id2", "打卡数", "-第01课"],
-            "rows": [["u1", 3, "当堂完成"]],
-        }
-
-    monkeypatch.setattr(
-        device_control,
-        "build_fanbei_attendance_step2_data",
-        fake_build_fanbei_attendance_step2_data,
-    )
-
-    token = test_device["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    response = client.post(
-        "/api/device-control/attendance/fanbei/step2-data",
-        headers=headers,
-        json={
-            "course_name": "d260509梵呗初阶",
-            "user_ids": ["u1"],
-            "clockin_names": ["打卡数"],
-            "clockin_titles": ["学修日志01"],
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["rows"] == [["u1", 3, "当堂完成"]]
-    assert calls == [
-        {
-            "course_name": "d260509梵呗初阶",
-            "user_ids": ["u1"],
-            "clockin_names": ["打卡数"],
-            "clockin_titles": ["学修日志01"],
-        }
-    ]
-
-
 def test_attendance_fanbei_step2_runs_on_local_data_host(client: TestClient, test_device, monkeypatch):
     """Device-control Fanbei step2 should run the sheet-writing step on the receiving CodeYun instance."""
 
@@ -215,8 +148,8 @@ def test_attendance_fanbei_step2_runs_on_local_data_host(client: TestClient, tes
 
     calls = []
 
-    def fake_run_fanbei_attendance_step2_local(execution_device=None):
-        calls.append(execution_device)
+    def fake_run_fanbei_attendance_step2_local():
+        calls.append(True)
         return "当前 CodeYun 实例已执行 step2"
 
     monkeypatch.setattr(
@@ -227,16 +160,14 @@ def test_attendance_fanbei_step2_runs_on_local_data_host(client: TestClient, tes
 
     token = test_device["token"]
     headers = {"Authorization": f"Bearer {token}"}
-    execution_device = {"entry_id": "exec-entry", "server_url": "http://mi15", "token": "mi15-token"}
     response = client.post(
         "/api/device-control/attendance/fanbei/step2",
         headers=headers,
-        json={"execution_device": execution_device},
     )
 
     assert response.status_code == 200
     assert response.json() == {"message": "当前 CodeYun 实例已执行 step2"}
-    assert calls == [execution_device]
+    assert calls == [True]
 
 
 def test_attendance_fanbei_step3_uses_local_sheet_api(client: TestClient, test_device, monkeypatch):

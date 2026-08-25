@@ -9,11 +9,7 @@ from kq5034.order_ops import (
     ORDER_NUMERIC_COLUMNS,
     OrderAutomationError,
     execute_order_action as _execute_order_action,
-    find_order_in_db,
-    lookup_order,
-    process_order_rows,
     query_order_refund_details as _query_order_refund_details,
-    sync_kqbook_order_sheet,
 )
 
 
@@ -204,9 +200,5 @@ __all__ = [
     "OrderAutomationError",
     "cleanup_weipay_tabs",
     "execute_order_action",
-    "find_order_in_db",
-    "lookup_order",
-    "process_order_rows",
     "query_order_refund_details",
-    "sync_kqbook_order_sheet",
 ]

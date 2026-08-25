@@ -14,6 +14,12 @@ from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, 
 from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
 from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
+from backend.core.codex.weekly_quota import (
+    CODEX_WEEKLY_QUOTA_RUN_TIME,
+    CODEX_WEEKLY_QUOTA_TASK_KEY,
+    collect_codex_weekly_quota_snapshot,
+)
 from backend.core.dp_browser_tab_cleanup import (
     DP_BROWSER_TAB_CLEANUP_TASK_KEY,
     run_dp_browser_tab_cleanup,
@@ -22,14 +28,6 @@ from backend.core.attendance.course_completion import (
     COURSE_COMPLETION_RUN_TIME,
     COURSE_COMPLETION_TASK_KEY,
     enqueue_attendance_course_completion_job,
-)
-from backend.core.attendance.fanbei_schedule import (
-    FANBEI_ATTENDANCE_EVENING_RUN_TIME,
-    FANBEI_ATTENDANCE_EVENING_TASK_KEY,
-    FANBEI_ATTENDANCE_MORNING_RUN_TIME,
-    FANBEI_ATTENDANCE_MORNING_TASK_KEY,
-    enqueue_fanbei_attendance_evening_steps,
-    enqueue_fanbei_attendance_morning_steps,
 )
 from backend.core.fanxiu_wechat_reminder import (
     FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME,
@@ -44,8 +42,24 @@ from backend.core.runtime.public_frontend_deploy import (
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     run_public_frontend_deploy_check,
 )
+from backend.core.library.ruanyf_weekly_excerpt_book import (
+    RUANYF_WEEKLY_EXCERPT_BOOK_RUN_TIME,
+    RUANYF_WEEKLY_EXCERPT_BOOK_TASK_KEY,
+    RUANYF_WEEKLY_EXCERPT_BOOK_WEEKDAYS,
+    enqueue_ruanyf_weekly_excerpt_book_job,
+)
+from backend.core.library.x_archive import (
+    TIBO_X_ARCHIVE_TASK_KEY,
+    enqueue_tibo_x_archive_job,
+)
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
+from backend.core.xiaoe_incremental_job import (
+    XIAOE_INCREMENTAL_UPDATE_RUN_TIME,
+    XIAOE_INCREMENTAL_UPDATE_TASK_KEY,
+    XIAOE_INCREMENTAL_UPDATE_WEEKDAYS,
+    enqueue_xiaoe_incremental_update_job,
+)
 from backend.models import AppSetting
 
 
@@ -54,7 +68,8 @@ CODEX_DIARY_RUN_TIME = "00:10"
 ATTENDANCE_SUMMARY_RUN_TIME = "00:00"
 MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
 MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
-MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT = 200
+MEDIA_SYNC_PIXIV_DAILY_ACQUISITION_COUNT = 1000
+MEDIA_SYNC_PINTEREST_DAILY_ACQUISITION_COUNT = 500
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
 MARKET_INTRADAY_PERSIST_TASK_KEY = "market_intraday_persist"
@@ -62,14 +77,20 @@ MARKET_INTRADAY_PERSIST_RUN_TIME = "16:30"
 HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
 HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
+WECHAT_MOMENTS_INCREMENTAL_SYNC_TASK_KEY = "wechat_moments_incremental_sync"
 NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY = "note_sheet_page_snapshot_backfill"
+RIME_CONTEXT_REFRESH_TASK_KEY = "rime_context_refresh"
+RIME_CONTEXT_LINT_TASK_KEY = "rime_context_lint"
 RUANYF_WEEKLY_START_TIME = "06:00"
 PUBLIC_FRONTEND_DEPLOY_INTERVAL_MINUTES = 30
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 12
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 20
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "codex_diary_yesterday_import",
+    CODEX_WEEKLY_QUOTA_TASK_KEY,
     RUANYF_WEEKLY_TASK_NAME,
+    RUANYF_WEEKLY_EXCERPT_BOOK_TASK_KEY,
+    TIBO_X_ARCHIVE_TASK_KEY,
     "attendance_summary_monthly_templates",
     COURSE_COMPLETION_TASK_KEY,
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
@@ -80,9 +101,13 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
     FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
+    WECHAT_MOMENTS_INCREMENTAL_SYNC_TASK_KEY,
     NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
+    RIME_CONTEXT_REFRESH_TASK_KEY,
+    RIME_CONTEXT_LINT_TASK_KEY,
     DP_BROWSER_TAB_CLEANUP_TASK_KEY,
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+    XIAOE_INCREMENTAL_UPDATE_TASK_KEY,
 }
 
 
@@ -179,11 +204,27 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
+    if task_key == CODEX_WEEKLY_QUOTA_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": CODEX_WEEKLY_QUOTA_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
         return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
     if task_key == RUANYF_WEEKLY_TASK_NAME:
         return _job_schedule_policy(
             {"type": "weekly", "weekdays": [5], "time": RUANYF_WEEKLY_START_TIME},
+            retry_minutes=10,
+        )
+    if task_key == RUANYF_WEEKLY_EXCERPT_BOOK_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "weekly",
+                "weekdays": list(RUANYF_WEEKLY_EXCERPT_BOOK_WEEKDAYS),
+                "time": RUANYF_WEEKLY_EXCERPT_BOOK_RUN_TIME,
+            },
+            retry_minutes=10,
+        )
+    if task_key == TIBO_X_ARCHIVE_TASK_KEY:
+        return _job_schedule_policy(
+            {"type": "interval", "minutes": 60, "anchor": "last_finish"},
             retry_minutes=10,
         )
     if task_key == "attendance_summary_monthly_templates":
@@ -192,10 +233,6 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": COURSE_COMPLETION_RUN_TIME}, retry_minutes=10)
     if task_key == MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}, retry_minutes=10)
-    if task_key == FANBEI_ATTENDANCE_EVENING_TASK_KEY:
-        return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_EVENING_RUN_TIME})
-    if task_key == FANBEI_ATTENDANCE_MORNING_TASK_KEY:
-        return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_MORNING_RUN_TIME})
     if task_key == FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME})
     if task_key == FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY:
@@ -213,7 +250,19 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
     if task_key == HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
-        return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
+        return _job_schedule_policy(
+            {"type": "interval", "minutes": 120, "anchor": "last_finish"},
+            retry_minutes=10,
+        )
+    if task_key == WECHAT_MOMENTS_INCREMENTAL_SYNC_TASK_KEY:
+        return _job_schedule_policy(
+            {"type": "interval", "minutes": 360, "anchor": "last_finish"},
+            retry_minutes=10,
+        )
+    if task_key == RIME_CONTEXT_REFRESH_TASK_KEY:
+        return _job_schedule_policy({"type": "interval", "minutes": 360, "anchor": "last_finish"}, retry_minutes=10)
+    if task_key == RIME_CONTEXT_LINT_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": "03:20"}, retry_minutes=10)
     if task_key == DP_BROWSER_TAB_CLEANUP_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
     if task_key == PUBLIC_FRONTEND_DEPLOY_TASK_KEY:
@@ -224,6 +273,15 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
                 "anchor": "last_finish",
             },
             retry_minutes=10,
+        )
+    if task_key == XIAOE_INCREMENTAL_UPDATE_TASK_KEY:
+        return _job_schedule_policy(
+            {
+                "type": "weekly",
+                "weekdays": list(XIAOE_INCREMENTAL_UPDATE_WEEKDAYS),
+                "time": XIAOE_INCREMENTAL_UPDATE_RUN_TIME,
+            },
+            retry_minutes=30,
         )
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
@@ -349,23 +407,31 @@ def is_background_task_visible(task_key: str, session: Session | None = None) ->
 
 
 def _enqueue_storage_analysis() -> str:
-    from backend.api.admin import scheduled_analysis_job
+    from backend.api.admin import enqueue_storage_analysis_job
 
-    task_id, _ = background_task_queue.enqueue_once("storage_analysis", scheduled_analysis_job)
-    return task_id
+    return enqueue_storage_analysis_job()
 
 
 def _enqueue_attendance_summary() -> str:
-    from backend.api.note_sheets import run_attendance_summary_template_job
-
-    task_id, _ = background_task_queue.enqueue_once("attendance_summary_monthly_templates", run_attendance_summary_template_job)
-    return task_id
+    active = find_active_local_job_run("attendance.summary-templates")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="attendance.summary-templates", payload={}).id
 
 
 def _enqueue_codex_diary() -> str | None:
     from backend.api.notes import maybe_enqueue_codex_diary_yesterday_import
 
     return maybe_enqueue_codex_diary_yesterday_import(trigger_reason="scheduled")
+
+
+def _enqueue_codex_weekly_quota_snapshot() -> str:
+    task_id, _queued = background_task_queue.enqueue_once(
+        CODEX_WEEKLY_QUOTA_TASK_KEY,
+        collect_codex_weekly_quota_snapshot,
+        resource_lock="resource:browser",
+    )
+    return task_id
 
 
 def _enqueue_ruanyf_weekly_note() -> str | None:
@@ -379,21 +445,37 @@ def _run_media_sync_home_discovery_job() -> None:
         print(f"Media sync home discovery skipped: plugin unavailable ({exc})")
         return
 
-    result = run_scheduled_home_discovery(target_count=MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT)
+    result = run_scheduled_home_discovery(
+        target_counts={
+            "pixiv": MEDIA_SYNC_PIXIV_DAILY_ACQUISITION_COUNT,
+            "pinterest": MEDIA_SYNC_PINTEREST_DAILY_ACQUISITION_COUNT,
+        }
+    )
     print(
         "Media candidate replenishment completed: "
         f"profiles={result.get('profile_count', 0)} "
-        f"target={result.get('target_count', 0)} "
+        f"targets={result.get('target_counts', {})} "
         f"success={result.get('success_count', 0)} "
         f"failed={len(result.get('failures') or {})}"
+    )
+    from backend.core.media_membership_reconcile import enqueue_all_media_membership_reconciles
+
+    reconciliation = enqueue_all_media_membership_reconciles()
+    print(
+        "Media membership reconciliation scheduled: "
+        f"profiles={reconciliation['profile_count']} "
+        f"jobs={len(reconciliation['jobs'])} "
+        f"queued={reconciliation['queued_count']}"
     )
     if result.get("failures"):
         raise RuntimeError(f"媒体候选补齐未完成：{result['failures']}")
 
 
 def _enqueue_media_sync_home_discovery() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _run_media_sync_home_discovery_job)
-    return task_id
+    active = find_active_local_job_run("media.scheduled-discovery")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="media.scheduled-discovery", payload={}).id
 
 
 def _run_market_quote_refresh_job() -> None:
@@ -434,8 +516,10 @@ def _run_market_quote_refresh_job() -> None:
 
 
 def _enqueue_market_quote_refresh() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(MARKET_QUOTE_REFRESH_TASK_KEY, _run_market_quote_refresh_job)
-    return task_id
+    active = find_active_local_job_run("stock.market-quote-refresh")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="stock.market-quote-refresh", payload={}).id
 
 
 def _run_market_intraday_persist_job() -> dict:
@@ -451,11 +535,10 @@ def _run_market_intraday_persist_job() -> dict:
 
 
 def _enqueue_market_intraday_persist() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        MARKET_INTRADAY_PERSIST_TASK_KEY,
-        _run_market_intraday_persist_job,
-    )
-    return task_id
+    active = find_active_local_job_run("stock.market-intraday-persist")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="stock.market-intraday-persist", payload={}).id
 
 
 def _run_hk_connect_momentum_review_job() -> dict:
@@ -472,11 +555,10 @@ def _run_hk_connect_momentum_review_job() -> dict:
 
 
 def _enqueue_hk_connect_momentum_review() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
-        _run_hk_connect_momentum_review_job,
-    )
-    return task_id
+    active = find_active_local_job_run("stock.hk-connect-momentum-review")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="stock.hk-connect-momentum-review", payload={}).id
 
 
 def _enqueue_wechat_archive_incremental_sync() -> str | None:
@@ -492,6 +574,16 @@ def _enqueue_wechat_archive_incremental_sync() -> str | None:
             print("WeChat archive sync skipped: task already queued or running.")
             return None
         raise
+
+
+def _enqueue_wechat_moments_incremental_sync() -> str | None:
+    active = find_active_local_job_run("archive.wechat-moments")
+    if active is not None:
+        return active.id
+    return submit_local_job(
+        job_type="archive.wechat-moments",
+        payload={"download_media": True, "media_preview_limit": 100},
+    ).id
 
 
 def _run_note_sheet_page_snapshot_backfill_job() -> dict[str, Any]:
@@ -512,30 +604,89 @@ def _run_note_sheet_page_snapshot_backfill_job() -> dict[str, Any]:
 
 
 def _enqueue_note_sheet_page_snapshot_backfill() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        NOTE_SHEET_PAGE_SNAPSHOT_BACKFILL_TASK_KEY,
-        _run_note_sheet_page_snapshot_backfill_job,
+    active = find_active_local_job_run("notes.sheet-page-snapshot-backfill")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="notes.sheet-page-snapshot-backfill", payload={}).id
+
+
+def _run_rime_context_refresh_job() -> dict[str, Any]:
+    from backend.core.ai.rime_context_prediction import refresh_rime_context_prediction_tree
+
+    result = refresh_rime_context_prediction_tree(limit=50000, source="snapshot")
+    print(
+        "Rime context refresh completed: "
+        f"available={result.get('available')} "
+        f"status={result.get('status')} "
+        f"nodes={len(result.get('nodes') or [])}"
     )
-    return task_id
+    return result
+
+
+def _enqueue_rime_context_refresh() -> str | None:
+    active = find_active_local_job_run("rime.context-refresh")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="rime.context-refresh", payload={}).id
+
+
+def _run_rime_context_lint_job() -> dict[str, Any]:
+    from backend.core.ai.rime_context_prediction import collect_rime_context_prediction_lint
+
+    result = collect_rime_context_prediction_lint(source="all")
+    print(
+        "Rime context lint completed: "
+        f"available={result.get('available')} "
+        f"status={result.get('status')} "
+        f"issues={len(result.get('issues') or [])}"
+    )
+    return result
+
+
+def _enqueue_rime_context_lint() -> str | None:
+    active = find_active_local_job_run("rime.context-lint")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="rime.context-lint", payload={}).id
 
 
 def _enqueue_dp_browser_tab_cleanup() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        DP_BROWSER_TAB_CLEANUP_TASK_KEY,
-        run_dp_browser_tab_cleanup,
-    )
-    return task_id
+    active = find_active_local_job_run("browser.dp-tab-cleanup")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="browser.dp-tab-cleanup", payload={}).id
 
 
 def _enqueue_public_frontend_deploy() -> str | None:
-    task_id, _ = background_task_queue.enqueue_once(
-        PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
-        run_public_frontend_deploy_check,
-    )
-    return task_id
+    active = find_active_local_job_run("frontend.public-deploy-check")
+    if active is not None:
+        return active.id
+    return submit_local_job(job_type="frontend.public-deploy-check", payload={}).id
 
 
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=CODEX_WEEKLY_QUOTA_TASK_KEY,
+        title="Codex 每周余额记录",
+        category="AI",
+        description="每天零点读取 Codex 分析页的每周使用限额，将剩余百分比记到前一天，并在星图日历中替代当天的工作小时显示。",
+        schedule_label=f"每天 {CODEX_WEEKLY_QUOTA_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_codex_weekly_quota_snapshot,
+        manual_warning="会复用 DrissionPage 默认浏览器访问 ChatGPT；首次使用需在该浏览器中完成登录。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=XIAOE_INCREMENTAL_UPDATE_TASK_KEY,
+        title="小鹅通课程增量归档",
+        category="考勤",
+        description="每周按视频、音频、图文顺序检查小鹅通后台新增课程，并将新内容串行归档到本地资料库。",
+        schedule_label=f"每周日 {XIAOE_INCREMENTAL_UPDATE_RUN_TIME}",
+        retry_label="失败后 30 分钟重试",
+        action=enqueue_xiaoe_incremental_update_job,
+        manual_warning="会使用小鹅通后台登录态下载新增视频、音频和图文；已有全量任务未完成时跳过对应类别，全程不并行下载。",
+        default_visible=False,
+    ),
     BackgroundTaskSpec(
         key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
         title="公网前端发布",
@@ -567,6 +718,28 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="会访问 GitHub 上的 ruanyf/weekly 仓库；已写入过当前发布窗口的新一期会自动跳过。",
     ),
     BackgroundTaskSpec(
+        key=RUANYF_WEEKLY_EXCERPT_BOOK_TASK_KEY,
+        title="科技周刊摘抄入书",
+        category="笔记",
+        description="每周日凌晨扫描星图日记中的科技周刊摘抄，把书中尚缺的期数补入“我的科技周刊摘抄”；延期补写的旧期也会在后续扫描中补齐。",
+        schedule_label=f"每周日 {RUANYF_WEEKLY_EXCERPT_BOOK_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_ruanyf_weekly_excerpt_book_job,
+        manual_warning="会读取星图日记并更新匹配的个人摘抄书；按期号去重，不会重复加入同一期。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=TIBO_X_ARCHIVE_TASK_KEY,
+        title="Tibo X 消息摘录",
+        category="图书馆",
+        description="每小时增量抓取 @thsottiaux 的公开 X 消息，翻译成中文后更新图书馆动态摘录；首次回溯最近 30 天，书内始终按时间倒序展示。",
+        schedule_label="每小时检查",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_tibo_x_archive_job,
+        manual_warning="会访问 X 的公开 RSS 镜像并调用本机 AI 翻译；按消息 ID 去重，只更新专用摘录书。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
         key="attendance_summary_monthly_templates",
         title="考勤汇总模板",
         category="表格",
@@ -590,52 +763,32 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
         title="媒体候选补齐",
         category="图片",
-        description="每天先补齐两个候选池的 URL 缓存，再依次下载图片；实际落盘不足目标时继续采集并补足。两个候选池互不占用同一个运行锁。",
+        description="每天新增落盘 Pixiv 1000 张、Pinterest 500 张到本地备货仓库；待整理区分别维持 200 张。Pixiv 不保存 URL 候选缓存。",
         schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_media_sync_home_discovery,
-        manual_warning=f"会使用媒体同步插件和浏览器登录态访问外部推荐流，先补 URL 缓存，再把每个候选池的实际图片分别补齐到 {MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT} 张。",
-    ),
-    BackgroundTaskSpec(
-        key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
-        title="梵呗课程数据晚间步骤",
-        category="考勤",
-        description="梵呗课程数据每天晚间执行 step1-step3。step1 默认调用课程数据浏览器下载小鹅通数据，step2/step3 默认在课程数据主机写表、计算返款并渲染高亮；每步运行位置可在考勤配置中覆盖。",
-        schedule_label=f"每天 {FANBEI_ATTENDANCE_EVENING_RUN_TIME}",
-        retry_label="无额外重试",
-        action=enqueue_fanbei_attendance_evening_steps,
-        manual_warning="会按考勤配置里的课程数据 step1-step6 运行位置执行：step1 默认使用课程数据浏览器，step2/step3 默认使用课程数据主机。",
-    ),
-    BackgroundTaskSpec(
-        key=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
-        title="梵呗课程数据上午步骤",
-        category="考勤",
-        description="梵呗课程数据每天上午执行 step4-step6。当前仅保留调度框架，具体步骤为空实现。",
-        schedule_label=f"每天 {FANBEI_ATTENDANCE_MORNING_RUN_TIME}",
-        retry_label="无额外重试",
-        action=enqueue_fanbei_attendance_morning_steps,
-        manual_warning="当前仅执行课程数据 step4-step6 空框架，不会修改考勤数据。",
+        manual_warning="会使用媒体同步插件和浏览器登录态访问外部推荐流；每日新增 Pixiv 1000 张、Pinterest 500 张到备货仓库，并把各待整理区补到 200 张。",
     ),
     BackgroundTaskSpec(
         key=FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
         title="凡修魔狱封阵微信群提醒",
         category="凡修",
-        description="每天在魔狱封阵前通过 xlproject 的微信发送脚本提醒三清道宗微信群。",
+        description="每天在魔狱封阵前通过 CodeYun 微信 iLink 接入提醒三清道宗微信群。",
         schedule_label=f"每天 {FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME}",
         retry_label="失败后下次调度重试",
         action=enqueue_fanxiu_wechat_boss_reminder,
-        manual_warning="会操作本机微信向三清道宗群发送 @所有人 提醒；需要微信登录态和 xlproject 环境可用。",
+        manual_warning="会通过已连接的微信 iLink 账号向三清道宗群发送 @所有人 提醒；需要配置接入账号和接收群。",
         default_visible=False,
     ),
     BackgroundTaskSpec(
         key=FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
         title="凡修圣祖微信群提醒",
         category="凡修",
-        description="每周在圣祖活动前通过 xlproject 的微信发送脚本提醒三清道宗微信群。",
+        description="每周在圣祖活动前通过 CodeYun 微信 iLink 接入提醒三清道宗微信群。",
         schedule_label=f"每周日 {FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME}",
         retry_label="失败后下次调度重试",
         action=enqueue_fanxiu_wechat_shengzu_reminder,
-        manual_warning="会操作本机微信向三清道宗群发送提醒；需要微信登录态和 xlproject 环境可用。",
+        manual_warning="会通过已连接的微信 iLink 账号向三清道宗群发送提醒；需要配置接入账号和接收群。",
         default_visible=False,
     ),
     BackgroundTaskSpec(
@@ -683,11 +836,22 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
         title="微信数据同步",
         category="微信",
-        description="通过纯数据库通道同步本机微信新增消息和图片等资源到 CodeYun 数据区；不会操作微信 GUI，已有同步在队列中会自动跳过。",
-        schedule_label="未配置自动触发",
+        description="每 2 小时通过纯数据库通道同步本机微信新增消息和图片等资源，并按增量水位整理微信支付与聊天转账到 Freebill；不会操作微信 GUI，已有同步在队列中会自动跳过。",
+        schedule_label="每 2 小时同步",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_wechat_archive_incremental_sync,
         manual_warning="会只读复制本机微信数据库、解密快照并导出图片等资源；不会修改官方微信原始数据，也不会操作微信窗口。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=WECHAT_MOMENTS_INCREMENTAL_SYNC_TASK_KEY,
+        title="微信朋友圈增量归档",
+        category="微信",
+        description="每 6 小时只读同步并解密本机微信朋友圈数据库，按动态 ID 将正文、作者、时间、媒体索引、点赞和评论增量写入 CodeYun；已归档内容不会因好友后续改为三天可见而删除。",
+        schedule_label="每 6 小时增量归档",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_wechat_moments_incremental_sync,
+        manual_warning="会读取你当前微信账号本来可见的朋友圈缓存，并把完整 XML 版本和可下载的图片预览保存到微信逆向数据目录；不会绕过可见性、修改微信数据或操作微信窗口。",
         default_visible=False,
     ),
     BackgroundTaskSpec(
@@ -702,10 +866,32 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         default_visible=False,
     ),
     BackgroundTaskSpec(
+        key=RIME_CONTEXT_REFRESH_TASK_KEY,
+        title="Rime 预测索引刷新",
+        category="输入法",
+        description="按周期合并 Rime 输入历史和语料文章，重建上下文预测索引、运行时 TSV、热词表和英文学习词典。",
+        schedule_label="每 6 小时刷新",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_rime_context_refresh,
+        manual_warning="会读写本机 Rime 用户目录中的上下文预测文件；不会启动或操作 Rime 程序。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
+        key=RIME_CONTEXT_LINT_TASK_KEY,
+        title="Rime 语料质量检查",
+        category="输入法",
+        description="按周期扫描 Rime 输入历史和导入语料，生成错别字、重复片段、异常英文 token 等质量检查结果。",
+        schedule_label="每天 03:20",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_rime_context_lint,
+        manual_warning="只读取本机 Rime 上下文预测语料并生成检查结果；不会启动或操作 Rime 程序。",
+        default_visible=False,
+    ),
+    BackgroundTaskSpec(
         key=DP_BROWSER_TAB_CLEANUP_TASK_KEY,
         title="DP 浏览器重复标签页清理",
         category="自动化",
-        description="每小时检查 DrissionPage 专用调试浏览器的标签页；同一域名同一 URL 连续跨周期重复且未被调试器附着时，关闭旧重复页，并为每个域名保留一个最新窗口。",
+        description="每小时检查 DrissionPage 专用调试浏览器的标签页；同一域名页面连续跨周期重复、观测状态稳定且未被调试器附着时，关闭旧重复页，并为每个域名保留一个最新窗口。",
         schedule_label="每小时扫描",
         retry_label="失败后下次调度重试",
         action=_enqueue_dp_browser_tab_cleanup,
@@ -765,7 +951,17 @@ class BackgroundTaskRunner:
                     self._runner = runner
                     self._last_error = None
                 while not self._stop_event.is_set():
-                    status = runner.run_once()
+                    try:
+                        status = runner.run_once()
+                    except Exception as exc:  # pragma: no cover - individual jobs must not kill the runner.
+                        self._last_error = str(exc)
+                        self._stop_event.wait(5)
+                        if self._stop_event.is_set():
+                            break
+                        runner = self.build_runner()
+                        with self._lock:
+                            self._runner = runner
+                        continue
                     if status != Status.RUNNING:
                         self._stop_event.wait(1)
         except Timeout:
@@ -1063,6 +1259,31 @@ def _find_queue_task_by_id(queue: dict[str, Any], queue_task_id: str) -> dict[st
         for item in queue.get(section) or []:
             if isinstance(item, dict) and item.get("id") == normalized_id:
                 return item
+
+    from backend.core.jobs.local_runtime import get_local_job_run
+
+    local_run = get_local_job_run(normalized_id)
+    if local_run is not None:
+        status_map = {
+            "queued": "pending",
+            "running": "running",
+            "succeeded": "completed",
+            "failed": "failed",
+            "cancelled": "failed",
+            "interrupted": "failed",
+        }
+        return {
+            "id": local_run.id,
+            "name": local_run.job_type,
+            "status": status_map.get(local_run.status, local_run.status),
+            "queued_at": local_run.queued_at,
+            "started_at": local_run.started_at,
+            "finished_at": local_run.finished_at,
+            "error_message": local_run.error_message,
+            "metadata": {"resource_lock": local_run.resource_key},
+            "resource_lock": local_run.resource_key,
+            "result": local_run.result_json or {},
+        }
 
     return None
 

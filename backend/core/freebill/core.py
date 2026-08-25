@@ -104,7 +104,7 @@ RAW_BILL_FILE_EXTENSIONS = {
     ".zip",
 }
 RAW_FILE_EXTENSIONS = RAW_BILL_FILE_EXTENSIONS
-RAW_FILE_QUERY_EXTENSIONS = tuple(sorted(RAW_BILL_FILE_EXTENSIONS))
+RAW_FILE_QUERY_EXTENSIONS = tuple(sorted({*RAW_BILL_FILE_EXTENSIONS, ".json"}))
 CSV_ENCODINGS = ("gb18030", "gbk", "utf-8-sig", "utf-8")
 ALIPAY_LEGACY_SOURCE_HINTS = (
     "支付宝",
@@ -131,7 +131,7 @@ FREEBILL_STANDARD_DIRECTIONS = (
     STANDARD_DIRECTION_NEUTRAL,
     STANDARD_DIRECTION_INCOME,
 )
-FREEBILL_STANDARDIZATION_VERSION = 29
+FREEBILL_STANDARDIZATION_VERSION = 30
 FREEBILL_STANDARD_NATURES = (
     STANDARD_NATURE_REGULAR,
     STANDARD_NATURE_LOAN,
@@ -297,6 +297,7 @@ FREEBILL_CATEGORY_DIMENSION_EMPTY_LABELS = {
     "type": "未分类",
     "counterparty": "未标注交易对方",
 }
+FREEBILL_CATEGORY_REMAINDER_LABEL = "..."
 FLOW_FINANCE_KEYWORDS = (
     "余利宝",
     "零钱通",
@@ -975,6 +976,12 @@ def _infer_freebill_standard_direction(
     normalized_direction = _normalize_text(record.get("direction"))
     if normalized_direction in STANDARD_DIRECTIONS:
         return str(normalized_direction)
+
+    normalized_status = _normalize_text(record.get("status")) or ""
+    if normalized_direction == "不计收支" and (
+        normalized_status == "交易关闭" or normalized_status.endswith("失败")
+    ):
+        return STANDARD_DIRECTION_NEUTRAL
 
     if standard_nature == STANDARD_NATURE_FINANCE and (
         "finance-keywords" in enabled_rules or "yuebao-income" in enabled_rules
@@ -2347,11 +2354,11 @@ def import_bill_records(
     work_dir: Path | None = None,
 ) -> dict[str, Any]:
     with get_freebill_connection(work_dir) as conn:
-        existing_trade_nos = {
-            str(row["trade_no"] or "").strip()
+        existing_records = {
+            str(row["trade_no"] or "").strip(): _row_to_dict(row)
             for row in conn.execute(
                 """
-                SELECT trade_no
+                SELECT *
                 FROM bill_records
                 WHERE trade_no IS NOT NULL AND TRIM(trade_no) NOT IN ('', '/')
                 """,
@@ -2359,6 +2366,7 @@ def import_bill_records(
         }
 
         inserted = 0
+        updated = 0
         skipped = 0
         placeholders = ", ".join("?" for _ in BILL_RECORD_COLUMNS)
         columns_sql = ", ".join(BILL_RECORD_COLUMNS)
@@ -2374,15 +2382,32 @@ def import_bill_records(
             )
             source = str(normalized_record.get("source") or "")
             trade_no = str(normalized_record.get("trade_no") or "").strip()
-            if not source or not trade_no or trade_no == "/" or trade_no in existing_trade_nos:
+            if not source or not trade_no or trade_no == "/":
                 skipped += 1
                 continue
+            existing_record = existing_records.get(trade_no)
+            if existing_record is not None:
+                existing_raw_sequence = str(existing_record.get("raw_sequence") or "")
+                incoming_raw_sequence = str(normalized_record.get("raw_sequence") or "")
+                existing_is_local_wechat = existing_raw_sequence.startswith("wechat-")
+                incoming_is_local_wechat = incoming_raw_sequence.startswith("wechat-")
+                if existing_is_local_wechat and not incoming_is_local_wechat:
+                    assignments = ", ".join(f"{column} = ?" for column in BILL_RECORD_COLUMNS)
+                    conn.execute(
+                        f"UPDATE bill_records SET {assignments} WHERE trade_no = ?",
+                        [normalized_record.get(column) for column in BILL_RECORD_COLUMNS] + [trade_no],
+                    )
+                    existing_records[trade_no] = normalized_record
+                    updated += 1
+                else:
+                    skipped += 1
+                continue
             conn.execute(insert_sql, [normalized_record.get(column) for column in BILL_RECORD_COLUMNS])
-            existing_trade_nos.add(trade_no)
+            existing_records[trade_no] = normalized_record
             inserted += 1
         conn.commit()
 
-        if inserted:
+        if inserted or updated:
             reset_bill_ids(conn)
             conn.commit()
 
@@ -2390,6 +2415,7 @@ def import_bill_records(
         "filename": filename,
         "processed": len(records),
         "inserted": inserted,
+        "updated": updated,
         "skipped": skipped,
     }
 
@@ -2503,7 +2529,7 @@ def rebuild_freebill_records_from_raw_files(
                 SELECT *
                 FROM freebill_raw_files
                 WHERE source IN ('支付宝', '微信', '建设银行')
-                  AND extension IN ('.csv', '.xlsx', '.xlsm', '.xls')
+                  AND extension IN ('.csv', '.xlsx', '.xlsm', '.xls', '.json')
                   AND COALESCE(note, '') != 'legacy-db-snapshot'
                 ORDER BY source, relative_path, original_name, id
                 """
@@ -2622,6 +2648,10 @@ def _parse_rebuild_raw_file(raw_file: dict[str, Any]) -> dict[str, Any]:
             records, parser_format = _parse_alipay_excel_bytes(content)
         elif source == "微信" and extension in {".xlsx", ".xlsm", ".xls"}:
             records, parser_format = _parse_wechat_excel_bytes(content)
+        elif source == "微信" and extension == ".json" and raw_file.get("note") == "wechat-local-payment-db-v1":
+            from backend.core.freebill.wechat_local_db import parse_wechat_local_snapshot_bytes
+
+            records, parser_format = parse_wechat_local_snapshot_bytes(content)
         elif source == "建设银行" and extension in {".xlsx", ".xlsm", ".xls"}:
             records, parser_format = _parse_ccb_excel_bytes(content)
         else:
@@ -2667,6 +2697,8 @@ def _score_rebuild_record(
         score += 100
     if parser_format in {"alipay-detail-csv", "wechat-excel", "ccb-excel"}:
         score += 1000
+    if parser_format == "wechat-local-payment-db-v1":
+        score += 200
     if "支付宝交易明细" in original_name or "微信支付账单流水文件" in original_name or "建设银行流水" in original_name:
         score += 1000
     if parser_format.startswith("alipay-legacy"):
@@ -4084,8 +4116,20 @@ def _freebill_category_value_sql(*, signed_category_values: bool) -> str:
         CASE
             WHEN {display_direction_sql} = '支出' THEN -COALESCE({amount_sql}, 0)
             WHEN {display_direction_sql} = '收入' THEN COALESCE({amount_sql}, 0)
-            WHEN {display_direction_sql} = '收支' THEN COALESCE({amount_sql}, 0)
+            WHEN {display_direction_sql} = '收支' THEN 0
             ELSE 0
+        END
+    """
+
+
+def _freebill_category_branch_value_sql(value_sql: str) -> str:
+    """Keep neutral records out of parent net values while showing their branch amount."""
+    amount_sql = _freebill_effective_number_field_sql("amount")
+    display_direction_sql = _freebill_display_direction_sql()
+    return f"""
+        CASE
+            WHEN {display_direction_sql} = '收支' THEN COALESCE({amount_sql}, 0)
+            ELSE ({value_sql})
         END
     """
 
@@ -4185,6 +4229,34 @@ def _build_category_group_order_sql(dimension: str, expression_sql: str) -> str:
     return "ABS(value) DESC, count DESC, name"
 
 
+def _collapse_category_tail(
+    rows: list[dict[str, Any]],
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    """Keep the largest groups visible and preserve the complete smallest suffix."""
+    if limit is None or len(rows) <= limit:
+        return rows
+    if limit <= 0:
+        return []
+
+    visible_rows = rows[:limit]
+    remainder_rows = rows[limit:]
+    remainder_value = sum(float(row.get("value") or 0) for row in remainder_rows)
+    if remainder_value.is_integer():
+        remainder_value = int(remainder_value)
+    return [
+        *visible_rows,
+        {
+            "name": FREEBILL_CATEGORY_REMAINDER_LABEL,
+            "value": remainder_value,
+            "count": sum(int(row.get("count") or 0) for row in remainder_rows),
+            "group_count": len(remainder_rows),
+            "is_remainder": True,
+            "remainder_items": remainder_rows,
+        },
+    ]
+
+
 def _query_category_tree_by_dimensions(
     conn: sqlite3.Connection,
     where_sql: str,
@@ -4226,35 +4298,41 @@ def _query_category_tree_level(
 
     dimension = dimensions[depth]
     dimension_sql = _freebill_category_dimension_sql(dimension)
+    has_direction_branch = dimension == "standard_direction" or any(
+        item.get("dimension") == "standard_direction"
+        for item in path
+    )
+    current_value_sql = (
+        _freebill_category_branch_value_sql(value_sql)
+        if has_direction_branch
+        else value_sql
+    )
     path_conditions, path_params = _build_category_path_filter_conditions(path, prefix=f"tree_{depth}")
     merged_conditions = [f"({where_sql})", *path_conditions]
     query_params = {**params, **path_params}
-    limit_sql = ""
     current_limit = None if depth == 0 else (level_limit if depth == 1 else child_limit)
-    if current_limit is not None:
-        if current_limit <= 0:
-            return []
-        query_params[f"tree_limit_{depth}"] = int(current_limit)
-        limit_sql = f"LIMIT :tree_limit_{depth}"
+    if current_limit is not None and current_limit <= 0:
+        return []
 
-    rows = [
+    grouped_rows = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
             SELECT {dimension_sql} AS name,
-                   COALESCE(SUM({value_sql}), 0) AS value,
+                   COALESCE(SUM({current_value_sql}), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
             WHERE {" AND ".join(merged_conditions)}
             GROUP BY {dimension_sql}
             ORDER BY {_build_category_group_order_sql(dimension, dimension_sql)}
-            {limit_sql}
             """,
             query_params,
         ).fetchall()
     ]
+    rows = _collapse_category_tail(grouped_rows, current_limit)
     next_depth = depth + 1
-    for row in rows:
+
+    def populate_row(row: dict[str, Any]) -> None:
         next_path = [*path, {"dimension": dimension, "value": str(row.get("name") or "")}]
         row["dimension"] = dimension
         row["path"] = next_path
@@ -4270,6 +4348,13 @@ def _query_category_tree_level(
                 level_limit=level_limit,
                 child_limit=child_limit,
             )
+
+    for row in rows:
+        if row.get("is_remainder"):
+            for remainder_item in row.get("remainder_items") or []:
+                populate_row(remainder_item)
+            continue
+        populate_row(row)
     return rows
 
 
@@ -4284,15 +4369,11 @@ def _query_category_stats(
     child_limit: int | None,
 ) -> list[dict[str, Any]]:
     query_params = {**params, "category_direction": direction}
-    limit_sql = ""
-    if limit is not None:
-        if limit <= 0:
-            return []
-        query_params["category_limit"] = int(limit)
-        limit_sql = "LIMIT :category_limit"
+    if limit is not None and limit <= 0:
+        return []
     display_direction_sql = _freebill_display_direction_sql()
     type_sql = _freebill_effective_text_field_sql("type")
-    categories = [
+    grouped_categories = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
@@ -4304,12 +4385,24 @@ def _query_category_stats(
               AND {display_direction_sql} = :category_direction
             GROUP BY COALESCE(NULLIF({type_sql}, ''), '未分类')
             ORDER BY ABS(value) DESC, count DESC
-            {limit_sql}
             """,
             query_params,
         ).fetchall()
     ]
+    categories = _collapse_category_tail(grouped_categories, limit)
     for category in categories:
+        if category.get("is_remainder"):
+            for remainder_category in category.get("remainder_items") or []:
+                remainder_category["children"] = _query_category_counterparty_stats(
+                    conn,
+                    where_sql,
+                    params,
+                    direction,
+                    str(remainder_category.get("name") or ""),
+                    value_sql=value_sql,
+                    limit=child_limit,
+                )
+            continue
         category["children"] = _query_category_counterparty_stats(
             conn,
             where_sql,
@@ -4339,12 +4432,13 @@ def _query_direction_category_tree(
     category_child_limit: int | None,
 ) -> list[dict[str, Any]]:
     display_direction_sql = _freebill_display_direction_sql()
+    branch_value_sql = _freebill_category_branch_value_sql(value_sql)
     directions = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
             SELECT {display_direction_sql} AS name,
-                   COALESCE(SUM({value_sql}), 0) AS value,
+                   COALESCE(SUM({branch_value_sql}), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
@@ -4369,7 +4463,7 @@ def _query_direction_category_tree(
             where_sql,
             params,
             str(direction.get("name") or ""),
-            value_sql=value_sql,
+            value_sql=branch_value_sql,
             limit=category_limit,
             child_limit=category_child_limit,
         )
@@ -4393,14 +4487,10 @@ def _query_category_counterparty_stats(
         "category_direction": direction,
         "category_name": category_name,
     }
-    limit_sql = ""
-    if limit is not None:
-        query_params["category_child_limit"] = int(limit)
-        limit_sql = "LIMIT :category_child_limit"
     display_direction_sql = _freebill_display_direction_sql()
     type_sql = _freebill_effective_text_field_sql("type")
     counterparty_sql = _freebill_effective_text_field_sql("counterparty")
-    return [
+    grouped_rows = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
@@ -4413,11 +4503,11 @@ def _query_category_counterparty_stats(
               AND COALESCE(NULLIF({type_sql}, ''), '未分类') = :category_name
             GROUP BY COALESCE(NULLIF({counterparty_sql}, ''), '未标注交易对方')
             ORDER BY ABS(value) DESC, count DESC, name
-            {limit_sql}
             """,
             query_params,
         ).fetchall()
     ]
+    return _collapse_category_tail(grouped_rows, limit)
 
 
 def _query_period_trend(

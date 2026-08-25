@@ -1,5 +1,15 @@
 from unittest.mock import patch
 
+import pytest
+from sqlmodel import select
+
+from backend.api.notes import (
+    CODEX_DIARY_BLOCK_FIELD,
+    CODEX_DIARY_DATE_FIELD,
+    CODEX_DIARY_SCOPE_FIELD,
+    CODEX_DIARY_SOURCE_THREADS_FIELD,
+    CODEX_DIARY_WORKLOG_FIELD,
+)
 from backend.core.notes.semantics import build_note_category_palette_setting_key
 from backend.models import AppSetting, NoteNode
 
@@ -212,6 +222,204 @@ def test_ai_categorize_note_forces_fanxiu_for_zhenxie_title(client, session, aut
     prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
     assert "命中领域专有词：镇邪、日常镇邪" in prompt
     assert "应归入 legacy_fanxiu(凡修)" in prompt
+
+
+@pytest.mark.parametrize(
+    ("title", "matched_term"),
+    [
+        ("动态插桩结果写回灵器前端表格", "动态插桩"),
+        ("论道OCR切回GPU并提速96%", "论道"),
+        ("活动答题奖励钩子闭环修复", "活动_答题"),
+        ("兑换码缓存", "兑换码缓存"),
+    ],
+)
+def test_ai_categorize_note_forces_fanxiu_for_runtime_business_title(
+    client,
+    session,
+    auth_user,
+    title,
+    matched_term,
+):
+    note = _make_note(
+        f"note-ai-categorize-fanxiu-{matched_term}",
+        auth_user.id,
+        title,
+        primary_category="custom_codeyun_note",
+        lifecycle_stage="done",
+    )
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "legacy_fanxiu", "label": "凡修", "color": "#67C23A", "order": 10},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add(note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"custom_codeyun_note","note_form":"note","lifecycle_stage":"done"}',
+        },
+    ) as mock_chat:
+        response = client.post(
+            f"/api/notes/{note.numeric_id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["note"]["primary_category"] == "legacy_fanxiu"
+    prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
+    assert f"命中领域专有词：{matched_term}" in prompt
+    assert "应归入 legacy_fanxiu(凡修)" in prompt
+
+
+def _attach_diary_fields(note, *, block_key, duration_seconds, turn_count, thread_id):
+    note.custom_fields = [
+        [CODEX_DIARY_DATE_FIELD, "string", "2026-08-01"],
+        [CODEX_DIARY_SCOPE_FIELD, "string", "entries:test"],
+        [CODEX_DIARY_BLOCK_FIELD, "string", block_key],
+        [CODEX_DIARY_SOURCE_THREADS_FIELD, "json", [thread_id]],
+        [
+            CODEX_DIARY_WORKLOG_FIELD,
+            "json",
+            {
+                "version": 1,
+                "date": "2026-08-01",
+                "timezone": "Asia/Shanghai",
+                "scope_key": "entries:test",
+                "block_key": block_key,
+                "duration_seconds": duration_seconds,
+                "duration_minutes": round(duration_seconds / 60),
+                "start_at": 1000 if block_key == "main" else 2000,
+                "end_at": 1500 if block_key == "main" else 2500,
+                "turn_count": turn_count,
+                "source_thread_ids": [thread_id],
+                "source_devices": ["codepc_mf"],
+            },
+        ],
+    ]
+    return note
+
+
+def test_ai_categorize_diary_note_reaggregates_same_date_category(client, session, auth_user):
+    main_note = _attach_diary_fields(_make_note(
+        "diary-fanxiu-main",
+        auth_user.id,
+        "凡修行为树运行框架统一修复",
+        content="<ol><li><span>行为树主线完成</span></li></ol><p><strong>来源</strong>：旧</p>",
+        primary_category="legacy_fanxiu",
+        lifecycle_stage="done",
+        updated_at=1,
+    ), block_key="main", duration_seconds=3600, turn_count=6, thread_id="thread-main")
+    target_note = _attach_diary_fields(_make_note(
+        "diary-fanxiu-target",
+        auth_user.id,
+        "论道OCR切回GPU并提速96%",
+        content="<ol><li><span>论道 OCR 切回 GPU</span></li></ol><p><strong>来源</strong>：旧</p>",
+        primary_category="custom_codeyun_note",
+        lifecycle_stage="done",
+        updated_at=2,
+    ), block_key="target", duration_seconds=1200, turn_count=2, thread_id="thread-target")
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#606266", "order": 0},
+                    {"key": "legacy_fanxiu", "label": "凡修", "color": "#67C23A", "order": 10},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446CCF", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add(main_note)
+    session.add(target_note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"custom_codeyun_note","note_form":"note","lifecycle_stage":"done"}',
+        },
+    ):
+        response = client.post(
+            f"/api/notes/{target_note.numeric_id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["note"]["title"] == main_note.title
+    active_fanxiu_notes = session.exec(
+        select(NoteNode).where(
+            NoteNode.user_id == auth_user.id,
+            NoteNode.primary_category == "legacy_fanxiu",
+            NoteNode.deleted_at == None,  # noqa: E711
+        )
+    ).all()
+    assert len(active_fanxiu_notes) == 1
+    merged_note = active_fanxiu_notes[0]
+    assert "行为树主线完成" in merged_note.content
+    assert "论道 OCR 切回 GPU" in merged_note.content
+    worklog = next(item[2] for item in merged_note.custom_fields if item[0] == CODEX_DIARY_WORKLOG_FIELD)
+    assert worklog["duration_seconds"] == 4800
+    assert worklog["turn_count"] == 8
+    assert worklog["source_thread_ids"] == ["thread-main", "thread-target"]
+    session.refresh(target_note)
+    assert target_note.deleted_at is not None
+
+
+def test_manual_diary_category_update_reaggregates_same_date_category(client, session, auth_user):
+    main_note = _attach_diary_fields(_make_note(
+        "diary-manual-main",
+        auth_user.id,
+        "凡修主日记",
+        content="<ol><li><span>凡修主线</span></li></ol>",
+        primary_category="legacy_fanxiu",
+        lifecycle_stage="done",
+        updated_at=1,
+    ), block_key="main", duration_seconds=3600, turn_count=6, thread_id="thread-main")
+    target_note = _attach_diary_fields(_make_note(
+        "diary-manual-target",
+        auth_user.id,
+        "动态插桩结果",
+        content="<ol><li><span>动态插桩支线</span></li></ol>",
+        primary_category="custom_codeyun_note",
+        lifecycle_stage="done",
+        updated_at=2,
+    ), block_key="target", duration_seconds=600, turn_count=1, thread_id="thread-target")
+    session.add(main_note)
+    session.add(target_note)
+    session.commit()
+
+    response = client.put(
+        f"/api/notes/{target_note.numeric_id}",
+        json={
+            "primary_category": "legacy_fanxiu",
+            "note_categories": [{"key": "legacy_fanxiu", "weight": 100}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "凡修主日记"
+    active_fanxiu_notes = session.exec(
+        select(NoteNode).where(
+            NoteNode.user_id == auth_user.id,
+            NoteNode.primary_category == "legacy_fanxiu",
+            NoteNode.deleted_at == None,  # noqa: E711
+        )
+    ).all()
+    assert len(active_fanxiu_notes) == 1
+    assert "凡修主线" in active_fanxiu_notes[0].content
+    assert "动态插桩支线" in active_fanxiu_notes[0].content
 
 
 def test_ai_categorize_note_forces_zaohua_domain_over_codeyun_note(client, session, auth_user):

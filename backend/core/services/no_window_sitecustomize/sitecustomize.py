@@ -39,4 +39,25 @@ def _install_no_window_popen_default() -> None:
     setattr(original_popen, "_codeyun_no_window_original_init", original_init)
 
 
+def _install_platform_wmi_processor_guard() -> None:
+    """Avoid Python's optional WMI CPU probe in explicitly managed workers.
+
+    Some Windows hosts return malformed or duplicated WMI rows.  Python 3.13's
+    ``platform.processor()`` then raises while importing debugpy, which can kill
+    an ipykernel before it answers its first kernel_info request.  Processor
+    branding is not required by CodeYun workers, so use the stable environment
+    value when the owning service explicitly opts in.
+    """
+
+    if os.name != "nt" or os.getenv("CODEYUN_SKIP_PLATFORM_WMI_PROCESSOR") != "1":
+        return
+    import platform
+
+    processor = getattr(platform, "_Processor", None)
+    if processor is None:
+        return
+    processor.get_win32 = staticmethod(lambda: os.getenv("PROCESSOR_IDENTIFIER", ""))
+
+
 _install_no_window_popen_default()
+_install_platform_wmi_processor_guard()

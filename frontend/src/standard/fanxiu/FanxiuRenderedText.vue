@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import {
   renderFanxiuPlainRichText,
   renderFanxiuRichText,
+  renderFanxiuTaggedRichText,
   type FanxiuResourceLinkTarget,
 } from './resourceRenderer'
 
@@ -13,14 +14,22 @@ const props = withDefaults(defineProps<{
   tone?: 'light' | 'dark'
   compact?: boolean
   enableLinks?: boolean
+  preserveColors?: boolean
 }>(), {
   value: '',
   tone: 'dark',
   compact: false,
   enableLinks: true,
+  preserveColors: false,
 })
 
 const renderedHtml = computed(() => {
+  if (props.preserveColors) {
+    return renderFanxiuTaggedRichText(props.value, {
+      tone: props.tone,
+      linkTargetGroups: props.enableLinks ? props.linkTargetGroups : undefined,
+    })
+  }
   if (!props.enableLinks) return renderFanxiuPlainRichText(props.value)
   return renderFanxiuRichText(props.value, props.linkTargetGroups)
 })
@@ -71,6 +80,13 @@ const renderedHtml = computed(() => {
 .fanxiu-rendered-text :deep(.fanxiu-rich-variable) {
   color: var(--wiki-variable-color);
   font-weight: 800;
+}
+
+.fanxiu-rendered-text :deep(.fanxiu-rich-color .fanxiu-rich-term),
+.fanxiu-rendered-text :deep(.fanxiu-rich-color .fanxiu-rich-number),
+.fanxiu-rendered-text :deep(.fanxiu-rich-color .fanxiu-rich-variable) {
+  color: inherit;
+  font-weight: inherit;
 }
 
 .fanxiu-rendered-text :deep(.fanxiu-resource-link) {

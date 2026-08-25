@@ -34,6 +34,21 @@ def test_choose_scene_from_graph_uses_graph_before_similarity():
     assert result.status == "graph_nearest"
 
 
+def test_choose_scene_from_graph_uses_unique_terminal_when_all_scores_are_100():
+    result = choose_scene_from_graph(
+        [
+            SceneGraphCandidate(scene_id=427, score=100.0, matched=True),
+            SceneGraphCandidate(scene_id=428, score=100.0, matched=True),
+            SceneGraphCandidate(scene_id=429, score=100.0, matched=True),
+        ],
+        [(427, 428), (427, 429), (428, 429)],
+    )
+
+    assert result.scene_id == 429
+    assert result.status == "graph_nearest"
+    assert result.unresolved_candidates == ()
+
+
 def test_choose_scene_from_graph_falls_back_to_similarity_for_tie():
     result = choose_scene_from_graph(
         [

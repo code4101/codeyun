@@ -5,7 +5,7 @@
       <div class="header-actions">
         <el-button type="default" size="small" @click="exportJSON">📥 导出</el-button>
         <el-button type="default" size="small" @click="triggerImport">📤 导入</el-button>
-        <el-button type="danger" size="small" @click="resetAll">🗑️ 重置</el-button>
+        <el-button type="default" size="small" :loading="defaultLoading" @click="resetAll">重置布局</el-button>
         <input type="file" ref="fileInput" style="display:none" accept=".json" @change="importJSON" />
       </div>
     </div>
@@ -129,7 +129,7 @@
           <div v-if="result" class="result-content">
             <div class="stat-text">
               <span v-if="result.score === -1">❌ 无法放置</span>
-              <span v-else>🏆 最高得分: <span style="color: #ef4444;">{{ result.score }}</span></span>
+              <span v-else>🏆 最高得分: <span style="color: #ef4444;">{{ formatScore(result.score) }}</span></span>
             </div>
             
             <div v-if="result.score !== -1" class="grid-wrapper">
@@ -159,6 +159,31 @@
         </div>
       </div>
     </div>
+
+    <section class="score-model-panel">
+      <div class="model-heading">
+        <h3>单件兽魂评分</h3>
+      </div>
+      <div class="model-table-scroll">
+        <el-table
+          :data="LEVEL_SCORE_ROWS"
+          size="small"
+          table-layout="auto"
+          :fit="false"
+          class="model-table"
+        >
+          <el-table-column prop="label" label="品级" />
+          <el-table-column prop="cells" label="格数" align="right" />
+          <el-table-column prop="entryCount" label="计分词条" align="right" />
+          <el-table-column label="最低分" align="right">
+            <template #default="scope">{{ formatScore(scope.row.itemMin) }}</template>
+          </el-table-column>
+          <el-table-column label="最高分" align="right">
+            <template #default="scope">{{ formatScore(scope.row.itemMax) }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -167,6 +192,8 @@ import { ref, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Delete } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
+import api from '@/api';
+import { formatChineseCompactNumber } from '@/utils/numberFormat';
 
 // --- Constants ---
 const STORAGE_KEY = 'soul_backpack_v7_vue';
@@ -184,6 +211,32 @@ const BASE_SHAPES = [
   { n: "自定义", v: "custom" }
 ];
 
+interface LevelScoreRow {
+  level: number;
+  label: string;
+  cells: number;
+  entryCount: number;
+  attrMin: number;
+  attrMax: number;
+  skillMin: number | null;
+  skillMax: number | null;
+  itemMin: number;
+  itemMax: number;
+}
+
+const LEVEL_SCORE_ROWS: LevelScoreRow[] = [
+  { level: 1, label: '一级', cells: 1, entryCount: 0, attrMin: 0, attrMax: 0, skillMin: null, skillMax: null, itemMin: 0, itemMax: 0 },
+  { level: 2, label: '二级', cells: 2, entryCount: 1, attrMin: 2300, attrMax: 72000, skillMin: null, skillMax: null, itemMin: 2300, itemMax: 72000 },
+  { level: 3, label: '三级', cells: 3, entryCount: 2, attrMin: 6450, attrMax: 201500, skillMin: null, skillMax: null, itemMin: 12900, itemMax: 403000 },
+  { level: 4, label: '四级', cells: 4, entryCount: 3, attrMin: 10300, attrMax: 322500, skillMin: 64800, skillMax: 648000, itemMin: 30900, itemMax: 1944000 },
+  { level: 5, label: '神品', cells: 4, entryCount: 4, attrMin: 18600, attrMax: 580500, skillMin: 64800, skillMax: 711000, itemMin: 74400, itemMax: 2844000 },
+  { level: 6, label: '神品一星', cells: 4, entryCount: 4, attrMin: 23200, attrMax: 782000, skillMin: 64800, skillMax: 1422000, itemMin: 92800, itemMax: 5688000 },
+  { level: 7, label: '神品二星', cells: 4, entryCount: 4, attrMin: 31300, attrMax: 983000, skillMin: 129600, skillMax: 1422000, itemMin: 125200, itemMax: 5688000 },
+  { level: 8, label: '神品三星', cells: 4, entryCount: 4, attrMin: 39300, attrMax: 1182750, skillMin: 129600, skillMax: 2133000, itemMin: 157200, itemMax: 8532000 },
+  { level: 9, label: '神品四星', cells: 4, entryCount: 4, attrMin: 47300, attrMax: 1383750, skillMin: 194400, skillMax: 2133000, itemMin: 189200, itemMax: 8532000 },
+  { level: 10, label: '神品五星', cells: 4, entryCount: 4, attrMin: 55350, attrMax: 1585750, skillMin: 259200, skillMax: 2133000, itemMin: 221400, itemMax: 8532000 },
+];
+
 // --- State ---
 interface SoulItem {
   id: string; // Unique ID for key
@@ -199,6 +252,26 @@ const items = ref<SoulItem[]>([]);
 const sortableList = ref<HTMLElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const calculating = ref(false);
+const defaultLoading = ref(false);
+
+interface DefaultBeastSoulItem {
+  item_id: string;
+  level: number;
+  shape_id: number;
+  code: string;
+  score: number;
+  role: string;
+}
+
+interface DefaultBeastSoulLayout {
+  version: string;
+  rows: number;
+  cols: number;
+  protected_prefix_k: number;
+  protected_prefix_m: number;
+  optimal_score: number;
+  items: DefaultBeastSoulItem[];
+}
 
 interface CalcResult {
   score: number;
@@ -206,12 +279,41 @@ interface CalcResult {
 }
 const result = ref<CalcResult | null>(null);
 
+const formatScore = (value?: number) => formatChineseCompactNumber(value || 0);
+
+const loadDefaultLayout = async () => {
+  defaultLoading.value = true;
+  try {
+    const response = await api.get<DefaultBeastSoulLayout>('/fanxiu/beast-spirit/default-layout');
+    rows.value = response.data.rows || 5;
+    cols.value = response.data.cols || 6;
+    items.value = response.data.items.map((item) => ({
+      id: `default-${item.item_id}`,
+      code: item.code,
+      customVal: '',
+      score: item.score,
+      isCustomMode: false,
+    }));
+    result.value = null;
+    return true;
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '默认布局加载失败');
+    return false;
+  } finally {
+    defaultLoading.value = false;
+  }
+};
+
 // --- Lifecycle ---
-onMounted(() => {
+onMounted(async () => {
   if (!loadData()) {
-    // Default data
-    addRow("11;11", 100);
-    addRow("10;10;11", 120);
+    const loaded = await loadDefaultLayout();
+    if (!loaded) {
+      items.value = [
+        { id: 'sample-1', code: '11;11', customVal: '', score: 100, isCustomMode: false },
+        { id: 'sample-2', code: '10;10;11', customVal: '', score: 120, isCustomMode: false },
+      ];
+    }
   }
   
   // Init Sortable
@@ -392,15 +494,15 @@ const importJSON = (event: Event) => {
 };
 
 const resetAll = () => {
-  ElMessageBox.confirm('确定清空所有数据吗？', '警告', {
+  ElMessageBox.confirm('确定丢弃本地布局并恢复最新默认布局吗？', '提示', {
     type: 'warning'
-  }).then(() => {
+  }).then(async () => {
     localStorage.removeItem(STORAGE_KEY);
-    items.value = [];
-    rows.value = 5;
-    cols.value = 6;
-    result.value = null;
-    ElMessage.success('已重置');
+    if (await loadDefaultLayout()) {
+      await nextTick();
+      runCalc();
+      ElMessage.success('已恢复最新默认布局');
+    }
   });
 };
 
@@ -573,7 +675,7 @@ const runCalc = () => {
       result.value = best;
       
       if (best.score !== -1) {
-        ElMessage.success(`计算完成！最高分: ${best.score}`);
+        ElMessage.success(`计算完成！最高分: ${formatScore(best.score)}`);
       } else {
         ElMessage.warning('无法放置');
       }
@@ -631,6 +733,55 @@ const resultGrid = computed(() => {
 .header-actions {
   display: flex;
   gap: 10px;
+}
+
+.score-model-panel {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.model-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.model-heading h3 {
+  margin: 0;
+  color: #303133;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.model-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.model-table {
+  width: max-content;
+  min-width: 440px;
+  max-width: none;
+}
+
+.model-table :deep(.el-table__header-wrapper th),
+.model-table :deep(.el-table__body-wrapper td) {
+  white-space: nowrap;
+}
+
+.model-table :deep(.cell) {
+  padding-right: 10px;
+  padding-left: 10px;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.model-table :deep(.el-table__body) {
+  font-variant-numeric: tabular-nums;
 }
 
 .layout-container {

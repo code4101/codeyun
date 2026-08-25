@@ -16,7 +16,7 @@ const items = ref<FanxiuLingquanQuestion[]>([])
 const groups = ref<Array<{ name: string; count: number }>>([])
 const editorVisible = ref(false)
 const editingId = ref('')
-const form = reactive({ group_name: '游戏剧情', question: '', answer: '', enabled: true, order_index: 0 })
+const form = reactive({ group_name: '游戏剧情', question: '', answer: '', order_index: 0 })
 
 const visibleGroups = computed(() => {
   const names = selectedGroup.value ? [selectedGroup.value] : groups.value.map(group => group.name)
@@ -36,7 +36,7 @@ async function load() {
 
 function openCreate() {
   editingId.value = ''
-  Object.assign(form, { group_name: selectedGroup.value || groups.value[0]?.name || '游戏剧情', question: '', answer: '', enabled: true, order_index: 0 })
+  Object.assign(form, { group_name: selectedGroup.value || groups.value[0]?.name || '游戏剧情', question: '', answer: '', order_index: 0 })
   editorVisible.value = true
 }
 
@@ -94,9 +94,6 @@ onMounted(load)
       <el-table :data="group.items" row-key="id" @row-dblclick="openEdit">
         <el-table-column prop="question" label="题目" min-width="420" />
         <el-table-column prop="answer" label="答案" min-width="150" />
-        <el-table-column label="状态" width="90">
-          <template #default="scope">{{ scope.row.enabled ? '启用' : '停用' }}</template>
-        </el-table-column>
       </el-table>
     </div>
     <el-empty v-if="!loading && !items.length" description="没有匹配题目" />
@@ -106,7 +103,6 @@ onMounted(load)
         <el-form-item label="分组"><el-input v-model="form.group_name" /></el-form-item>
         <el-form-item label="题目"><el-input v-model="form.question" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="答案"><el-input v-model="form.answer" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button v-if="editingId" type="danger" text @click="removeEditing">删除题目</el-button>

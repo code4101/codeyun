@@ -13,11 +13,11 @@ import pytest
 from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
 from backend.core.fanxiu.runtime import jupyter_kernel as jupyter_kernel_core
-from backend.core.fanxiu.runtime.kernel import FanxiuKernel
-from backend.core.fanxiu.data_annotation.runtime import DataAnnotationRuntimeContainer
-from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
-from backend.core.fanxiu.data_annotation import runtime_framework as runtime_framework
-from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
+from backend.core.fanxiu.data_annotation.behavior_tree_container import BehaviorTreeRuntimeContainer
+from backend.core.fanxiu.data_annotation import behavior_tree_control as behavior_tree_control
+from backend.core.fanxiu.data_annotation import behavior_tree_framework as behavior_tree_framework
+from backend.core.fanxiu.data_annotation import runtime_runner as behavior_tree_runtime_core
 from backend.core.fanxiu.data_annotation import storage as storage_core
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
@@ -42,8 +42,8 @@ def test_core_behavior_tree_facade_does_not_import_codeyun_db_at_module_top():
     assert "def resolve_fanxiu_entry" in source
 
 
-def test_core_runtime_control_does_not_import_codeyun_model_at_module_top():
-    source = Path("backend/core/fanxiu/data_annotation/runtime_control.py").read_text(encoding="utf-8")
+def test_core_behavior_tree_control_does_not_import_codeyun_model_at_module_top():
+    source = Path("backend/core/fanxiu/data_annotation/behavior_tree_control.py").read_text(encoding="utf-8")
     header = source.split("def read_world_facts", 1)[0]
 
     assert "from backend.models import" not in header
@@ -151,7 +151,7 @@ def test_runtime_long_press_shape_owns_shape_coordinate_conversion():
         "height": 1600,
         "shapes": [{"id": "cuiling", "title": "淬灵", "x": 0.4, "y": 0.7, "w": 0.2, "h": 0.1}],
     }
-    view = runtime_runner_core.View(image)
+    view = behavior_tree_runtime_core.View(image)
     shape = view.get_shapes()[0]
     calls: list[dict] = []
 
@@ -166,7 +166,7 @@ def test_runtime_long_press_shape_owns_shape_coordinate_conversion():
             })
             return {"ok": True}
 
-    runtime = runtime_runner_core.FanxiuRuntime(FakeRunner(), {"images": {349: image}})
+    runtime = behavior_tree_runtime_core.BehaviorTreeRuntime(FakeRunner(), {"images": {349: image}})
     runtime.view = lambda _selector: view
     runtime.resolve_shape_selector = lambda _view, _selector: shape
     runtime.match_shape = lambda _shape: True
@@ -189,12 +189,12 @@ def test_runtime_long_press_shape_owns_shape_coordinate_conversion():
 
 
 
-def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
+def test_behavior_tree_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
     latest_path = tmp_path / "fanxiu-watch" / "latest.json"
     heartbeat_path = tmp_path / "fanxiu-watch" / "heartbeat.json"
-    monkeypatch.setattr(runtime_control, "doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(behavior_tree_control, "doctor_watch_heartbeat_path", lambda: heartbeat_path)
 
-    missing = runtime_control.read_doctor_watch_latest(latest_path)
+    missing = behavior_tree_control.read_doctor_watch_latest(latest_path)
 
     assert missing["ok"] is False
     assert missing["exists"] is False
@@ -207,7 +207,7 @@ def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_pat
             {
                 "pid": 123,
                 "updated_at": 100.0,
-                "stable_latest_path": str(runtime_control.doctor_watch_latest_path()),
+                "stable_latest_path": str(behavior_tree_control.doctor_watch_latest_path()),
                 "severity": "blocked",
             },
             ensure_ascii=False,
@@ -228,7 +228,7 @@ def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_pat
         ),
         encoding="utf-8",
     )
-    loaded = runtime_control.read_doctor_watch_latest(latest_path)
+    loaded = behavior_tree_control.read_doctor_watch_latest(latest_path)
 
     assert loaded["ok"] is True
     assert loaded["exists"] is True
@@ -238,15 +238,15 @@ def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_pat
     assert loaded["heartbeat"]["pid"] == 123
 
 
-def test_runtime_control_reads_stable_or_fallback_doctor_watch_latest(monkeypatch, tmp_path):
+def test_behavior_tree_control_reads_stable_or_fallback_doctor_watch_latest(monkeypatch, tmp_path):
     watch_dir = tmp_path / "fanxiu-watch"
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
 
     fallback_path = watch_dir / "doctor_watch_20260615_050000.latest.json"
     fallback_path.parent.mkdir(parents=True)
     fallback_path.write_text(json.dumps({"severity": "blocked", "summary": "旧快照"}, ensure_ascii=False), encoding="utf-8")
 
-    loaded_fallback = runtime_control.read_doctor_watch_latest()
+    loaded_fallback = behavior_tree_control.read_doctor_watch_latest()
 
     assert loaded_fallback["ok"] is True
     assert loaded_fallback["path"] == str(fallback_path)
@@ -255,19 +255,19 @@ def test_runtime_control_reads_stable_or_fallback_doctor_watch_latest(monkeypatc
     stable_path = watch_dir / "doctor_watch_latest.json"
     stable_path.write_text(json.dumps({"severity": "ok", "summary": "稳定快照"}, ensure_ascii=False), encoding="utf-8")
 
-    loaded_stable = runtime_control.read_doctor_watch_latest()
+    loaded_stable = behavior_tree_control.read_doctor_watch_latest()
 
     assert loaded_stable["ok"] is True
     assert loaded_stable["path"] == str(stable_path)
     assert loaded_stable["message"] == "稳定快照"
 
 
-def test_runtime_control_reads_doctor_watch_heartbeat(monkeypatch, tmp_path):
+def test_behavior_tree_control_reads_doctor_watch_heartbeat(monkeypatch, tmp_path):
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 150.0)
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 150.0)
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -281,7 +281,7 @@ def test_runtime_control_reads_doctor_watch_heartbeat(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    active = runtime_control.read_doctor_watch_heartbeat(stale_after_seconds=180.0)
+    active = behavior_tree_control.read_doctor_watch_heartbeat(stale_after_seconds=180.0)
 
     assert active["ok"] is True
     assert active["active"] is True
@@ -293,20 +293,20 @@ def test_runtime_control_reads_doctor_watch_heartbeat(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    inconsistent = runtime_control.read_doctor_watch_heartbeat(stale_after_seconds=180.0)
+    inconsistent = behavior_tree_control.read_doctor_watch_heartbeat(stale_after_seconds=180.0)
 
     assert inconsistent["active"] is False
     assert inconsistent["runtime_consistent"] is False
 
 
-def test_runtime_control_prefers_active_heartbeat_latest_sidecar(monkeypatch, tmp_path):
+def test_behavior_tree_control_prefers_active_heartbeat_latest_sidecar(monkeypatch, tmp_path):
     watch_dir = tmp_path / "fanxiu-watch"
     stable_path = watch_dir / "doctor_watch_latest.json"
     active_sidecar_path = watch_dir / "doctor_watch_background.latest.json"
     heartbeat_path = watch_dir / "doctor_watch_heartbeat.json"
     watch_dir.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 150.0)
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 150.0)
     stable_path.write_text(json.dumps({"severity": "ok", "summary": "旧稳定快照"}, ensure_ascii=False), encoding="utf-8")
     active_sidecar_path.write_text(json.dumps({"severity": "blocked", "summary": "活跃巡检快照"}, ensure_ascii=False), encoding="utf-8")
     heartbeat_path.write_text(
@@ -322,7 +322,7 @@ def test_runtime_control_prefers_active_heartbeat_latest_sidecar(monkeypatch, tm
         encoding="utf-8",
     )
 
-    loaded = runtime_control.read_doctor_watch_latest()
+    loaded = behavior_tree_control.read_doctor_watch_latest()
 
     assert loaded["path"] == str(active_sidecar_path)
     assert loaded["snapshot"]["severity"] == "blocked"
@@ -331,7 +331,7 @@ def test_runtime_control_prefers_active_heartbeat_latest_sidecar(monkeypatch, tm
 
 def test_doctor_watch_latest_payload_for_frontend_omits_large_auto_run_due(monkeypatch):
     monkeypatch.setattr(
-        fanxiu_api._runtime_control,
+        fanxiu_api._behavior_tree_control,
         "read_doctor_watch_latest",
         lambda: {
             "ok": True,
@@ -359,7 +359,7 @@ def test_doctor_watch_latest_payload_for_frontend_omits_large_auto_run_due(monke
     assert payload["snapshot"]["auto_run_due"] is None
 
 
-def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monkeypatch, tmp_path):
+def test_behavior_tree_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monkeypatch, tmp_path):
     class ActiveProcess:
         def __init__(self, _pid):
             pass
@@ -373,9 +373,9 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monk
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 120.0)
-    monkeypatch.setattr(runtime_control.psutil, "Process", ActiveProcess)
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(behavior_tree_control.psutil, "Process", ActiveProcess)
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -384,16 +384,16 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monk
                 "stable_latest_path": str(stable_path),
                 "latest_path": str(stable_path),
                 "auto_run_due_enabled": False,
-                "code_signature": runtime_control.doctor_watch_code_signature(),
+                "code_signature": behavior_tree_control.doctor_watch_code_signature(),
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
     stable_path.write_text(json.dumps({"severity": "blocked", "summary": "活跃"}, ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setattr(runtime_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
+    monkeypatch.setattr(behavior_tree_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
 
-    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=False)
+    result = behavior_tree_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=False)
 
     assert result["started"] is False
     assert result["reason"] == "heartbeat_recent"
@@ -402,7 +402,7 @@ def test_runtime_control_ensure_doctor_watch_skips_recent_observe_heartbeat(monk
     assert result["latest"]["snapshot"]["severity"] == "blocked"
 
 
-def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatch, tmp_path):
+def test_behavior_tree_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatch, tmp_path):
     class FakeProcess:
         pid = 789
 
@@ -415,9 +415,9 @@ def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatc
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 120.0)
-    monkeypatch.setattr(runtime_control.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(behavior_tree_control.subprocess, "Popen", fake_popen)
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -432,7 +432,7 @@ def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatc
     )
     stable_path.write_text(json.dumps({"severity": "blocked", "summary": "旧 watcher"}, ensure_ascii=False), encoding="utf-8")
 
-    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=True)
+    result = behavior_tree_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=True)
 
     assert result["started"] is True
     assert result["pid"] == 789
@@ -441,7 +441,7 @@ def test_runtime_control_ensure_doctor_watch_can_request_auto_run_due(monkeypatc
     assert "--auto-run-due" in popen_calls[0]["command"]
 
 
-def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbeat(monkeypatch, tmp_path):
+def test_behavior_tree_control_ensure_doctor_watch_allows_observe_only_recent_heartbeat(monkeypatch, tmp_path):
     class ActiveProcess:
         def __init__(self, _pid):
             pass
@@ -455,10 +455,10 @@ def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbea
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 120.0)
-    monkeypatch.setattr(runtime_control.psutil, "Process", ActiveProcess)
-    monkeypatch.setattr(runtime_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(behavior_tree_control.psutil, "Process", ActiveProcess)
+    monkeypatch.setattr(behavior_tree_control.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not start")))
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -466,7 +466,7 @@ def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbea
                 "updated_at": 100.0,
                 "stable_latest_path": str(stable_path),
                 "latest_path": str(stable_path),
-                "code_signature": runtime_control.doctor_watch_code_signature(),
+                "code_signature": behavior_tree_control.doctor_watch_code_signature(),
             },
             ensure_ascii=False,
         ),
@@ -474,14 +474,14 @@ def test_runtime_control_ensure_doctor_watch_allows_observe_only_recent_heartbea
     )
     stable_path.write_text(json.dumps({"severity": "blocked", "summary": "observe only"}, ensure_ascii=False), encoding="utf-8")
 
-    result = runtime_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=False)
+    result = behavior_tree_control.ensure_doctor_watch_background(stale_after_seconds=180.0, auto_run_due=False)
 
     assert result["started"] is False
     assert result["reason"] == "heartbeat_recent"
     assert result["heartbeat"]["auto_run_due_enabled"] is False
 
 
-def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeypatch, tmp_path):
+def test_behavior_tree_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeypatch, tmp_path):
     class FakeProcess:
         pid = 456
 
@@ -494,9 +494,9 @@ def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeyp
     heartbeat_path = tmp_path / "fanxiu-watch" / "doctor_watch_heartbeat.json"
     stable_path = tmp_path / "fanxiu-watch" / "doctor_watch_latest.json"
     heartbeat_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(runtime_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
-    monkeypatch.setattr(runtime_control.time, "time", lambda: 400.0)
-    monkeypatch.setattr(runtime_control.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(behavior_tree_control, "codeyun_temp_root", lambda *parts: tmp_path.joinpath(*parts))
+    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 400.0)
+    monkeypatch.setattr(behavior_tree_control.subprocess, "Popen", fake_popen)
     heartbeat_path.write_text(
         json.dumps(
             {
@@ -510,7 +510,7 @@ def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeyp
         encoding="utf-8",
     )
 
-    result = runtime_control.ensure_doctor_watch_background(
+    result = behavior_tree_control.ensure_doctor_watch_background(
         interval_seconds=30,
         duration_seconds=60,
         stale_after_seconds=180.0,
@@ -547,7 +547,7 @@ def test_runtime_control_ensure_doctor_watch_starts_when_heartbeat_stale(monkeyp
 
 
 def test_runtime_runner_default_close_popups_guard_is_on():
-    runner = bt.create_fanxiu_runtime_runner()
+    runner = bt.create_behavior_tree_runtime_runner()
 
     status = runner.status()
 
@@ -557,7 +557,7 @@ def test_runtime_runner_default_close_popups_guard_is_on():
 
 
 def test_runtime_scene_does_not_fallback_when_graph_returns_unknown(monkeypatch):
-    runner = bt.create_fanxiu_runtime_runner()
+    runner = bt.create_behavior_tree_runtime_runner()
     monkeypatch.setattr(runner, "_identify_scene_number_by_graph", lambda *_args, **_kwargs: (None, 37.0, "unknown"))
 
     scene_id, score = runner._identify_scene_number({}, "frame", [327, 326])
@@ -576,7 +576,7 @@ def test_runtime_status_migrates_legacy_close_popups_guard_off_to_on():
         "guard_items": {"close_popups": {"enabled": False}},
     }
 
-    runtime_control.normalize_runtime_guard_items(status)
+    behavior_tree_control.normalize_runtime_guard_items(status)
 
     assert status["guard_enabled"] is True
     assert status["guard_items"]["close_popups"]["enabled"] is True
@@ -592,7 +592,7 @@ def test_runtime_status_preserves_versioned_close_popups_guard_off():
         "guard_items": {"close_popups": {"enabled": False}},
     }
 
-    runtime_control.normalize_runtime_guard_items(status)
+    behavior_tree_control.normalize_runtime_guard_items(status)
 
     assert status["guard_enabled"] is False
     assert status["guard_items"]["close_popups"]["enabled"] is False
@@ -672,7 +672,7 @@ def test_core_runner_factory_can_create_unregistered_runner(monkeypatch):
     monkeypatch.setattr(runner_core, "_RUNTIME_RUNNER_CLASS", None)
     bt.register_fanxiu_runtime_runner_class(FakeRunner)
 
-    runner = bt.create_fanxiu_runtime_runner()
+    runner = bt.create_behavior_tree_runtime_runner()
 
     assert isinstance(runner, FakeRunner)
 
@@ -1277,6 +1277,73 @@ def test_fanxiu_bt_watch_doctor_wakes_early_when_blocked_annotation_changes(monk
     assert len(run_due_calls) == 1
 
 
+def test_fanxiu_bt_watch_sleeps_until_exact_next_trigger(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "scheduler": {
+            "enabled_tasks": [
+                {"id": "daily-lingquan", "next_time": "2026-07-23 20:30:00"},
+                {"id": "later", "next_time": "2026-07-23 21:00:00"},
+            ],
+        },
+        "maintenance": {"severity": "ok", "annotation_targets": []},
+    }
+    sleeps = []
+    assert fanxiu_bt._watch_seconds_until_next_trigger(
+        report,
+        now=datetime(2026, 7, 23, 20, 29, 37),
+    ) == 23.0
+    monkeypatch.setattr(fanxiu_bt.time, "sleep", sleeps.append)
+    monkeypatch.setattr(fanxiu_bt, "_watch_seconds_until_next_trigger", lambda _report: 23.0)
+
+    fanxiu_bt._watch_sleep_until_next_check(report, interval_seconds=60.0)
+
+    assert sleeps == [18.0]
+
+
+def test_fanxiu_bt_watch_wakes_when_scheduler_files_change(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {"scheduler": {"scheduled_tasks": []}, "maintenance": {"severity": "ok"}}
+    sleeps: list[float] = []
+    monkeypatch.setattr(fanxiu_bt, "_watch_seconds_until_next_trigger", lambda _report: None)
+    monkeypatch.setattr(fanxiu_bt.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(fanxiu_bt.time, "sleep", sleeps.append)
+    monkeypatch.setattr(fanxiu_bt, "_watch_scheduler_files_signature", lambda: ((2, 2),))
+
+    fanxiu_bt._watch_sleep_until_next_check(
+        report,
+        interval_seconds=60.0,
+        wake_signature=((1, 1),),
+    )
+
+    assert sleeps == [0.5]
+
+
+def test_fanxiu_bt_watch_wakes_as_soon_as_busy_kernel_becomes_idle(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "kernel": {"execution_state": "busy"},
+        "scheduler": {
+            "next_action": "run_due",
+            "due_tasks": [{"id": "daily-redpacket"}],
+        },
+        "maintenance": {"severity": "attention"},
+    }
+    sleeps: list[float] = []
+    kernel_states = iter(({"execution_state": "busy"}, {"execution_state": "idle"}))
+    monotonic_values = iter((0.0, 0.0, 0.5))
+    monkeypatch.setattr(fanxiu_bt.time, "sleep", sleeps.append)
+    monkeypatch.setattr(fanxiu_bt.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(fanxiu_bt, "fanxiu_kernel_manager_status", lambda: next(kernel_states))
+
+    fanxiu_bt._watch_sleep_until_next_check(report, interval_seconds=60.0)
+
+    assert sleeps == [0.5, 0.5]
+
+
 def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_blocked(monkeypatch, tmp_path):
     import scripts.fanxiu_bt as fanxiu_bt
 
@@ -1683,6 +1750,73 @@ def test_fanxiu_bt_doctor_maintenance_blocks_runtime_annotation_error():
     assert summary["blocked_due_ids"] == ["legacy-daily-lingta"]
 
 
+def test_fanxiu_bt_doctor_classifies_unreachable_scene_path_as_annotation_issue():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    error = "go_scene(34) 失败：无法从当前#395找到可达#34的路径，请检查标注shape。"
+    report = {
+        "runtime": {
+            "status": "error",
+            "phase": "error",
+            "current_scene": 34,
+            "error": error,
+        },
+        "scheduler": {
+            "next_action": "idle",
+            "message": "没有到期任务",
+            "due_tasks": [],
+            "scheduled_tasks": [],
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "blocked"
+    assert summary["automation_safe"] is False
+    assert summary["needs_human_annotation"] is True
+    assert summary["blocked_by"][0]["title"] == "场景跳转标注缺失"
+    assert summary["action_required"] == [error]
+    assert summary["retry_condition"] == "修复 Runtime 报告的场景标注后重试"
+
+
+def test_fanxiu_bt_doctor_does_not_globally_block_unrelated_due_task():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    old_error = (
+        "日常_挑战仙缘：无法通过场景图跳转到 #69："
+        "go_scene(69) 失败：无法从当前#395找到可达#69的路径，请检查标注shape。"
+    )
+    report = {
+        "runtime": {
+            "running": False,
+            "status": "error",
+            "phase": "error",
+            "error": old_error,
+        },
+        "scheduler": {
+            "next_action": "run_due",
+            "message": "建议执行到期任务：日常_拜谒",
+            "due_tasks": [{"id": "legacy-daily-baiye", "label": "日常_拜谒"}],
+            "scheduled_tasks": [
+                {
+                    "id": "legacy-daily-baiye",
+                    "label": "日常_拜谒",
+                    "next_time": "2026-07-27 12:07:20",
+                    "last_result": "error",
+                }
+            ],
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "error"
+    assert summary["automation_safe"] is True
+    assert summary["needs_human_annotation"] is False
+    assert summary["blocked_due_ids"] == []
+    assert summary["action_required"] == ["当前有到期任务且未发现阻断，请检查外部 Scheduler 提交记录"]
+
+
 
 
 def test_fanxiu_bt_doctor_maintenance_reports_daily_audit_visual_incomplete():
@@ -1731,41 +1865,6 @@ def test_fanxiu_bt_doctor_maintenance_reports_daily_audit_visual_incomplete():
     assert summary["visual_incomplete_ids"] == ["legacy-daily-jianling"]
     assert summary["visual_unmapped_incomplete_count"] == 1
     assert "日常页复核" in summary["action_required"][0]
-
-
-def test_fanxiu_bt_doctor_maintenance_reports_failed_mail_selective_claim_without_due_task():
-    import scripts.fanxiu_bt as fanxiu_bt
-
-    report = {
-        "runtime": {"status": "idle", "phase": "idle", "message": "idle", "running": False},
-        "scheduler": {
-            "next_action": "idle",
-            "message": "当前没有到期任务",
-            "due_tasks": [],
-            "enabled_tasks": [
-                {
-                    "id": "mail-selective-claim",
-                    "task_type": "mail_selective_claim",
-                    "label": "邮件_选择性领取",
-                    "enabled": True,
-                    "schedule_times": ["00:05"],
-                    "last_run_at": "2026-07-06 01:02:12",
-                    "last_result": "stopped",
-                    "retry_after": "2026-07-06 01:13:14",
-                }
-            ],
-        },
-    }
-
-    summary = fanxiu_bt._build_maintenance_summary(report)
-
-    assert summary["severity"] == "attention"
-    assert summary["summary"] == "关键作业失败或残留：邮件_选择性领取"
-    assert summary["critical_failed_count"] == 1
-    assert summary["critical_failed_ids"] == ["mail-selective-claim"]
-    assert summary["critical_failed_tasks"][0]["last_result"] == "stopped"
-    assert "关键作业今日失败或残留：邮件_选择性领取" in summary["action_required"][0]
-    assert "当前没有到期任务" not in summary["action_required"][0]
 
 
 def test_fanxiu_bt_doctor_maintenance_ignores_stale_daily_audit_visual_incomplete():
@@ -1871,7 +1970,7 @@ def test_fanxiu_bt_doctor_ignores_reward_popup_words_without_context(tmp_path, m
     screenshot = tmp_path / "frame.png"
     screenshot.write_bytes(b"fake-png")
 
-    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(fanxiu_bt, "create_behavior_tree_runtime_runner", lambda: FakeRunner())
 
     blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
 
@@ -1909,7 +2008,7 @@ def test_fanxiu_bt_doctor_reports_game_announcement_blocker(tmp_path, monkeypatc
     screenshot = tmp_path / "frame.png"
     screenshot.write_bytes(b"fake-png")
 
-    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(fanxiu_bt, "create_behavior_tree_runtime_runner", lambda: FakeRunner())
 
     blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
 
@@ -1962,7 +2061,7 @@ def test_fanxiu_bt_doctor_reports_dungeon_purchase_blocker(tmp_path, monkeypatch
     screenshot = tmp_path / "frame.png"
     screenshot.write_bytes(b"fake-png")
 
-    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(fanxiu_bt, "create_behavior_tree_runtime_runner", lambda: FakeRunner())
 
     blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
 
@@ -2008,7 +2107,7 @@ def test_fanxiu_bt_doctor_does_not_infer_game_announcement_action_from_jump_targ
     screenshot = tmp_path / "frame.png"
     screenshot.write_bytes(b"fake-png")
 
-    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(fanxiu_bt, "create_behavior_tree_runtime_runner", lambda: FakeRunner())
 
     blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
 
@@ -2056,7 +2155,7 @@ def test_core_runtime_runner_import_does_not_load_codeyun_orm_modules():
     code = "\n".join(
         [
             "import sys",
-            "import backend.core.fanxiu.data_annotation.runtime_runner",
+            "import backend.core.fanxiu.data_annotation.behavior_tree_runtime",
             "for name in ('backend.models', 'backend.db', 'sqlmodel', 'fastapi'):",
             "    assert name not in sys.modules, name",
         ]
@@ -2068,8 +2167,8 @@ def test_core_runtime_runner_factory_does_not_import_runner_at_module_top():
     source = Path("backend/core/fanxiu/data_annotation/runner.py").read_text(encoding="utf-8")
     header = source.split("def _default_fanxiu_runtime_runner_class", 1)[0]
 
-    assert "fanxiu_data_annotation_runtime_runner" not in header
-    assert "from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner" in source
+    assert "fanxiu_behavior_tree_runtime_runner" not in header
+    assert "from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner" in source
 
 
 
@@ -2081,7 +2180,7 @@ def test_fanxiu_api_import_does_not_load_runtime_runner_module():
         [
             "import sys",
             "import backend.api.fanxiu as fanxiu",
-            "assert 'backend.core.fanxiu.data_annotation.runtime_runner' not in sys.modules",
+            "assert 'backend.core.fanxiu.data_annotation.behavior_tree_runtime' not in sys.modules",
             "assert type(fanxiu._DATA_ANNOTATION_RUNTIME_RUNNER).__name__ == '_FanxiuRuntimeRunnerProxy'",
         ]
     )

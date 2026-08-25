@@ -5,6 +5,8 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileViewerRenderers } from '@file-viewer/vite-plugin'
 import path from 'path'
 
+const devBackendTarget = process.env.CODEYUN_DEV_BACKEND_TARGET || 'http://127.0.0.1:8000'
+
 const devOptimizedDeps = [
   '@element-plus/icons-vue',
   '@file-viewer/preset-lite',
@@ -209,13 +211,13 @@ export default defineConfig(({ command }) => ({
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: devBackendTarget,
         changeOrigin: true,
         ws: true,
         // rewrite: (path) => path.replace(/^\/api/, ''), // Don't rewrite if backend uses /api prefix
       },
       '/static': {
-        target: 'http://127.0.0.1:8000',
+        target: devBackendTarget,
         changeOrigin: true,
       },
     },

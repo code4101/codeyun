@@ -251,6 +251,7 @@
             <div class="page-note-toolbar">
               <span>第 {{ currentPage }} 页</span>
               <span class="page-note-status">{{ pageNoteStatusText }}</span>
+              <el-button v-if="canEditPageNote" text type="danger" @click="clearAllMyNotes">清空全部笔记</el-button>
             </div>
             <div v-if="!canUsePageNotes" class="sidebar-empty">登录后可记录页面笔记</div>
             <div v-else-if="pageNoteErrorText" class="sidebar-empty">{{ pageNoteErrorText }}</div>
@@ -302,8 +303,6 @@
         ref="stageRef"
         class="pdf-stage"
         tabindex="0"
-        @keydown.left.prevent="goPreviousPage"
-        @keydown.right.prevent="goNextPage"
         @wheel="handleStageWheel"
       >
         <div v-if="readerErrorText || errorText" class="reader-empty">
@@ -319,6 +318,14 @@
         <div v-else class="pdf-page-scroll">
           <div class="pdf-page-shell" :class="{ 'is-rendering': pageRendering }">
             <canvas ref="canvasRef" class="pdf-canvas" />
+            <PdfTextAnnotationLayer
+              v-if="documentDetail && pdfTextContent && pdfTextViewport"
+              :pdf-id="documentDetail.id"
+              :page-number="renderedPage || currentPage"
+              :source-revision="documentDetail.content_hash || ''"
+              :text-content="pdfTextContent"
+              :viewport="pdfTextViewport"
+            />
             <div v-if="contentLoading || pageRendering" class="reader-loading">
               {{ contentLoading ? 'PDF 加载中' : '页面渲染中' }}
             </div>
@@ -346,7 +353,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowLeft,
   ArrowRight,
@@ -366,6 +373,8 @@ import {
 import {
   GlobalWorkerOptions,
   RenderingCancelledException,
+  type PageViewport,
+  type TextContent,
   getDocument,
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
@@ -374,8 +383,10 @@ import {
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 import NoteEditor from '@/components/NoteEditor.vue';
+import PdfTextAnnotationLayer from './PdfTextAnnotationLayer.vue';
 import {
   fetchPdfAccess,
+  clearMyPdfPageNotes,
   fetchPdfContentUrl,
   fetchPdfDocument,
   fetchPdfPageNote,
@@ -390,7 +401,10 @@ import {
   type PdfUserState,
 } from '@/api/pdfDocuments';
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// The public server previously served `.mjs` as `application/octet-stream` and
+// cached that response as immutable. Keep a version on the module URL so
+// browsers that saw the bad MIME response fetch the corrected worker again.
+GlobalWorkerOptions.workerSrc = `${pdfWorkerUrl}?module-mime=1`;
 
 const route = useRoute();
 const PDFJS_WASM_URL = '/pdfjs/wasm/';
@@ -424,6 +438,7 @@ interface PdfOutlineItem {
 
 const documentDetail = ref<PdfDocumentDetail | null>(null);
 const contentUrl = ref('');
+const lastPdfLoadError = ref('');
 const loading = ref(false);
 const contentLoading = ref(false);
 const pageRendering = ref(false);
@@ -456,6 +471,8 @@ const stageRef = ref<HTMLElement | null>(null);
 const outlinePanelRef = ref<HTMLElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const pdfDocument = shallowRef<PDFDocumentProxy | null>(null);
+const pdfTextContent = shallowRef<TextContent | null>(null);
+const pdfTextViewport = shallowRef<PageViewport | null>(null);
 
 let resizeObserver: ResizeObserver | null = null;
 let loadingTask: PDFDocumentLoadingTask | null = null;
@@ -663,6 +680,8 @@ async function destroyPdfRuntime() {
   pageNavInput.value = 1;
   pageNavStart.value = 1;
   clearCanvas();
+  pdfTextContent.value = null;
+  pdfTextViewport.value = null;
 }
 
 function getStageAvailableSize() {
@@ -781,6 +800,8 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
   }
 
   pageRendering.value = true;
+  pdfTextContent.value = null;
+  pdfTextViewport.value = null;
   try {
     const page = await documentProxy.getPage(targetPage);
     if (version !== renderVersion) return;
@@ -807,11 +828,16 @@ async function renderCurrentPage(options?: { persist?: boolean }) {
       viewport: cssViewport,
       transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
     });
+    const textContentPromise = page.getTextContent();
     renderTask = task;
     await task.promise;
     if (version !== renderVersion) return;
+    const textContent = await textContentPromise;
+    if (version !== renderVersion) return;
 
     renderedPage.value = targetPage;
+    pdfTextContent.value = textContent;
+    pdfTextViewport.value = cssViewport;
     if (options?.persist !== false) {
       scheduleReaderStateSave();
     }
@@ -994,11 +1020,15 @@ async function loadPdfContent(url: string): Promise<boolean> {
 
   contentLoading.value = true;
   readerErrorText.value = '';
+  lastPdfLoadError.value = '';
   try {
     loadingTask = getDocument({
       url,
-      disableRange: true,
+      // The content URL is signed and supports byte ranges.  Keep streaming
+      // disabled so large PDFs do not have to cross the public tunnel in full
+      // before PDF.js can resolve the cross-reference table and first page.
       disableStream: true,
+      rangeChunkSize: 1024 * 1024,
       useSystemFonts: true,
       wasmUrl: PDFJS_WASM_URL,
     });
@@ -1014,6 +1044,9 @@ async function loadPdfContent(url: string): Promise<boolean> {
     return true;
   } catch (error) {
     console.warn('Failed to load PDF content:', error);
+    lastPdfLoadError.value = error instanceof Error
+      ? error.message.slice(0, 160)
+      : String(error || '未知错误').slice(0, 160);
     return false;
   } finally {
     contentLoading.value = false;
@@ -1045,6 +1078,7 @@ async function loadPdfDocument() {
     documentDetail.value = detail;
     document.title = `${detail.title || 'PDF'} - CodeYun`;
     applyUserState(detail.my_state);
+    loading.value = false;
     await reloadContentUrl();
   } catch (error) {
     console.warn('Failed to load PDF document:', error);
@@ -1077,7 +1111,9 @@ async function reloadContentUrl() {
     }
   }
   contentLoading.value = false;
-  readerErrorText.value = 'PDF 内容加载失败，请刷新后重试';
+  readerErrorText.value = lastPdfLoadError.value
+    ? `PDF 内容加载失败：${lastPdfLoadError.value}`
+    : 'PDF 内容加载失败，请刷新后重试';
   ElMessage.error('PDF 内容加载失败');
 }
 
@@ -1228,6 +1264,25 @@ function handlePageNoteContentUpdate(value: string) {
   schedulePageNoteSave(targetPage, value);
 }
 
+async function clearAllMyNotes() {
+  const detail = documentDetail.value;
+  if (!detail || !canEditPageNote.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '这只会清空你在本书中的全部页面笔记，不影响原书或其他读者。此操作不可撤销。',
+      '清空全部笔记',
+      { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
+    );
+    resetPageNoteState();
+    const result = await clearMyPdfPageNotes(detail.id);
+    await loadCurrentPageNote();
+    ElMessage.success(`已清空 ${result.deleted_count} 条笔记`);
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return;
+    ElMessage.error('清空笔记失败');
+  }
+}
+
 async function goToPage(page: number) {
   if (!pdfDocument.value) return;
   const nextPage = clampPage(page);
@@ -1282,6 +1337,30 @@ function goPreviousPage() {
 function goNextPage() {
   if (!canGoNext.value) return;
   void goToPage(currentPage.value + 1);
+}
+
+function isTextInputTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'));
+}
+
+function handleReaderKeydown(event: KeyboardEvent) {
+  if (
+    event.defaultPrevented
+    || event.isComposing
+    || event.ctrlKey
+    || event.metaKey
+    || event.altKey
+    || isTextInputTarget(event.target)
+  ) return;
+
+  if (event.key === 'ArrowLeft' && canGoPrevious.value) {
+    event.preventDefault();
+    goPreviousPage();
+  } else if (event.key === 'ArrowRight' && canGoNext.value) {
+    event.preventDefault();
+    goNextPage();
+  }
 }
 
 function goRandomPage() {
@@ -1429,6 +1508,7 @@ watch([currentPage, sidebarTab, sidebarOpen, canUsePageNotes], () => {
 });
 
 onMounted(() => {
+  window.addEventListener('keydown', handleReaderKeydown);
   resizeObserver = new ResizeObserver(() => {
     if (zoom.value === 'page-width' || zoom.value === 'page-fit') {
       void renderCurrentPage({ persist: false });
@@ -1441,6 +1521,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleReaderKeydown);
   if (stateSaveTimer != null) {
     window.clearTimeout(stateSaveTimer);
     stateSaveTimer = null;

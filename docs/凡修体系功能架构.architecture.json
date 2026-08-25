@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "凡修体系功能架构",
+    "output": "凡修体系功能架构.html",
+    "quality_profile": "showcase",
+    "viewBox": [1880, 700],
+    "views": [
+      {
+        "id": "primary-runtime-path",
+        "label": "一次作业如何运行",
+        "focus": ["runtime-ui", "control-api", "scheduler", "jupyter-kernel", "behavior-runtime", "adb-control", "mumu-game"],
+        "note": "从 Runtime 控制台或工程调度出发，最终只有普通 Python Cell 能进入唯一 Kernel 并驱动游戏。"
+      },
+      {
+        "id": "recognition-and-action",
+        "label": "识别与动作闭环",
+        "focus": ["behavior-runtime", "asset-tree", "adb-control", "mumu-game"],
+        "note": "行为树用场景与 Shape 理解画面，经 ADB 操作 MuMu，再重新截图验证真实落点。"
+      },
+      {
+        "id": "readonly-runtime-facts",
+        "label": "只读运行态事实",
+        "focus": ["mumu-game", "readonly-instrumentation", "job-library", "behavior-runtime", "scheduler"],
+        "note": "动态插桩只读取游戏进程与内存；业务事实供行为树决策，轻量巡检只负责更新作业 next_time。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "runtime-ui",
+      "type": "frontend",
+      "label": "凡修 Runtime 控制台",
+      "sublabel": "工程 / AI、作业、Cell、日志与巡检",
+      "pos": [40, 120],
+      "size": [180, 72]
+    },
+    {
+      "id": "control-api",
+      "type": "backend",
+      "label": "FastAPI 控制面",
+      "sublabel": "状态、Cell 与 Scheduler 接口",
+      "pos": [340, 120],
+      "size": [180, 72]
+    },
+    {
+      "id": "scheduler",
+      "type": "backend",
+      "label": "watch-doctor Scheduler",
+      "sublabel": "到期选择、优先级、抢占与设备仲裁",
+      "tag": "Kernel 外",
+      "pos": [650, 120],
+      "size": [190, 72]
+    },
+    {
+      "id": "jupyter-kernel",
+      "type": "backend",
+      "label": "唯一 Jupyter Kernel",
+      "sublabel": "长期存活的 ipykernel",
+      "tag": "单实例",
+      "pos": [980, 120],
+      "size": [180, 72]
+    },
+    {
+      "id": "behavior-runtime",
+      "type": "backend",
+      "label": "行为树 Runtime",
+      "sublabel": "task / guard / generator / ctx",
+      "pos": [1310, 120],
+      "size": [190, 72]
+    },
+    {
+      "id": "adb-control",
+      "type": "external",
+      "label": "ADB / MuMu 控制层",
+      "sublabel": "截图、点击、滑动与设备恢复",
+      "pos": [1620, 120],
+      "size": [180, 72]
+    },
+    {
+      "id": "mumu-game",
+      "type": "external",
+      "label": "MuMu 中的凡修游戏",
+      "sublabel": "真实画面、交互与客户端状态",
+      "pos": [1620, 370],
+      "size": [180, 72]
+    },
+    {
+      "id": "scheduler-state",
+      "type": "database",
+      "label": "Scheduler 状态",
+      "sublabel": "next_time、attempt、结果与设置",
+      "pos": [650, 370],
+      "size": [190, 72]
+    },
+    {
+      "id": "job-library",
+      "type": "backend",
+      "label": "标准作业与业务策略库",
+      "sublabel": "注册表、准入、终态与下次时间",
+      "pos": [980, 370],
+      "size": [180, 72]
+    },
+    {
+      "id": "asset-tree",
+      "type": "database",
+      "label": "场景 / Shape 资产树",
+      "sublabel": "OCR、图像模板与跳转图模型",
+      "pos": [1310, 370],
+      "size": [190, 72]
+    },
+    {
+      "id": "readonly-instrumentation",
+      "type": "security",
+      "label": "只读动态状态层",
+      "sublabel": "进程内存、Manager 与业务快照",
+      "tag": "严格只读",
+      "pos": [1180, 570],
+      "size": [190, 72]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "CodeYun 控制平面",
+      "wraps": ["runtime-ui", "control-api", "scheduler", "scheduler-state"],
+      "pad": 22
+    },
+    {
+      "kind": "region",
+      "label": "Kernel 执行平面",
+      "wraps": ["jupyter-kernel", "behavior-runtime", "job-library", "asset-tree"],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "模拟器与游戏边界",
+      "wraps": ["adb-control", "mumu-game"],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "严格只读观测",
+      "wraps": ["readonly-instrumentation"],
+      "pad": 22
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-to-api",
+      "from": "runtime-ui",
+      "to": "control-api",
+      "label": "查看状态 / 提交控制",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-scheduler",
+      "from": "control-api",
+      "to": "scheduler",
+      "label": "工程 / AI 运行权",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scheduler-to-kernel",
+      "from": "scheduler",
+      "to": "jupyter-kernel",
+      "label": "提交 run_task(...) Cell",
+      "variant": "emphasis"
+    },
+    {
+      "id": "kernel-to-runtime",
+      "from": "jupyter-kernel",
+      "to": "behavior-runtime",
+      "label": "执行普通 Python Cell",
+      "variant": "emphasis"
+    },
+    {
+      "id": "runtime-to-adb",
+      "from": "behavior-runtime",
+      "to": "adb-control",
+      "label": "识别后执行原子动作",
+      "variant": "emphasis"
+    },
+    {
+      "id": "adb-to-game",
+      "from": "adb-control",
+      "to": "mumu-game",
+      "label": "截图 / 输入",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "api-to-state",
+      "from": "control-api",
+      "to": "scheduler-state",
+      "label": "读取状态与日志"
+    },
+    {
+      "id": "state-to-scheduler",
+      "from": "scheduler-state",
+      "to": "scheduler",
+      "label": "next_time 与 attempt"
+    },
+    {
+      "id": "jobs-to-kernel",
+      "from": "job-library",
+      "to": "jupyter-kernel",
+      "label": "注册并 bootstrap"
+    },
+    {
+      "id": "assets-to-runtime",
+      "from": "asset-tree",
+      "to": "behavior-runtime",
+      "label": "场景识别与导航先验"
+    },
+    {
+      "id": "game-to-instrumentation",
+      "from": "mumu-game",
+      "to": "readonly-instrumentation",
+      "label": "只读进程内存",
+      "variant": "security"
+    },
+    {
+      "id": "instrumentation-to-jobs",
+      "from": "readonly-instrumentation",
+      "to": "job-library",
+      "label": "权威业务状态快照",
+      "variant": "security"
+    },
+    {
+      "id": "instrumentation-to-scheduler-state",
+      "from": "readonly-instrumentation",
+      "to": "scheduler-state",
+      "label": "轻量巡检更新 next_time",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "唯一执行协议",
+      "items": [
+        "Kernel 是唯一长期存活的执行实体",
+        "调试、人工和正式作业统一提交普通 Python Cell",
+        "interrupt 保留 namespace；restart 才替换 Kernel"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "业务闭环",
+      "items": [
+        "作业自己判断准入、业务终态与 next_time",
+        "行为树完成 observe → decide → act → verify → finish",
+        "场景与 Shape 资产承载可复用的视觉和导航知识"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全边界",
+      "items": [
+        "动态状态层严格只读，不注入、不 Hook、不发送游戏命令",
+        "真正的游戏操作只通过行为树调用 ADB",
+        "工程 / AI 是 Scheduler 唯一运行权开关"
+      ]
+    }
+  ]
+}

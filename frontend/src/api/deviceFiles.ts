@@ -1,6 +1,10 @@
 import api, { getDeviceEntryPath } from '@/api';
 import type { GalleryItemKind, GallerySortProgram } from '@/utils/imageGallery';
 import { monitorPolledTask, runLongTask, type LongTaskSnapshot } from '@/utils/longTask';
+import {
+  shouldAttemptDeviceMediaSync,
+  usesDuplicateClusterSort,
+} from '@/utils/deviceMediaListPolicy';
 
 export type DeviceMediaSortMode = 'path' | 'modified-desc' | 'size-desc' | 'weight-desc';
 export type DeviceDirectorySortField =
@@ -13,7 +17,7 @@ export type DeviceDirectorySortField =
   | 'weighted_file_count';
 export type DeviceDirectorySortDirection = 'asc' | 'desc';
 export type DeviceDirectorySortNulls = 'first' | 'last';
-export type DeviceDirectoryRecursiveStatsSource = 'indexed' | 'filesystem';
+export type DeviceDirectoryRecursiveStatsSource = 'indexed' | 'filesystem' | 'auto';
 
 export interface DeviceDirectorySortRule {
   field: DeviceDirectorySortField;
@@ -99,6 +103,7 @@ export interface DeviceMediaListRequest extends DeviceFileSelector {
   layout_column_width?: number;
   layout_gap?: number;
   layout_column_heights?: number[];
+  excluded_directory_names?: string[];
 }
 
 export interface DeviceDirectoryListRequest extends DeviceFileSelector {
@@ -129,39 +134,12 @@ const DEVICE_MEDIA_LIST_IDLE_TIMEOUT_MS = 30_000;
 const DEVICE_MEDIA_LIST_FAST_PATH_TIMEOUT_MS = 2_500;
 const DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS = 10_000;
 const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
-const DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT = 2_000;
-const DEVICE_MEDIA_LIST_FAST_PATH_LIMIT = 100;
 const DEVICE_DIRECTORY_LIST_TIMEOUT_MS = 10_000;
 const DEVICE_DIRECTORY_LIST_FILESYSTEM_TIMEOUT_MS = 2_500;
 const DEVICE_DIRECTORY_LIST_FALLBACK_TIMEOUT_MS = 30_000;
 const DEVICE_DIRECTORY_LIST_FALLBACK_SORT_PROGRAM: DeviceDirectorySortProgram = {
   rules: [{ field: 'name', direction: 'asc', nulls: 'last' }],
 };
-
-const usesDuplicateClusterSort = (payload: DeviceMediaListRequest) =>
-  Array.isArray(payload.sort_program?.rules)
-  && payload.sort_program.rules.some((rule) => rule?.field === 'duplicate_cluster');
-
-const canUseRecursiveDatabaseFastPath = (payload: DeviceMediaListRequest) => {
-  if (payload.recursive !== true) {
-    return false;
-  }
-  const rules = Array.isArray(payload.sort_program?.rules) ? payload.sort_program.rules : [];
-  const databaseFields = new Set(['weight', 'modified_at', 'size', 'relative_path', 'kind']);
-  return rules.length > 0 && rules.every((rule, index) => {
-    if (rule?.field === 'name' && index > 0) {
-      return true;
-    }
-    return databaseFields.has(String(rule?.field || ''));
-  });
-};
-
-const canUseFastMediaList = (payload: DeviceMediaListRequest) =>
-  !usesDuplicateClusterSort(payload)
-  && (payload.recursive !== true || canUseRecursiveDatabaseFastPath(payload))
-  && Number(payload.scan_limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT
-  && Number(payload.limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_LIMIT
-  && !payload.snapshot_id;
 
 const isTimeoutError = (error: any) =>
   error?.code === 'ECONNABORTED'
@@ -467,7 +445,7 @@ export const fetchDeviceMedia = async (
   entryId: string,
   payload: DeviceMediaListRequest
 ): Promise<DeviceMediaListing> => {
-  if (canUseFastMediaList(payload)) {
+  if (shouldAttemptDeviceMediaSync(payload)) {
     try {
       return await fetchDeviceMediaSync(entryId, payload, {
         timeoutMs: DEVICE_MEDIA_LIST_FAST_PATH_TIMEOUT_MS,

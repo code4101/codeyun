@@ -10,6 +10,9 @@ from typing import Any
 from sqlmodel import Session
 
 from backend.api.note_sheets import (
+    _append_registration_detection_note,
+    _build_registration_user_id_detection_candidates,
+    _collect_registration_course_user_progress,
     _extract_document_rows,
     _normalize_document_columns,
     _replace_document_data_rows,
@@ -110,6 +113,7 @@ CLOCKIN_DATA_BASE_COLUMNS = [
     "clockin_id",
 ]
 CLOCKIN_DATA_COLUMNS = [*CLOCKIN_DATA_BASE_COLUMNS]
+IDENTITY_REPAIR_GRACE_DAYS = 3
 
 COURSE_SHEET_SPECS = [
     CourseSheetSpec(VIDEO_CONFIG_SHEET_KEY, "视频配置", 30),
@@ -237,106 +241,6 @@ def _find_column_index(columns: list[str], header: str) -> int | None:
     return None
 
 
-def _query_legacy_lesson_rows(course_name: str) -> tuple[list[dict[str, Any]], str | None]:
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    sql = (
-        "SELECT lesson_id, start_date, end_date, next_update, lesson_id2, shop_id, "
-        "lesson_name, video_duration "
-        "FROM lesson_table WHERE lesson_name LIKE %s ORDER BY lesson_id"
-    )
-    try:
-        xldb = get_kqdb()
-        try:
-            records = xldb.exec2dict(sql, [f"%{course_name}%"])
-        except TypeError:
-            safe = course_name.replace("'", "''")
-            records = xldb.exec2dict(sql.replace("%s", f"'%{safe}%'"))
-    except Exception as exc:
-        return [], f"查询 lesson_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _query_legacy_lesson_data_rows(legacy_lesson_ids: list[int]) -> tuple[list[dict[str, Any]], str | None]:
-    if not legacy_lesson_ids:
-        return [], None
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    id_list = ",".join(str(int(item)) for item in legacy_lesson_ids)
-    sql = (
-        "SELECT lesson_data_id, user_id2, remark_nm, state, stay_seconds, cum_seconds, "
-        "studio_seconds, playback_seconds, num_of_comments, studio_amount, study_state, "
-        "progress, last_play_time, shop_id, update_time, lesson_id, finish_time, "
-        "comment_times, money, lesson_name "
-        f"FROM lesson_data_table WHERE lesson_id IN ({id_list}) "
-        "ORDER BY lesson_id, lesson_data_id"
-    )
-    try:
-        records = get_kqdb().exec2dict(sql)
-    except Exception as exc:
-        return [], f"查询 lesson_data_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _query_legacy_clockin_rows(course_name: str) -> tuple[list[dict[str, Any]], str | None]:
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    sql = (
-        "SELECT clockin_id, name, url, start_date, end_date, days, clockin_user_num, total_user_num "
-        "FROM clockin_table WHERE name LIKE %s ORDER BY clockin_id"
-    )
-    try:
-        xldb = get_kqdb()
-        try:
-            records = xldb.exec2dict(sql, [f"{course_name}-%"])
-        except TypeError:
-            safe = course_name.replace("'", "''")
-            records = xldb.exec2dict(sql.replace("%s", f"'{safe}-%'"))
-    except Exception as exc:
-        return [], f"查询 clockin_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _query_legacy_clockin_data_rows(legacy_clockin_ids: list[int]) -> tuple[list[dict[str, Any]], str | None]:
-    if not legacy_clockin_ids:
-        return [], None
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    id_list = ",".join(str(int(item)) for item in legacy_clockin_ids)
-    sql = (
-        "SELECT clockin_data_id, user_id2, nickname, groupname, publish_time, update_content, "
-        "update_title, update_type, tags, read_num, like_num, comment_num, is_essence, "
-        "share_num, update_url, clockin_name, is_repair, task_date, extra, clockin_id "
-        f"FROM clockin_data_table WHERE clockin_id IN ({id_list}) "
-        "ORDER BY clockin_id, clockin_data_id"
-    )
-    try:
-        records = get_kqdb().exec2dict(sql)
-    except Exception as exc:
-        return [], f"查询 clockin_data_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _legacy_records(value: Any) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-    if hasattr(value, "fetchall"):
-        value = value.fetchall()
-    return [dict(record) for record in (value or []) if isinstance(record, dict)]
-
-
 def _attendance_lesson_config_rows(attendance_document: dict[str, Any], *, course_name: str) -> list[dict[str, Any]]:
     columns = _normalize_document_columns(attendance_document)
     rows: list[dict[str, Any]] = []
@@ -357,27 +261,22 @@ def _course_sheet_documents_from_attendance(
     *,
     course_name: str,
 ) -> dict[str, dict[str, Any]]:
-    legacy_lessons, lesson_error = _query_legacy_lesson_rows(course_name)
-    if not legacy_lessons:
-        legacy_lessons = _attendance_lesson_config_rows(attendance_document, course_name=course_name)
-    lesson_ids = [int(_to_float(row.get("lesson_id"))) for row in legacy_lessons if _to_float(row.get("lesson_id")) > 0]
-    legacy_lesson_data, lesson_data_error = _query_legacy_lesson_data_rows(lesson_ids)
-
-    legacy_clockins, clockin_error = _query_legacy_clockin_rows(course_name)
-    clockin_ids = [int(_to_float(row.get("clockin_id"))) for row in legacy_clockins if _to_float(row.get("clockin_id")) > 0]
-    legacy_clockin_data, clockin_data_error = _query_legacy_clockin_data_rows(clockin_ids)
+    lesson_rows = _attendance_lesson_config_rows(attendance_document, course_name=course_name)
 
     video_config_document = make_table_document_from_dicts(
         columns=VIDEO_CONFIG_COLUMNS,
-        rows=legacy_lessons,
+        rows=lesson_rows,
         numeric_columns={"lesson_id", "shop_id", "video_duration"},
         page_size=100,
     )
-    video_config_document["source_meta"] = {"legacy_lesson_rows": len(legacy_lessons), "legacy_lesson_error": lesson_error}
+    video_config_document["source_meta"] = {
+        "course_name": course_name,
+        "source": "attendance_template",
+    }
 
     video_data_document = make_table_document_from_dicts(
         columns=VIDEO_DATA_COLUMNS,
-        rows=legacy_lesson_data,
+        rows=[],
         numeric_columns={
             "lesson_data_id",
             "stay_seconds",
@@ -390,32 +289,23 @@ def _course_sheet_documents_from_attendance(
         },
         page_size=200,
     )
-    video_data_document["source_meta"] = {
-        "legacy_lesson_data_rows": len(legacy_lesson_data),
-        "legacy_lesson_data_error": lesson_data_error,
-    }
+    video_data_document["source_meta"] = {"course_name": course_name, "source": "course_step1"}
 
     clockin_config_document = make_table_document_from_dicts(
         columns=CLOCKIN_CONFIG_COLUMNS,
-        rows=legacy_clockins,
+        rows=[],
         numeric_columns={"clockin_id", "days", "clockin_user_num", "total_user_num"},
         page_size=100,
     )
-    clockin_config_document["source_meta"] = {
-        "legacy_clockin_rows": len(legacy_clockins),
-        "legacy_clockin_error": clockin_error,
-    }
+    clockin_config_document["source_meta"] = {"course_name": course_name, "source": "course_config"}
 
     clockin_data_document = make_table_document_from_dicts(
         columns=CLOCKIN_DATA_COLUMNS,
-        rows=legacy_clockin_data,
+        rows=[],
         numeric_columns={"clockin_data_id", "clockin_id", "read_num", "like_num", "comment_num", "share_num"},
         page_size=200,
     )
-    clockin_data_document["source_meta"] = {
-        "legacy_clockin_data_rows": len(legacy_clockin_data),
-        "legacy_clockin_data_error": clockin_data_error,
-    }
+    clockin_data_document["source_meta"] = {"course_name": course_name, "source": "course_step1"}
 
     return {
         VIDEO_CONFIG_SHEET_KEY: video_config_document,
@@ -463,6 +353,154 @@ def _load_fanbei_course_sheet_bundle(
         default_owner_key=FANBEI_OWNER_KEY,
         course_label="梵呗",
     )
+
+
+def _fanbei_course_start_date(bundle: dict[str, Any]) -> date | None:
+    candidates: list[date] = []
+    for sheet_key in (CLOCKIN_CONFIG_SHEET_KEY, VIDEO_CONFIG_SHEET_KEY):
+        sheet = bundle.get(sheet_key)
+        if sheet is None:
+            continue
+        for row in document_dict_rows(dict(sheet.document_json or {})):
+            value = _parse_datetime_cell(row.get("start_date"))
+            if value is not None:
+                candidates.append(value.date())
+    return min(candidates) if candidates else None
+
+
+def _fanbei_identity_repair_eligible(
+    start_date: date,
+    current_date: date,
+    *,
+    grace_days: int = IDENTITY_REPAIR_GRACE_DAYS,
+) -> bool:
+    return current_date >= start_date + timedelta(days=max(int(grace_days), 0))
+
+
+def _plan_fanbei_registration_user_id_repairs(
+    registration_rows: list[dict[str, Any]],
+    progress: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Find wrong primary IDs with one unique high-confidence course-data identity."""
+    primary_ids = {
+        normalize_text(row.get("用户ID"))
+        for row in registration_rows
+        if normalize_text(row.get("用户ID"))
+    }
+    planned: list[dict[str, Any]] = []
+    for row_index, row in enumerate(registration_rows):
+        current_user_id = normalize_text(row.get("用户ID"))
+        if not current_user_id or "退课" in normalize_text(row.get("备注")):
+            continue
+        current_progress = progress.get(current_user_id) or {}
+        if int(current_progress.get("video_count") or 0) + int(current_progress.get("clockin_count") or 0) > 0:
+            continue
+
+        high_candidates = [
+            candidate
+            for candidate in _build_registration_user_id_detection_candidates(row, progress)
+            if candidate.confidence == "high"
+            and candidate.user_id != current_user_id
+            and candidate.user_id not in primary_ids
+        ]
+        if len(high_candidates) != 1:
+            continue
+        candidate = high_candidates[0]
+        planned.append({
+            "row_index": row_index,
+            "student_id": normalize_text(row.get("序号") or row.get("学号")),
+            "name": normalize_text(row.get("姓名")),
+            "old_user_id": current_user_id,
+            "new_user_id": candidate.user_id,
+            "video_count": int(candidate.video_count or 0),
+            "clockin_count": int(candidate.clockin_count or 0),
+            "evidence": list(candidate.evidence),
+        })
+
+    target_counts: dict[str, int] = {}
+    for item in planned:
+        target = str(item["new_user_id"])
+        target_counts[target] = target_counts.get(target, 0) + 1
+    return [item for item in planned if target_counts[str(item["new_user_id"])] == 1]
+
+
+def repair_fanbei_registration_user_ids_after_grace_period(
+    session: Session,
+    *,
+    attendance: Any,
+    now: datetime | None = None,
+    grace_days: int = IDENTITY_REPAIR_GRACE_DAYS,
+) -> dict[str, Any]:
+    """Correct confidently wrong primary IDs after course data has had time to appear."""
+    bundle = _load_fanbei_course_sheet_bundle(
+        session,
+        attendance=attendance,
+        sheet_keys=("registration", *COURSE_STORAGE_SHEET_KEYS),
+    )
+    start_date = _fanbei_course_start_date(bundle)
+    current_date = (now or datetime.now()).date()
+    if start_date is None:
+        return {"status": "skipped", "reason": "missing_start_date", "updated_count": 0, "items": []}
+    if not _fanbei_identity_repair_eligible(start_date, current_date, grace_days=grace_days):
+        return {
+            "status": "skipped",
+            "reason": "grace_period",
+            "start_date": start_date.isoformat(),
+            "eligible_date": (start_date + timedelta(days=max(int(grace_days), 0))).isoformat(),
+            "updated_count": 0,
+            "items": [],
+        }
+
+    registration = bundle["registration"]
+    current_document = copy.deepcopy(dict(registration.document_json or {}))
+    columns = _normalize_document_columns(current_document)
+    row_values = [normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
+    registration_rows = [dict(zip(columns, row)) for row in row_values]
+    progress = _collect_registration_course_user_progress(
+        dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+    )
+    repairs = _plan_fanbei_registration_user_id_repairs(registration_rows, progress)
+    if not repairs:
+        return {
+            "status": "unchanged",
+            "start_date": start_date.isoformat(),
+            "updated_count": 0,
+            "items": [],
+        }
+
+    indexes = {column: index for index, column in enumerate(columns)}
+    user_id_index = indexes.get("用户ID")
+    if user_id_index is None:
+        raise RuntimeError("报名表缺少 用户ID 字段，无法主动校正身份")
+    score_index = indexes.get("匹配得分")
+    for item in repairs:
+        target_row = row_values[int(item["row_index"])]
+        target_row[user_id_index] = item["new_user_id"]
+        if score_index is not None:
+            target_row[score_index] = "100" if any("手机号命中" in text for text in item["evidence"]) else "95"
+        evidence = "、".join(item["evidence"][:3])
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"开课满{int(grace_days)}天主动校正用户ID：{item['old_user_id']} → {item['new_user_id']}；"
+            f"课程数据：视频{item['video_count']}/打卡{item['clockin_count']}"
+            f"{f'；依据：{evidence}' if evidence else ''}",
+        )
+
+    next_document = _replace_document_data_rows(current_document, row_values)
+    registration.document_json = next_document
+    registration.version = max(int(registration.version or 1), 1) + 1
+    import time
+
+    registration.updated_at = time.time()
+    session.add(registration)
+    return {
+        "status": "updated",
+        "start_date": start_date.isoformat(),
+        "updated_count": len(repairs),
+        "items": repairs,
+    }
 
 
 def has_fanbei_course_storage_sheets(session: Session, *, attendance_sheet: Any) -> bool:
@@ -741,6 +779,9 @@ def _build_step2_column_map(
     mapping: dict[int, int] = {}
     for data_index, data_column in enumerate(data_columns):
         if data_index == 0 or normalize_text(data_column) == "user_id2":
+            user_id_index = _find_column_index(sheet_columns, "用户ID")
+            if user_id_index is not None:
+                mapping[data_index] = user_id_index
             continue
         sheet_index = _find_column_index(sheet_columns, data_column)
         if sheet_index is None:
@@ -792,6 +833,10 @@ def rebuild_fanbei_attendance_from_course_sheets(
     user_alias_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     attendance = get_sheet(session, attendance_sheet_id)
+    identity_repair = repair_fanbei_registration_user_ids_after_grace_period(
+        session,
+        attendance=attendance,
+    )
     current_document = copy.deepcopy(dict(attendance.document_json or {}))
     columns = _normalize_document_columns(current_document)
     rows = [normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
@@ -853,6 +898,7 @@ def rebuild_fanbei_attendance_from_course_sheets(
 
     return {
         "attendance_sheet_id": int(attendance.numeric_id or 0),
+        "identity_repair": identity_repair,
         "updated_rows": updated_rows,
         "updated_cells": updated_cells,
         "mapped_columns": len(column_map),

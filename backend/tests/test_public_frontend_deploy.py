@@ -70,6 +70,49 @@ def test_ssh_config_reads_direct_interface_index(monkeypatch):
     assert config["direct_interface_index"] == 8
 
 
+def test_ssh_config_falls_back_to_xlproject_service_config(monkeypatch):
+    for name in (
+        "YUN_SERVER_HOST",
+        "YUN_SERVER_PORT",
+        "YUN_USER_CHENKUNZE",
+        "YUN_SERVER_USER",
+        "YUN_USER_PASS_CHENKUNZE",
+        "YUN_SERVER_PASS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(public_frontend_deploy, "_load_env_file", lambda: None)
+    monkeypatch.setattr(
+        public_frontend_deploy,
+        "_shared_ssh_password",
+        lambda username: "shared-password" if username == "chenkunze" else None,
+    )
+
+    config = public_frontend_deploy._ssh_config()
+
+    assert config["host"] == "code4101.com"
+    assert config["port"] == 22
+    assert config["username"] == "chenkunze"
+    assert config["password"] == "shared-password"
+
+
+def test_load_env_file_reads_shared_xlproject_env_before_codeyun_env(monkeypatch, tmp_path):
+    root = tmp_path / "codeyun"
+    shared_env = tmp_path / "xlproject" / ".env"
+    shared_env.parent.mkdir(parents=True)
+    shared_env.write_text("XL_SERVICES=[]\n", encoding="utf-8")
+    root.mkdir()
+    codeyun_env = root / ".env"
+    codeyun_env.write_text("CODEYUN_TEST=1\n", encoding="utf-8")
+    loaded = []
+
+    monkeypatch.setattr(public_frontend_deploy, "ROOT_DIR", root)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda path: loaded.append(Path(path)))
+
+    public_frontend_deploy._load_env_file()
+
+    assert loaded == [shared_env, codeyun_env]
+
+
 def test_open_direct_socket_pins_windows_interface(monkeypatch):
     calls = []
 

@@ -193,8 +193,24 @@ export interface NoteSheetCellPatchResponse {
 }
 
 export type NoteSheetPatchOperation =
-  | { op: 'set-cell-value'; row_index: number; column_index: number; value: unknown }
-  | { op: 'set-cell-meta'; row_index: number; column_index: number; meta: Record<string, unknown> }
+  | {
+      op: 'set-cell-value'
+      row_index: number
+      column_index: number
+      row_id?: string
+      column_id?: string
+      expected_value?: unknown
+      value: unknown
+    }
+  | {
+      op: 'set-cell-meta'
+      row_index: number
+      column_index: number
+      row_id?: string
+      column_id?: string
+      expected_meta?: Record<string, unknown>
+      meta: Record<string, unknown>
+    }
   | { op: 'set-column-width'; column_index: number; width: number }
   | { op: 'set-column-hidden'; column_index: number; hidden: boolean }
   | { op: 'set-column-config'; column_index: number; config: Record<string, unknown> }
@@ -210,6 +226,8 @@ export type NoteSheetPatchOperation =
 export interface NoteSheetPatchRequest {
   base_version: number
   ops: NoteSheetPatchOperation[]
+  mutation_id?: string
+  client_instance_id?: string
 }
 
 export interface NoteSheetPatchResponse {

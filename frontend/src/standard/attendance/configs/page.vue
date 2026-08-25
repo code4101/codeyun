@@ -44,6 +44,7 @@ const courseDataDeviceId = ref('')
 const courseDataDeviceLabel = ref('')
 const stepRunners = ref<AttendanceCourseDataStepRunnerConfig[]>([])
 const stepDeviceEntryIds = reactive<Record<string, string>>({
+  '0': '',
   '1': '',
   '2': '',
   '3': '',
@@ -71,6 +72,7 @@ const accountForm = reactive({
 const account = computed(() => accounts.value[0] ?? null)
 
 const fallbackStepRunners: AttendanceCourseDataStepRunnerConfig[] = [
+  { step: 0, title: 'step0 浏览器同步动态课程目录与表格模板', default_role: 'browser_device', effective_role: 'browser_device' },
   { step: 1, title: 'step1 课程数据浏览器导入原始数据', default_role: 'browser_device', effective_role: 'browser_device' },
   { step: 2, title: 'step2 课程数据聚合与写回', default_role: 'data_host', effective_role: 'data_host' },
   { step: 3, title: 'step3 课程数据返款计算与高亮', default_role: 'data_host', effective_role: 'data_host' },
@@ -156,7 +158,7 @@ function clearSavedOrderOperationPassword() {
 }
 
 function setStepDeviceEntryIds(value?: Record<string, string | null>) {
-  for (let step = 1; step <= 6; step += 1) {
+  for (let step = 0; step <= 6; step += 1) {
     stepDeviceEntryIds[String(step)] = value?.[String(step)] || ''
   }
 }
@@ -429,7 +431,7 @@ onMounted(() => {
         <div class="panel-header">
           <div>
             <p class="panel-kicker">课程数据</p>
-            <h2>step1-step6 运行位置</h2>
+            <h2>step0-step6 运行位置</h2>
           </div>
           <el-tag type="warning" effect="plain">管理员共享</el-tag>
         </div>

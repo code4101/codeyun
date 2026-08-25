@@ -750,6 +750,71 @@ def test_local_entry_proxy_lists_only_current_directory_media_by_default(client,
     assert {item["name"] for item in recursive_resp.json()["media"]} == {"top.png", "deep.png"}
 
 
+def test_local_entry_database_media_page_uses_strict_directory_boundary_and_media_mime(
+    client,
+    auth_user,
+    test_device,
+    session,
+    tmp_path,
+):
+    selected_dir = tmp_path / "selected"
+    sibling_dir = tmp_path / "selected-sibling"
+    selected_dir.mkdir()
+    sibling_dir.mkdir()
+    selected_image = selected_dir / "selected.png"
+    normal_image = sibling_dir / "normal.png"
+    sidecar = selected_dir / "state.json"
+    Image.new("RGB", (32, 32), color=(96, 48, 72)).save(selected_image, format="PNG")
+    Image.new("RGB", (32, 32), color=(24, 48, 72)).save(normal_image, format="PNG")
+    sidecar.write_text("{}", encoding="utf-8")
+
+    for path, media_kind, mime_type in (
+        (selected_image, "image", "image/png"),
+        (normal_image, "image", "image/png"),
+        (sidecar, None, "application/json"),
+    ):
+        stat_result = path.stat()
+        session.add(
+            DeviceFile(
+                device_id=test_device["id"],
+                absolute_path=str(path),
+                last_known_path=str(path),
+                file_size=stat_result.st_size,
+                modified_at_ms=int(stat_result.st_mtime * 1000),
+                media_kind=media_kind,
+                mime_type=mime_type,
+                match_status="matched",
+            )
+        )
+    session.commit()
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={"mode": "local", "token": "local-entry-token", "alias": "当前机器"},
+    )
+    entry_id = entry_resp.json()["id"]
+    media_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/media/list",
+        json={
+            "absolute_path": str(selected_dir),
+            "recursive": True,
+            "limit": 50,
+            "sort_program": {
+                "rules": [
+                    {"field": "weight", "direction": "desc", "nulls": "last"},
+                    {"field": "modified_at", "direction": "desc", "nulls": "last"},
+                ]
+            },
+        },
+    )
+
+    assert media_resp.status_code == 200
+    payload = media_resp.json()
+    assert payload["total_count"] == 1
+    assert payload["total_bytes"] == selected_image.stat().st_size
+    assert [item["name"] for item in payload["media"]] == ["selected.png"]
+
+
 def test_local_entry_proxy_reuses_media_snapshot_for_follow_up_pages(
     client,
     auth_user,
@@ -1795,6 +1860,118 @@ def test_local_entry_proxy_uses_everything_directory_stats_when_index_missing(
     assert payload["items"][0]["recursive_file_count"] is None
     assert payload["items"][0]["direct_file_bytes"] == 0
     assert payload["items"][1]["recursive_total_bytes"] == 128
+
+
+def test_local_entry_proxy_auto_avoids_filesystem_scan_when_everything_has_sizes(
+    client,
+    auth_user,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    (browse_dir / "large").mkdir(parents=True)
+    (browse_dir / "small").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        lambda **_: {
+            "large": {"recursive_total_bytes": 4096},
+            "small": {"recursive_total_bytes": 128},
+        },
+    )
+
+    def fail_if_filesystem_scans(**_kwargs):
+        raise AssertionError("auto mode should trust available Everything folder sizes")
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_filesystem_recursive_directory_stats_by_name",
+        fail_if_filesystem_scans,
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={
+            "absolute_path": str(browse_dir),
+            "recursive_stats_source": "auto",
+            "sort_program": {
+                "rules": [
+                    {
+                        "field": "recursive_total_bytes",
+                        "direction": "desc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert [item["name"] for item in payload["items"][:2]] == ["large", "small"]
+    assert payload["items"][0]["recursive_total_bytes"] == 4096
+    assert payload["items"][1]["recursive_total_bytes"] == 128
+
+
+def test_local_entry_proxy_auto_scans_filesystem_when_everything_is_unavailable(
+    client,
+    auth_user,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    nested_dir = browse_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "data.bin").write_bytes(b"x" * 32)
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        lambda **_: {},
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={
+            "absolute_path": str(browse_dir),
+            "recursive_stats_source": "auto",
+            "sort_program": {
+                "rules": [
+                    {
+                        "field": "recursive_total_bytes",
+                        "direction": "desc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["items"][0]["name"] == "nested"
+    assert payload["items"][0]["recursive_total_bytes"] == 32
+    assert payload["items"][0]["recursive_file_count"] == 1
 
 
 def test_local_entry_proxy_prefers_everything_recursive_size_over_stale_index(

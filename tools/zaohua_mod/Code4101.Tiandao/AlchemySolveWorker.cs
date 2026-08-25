@@ -17,7 +17,9 @@ namespace Code4101.Zaohua.Tiandao
         internal int GlobalQualityBonus { get; set; }
         internal IReadOnlyList<SmartAlchemyUi.HerbStock> Herbs { get; set; }
         internal IReadOnlyDictionary<int, long> Inventory { get; set; }
-        internal int Limit { get; set; }
+        internal IReadOnlyList<AlchemySolution> CachedStaticSolutions { get; set; }
+        internal bool StaticComplete { get; set; }
+        internal string InventorySignature { get; set; }
     }
 
     internal sealed class AlchemySolveResponse
@@ -25,7 +27,8 @@ namespace Code4101.Zaohua.Tiandao
         internal AlchemySolveRequest Request { get; set; }
         internal List<AlchemySolution> Solutions { get; set; }
         internal long ElapsedMilliseconds { get; set; }
-        internal int CompletedStage { get; set; }
+        internal long StaticElapsedMilliseconds { get; set; }
+        internal long BackpackElapsedMilliseconds { get; set; }
         internal Exception Error { get; set; }
     }
 
@@ -82,12 +85,40 @@ namespace Code4101.Zaohua.Tiandao
                 var response = new AlchemySolveResponse { Request = request };
                 try
                 {
-                    response.Solutions = FiniteInventoryAlchemySolver.SolvePhased(
-                        request.Recipe, request.Furnace,
-                        request.GlobalCountBonus, request.GlobalQualityBonus,
-                        request.Herbs, request.Inventory,
-                        request.Limit, cancellationToken, progress.Publish,
-                        stage => response.CompletedStage = stage);
+                    var staticStopwatch = Stopwatch.StartNew();
+                    var staticSolutions = (request.CachedStaticSolutions ?? new List<AlchemySolution>())
+                        .Where(solution => solution != null &&
+                                           (solution.SearchStage == 1 || solution.SearchStage == 2))
+                        .OrderBy(solution => solution.SearchStage)
+                        .ToList();
+                    // “没有静态解”和“静态解尚未求完”是两种状态。即使完成后的
+                    // 基础解、迭代解均为空，也必须复用这个已证明无解的进程缓存。
+                    if (!request.StaticComplete)
+                    {
+                        staticSolutions = FiniteInventoryAlchemySolver.SolveStatic(
+                            request.Recipe, request.Furnace,
+                            request.GlobalCountBonus, request.GlobalQualityBonus,
+                            request.Herbs, cancellationToken, progress.Publish);
+                    }
+                    staticStopwatch.Stop();
+                    response.StaticElapsedMilliseconds = staticStopwatch.ElapsedMilliseconds;
+                    response.Solutions = staticSolutions.ToList();
+
+                    var hasAvailableStatic = staticSolutions.Any(solution => solution.IsAvailable(request.Inventory));
+                    if (!hasAvailableStatic)
+                    {
+                        var ideal = staticSolutions.FirstOrDefault(solution => solution.SearchStage == 2) ??
+                                    staticSolutions.FirstOrDefault(solution => solution.SearchStage == 1);
+                        var backpackStopwatch = Stopwatch.StartNew();
+                        var backpack = FiniteInventoryAlchemySolver.SolveBackpack(
+                            request.Recipe, request.Furnace,
+                            request.GlobalCountBonus, request.GlobalQualityBonus,
+                            request.Herbs, request.Inventory, ideal,
+                            cancellationToken, progress.Publish);
+                        backpackStopwatch.Stop();
+                        response.BackpackElapsedMilliseconds = backpackStopwatch.ElapsedMilliseconds;
+                        if (backpack != null) response.Solutions.Add(backpack);
+                    }
                 }
                 catch (OperationCanceledException)
                 {

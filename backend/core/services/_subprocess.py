@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+WINDOWS_CREATE_NEW_CONSOLE = 0x00000010
 WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_DETACHED_PROCESS = 0x00000008
@@ -24,7 +25,7 @@ def _windows_startupinfo_hidden() -> Any:
     return startupinfo
 
 
-def hidden_subprocess_kwargs(*, new_process_group: bool = True, detached: bool = True) -> dict[str, Any]:
+def hidden_subprocess_kwargs(*, new_process_group: bool = True) -> dict[str, Any]:
     """Return kwargs for subprocess.run/check_call that must not flash a console."""
 
     if os.name != "nt":
@@ -32,8 +33,6 @@ def hidden_subprocess_kwargs(*, new_process_group: bool = True, detached: bool =
     creationflags = WINDOWS_CREATE_NO_WINDOW
     if new_process_group:
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", WINDOWS_CREATE_NEW_PROCESS_GROUP)
-    if detached:
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", WINDOWS_DETACHED_PROCESS)
     return {
         "creationflags": creationflags,
         "startupinfo": _windows_startupinfo_hidden(),
@@ -47,6 +46,25 @@ def no_window_subprocess_kwargs() -> dict[str, Any]:
         return {}
     return {
         "creationflags": WINDOWS_CREATE_NO_WINDOW,
+        "startupinfo": _windows_startupinfo_hidden(),
+    }
+
+
+def hidden_console_subprocess_kwargs() -> dict[str, Any]:
+    """Create a hidden console that native descendants can safely inherit.
+
+    ``CREATE_NO_WINDOW`` hides the direct child but leaves native grandchildren
+    without a console. Some CLIs then start console-subsystem helpers (notably
+    ``git.exe``) that briefly create their own visible console. A hidden,
+    inheritable console prevents that descendant flash.
+    """
+
+    if os.name != "nt":
+        return {}
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", WINDOWS_CREATE_NEW_CONSOLE)
+    creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", WINDOWS_CREATE_NEW_PROCESS_GROUP)
+    return {
+        "creationflags": creationflags,
         "startupinfo": _windows_startupinfo_hidden(),
     }
 
@@ -88,15 +106,17 @@ def install_no_window_popen_default() -> bool:
 def background_popen_kwargs(*, independent: bool = True) -> dict[str, Any]:
     """Return kwargs for long-running background children.
 
-    On Windows this detaches the process from the current console/job and hides
-    any console window. On POSIX it starts a new session.
+    On Windows this creates a separate process group, breaks away from the
+    current job when requested, and suppresses console allocation. Do not mix
+    ``DETACHED_PROCESS`` with ``CREATE_NO_WINDOW``: Windows ignores the latter
+    in that combination and console-subsystem descendants may briefly flash.
+    On POSIX it starts a new session.
     """
 
     if os.name != "nt":
         return {"start_new_session": True} if independent else {}
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", WINDOWS_CREATE_NEW_PROCESS_GROUP)
     creationflags |= WINDOWS_CREATE_NO_WINDOW
-    creationflags |= getattr(subprocess, "DETACHED_PROCESS", WINDOWS_DETACHED_PROCESS)
     if independent:
         creationflags |= WINDOWS_CREATE_BREAKAWAY_FROM_JOB
     return {
@@ -284,18 +304,25 @@ def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess
     return subprocess.run(command, **kwargs)
 
 
-def run_hidden_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+def _run_tree_safe(
+    command: list[str],
+    *,
+    process_kwargs: dict[str, Any],
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
     """Run a bounded command and tear down its whole process tree on timeout.
 
     ``subprocess.run`` only kills the direct child.  On Windows a CLI shim can
     leave Node/Python descendants holding inherited stdout/stderr pipes, which
-    makes the timeout cleanup block forever.  This variant is intended for
-    bounded, captured commands such as Codex CLI calls.
+    makes timeout cleanup block forever.
     """
 
     timeout = kwargs.pop("timeout", None)
     if timeout is None:
-        return run_hidden(command, **kwargs)
+        kwargs.setdefault("shell", False)
+        _inject_managed_child_env_for_command(command, kwargs)
+        kwargs.update(process_kwargs)
+        return subprocess.run(command, **kwargs)
 
     input_value = kwargs.pop("input", None)
     check = bool(kwargs.pop("check", False))
@@ -312,7 +339,7 @@ def run_hidden_tree_safe(command: list[str], **kwargs: Any) -> subprocess.Comple
 
     kwargs.setdefault("shell", False)
     _inject_managed_child_env_for_command(command, kwargs)
-    kwargs.update(hidden_subprocess_kwargs())
+    kwargs.update(process_kwargs)
     process = subprocess.Popen(command, **kwargs)
     try:
         stdout, stderr = process.communicate(input_value, timeout=timeout)
@@ -336,6 +363,18 @@ def run_hidden_tree_safe(command: list[str], **kwargs: Any) -> subprocess.Comple
     if check:
         completed.check_returncode()
     return completed
+
+
+def run_hidden_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run a bounded no-window command and terminate descendants on timeout."""
+
+    return _run_tree_safe(command, process_kwargs=hidden_subprocess_kwargs(), **kwargs)
+
+
+def run_hidden_console_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run a bounded command in a hidden console inherited by native children."""
+
+    return _run_tree_safe(command, process_kwargs=hidden_console_subprocess_kwargs(), **kwargs)
 
 
 def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:

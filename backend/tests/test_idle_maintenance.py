@@ -2,8 +2,27 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from backend.core.maintenance import idle_maintenance
+
+
+def test_enqueue_idle_maintenance_uses_local_job(monkeypatch) -> None:
+    submitted = []
+    monkeypatch.setattr(idle_maintenance, "find_active_local_job_run", lambda *_args: None)
+    monkeypatch.setattr(
+        idle_maintenance,
+        "submit_local_job",
+        lambda **kwargs: submitted.append(kwargs) or SimpleNamespace(id="idle-local-1"),
+    )
+
+    assert idle_maintenance.enqueue_idle_maintenance() == "idle-local-1"
+    assert submitted == [
+        {
+            "job_type": "maintenance.idle",
+            "payload": {"task_key": idle_maintenance.IDLE_MAINTENANCE_TASK_KEY},
+        }
+    ]
 
 
 def test_select_idle_maintenance_prefers_auto_commit_when_worktree_dirty():

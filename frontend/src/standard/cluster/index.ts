@@ -1,6 +1,7 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 import clusterCodexPage from './codex'
+import hardwareTemperaturePage from './hardware-temperature'
 import deviceFileBrowserPage from './files'
 import deviceLabelmeBrowserPage from './labelme'
 import taskLogsPage from './logs'
@@ -15,6 +16,7 @@ const pages: AppPageDefinition[] = [
   deviceTasksPage,
   clusterRimeContextPredictionPage,
   clusterServicesPage,
+  hardwareTemperaturePage,
   deviceFileBrowserPage,
   clusterTreeSizePage,
   clusterCodexPage,

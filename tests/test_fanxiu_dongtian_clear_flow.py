@@ -1,6 +1,6 @@
 import threading
 
-from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
 
 
 class _Runtime:
@@ -8,9 +8,20 @@ class _Runtime:
         self.calls = []
         self.battle_scenes = iter(battle_scenes or [346])
 
-    def wait_click_then_view(self, scene, shape, target):
+    def wait_click_then_view(self, scene, shape, target, **_kwargs):
         self.calls.append(("wait_click_then_view", scene, shape, target))
         yield
+        return f"scene-{target}"
+
+    def cur_frame(self):
+        self.calls.append(("cur_frame",))
+        return "current-frame"
+
+    def click_shape(self, scene, shape, *, frame_data_url):
+        self.calls.append(("click_shape", scene, shape, frame_data_url))
+
+    def clear_frame(self):
+        self.calls.append(("clear_frame",))
 
     def wait_click(self, scene, shape):
         self.calls.append(("wait_click", scene, shape))
@@ -33,14 +44,16 @@ class _Runtime:
 def test_daily_dongtian_known_occupation_chain():
     runtime = _Runtime([345, 346])
 
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     list(runner._daily_dongtian_continue_enemy_occupation(runtime))
 
     assert runtime.calls == [
         ("wait_click_then_view", 341, "\u4f4d\u7f6e1", 342),
         ("wait_click_then_view", 342, "\u5360\u9886", 343),
         ("wait_click_then_view", 343, "\u5360\u9886", 344),
-        ("wait_click", 344, "\u6218\u6597"),
+        ("cur_frame",),
+        ("click_shape", "scene-344", "\u6218\u6597", "current-frame"),
+        ("clear_frame",),
         ("wait_action_settle", 1.0),
         ("current_scene", [345, 346], True, 345),
         ("wait_click", 345, "\u8df3\u8fc7"),
@@ -53,7 +66,7 @@ def test_daily_dongtian_known_occupation_chain():
 
 def test_daily_dongtian_battle_can_finish_without_optional_skip_scene():
     runtime = _Runtime([346])
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
 
     list(runner._daily_dongtian_finish_battle(runtime))
 
@@ -82,7 +95,7 @@ def test_daily_dongtian_action_power_loop_can_start_at_341_and_stop_below_100():
             return [value], str(value)
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
     occupation_calls = []
 
@@ -92,7 +105,15 @@ def test_daily_dongtian_action_power_loop_can_start_at_341_and_stop_below_100():
 
     runner._daily_dongtian_continue_enemy_occupation = occupy
     result = None
-    action = runner._daily_dongtian_clear_action_power_loop(runtime, threading.Event(), {})
+    action = runner._daily_dongtian_clear_action_power_loop(
+        runtime,
+        threading.Event(),
+        {
+            "__dongtian_runtime_snapshot_override": {
+                "available": False,
+            }
+        },
+    )
     while True:
         try:
             next(action)
@@ -116,7 +137,7 @@ def test_daily_dongtian_action_power_reuses_279_hud_shape_on_current_frame():
             assert frame_data_url == "current-341-frame"
             return [80], "80"
 
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
 
     assert runner._daily_dongtian_action_power(Runtime()) == (80, "80")
 
@@ -133,9 +154,47 @@ def test_daily_dongtian_action_power_reads_zero_from_full_frame_context():
             assert frame == "current-279-frame"
             return "洞天福地 我的编队 0 联盟占领"
 
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
 
     assert runner._daily_dongtian_action_power(Runtime()) == (0, "我的编队0")
+
+
+def test_daily_dongtian_action_power_prefers_runtime_snapshot():
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+
+    class Runtime:
+        def cur_frame(self, *, update=False):
+            raise AssertionError("Runtime 快照可用时不应调用 GUI OCR")
+
+    payload = {
+        "__dongtian_runtime_snapshot_override": {
+            "available": True,
+            "action_power": 300,
+        }
+    }
+
+    assert runner._daily_dongtian_action_power(Runtime(), payload) == (
+        300,
+        "runtime:XianLvMinesMgr.Model.Data.V_AttackFatigueValue",
+    )
+
+
+def test_daily_dongtian_runtime_snapshot_builds_enemy_place_list():
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner._log = lambda *_args, **_kwargs: None
+    payload = {
+        "__dongtian_runtime_snapshot": {
+            "available": True,
+            "own_union_id": 10,
+            "own_union_name": "自己联盟",
+            "mines": [
+                {"id": 1, "cross_union_id": 10, "cross_union_name": "自己联盟"},
+                {"id": 2, "cross_union_id": 20, "cross_union_name": "敌方联盟"},
+            ],
+        }
+    }
+
+    assert runner._daily_dongtian_enemy_places_from_runtime(payload) == ["大罗天墟"]
 
 
 def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
@@ -155,7 +214,7 @@ def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
             yield
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_validate_enemy_detail(
         runtime,
@@ -175,113 +234,10 @@ def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
     ]
 
 
-def test_daily_dongtian_packet_builds_enemy_place_list(monkeypatch):
-    from backend.core.fanxiu.packet import current_facts
-
-    def fake_facts(*_args, **_kwargs):
-        return {
-            "decoded_records": {
-                "records": [
-                    {"payload": {"parsed": {"mines": {"_count": 0, "items": []}}}},
-                    {
-                    "payload": {
-                        "parsed": {
-                            "mines": {
-                                "_count": 39,
-                                "items": [
-                                    {"id": 1, "crossUnion": {"id": 11, "name": "enemy"}},
-                                    {"id": 7, "crossUnion": {"id": 22, "name": "own"}},
-                                ],
-                            }
-                        }
-                    }
-                    },
-                ]
-            }
-        }
-
-    monkeypatch.setattr(current_facts, "catch_up_and_list_fanxiu_packet_decoded_records", fake_facts)
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
-    runner._log = lambda *_args, **_kwargs: None
-
-    assert runner._daily_dongtian_enemy_places_from_latest_packet({"own_union_name": "own"}) == ["\u767d\u7389\u4eac"]
 
 
-def test_daily_dongtian_packet_resolves_own_union_from_packet(monkeypatch):
-    from backend.core.fanxiu.packet import current_facts, decoded_store
-
-    monkeypatch.setattr(
-        current_facts,
-        "catch_up_and_list_fanxiu_packet_decoded_records",
-        lambda *_args, **_kwargs: {
-            "decoded_records": {
-                "records": [{
-                    "payload": {
-                        "parsed": {
-                            "mines": {
-                                "_count": 2,
-                                "items": [
-                                    {"id": 1, "crossUnion": {"id": 11, "name": "enemy"}},
-                                    {"id": 7, "crossUnion": {"id": 22, "name": "own"}},
-                                ],
-                            }
-                        }
-                    }
-                }]
-            }
-        },
-    )
-    monkeypatch.setattr(
-        decoded_store,
-        "list_fanxiu_packet_decoded_records",
-        lambda *_args, **_kwargs: {
-            "records": [{
-                "payload": {
-                    "parsed": {
-                        "crossUnionVO": {
-                            "_super": {"id": 22, "name": "own"}
-                        }
-                    }
-                }
-            }]
-        },
-    )
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
-    runner._log = lambda *_args, **_kwargs: None
-    payload = {}
-
-    assert runner._daily_dongtian_enemy_places_from_latest_packet(payload) == ["\u767d\u7389\u4eac"]
-    assert payload["own_union_id"] == 22
-    assert payload["own_union_name"] == "own"
 
 
-def test_daily_dongtian_packet_level_two_ids_match_real_map_order(monkeypatch):
-    from backend.core.fanxiu.packet import current_facts
-
-    def fake_facts(*_args, **_kwargs):
-        return {
-            "decoded_records": {
-                "records": [{
-                    "payload": {
-                        "parsed": {
-                            "mines": {
-                                "_count": 8,
-                                "items": [
-                                    {"id": 2, "crossUnion": {"id": 22, "name": "own"}},
-                                    {"id": 3, "crossUnion": {"id": 11, "name": "enemy"}},
-                                ],
-                            }
-                        }
-                    }
-                }]
-            }
-        }
-
-    monkeypatch.setattr(current_facts, "catch_up_and_list_fanxiu_packet_decoded_records", fake_facts)
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
-    runner._log = lambda *_args, **_kwargs: None
-
-    assert runner._daily_dongtian_enemy_places_from_latest_packet({"own_union_name": "own"}) == ["\u592a\u660e\u7389\u589f"]
 
 
 def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster():
@@ -330,7 +286,7 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
             yield
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_click_first_enemy_place(
         runtime,
@@ -409,7 +365,7 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
             return True
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_click_first_enemy_place(
         runtime,
@@ -449,7 +405,7 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
 
 
 def test_daily_dongtian_location_uses_only_tokens_linked_to_native_line():
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     lines = [
         {"line_id": "line-20", "text": "\u7389\u6e05\u9053\u5b9712/12", "x": 103, "y": 898, "w": 191, "h": 28},
         {"line_id": "line-21", "text": "\u592a\u660e\u7389\u589f", "x": 644, "y": 898, "w": 113, "h": 31},
@@ -469,7 +425,7 @@ def test_daily_dongtian_location_uses_only_tokens_linked_to_native_line():
 
 
 def test_daily_dongtian_location_suffix_uses_real_linked_token_box():
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     line = {"line_id": "line-14", "text": "\u767d\u7389\u4eac100%", "x": 414, "y": 638, "w": 130, "h": 32}
     tokens = [
         {"text": char, "x": 414 + index * 20, "y": 638, "w": 20, "h": 32, "parent_line_id": "line-14", "line_order": 14, "order": index}

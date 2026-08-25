@@ -7891,6 +7891,60 @@ def get_fanxiu_item_card(
     raise FanxiuResourceError(f"没有找到道具：{item_id}")
 
 
+def load_fanxiu_talisman_item_knowledge(
+    *,
+    export_root: str | Path | None = None,
+    rebuild_missing: bool = False,
+) -> dict[int, dict[str, Any]]:
+    """Index the item encyclopedia facts that belong to each talisman.
+
+    The inventory runtime owns the player's current progression.  This index
+    deliberately contains only versioned encyclopedia facts and links, so a
+    stale static export can never overwrite a newer in-game rank or effect.
+    """
+
+    runtime_index = load_fanxiu_item_runtime_index(
+        export_root=export_root,
+        rebuild_missing=rebuild_missing,
+    )
+    knowledge_by_id: dict[int, dict[str, Any]] = {}
+    for card in runtime_index["catalog"].get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+
+        talisman_id = _as_int(card.get("linked_talisman_id"))
+        if talisman_id is not None:
+            knowledge = knowledge_by_id.setdefault(talisman_id, {})
+            knowledge.update(
+                {
+                    "catalog_item_id": card.get("id"),
+                    "catalog_name": card.get("name") or "",
+                    "catalog_icon": card.get("icon") or "",
+                    "catalog_description": card.get("description") or "",
+                    "catalog_effect_description": card.get("effect_description") or "",
+                    "catalog_quality": card.get("quality"),
+                    "catalog_quality_name": card.get("quality_name") or "",
+                    "catalog_quality_color": card.get("quality_color") or "",
+                }
+            )
+
+        refine_target_id = _as_int(card.get("linked_talisman_refine_target_id"))
+        if refine_target_id is None:
+            continue
+        knowledge = knowledge_by_id.setdefault(refine_target_id, {})
+        knowledge.update(
+            {
+                "catalog_refine_item_id": card.get("id"),
+                "catalog_refine_name": card.get("name") or "",
+            }
+        )
+
+    return {
+        talisman_id: {key: value for key, value in knowledge.items() if value not in (None, "")}
+        for talisman_id, knowledge in knowledge_by_id.items()
+    }
+
+
 def build_fanxiu_item_catalog(
     *,
     item_rows_path: str | Path | None = None,

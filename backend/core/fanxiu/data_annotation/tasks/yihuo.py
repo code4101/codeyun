@@ -15,10 +15,6 @@ class 日常异火任务Mixin:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return "已领取" in compact and "次日5点刷新" in compact and "净莲妖火" in compact
 
-    def _daily_yihuo_text_is_world(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        return "大地图" in compact and "异火" not in compact and "净莲妖火" not in compact
-
     def _daily_yihuo_text_is_detail(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return "异火" in compact and ("升阶" in compact or "次日5点刷新" in compact or "净莲妖火" in compact)
@@ -31,11 +27,7 @@ class 日常异火任务Mixin:
                 continue
             try:
                 result = yield from runtime.wait_any({
-                    "已回世界": runtime.all_of(
-                        runtime.view_visible(34),
-                        runtime.ocr_matches(self._daily_yihuo_text_is_world, label="异火收尾世界 OCR"),
-                        label="世界场景和 OCR",
-                    ),
+                    "已回世界": runtime.view_visible(34),
                     "仍在异火详情": runtime.ocr_matches(self._daily_yihuo_text_is_claimed, label="异火已领取"),
                 }, timeout=2.0, label="日常_异火：返回后确认")
             except Exception:
@@ -48,6 +40,7 @@ class 日常异火任务Mixin:
         current_text = runtime.ocr_text(frame)
         if self._daily_yihuo_text_is_claimed(current_text):
             yield from self._daily_yihuo_return_best_effort(runtime)
+            runtime.set_next_time(self._next_daily_boss_reset_time_text())
             return
         if scene_id == 261 or self._daily_yihuo_text_is_detail(current_text):
             runtime.click_shape_center(261, "返回")
@@ -91,4 +84,5 @@ class 日常异火任务Mixin:
             yield from runtime.wait_scene(34, timeout=3.0)
         except Exception:
             pass
+        runtime.set_next_time(self._next_daily_boss_reset_time_text())
 

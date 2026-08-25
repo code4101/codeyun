@@ -534,6 +534,9 @@ export type NoteDocUpdatePayload = Partial<Pick<
   | 'custom_fields'
 >> & {
   base_version?: number;
+  expected_fields?: Record<string, unknown>;
+  mutation_id?: string;
+  client_instance_id?: string;
   completion_progress_expr?: string | null;
 }
 
@@ -544,6 +547,9 @@ export async function updateNoteDoc(
   const updateData: any = { ...data };
   if (typeof updateData.start_at === 'number' && updateData.start_at > 10000000000) {
     updateData.start_at /= 1000;
+  }
+  if (typeof updateData.expected_fields?.start_at === 'number' && updateData.expected_fields.start_at > 10000000000) {
+    updateData.expected_fields = { ...updateData.expected_fields, start_at: updateData.expected_fields.start_at / 1000 };
   }
   const response = await api.put(`/note-docs/${encodeURIComponent(noteRef)}`, updateData);
   return normalizeNote(response.data);
@@ -604,6 +610,19 @@ export const fetchCodexDiaryImportRun = async (
     timeout: CODEX_DIARY_IMPORT_REQUEST_TIMEOUT_MS,
   });
   return normalizeCodexDiaryImportRun(response.data);
+};
+
+export interface CodexWeeklyQuotaSnapshot {
+  date: string;
+  remaining_percent: number;
+  observed_at: string;
+  reset_at?: string;
+  source_url?: string;
+}
+
+export const fetchCodexWeeklyQuotaSnapshots = async (): Promise<CodexWeeklyQuotaSnapshot[]> => {
+  const response = await api.get<{ snapshots?: CodexWeeklyQuotaSnapshot[] }>('/notes/codex-weekly-quota');
+  return Array.isArray(response.data?.snapshots) ? response.data.snapshots : [];
 };
 
 export interface CalendarYearMonthMemosResponse {
@@ -2284,12 +2303,18 @@ export const useNoteStore = defineStore('notes', () => {
       custom_fields?: any[];
       completion_progress_expr?: string | null;
       base_version?: number;
+      expected_fields?: Record<string, unknown>;
+      mutation_id?: string;
+      client_instance_id?: string;
     }
   ) => {
     bumpPending(1);
     try {
       const updateData: any = { ...data };
       if (data.start_at !== undefined) updateData.start_at = data.start_at / 1000;
+      if (typeof data.expected_fields?.start_at === 'number' && data.expected_fields.start_at > 10000000000) {
+        updateData.expected_fields = { ...data.expected_fields, start_at: data.expected_fields.start_at / 1000 };
+      }
       if (data.private_level !== undefined) updateData.private_level = normalizeInteger(data.private_level, 0);
 
       const response = await api.put(`/notes/${encodeURIComponent(noteKey(id))}`, updateData);
@@ -2300,7 +2325,7 @@ export const useNoteStore = defineStore('notes', () => {
     } catch (error) {
       console.error('Failed to update note:', error);
       if (axios.isAxiosError(error) && error.response?.status === 409) {
-        ElMessage.warning('文档已被其他人更新，已保留本地草稿');
+        ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿');
         throw error;
       }
       ElMessage.error('保存任务失败');

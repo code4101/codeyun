@@ -5,9 +5,9 @@ import csv
 import json
 import time
 import tempfile
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Lock
 
@@ -19,6 +19,7 @@ from backend.core.access.auth import get_current_active_user
 from backend.core.access.feature_access_guard import require_feature_access_dependency
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.settings import get_settings
+from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job, submit_local_job_once
 from backend.core.stock import (
     DEFAULT_TRADE_WORKBENCH_POLICY,
     EastmoneyTradeError,
@@ -80,7 +81,13 @@ from backend.core.stock import (
     snapshot_to_dict,
     sync_trade_data,
 )
-from backend.core.stock.qlib_screening import QlibScreenItem, QlibScreenResult, QlibScreenTarget
+from backend.core.stock.qlib_screening import (
+    QlibRotationStrategyCandidate,
+    QlibScreenItem,
+    QlibScreenResult,
+    QlibScreenTarget,
+    QlibStrategyCandidate,
+)
 from backend.core.stock.index_benchmark import load_index_benchmark
 from backend.core.stock.qlib_screening import (
     _read_hk_pool_backtest_cache,
@@ -222,14 +229,6 @@ def _build_akshare_history_error_result(
         rows=(),
         error=str(error),
     )
-
-
-_hk_pool_backtest_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hk-pool-backtest-api")
-_hk_pool_backtest_lock = Lock()
-_hk_pool_backtest_jobs: dict[str, Future] = {}
-_hk_pool_strategy_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hk-pool-strategy-api")
-_hk_pool_strategy_lock = Lock()
-_hk_pool_strategy_jobs: dict[str, Future] = {}
 
 
 class EastmoneySyncRequest(BaseModel):
@@ -1317,31 +1316,63 @@ def _start_hk_pool_backtest_job(
     cost_rate: float,
     force_liquidate_end: bool,
 ) -> None:
-    with _hk_pool_backtest_lock:
-        existing = _hk_pool_backtest_jobs.get(job_key)
-        if existing is not None and not existing.done():
-            return
+    del job_key, progress_path
+    if find_active_local_job_run("stock.hk-pool-one-lot-backtest") is not None:
+        return
+    submit_local_job(
+        job_type="stock.hk-pool-one-lot-backtest",
+        payload={
+            "cache_key": cache_key,
+            "refresh": refresh,
+            "limit": limit,
+            "start_date": start_date,
+            "end_date": end_date,
+            "score_threshold": score_threshold,
+            "score_profile": score_profile,
+            "take_profit_percent": take_profit_percent,
+            "stop_loss_percent": stop_loss_percent,
+            "max_holding_days": max_holding_days,
+            "cost_rate": cost_rate,
+            "force_liquidate_end": force_liquidate_end,
+        },
+    )
 
-        def write_progress(result):
-            _write_hk_pool_backtest_cache(progress_path, cache_key, result)
 
-        def run_job():
-            return backtest_hk_pool_one_lot_score(
-                refresh=refresh,
-                limit=limit,
-                start_date=start_date,
-                end_date=end_date,
-                score_threshold=score_threshold,
-                score_profile=score_profile,
-                take_profit_percent=take_profit_percent,
-                stop_loss_percent=stop_loss_percent,
-                max_holding_days=max_holding_days,
-                cost_rate=cost_rate,
-                force_liquidate_end=force_liquidate_end,
-                progress_callback=write_progress,
-            )
+def run_hk_pool_backtest_local_job_payload(
+    payload: dict,
+    *,
+    progress_callback=None,
+) -> dict:
+    cache_key = dict(payload.get("cache_key") or {})
+    if not cache_key:
+        raise ValueError("港股池回测缺少 cache_key。")
+    _cache_path, progress_path = _hk_pool_backtest_cache_paths(cache_key)
 
-        _hk_pool_backtest_jobs[job_key] = _hk_pool_backtest_executor.submit(run_job)
+    def write_progress(result):
+        _write_hk_pool_backtest_cache(progress_path, cache_key, result)
+        if progress_callback is not None:
+            progress_callback(result)
+
+    result = backtest_hk_pool_one_lot_score(
+        refresh=bool(payload.get("refresh")),
+        limit=payload.get("limit"),
+        start_date=str(payload.get("start_date") or "2025-01-01"),
+        end_date=payload.get("end_date"),
+        score_threshold=int(payload["score_threshold"] if payload.get("score_threshold") is not None else 84),
+        score_profile=str(payload.get("score_profile") or "balanced"),
+        take_profit_percent=float(payload.get("take_profit_percent") or 0),
+        stop_loss_percent=float(payload.get("stop_loss_percent") or 0),
+        max_holding_days=int(payload.get("max_holding_days") or 0),
+        cost_rate=float(payload.get("cost_rate") or 0),
+        force_liquidate_end=bool(payload.get("force_liquidate_end", True)),
+        progress_callback=write_progress,
+    )
+    return {
+        "target_count": int(result.target_count or 0),
+        "tested_count": int(result.tested_count or 0),
+        "skipped_count": int(result.skipped_count or 0),
+        "source": result.source,
+    }
 
 
 def _parse_int_list(value: str, *, default: tuple[int, ...]) -> tuple[int, ...]:
@@ -1519,46 +1550,19 @@ def _start_strategy_search_job(
     min_annual_return_percent: float,
     require_beat_benchmark: bool,
 ) -> None:
-    with _hk_pool_strategy_lock:
-        existing = _hk_pool_strategy_jobs.get(job_key)
-        if existing is not None and not existing.done():
-            return
-
-        def write_progress(result):
-            _write_strategy_search_cache(progress_path, cache_key, result)
-
-        def run_job():
-            try:
-                return search_hk_pool_one_lot_score_strategies(
-                    years=years,
-                    limit=limit,
-                    candidates=candidates,
-                    refresh=True,
-                    min_annual_return_percent=min_annual_return_percent,
-                    require_beat_benchmark=require_beat_benchmark,
-                    progress_callback=write_progress,
-                )
-            except Exception as exc:
-                from backend.core.stock.qlib_screening import QlibStrategySearchResult
-
-                error_result = QlibStrategySearchResult(
-                    pool="hk_pool",
-                    source="error:hk_pool_strategy_search",
-                    years=years,
-                    limit=limit,
-                    benchmark_name="恒生指数",
-                    items=(),
-                    done_count=0,
-                    candidate_count=len(candidates),
-                    min_annual_return_percent=min_annual_return_percent,
-                    require_beat_benchmark=require_beat_benchmark,
-                    status="error",
-                    error=str(exc),
-                )
-                write_progress(error_result)
-                raise
-
-        _hk_pool_strategy_jobs[job_key] = _hk_pool_strategy_executor.submit(run_job)
+    del progress_path
+    submit_local_job_once(
+        job_type="stock.hk-pool-strategy-search",
+        payload={
+            "cache_key": cache_key,
+            "years": list(years),
+            "limit": limit,
+            "candidates": [asdict(item) for item in candidates],
+            "min_annual_return_percent": min_annual_return_percent,
+            "require_beat_benchmark": require_beat_benchmark,
+        },
+        dedup_key=f"hk-pool-strategy:{job_key}",
+    )
 
 
 def _start_rotation_strategy_search_job(
@@ -1573,52 +1577,19 @@ def _start_rotation_strategy_search_job(
     min_annual_return_percent: float,
     require_beat_benchmark: bool,
 ) -> None:
-    with _hk_pool_strategy_lock:
-        existing = _hk_pool_strategy_jobs.get(job_key)
-        if existing is not None and not existing.done():
-            return
-
-        def write_progress(result):
-            _write_rotation_strategy_search_snapshot(
-                progress_path,
-                cache_key,
-                serialize_qlib_rotation_strategy_search_result(result),
-            )
-
-        def run_job():
-            try:
-                result = search_hk_pool_ranked_rotation_strategies(
-                    years=years,
-                    limit=limit,
-                    candidates=candidates,
-                    min_annual_return_percent=min_annual_return_percent,
-                    require_beat_benchmark=require_beat_benchmark,
-                    progress_callback=write_progress,
-                )
-                payload = serialize_qlib_rotation_strategy_search_result(result)
-                _write_rotation_strategy_search_snapshot(cache_path, cache_key, payload)
-                _write_rotation_strategy_search_snapshot(progress_path, cache_key, payload)
-                return result
-            except Exception as exc:
-                payload = {
-                    "pool": "hk_pool",
-                    "source": "error:hk_pool_rotation_strategy_search",
-                    "years": list(years),
-                    "limit": limit,
-                    "benchmark_name": "恒生指数",
-                    "min_annual_return_percent": min_annual_return_percent,
-                    "require_beat_benchmark": require_beat_benchmark,
-                    "qualified_count": 0,
-                    "done_count": 0,
-                    "candidate_count": len(candidates),
-                    "status": "error",
-                    "error": str(exc),
-                    "items": [],
-                }
-                _write_rotation_strategy_search_snapshot(progress_path, cache_key, payload)
-                raise
-
-        _hk_pool_strategy_jobs[job_key] = _hk_pool_strategy_executor.submit(run_job)
+    del cache_path, progress_path
+    submit_local_job_once(
+        job_type="stock.hk-pool-rotation-strategy-search",
+        payload={
+            "cache_key": cache_key,
+            "years": list(years),
+            "limit": limit,
+            "candidates": [asdict(item) for item in candidates],
+            "min_annual_return_percent": min_annual_return_percent,
+            "require_beat_benchmark": require_beat_benchmark,
+        },
+        dedup_key=f"hk-pool-rotation:{job_key}",
+    )
 
 
 def _start_hk_connect_momentum_review_job(
@@ -1639,74 +1610,170 @@ def _start_hk_connect_momentum_review_job(
     hold_days: int,
     cost_rate: float,
 ) -> None:
-    with _hk_pool_strategy_lock:
-        existing = _hk_pool_strategy_jobs.get(job_key)
-        if existing is not None and not existing.done():
-            return
+    del cache_path, progress_path
+    submit_local_job_once(
+        job_type="stock.hk-connect-momentum-review-on-demand",
+        payload={
+            "cache_key": cache_key,
+            "end_date": end_date,
+            "capital": capital,
+            "max_position_percent": max_position_percent,
+            "universe_limit": universe_limit,
+            "min_market_cap": min_market_cap,
+            "min_amount": min_amount,
+            "top_n": top_n,
+            "lookback_days": lookback_days,
+            "volume_window_days": volume_window_days,
+            "hold_days": hold_days,
+            "cost_rate": cost_rate,
+        },
+        dedup_key=f"hk-connect-momentum:{job_key}",
+    )
 
-        def write_progress(result):
-            _write_dict_snapshot(
-                progress_path,
-                cache_key,
-                serialize_hk_connect_momentum_review_result(result),
-            )
 
-        def run_job():
-            try:
-                result = compute_hk_connect_momentum_review(
-                    refresh=True,
-                    end_date=end_date,
-                    capital=capital,
-                    max_position_percent=max_position_percent,
-                    universe_limit=universe_limit,
-                    min_market_cap=min_market_cap,
-                    min_amount=min_amount,
-                    top_n=top_n,
-                    lookback_days=lookback_days,
-                    volume_window_days=volume_window_days,
-                    hold_days=hold_days,
-                    cost_rate=cost_rate,
-                    progress_callback=write_progress,
-                )
-                payload = serialize_hk_connect_momentum_review_result(result)
-                _write_dict_snapshot(cache_path, cache_key, payload)
-                _write_dict_snapshot(progress_path, cache_key, payload)
-                return result
-            except Exception as exc:
-                payload = {
-                    "strategy_key": "hk_connect_hsi60_largecap_volmom_top2",
-                    "strategy_name": "港股通恒生60日线大市值成交额动量",
-                    "source": "error:hk_connect_momentum_review",
-                    "status": "error",
-                    "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
-                    "signal_date": "",
-                    "hsi_date": "",
-                    "hsi_close": None,
-                    "hsi_ma60": None,
-                    "hsi_filter_passed": False,
-                    "action": "wait",
-                    "summary": f"复盘计算失败：{exc}",
-                    "pool_count": 0,
-                    "usable_count": 0,
-                    "capital": capital,
-                    "max_position_percent": max_position_percent,
-                    "single_position_budget": capital * max_position_percent / max(1, top_n),
-                    "cost_rate": cost_rate,
-                    "universe_limit": universe_limit,
-                    "min_market_cap": min_market_cap,
-                    "min_amount": min_amount,
-                    "top_n": top_n,
-                    "lookback_days": lookback_days,
-                    "volume_window_days": volume_window_days,
-                    "hold_days": hold_days,
-                    "error": str(exc),
-                    "candidates": [],
-                    "selected": [],
-                }
-                _write_dict_snapshot(progress_path, cache_key, payload)
-                raise
+def run_hk_pool_strategy_search_local_job(context, payload: dict) -> dict:
+    from backend.core.stock.qlib_screening import QlibStrategySearchResult
 
-        _hk_pool_strategy_jobs[job_key] = _hk_pool_strategy_executor.submit(run_job)
+    cache_key = dict(payload.get("cache_key") or {})
+    years = tuple(int(item) for item in payload.get("years") or [])
+    candidates = tuple(QlibStrategyCandidate(**dict(item)) for item in payload.get("candidates") or [])
+    _cache_path, progress_path = _strategy_search_cache_paths()
+
+    def write_progress(result) -> None:
+        context.heartbeat(
+            stage="hk-pool-strategy-search",
+            message=f"港股池策略搜索 {int(result.done_count or 0)}/{int(result.candidate_count or 0)}",
+            progress_current=int(result.done_count or 0),
+            progress_total=int(result.candidate_count or 0),
+        )
+        _write_strategy_search_cache(progress_path, cache_key, result)
+
+    try:
+        result = search_hk_pool_one_lot_score_strategies(
+            years=years,
+            limit=payload.get("limit"),
+            candidates=candidates,
+            refresh=True,
+            min_annual_return_percent=float(payload.get("min_annual_return_percent") or 0),
+            require_beat_benchmark=bool(payload.get("require_beat_benchmark")),
+            progress_callback=write_progress,
+        )
+    except Exception as exc:
+        error_result = QlibStrategySearchResult(
+            pool="hk_pool",
+            source="error:hk_pool_strategy_search",
+            years=years,
+            limit=payload.get("limit"),
+            benchmark_name="恒生指数",
+            items=(),
+            done_count=0,
+            candidate_count=len(candidates),
+            min_annual_return_percent=float(payload.get("min_annual_return_percent") or 0),
+            require_beat_benchmark=bool(payload.get("require_beat_benchmark")),
+            status="error",
+            error=str(exc),
+        )
+        write_progress(error_result)
+        raise
+    return {"status": result.status, "done_count": result.done_count, "candidate_count": result.candidate_count}
+
+
+def run_hk_pool_rotation_strategy_search_local_job(context, payload: dict) -> dict:
+    cache_key = dict(payload.get("cache_key") or {})
+    years = tuple(int(item) for item in payload.get("years") or [])
+    candidates = tuple(QlibRotationStrategyCandidate(**dict(item)) for item in payload.get("candidates") or [])
+    cache_path, progress_path = _rotation_strategy_search_cache_paths()
+
+    def write_progress(result) -> None:
+        serialized = serialize_qlib_rotation_strategy_search_result(result)
+        context.heartbeat(
+            stage="hk-pool-rotation-search",
+            message=f"港股池轮动搜索 {int(serialized.get('done_count') or 0)}/{int(serialized.get('candidate_count') or 0)}",
+            progress_current=int(serialized.get("done_count") or 0),
+            progress_total=int(serialized.get("candidate_count") or 0),
+        )
+        _write_rotation_strategy_search_snapshot(progress_path, cache_key, serialized)
+
+    try:
+        result = search_hk_pool_ranked_rotation_strategies(
+            years=years,
+            limit=payload.get("limit"),
+            candidates=candidates,
+            min_annual_return_percent=float(payload.get("min_annual_return_percent") or 0),
+            require_beat_benchmark=bool(payload.get("require_beat_benchmark")),
+            progress_callback=write_progress,
+        )
+        serialized = serialize_qlib_rotation_strategy_search_result(result)
+        _write_rotation_strategy_search_snapshot(cache_path, cache_key, serialized)
+        _write_rotation_strategy_search_snapshot(progress_path, cache_key, serialized)
+        return {
+            "status": serialized.get("status"),
+            "done_count": serialized.get("done_count"),
+            "candidate_count": serialized.get("candidate_count"),
+        }
+    except Exception as exc:
+        error_payload = {
+            "pool": "hk_pool",
+            "source": "error:hk_pool_rotation_strategy_search",
+            "years": list(years),
+            "limit": payload.get("limit"),
+            "benchmark_name": "恒生指数",
+            "min_annual_return_percent": float(payload.get("min_annual_return_percent") or 0),
+            "require_beat_benchmark": bool(payload.get("require_beat_benchmark")),
+            "qualified_count": 0,
+            "done_count": 0,
+            "candidate_count": len(candidates),
+            "status": "error",
+            "error": str(exc),
+            "items": [],
+        }
+        _write_rotation_strategy_search_snapshot(progress_path, cache_key, error_payload)
+        raise
+
+
+def run_hk_connect_momentum_review_local_job(context, payload: dict) -> dict:
+    cache_key = dict(payload.get("cache_key") or {})
+    cache_path, progress_path = _hk_connect_momentum_review_cache_paths()
+
+    def write_progress(result) -> None:
+        serialized = serialize_hk_connect_momentum_review_result(result)
+        context.heartbeat(stage="hk-connect-momentum-review", message="正在执行港股通动量复盘")
+        _write_dict_snapshot(progress_path, cache_key, serialized)
+
+    try:
+        result = compute_hk_connect_momentum_review(
+            refresh=True,
+            end_date=payload.get("end_date"),
+            capital=float(payload.get("capital") or 0),
+            max_position_percent=float(payload.get("max_position_percent") or 0),
+            universe_limit=int(payload.get("universe_limit") or 0),
+            min_market_cap=float(payload.get("min_market_cap") or 0),
+            min_amount=float(payload.get("min_amount") or 0),
+            top_n=int(payload.get("top_n") or 1),
+            lookback_days=int(payload.get("lookback_days") or 1),
+            volume_window_days=int(payload.get("volume_window_days") or 1),
+            hold_days=int(payload.get("hold_days") or 1),
+            cost_rate=float(payload.get("cost_rate") or 0),
+            progress_callback=write_progress,
+        )
+        serialized = serialize_hk_connect_momentum_review_result(result)
+        _write_dict_snapshot(cache_path, cache_key, serialized)
+        _write_dict_snapshot(progress_path, cache_key, serialized)
+        return {"status": serialized.get("status"), "signal_date": serialized.get("signal_date")}
+    except Exception as exc:
+        error_payload = {
+            "strategy_key": "hk_connect_hsi60_largecap_volmom_top2",
+            "strategy_name": "港股通恒生60日线大市值成交额动量",
+            "source": "error:hk_connect_momentum_review",
+            "status": "error",
+            "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "summary": f"复盘计算失败：{exc}",
+            "error": str(exc),
+            "candidates": [],
+            "selected": [],
+        }
+        _write_dict_snapshot(progress_path, cache_key, error_payload)
+        raise
 
 
 def run_hk_connect_momentum_review_snapshot_job() -> dict:

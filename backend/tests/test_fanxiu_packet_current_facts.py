@@ -1,21 +1,28 @@
+from datetime import datetime
+
 from sqlmodel import Session, SQLModel, create_engine
 
-from backend.core.fanxiu.packet.current_facts import (
+from backend.core.fanxiu.history_museum.packet_capture import current_facts as current_facts_module
+from backend.core.fanxiu.history_museum.packet_capture.current_facts import (
     get_latest_fanxiu_faze_show_facts,
+    get_latest_fanxiu_lingmai_daily_status,
     get_latest_fanxiu_lingmai_scene_seat_facts,
     get_latest_fanxiu_lingmai_self_seat_facts,
     get_latest_fanxiu_lundao_scene_seat_facts,
     get_latest_fanxiu_lundao_kick_transition_facts,
     get_latest_fanxiu_lundao_status_facts,
+    get_latest_fanxiu_xianyuan_duel_facts,
     normalize_fanxiu_lingmai_scene_seat_facts,
+    normalize_fanxiu_lingmai_daily_status,
     normalize_fanxiu_lingmai_self_seat_facts,
     normalize_fanxiu_lundao_scene_seat_facts,
+    normalize_fanxiu_xianyuan_duel_record,
 )
-from backend.core.fanxiu.packet.decoded_store import (
+from backend.core.fanxiu.history_museum.packet_capture.decoded_store import (
     decoded_record_rows_from_decode_result,
     upsert_fanxiu_packet_decoded_records,
 )
-from backend.core.fanxiu.packet.tcp_flow import FANXIU_TCP_DECODE_SCHEMA_VERSION, _trim_value
+from backend.core.fanxiu.history_museum.packet_capture.tcp_flow import FANXIU_TCP_DECODE_SCHEMA_VERSION, _trim_value
 
 
 def _scene_record(*, declared_count: int = 2, truncated: int = 0) -> dict:
@@ -140,7 +147,7 @@ def test_decoder_keeps_full_lundao_seat_roster_but_still_trims_nested_details() 
         }
     )
 
-    assert FANXIU_TCP_DECODE_SCHEMA_VERSION >= 2
+    assert FANXIU_TCP_DECODE_SCHEMA_VERSION >= 3
     assert len(trimmed["seats"]["items"]) == 15
     assert "_truncated_items" not in trimmed["seats"]
     assert len(trimmed["seats"]["items"][0]["seatOwner"]["hangPoint"]["items"]) == 8
@@ -152,6 +159,101 @@ def test_decoder_keeps_full_lingmai_seat_roster() -> None:
         {
             "seats": {
                 "_type": "VeinsSeatVO",
+                "items": [{"id": index, "seatOwner": {"name": f"玩家{index}"}} for index in range(10)],
+            }
+        }
+    )
+
+    assert len(trimmed["seats"]["items"]) == 10
+    assert "_truncated_items" not in trimmed["seats"]
+
+
+def test_decoder_keeps_complete_reward_and_cost_result_lists() -> None:
+    trimmed = _trim_value(
+        {
+            "rewards": {
+                "_type": "RewardResult",
+                "items": [{"type": 0, "code": index, "content": {"items": [{"id": index}]}} for index in range(12)],
+            },
+            "costs": {
+                "_type": "CostResult",
+                "items": [{"type": 0, "code": index, "content": {"items": [{"id": index}]}} for index in range(13)],
+            },
+        }
+    )
+
+    assert FANXIU_TCP_DECODE_SCHEMA_VERSION >= 5
+    assert len(trimmed["rewards"]["items"]) == 12
+    assert len(trimmed["costs"]["items"]) == 13
+    assert "_truncated_items" not in trimmed["rewards"]
+    assert "_truncated_items" not in trimmed["costs"]
+
+
+def test_decoder_keeps_complete_activity_rank_lists() -> None:
+    assert FANXIU_TCP_DECODE_SCHEMA_VERSION >= 7
+    for vo_type in ("ActivityRankPersonalVO", "ActivityRankCrossServerVO", "ActivityRankTeamVO"):
+        trimmed = _trim_value(
+            {
+                "rankVOS": {
+                    "_type": vo_type,
+                    "items": [
+                        {"rank": rank, "name": f"玩家{rank}", "score": 1000 - rank}
+                        for rank in range(1, 142)
+                    ],
+                }
+            }
+        )
+
+        assert len(trimmed["rankVOS"]["items"]) == 141
+        assert trimmed["rankVOS"]["items"][-1]["rank"] == 141
+        assert "_truncated_items" not in trimmed["rankVOS"]
+
+
+def test_decoder_keeps_complete_quest_membership() -> None:
+    trimmed = _trim_value(
+        {
+            "entryVOs": {
+                "_type": "QuestEntryVO",
+                "_count": 14,
+                "items": [{"taskId": 804290151 + index} for index in range(14)],
+            }
+        }
+    )
+
+    assert FANXIU_TCP_DECODE_SCHEMA_VERSION >= 8
+    assert len(trimmed["entryVOs"]["items"]) == 14
+    assert "_truncated_items" not in trimmed["entryVOs"]
+
+
+def test_normalize_lingmai_daily_status_treats_explicit_zero_as_complete() -> None:
+    record = _scene_record()
+    record["pro_id"] = 93513
+    record["name"] = "SM_SyncUnionVeinsRoleInfo"
+    record["payload"]["pro_id"] = 93513
+    record["payload"]["name"] = "SM_SyncUnionVeinsRoleInfo"
+    record["payload"]["parsed"] = {
+        "_class": "SM_SyncUnionVeinsRoleInfo",
+        "roomId": 0,
+        "seatId": 0,
+        "leftListenTime": 0,
+        "sitDownTime": 0,
+    }
+
+    result = normalize_fanxiu_lingmai_daily_status(record)
+
+    assert result["ok"] is True
+    assert result["available"] is True
+    assert result["completed"] is True
+    assert result["remaining_milliseconds"] == 0
+    assert result["remaining_seconds"] == 0
+    assert result["protocol"] == "SM_SyncUnionVeinsRoleInfo"
+
+
+def test_decoder_keeps_full_union_lingmai_seat_roster() -> None:
+    trimmed = _trim_value(
+        {
+            "seats": {
+                "_type": "UnionVeinsSeatVO",
                 "items": [{"id": index, "seatOwner": {"name": f"玩家{index}"}} for index in range(10)],
             }
         }
@@ -195,6 +297,8 @@ def test_normalize_union_lingmai_scene_uses_current_protocol_family() -> None:
     seats = record["payload"]["parsed"]["seats"]
     seats["_type"] = "UnionVeinsSeatVO"
     seats["_type_id"] = 93553
+    seats["items"][0]["seatOwner"]["teamUid"] = 24077380502945993
+    seats["items"][0]["seatOwner"]["teamName"] = "玉清道宗"
     record["payload"]["parsed"] = {
         "_class": "SM_UnionVeinsSeatsNoInScene",
         "roomId": 17,
@@ -208,6 +312,8 @@ def test_normalize_union_lingmai_scene_uses_current_protocol_family() -> None:
     assert result["pro_id"] == 93517
     assert result["room_id"] == 17
     assert result["available_count"] == 1
+    assert result["seats"][0]["owner"]["team_uid"] == 24077380502945993
+    assert result["seats"][0]["owner"]["team_name"] == "玉清道宗"
 
 
 def test_get_latest_lingmai_scene_returns_explicit_no_fact_result() -> None:
@@ -476,9 +582,9 @@ def test_lundao_kick_transition_detects_latest_seated_to_unseated_event() -> Non
     ]
     with Session(engine) as session:
         rows = decoded_record_rows_from_decode_result(
-            {
-                "record_id": "kick-transition",
-                "created_at": "2026-07-20 19:00:00",
+                {
+                    "record_id": "kick-transition",
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "pcap_name": "fanxiu_runtime_20260720_190000.pcap",
                 "capture_sha256": "kick-sha",
                 "stream": 0,
@@ -486,7 +592,7 @@ def test_lundao_kick_transition_detects_latest_seated_to_unseated_event() -> Non
             }
         )
         upsert_fanxiu_packet_decoded_records(session, rows)
-        result = get_latest_fanxiu_lundao_kick_transition_facts(session)
+        result = get_latest_fanxiu_lundao_kick_transition_facts(session, since_seconds=2 * 86400)
 
     assert result["kicked"] is True
     assert result["event_at"] == "2026-07-20 19:00:00"
@@ -531,3 +637,224 @@ def test_get_latest_faze_show_prefers_latest_capture_across_both_protocols() -> 
     assert result["available"] is True
     assert result["protocol"] == "SM_FazeShow"
     assert result["faze_id"] == 10020
+
+
+
+
+
+
+def _xianyuan_target(target_id: int, name: str, score: int, power: int, server: int) -> dict:
+    return {
+        "id": target_id,
+        "player": True,
+        "willScore": 100,
+        "rankVO": {"name": name, "score": score, "rank": 1, "server": server, "power": power},
+        "teamVO": {"power": power},
+    }
+
+
+def _xianyuan_record(
+    *,
+    protocol: str,
+    pro_id: int,
+    pcap_name: str,
+    frame_index: int,
+    targets: list[dict],
+    self_power: int | None = None,
+    remaining_challenges: int | None = None,
+    remaining_refreshes: int | None = None,
+) -> dict:
+    parsed: dict = {"targets": {"_count": len(targets), "items": targets}}
+    if protocol == "SM_PartnerArenaPlayInfo":
+        parsed["joinerVO"] = {
+            "teams": {"_count": 1, "items": [{"power": self_power}]},
+            "remainChallengeTimes": remaining_challenges,
+            "remainRefreshTimes": remaining_refreshes,
+            "current": 3000,
+            "rank": 50,
+        }
+    elif protocol == "SM_PartnerArenaChallenge":
+        parsed.update(
+            {
+                "remainChallengeTimes": remaining_challenges,
+                "current": 3100,
+                "victory": True,
+                "recordVO": {"attacker": {"power": self_power}},
+            }
+        )
+    elif protocol == "SM_PartnerArenaRefresh":
+        parsed["remainRefreshTimes"] = remaining_refreshes
+    return {
+        "packet_id": f"{pcap_name}|{frame_index}",
+        "record_id": pcap_name,
+        "pcap_name": pcap_name,
+        "frame_index": frame_index,
+        "offset": frame_index * 10,
+        "sn": frame_index,
+        "pro_id": pro_id,
+        "name": protocol,
+        "captured_at": "2026-07-24 23:00:00",
+        "decode_error": "",
+        "payload": {
+            "pro_id": pro_id,
+            "name": protocol,
+            "parsed": parsed,
+            "parsed_bytes": 100,
+            "remain": 0,
+        },
+    }
+
+
+def test_normalize_xianyuan_duel_play_info_exposes_team_power_and_three_targets() -> None:
+    targets = [
+        _xianyuan_target(1, "甲", 3200, 100, 22001),
+        _xianyuan_target(2, "乙", 3100, 200, 22002),
+        _xianyuan_target(3, "丙", 3000, 300, 22003),
+    ]
+
+    result = normalize_fanxiu_xianyuan_duel_record(
+        _xianyuan_record(
+            protocol="SM_PartnerArenaPlayInfo",
+            pro_id=90102,
+            pcap_name="fanxiu_runtime_20260724_230000.pcap",
+            frame_index=10,
+            targets=targets,
+            self_power=999,
+            remaining_challenges=5,
+            remaining_refreshes=1,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["targets_complete"] is True
+    assert result["self_power"] == 999
+    assert result["remaining_challenges"] == 5
+    assert result["remaining_refreshes"] == 1
+    assert [item["name"] for item in result["targets"]] == ["甲", "乙", "丙"]
+
+
+def test_normalize_xianyuan_duel_exposes_ordered_structured_formations() -> None:
+    partner_ids = [16, 23, 9, 2, 1]
+    targets = [_xianyuan_target(index + 1, f"目标{index}", 3200 - index, 100, 22001) for index in range(3)]
+    for index, target in enumerate(targets):
+        ids = [28, 2, 1, 30, 9]
+        target["teamVO"].update(
+            {
+                "partnerIds": {"_count": 5, "items": ids},
+                "teamDetail": {
+                    "_count": 5,
+                    "items": [{"_super": {"partnerId": value, "fightPower": 10}} for value in ids],
+                },
+            }
+        )
+    record = _xianyuan_record(
+        protocol="SM_PartnerArenaPlayInfo",
+        pro_id=90102,
+        pcap_name="formation.pcap",
+        frame_index=1,
+        targets=targets,
+        self_power=999,
+        remaining_challenges=1,
+        remaining_refreshes=1,
+    )
+    self_team = record["payload"]["parsed"]["joinerVO"]["teams"]["items"][0]
+    self_team.update(
+        {
+            "type": 0,
+            "partnerIds": {"_count": 5, "items": partner_ids},
+            "teamDetail": {
+                "_count": 5,
+                "items": [{"_super": {"partnerId": value, "fightPower": 20}} for value in partner_ids],
+            },
+        }
+    )
+
+    result = normalize_fanxiu_xianyuan_duel_record(record)
+
+    assert result["self_team"]["partner_ids"] == partner_ids
+    assert result["self_team"]["formation_complete"] is True
+    assert result["targets"][0]["team"]["partner_ids"] == [28, 2, 1, 30, 9]
+    assert result["targets"][0]["team"]["formation_complete"] is True
+
+
+def test_latest_xianyuan_duel_facts_combines_latest_targets_with_joiner_fields(monkeypatch) -> None:
+    first_targets = [
+        _xianyuan_target(1, "甲", 3200, 100, 22001),
+        _xianyuan_target(2, "乙", 3100, 200, 22002),
+        _xianyuan_target(3, "丙", 3000, 300, 22003),
+    ]
+    refreshed_targets = [
+        _xianyuan_target(4, "丁", 3300, 400, 22004),
+        _xianyuan_target(5, "戊", 3250, 500, 22005),
+        _xianyuan_target(6, "己", 3150, 600, 22006),
+    ]
+    play_info = _xianyuan_record(
+        protocol="SM_PartnerArenaPlayInfo",
+        pro_id=90102,
+        pcap_name="fanxiu_runtime_20260724_230000.pcap",
+        frame_index=10,
+        targets=first_targets,
+        self_power=999,
+        remaining_challenges=2,
+        remaining_refreshes=1,
+    )
+    refresh = _xianyuan_record(
+        protocol="SM_PartnerArenaRefresh",
+        pro_id=90116,
+        pcap_name="fanxiu_runtime_20260724_230100.pcap",
+        frame_index=20,
+        targets=refreshed_targets,
+        remaining_refreshes=0,
+    )
+    monkeypatch.setattr(
+        current_facts_module,
+        "list_fanxiu_packet_decoded_records",
+        lambda *_args, **_kwargs: {"ok": True, "records": [play_info, refresh]},
+    )
+
+    result = get_latest_fanxiu_xianyuan_duel_facts(object())
+
+    assert result["available"] is True
+    assert result["protocol"] == "SM_PartnerArenaRefresh"
+    assert result["self_power"] == 999
+    assert result["remaining_challenges"] == 2
+    assert result["remaining_refreshes"] == 0
+    assert [item["name"] for item in result["targets"]] == ["丁", "戊", "己"]
+
+
+def test_latest_xianyuan_duel_facts_does_not_fall_back_to_older_targets(monkeypatch) -> None:
+    complete = _xianyuan_record(
+        protocol="SM_PartnerArenaPlayInfo",
+        pro_id=90102,
+        pcap_name="fanxiu_runtime_20260724_230000.pcap",
+        frame_index=10,
+        targets=[
+            _xianyuan_target(1, "甲", 3200, 100, 22001),
+            _xianyuan_target(2, "乙", 3100, 200, 22002),
+            _xianyuan_target(3, "丙", 3000, 300, 22003),
+        ],
+        self_power=999,
+        remaining_challenges=2,
+        remaining_refreshes=1,
+    )
+    incomplete = _xianyuan_record(
+        protocol="SM_PartnerArenaRefresh",
+        pro_id=90116,
+        pcap_name="fanxiu_runtime_20260724_230100.pcap",
+        frame_index=20,
+        targets=[_xianyuan_target(4, "丁", 3300, 400, 22004)],
+        remaining_refreshes=0,
+    )
+    monkeypatch.setattr(
+        current_facts_module,
+        "list_fanxiu_packet_decoded_records",
+        lambda *_args, **_kwargs: {"ok": True, "records": [complete, incomplete]},
+    )
+
+    result = get_latest_fanxiu_xianyuan_duel_facts(object())
+
+    assert result["available"] is False
+    assert result["reason"] == "latest_targets_incomplete"
+    assert [item["name"] for item in result["targets"]] == ["丁"]
+
+

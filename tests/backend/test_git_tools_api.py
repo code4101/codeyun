@@ -1,6 +1,7 @@
 import json
 import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -609,6 +610,49 @@ def test_local_entry_git_reduction_run_reports_progress_and_result(client, auth_
     assert final_payload["completed_chunk_count"] >= 1
     assert final_payload["result"]["subject"] == "整理 Git 异步拆分进度"
     assert final_payload["commit"] is None
+
+
+def test_git_reduction_production_path_submits_secret_free_local_job(
+    client,
+    auth_user,
+    test_device,
+    tmp_path,
+    monkeypatch,
+):
+    repo_path = tmp_path / "git-reduction-local-job-repo"
+    _init_git_repo(repo_path)
+    entry_response = client.post(
+        "/api/devices/add",
+        json={"mode": "local", "token": "local-entry-token", "alias": "当前机器"},
+    )
+    entry_id = entry_response.json()["id"]
+    submitted = []
+    monkeypatch.setattr(
+        "backend.core.settings.get_settings",
+        lambda: SimpleNamespace(is_test=False),
+    )
+    monkeypatch.setattr(
+        "backend.api.device_entries.submit_local_job",
+        lambda **kwargs: submitted.append(kwargs) or SimpleNamespace(id="local-git-reduction-1"),
+    )
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/git/reduce-runs",
+        json={
+            "cwd": str(repo_path),
+            "provider": "ollama",
+            "model": "qwen3.5:4b-instruct",
+            "auto_commit": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(submitted) == 1
+    assert submitted[0]["job_type"] == "git.reduction"
+    assert submitted[0]["user_id"] == auth_user.id
+    assert set(submitted[0]["payload"]) == {"run_id", "user_id"}
+    assert "api_key" not in json.dumps(submitted[0])
+    assert "local-entry-token" not in json.dumps(submitted[0])
 
 
 def test_local_entry_git_generate_message_forces_split_for_large_change_set(client, auth_user, test_device, tmp_path, monkeypatch):

@@ -36,44 +36,18 @@ class _FakeRuntime:
         yield
 
 
-def test_daily_zhenxie_flow_runs_exact_closed_loop_inside_window(monkeypatch):
+def test_daily_zhenxie_admission_allows_inside_window(monkeypatch):
     monkeypatch.setattr(zhenxie_module, "datetime", _FakeDateTime)
-    runtime = _FakeRuntime()
 
-    flow = ZhenxieTaskMixin().daily_zhenxie_flow(runtime)
-    while True:
-        try:
-            next(flow)
-        except StopIteration as exc:
-            result = exc.value
-            break
-
-    assert runtime.calls == [
-        ("goto_view", 34),
-        ("wait_click_then_view", 34, "\u65e5\u7a0b", 66),
-        ("wait_click_then_view", 66, "\u524d\u5f80", 63),
-        ("wait_click_then_view", 63, "\u524d\u5f80", 271),
-        ("wait_click_then_view", 271, "\u53c2\u52a0", 272),
-        ("wait_click", 272, "\u524d\u5f80"),
-        ("wait_action_settle", 30.0),
-    ]
-    assert result["result"] == "success"
-    assert result["next_time"] == "2026-07-13 21:00:00"
+    assert ZhenxieTaskMixin().daily_zhenxie_admission() is None
 
 
-def test_daily_zhenxie_flow_skips_all_actions_outside_window(monkeypatch):
+def test_daily_zhenxie_admission_skips_all_actions_outside_window(monkeypatch):
     _FakeDateTime.current = RealDateTime(2026, 7, 12, 21, 5, 1)
     monkeypatch.setattr(zhenxie_module, "datetime", _FakeDateTime)
-    runtime = _FakeRuntime()
 
-    flow = ZhenxieTaskMixin().daily_zhenxie_flow(runtime)
-    with_result = None
-    try:
-        next(flow)
-    except StopIteration as exc:
-        with_result = exc.value
+    with_result = ZhenxieTaskMixin().daily_zhenxie_admission()
 
-    assert runtime.calls == []
     assert with_result["result"] == "success"
     assert with_result["next_time"] == "2026-07-13 21:00:00"
 
@@ -83,6 +57,7 @@ def test_daily_zhenxie_scheduler_definition_is_runtime_job():
 
     assert task["task_type"] == "daily_zhenxie"
     assert task["source"] == "data_annotation_runtime"
-    assert task["enabled"] is True
-    assert task["schedule_times"] == ["21:00"]
-    assert task["window"] == ["21:00", "21:05"]
+    assert task["trigger_description"] == "每日"
+    assert task["next_time"]
+    assert task["dispatch_level"] == 1
+    assert "window" not in task

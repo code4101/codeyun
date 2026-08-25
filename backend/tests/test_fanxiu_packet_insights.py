@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from backend.core.fanxiu.packet import insights as insights
+from backend.core.fanxiu.history_museum.packet_capture import insights as insights
 
 
 def _write_self_attr_decoded(decoded_path, *, pcap_name: str = "fanxiu_runtime_snapshot_self_attrs.pcap") -> None:
@@ -67,55 +67,67 @@ def test_runtime_player_profile_rows_collects_unique_snapshot_records() -> None:
     assert rows == [valid_row, record_only_row]
 
 
-def test_extract_bag_uses_full_analysis_when_decoded_payload_is_truncated(tmp_path, monkeypatch) -> None:
-    record_dir = tmp_path / "tcp-flow" / "record-1"
-    record_dir.mkdir(parents=True)
-    decoded_path = record_dir / "decoded.json"
-    decoded_path.write_text("{}", encoding="utf-8")
-    (record_dir / "all_bag_full_items.analysis.json").write_text(
-        json.dumps(
-            {
-                "rows": [
-                    {"bag_i": 0, "vo": "ItemVO", "base_id": "1001", "num": 3, "name": "仙花", "quality": "红色品质", "type": "法宝/符器"},
-                    {"bag_i": 0, "vo": "ItemVO", "base_id": "1002", "num": 4, "name": "灵草", "quality": "绿色品质", "type": "道具"},
-                ],
+
+
+
+
+def test_reward_result_extracts_absolute_standard_resource_state() -> None:
+    parsed = {
+        "_class": "SM_RewardResult",
+        "rewards": {
+            "items": [
+                {
+                    "type": 1,
+                    "code": 19,
+                    "amount": 62,
+                    "content": {
+                        "_class": "ResourceVo",
+                        "type": 19,
+                        "amount": 341222,
+                        "history": 351222,
+                        "borrow": 10000,
+                    },
+                }
+            ]
+        },
+        "reason": "yunmeng",
+    }
+    rows = insights._extract_resource_state_updates(
+        parsed,
+        {
+            "name": "SM_RewardResult",
+            "captured_at": "2026-08-02 20:22:54",
+            "id": "packet-1",
+        },
+        {},
+    )
+
+    assert rows == [
+        {
+            "type": 19,
+            "code": None,
+            "amount": 341222,
+            "history": 351222,
+            "borrow": 10000,
+            "name": "资源类型 19",
+            "resource_type": 19,
+            "available": 331222,
+            "delta": 62,
+            "reason": "yunmeng",
+            "captured_at": "2026-08-02 20:22:54",
+            "protocol": "SM_RewardResult",
+            "evidence": {
+                "packet_id": "packet-1",
+                "protocol": "SM_RewardResult",
+                "decoded_at": "",
+                "captured_at": "2026-08-02 20:22:54",
+                "record_id": "",
+                "pcap_name": "",
             },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(insights, "resolve_fanxiu_tcp_store_root", lambda _data_dir=None: tmp_path / "tcp-flow")
+        }
+    ]
 
-    row = insights._extract_bag(
-        {
-            "bagInfoVOs": {
-                "items": [
-                    {
-                        "itemVOs": {
-                            "_count": 2,
-                            "_truncated_items": 1,
-                            "items": [{"_super": {"baseId": "1001", "id": 1, "num": 1}}],
-                        }
-                    }
-                ]
-            }
-        },
-        {
-            "id": "record-1|s2c|1|30110|1",
-            "name": "SM_AllBagSyncInfo",
-            "record_id": "record-1",
-            "source_path": str(decoded_path),
-            "decoded_at": "2026-06-11 12:00:00",
-        },
-        {"cards_by_id": {}},
-        allow_pcap_redecode=False,
-    )
 
-    assert row is not None
-    assert row["decoded_from_analysis"] is True
-    assert row["stack_count"] == 2
-    assert row["decoded_stack_count"] == 2
-    assert [item["item"]["name"] for item in row["items"]] == ["仙花", "灵草"]
 
 
 def test_decode_result_with_worldline_activity_triggers_activity_sync(monkeypatch) -> None:
@@ -138,7 +150,13 @@ def test_decode_result_with_worldline_activity_triggers_activity_sync(monkeypatc
         export_root="export-root",
     )
 
-    assert calls == [{"data_dir": "data-dir", "export_root": "export-root", "force": False}]
+    assert len(calls) == 1
+    assert calls[0]["data_dir"] == "data-dir"
+    assert calls[0]["export_root"] == "export-root"
+    assert calls[0]["force"] is False
+    assert [entry["name"] for entry in calls[0]["decoded_entries"]] == [
+        "SM_WorldLineActivitySync"
+    ]
     assert result == {
         "ok": True,
         "changed": True,

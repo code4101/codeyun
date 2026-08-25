@@ -1,4 +1,5 @@
 using HarmonyLib;
+using System;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Collections;
@@ -40,6 +41,84 @@ namespace Code4101.Zaohua.Tiandao
 
     internal sealed class SmartAlchemyUi : MonoBehaviour
     {
+        private sealed class AlchemyPlanState
+        {
+            internal string CacheKey { get; set; }
+            internal int RecipeId { get; set; }
+            internal string InventorySignature { get; private set; } = string.Empty;
+            internal List<AlchemySolution> StaticSolutions { get; private set; } = new List<AlchemySolution>();
+            internal AlchemySolution BackpackSolution { get; private set; }
+            internal bool StaticComplete { get; private set; }
+            internal bool InventoryComplete { get; private set; }
+            private IReadOnlyDictionary<int, long> CurrentInventory { get; set; } =
+                new Dictionary<int, long>();
+
+            internal IReadOnlyList<AlchemySolution> Solutions
+            {
+                get
+                {
+                    var solutions = StaticSolutions.ToList();
+                    // 状态层硬约束：任一静态解可用时，背包解既不保留也不展示。
+                    if (BackpackSolution != null && !HasAvailableStatic())
+                        solutions.Add(BackpackSolution);
+                    return FiniteInventoryAlchemySolver.RankAndSelectSolutions(solutions, 3);
+                }
+            }
+
+            private bool HasAvailableStatic() =>
+                StaticSolutions.Any(solution => solution.IsAvailable(CurrentInventory));
+
+            internal void PrepareInventory(
+                string inventorySignature,
+                IReadOnlyDictionary<int, long> inventory)
+            {
+                var inventoryChanged = InventorySignature != inventorySignature;
+                InventorySignature = inventorySignature;
+                CurrentInventory = inventory ?? new Dictionary<int, long>();
+                if (inventoryChanged) BackpackSolution = null;
+                if (HasAvailableStatic())
+                {
+                    BackpackSolution = null;
+                    InventoryComplete = StaticComplete;
+                }
+                else if (inventoryChanged)
+                {
+                    InventoryComplete = false;
+                }
+            }
+
+            internal void Publish(
+                IReadOnlyList<AlchemySolution> solutions,
+                string inventorySignature,
+                IReadOnlyDictionary<int, long> inventory)
+            {
+                var staticSolutions = solutions
+                    .Where(solution => solution.SearchStage == 1 || solution.SearchStage == 2)
+                    .OrderBy(solution => solution.SearchStage)
+                    .ToList();
+                if (staticSolutions.Count > 0) StaticSolutions = staticSolutions;
+                if (InventorySignature != inventorySignature) return;
+                CurrentInventory = inventory ?? new Dictionary<int, long>();
+                BackpackSolution = HasAvailableStatic()
+                    ? null
+                    : solutions.FirstOrDefault(solution => solution.SearchStage == 3);
+            }
+
+            internal void Complete(
+                IReadOnlyList<AlchemySolution> solutions,
+                string inventorySignature,
+                IReadOnlyDictionary<int, long> inventory)
+            {
+                Publish(solutions, inventorySignature, inventory);
+                StaticComplete = true;
+                if (InventorySignature == inventorySignature)
+                {
+                    // 有解和已证明无解都属于这个背包版本的完整结果，避免反复重算。
+                    InventoryComplete = true;
+                }
+            }
+        }
+
         private CraftingDrugCell _cell;
         private Button _spectrumButton;
         private Button _smartButton;
@@ -47,22 +126,26 @@ namespace Code4101.Zaohua.Tiandao
         private RectTransform _spectrumContent;
         private readonly List<GameObject> _spectrumItems = new List<GameObject>();
         private readonly List<CraftingDrugRecipeCell> _spectrumRecipeCards = new List<CraftingDrugRecipeCell>();
+        private readonly Dictionary<int, CraftingDrugRecipeCell> _spectrumCardsByRecipe =
+            new Dictionary<int, CraftingDrugRecipeCell>();
         private bool _changingSpectrumRecipeSelection;
         private GameObject _smartPanel;
         private TextPro _message;
         private RectTransform _smartContent;
         private readonly List<GameObject> _smartResultObjects = new List<GameObject>();
-        private List<AlchemySolution> _solutions = new List<AlchemySolution>();
-        private readonly Dictionary<string, List<AlchemySolution>> _solutionCache =
-            new Dictionary<string, List<AlchemySolution>>();
-        private readonly Dictionary<string, int> _solutionCacheStages = new Dictionary<string, int>();
+        private static readonly Dictionary<string, AlchemyPlanState> SessionPlanStates =
+            new Dictionary<string, AlchemyPlanState>();
+        private AlchemyPlanState _selectedPlanState;
+        private readonly LinkedList<int> _prefetchQueue = new LinkedList<int>();
+        private readonly HashSet<int> _queuedRecipeIds = new HashSet<int>();
         private TbDrugRecipeCfg _solvedRecipe;
-        private int _visibleSolutionCount = 5;
         private CancellationTokenSource _solveCancellation;
         private Task<AlchemySolveResponse> _solveTask;
         private string _activeSolveKey;
+        private int _activeRecipeId;
         private int _solveGeneration;
-        private bool _onlyAvailable;
+        private Coroutine _solveQueueCoroutine;
+        private string _inventorySignature = string.Empty;
         private IReadOnlyDictionary<int, long> _inventory = new Dictionary<int, long>();
 
         internal TbPackSto Furnace { get; private set; }
@@ -106,6 +189,7 @@ namespace Code4101.Zaohua.Tiandao
                 officialButton.onClick.AddListener(HideSmart);
             }
             RefreshGameState();
+            RefreshStaticAvailabilityAndQueueFallbacks();
         }
 
         internal void SetFeatureEnabled(bool enabled)
@@ -280,6 +364,12 @@ namespace Code4101.Zaohua.Tiandao
                 {
                     card.SetActive(isOn);
                 }
+                if (isOn)
+                {
+                    // 卡片可能在后台结果发布后才展开；展开时必须主动从统一状态重放标记。
+                    RefreshStaticAvailabilityAndQueueFallbacks();
+                    foreach (var recipe in recipes) EnqueueRecipe(recipe.id, false);
+                }
                 RelayoutSpectrum();
             });
         }
@@ -298,8 +388,13 @@ namespace Code4101.Zaohua.Tiandao
             };
             card.SetInfo(recipeSto, false, false, false);
             _spectrumRecipeCards.Add(card);
+            _spectrumCardsByRecipe[recipe.id] = card;
             card.btnDelete.gameObject.SetActive(false);
             card.togFollow.gameObject.SetActive(false);
+            card.togReady.onValueChanged.RemoveAllListeners();
+            foreach (var graphic in card.togReady.GetComponentsInChildren<Graphic>(true))
+                graphic.raycastTarget = false;
+            card.togReady.SetIsOnWithoutNotify(false);
             card.imgArrow.gameObject.SetActive(false);
             card._tog.onValueChanged.RemoveAllListeners();
             card._tog.onValueChanged.AddListener(isOn =>
@@ -347,12 +442,16 @@ namespace Code4101.Zaohua.Tiandao
 
         private void ShowSpectrum()
         {
+            RefreshGameState();
             _cell.view.togGroup.SetActiveButton(_spectrumButton);
             _cell.view.recipeScroll.gameObject.SetActive(false);
             _cell.view.itemScroll.gameObject.SetActive(false);
             _cell.view.craftingLogScroll.gameObject.SetActive(false);
             _smartPanel.SetActive(false);
             _spectrumPanel.SetActive(true);
+            // 丹谱是统一状态的投影，不依赖后台任务恰好在当前页面完成。
+            RefreshStaticAvailabilityAndQueueFallbacks();
+            if (_cell.lockRecipeSto != null) EnqueueRecipe(_cell.lockRecipeSto.recipeId, true);
         }
 
         private void CreateSmartPanel()
@@ -412,10 +511,10 @@ namespace Code4101.Zaohua.Tiandao
             _cell.view.craftingLogScroll.gameObject.SetActive(false);
             _spectrumPanel.SetActive(false);
             _smartPanel.SetActive(true);
-            StartSolveOrRenderCache();
+            RenderSelectedPlanOrEnqueue();
         }
 
-        private void StartSolveOrRenderCache()
+        private void RenderSelectedPlanOrEnqueue()
         {
             ClearSmartResults();
             var recipeSto = _cell.lockRecipeSto;
@@ -437,105 +536,193 @@ namespace Code4101.Zaohua.Tiandao
                 return;
             }
 
-            _visibleSolutionCount = 5;
             var globalOutcome = ReadAlchemyGlobalOutcome(Furnace);
-            var cacheKey = BuildSolutionCacheKey(globalOutcome.count, globalOutcome.quality);
-            if (!_solutionCache.ContainsKey(cacheKey) &&
-                AlchemySolutionCacheRepository.TryLoad(
-                    cacheKey, out var persistedSolutions, out var persistedCompletedStage))
+            var cacheKey = BuildSolutionCacheKey(_solvedRecipe, globalOutcome);
+            var state = GetOrCreatePlanState(cacheKey, _solvedRecipe.id);
+            state.PrepareInventory(_inventorySignature, _inventory);
+            _selectedPlanState = state;
+            if (state.InventoryComplete || state.Solutions.Count > 0)
             {
-                _solutionCache[cacheKey] = persistedSolutions;
-                _solutionCacheStages[cacheKey] = persistedCompletedStage;
-            }
-            if (_solutionCache.TryGetValue(cacheKey, out _solutions) &&
-                _solutionCacheStages.TryGetValue(cacheKey, out var completedStage) &&
-                (_solutions.Any(solution => solution.SearchStage <= completedStage && solution.IsAvailable(_inventory)) ||
-                 completedStage >= 3))
-            {
-                Debug.Log($"[Code4101 Tiandao] cache hit recipe={_solvedRecipe.id}, solutions={_solutions.Count}");
                 RenderSmartResults();
-                return;
             }
-
-            if (_solveTask != null && !_solveTask.IsCompleted && _activeSolveKey == cacheKey)
+            else
             {
-                SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
-                return;
+                SetMessage("智能炼丹\n\n丹谱已在后台预热当前丹方……\n可以继续查看丹方、切换页面或进行游戏");
             }
-
-            _solveCancellation?.Cancel();
-            _solveCancellation?.Dispose();
-            _solveCancellation = new CancellationTokenSource();
-            var token = _solveCancellation.Token;
-            var generation = ++_solveGeneration;
-            _activeSolveKey = cacheKey;
-            var request = new AlchemySolveRequest
-            {
-                CacheKey = cacheKey,
-                Generation = generation,
-                Recipe = _solvedRecipe,
-                Furnace = Furnace,
-                GlobalCountBonus = globalOutcome.count,
-                GlobalQualityBonus = globalOutcome.quality,
-                Herbs = Herbs.ToList(),
-                Inventory = new Dictionary<int, long>(_inventory),
-                Limit = 50,
-            };
-            SetMessage("智能炼丹\n\n正在后台求解……\n可以继续查看丹方、切换页面或进行游戏");
-            Debug.Log($"[Code4101 Tiandao] background solve started recipe={request.Recipe.id}, generation={generation}");
-            var progress = new AlchemySolveProgress();
-            _solveTask = AlchemySolveWorker.RunAsync(request, progress, token);
-            StartCoroutine(CompleteSolveOnMainThread(_solveTask, progress, request));
+            if (!state.InventoryComplete) EnqueueRecipe(_solvedRecipe.id, true);
         }
 
-        private IEnumerator CompleteSolveOnMainThread(
-            Task<AlchemySolveResponse> task,
-            AlchemySolveProgress progress,
-            AlchemySolveRequest activeRequest)
+        private void EnqueueRecipe(int recipeId, bool prioritize)
         {
-            var nextProgressRefresh = Time.realtimeSinceStartup + 5f;
-            var publishedRevision = 0;
-            while (!task.IsCompleted)
+            if (recipeId <= 0 || Furnace == null) return;
+            if (_activeRecipeId == recipeId && _solveTask != null && !_solveTask.IsCompleted) return;
+            var recipe = Singleton<TbDataImpl>.Instance.GetDrugRecipeCfg(recipeId);
+            if (recipe != null)
             {
-                if (Time.realtimeSinceStartup >= nextProgressRefresh)
+                var globalOutcome = ReadAlchemyGlobalOutcome(Furnace);
+                var cacheKey = BuildSolutionCacheKey(recipe, globalOutcome);
+                if (SessionPlanStates.TryGetValue(cacheKey, out var cachedState))
                 {
-                    nextProgressRefresh = Time.realtimeSinceStartup + 5f;
-                    var snapshot = progress.Snapshot(50, out var revision);
-                    if (revision > publishedRevision && snapshot.Count > 0 &&
-                        activeRequest.Generation == _solveGeneration &&
-                        _smartPanel.activeSelf && _activeSolveKey == activeRequest.CacheKey)
+                    cachedState.PrepareInventory(_inventorySignature, _inventory);
+                    if (cachedState.InventoryComplete)
                     {
-                        publishedRevision = revision;
-                        _solutions = snapshot;
-                        RenderSmartResults();
+                        RefreshRecipeViews(recipe, cachedState);
+                        return;
                     }
                 }
-                yield return null;
             }
-            if (task.IsCanceled) yield break;
-            var result = task.Result;
-            var request = result.Request;
-            if (request.Generation != _solveGeneration) yield break;
-            if (result.Error != null)
+            if (_queuedRecipeIds.Contains(recipeId))
             {
-                Debug.LogError($"[Code4101 Tiandao] background solve failed: {result.Error}");
-                if (_smartPanel.activeSelf) SetMessage("智能炼丹\n\n后台求解失败，请重新选择丹方后再试");
-                yield break;
+                if (!prioritize) return;
+                var existing = _prefetchQueue.Find(recipeId);
+                if (existing != null) _prefetchQueue.Remove(existing);
             }
-            if (_solutionCache.Count >= 32)
+            if (prioritize) _prefetchQueue.AddFirst(recipeId);
+            else _prefetchQueue.AddLast(recipeId);
+            _queuedRecipeIds.Add(recipeId);
+            if (_solveQueueCoroutine == null) _solveQueueCoroutine = StartCoroutine(ProcessSolveQueue());
+        }
+
+        private IEnumerator ProcessSolveQueue()
+        {
+            if (_solveCancellation == null || _solveCancellation.IsCancellationRequested)
             {
-                _solutionCache.Clear();
-                _solutionCacheStages.Clear();
+                _solveCancellation?.Dispose();
+                _solveCancellation = new CancellationTokenSource();
             }
-            _solutionCache[request.CacheKey] = result.Solutions;
-            _solutionCacheStages[request.CacheKey] = result.CompletedStage;
-            AlchemySolutionCacheRepository.Save(request.CacheKey, result.Solutions, result.CompletedStage);
-            Debug.Log($"[Code4101 Tiandao] background solved recipe={request.Recipe.id}, " +
-                      $"solutions={result.Solutions.Count}, elapsed={result.ElapsedMilliseconds}ms");
-            if (!_smartPanel.activeSelf || _activeSolveKey != request.CacheKey) yield break;
-            _solutions = result.Solutions;
-            _solvedRecipe = request.Recipe;
+            while (_prefetchQueue.Count > 0 && !_solveCancellation.IsCancellationRequested)
+            {
+                var node = _prefetchQueue.First;
+                _prefetchQueue.RemoveFirst();
+                var recipeId = node.Value;
+                _queuedRecipeIds.Remove(recipeId);
+                var recipe = Singleton<TbDataImpl>.Instance.GetDrugRecipeCfg(recipeId);
+                if (recipe == null || Furnace == null) continue;
+
+                var globalOutcome = ReadAlchemyGlobalOutcome(Furnace);
+                var cacheKey = BuildSolutionCacheKey(recipe, globalOutcome);
+                var state = GetOrCreatePlanState(cacheKey, recipe.id);
+                state.PrepareInventory(_inventorySignature, _inventory);
+                if (state.InventoryComplete)
+                {
+                    RefreshRecipeViews(recipe, state);
+                    continue;
+                }
+                var request = new AlchemySolveRequest
+                {
+                    CacheKey = cacheKey,
+                    Generation = _solveGeneration,
+                    Recipe = recipe,
+                    Furnace = Furnace,
+                    GlobalCountBonus = globalOutcome.count,
+                    GlobalQualityBonus = globalOutcome.quality,
+                    Herbs = Herbs.ToList(),
+                    Inventory = new Dictionary<int, long>(_inventory),
+                    InventorySignature = _inventorySignature,
+                    CachedStaticSolutions = state.StaticSolutions.ToList(),
+                    StaticComplete = state.StaticComplete,
+                };
+                _activeRecipeId = recipeId;
+                _activeSolveKey = cacheKey;
+                var progress = new AlchemySolveProgress();
+                Debug.Log($"[Code4101 Tiandao] prefetch started recipe={recipeId}, " +
+                          $"staticComplete={request.StaticComplete}, staticCached={request.CachedStaticSolutions.Count}");
+                _solveTask = AlchemySolveWorker.RunAsync(request, progress, _solveCancellation.Token);
+                var publishedRevision = 0;
+                var nextRefresh = Time.realtimeSinceStartup;
+                while (!_solveTask.IsCompleted)
+                {
+                    if (Time.realtimeSinceStartup >= nextRefresh)
+                    {
+                        nextRefresh = Time.realtimeSinceStartup + 0.25f;
+                        PublishSolveProgress(recipe, request, progress, ref publishedRevision);
+                    }
+                    yield return null;
+                }
+                if (_solveTask.IsCanceled) break;
+                var result = _solveTask.Result;
+                if (result.Error != null)
+                {
+                    Debug.LogError($"[Code4101 Tiandao] prefetch failed recipe={recipeId}: {result.Error}");
+                    continue;
+                }
+                var staticSolutions = result.Solutions
+                    .Where(solution => solution.SearchStage == 1 || solution.SearchStage == 2)
+                    .OrderBy(solution => solution.SearchStage)
+                    .ToList();
+                state.Complete(result.Solutions, request.InventorySignature, request.Inventory);
+                if (request.InventorySignature == _inventorySignature)
+                {
+                    RefreshRecipeViews(recipe, state);
+                }
+                else
+                {
+                    state.PrepareInventory(_inventorySignature, _inventory);
+                    RefreshRecipeViews(recipe, state);
+                    if (staticSolutions.Any(solution => solution.IsAvailable(_inventory)))
+                    {
+                        state.Complete(staticSolutions, _inventorySignature, _inventory);
+                        RefreshRecipeViews(recipe, state);
+                    }
+                    else
+                    {
+                        EnqueueRecipe(recipeId, false);
+                    }
+                }
+                Debug.Log($"[Code4101 Tiandao] prefetch solved recipe={recipeId}, solutions={result.Solutions.Count}, " +
+                          $"static={result.StaticElapsedMilliseconds}ms, backpack={result.BackpackElapsedMilliseconds}ms, " +
+                          $"total={result.ElapsedMilliseconds}ms");
+                _activeRecipeId = 0;
+                _activeSolveKey = null;
+            }
+            _solveQueueCoroutine = null;
+            _activeRecipeId = 0;
+            _activeSolveKey = null;
+            if (_prefetchQueue.Count > 0 && SmartAlchemyFeature.IsEnabled)
+                _solveQueueCoroutine = StartCoroutine(ProcessSolveQueue());
+        }
+
+        private void PublishSolveProgress(
+            TbDrugRecipeCfg recipe,
+            AlchemySolveRequest request,
+            AlchemySolveProgress progress,
+            ref int publishedRevision)
+        {
+            var snapshot = progress.Snapshot(3, out var revision);
+            if (revision <= publishedRevision || snapshot.Count == 0) return;
+            publishedRevision = revision;
+            var state = GetOrCreatePlanState(request.CacheKey, recipe.id);
+            state.Publish(snapshot, request.InventorySignature, request.Inventory);
+            if (request.InventorySignature == _inventorySignature) RefreshRecipeViews(recipe, state);
+        }
+
+        private void RefreshRecipeViews(TbDrugRecipeCfg recipe, AlchemyPlanState state)
+        {
+            RefreshSpectrumAvailability(recipe.id, state.Solutions);
+            if (!_smartPanel.activeSelf || _cell.lockRecipeSto?.recipeId != recipe.id) return;
+            var selectedOutcome = ReadAlchemyGlobalOutcome(Furnace);
+            var selectedKey = BuildSolutionCacheKey(recipe, selectedOutcome);
+            if (selectedKey != state.CacheKey) return;
+            _solvedRecipe = recipe;
+            _selectedPlanState = state;
             RenderSmartResults();
+        }
+
+        private static AlchemyPlanState GetOrCreatePlanState(string cacheKey, int recipeId)
+        {
+            if (SessionPlanStates.TryGetValue(cacheKey, out var state)) return state;
+            state = new AlchemyPlanState { CacheKey = cacheKey, RecipeId = recipeId };
+            SessionPlanStates[cacheKey] = state;
+            return state;
+        }
+
+        private void RefreshSpectrumAvailability(int recipeId, IReadOnlyList<AlchemySolution> solutions)
+        {
+            if (!_spectrumCardsByRecipe.TryGetValue(recipeId, out var card) || card?.togReady == null) return;
+            var available = solutions != null && solutions.Any(solution => solution.IsAvailable(_inventory));
+            if (card.togReady.isOn != available)
+                Debug.Log($"[Code4101 Tiandao] spectrum availability recipe={recipeId}, available={available}");
+            card.togReady.SetIsOnWithoutNotify(available);
         }
 
         private static CraftingDrugTmp ReadAlchemyGlobalOutcome(TbPackSto furnace)
@@ -561,15 +748,18 @@ namespace Code4101.Zaohua.Tiandao
             return outcome;
         }
 
-        private string BuildSolutionCacheKey(int globalCountBonus, int globalQualityBonus)
+        private string BuildSolutionCacheKey(
+            TbDrugRecipeCfg recipe,
+            CraftingDrugTmp globalOutcome)
         {
             var data = Singleton<TbDataImpl>.Instance;
             var furnaceCfg = data.GetCraftingItemCfg(Furnace.itemId.sedId);
             var furnaceShape = furnaceCfg == null ? "" :
                 $"{furnaceCfg.yangGridSize.x}x{furnaceCfg.yangGridSize.y}:{furnaceCfg.yinGridSize.x}x{furnaceCfg.yinGridSize.y}";
-            return $"solver-v7|{_solvedRecipe.id}|{_solvedRecipe.attrLimiteStr}|{_solvedRecipe.stateIdStr}|" +
+            return $"solver-v21|{recipe.id}|{recipe.attrLimiteStr}|{recipe.stateIdStr}|" +
                    $"{Furnace.itemId.blendEnum}:{Furnace.itemId.sedId}:{furnaceShape}:" +
-                   $"count+{globalCountBonus}:quality+{globalQualityBonus}|" +
+                   $"count+{globalOutcome.count}:quality+{globalOutcome.quality}:" +
+                   $"day+{globalOutcome.day}:dayMul={globalOutcome.dayMul.ToString("R", CultureInfo.InvariantCulture)}|" +
                    string.Join(";", Herbs.OrderBy(stock => stock.ItemId.sedId)
                        .Select(stock =>
                        {
@@ -583,32 +773,17 @@ namespace Code4101.Zaohua.Tiandao
         private void RenderSmartResults()
         {
             ClearSmartResults();
-            if (_solutions.Count == 0)
+            var solutions = _selectedPlanState?.Solutions ?? new List<AlchemySolution>();
+            if (solutions.Count == 0)
             {
                 SetMessage($"智能炼丹\n\n{_solvedRecipe.GetName}\n当前丹炉无法组成该丹方");
                 return;
             }
 
             _message.gameObject.SetActive(false);
-            CreateOnlyAvailableToggle();
-            var firstAvailableStage = _solutions
-                .Where(solution => solution.IsAvailable(_inventory))
-                .Select(solution => solution.SearchStage)
-                .DefaultIfEmpty(int.MaxValue)
-                .Min();
-            var stagedSolutions = firstAvailableStage == int.MaxValue
-                ? _solutions
-                : _solutions.Where(solution => solution.SearchStage <= firstAvailableStage).ToList();
-            var visibleSolutions = _onlyAvailable
-                ? stagedSolutions.Where(solution => solution.IsAvailable(_inventory)).ToList()
-                : stagedSolutions;
-            if (visibleSolutions.Count == 0)
-            {
-                SetMessage($"智能炼丹\n\n{_solvedRecipe.GetName}\n当前没有背包可用方案");
-                LayoutRebuilder.ForceRebuildLayoutImmediate(_smartContent);
-                return;
-            }
-            var count = Mathf.Min(_visibleSolutionCount, visibleSolutions.Count);
+            var visibleSolutions = solutions.OrderBy(solution => solution.SearchStage).Take(3).ToList();
+            var globalOutcome = ReadAlchemyGlobalOutcome(Furnace);
+            var count = visibleSolutions.Count;
             for (var index = 0; index < count; index++)
             {
                 var solution = visibleSolutions[index];
@@ -616,12 +791,10 @@ namespace Code4101.Zaohua.Tiandao
                 card.gameObject.name = $"Code4101SmartSolution_{index + 1}";
                 card.SetInfo(solution.ToTemplate(_solvedRecipe, index), false, false);
                 var plantingCost = CreatePlantingCostField(card, solution, _solvedRecipe);
-                NormalizeSmartSolutionCard(card, plantingCost);
+                var value = CreateValueField(card, solution, _solvedRecipe, globalOutcome);
+                NormalizeSmartSolutionCard(card, plantingCost, value);
+                card.gameObject.SetActive(true);
                 _smartResultObjects.Add(card.gameObject);
-            }
-            if (count < visibleSolutions.Count)
-            {
-                CreateLoadMoreButton(count, visibleSolutions.Count);
             }
             LayoutRebuilder.ForceRebuildLayoutImmediate(_smartContent);
         }
@@ -658,68 +831,39 @@ namespace Code4101.Zaohua.Tiandao
             return field;
         }
 
-        private void CreateOnlyAvailableToggle()
+        private TextPro CreateValueField(
+            CraftingLogInfoCell card,
+            AlchemySolution solution,
+            TbDrugRecipeCfg recipe,
+            CraftingDrugTmp globalOutcome)
         {
-            var toggleObject = new GameObject("Code4101OnlyAvailable", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
-            toggleObject.layer = _smartPanel.layer;
-            toggleObject.transform.SetParent(_smartContent, false);
-            toggleObject.transform.SetAsFirstSibling();
-            var image = toggleObject.GetComponent<Image>();
-            image.color = new Color(0.18f, 0.16f, 0.13f, 0.72f);
-            var layout = toggleObject.GetComponent<LayoutElement>();
-            layout.preferredHeight = 64f;
-            layout.minHeight = 64f;
-            var labelObject = Instantiate(_cell.view.txtNoRecipeTip.gameObject, toggleObject.transform);
-            labelObject.SetActive(true);
-            foreach (var localization in labelObject.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
-            var rect = labelObject.transform as RectTransform;
-            rect.anchorMin = Vector2.zero;
-            rect.anchorMax = Vector2.one;
-            rect.offsetMin = new Vector2(18f, 0f);
-            rect.offsetMax = new Vector2(-18f, 0f);
-            var label = labelObject.GetComponent<TextPro>();
-            label.alignment = TMPro.TextAlignmentOptions.MidlineLeft;
-            label.fontSize = 25f;
-            label.text = (_onlyAvailable ? "✓ " : "□ ") + "仅看可用";
-            toggleObject.GetComponent<Button>().onClick.AddListener(() =>
-            {
-                _onlyAvailable = !_onlyAvailable;
-                _visibleSolutionCount = 5;
-                RenderSmartResults();
-            });
-            _smartResultObjects.Add(toggleObject);
-        }
+            if (card?.txtAttrLimit == null || solution == null || recipe == null) return null;
+            var output = solution.ResolveOutputItem(recipe);
+            if (output == null) return null;
+            var pillCount = Math.Max(0, solution.BasePillCount + solution.TotalCountBonus);
+            var outputValue = (long)output.price * pillCount;
+            var materialValue = solution.MaterialValue();
+            var craftingDays = solution.CraftingDays(recipe, globalOutcome.day, globalOutcome.dayMul);
+            var netValue = outputValue - materialValue;
+            var dailyProfit = netValue / (double)Math.Max(1, craftingDays);
+            var roundedDailyProfit = (long)Math.Round(dailyProfit, MidpointRounding.AwayFromZero);
 
-        private void CreateLoadMoreButton(int shownCount, int totalCount)
-        {
-            var buttonObject = new GameObject("Code4101LoadMore", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
-            buttonObject.layer = _smartPanel.layer;
-            buttonObject.transform.SetParent(_smartContent, false);
-            var image = buttonObject.GetComponent<Image>();
-            image.color = new Color(0.25f, 0.20f, 0.15f, 0.22f);
-            var layout = buttonObject.GetComponent<LayoutElement>();
-            layout.preferredWidth = 360f;
-            layout.minWidth = 360f;
-            layout.preferredHeight = 86f;
-            var buttonRect = buttonObject.transform as RectTransform;
-            buttonRect.sizeDelta = new Vector2(360f, 86f);
-            var labelObject = Instantiate(_cell.view.txtNoRecipeTip.gameObject, buttonObject.transform);
-            labelObject.SetActive(true);
-            foreach (var localization in labelObject.GetComponentsInChildren<TextProLocalization>(true)) localization.enabled = false;
-            var rect = labelObject.transform as RectTransform;
-            rect.anchorMin = Vector2.zero;
-            rect.anchorMax = Vector2.one;
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
-            var label = labelObject.GetComponent<TextPro>();
-            label.fontSize = 28f;
-            label.text = $"加载更多\n（已显示 {shownCount}/{totalCount}）";
-            buttonObject.GetComponent<Button>().onClick.AddListener(() =>
+            var field = Instantiate(card.txtAttrLimit, card.txtAttrLimit.transform.parent);
+            field.gameObject.name = "Code4101AlchemyValue";
+            foreach (var localization in field.GetComponentsInChildren<TextProLocalization>(true))
+                localization.enabled = false;
+            foreach (var nested in field.GetComponentsInChildren<TextPro>(true))
             {
-                _visibleSolutionCount += 5;
-                RenderSmartResults();
-            });
-            _smartResultObjects.Add(buttonObject);
+                if (nested == field) continue;
+                if ((nested.text ?? string.Empty).Contains("灵草") ||
+                    nested.gameObject.name.IndexOf("title", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    nested.gameObject.name.IndexOf("label", StringComparison.OrdinalIgnoreCase) >= 0)
+                    nested.text = "价值：";
+            }
+            field.text = $"日收益 {CompactNumberDisplay.Format(roundedDailyProfit)}";
+            field.raycastTarget = false;
+            field.transform.SetSiblingIndex(card.txtAttrLimit.transform.GetSiblingIndex() + 2);
+            return field;
         }
 
         private void ClearSmartResults()
@@ -735,18 +879,25 @@ namespace Code4101.Zaohua.Tiandao
 
         internal void OnRecipeChanged()
         {
-            CancelActiveSolve();
             ClearSmartResults();
-            _solutions.Clear();
-            _solvedRecipe = null;
-            _visibleSolutionCount = 5;
+            _selectedPlanState = null;
+            var recipeId = _cell.lockRecipeSto?.recipeId ?? 0;
+            _solvedRecipe = recipeId > 0
+                ? Singleton<TbDataImpl>.Instance.GetDrugRecipeCfg(recipeId)
+                : null;
             if (_message != null)
             {
-                SetMessage("智能炼丹\n\n丹方已更换，进入“智能”后将重新计算");
+                SetMessage("智能炼丹\n\n丹方已更换，丹谱正在后台预热计算");
             }
             if (_smartContent != null)
             {
                 _smartContent.anchoredPosition = Vector2.zero;
+            }
+            if (recipeId > 0)
+            {
+                EnqueueRecipe(recipeId, true);
+                if (_smartPanel.activeSelf) RenderSelectedPlanOrEnqueue();
+                if (_spectrumPanel.activeSelf) RefreshStaticAvailabilityAndQueueFallbacks();
             }
         }
 
@@ -760,7 +911,10 @@ namespace Code4101.Zaohua.Tiandao
             _solveCancellation?.Dispose();
             _solveCancellation = null;
             _activeSolveKey = null;
+            _activeRecipeId = 0;
             _solveGeneration++;
+            _prefetchQueue.Clear();
+            _queuedRecipeIds.Clear();
         }
 
         private void OnDestroy()
@@ -784,51 +938,80 @@ namespace Code4101.Zaohua.Tiandao
             layout.minHeight = sourceRect.rect.height;
         }
 
-        private void NormalizeSmartSolutionCard(CraftingLogInfoCell card, TextPro plantingCost)
+        private void NormalizeSmartSolutionCard(CraftingLogInfoCell card, params TextPro[] extraFields)
         {
-            const float minimumCardHeight = 176f;
-            const float plantingCostGap = 6f;
+            const float minimumCardHeight = 206f;
+            const float extraFieldGap = 6f;
+            const float bottomPadding = 12f;
             var cardRect = card.transform as RectTransform;
             if (cardRect == null) return;
+            cardRect.anchorMin = new Vector2(0f, 1f);
+            cardRect.anchorMax = new Vector2(1f, 1f);
+            cardRect.pivot = new Vector2(0.5f, 1f);
             cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, minimumCardHeight);
+            foreach (var canvasGroup in card.GetComponentsInChildren<CanvasGroup>(true))
+            {
+                canvasGroup.alpha = 1f;
+                canvasGroup.interactable = true;
+                canvasGroup.blocksRaycasts = true;
+            }
             Canvas.ForceUpdateCanvases();
             var attrRect = card.txtAttrLimit.transform as RectTransform;
             if (attrRect != null)
             {
-                var requiredHeight = card.txtAttrLimit.preferredHeight;
-                if (requiredHeight > attrRect.rect.height)
-                {
-                    attrRect.sizeDelta = new Vector2(attrRect.sizeDelta.x, requiredHeight + 8f);
-                }
+                var requiredHeight = Mathf.Max(attrRect.rect.height, card.txtAttrLimit.preferredHeight + 8f);
+                SetHeightPreservingTop(attrRect, requiredHeight);
             }
 
-            var plantingCostHeight = 0f;
-            var plantingCostRect = plantingCost?.transform as RectTransform;
-            if (attrRect != null && plantingCostRect != null)
+            var previousRect = attrRect;
+            foreach (var extraField in extraFields ?? new TextPro[0])
             {
-                plantingCostHeight = plantingCost.preferredHeight;
-                plantingCostRect.anchorMin = attrRect.anchorMin;
-                plantingCostRect.anchorMax = attrRect.anchorMax;
-                plantingCostRect.pivot = new Vector2(attrRect.pivot.x, 1f);
-                plantingCostRect.sizeDelta = new Vector2(attrRect.sizeDelta.x, plantingCostHeight);
-                var attrBottom = attrRect.anchoredPosition.y - attrRect.rect.height * attrRect.pivot.y;
-                plantingCostRect.anchoredPosition = new Vector2(
-                    attrRect.anchoredPosition.x,
-                    attrBottom - plantingCostGap);
+                var extraRect = extraField?.transform as RectTransform;
+                if (previousRect == null || extraRect == null) continue;
+                var extraHeight = Mathf.Max(28f, extraField.preferredHeight + 4f);
+                var previousBottom = previousRect.TransformPoint(new Vector3(
+                    previousRect.rect.xMin + previousRect.rect.width * previousRect.pivot.x,
+                    previousRect.rect.yMin,
+                    0f));
+                extraRect.anchorMin = previousRect.anchorMin;
+                extraRect.anchorMax = previousRect.anchorMax;
+                extraRect.pivot = new Vector2(previousRect.pivot.x, 1f);
+                extraRect.sizeDelta = new Vector2(previousRect.sizeDelta.x, extraHeight);
+                // 两行可能处于拉伸锚点下，直接相减 anchoredPosition 会使用错误的旧高度。
+                // 以真实世界坐标的上一行底边为基准，保证灵草换行后成本、价值顺次下移。
+                extraRect.position = previousBottom +
+                                     extraRect.parent.TransformVector(new Vector3(0f, -extraFieldGap, 0f));
+                previousRect = extraRect;
             }
 
-            var textHeight = card.txtEffect.preferredHeight +
-                             card.txtName.preferredHeight +
-                             card.txtAttrLimit.preferredHeight +
-                             plantingCostHeight + plantingCostGap + 44f;
-            var height = Mathf.Max(minimumCardHeight, textHeight);
+            Canvas.ForceUpdateCanvases();
+            var contentBottom = previousRect == null
+                ? cardRect.rect.yMin
+                : cardRect.InverseTransformPoint(previousRect.TransformPoint(new Vector3(
+                    previousRect.rect.center.x,
+                    previousRect.rect.yMin,
+                    0f))).y;
+            var height = Mathf.Max(minimumCardHeight, cardRect.rect.yMax - contentBottom + bottomPadding);
             cardRect.sizeDelta = new Vector2(cardRect.sizeDelta.x, height);
             var cardLayout = card.GetComponent<LayoutElement>() ?? card.gameObject.AddComponent<LayoutElement>();
+            cardLayout.ignoreLayout = false;
             cardLayout.preferredWidth = -1f;
             cardLayout.minWidth = -1f;
             cardLayout.flexibleWidth = 1f;
             cardLayout.preferredHeight = height;
             cardLayout.minHeight = height;
+        }
+
+        private static void SetHeightPreservingTop(RectTransform rect, float height)
+        {
+            if (rect == null) return;
+            var top = rect.TransformPoint(new Vector3(
+                rect.rect.xMin + rect.rect.width * rect.pivot.x,
+                rect.rect.yMax,
+                0f));
+            rect.pivot = new Vector2(rect.pivot.x, 1f);
+            rect.sizeDelta = new Vector2(rect.sizeDelta.x, height);
+            rect.position = top;
         }
 
         private void SetMessage(string text)
@@ -853,6 +1036,7 @@ namespace Code4101.Zaohua.Tiandao
                 return;
             }
 
+            var previousFurnaceId = Furnace?.itemId.sedId ?? 0;
             Furnace = actor.packStoList.Find(s => s.flag == 202 && s.npcStoId == 10000);
 
             if (Furnace == null)
@@ -864,6 +1048,15 @@ namespace Code4101.Zaohua.Tiandao
                     SetMessage("智能炼丹\n\n请先装备丹炉\n依赖丹炉的求解功能暂不可用");
                 }
                 return;
+            }
+            var furnaceChanged = previousFurnaceId != 0 && previousFurnaceId != Furnace.itemId.sedId;
+            if (furnaceChanged)
+            {
+                CancelActiveSolve();
+                foreach (var card in _spectrumCardsByRecipe.Values)
+                {
+                    if (card?.togReady != null) card.togReady.SetIsOnWithoutNotify(false);
+                }
             }
 
             Herbs = Singleton<BsBagImpl>.Instance
@@ -894,6 +1087,27 @@ namespace Code4101.Zaohua.Tiandao
                 .ThenBy(stock => stock.ItemCfg.id)
                 .ToList();
 
+            var nextInventorySignature = string.Join(";", _inventory.OrderBy(pair => pair.Key)
+                .Select(pair => $"{pair.Key}:{pair.Value}"));
+            var inventoryChanged = nextInventorySignature != _inventorySignature;
+            if (inventoryChanged)
+            {
+                _inventorySignature = nextInventorySignature;
+                foreach (var card in _spectrumCardsByRecipe.Values)
+                {
+                    if (card?.togReady != null) card.togReady.SetIsOnWithoutNotify(false);
+                }
+                RefreshStaticAvailabilityAndQueueFallbacks();
+            }
+            if (furnaceChanged)
+            {
+                foreach (var pair in _spectrumCardsByRecipe)
+                {
+                    if (_cell.lockRecipeSto?.recipeId == pair.Key || pair.Value.gameObject.activeSelf)
+                        EnqueueRecipe(pair.Key, _cell.lockRecipeSto?.recipeId == pair.Key);
+                }
+            }
+
             var totalCount = _inventory.Values.Sum();
             if (_message != null)
             {
@@ -901,6 +1115,25 @@ namespace Code4101.Zaohua.Tiandao
                     $"智能炼丹\n\n丹炉：{Furnace.name}\n" +
                     $"背包药材：{_inventory.Count} 种，共 {totalCount} 份\n" +
                     "丹炉与药材数据已就绪");
+            }
+        }
+
+        private void RefreshStaticAvailabilityAndQueueFallbacks()
+        {
+            if (Furnace == null) return;
+            foreach (var pair in _spectrumCardsByRecipe)
+            {
+                var recipe = Singleton<TbDataImpl>.Instance.GetDrugRecipeCfg(pair.Key);
+                if (recipe == null) continue;
+                var outcome = ReadAlchemyGlobalOutcome(Furnace);
+                var cacheKey = BuildSolutionCacheKey(recipe, outcome);
+                if (!SessionPlanStates.TryGetValue(cacheKey, out var state)) continue;
+                state.PrepareInventory(_inventorySignature, _inventory);
+                RefreshRecipeViews(recipe, state);
+                if (!state.InventoryComplete &&
+                    (_cell.lockRecipeSto?.recipeId == pair.Key ||
+                     (_spectrumCardsByRecipe.TryGetValue(pair.Key, out var card) && card.gameObject.activeSelf)))
+                    EnqueueRecipe(pair.Key, _cell.lockRecipeSto?.recipeId == pair.Key);
             }
         }
 

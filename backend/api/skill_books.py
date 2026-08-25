@@ -5,26 +5,46 @@ import hashlib
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from backend.core.access.auth import get_current_active_user
-from backend.db import get_session
+from backend.db import engine, get_session
 from backend.models import (
     LibraryBookAsset,
     LibraryBookPlacement,
+    LibraryFolder,
     LibraryReadingState,
     PdfBookshelfPlacement,
     PdfLibraryBookshelf,
     User,
 )
 from backend.api.pdf_documents import _resolve_bookshelf_resource_access
+from backend.core.library.dynamic_book_pagination import (
+    DYNAMIC_BOOK_CHARACTERS_PER_PAGE,
+    dynamic_book_page_at,
+    dynamic_book_page_count,
+)
+from backend.core.library.book_metadata import normalize_book_start_date
+from backend.core.ai.app_config import (
+    AI_APP_SKILL_BOOK_TRANSLATION,
+    AiAppConfigError,
+    resolve_ai_app_runtime_config,
+)
+from backend.core.jobs.local_runtime import submit_local_job_once
+from backend.core.library.skill_book_translation import (
+    SkillTranslationSource,
+    detect_markdown_language,
+    translate_skill_sources,
+    translation_state,
+)
 
 
 router = APIRouter()
@@ -35,11 +55,12 @@ SKILL_BOOK_TITLE = "本地 Skill 手册"
 SKILL_BOOK_AUTHOR = "CodeYun"
 LOCAL_SKILL_BOOK_OWNER_USERNAME = "code4101"
 MAX_SKILL_MARKDOWN_BYTES = 2 * 1024 * 1024
-SKILL_BOOK_PAGINATION_VERSION = 2
+SKILL_BOOK_PAGINATION_VERSION = 3
 SKILL_BOOK_LINE_CAPACITY_UNITS = 44
 SKILL_BOOK_LINES_PER_PAGE = 30
-SKILL_BOOK_PAGE_CAPACITY_UNITS = SKILL_BOOK_LINE_CAPACITY_UNITS * SKILL_BOOK_LINES_PER_PAGE
+SKILL_BOOK_PAGE_CAPACITY_UNITS = DYNAMIC_BOOK_CHARACTERS_PER_PAGE
 DEFAULT_SKILL_BOOK_PAGE_FORMAT = "A4"
+SKILL_BOOK_TRANSLATION_TASK_KEY = "skill_book_translation"
 SKILL_BOOK_PAGE_FORMATS: dict[str, tuple[str, float, float]] = {
     "A3": ("A3", 297.0, 420.0),
     "A4": ("A4", 210.0, 297.0),
@@ -47,6 +68,15 @@ SKILL_BOOK_PAGE_FORMATS: dict[str, tuple[str, float, float]] = {
     "B5": ("B5", 176.0, 250.0),
     "LETTER": ("Letter", 215.9, 279.4),
 }
+_SKILL_BOOK_SCAN_CACHE_LOCK = threading.Lock()
+_SKILL_BOOK_SCAN_CACHE: dict[
+    tuple[str, str, int],
+    tuple[
+        tuple[tuple[str, int, int], ...],
+        SkillBookCatalog,
+        dict[str, tuple[SkillBookChapter, Path]],
+    ],
+] = {}
 
 
 def _ensure_local_skill_book_asset(
@@ -60,6 +90,7 @@ def _ensure_local_skill_book_asset(
 
     asset = session.get(LibraryBookAsset, SKILL_BOOK_ASSET_ID)
     now = time.time()
+    changed = False
     if asset is None:
         asset = LibraryBookAsset(
             id=SKILL_BOOK_ASSET_ID,
@@ -74,6 +105,9 @@ def _ensure_local_skill_book_asset(
             updated_at=now,
         )
         session.add(asset)
+        changed = True
+    elif bool((asset.metadata_json or {}).get("library_hidden")):
+        raise HTTPException(status_code=404, detail="Local skill book not found")
 
     shelves = list(session.exec(
         select(PdfLibraryBookshelf)
@@ -89,7 +123,8 @@ def _ensure_local_skill_book_asset(
                 created_at=now,
                 updated_at=now,
             ))
-        session.commit()
+        changed = True
+        session.flush()
         shelves = list(session.exec(
             select(PdfLibraryBookshelf)
             .where(PdfLibraryBookshelf.user_id == owner.id)
@@ -126,9 +161,11 @@ def _ensure_local_skill_book_asset(
             updated_at=now,
         )
         session.add(placement)
-    session.commit()
-    session.refresh(asset)
-    session.refresh(placement)
+        changed = True
+    if changed:
+        session.commit()
+        session.refresh(asset)
+        session.refresh(placement)
     shelf = session.get(PdfLibraryBookshelf, placement.bookshelf_id) or default_shelf
     return asset, placement, shelf, owner
 
@@ -171,11 +208,15 @@ class SkillBookChapter(BaseModel):
     kind: Literal["main", "reference"]
     revision: str
     character_count: int
+    book_character_start: int = 0
     reading_unit_count: int
     estimated_page_count: int
     page_start: int
     page_end: int
+    created_at: float
+    modified_at: float
     updated_at: float
+    source_language: Literal["zh", "en", "mixed"] = "mixed"
 
 
 class SkillBookSkill(BaseModel):
@@ -192,12 +233,15 @@ class SkillBookPlacementPayload(BaseModel):
     shelf_index: int = 0
     position_index: int = 0
     orientation: Literal["spine_vertical", "spine_horizontal", "cover_front"] = "spine_vertical"
+    folder_id: str | None = None
 
 
 class SkillBookCatalog(BaseModel):
     id: str = SKILL_BOOK_ID
+    asset_id: str = SKILL_BOOK_ASSET_ID
     title: str = SKILL_BOOK_TITLE
     author: str = SKILL_BOOK_AUTHOR
+    start_date: str = ""
     cover_color: str = "#315f53"
     revision: str
     skill_count: int
@@ -223,12 +267,32 @@ class SkillBookPlacementUpdate(BaseModel):
     shelf_index: int = Field(default=0, ge=0)
     position_index: int = Field(default=0, ge=0)
     orientation: Literal["spine_vertical", "spine_horizontal", "cover_front"] = "spine_vertical"
+    folder_id: str | None = None
+
+
+class SkillBookTranslationPayload(BaseModel):
+    status: Literal["not_needed", "missing", "pending", "done", "error"]
+    language: str = "zh-CN"
+    source_revision: str
+    revision: str = ""
+    markdown: str = ""
+    updated_at: float | None = None
+    error_message: str = ""
 
 
 class SkillBookChapterContent(BaseModel):
     book_id: str = SKILL_BOOK_ID
     chapter: SkillBookChapter
     markdown: str
+    translation: SkillBookTranslationPayload
+
+
+class SkillBookTranslationSyncPayload(BaseModel):
+    eligible_count: int
+    ready_count: int
+    queued_count: int
+    task_id: str | None = None
+    status: Literal["ready", "queued", "running"]
 
 
 class SkillBookReadingStatePayload(BaseModel):
@@ -250,6 +314,12 @@ class SkillBookReadingStateUpdate(BaseModel):
 
 class SkillBookMetadataUpdate(BaseModel):
     page_format: str = DEFAULT_SKILL_BOOK_PAGE_FORMAT
+    start_date: str = Field(default="", max_length=10)
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, value: str) -> str:
+        return normalize_book_start_date(value)
 
 
 def _normalize_page_format(value: str | None) -> str:
@@ -268,7 +338,7 @@ def _page_capacity(page_format: str) -> tuple[int, int, int]:
     _label, width_mm, height_mm = SKILL_BOOK_PAGE_FORMATS[_normalize_page_format(page_format)]
     line_capacity = max(24, round(SKILL_BOOK_LINE_CAPACITY_UNITS * width_mm / 210.0))
     lines_per_page = max(18, round(SKILL_BOOK_LINES_PER_PAGE * height_mm / 297.0))
-    return line_capacity, lines_per_page, line_capacity * lines_per_page
+    return line_capacity, lines_per_page, DYNAMIC_BOOK_CHARACTERS_PER_PAGE
 
 
 def _skills_root() -> Path:
@@ -319,6 +389,15 @@ def _markdown_title(markdown: str, fallback: str) -> str:
 
 def _chapter_id(relative_path: str) -> str:
     return base64.urlsafe_b64encode(relative_path.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _file_created_at(stat_result: os.stat_result) -> float:
+    birth_time = float(getattr(stat_result, "st_birthtime", 0.0) or 0.0)
+    if birth_time > 0:
+        return birth_time
+    if os.name == "nt":
+        return float(stat_result.st_ctime)
+    return min(float(stat_result.st_ctime), float(stat_result.st_mtime))
 
 
 def _character_width_units(text: str) -> float:
@@ -381,11 +460,15 @@ def _chapter_payload(
     metadata, body = _split_frontmatter(raw_markdown)
     relative_path = path.relative_to(root).as_posix()
     stat = path.stat()
+    created_at = _file_created_at(stat)
+    modified_at = float(stat.st_mtime)
     fallback_title = skill_id if kind == "main" else path.stem
     title = metadata.get("name", "").strip() if kind == "main" else ""
     title = title or _markdown_title(body, fallback_title)
     revision = hashlib.sha256(raw_markdown.encode("utf-8")).hexdigest()
+    source_language = detect_markdown_language(body)
     reading_unit_count = _estimate_markdown_reading_units(body, line_capacity_units)
+    character_count = len(body)
     return (
         SkillBookChapter(
             id=_chapter_id(relative_path),
@@ -394,12 +477,18 @@ def _chapter_payload(
             relative_path=relative_path,
             kind=kind,
             revision=revision,
-            character_count=len(body),
+            character_count=character_count,
             reading_unit_count=reading_unit_count,
-            estimated_page_count=max(1, math.ceil(reading_unit_count / page_capacity_units)),
+            estimated_page_count=dynamic_book_page_count(
+                character_count,
+                page_capacity_units,
+            ),
             page_start=1,
             page_end=1,
-            updated_at=stat.st_mtime,
+            created_at=created_at,
+            modified_at=modified_at,
+            updated_at=modified_at,
+            source_language=source_language,
         ),
         body,
         metadata,
@@ -409,6 +498,7 @@ def _chapter_payload(
 def _scan_skill_book(
     root: Path | None = None,
     page_format: str = DEFAULT_SKILL_BOOK_PAGE_FORMAT,
+    page_capacity_units: int = SKILL_BOOK_PAGE_CAPACITY_UNITS,
 ) -> tuple[SkillBookCatalog, dict[str, tuple[SkillBookChapter, Path]]]:
     resolved_root = (root or _skills_root()).resolve(strict=False)
     if not resolved_root.is_dir():
@@ -416,12 +506,13 @@ def _scan_skill_book(
 
     normalized_page_format = _normalize_page_format(page_format)
     _page_label, page_width_mm, page_height_mm = SKILL_BOOK_PAGE_FORMATS[normalized_page_format]
-    line_capacity_units, _lines_per_page, page_capacity_units = _page_capacity(normalized_page_format)
+    line_capacity_units, _lines_per_page, _default_page_capacity = _page_capacity(normalized_page_format)
+    page_capacity_units = max(1, int(page_capacity_units))
     skills: list[SkillBookSkill] = []
     chapter_lookup: dict[str, tuple[SkillBookChapter, Path]] = {}
     revision_parts: list[str] = []
     latest_updated_at = 0.0
-    next_page = 1
+    next_character = 0
 
     for skill_dir in sorted(resolved_root.iterdir(), key=lambda item: item.name.casefold()):
         main_path = skill_dir / "SKILL.md"
@@ -459,9 +550,12 @@ def _scan_skill_book(
             chapter_rows.append(chapter)
 
         for chapter in chapter_rows:
-            chapter.page_start = next_page
-            chapter.page_end = next_page + chapter.estimated_page_count - 1
-            next_page = chapter.page_end + 1
+            chapter.book_character_start = next_character
+            chapter.page_start = dynamic_book_page_at(next_character, page_capacity_units)
+            next_character += chapter.character_count
+            last_character = max(chapter.book_character_start, next_character - 1)
+            chapter.page_end = dynamic_book_page_at(last_character, page_capacity_units)
+            chapter.estimated_page_count = chapter.page_end - chapter.page_start + 1
             chapter_lookup[chapter.id] = (chapter, resolved_root / chapter.relative_path)
             revision_parts.append(f"{chapter.relative_path}\0{chapter.revision}")
             latest_updated_at = max(latest_updated_at, chapter.updated_at)
@@ -482,7 +576,7 @@ def _scan_skill_book(
         revision=revision,
         skill_count=len(skills),
         chapter_count=chapter_count,
-        estimated_page_count=max(1, next_page - 1),
+        estimated_page_count=dynamic_book_page_count(next_character, page_capacity_units),
         page_format=normalized_page_format,
         page_width_mm=page_width_mm,
         page_height_mm=page_height_mm,
@@ -499,21 +593,65 @@ def _scan_skill_book(
     return catalog, chapter_lookup
 
 
+def _skill_book_source_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    rows: list[tuple[str, int, int]] = []
+    for skill_dir in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
+        main_path = skill_dir / "SKILL.md"
+        if not skill_dir.is_dir() or not main_path.is_file():
+            continue
+        for path in skill_dir.rglob("*.md"):
+            relative_parts = path.relative_to(skill_dir).parts
+            if any(part.startswith(".") for part in relative_parts):
+                continue
+            stat = path.stat()
+            rows.append((path.relative_to(root).as_posix(), stat.st_size, stat.st_mtime_ns))
+    rows.sort(key=lambda item: item[0].casefold())
+    return tuple(rows)
+
+
+def _scan_skill_book_cached(
+    root: Path | None = None,
+    page_format: str = DEFAULT_SKILL_BOOK_PAGE_FORMAT,
+    page_capacity_units: int = SKILL_BOOK_PAGE_CAPACITY_UNITS,
+) -> tuple[SkillBookCatalog, dict[str, tuple[SkillBookChapter, Path]]]:
+    resolved_root = (root or _skills_root()).resolve(strict=False)
+    if not resolved_root.is_dir():
+        raise HTTPException(status_code=404, detail="Local Skill directory not found")
+
+    normalized_page_format = _normalize_page_format(page_format)
+    normalized_page_capacity = max(1, int(page_capacity_units))
+    signature = _skill_book_source_signature(resolved_root)
+    cache_key = (str(resolved_root), normalized_page_format, normalized_page_capacity)
+    with _SKILL_BOOK_SCAN_CACHE_LOCK:
+        cached = _SKILL_BOOK_SCAN_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return cached[1], cached[2]
+        result = _scan_skill_book(
+            resolved_root,
+            page_format=normalized_page_format,
+            page_capacity_units=normalized_page_capacity,
+        )
+        _SKILL_BOOK_SCAN_CACHE[cache_key] = (signature, result[0], result[1])
+        return result
+
+
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
 
 
-def _reading_page(chapter: SkillBookChapter | None, character_offset: int) -> int:
+def _reading_page(
+    chapter: SkillBookChapter | None,
+    character_offset: int,
+    page_capacity_units: int = SKILL_BOOK_PAGE_CAPACITY_UNITS,
+) -> int:
     if chapter is None or chapter.character_count <= 0:
         return 1
-    bounded_offset = min(chapter.character_count, max(0, character_offset))
-    progress = bounded_offset / chapter.character_count
-    chapter_page = min(
-        chapter.estimated_page_count,
-        math.floor(progress * chapter.estimated_page_count) + 1,
+    bounded_offset = min(chapter.character_count - 1, max(0, character_offset))
+    return dynamic_book_page_at(
+        chapter.book_character_start + bounded_offset,
+        page_capacity_units,
     )
-    return chapter.page_start + chapter_page - 1
 
 
 def _get_reading_state(session: Session, user_id: int) -> LibraryReadingState | None:
@@ -530,6 +668,7 @@ def _serialize_reading_state(
     lookup: dict[str, tuple[SkillBookChapter, Path]],
     *,
     page_format: str = DEFAULT_SKILL_BOOK_PAGE_FORMAT,
+    page_capacity_units: int = SKILL_BOOK_PAGE_CAPACITY_UNITS,
 ) -> SkillBookReadingStatePayload:
     chapter = lookup.get(state.chapter_id)[0] if state and state.chapter_id in lookup else None
     offset = min(chapter.character_count, max(0, state.character_offset)) if chapter and state else 0
@@ -537,7 +676,7 @@ def _serialize_reading_state(
         chapter_id=chapter.id if chapter else "",
         character_offset=offset,
         chapter_revision=state.chapter_revision if state and chapter else "",
-        current_page=_reading_page(chapter, offset),
+        current_page=_reading_page(chapter, offset, page_capacity_units),
         page_format=page_format,
         updated_at=state.updated_at if state and chapter else None,
     )
@@ -550,14 +689,18 @@ def get_local_skill_book_catalog(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ) -> SkillBookCatalog:
-    asset, placement, _shelf, owner, role = _get_local_skill_book_context(
+    asset, placement, shelf, owner, role = _get_local_skill_book_context(
         session, current_user, bookshelf_id=bookshelf_id
     )
     _no_store(response)
-    catalog, _lookup = _scan_skill_book(page_format=_asset_page_format(asset))
+    catalog, _lookup = _scan_skill_book_cached(
+        page_format=_asset_page_format(asset),
+        page_capacity_units=shelf.logical_page_target_characters,
+    )
     return catalog.model_copy(update={
         "title": asset.title,
         "author": asset.author,
+        "start_date": str((asset.metadata_json or {}).get("start_date") or ""),
         "cover_color": asset.cover_color,
         "owner_user_id": owner.id,
         "owner_username": owner.username,
@@ -568,8 +711,30 @@ def get_local_skill_book_catalog(
             shelf_index=placement.shelf_index,
             position_index=placement.position_index,
             orientation=placement.orientation,
+            folder_id=placement.folder_id,
         ),
     })
+
+
+@router.delete("/local", status_code=204)
+def delete_local_skill_book(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    asset, placement, _shelf, _owner, _role = _get_local_skill_book_context(
+        session, current_user, required_role="manager"
+    )
+    metadata = dict(asset.metadata_json or {})
+    metadata["library_hidden"] = True
+    asset.metadata_json = metadata
+    asset.updated_at = time.time()
+    session.add(asset)
+    session.delete(placement)
+    state = _get_reading_state(session, current_user.id)
+    if state is not None:
+        session.delete(state)
+    session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/local/chapters/{chapter_id}", response_model=SkillBookChapterContent)
@@ -579,12 +744,16 @@ def get_local_skill_book_chapter(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ) -> SkillBookChapterContent:
-    asset, _placement, _shelf, _owner, _role = _get_local_skill_book_context(
+    asset, _placement, shelf, _owner, _role = _get_local_skill_book_context(
         session, current_user
     )
     _no_store(response)
     page_format = _asset_page_format(asset)
-    _catalog, lookup = _scan_skill_book(page_format=page_format)
+    page_capacity_units = shelf.logical_page_target_characters
+    _catalog, lookup = _scan_skill_book_cached(
+        page_format=page_format,
+        page_capacity_units=page_capacity_units,
+    )
     row = lookup.get(chapter_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Skill chapter not found")
@@ -595,16 +764,146 @@ def get_local_skill_book_chapter(
     if current_revision != chapter.revision:
         line_capacity_units, _lines_per_page, page_capacity_units = _page_capacity(page_format)
         reading_unit_count = _estimate_markdown_reading_units(body, line_capacity_units)
-        estimated_page_count = max(1, math.ceil(reading_unit_count / page_capacity_units))
+        last_character = max(chapter.book_character_start, chapter.book_character_start + len(body) - 1)
+        page_end = dynamic_book_page_at(last_character, page_capacity_units)
+        estimated_page_count = page_end - chapter.page_start + 1
+        stat = path.stat()
         chapter = chapter.model_copy(update={
             "revision": current_revision,
             "character_count": len(body),
             "reading_unit_count": reading_unit_count,
             "estimated_page_count": estimated_page_count,
-            "page_end": chapter.page_start + estimated_page_count - 1,
-            "updated_at": path.stat().st_mtime,
+            "page_end": page_end,
+            "created_at": _file_created_at(stat),
+            "modified_at": stat.st_mtime,
+            "updated_at": stat.st_mtime,
+            "source_language": detect_markdown_language(body),
         })
-    return SkillBookChapterContent(chapter=chapter, markdown=body)
+    return SkillBookChapterContent(
+        chapter=chapter,
+        markdown=body,
+        translation=SkillBookTranslationPayload(**translation_state(
+            chapter_id=chapter.id,
+            source_revision=current_revision,
+            source_language=chapter.source_language,
+        )),
+    )
+
+
+@router.post("/local/translations/sync", response_model=SkillBookTranslationSyncPayload)
+def sync_local_skill_book_translations(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+) -> SkillBookTranslationSyncPayload:
+    asset, _placement, shelf, _owner, _role = _get_local_skill_book_context(
+        session, current_user
+    )
+    _catalog, lookup = _scan_skill_book_cached(
+        page_format=_asset_page_format(asset),
+        page_capacity_units=shelf.logical_page_target_characters,
+    )
+    eligible_count = 0
+    ready_count = 0
+    sources: list[SkillTranslationSource] = []
+    for chapter, path in lookup.values():
+        if chapter.source_language != "en":
+            continue
+        eligible_count += 1
+        state = translation_state(
+            chapter_id=chapter.id,
+            source_revision=chapter.revision,
+            source_language=chapter.source_language,
+        )
+        if state["status"] == "done":
+            ready_count += 1
+            continue
+        raw_markdown = _read_markdown(path)
+        _metadata, body = _split_frontmatter(raw_markdown)
+        sources.append(SkillTranslationSource(
+            chapter_id=chapter.id,
+            relative_path=chapter.relative_path,
+            source_revision=chapter.revision,
+            markdown=body,
+        ))
+
+    if not sources:
+        return SkillBookTranslationSyncPayload(
+            eligible_count=eligible_count,
+            ready_count=ready_count,
+            queued_count=0,
+            status="ready",
+        )
+    try:
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=current_user,
+            app_id=AI_APP_SKILL_BOOK_TRANSLATION,
+        )
+    except AiAppConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    del runtime  # Preflight only; credentials must never enter persistent Local Job input.
+    local_run, created = submit_local_job_once(
+        job_type="library.skill-book-translation",
+        payload={"user_id": current_user.id},
+        user_id=current_user.id,
+    )
+    return SkillBookTranslationSyncPayload(
+        eligible_count=eligible_count,
+        ready_count=ready_count,
+        queued_count=len(sources),
+        task_id=local_run.id,
+        status="queued" if created else "running",
+    )
+
+
+def run_skill_book_translation_local_job_payload(
+    *,
+    user_id: int,
+    progress_callback=None,
+) -> dict[str, int]:
+    """Resolve current files and AI credentials inside the detached worker."""
+
+    with Session(engine) as session:
+        user = session.get(User, int(user_id))
+        if user is None:
+            raise RuntimeError(f"Skill 手册翻译用户不存在：{user_id}")
+        asset, _placement, shelf, _owner, _role = _get_local_skill_book_context(session, user)
+        _catalog, lookup = _scan_skill_book_cached(
+            page_format=_asset_page_format(asset),
+            page_capacity_units=shelf.logical_page_target_characters,
+        )
+        sources: list[SkillTranslationSource] = []
+        for chapter, path in lookup.values():
+            if chapter.source_language != "en":
+                continue
+            state = translation_state(
+                chapter_id=chapter.id,
+                source_revision=chapter.revision,
+                source_language=chapter.source_language,
+            )
+            if state["status"] == "done":
+                continue
+            raw_markdown = _read_markdown(path)
+            _metadata, body = _split_frontmatter(raw_markdown)
+            sources.append(
+                SkillTranslationSource(
+                    chapter_id=chapter.id,
+                    relative_path=chapter.relative_path,
+                    source_revision=chapter.revision,
+                    markdown=body,
+                )
+            )
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_SKILL_BOOK_TRANSLATION,
+        )
+    result = translate_skill_sources(
+        sources,
+        runtime=runtime,
+        progress_callback=progress_callback,
+    )
+    return {**result, "queued_count": len(sources)}
 
 
 @router.get("/local/my-state", response_model=SkillBookReadingStatePayload)
@@ -613,14 +912,23 @@ def get_local_skill_book_reading_state(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ) -> SkillBookReadingStatePayload:
-    asset, _placement, _shelf, _owner, _role = _get_local_skill_book_context(
+    asset, _placement, shelf, _owner, _role = _get_local_skill_book_context(
         session, current_user
     )
     _no_store(response)
     state = _get_reading_state(session, current_user.id)
     page_format = _asset_page_format(asset)
-    _catalog, lookup = _scan_skill_book(page_format=page_format)
-    return _serialize_reading_state(state, lookup, page_format=page_format)
+    page_capacity_units = shelf.logical_page_target_characters
+    _catalog, lookup = _scan_skill_book_cached(
+        page_format=page_format,
+        page_capacity_units=page_capacity_units,
+    )
+    return _serialize_reading_state(
+        state,
+        lookup,
+        page_format=page_format,
+        page_capacity_units=page_capacity_units,
+    )
 
 
 @router.put("/local/my-state", response_model=SkillBookReadingStatePayload)
@@ -630,13 +938,17 @@ def update_local_skill_book_reading_state(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ) -> SkillBookReadingStatePayload:
-    asset, _placement, _shelf, _owner, _role = _get_local_skill_book_context(
+    asset, _placement, shelf, _owner, _role = _get_local_skill_book_context(
         session, current_user
     )
     _no_store(response)
     state = _get_reading_state(session, current_user.id)
     page_format = _asset_page_format(asset)
-    _catalog, lookup = _scan_skill_book(page_format=page_format)
+    page_capacity_units = shelf.logical_page_target_characters
+    _catalog, lookup = _scan_skill_book_cached(
+        page_format=page_format,
+        page_capacity_units=page_capacity_units,
+    )
     row = lookup.get(payload.chapter_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Skill chapter not found")
@@ -656,7 +968,12 @@ def update_local_skill_book_reading_state(
     session.add(state)
     session.commit()
     session.refresh(state)
-    return _serialize_reading_state(state, lookup, page_format=page_format)
+    return _serialize_reading_state(
+        state,
+        lookup,
+        page_format=page_format,
+        page_capacity_units=page_capacity_units,
+    )
 
 
 @router.put("/local/metadata", response_model=SkillBookCatalog)
@@ -666,7 +983,7 @@ def update_local_skill_book_metadata(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
 ) -> SkillBookCatalog:
-    asset, placement, _shelf, owner, role = _get_local_skill_book_context(
+    asset, placement, shelf, owner, role = _get_local_skill_book_context(
         session, current_user, required_role="manager"
     )
     _no_store(response)
@@ -674,14 +991,23 @@ def update_local_skill_book_metadata(
     if payload.page_format.strip().upper() not in SKILL_BOOK_PAGE_FORMATS:
         raise HTTPException(status_code=422, detail="Unsupported page format")
     now = time.time()
-    asset.metadata_json = {**(asset.metadata_json or {}), "page_format": normalized_page_format}
+    metadata = {
+        **(asset.metadata_json or {}),
+        "page_format": normalized_page_format,
+        "start_date": payload.start_date,
+    }
+    asset.metadata_json = metadata
     asset.updated_at = now
     session.add(asset)
     session.commit()
-    catalog, _lookup = _scan_skill_book(page_format=normalized_page_format)
+    catalog, _lookup = _scan_skill_book(
+        page_format=normalized_page_format,
+        page_capacity_units=shelf.logical_page_target_characters,
+    )
     return catalog.model_copy(update={
         "title": asset.title,
         "author": asset.author,
+        "start_date": payload.start_date,
         "cover_color": asset.cover_color,
         "owner_user_id": owner.id,
         "owner_username": owner.username,
@@ -692,6 +1018,7 @@ def update_local_skill_book_metadata(
             shelf_index=placement.shelf_index,
             position_index=placement.position_index,
             orientation=placement.orientation,
+            folder_id=placement.folder_id,
         ),
     })
 
@@ -708,8 +1035,18 @@ def update_local_skill_book_placement(
     target_shelf = session.get(PdfLibraryBookshelf, payload.bookshelf_id)
     if target_shelf is None or target_shelf.user_id != owner.id:
         raise HTTPException(status_code=404, detail="Bookshelf not found")
+    target_folder = None
+    if payload.folder_id:
+        target_folder = session.get(LibraryFolder, payload.folder_id)
+        if (
+            target_folder is None
+            or target_folder.owner_user_id != owner.id
+            or target_folder.bookshelf_id != target_shelf.id
+        ):
+            raise HTTPException(status_code=404, detail="Library folder not found")
     placement.bookshelf_id = target_shelf.id
-    placement.shelf_index = payload.shelf_index
+    placement.folder_id = target_folder.id if target_folder else None
+    placement.shelf_index = target_folder.shelf_index if target_folder else payload.shelf_index
     placement.position_index = payload.position_index
     placement.orientation = payload.orientation
     placement.updated_at = time.time()
@@ -721,4 +1058,5 @@ def update_local_skill_book_placement(
         shelf_index=placement.shelf_index,
         position_index=placement.position_index,
         orientation=placement.orientation,
+        folder_id=placement.folder_id,
     )

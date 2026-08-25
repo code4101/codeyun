@@ -1,6 +1,7 @@
 import re
 import time
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -28,6 +29,7 @@ from backend.api.notes import (
     _repair_codex_diary_body_number_prefixes,
     _run_codex_diary_import_worker,
     mark_stale_codex_diary_import_runs,
+    maybe_enqueue_codex_diary_yesterday_import,
     run_codex_diary_auto_import_job,
 )
 from backend.models import AppSetting, CodexDiaryImportRun, NoteNode, UserDevice
@@ -66,6 +68,59 @@ def _create_device_entries(session: Session, user_id: int) -> list[UserDevice]:
     for entry in entries:
         session.refresh(entry)
     return entries
+
+
+def test_codex_diary_production_endpoint_submits_local_job(
+    client,
+    session: Session,
+    auth_user,
+    monkeypatch,
+):
+    _create_device_entries(session, auth_user.id)
+    submitted = []
+    monkeypatch.setattr(
+        "backend.core.settings.get_settings",
+        lambda: SimpleNamespace(is_test=False),
+    )
+    monkeypatch.setattr(
+        "backend.api.notes.submit_local_job",
+        lambda **kwargs: submitted.append(kwargs) or SimpleNamespace(id="local-diary-1"),
+    )
+
+    response = client.post(
+        "/api/notes/codex-diary/import-runs",
+        json={"date": "2026-08-05"},
+    )
+
+    assert response.status_code == 200
+    assert len(submitted) == 1
+    assert submitted[0]["job_type"] == "notes.codex-diary-import"
+    assert submitted[0]["user_id"] == auth_user.id
+    assert submitted[0]["payload"]["run_id"] == response.json()["id"]
+    assert response.json()["result"]["execution"] == {
+        "runner": "local-job",
+        "run_id": "local-diary-1",
+    }
+
+
+def test_codex_diary_scheduler_submits_local_job(monkeypatch) -> None:
+    submitted = []
+    monkeypatch.setattr("backend.api.notes._codex_diary_queue_has_active_task", lambda: False)
+    monkeypatch.setattr("backend.api.notes._codex_diary_yesterday_text", lambda: "2026-08-05")
+    monkeypatch.setattr(
+        "backend.api.notes.submit_local_job",
+        lambda **kwargs: submitted.append(kwargs) or SimpleNamespace(id="local-diary-auto-1"),
+    )
+
+    task_id = maybe_enqueue_codex_diary_yesterday_import(trigger_reason="test")
+
+    assert task_id == "local-diary-auto-1"
+    assert submitted == [
+        {
+            "job_type": "notes.codex-diary-auto-import",
+            "payload": {"target_date": "2026-08-05", "trigger_reason": "test"},
+        }
+    ]
 
 
 def test_device_entry_remote_json_bypasses_environment_proxy(monkeypatch):

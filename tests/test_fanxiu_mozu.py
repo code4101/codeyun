@@ -58,6 +58,7 @@ def test_daily_mozu_flow_completes_immediately_on_world_or_auction(monkeypatch, 
     assert runtime.calls == [
         ("go_scene", 34),
         ("wait_click_then_view", 34, "日程", 66),
+        ("wait_action_settle", 3.0),
         ("wait_click_then_view", 66, "前往", 336),
         ("wait_click_then_view", 336, "前往", 337),
         ("wait_click_then_view", 337, "前往", [338, 34, 339]),
@@ -86,26 +87,22 @@ def test_daily_mozu_flow_waits_30_seconds_after_battle_scene(monkeypatch):
     assert result["current_scene"] == 338
 
 
-def test_daily_mozu_flow_skips_all_actions_after_window(monkeypatch):
+def test_daily_mozu_admission_skips_all_actions_after_window(monkeypatch):
     _FakeDateTime.current = RealDateTime(2026, 7, 13, 12, 35, 1)
     monkeypatch.setattr(mozu_module, "datetime", _FakeDateTime)
-    runtime = _FakeRuntime()
 
-    result = _finish(MozuTaskMixin().daily_mozu_flow(runtime))
+    result = MozuTaskMixin().daily_mozu_admission()
 
-    assert runtime.calls == []
     assert result["result"] == "success"
     assert result["next_time"] == "2026-07-14 12:30:00"
 
 
-def test_daily_mozu_flow_skips_before_window_and_keeps_today_trigger(monkeypatch):
+def test_daily_mozu_admission_skips_before_window_and_keeps_today_trigger(monkeypatch):
     _FakeDateTime.current = RealDateTime(2026, 7, 13, 12, 29, 59)
     monkeypatch.setattr(mozu_module, "datetime", _FakeDateTime)
-    runtime = _FakeRuntime()
 
-    result = _finish(MozuTaskMixin().daily_mozu_flow(runtime))
+    result = MozuTaskMixin().daily_mozu_admission()
 
-    assert runtime.calls == []
     assert result["next_time"] == "2026-07-13 12:30:00"
 
 
@@ -114,12 +111,13 @@ def test_daily_mozu_scheduler_definition_is_enabled_runtime_job():
 
     assert task["task_type"] == "daily_mozu"
     assert task["source"] == "data_annotation_runtime"
-    assert task["enabled"] is True
-    assert task["schedule_times"] == ["12:30"]
-    assert task["window"] == ["12:30", "12:35"]
+    assert task["trigger_description"] == "每日"
+    assert task["next_time"]
+    assert task["dispatch_level"] == 1
+    assert "window" not in task
 
 
-def test_daily_mozu_scheduler_migrates_legacy_placeholder_enabled():
+def test_daily_mozu_scheduler_discards_old_placeholder_fields():
     tasks, changed = repair_data_annotation_scheduler_tasks(
         [
             {
@@ -145,6 +143,8 @@ def test_daily_mozu_scheduler_migrates_legacy_placeholder_enabled():
     assert changed is True
     assert task["task_type"] == "daily_mozu"
     assert task["source"] == "data_annotation_runtime"
-    assert task["enabled"] is True
-    assert task["schedule_times"] == ["12:30"]
-    assert task["window"] == ["12:30", "12:35"]
+    assert "schedule_kind" not in task
+    assert "schedule_times" not in task
+    assert task["trigger_description"] == "每日"
+    assert task["dispatch_level"] == 1
+    assert "window" not in task

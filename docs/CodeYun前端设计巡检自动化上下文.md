@@ -1,5 +1,10 @@
 # CodeYun 前端设计巡检自动化上下文
 
+> **当前强约束：** `/fanxiu/data-annotation/runtime` 的“游戏状态巡检”必须常驻可见。下方历史记录中“删除游戏状态巡检卡片”的做法已被判定为产品事故，只用于追溯，禁止再次作为巡检或重构依据。
+
+> 凡修 GUI 的 `scene/frame`、Layer 0～3、识别图和场景地图以
+> [凡修 GUI 场景地图与图模型约定](./凡修GUI场景地图与图模型约定.md) 为准。本文“增量记忆”中的旧 `subframe/sub-scene/recognitionParentId` 文字只保留历史追溯，不得作为当前实现依据。
+
 ## 定位
 
 `CodeYun 前端设计巡检` 是跟随 Git 提交的前端 UI 设计自动化。
@@ -31,14 +36,196 @@
 
 ```yaml
 last_audited_commit: "6421d1833078e750a83b41939e85f9cac7700594"
-last_audited_at: "2026-07-21T01:17:27.1083292+08:00"
-last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-21-frontend-design-a81d384d/report.md"
-last_frontend_commit_summary: "6421d183..a81d384d 已逐提交巡检；Runtime 减少 62 个逐行按钮、玲泉题库减少 224 个行内入口，三视口与生产入口通过，但相关 pytest 仍为 232 通过、17 失败，范围继续 pending。"
-audited_commit_count: 217
+last_audited_at: "2026-08-10T01:15:02+08:00"
+last_report_path: "C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-10-frontend-design-f3f2af06/report.md"
+last_frontend_commit_summary: "Git 重写等价锚点继续使用 ce40bc21；完整语义范围 ce40bc21..f3f2af06 共 177 个提交，累计 135 F / 42 N，新段 10 个均为 F。兽魂评分参考表后置到计算工作台之后；仙窍删除 5 条章节复述和 1 条重复毕业步骤；攻略视频普通桌面/窄屏恢复搜索与同步动作可见性。三文件净减 8 行，不新增业务 UI 概念；四条真实页面链路完成三视口且无根级横向溢出。typecheck/build 与新增链路 55 项通过；PDF 迁移导入仍失败，Runtime/邮件组合超时，范围继续 pending。"
+audited_commit_count: 299
 pending_or_skipped_ranges:
-  - range: "6421d1833078e750a83b41939e85f9cac7700594..a81d384d2f0b2cf1ecfd8a8cd64fed2014e5fbfb"
-    reason: "前端 typecheck/build、三视口和生产入口资源检查通过，但 NoteSheet/课程表相关 pytest 仍有 17 项失败；PDF 书库空架问题又与用户进行中的同文件改动重叠，完整范围仍未闭环，游标不得推进。"
+  - range: "ce40bc21d407fe64dbc97fd1e0edc63eee6739fc..f3f2af06335a96943dc481e10b3ea106aa5950e8"
+    reason: "文档游标 6421d183 与当前线 ce40bc21 具有相同 tree/标题/时间；重写去重后的 177 个提交已从旧到新完整覆盖，累计 135 F / 42 N。兽魂、仙窍、攻略视频和 Freebill 完成三视口；typecheck/build、新增链路 55 项与生产入口检查通过。PDF API 仍因迁移符号缺失在收集阶段失败，Runtime guard + 邮件组合 120 秒未完成，游标不得推进。"
 ```
+
+### 2026-08-10 · `f3f2af06`（未闭环）
+
+- Git 重写等价锚点继续使用 `ce40bc21`；完整语义范围 `ce40bc21..f3f2af06` 为 177 个提交。承接上轮 167 个明细，本轮新增 10 个从旧到新均归类为前端或前端可见投影，累计 135 F / 42 N。
+- 入口与模型：兽魂保持“形状/评分清单 → 背包布局 → 计算结果”，评分参考后置；仙窍保持“境界/体系 → 五行效果 → 养成取舍/试炼/品质”，不再用章节说明复述同一事实；攻略视频保持“来源/搜索 → 分页清单 → 选中详情”；Freebill 本机微信进入已有统一账单输入模型。
+- 自动修复：兽魂 10 行评分参考表移到工作台之后；仙窍删除 5 条章节复述与 1 条重复毕业步骤；攻略视频工具栏在普通桌面和窄屏改为两行，搜索与同步动作不再被裁切。三文件 34 行新增、42 行删除，净减 8 行，没有新增业务控件、字段、状态或入口。
+- 仙窍、兽魂、攻略视频、Freebill 完成 `1440×1000`、`1180×900`、`820×1180` 三视口，根级横向溢出均为 0；仙窍真实 6 个体系/五行/试炼/品质可见，攻略视频真实 3654 条/183 页可见，Freebill 真实趋势/分类数据可见。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、新增链路 `55 passed / 1 warning`；dist 主入口只静态导入基础 vendor。PDF API 仍因缺失 `v94_normalize_pdf_bookshelf_thickness_scale` 收集失败，Runtime guard + 邮件组合 120 秒未完成。
+- 因 PDF 与 Runtime/邮件门禁未闭环，游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-10-frontend-design-f3f2af06/`。
+
+### 2026-08-09 · `335ef8dd`（未闭环）
+
+- Git 重写等价锚点继续使用 `ce40bc21`；完整语义范围 `ce40bc21..335ef8dd` 为 167 个提交。承接上轮 158 个明细，本轮新增 9 个从旧到新归类为 8 个前端或前端可见投影、1 个无关，累计 125 F / 42 N。
+- 入口与模型：缘定三生资源榜应保持“活动实例 → 当前积分/下一任务 → 奖励关键点/分组排名”；个人功法保持“清单 → 选中功法 → 搭配使用/获取渠道”；MN 保持“媒体目录 → 明确下载命令 → 媒体结果”；Runtime 新作业继续进入统一状态表，固定游戏状态巡检继续常驻。
+- 自动修复：删除缘定三生页面 3 张玩法说明卡和 1 条自动联姻警告。页面本身不执行联姻，这 4 个常驻解释不参与榜单决策；保留活动选择、从游戏更新、真实积分、14 档任务、个人榜和分组榜。单文件净减 33 行、4 个 UI 概念，没有新增控件、字段、状态或入口。
+- 缘定三生、个人功法、MN、数据标注、Runtime 完成 `1440×1000`、`1180×900`、`820×1180` 三视口，根级横向溢出均为 0；个人功法真实 121 本及搭配/渠道详情可见；MN 三档加载真实媒体；Runtime 游戏状态巡检均为 1、“作业 +”均为 0，`/status` 已恢复。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；缘定三生/功法、页面契约、媒体下载/同步共 87 项通过。Runtime guard 为 `32 passed / 1 failed`，邮件为 `79 passed / 5 failed`，PDF API 仍因缺失迁移符号在收集阶段失败。dist 主入口只静态导入 5 个基础 chunk，生产反馈入口只加载自身与基础资源。
+- 因 Runtime guard、邮件和 PDF 测试门禁未闭环，游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-09-frontend-design-335ef8dd/`。
+
+### 2026-08-08 · `b6a42f78`（未闭环）
+
+- Git 历史重写后，旧游标 `6421d183` 与当前线锚点 `ce40bc21` 的 tree、标题和时间完全一致；本轮完整语义范围 `ce40bc21..b6a42f78` 为 158 个提交。承接上一轮 149 个明细，本轮新增 9 个从旧到新归类为 8 个前端或前端可见投影、1 个无关，累计 117 F / 41 N。
+- 入口与模型：活动页保持“活动实例 → 资源/任务事实 → 个人奖励关键点/按需位面榜”；仙缘保持“凡修图鉴页签 → 可送礼人物 → 当前人物详情”；Runtime 新仙市作业继续复用标准状态清单、下次时间和结果，不新增专用卡片或开关，固定游戏状态巡检继续常驻。
+- 复杂度下降：四个活动页的榜单标题、个人榜、分页和位面榜重复实现收敛为一个 `FanxiuActivityRankingSection`；仙缘独立路由删除并收回凡修图鉴页签，减少一条平行入口。没有追加业务源码修复，也没有新增解释区来掩盖后端/运行环境问题。
+- 资源榜、仙缘图鉴、Runtime、数据标注完成 `1440×1000`、`1180×900`、`820×1180` 三视口，页面级横向溢出均为 0；Runtime 固定游戏状态巡检三档均为 1。MN 三档布局无溢出，但真实目录 `E:\data\m2510mn\_pixiv` 读取 404、媒体卡为 0，不能视为视觉闭环。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、新增仙市专项 `9 passed`；活动/图鉴/Runtime/媒体组合 `59 passed / 1 failed`，邮件 `86 passed / 5 failed`，PDF API 仍因迁移符号缺失在收集阶段失败。dist 主入口只静态导入 7 个基础 chunk，局部图鉴、图库和高风险依赖仅在异步映射中。
+- 因 Runtime `/status` 500、MN 真实数据与测试门禁未闭环，游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-08-frontend-design-9ea63af0/`。
+
+### 2026-08-07 · `f92b4af8`（未闭环）
+
+- Git 历史重写后，旧游标 `6421d183` 与当前线锚点 `ce40bc21` 的 tree、标题和时间完全一致；字面差集为 320 个提交身份，按等价锚点去重后的完整语义范围 `ce40bc21..f92b4af8` 为 149 个提交。承接上一轮 135 个明细，本轮新增 14 个均从旧到新归类为前端或前端可见投影，累计 109 F / 40 N。
+- 入口与模型：法宝殿沿“运行态快照 → 列表 → 选中法宝 → 升级/神炼详情”；图书阅读采用“书柜默认 → 单书覆盖 → 一个生效方式”；Runtime 继续保持固定游戏状态巡检。日历把每日工作量小时与每周配额百分比投到同一个日期格并以前者被后者覆盖，属于两类指标的模型冲突，不能靠新增说明解决。
+- 自动修复：权限注册表中的“3 法宝”统一为页面稳定对象名“法宝殿”；序号仍由菜单排序承担，减少 1 个同义 UI 概念，不新增控件、字段或状态。
+- 法宝殿、图书阅读方式、LinuxDo 阅读器、Runtime、日历完成 `1440×1000`、`1180×900`、`820×1180` 三视口，根级横向溢出均为 0；MN 三档布局无溢出，但真实设备目录读取失败、媒体卡为 0，视觉闭环未完成。日历没有周配额真实快照，覆盖行为也不能视为已验证。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、法宝前端专项通过；新增链路组合 `154 passed / 1 failed`，邮件专项 `79 passed / 5 failed`，PDF API 仍因迁移符号缺失在收集阶段失败。dist 主入口只静态导入基础 vendor；生产 `/attendance-feedback/` 离开 loading，只加载自身 JS/CSS、Vue vendor 和 export helper，无局部重依赖污染。
+- 因 MN 数据、周配额语义与测试门禁未闭环，游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-07-frontend-design-f92b4af8/`。
+
+### 2026-08-06 · `2e738ebd`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..2e738ebda2d6c407a165e9d0864df92b0599b8a1`；共 135 个提交。承接并复核上一轮 123 个提交，新段 12 个提交从旧到新归类为 10 个前端或前端投影相关、2 个无关，完整范围累计 95 F / 40 N，明细见报告。
+- 入口与模型：瑶池花会沿“活动类型 → 活动实例 → 库存容量 → 任务效率 → 榜单位置”形成判断闭环；类型已有灵装化道/瑶池花会两个真实对象，应保留选择器。库存区标题已展示基础友好度，下面“现有资源可提供”是同一事实的重复投影。
+- 自动修复：删除瑶池库存区第二个友好度摘要及其样式，净减 11 行、1 个常驻 UI 概念；9 项资源明细、任务表、阈值图和榜单信息保持不变。
+- 瑶池、Runtime、数据标注、MN 图片流、凡修邮件完成 `1440×1000`、`1180×900`、`820×1180` 三视口，根级横向溢出均为 0；Runtime 固定游戏状态巡检/信息窗可见，MN 在 `2e738ebd` 后显示真实瀑布流，邮件 189 条真实记录可见。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、MN 专项通过；相关后端组合为 `92 passed / 4 failed / 1 warning`。dist 主入口只静态导入基础 vendor；生产 `/attendance-feedback/` 离开 loading，只加载 4 项自身/基础资源，无 PDF、编辑器、file-viewer、Handsontable、ECharts、worker/wasm 高风险局部 chunk。
+- 剩余门禁：邮件聚焦测试仍有 4 项失败；`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失在收集阶段失败。因此游标继续停在 `6421d183`。报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-06-frontend-design-2e738ebd/report.md`；截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-06-frontend-design-db54f36a/`。
+
+### 2026-08-05 · `1ed37788`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..1ed37788a32fc31589fe3c78f7cca8bc7b878cac`；共 123 个提交。承接并复核上一轮 117 个提交，新段 6 个提交从旧到新归类为 5 个前端或前端投影相关、1 个无关，完整范围累计 85 F / 38 N，明细见报告。
+- 入口与模型：资源榜只有灵装化道一种业务对象，真实选择发生在活动实例；邮件页的动态模型/数据库快照是实现机制而非用户决策事实；图书编辑继续复用阅读视图，MN 库存直接挂在来源入口。50944c73 重新引入了上一轮已经删除的唯一类型选择器，属于同一业务对象上的复杂度回退。
+- 自动修复：资源榜再次删除唯一选项类型下拉、恒定 `?activity=lingzhuang-huadao` 及路由同步，邮件页删除常驻技术数据源说明而保留 `?` 规则帮助。两页合计 3 行新增、69 行删除，净减 66 行、1 个常驻控件和 1 段常驻说明，没有新增 UI 概念。
+- 资源榜、邮件、图书行内编辑、Runtime 完成 `1440×1000`、`1180×900`、`820×1180` 探针，页面级横向溢出均为 0；资源榜类型下拉从 1 降为 0，邮件技术说明从 1 降为 0，阅读器编辑/取消闭环存在，Runtime 游戏状态巡检仍为 1。但 Runtime `/status` 持续 500；MN DOM 读到 pixiv/pinterest 库存且无溢出，三档截图却为空白，不能视作视觉验证完成。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、11 项前端专项通过；Fanxiu/图书/媒体聚焦 pytest 为 `139 passed / 9 failed / 1 warning`，9 项失败集中于当前未提交邮件链的 fixture/Schema 契约。dist 主入口只静态导入基础 vendor；生产 `/attendance-feedback/` 离开 shell loading，6 项资源中没有 PDF、编辑器、file-viewer、Handsontable、公式、ECharts、worker/wasm 高风险局部 chunk。
+- 剩余门禁：邮件聚焦测试、Runtime 真实状态和 MN 可见截图未闭环；`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失在收集阶段失败。因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-05-frontend-design-1ed37788/`。
+
+### 2026-08-04 · `3f68d0e3`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..3f68d0e315a9a45e7168ed416a5ecc8684ee679b`；共 117 个提交。前 104 个提交沿用上一轮 71 F / 33 N 明细并复核最终页；新增 13 个提交从旧到新归类为 9 个前端或前端投影相关、4 个无关，明细见报告。
+- 入口与模型：玩法榜用一个双选类型控件聚合云梦试剑/虚天殿；资源榜当前只有灵装化道一种类型，真实选择只发生在活动实例；Runtime 固定游戏状态巡检继续常驻。废弃魔道入侵/守元探索页面整套删除，新段前端合计净减 2631 行。
+- 自动修复：删除资源榜唯一选项“灵装化道”下拉及恒定 `?activity=lingzhuang-huadao` 路由同步，`resource-ranking/page.vue` 净 1 行新增、42 行删除；活动实例、从游戏更新、强化现状、任务阈值/关系、个人榜与位面榜完整保留，UI 概念数下降 1。
+- 资源榜、虚天殿玩法榜、Runtime 完成 `1440×1000`、`1180×900`、`820×1180` 三视口；九组 `body/root` 横向溢出均为 0。资源榜类型下拉从 1 降为 0，玩法榜双选下拉保持 1；Runtime 游戏状态巡检为 1、“作业+”为 0。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；Fanxiu 专项与权限组合为 `33 passed / 2 failed / 1 warning`，失败仍是匿名权限键清单历史事实漂移。dist 主入口只静态导入基础 vendor；生产 `/attendance-feedback/` 离开 shell loading且只加载 4 项自身/基础资源，无 PDF、编辑器、file-viewer、Handsontable、公式、ECharts、worker/wasm 高风险局部 chunk。
+- 剩余门禁：`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失在收集阶段失败；灵装关系图与旁边精确表格存在重复候选，但还承载样本趋势，需产品判断，不自动删除。因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-04-frontend-design-3f68d0e3/`。
+
+### 2026-08-03 · `e5c090f9`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..e5c090f90bb8931e79bc66d2da93f2f6851c92c4`；共 104 个提交，从旧到新逐项归类为 71 个前端或前端投影相关、33 个无关，明细见报告。收尾时并行工作流新增 `e5c090f9`，已纳入范围并复核。
+- 入口与模型：云梦试剑保持“活动选择 → 资源策略 → 兑换计划（优先级/锁定）→ 货币与实测产率 → 剩余挑战/兑换判断”，排名保持末位、本人、奖励守卫和位面排名；Runtime 删除“作业+”自助目录但固定“游戏状态巡检”仍常驻；Skill 手册阅读器把树、文件时间、语言切换和译文保持为单一阅读闭环。
+- 自动修复：云梦排名从裸 `el-pagination` 收回 `StandardPagination`，能力和 UI 概念数不变，统一分页语法、位置与响应式行为；该修改在巡检收尾时被并行工作流纳入 `e5c090f9`。非空 `resource_strategy` 的人类可读语义尚未定义，不用新增解释区掩盖模型问题。
+- 云梦试剑和 Runtime 完成 `1440×1000`、`1180×900`、`820×1180` 三视口；页面级横向溢出均为 0，820px 云梦兑换表只在表内局部滚动约 195px。Runtime “游戏状态巡检”为 1、“作业+”为 0。Skill 手册阅读器完成真实 DOM 与溢出验证，但页签未接受视口覆盖，因此没有虚报三视口证据。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、云梦/Runtime/笔记专项 `19 passed`；dist 入口只静态导入基础 vendor，PDF、ECharts、编辑器仍为动态局部 chunk。生产 preview 离开 shell loading且无入口执行错误，但本机匿名权限投影返回 403，业务内容以登录态开发入口验证。
+- 剩余门禁：匿名权限键清单测试有 2 个历史事实漂移断言；`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失在收集阶段失败，因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-03-frontend-design-e5c090f9/`。
+
+### 2026-08-02 · `c8a8e039`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..c8a8e039e4d6f2ab28a3906bb6e227971859e710`；共 92 个提交，从旧到新逐项归类为 60 个前端或前端投影相关、32 个无关，明细见报告。
+- 入口与模型：新增 `/zaohua/grades` 用单张五行表表达 `1–15 档` 规则；Runtime 恢复并锁定固定“游戏状态巡检”面板，继续显示状态、周期、巡检项、最近检查和结果；精神工坊从运行态快照读取 8 件灵器与 48 个部位。
+- 自动修复：精神工坊提交把 `baseId / ware / part / cleanseId / value / code` 等采集字段升级为每行展开详情，共增加 48 个调试入口。已删除 62 行内部详情投影，运行态数据仍留在 API/模型层；同时把已过期的菜单名“4 灵器”收回稳定对象名“灵器”。两文件合计 1 行新增、63 行删除，没有新增 UI 概念。
+- 品阶对照、精神工坊和 Runtime 完成 `1440×1000`、`1180×900`、`820×1180` 三视口，页面级横向溢出均为 0；精神工坊展开入口从 48 降为 0，Runtime 游戏状态巡检面板始终为 1 个。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、Runtime/精神工坊专项 `10 passed / 1 warning` 通过；生产 `/zaohua/grades` 离开 shell loading，只加载基础资源和自身 chunk，没有加载 PDF、编辑器、file-viewer、Handsontable、公式、图表、worker 或 wasm。
+- 剩余门禁：`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失在收集阶段失败，因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-02-frontend-design-c8a8e039/`。
+
+### 2026-08-01 · `743051d8`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..743051d866bf374056d5fb3836c6116f37612426`；共 83 个提交，从旧到新逐项归类为 57 个前端或前端投影相关、26 个无关，明细见报告。
+- 入口与模型：课程基础对象已经是包含考勤、报名、视频配置/数据、打卡配置/数据六张表的工作簿；独立“表头工具”重复输入课程前缀并生成/复制另一份表头事实。提交 `16eae694` 删除该页面、路由、权限、前端 API 与后端生成接口，把表头收回课程工作簿唯一事实。灵泉新增选项/交互元数据只服务 Runtime，不抬升为题库一级列或控件。
+- 复杂度下降：新增范围前端删除 473 行、增加 12 行类型，净减 461 行；删除 1 个页面、1 个路由、1 个权限节点、1 组 API/DTO 和生成/复制平行闭环，没有新增前端控件、字段、状态、入口或解释区。
+- 星云表格入口、第 43 届念住课程工作簿、灵泉题库完成 `1440×1000`、`1180×900`、`820×1180` 三视口；全部页面级横向溢出为 0。“表头工具”入口为 0，课程工作簿六张业务表完整，灵泉题库仍只显示“题目 / 答案”。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；考勤边界与灵泉知识专项 `37 passed / 1 warning`。首次 build 仅被旧 `4173` preview 的 dist 文件锁打断，停止旧 preview 后同源码通过。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-Bef0_29r.js` 顶层静态 import 只有 7 个基础 helper/vendor；生产 preview `/attendance-feedback/` 离开 shell loading且资源清单只有 6 项自身/基础资源，没有加载 PDF、编辑器、KaTeX、file-viewer、Handsontable、公式、图表、worker 或 wasm。
+- 剩余门禁：`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失而收集失败，因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-08-01-frontend-design-743051d8/`。
+
+### 2026-07-31 · `c47fb49c`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..c47fb49c15eb2343854435dd89ed19b0bab22f16`；共 75 个提交，从旧到新逐项归类为 53 个前端或前端投影相关、22 个无关，明细见报告。
+- 入口与模型：Runtime 游戏状态巡检只通过内部探针调整既有作业 `next_time`，不是独立用户对象；Scheduler 时间编排只表达同一原始时间组内的相对顺序；Eastmoney 保持历史判断与价位计算分离；LinuxDo 字号变化只使用可回收的瞬时分页层。
+- 自动修复：删除 Runtime 顶层“游戏状态巡检”卡片及其专用 API import、状态、计算属性、刷新、轮询与样式，净减 106 行；后端巡检机制、作业目录、时间编排和运行命令不变，没有新增 UI 概念。巡检期间仓库自动提交流程把该减法与此前已有后端改动一并写入 `c47fb49c`。
+- Runtime/Scheduler、Eastmoney 历史/计算器、LinuxDo 阅读器、数据标注完成 `1440×1000`、`1180×900`、`820×1180` 三视口；页面级横向溢出均为 0。阅读器实测临时 `≈2/101` 在下一页后恢复规范 `3/101`，临时层归零。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；阅读器瞬时分页 `2 passed`，Runtime/Scheduler/Eastmoney 精确 pytest `71 passed / 1 warning`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor；`main-BdU-FY0g.js` 顶层静态 import 为 7 个基础 chunk。生产 preview `/attendance-feedback/` 离开 shell loading，只挂载自身入口、Vue helper/vendor 与自身样式，没有加载 PDF、编辑器、图表、表格公式、worker 或 wasm 高风险局部 chunk。
+- 剩余门禁：`tests/backend/test_pdf_documents_api.py` 仍因迁移符号 `v94_normalize_pdf_bookshelf_thickness_scale` 缺失而收集失败，因此游标继续停在 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-31-frontend-design-c47fb49c/`。
+
+### 2026-07-29 · `971784f1`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..971784f1ddc2c519c42e4e682a6df006929b2fe7`；共 56 个提交，从旧到新逐项归类为 42 个前端或前端投影相关、14 个无关，明细见报告。
+- 入口与模型：导航事故保持“事故事实 → 时间线 → 当前步骤前后帧 → 按需诊断”；文件设备失败保持“错误事实 + 单一重试”；Runtime 游戏状态巡检只通过内部探针提前既有作业下一触发，不是独立用户对象。
+- 自动修复：删除 Runtime 顶层“游戏状态巡检”卡片及其前端专用轮询、类型、计算属性与样式，净减约 98 行；后端机制不变，唯一外显事实继续由既有作业表承载，没有新增控件、字段、状态、入口或解释区。
+- Runtime、数据标注导航事故、禅课文件入口完成 `1440×1000`、`1180×900`、`820×1180` 三视口；全部页面级横向溢出为 0。导航事故宽屏双帧、窄屏单列；禅课入口真实加载 3 页媒体。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过。NoteSheet/考勤 focused suite 仍为 `328 passed / 13 failed / 1 warning`；PDF API suite 仍因迁移符号缺失在收集阶段失败；本轮凡修多文件专项运行超过 180 秒未结束并已终止，所以游标继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-CYjuQJQK.js` 顶层静态 import 为 7 个基础 chunk；生产 preview `/attendance-feedback/` 离开 shell loading，只加载自身 JS/CSS、Vue helper/vendor 与业务 API，没有加载 PDF/编辑器/KaTeX/file-viewer/worker/wasm/图表局部高风险 chunk。
+- 工作树边界：仅修改 `frontend/src/standard/fanxiu/data-annotation-runtime/page.vue`；4 个预先存在的凡修后端/测试改动未触碰。
+- 报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-29-frontend-design-971784f1/report.md`。
+
+### 2026-07-28 · `85cb2192`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..85cb2192cb892782b608296e22d8ea8b2e51062d`；共 48 个提交，从旧到新逐项归类为 37 个前端或前端投影相关、11 个无关，明细见报告。
+- 入口与模型：场景继承保持“当前 scene + 继承 scene → 有效 Shape 集”；Runtime 模拟器重启保持设备级一次性命令并保留确认；图书分页保持书柜级规则并后置在右键“书柜设置”，没有把实现参数升级为主界面常驻控件。
+- 自动修复：真实标注页确认 `parentSceneIds` 绑定当前 scene，却被放进选中 shape 的属性行。已把同一个“继承”输入框搬到当前场景标题工具区；字段、数据、动作和控件数量不变，只修正 UI 归属。
+- Runtime、数据标注、图书馆完成 `1440×1000`、`1180×900`、`820×1180` 三视口；全部页面级横向溢出为 0。书柜设置另完成宽/窄屏弹窗复验。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；Fanxiu 场景继承、Runtime 控制、Jupyter Kernel、Skill Book 专项 `78 passed`。NoteSheet/考勤 focused suite 为 `328 passed / 13 failed / 1 warning`，PDF API suite 因迁移符号缺失在收集阶段失败，所以游标继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-DXjuk6jY.js` 顶层静态 import 只有 6 个基础 helper/vendor；生产 preview `/attendance-feedback/` 离开 shell loading且只加载 4 项自身/基础资源，没有加载 PDF/编辑器/KaTeX/file-viewer/worker/wasm/ECharts。
+- 凡修技能证据边界：读取了 `runtime真实自检.md` 和 GUI 场景模型约定；本轮只验证真实标注页与 Runtime 页面，未修改正式资产树、未执行模拟器重启、未宣称真实游戏 Runtime 作业成功。
+- 报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-28-frontend-design-85cb2192/report.md`。
+
+### 2026-07-27 · `9b761fbc`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..9b761fbc03cc458fbbaf354accc1ac0b8ad5c7d7`；共 39 个提交，从旧到新逐项归类为 36 个前端或前端投影相关、3 个无关，明细见报告。
+- 入口与模型：Layer0 已把专用“关弹窗”状态收回基础识别；本轮继续删除永远只返回 `SKIP` 的“万灵切磋邀请”占位守护，使 Runtime 守护从 2 行/2 开关/2 份说明收回为唯一可执行的“设备健康”。没有新增控件、状态、字段或解释区。
+- 图书馆、Runtime、目录容量、共享图片、微信群志阅读器完成 1440×1000、1180×900、820×1180 三视口；页面级横向溢出均为 0。微信群志目录按 `年 → 月 → 日` 呈现且月份不再重复编号。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；Runtime 精确测试 9 项、图书/归档 74 项、设备/媒体 64 项通过。历史 NoteSheet/课程表 focused suite 仍为 `243 passed / 17 failed / 1 warning`，所以游标继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor；`main-DSQKdvxW.js` 顶层静态 import 仅 Vue helper。生产 `/attendance-feedback/` 离开 shell loading且只加载 5 项自身资源，没有拉入 PDF/编辑器/KaTeX/file-viewer/worker/wasm/ECharts。
+- 报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-27-frontend-design-9b761fbc/report.md`。
+
+### 2026-07-26 · `28a34255`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..28a3425505893a40ca0e9757d96700c575b9da9a`；共 33 个提交，从旧到新逐项归类为 30 个前端或前端投影相关、3 个无关；新增 7 个提交覆盖文件媒体分页、微信语录成书、调度时间编排和统一阅读主题。
+- 入口与模型：调度保持“原始规则 → 同组编号拖拽顺序 → 实际时间 → 一级状态事实”；阅读器保持“一本书 → 目录/正文/页内大纲 + 一个共享主题偏好”；微信归档保持“一个群聊 → 一次语录成书命令 → 一个任务 → 一本按年/月组织的图书”；文件浏览把扫描保护值明确为预加载批次而非结果总上限。
+- 自动修复时间编排首项多偏移 1 分钟：真实页面原先把说明中的“首项保持原时间”投影成 `00:00 → 00:01`；修复后为 `00:00 → 00:00`，只删除多余的 `+1`，没有新增控件、字段、状态或入口。
+- Runtime、周刊阅读器、文件浏览完成 1440×1000、1180×900、820×1180 三视口；三页页面级横向溢出均为 0。阅读主题保持一个共享三态控件，文件浏览“预加载上限”每页只出现一次。当前微信数据源重选后返回 0 个会话，未补齐新版“语录成书”对话框截图。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；Runtime、微信成书、LinuxDo/周刊、Skill、设备媒体专项 `134 passed`。旧 NoteSheet/课程表 focused suite 仍为 `240 passed / 17 failed / 1 warning`，因此 `last_audited_commit` 继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-KFC9uAbz.js` 顶层静态 import 只有 6 个基础 chunk；生产 `/attendance-feedback/` 离开 shell loading且只加载 6 项自身资源，没有拉入 PDF/编辑器/KaTeX/file-viewer/worker 等局部高风险 chunk。
+- 报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-26-frontend-design-28a34255/report.md`。
+
+### 2026-07-25 · `424b92f6`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..424b92f6bfd199faafc1393c8ecaf9d65a3feaff`；共 26 个提交，从旧到新逐项归类为 23 个前端或前端投影相关、3 个无关，明细见报告。
+- 入口与模型：统一图书馆保持“真实书架 + 一个空投放行”，周刊阅读保持“一本书 → 目录/全文搜索 → 当前逻辑页 → 同页脚注”，微信归档保持“一个群聊 → 一次整理命令 → 一个后台任务 → 一本图书馆图书”。
+- 自动修复 `5315cf8b` 在同一图书馆页面重新引入的空站点导航：站点导航由 7 个收回为 2 个真实容器，5 个空容器清零；只增加既有事实判断，没有新增控件、字段、状态或入口。
+- 图书馆、周刊阅读器、微信群聊整理成书均完成 1440×1000、1180×900、820×1180 三视口复验；群聊命令仅在真实群聊上下文出现一次，对话框三档均为 520×230px，页面无横向溢出。为避免污染业务数据，没有实际提交“开始整理”。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；新增图书链路 42 项、微信归档与 Fanxiu 策略 16 项 pytest 通过。旧 NoteSheet/课程表 focused suite 为 240 通过、17 失败，因此 `last_audited_commit` 继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-dvymXaJd.js` 顶层静态 import 只有基础 helper/vendor；生产 `/attendance-feedback/` 离开 shell loading且只加载 6 项自身资源，没有拉入 PDF/编辑器/KaTeX/file-viewer/worker 等局部高风险 chunk。
+- 报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-25-frontend-design-18ff18ed/report.md`。
+
+### 2026-07-24 · `62f24dd3`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..62f24dd3bf519b5cb69bd16940f832691efae36e`；共 17 个提交，从旧到新为 15 个 `frontend_relevant`、2 个 `not_frontend_relevant`，逐项明细见报告。
+- 本轮新增入口把统一图书馆、LinuxDo/富文本阅读、KaTeX、本地编辑器适配与凡修 `next_time` 调度模型纳入既有巡检链路。概念检查确认运行控制删除逐任务启停/重试专用状态、阅读器保持正文/大纲/少量命令的基础模型。
+- 自动修复同一统一图书馆页面的旧重复结构：书架由固定 12 层收回为“最高真实资源层 + 1 个空投放层”，常用网站导航只在该层实际有站点时出现；当前真实数据从 12 层/12 个站点区降为 6 层/1 个站点区，仍保留 15 本可见图书、文件夹/站点高层坐标和拖放能力。
+- 图书馆、Runtime、网页大纲、LinuxDo 阅读器均完成 1440×1000、1180×820、760×900 三视口复验且无横向溢出；开发态数据标注路由动态导入失败，生产 dist 路由可执行但预览环境无登录态，只验证到登录页。
+- `npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、`git diff --check` 通过；新增链路 pytest 为 79 通过，focused suite 为 260 通过、18 失败。因此 `last_audited_commit` 继续停在 `6421d183`。
+- 入口依赖检查通过：`index.html` 只预加载基础 vendor，`main-D0czurX9.js` 唯一顶层静态 import 为 Vue helper；生产 `/attendance-feedback/` 离开 shell loading，仅加载 6 项自身资源，没有拉入 KaTeX/PDF/编辑器/图表/worker/wasm chunk。
+- 报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-24-frontend-design-62f24dd3/report.md`。
+
+### 2026-07-23 · `4a37f5eb`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..4a37f5ebf069294a3d06e3430316a89ac7c46461`；共 14 个提交，从旧到新为 12 个 `frontend_relevant`、2 个 `not_frontend_relevant`，逐项明细见报告。
+- 入口与模型：网页目录收敛为“URL → 规则目录 → 复制，原始标题按需展开”；灵泉题库收敛为“分组/搜索 → 题目与答案 → 双击编辑 → 保存或删除”；账号页保持“账号事实表 → 选择权限主体 → 权限树覆盖”。
+- 本轮减法：网页目录删除 AI/语义重建开关、双结果/来源状态、告警和 AI 应用入口，匿名入口不再产生 AI 成本；灵泉题库删除 `enabled` API 输入、状态列和逐题开关；账号页提交上一轮已验证的 3 个重复摘要与 1 个泛化刷新减法。没有追加源码修复。
+- 真实页面：网页目录和灵泉题库均覆盖 `1440x1000`、`1180x900`、`820x1180`，页面级无横向溢出；网页目录真实提取 `https://example.com` 成功。灵泉 API 因无登录态返回 401，数据区为空；账号路由转到登录页，但同一代码状态的三档账号页截图已在上一轮完成。
+- 入口依赖污染：生产构建通过（4288 modules）；`dist/index.html` 与 `main-esxAy15Y.js` 顶层只加载基础 vendor，MediaSync/PDF/ECharts 等仅存在于异步依赖映射而非顶层 import；匿名考勤反馈入口保持局部加载，网页目录真实 URL 离开 shell loading 并完成提取。
+- 风险变化：上一轮“匿名网页目录可能消耗 AI”风险已由本提交删除 AI 路径而关闭；剩余阻塞仍是旧 NoteSheet/课程表回归失败与缺少本地真实工作簿，不属于本轮 UI 模型新增问题。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、本轮相关 pytest `67 passed / 4 warnings`；旧 NoteSheet/课程表 focused suite 为 `237 passed / 16 failed / 1 warning`，所以游标保持 `6421d183`。报告与截图：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-23-frontend-design-4a37f5eb/`。
+
+### 2026-07-22 · `28201e60`（未闭环）
+
+- 完整范围：`6421d1833078e750a83b41939e85f9cac7700594..28201e6061fb1f25e33646d1b9ae84d4c9d98099`；共 13 个提交，从旧到新分类为 11 个 `frontend_relevant`、2 个 `not_frontend_relevant`，逐项明细见报告。
+- 入口与模型：PDF 链路保持“书柜/个人视图偏好 → PDF 或 Skill 手册 → 快速预览/正式阅读”；网页大纲保持“URL + 可选语义规则 → 编号目录 → 复制，原始标题后置”；账号页保持“账号事实清单 → 选择权限主体 → 权限树覆盖”。
+- 本轮减法：账号页删除 3 个重复统计摘要和 1 个泛化“刷新”，同时清理对应计算与样式，`frontend/src/standard/admin/accounts/page.vue` 净减 55 行；19 行账号、游客基线、权限树和新增账号动作完整保留。
+- 真实页面：网页大纲、PDF 图书馆、技能书动态阅读器、PDF 正式阅读器、账号页均覆盖 `1440x1000`、`1180x900`、`820x1180`，页面级横向溢出均为 0；网页大纲真实提取 `https://example.com/` 成功，PDF `/pdf/61949` 有 canvas 且无 reader error。
+- 入口依赖污染：生产 `index.html` 与 `main-DXvxZZhT.js` 静态入口只加载基础依赖；PDF/worker/编辑器/ECharts/file-viewer 保持局部懒加载。生产网页大纲正常挂载；匿名考勤反馈入口只加载自身、Vue 和基础 helper/样式，控制台无 warn/error。
+- 模型风险：网页大纲页面默认启用语义重建，而路由默认匿名开放、API 只要求可选登录；是否允许匿名消耗抓取和 AI 能力需人工决策，已登记 `UI-HANDOFF-20260722-001`，未自动修改权限语义。
+- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend`、本轮 PDF/技能书/账号/网页大纲相关 pytest `64 passed`；旧 NoteSheet/课程表 focused suite 为 `234 passed / 18 failed / 1 warning`，且本地星云表格为 0 个工作簿，无法真实操作工作簿菜单，所以游标保持 `6421d183`。报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-22-frontend-design-28201e60/report.md`。
 
 ### 2026-07-21 · `a81d384d`（未闭环）
 
@@ -1197,26 +1384,14 @@ pending_or_skipped_ranges:
 - 完整范围：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a..266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
 - 覆盖提交：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
 - 前端入口提交：`266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`
-- 入口如何牵引到旧问题：本次提交虽然主题是凡修 data-annotation 运行监控与巡检能力补强，但同时触及 `featureAccessStore`、`main.ts`、`notes/center`、`cluster/runtime` 和 `notes/task-system`。巡检边界因此收敛在“首屏状态是否稳定投影”这条链路：权限上下文不应制造菜单/路由闪烁，星图笔记 query 应只表达当前 tab，运行管理设备选择应作为唯一状态作用域，任务空间健康条继续区分只读事实和可跳转任务。
+- 入口如何牵引到旧问题：本次提交虽然主题是凡修 data-annotation 运行监控与巡检能力补强，但同时触及 `featureAccessStore`、`main.ts`、`notes/center` 和 `cluster/runtime`。巡检边界因此收敛在“首屏状态是否稳定投影”这条链路：权限上下文不应制造菜单/路由闪烁，星图笔记 query 应只表达当前 tab，运行管理设备选择应作为唯一状态作用域。
 - 本轮减法：未新增任何 UI 控件；提交本身用 60 秒权限上下文缓存、首次 `ensureLoaded`、route watcher、设备选择变更判定和健康条文本/链接分层减少重复加载、重复状态和错误动作暗示。
-- 信息量保持：菜单权限、路由守卫、星图笔记 tab 直达、运行管理设备状态加载、任务空间健康告警和任务跳转能力都保留；减少的是首屏等待、竞态导致的重复拉取，以及只读告警被当作按钮的视觉歧义。
+- 信息量保持：菜单权限、路由守卫、星图笔记 tab 直达和运行管理设备状态加载都保留；减少的是首屏等待与竞态导致的重复拉取。
 - 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-266187a4/report.md`
-- 验证：复用本地 `5173/8000` 开发环境，在 `notes/task-system`、`cluster/runtime`、`notes/center?tab=calendar`、`notes/center?tab=list` 各补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 12 张有效截图；`/notes?tab=...` 作为错误入口探针进入 403，确认规范入口是 `/notes/center?tab=...`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
+- 验证：复用本地 `5173/8000` 开发环境，在 `cluster/runtime`、`notes/center?tab=calendar`、`notes/center?tab=list` 补齐多视口截图；`/notes?tab=...` 作为错误入口探针进入 403，确认规范入口是 `/notes/center?tab=...`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
 - 根因分层：本轮前端变化属于前端状态投影稳定性收敛；未发现新的表现层溢出、后端数据投影问题或业务建模债务，不新增 `docs/CodeYun自动化协作交接.md` 条目。
 - 剩余风险：`cluster/runtime` 当前仍主要覆盖本机已有设备样本，没有强制构造设备列表为空或 token 失效的错误态；本轮没有源码修复，因此风险仅记录在报告中。
 - 处理结果：本轮完整处理 `c1a7cc90..266187a4`，有前端相关提交但无需自动修复，因此把 `last_audited_commit` 推进到 `266187a479ac3f07ec3ac2bf36fa16bc6d4e98a4`。
-
-- 完整范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35`
-- 覆盖提交：`d656704fa2d9f6c97e52fa5eeda3a6ff7c4b28eb`、`bd4d49f1a43940b0bc42892cb53f5e3fbb0e4596`、`62c00f967cf8ced2c7a23badca5aa113a5addf0c`、`0b8cd38cf4d76ba44faced3b53a0e7c4a0947075`、`19a720628aad19a07a61eb117125a96af4600c35`
-- 前端入口提交：`d656704fa2d9f6c97e52fa5eeda3a6ff7c4b28eb`、`bd4d49f1a43940b0bc42892cb53f5e3fbb0e4596`、`0b8cd38cf4d76ba44faced3b53a0e7c4a0947075`、`19a720628aad19a07a61eb117125a96af4600c35`
-- 入口如何牵引到旧问题：新增 `task-system` 页面把“任务空间健康 -> 当前该处理哪条任务”的一级闭环正式抬到前台，live DOM 立刻暴露出同页旧问题：内部自动化断言被原样当作禁用按钮投到首页，技术细节和可执行问题混在一级健康条里。`fanxiu runtime` 同轮提交又继续暴露出 `下次触发` 列混入解释型文案，说明同一批提交仍在牵引“状态投影是否回到基础模型”这条链路。
-- 本轮减法：仅收敛 `frontend/src/standard/notes/task-system/page.vue` 的健康条投影，不新增入口、不新增状态，只把已知自动化断言压成短标签 `自动化提示词未同步`，并把非任务跳转型问题从禁用按钮改回静态标签，删除错误 affordance。
-- 信息量保持：自动化健康细节仍保留在 `title`，任务跳转型问题仍保留按钮能力；减少的是技术断言直铺首屏和“不可点击却长得像按钮”的冗余概念。
-- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md`
-- 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；4 个相关入口已补齐宽屏 `1600x1000`、普通桌面 `1366x900`、窄屏 `820x1180` 共 12 张真实页面截图，见 `C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/`；其中 `task-system` 三视口实图都已显示 `自动化提示词未同步`。
-- 根因分层：`task-system` 首页问题属于前端状态投影；`fanxiu runtime` 的 `动态作业未记录下次时间` 属于后端数据投影 / 业务建模边界，已登记到 `docs/CodeYun自动化协作交接.md` 的 `UI-HANDOFF-20260623-001`。
-- 剩余风险：`cluster/runtime` 当前截图只覆盖空表首屏，没有新的服务 / 作业行样本；`fanxiu runtime` 的深层动态作业行没有在当前首屏截图中形成新的反证，因此后端状态投影 handoff 继续保留。
-- 处理结果：本轮补齐了上轮缺失的真实三视口截图并完成复验，因此完整关闭这段增量范围，把 `last_audited_commit` 推进到 `19a720628aad19a07a61eb117125a96af4600c35`。
 
 ### 2026-06-22
 
@@ -1302,17 +1477,6 @@ pending_or_skipped_ranges:
 - 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-22-runtime/report.md`
 - 验证：`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过；真实页面截图见 `runtime-wide-before.png` 与 `runtime-after.png`。
 - 剩余风险：Chrome / in-app Browser 截图链路会把窗口归一为固定渲染宽度，本轮未拿到真正不同宽度的三张实图；但本次修改只删除重复入口，不涉及 CSS 或布局算法，窄屏风险较低。
-
-- 完整范围：`19a720628aad19a07a61eb117125a96af4600c35..c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
-- 覆盖提交：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
-- 前端入口提交：`c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`
-- 入口如何牵引到旧问题：本次提交继续落在 `notes/task-system` 同一条“任务空间健康 -> 自动化契约异常 -> 当前是否还能继续执行”链路上。commit 本身已经把英文告警压成 `自动化提示词未同步`，但真实页面立刻暴露出同页旧问题：健康条自己已经是容器，内部仍套一个橙色描边 chip，且只读系统告警和可跳转任务问题共用同一外观，首屏会把“状态事实”和“可执行动作”混成一个层级。
-- 本轮减法：不新增任何新控件，只把健康条收敛成唯一容器；被动系统告警改回文本级提示，只有带 `taskId` 的问题才保留为可点击文本链接；同时取消 issue 的强制截断，让同一条健康带承载完整事实，而不是“容器里再塞一个伪按钮”。
-- 信息量保持：自动化失败事实、任务审计问题、按任务跳转能力和顶部 stale reload 逻辑都保留；减少的是重复边框、错误动作暗示和被截断的重复投影，不是减少诊断能力。
-- 报告路径：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-task-system-c1a7cc90/report.md`
-- 验证：复用本地 `5173/8000` 开发环境，以本地 admin token 打开真实页面 `http://127.0.0.1:5173/notes/task-system`，在宽屏 / 普通桌面 / 窄屏三种视口下分别截图 `task-system-after-wide.png`、`task-system-after-desktop.png`、`task-system-after-narrow.png`；`npm run typecheck --prefix frontend`、`npm run build --prefix frontend` 通过。
-- 剩余风险：本轮真实数据只复现了自动化只读告警，没有同时采到“可跳转任务问题 + 自动化告警”混合样本；但改动只收敛同一健康条内的投影层级，不改 API、写回和任务逻辑，风险较低。
-- 处理结果：本轮已完成完整增量范围的提交归类、概念图/线框图、真实多视口截图、低风险修复和前端验证，因此把 `last_audited_commit` 推进到 `c1a7cc906ac1c3baafc702dffdd0a4dfbe0c404a`。
 
 - 完整范围：`46c34d1d9e6147e349a065fc3b6b218e4cd5cb9e..358177a3394d280730a3abc19d3f1d5272cfc0f1`
 - 覆盖提交：`358177a3394d280730a3abc19d3f1d5272cfc0f1`

@@ -504,27 +504,41 @@ function getRefundHotInstance() {
   return refundHotTableRef.value?.hotInstance ?? null
 }
 
-function measureRenderedTableHeight(hot: Handsontable | null, extraVisibleRows = 0): number | null {
+function measureRenderedTableHeight(
+  hot: Handsontable | null,
+  options?: {
+    minVisibleRows?: number
+    extraVisibleRows?: number
+  },
+): number | null {
   if (!hot) return null
 
   const rowCount = hot.countRows()
+  const minVisibleRows = options?.minVisibleRows ?? 1
+  const extraVisibleRows = options?.extraVisibleRows ?? 0
   let totalHeight = HOT_TABLE_HEADER_HEIGHT + 2
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
     totalHeight += hot.getRowHeight(rowIndex) ?? HOT_TABLE_ROW_HEIGHT
   }
   totalHeight += extraVisibleRows * HOT_TABLE_ROW_HEIGHT
-  return totalHeight
+  const minimumHeight = HOT_TABLE_HEADER_HEIGHT + 2 + minVisibleRows * HOT_TABLE_ROW_HEIGHT
+  return Math.max(totalHeight, minimumHeight)
 }
 
 function refreshInputTableHeight() {
   requestAnimationFrame(() => {
-    inputMeasuredHeight.value = measureRenderedTableHeight(getInputHotInstance(), 1)
+    inputMeasuredHeight.value = measureRenderedTableHeight(getInputHotInstance(), {
+      minVisibleRows: INPUT_TABLE_MIN_VISIBLE_ROWS,
+      extraVisibleRows: 1,
+    })
   })
 }
 
 function refreshQueryTableHeight() {
   requestAnimationFrame(() => {
-    queryMeasuredHeight.value = measureRenderedTableHeight(getQueryHotInstance())
+    queryMeasuredHeight.value = measureRenderedTableHeight(getQueryHotInstance(), {
+      minVisibleRows: QUERY_TABLE_MIN_VISIBLE_ROWS,
+    })
   })
 }
 

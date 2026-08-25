@@ -11,24 +11,6 @@
         <el-button type="primary" plain @click="openCreateDialog">
           新增账号
         </el-button>
-        <el-button type="primary" @click="loadAccounts" :loading="loading">
-          刷新
-        </el-button>
-      </div>
-    </div>
-
-    <div class="summary-strip">
-      <div class="summary-item">
-        <span class="summary-label">账号总数</span>
-        <strong class="summary-value">{{ accounts.length }}</strong>
-      </div>
-      <div class="summary-item">
-        <span class="summary-label">超管账号</span>
-        <strong class="summary-value">{{ superuserCount }}</strong>
-      </div>
-      <div class="summary-item">
-        <span class="summary-label">普通账号</span>
-        <strong class="summary-value">{{ normalUserCount }}</strong>
       </div>
     </div>
 
@@ -494,12 +476,6 @@ const profilePasswordVisible = ref(false);
 const profileNewPasswordValue = ref('');
 
 const currentUserId = computed(() => userStore.user?.id ?? null);
-const superuserCount = computed(
-  () => accounts.value.filter((account) => account.is_superuser).length,
-);
-const normalUserCount = computed(
-  () => accounts.value.filter((account) => !account.is_superuser).length,
-);
 const profilePasswordValue = computed(() => profileTarget.value?.password_plain || '未知');
 
 const selectedSubjectAccount = computed(() => {
@@ -931,34 +907,6 @@ onMounted(() => {
   color: #606266;
 }
 
-.summary-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 16px;
-  background: #fff;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.summary-label {
-  font-size: 13px;
-  color: #909399;
-}
-
-.summary-value {
-  font-size: 24px;
-  line-height: 1.2;
-  color: #303133;
-}
-
 .content-stack {
   flex: 1;
   min-height: 0;
@@ -1156,9 +1104,6 @@ onMounted(() => {
     justify-content: flex-end;
   }
 
-  .summary-strip {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 520px) {

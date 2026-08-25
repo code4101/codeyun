@@ -325,6 +325,8 @@ export const useImageGalleryState = (
     allItemsLabel?: string;
     enableFolderFilter?: Ref<boolean>;
     preserveOrder?: Ref<boolean>;
+    onPreviewArrowKey?: (direction: -1 | 1) => boolean;
+    onPreviewVerticalArrowKey?: (direction: -1 | 1) => boolean;
   }
 ) => {
   const storageKeyPrefix = options.storageKeyPrefix ?? 'image_gallery';
@@ -518,9 +520,7 @@ export const useImageGalleryState = (
     if (
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      target instanceof HTMLVideoElement ||
-      target instanceof HTMLButtonElement
+      target instanceof HTMLSelectElement
     ) {
       return true;
     }
@@ -530,7 +530,31 @@ export const useImageGalleryState = (
 
   const handleKeydown = (event: KeyboardEvent) => {
     if (!previewVisible.value) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      previewVisible.value = false;
+      return;
+    }
+
+    const isArrowKey = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+    const isVerticalArrowKey = event.key === 'ArrowUp' || event.key === 'ArrowDown';
     if (isInteractiveTarget(event.target)) return;
+
+    if (
+      isVerticalArrowKey
+      && options.onPreviewVerticalArrowKey?.(event.key === 'ArrowUp' ? 1 : -1)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (isArrowKey && options.onPreviewArrowKey?.(event.key === 'ArrowLeft' ? -1 : 1)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
 
     if (event.key === 'ArrowLeft' && hasPreviousImage.value) {
       event.preventDefault();
@@ -640,11 +664,11 @@ export const useImageGalleryState = (
       console.warn('Failed to restore image gallery preferences', error);
     }
 
-    window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('keydown', handleKeydown, { capture: true });
   });
 
   onBeforeUnmount(() => {
-    window.removeEventListener('keydown', handleKeydown);
+    window.removeEventListener('keydown', handleKeydown, { capture: true });
     galleryResizeObserver?.disconnect();
   });
 

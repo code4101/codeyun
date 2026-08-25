@@ -58,7 +58,27 @@ def _load_env_file() -> None:
         from dotenv import load_dotenv
     except Exception:
         return
+    load_dotenv(ROOT_DIR.parent / "xlproject" / ".env")
     load_dotenv(ROOT_DIR / ".env")
+
+
+def _shared_ssh_password(username: str) -> str | None:
+    """Read a shared SSH credential from XL_SERVICES."""
+    try:
+        from pyxllib.prog.xlenv import XlHosts
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+    try:
+        services = XlHosts.get_df("XL_SERVICES")
+    except (AssertionError, KeyError, TypeError, ValueError):
+        return None
+    passwords = {
+        str(accounts[username])
+        for accounts in services.loc[services["service"].eq("ssh"), "accounts"]
+        if isinstance(accounts, dict) and accounts.get(username)
+    }
+    return passwords.pop() if len(passwords) == 1 else None
 
 
 def _state_path() -> Path:
@@ -208,13 +228,19 @@ def _create_dist_zip(release_id: str) -> Path:
 
 def _ssh_config() -> dict[str, Any]:
     _load_env_file()
-    host = os.getenv("YUN_SERVER_HOST")
+    host = os.getenv("YUN_SERVER_HOST") or "code4101.com"
     port = int(os.getenv("YUN_SERVER_PORT") or "22")
     username = os.getenv("YUN_USER_CHENKUNZE") or os.getenv("YUN_SERVER_USER") or "chenkunze"
-    password = os.getenv("YUN_USER_PASS_CHENKUNZE") or os.getenv("YUN_SERVER_PASS")
+    password = (
+        os.getenv("YUN_USER_PASS_CHENKUNZE")
+        or os.getenv("YUN_SERVER_PASS")
+        or _shared_ssh_password(username)
+    )
     direct_interface_text = (os.getenv("YUN_SERVER_DIRECT_INTERFACE_INDEX") or "").strip()
-    if not host or not password:
-        raise PublicFrontendDeployError("缺少 yun 服务器环境变量，无法上传前端 dist。")
+    if not password:
+        raise PublicFrontendDeployError(
+            "未能从共享环境配置的 XL_SERVICES 读取公网服务器 SSH 凭据，无法上传前端 dist。"
+        )
     direct_interface_index: int | None = None
     if direct_interface_text:
         try:

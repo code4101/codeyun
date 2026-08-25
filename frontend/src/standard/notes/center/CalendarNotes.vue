@@ -148,11 +148,11 @@
                 <div class="day-left">
                   <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
                   <span
-                    v-if="showCodexWorkload && shouldShowCodexHours(getCodexSecondsForDate(day.date))"
+                    v-if="showCodexWorkload && shouldShowCodexDailyMetric(day.date)"
                     class="codex-hours"
-                    :title="getCodexHoursTitle(getCodexSecondsForDate(day.date))"
+                    :title="getCodexDailyMetricTitle(day.date)"
                   >
-                    {{ formatCodexHours(getCodexSecondsForDate(day.date)) }}
+                    {{ formatCodexDailyMetric(day.date) }}
                   </span>
                   <span v-if="isToday(day.date)" class="today-tag">今天</span>
                   <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
@@ -543,7 +543,9 @@ import {
   normalizeNoteProgramChannel,
   startCodexDiaryImportRun,
   fetchCodexDiaryImportRun,
+  fetchCodexWeeklyQuotaSnapshots,
   fetchCalendarYearMonthMemos,
+  type CodexWeeklyQuotaSnapshot,
   noteKey,
   saveCalendarYearMonthMemos
 } from '@/api/notes';
@@ -828,6 +830,7 @@ const loading = ref(false);
 const codexDiaryImporting = ref(false);
 const codexWorkloadTurns = ref<CodexWorkloadTurn[]>([]);
 const codexHistoricalSecondsByDay = ref<CodexWorkloadDaySeconds>({});
+const codexWeeklyQuotaByDay = ref<Record<string, CodexWeeklyQuotaSnapshot>>({});
 const codexWorkloadLoaded = ref(false);
 const codexWorkloadError = ref('');
 const CODEX_DIARY_IMPORT_POLL_INTERVAL_MS = 1500;
@@ -1301,6 +1304,23 @@ const scheduleCodexWorkloadRefresh = (cache?: CodexWorkloadStatsCache) => {
   }, CODEX_WORKLOAD_INITIAL_REFRESH_DELAY_MS);
 };
 
+const refreshCodexWeeklyQuotaSnapshots = async () => {
+  if (!userStore.isAuthenticated) {
+    codexWeeklyQuotaByDay.value = {};
+    return;
+  }
+  try {
+    const snapshots = await fetchCodexWeeklyQuotaSnapshots();
+    codexWeeklyQuotaByDay.value = Object.fromEntries(
+      snapshots
+        .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number.isFinite(item.remaining_percent))
+        .map(item => [item.date, item])
+    );
+  } catch (error) {
+    console.warn('Failed to load Codex weekly quota snapshots:', error);
+  }
+};
+
 let scheduledCalendarRefreshToken = 0;
 let scheduledCalendarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inactiveCalendarRefreshPending = false;
@@ -1649,12 +1669,13 @@ const notesByDay = computed(() => {
   }
 
   for (const arr of map.values()) {
-    // 优先按时间（start_at 或 created_at）升序排序，时间相同时按权重降序
+    // 每天优先按权重降序排序，权重相同时再按时间（start_at 或 created_at）升序。
     arr.sort((a, b) => {
+      const weightDiff = (Number(b.weight) || 0) - (Number(a.weight) || 0);
+      if (weightDiff !== 0) return weightDiff;
       const timeA = a.start_at || a.created_at;
       const timeB = b.start_at || b.created_at;
-      if (timeA !== timeB) return timeA - timeB;
-      return (b.weight || 0) - (a.weight || 0);
+      return timeA - timeB;
     });
   }
 
@@ -2157,6 +2178,23 @@ const getCodexHoursTitle = (seconds: number) => {
   const minutes = Math.round(seconds / 60);
   const sourceText = codexWorkloadLoaded.value ? '来自 Codex workload' : '正在读取 Codex workload';
   return `Codex 工作约 ${formatCodexHours(seconds)}（${minutes} 分钟，${sourceText}）`;
+};
+const getCodexWeeklyQuotaForDate = (date: Date) => codexWeeklyQuotaByDay.value[toDateStr(date)];
+const shouldShowCodexDailyMetric = (date: Date) => (
+  Boolean(getCodexWeeklyQuotaForDate(date)) || shouldShowCodexHours(getCodexSecondsForDate(date))
+);
+const formatCodexDailyMetric = (date: Date) => {
+  const quota = getCodexWeeklyQuotaForDate(date);
+  return quota ? `${quota.remaining_percent}%` : formatCodexHours(getCodexSecondsForDate(date));
+};
+const getCodexDailyMetricTitle = (date: Date) => {
+  const quota = getCodexWeeklyQuotaForDate(date);
+  if (!quota) return getCodexHoursTitle(getCodexSecondsForDate(date));
+  const observedAt = new Date(quota.observed_at);
+  const observedText = Number.isNaN(observedAt.getTime())
+    ? quota.observed_at
+    : observedAt.toLocaleString('zh-CN', { hour12: false });
+  return `Codex 每周使用限额剩余 ${quota.remaining_percent}%（${observedText} 采集，记入 ${quota.date}）`;
 };
 const codexWorkloadStatusText = computed(() => {
   if (!showCodexWorkload.value) return '';
@@ -3189,6 +3227,7 @@ onMounted(() => {
     } else {
       inactiveCalendarRefreshPending = true;
     }
+    void refreshCodexWeeklyQuotaSnapshots();
   }
   if (isActive.value) {
     refreshData({ silent: true });
@@ -3263,6 +3302,7 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   }
   if (isAuthenticated) {
     scheduleCodexWorkloadRefresh();
+    void refreshCodexWeeklyQuotaSnapshots();
   } else {
     if (scheduledCodexWorkloadRefreshTimer !== null) {
       clearTimeout(scheduledCodexWorkloadRefreshTimer);
@@ -3271,6 +3311,7 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
     codexWorkloadTurns.value = [];
     applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
     codexWorkloadError.value = '';
+    codexWeeklyQuotaByDay.value = {};
   }
 });
 

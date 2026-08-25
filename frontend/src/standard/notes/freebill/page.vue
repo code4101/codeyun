@@ -32,6 +32,7 @@ import {
   saveFreebillRecordManualOverrides,
   clearFreebillRecordOverrides,
   refreshFreebillSheetWorkbook,
+  syncFreebillFromLocalWechat,
   upsertFreebillDateRangeRule,
   type FreebillBuiltInInterpretRule,
   type FreebillCategoryDimension,
@@ -116,6 +117,11 @@ type CategoryBranchRef = {
   label: string
   count: number
   value: number
+  detailProgram?: FreebillProgramChannel
+  detailKey?: string
+}
+type CategoryBranchRefOptions = Pick<CategoryBranchRef, 'detailProgram' | 'detailKey'> & {
+  label?: string
 }
 type RecordManualOverrideField = {
   key: string
@@ -358,6 +364,7 @@ const CATEGORY_FALLBACK_DIRECTION_COLORS: Record<FreebillStandardDirection, stri
 const loading = ref(false)
 const sheetWorkbookLoading = ref(false)
 const importingSource = ref<FreebillImportSource | ''>('')
+const syncingLocalWechat = ref(false)
 const status = ref<FreebillStatus | null>(null)
 const dashboard = ref<FreebillDashboard | null>(null)
 const sheetWorkbook = ref<FreebillSheetWorkbook | null>(null)
@@ -429,7 +436,7 @@ const summary = computed(() => dashboard.value?.summary ?? emptySummary)
 const selectedCategoryDetailState = computed(() => {
   const branch = selectedCategoryBranch.value
   if (!branch) return null
-  return getCategoryDetailState(branch.path)
+  return getCategoryDetailState(branch)
 })
 const builtInInterpretRuleGroups = computed<BuiltInInterpretRuleGroup[]>(() => {
   return TREND_STANDARD_NATURE_OPTIONS
@@ -1270,7 +1277,8 @@ async function handleFileInput(source: FreebillImportSource, event: Event) {
   try {
     const result = await importFreebillFiles(source, files)
     const sourceLabel = getImportSourceLabel(source)
-    const message = `${sourceLabel}导入完成：新增 ${result.inserted} 条，跳过 ${result.skipped} 条`
+    const updatedText = result.updated ? `，更新 ${result.updated} 条` : ''
+    const message = `${sourceLabel}导入完成：新增 ${result.inserted} 条${updatedText}，跳过 ${result.skipped} 条`
     if (result.error_count) {
       const firstError = result.results.find((item) => item.status === 'error')?.error
       ElMessage.warning(firstError ? `${message}，失败 ${result.error_count} 个：${firstError}` : `${message}，失败 ${result.error_count} 个`)
@@ -1286,6 +1294,27 @@ async function handleFileInput(source: FreebillImportSource, event: Event) {
   } finally {
     importingSource.value = ''
     input.value = ''
+  }
+}
+
+async function syncLocalWechat() {
+  syncingLocalWechat.value = true
+  try {
+    const result = await syncFreebillFromLocalWechat()
+    const message = `本机微信增量同步完成：新增 ${result.inserted} 条，支付 ${result.payment.parsed} 条，聊天转账 ${result.chat_transfer.parsed} 条，已存在 ${result.skipped} 条`
+    if (result.source_sync_error) {
+      ElMessage.warning(`${message}；实时快照更新失败，本次使用已有快照`)
+    } else {
+      ElMessage.success(message)
+    }
+    await refreshAll()
+    if (sheetWorkbook.value) {
+      await refreshSheetWorkbook()
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    syncingLocalWechat.value = false
   }
 }
 
@@ -1369,6 +1398,23 @@ function buildCategoryTreeRows(
 ): CategoryTreeRow[] {
   const rows: CategoryTreeRow[] = []
   const visit = (item: FreebillCategoryStat, rowDepth: number, currentParentPath: FreebillCategoryPathItem[]) => {
+    if (item.is_remainder) {
+      const remainderDimension = item.remainder_items?.[0]?.dimension || CATEGORY_MATRIX_DIMENSIONS[rowDepth + parentPath.length]
+      const remainderPath = remainderDimension
+        ? [...currentParentPath, { dimension: remainderDimension, value: '...' }]
+        : currentParentPath
+      rows.push({
+        key: `${getCategoryPathKey(remainderPath)}/__remainder__:${rowDepth}`,
+        depth: rowDepth,
+        item,
+        path: remainderPath,
+      })
+      if (isCategoryExpanded(remainderPath)) {
+        const remainderItems = item.remainder_items ?? []
+        remainderItems.forEach((remainderItem) => visit(remainderItem, rowDepth, currentParentPath))
+      }
+      return
+    }
     const path = resolveCategoryItemPath(item, currentParentPath, rowDepth + parentPath.length)
     const key = getCategoryPathKey(path)
     rows.push({ key, depth: rowDepth, item, path })
@@ -1384,7 +1430,13 @@ function getCategoryChildren(item: FreebillCategoryStat) {
 }
 
 function hasCategoryChildren(item: FreebillCategoryStat) {
+  if (item.is_remainder) return Boolean(item.remainder_items?.length)
   return getCategoryChildren(item).length > 0
+}
+
+function getCategoryRemainderTitle(item: FreebillCategoryStat) {
+  if (!item.is_remainder) return ''
+  return `其余 ${formatNumber(item.group_count)} 个较小分类，合计 ${formatNumber(item.count)} 条记录`
 }
 
 function resolveCategoryItemPath(
@@ -1421,14 +1473,17 @@ function toggleCategoryExpanded(path: FreebillCategoryPathItem[]) {
 function createCategoryBranchRef(
   path: FreebillCategoryPathItem[],
   item?: FreebillCategoryStat,
+  options: CategoryBranchRefOptions = {},
 ): CategoryBranchRef {
   const normalizedPath = path.map((segment) => ({ ...segment }))
-  const label = normalizedPath.map((segment) => segment.value).join(' / ')
+  const label = options.label ?? normalizedPath.map((segment) => segment.value).join(' / ')
   return {
     path: normalizedPath,
     label,
     count: Number(item?.count || 0),
     value: Number(item?.value || 0),
+    detailProgram: options.detailProgram,
+    detailKey: options.detailKey,
   }
 }
 
@@ -1457,7 +1512,11 @@ function syncSelectedCategoryBranchWithDashboard() {
   if (!branch) return
   const currentBranch = findCategoryBranchInCurrentTree(branch.path)
   selectedCategoryBranch.value = currentBranch
-    ? createCategoryBranchRef(currentBranch.path, currentBranch.item)
+    ? createCategoryBranchRef(currentBranch.path, currentBranch.item, {
+        label: branch.detailKey ? branch.label : undefined,
+        detailProgram: branch.detailProgram,
+        detailKey: branch.detailKey,
+      })
     : null
 }
 
@@ -1467,19 +1526,21 @@ function isSelectedCategoryBranch(path: FreebillCategoryPathItem[]) {
 }
 
 async function selectCategoryBranch(path: FreebillCategoryPathItem[], item?: FreebillCategoryStat) {
-  selectedCategoryBranch.value = createCategoryBranchRef(path, item)
-  await loadCategoryBranchRecords(path, 1)
+  const branch = createCategoryBranchRef(path, item)
+  selectedCategoryBranch.value = branch
+  await loadCategoryBranchRecords(branch, 1)
 }
 
 async function reloadSelectedCategoryBranchDetail() {
   const branch = selectedCategoryBranch.value
   if (!branch) return
-  const state = getCategoryDetailState(branch.path)
-  await loadCategoryBranchRecords(branch.path, state.page, true)
+  const state = getCategoryDetailState(branch)
+  await loadCategoryBranchRecords(branch, state.page, true)
 }
 
-function getCategoryDetailKey(path: FreebillCategoryPathItem[]) {
-  return `detail/${getCategoryPathKey(path)}`
+function getCategoryDetailKey(branch: CategoryBranchRef) {
+  const contextKey = branch.detailKey ? `/${branch.detailKey}` : ''
+  return `detail/${getCategoryPathKey(branch.path)}${contextKey}`
 }
 
 function createCategoryDetailState(): CategoryBranchDetailState {
@@ -1496,8 +1557,8 @@ function createCategoryDetailState(): CategoryBranchDetailState {
   }
 }
 
-function getCategoryDetailState(path: FreebillCategoryPathItem[]) {
-  const key = getCategoryDetailKey(path)
+function getCategoryDetailState(branch: CategoryBranchRef) {
+  const key = getCategoryDetailKey(branch)
   if (!categoryBranchDetailCache[key]) {
     categoryBranchDetailCache[key] = createCategoryDetailState()
   }
@@ -1511,11 +1572,11 @@ function clearCategoryDetailCache() {
 }
 
 async function loadCategoryBranchRecords(
-  path: FreebillCategoryPathItem[],
+  branch: CategoryBranchRef,
   page = 1,
   force = false,
 ) {
-  const state = getCategoryDetailState(path)
+  const state = getCategoryDetailState(branch)
   const nextPage = Math.max(1, Math.floor(page))
   const sort = categoryDetailSort.value
   if (state.loading) return
@@ -1526,8 +1587,12 @@ async function loadCategoryBranchRecords(
     const offset = (nextPage - 1) * CATEGORY_DETAIL_PAGE_SIZE
     const result = await fetchFreebillCategoryBranchRecords({
       program: backendProgram.value,
-      programs: [backendProgram.value, frontendProgram.value],
-      path,
+      programs: [
+        backendProgram.value,
+        frontendProgram.value,
+        ...(branch.detailProgram ? [branch.detailProgram] : []),
+      ],
+      path: branch.path,
       limit: CATEGORY_DETAIL_PAGE_SIZE,
       offset,
       sort_by: sort.field,
@@ -1550,7 +1615,7 @@ async function loadCategoryBranchRecords(
 async function changeCategoryDetailPage(page: number) {
   const branch = selectedCategoryBranch.value
   if (!branch) return
-  await loadCategoryBranchRecords(branch.path, page)
+  await loadCategoryBranchRecords(branch, page)
 }
 
 async function setCategoryDetailSort(field: FreebillCategoryBranchSortBy) {
@@ -1561,7 +1626,7 @@ async function setCategoryDetailSort(field: FreebillCategoryBranchSortBy) {
   categoryDetailSort.value = { field, order }
   const branch = selectedCategoryBranch.value
   if (!branch) return
-  await loadCategoryBranchRecords(branch.path, 1, true)
+  await loadCategoryBranchRecords(branch, 1, true)
 }
 
 function getCategoryDetailSortMark(field: FreebillCategoryBranchSortBy) {
@@ -1578,6 +1643,12 @@ function formatCategoryDetailTime(value: string | null | undefined) {
 function formatCategoryDetailText(value: string | number | null | undefined) {
   const text = String(value ?? '').trim()
   return text || '-'
+}
+
+function formatCategoryDetailAmount(value: number | null | undefined) {
+  const numberValue = Number(value || 0)
+  const normalized = Object.is(numberValue, -0) ? 0 : numberValue
+  return normalized.toFixed(2)
 }
 
 function getRecordFieldValue(record: FreebillRecord | null, field: string) {
@@ -1932,6 +2003,7 @@ async function updateTrendChart() {
   }
   if (!trendChart) {
     trendChart = echarts.init(el)
+    trendChart.on('click', handleTrendChartClick)
     trendResizeObserver = new ResizeObserver(() => {
       trendChart?.resize()
     })
@@ -1944,6 +2016,7 @@ async function updateTrendChart() {
 function disposeTrendChart() {
   trendResizeObserver?.disconnect()
   trendResizeObserver = undefined
+  trendChart?.off('click', handleTrendChartClick)
   trendChart?.dispose()
   trendChart = null
 }
@@ -1957,6 +2030,7 @@ function buildTrendChartOption(): TrendChartOption {
         {
           name: '收支',
           type: 'bar',
+          cursor: 'pointer',
           barWidth: 18,
           data: items.map((item) => Number(item.other || 0)),
           itemStyle: {
@@ -1972,6 +2046,7 @@ function buildTrendChartOption(): TrendChartOption {
         {
           name: '支出',
           type: 'bar',
+          cursor: 'pointer',
           barWidth: 18,
           barGap: '-100%',
           data: items.map((item) => Number(item.expense || 0)),
@@ -1986,6 +2061,7 @@ function buildTrendChartOption(): TrendChartOption {
         {
           name: '收入',
           type: 'bar',
+          cursor: 'pointer',
           barWidth: 18,
           data: items.map((item) => -Number(item.income || 0)),
           itemStyle: {
@@ -2066,10 +2142,10 @@ function buildTrendTooltip(params: unknown) {
   if (!item) return ''
   const trendColors = getNatureDirectionColors(trendStandardNature.value)
   const lines = isFlowNature(trendStandardNature.value)
-    ? [buildTrendTooltipLine('收支', trendColors.收支, item.other, item.other_count)]
+    ? [buildTrendTooltipLine('收支', trendColors.收支, item.other)]
     : [
-        buildTrendTooltipLine('支出', trendColors.支出, item.expense, item.expense_count),
-        buildTrendTooltipLine('收入', trendColors.收入, item.income, item.income_count),
+        buildTrendTooltipLine('支出', trendColors.支出, item.expense),
+        buildTrendTooltipLine('收入', trendColors.收入, item.income),
       ]
   return [
     `<div style="font-weight:650;margin-bottom:5px;">${escapeHtml(item.fullPeriod)}</div>`,
@@ -2077,8 +2153,40 @@ function buildTrendTooltip(params: unknown) {
   ].join('')
 }
 
-function buildTrendTooltipLine(label: string, color: string, value: number | null | undefined, count: number | null | undefined) {
-  return `<div><span style="display:inline-block;width:7px;height:7px;background:${color};margin-right:6px;"></span>${label} ${formatMoney(value)} · ${formatNumber(Number(count || 0))} 条</div>`
+function buildTrendTooltipLine(label: string, color: string, value: number | null | undefined) {
+  return `<div><span style="display:inline-block;width:7px;height:7px;background:${color};margin-right:6px;"></span>${label} ${formatMoney(value)}</div>`
+}
+
+async function handleTrendChartClick(params: unknown) {
+  const point = params as { componentType?: string; seriesName?: string; dataIndex?: number }
+  if (point.componentType !== 'series') return
+  const dataIndex = Number(point.dataIndex)
+  const item = trendItems.value[dataIndex]
+  if (!item) return
+
+  const direction = String(point.seriesName || '').trim() as FreebillStandardDirection
+  if (!['支出', '收入', '收支'].includes(direction)) return
+  const periodStart = parseTrendPeriodStart(item.month)
+  const periodEnd = parseTrendPeriodEnd(item.month)
+  if (!periodStart || !periodEnd) return
+
+  const detailProgram = upsertFreebillDateRangeRule(
+    createFreebillIncludeAllProgram(),
+    'create_time',
+    formatLocalDate(periodStart),
+    formatLocalDate(periodEnd),
+  )
+  const path: FreebillCategoryPathItem[] = [
+    { dimension: 'standard_nature', value: trendStandardNature.value },
+    { dimension: 'standard_direction', value: direction },
+  ]
+  const branch = createCategoryBranchRef(path, undefined, {
+    label: `${item.fullPeriod} / ${trendStandardNature.value} / ${direction}`,
+    detailProgram,
+    detailKey: [trendGranularity.value, item.month, trendStandardNature.value, direction].join(':'),
+  })
+  selectedCategoryBranch.value = branch
+  await loadCategoryBranchRecords(branch, 1, true)
 }
 
 function escapeHtml(value: string) {
@@ -2427,6 +2535,16 @@ onUnmounted(() => {
           微信 Excel
         </el-button>
         <el-button
+          :icon="Refresh"
+          :loading="syncingLocalWechat"
+          size="small"
+          plain
+          title="只读同步微信本地数据库中的支付通知"
+          @click="syncLocalWechat"
+        >
+          本机微信
+        </el-button>
+        <el-button
           :icon="Upload"
           :loading="importingSource === 'ccb'"
           size="small"
@@ -2771,7 +2889,7 @@ onUnmounted(() => {
             ref="trendChartRef"
             class="trend-chart"
             :style="trendChartStyle"
-            title="Ctrl+滚轮缩放时间范围"
+            title="点击柱形查看明细；Ctrl+滚轮缩放时间范围"
             @wheel="handleTrendWheel"
           ></div>
         </div>
@@ -2851,8 +2969,12 @@ onUnmounted(() => {
                           v-for="row in entry.rows"
                           :key="row.key"
                           class="category-row category-tree-row"
-                          :class="{ 'is-selected': isSelectedCategoryBranch(row.path) }"
+                          :class="{
+                            'is-selected': !row.item.is_remainder && isSelectedCategoryBranch(row.path),
+                            'is-remainder': row.item.is_remainder,
+                          }"
                           :style="{ paddingLeft: `${row.depth * 18}px` }"
+                          :title="getCategoryRemainderTitle(row.item)"
                         >
                           <button
                             v-if="hasCategoryChildren(row.item)"
@@ -2867,8 +2989,8 @@ onUnmounted(() => {
                           <div
                             class="category-track"
                             :style="getCategoryTrackStyle(getNatureDirectionColor(matrixRow.nature, entry.direction), row.item.value, maxCategoryMatrixReferenceValue)"
-                            @click="selectCategoryBranch(row.path, row.item)"
-                            @contextmenu.prevent.stop="openCategoryBranchBatchEdit($event, row.path, row.item)"
+                            @click="row.item.is_remainder ? toggleCategoryExpanded(row.path) : selectCategoryBranch(row.path, row.item)"
+                            @contextmenu.prevent.stop="!row.item.is_remainder && openCategoryBranchBatchEdit($event, row.path, row.item)"
                           >
                             <i class="category-bar" />
                             <span class="category-name-label">
@@ -2941,7 +3063,7 @@ onUnmounted(() => {
                     来源<span>{{ getCategoryDetailSortMark('source') }}</span>
                   </button>
                 </th>
-                <th>
+                <th class="amount-cell">
                   <button
                     type="button"
                     class="category-detail-sort-button"
@@ -2993,7 +3115,7 @@ onUnmounted(() => {
               >
                 <td>{{ formatCategoryDetailTime(record.create_time) }}</td>
                 <td>{{ formatCategoryDetailText(record.source) }}</td>
-                <td class="amount-cell">{{ formatMoney(record.amount) }}</td>
+                <td class="amount-cell">{{ formatCategoryDetailAmount(record.amount) }}</td>
                 <td
                   v-for="column in categoryDetailContextColumns"
                   :key="column.key"
@@ -3063,7 +3185,7 @@ onUnmounted(() => {
             :key="getSheetWorkspaceKey(tab.key)"
             :workbook-id="workbookId"
             :sheet-id="tab.sheet.sheet_id"
-            :show-title-input="false"
+            :show-sheet-menu="false"
             :empty-text="tab.emptyText"
             :base-row-filter-programs="tab.key === 'records' ? recordsBaseRowFilterPrograms : null"
             :row-filter-program="tab.key === 'records' ? sheetViewProgram : null"
@@ -3779,6 +3901,14 @@ h2 {
   gap: 6px;
 }
 
+.category-tree-row.is-remainder .category-track {
+  cursor: pointer;
+}
+
+.category-tree-row.is-remainder .category-name-text {
+  color: #64748b;
+}
+
 .category-toggle,
 .category-toggle-placeholder {
   flex: 0 0 18px;
@@ -4024,6 +4154,7 @@ h2 {
   color: #991b1b;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
+  text-align: right;
 }
 
 .category-detail-row {

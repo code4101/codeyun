@@ -149,6 +149,13 @@ def choose_scene_from_graph(
         )
 
     if len(matched) > 1:
+        # 核心设计：多个场景即使都命中 100%，也不能按分数或候选顺序选。
+        # ``s -> x`` 表示场景 s 的身份条件能够匹配事实帧 x；因此它同时
+        # 表达了“s 比 x 更宽泛”。例如 427 -> 428 -> 429 且
+        # 427 -> 429 时，三者对当前帧都可能是 100%，但唯一终点 429
+        # 才是最具体的事实。这里先压缩双向可达的强连通分量，再只保留
+        # 没有指向其它分量的终端节点。若终端不唯一，必须继续消歧或返回
+        # ambiguous，绝不能让遍历顺序制造一个看似确定的结果。
         nearest_ids = graph_nearest_scene_ids((item.scene_id for item in matched), match_edges)
         if len(nearest_ids) == 1:
             winner = next(item for item in matched if item.scene_id == nearest_ids[0])

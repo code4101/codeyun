@@ -50,6 +50,8 @@ export interface EditableNotePatch {
   custom_fields?: NoteCustomFieldTuple[];
 }
 
+export type EditableNoteExpectedFields = Partial<Omit<EditableNoteSnapshot, 'id'>>;
+
 const normalizeText = (value: unknown) => value == null ? '' : String(value);
 const STANDARD_NUMBER_PATTERN = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/;
 const BOOLEAN_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
@@ -295,6 +297,18 @@ export const buildEditableNotePatch = (
   }
 
   return patch;
+};
+
+export const buildEditableNoteExpectedFields = (
+  patch: EditableNotePatch,
+  baseline: EditableNoteSnapshot | null
+): EditableNoteExpectedFields => {
+  if (!baseline) return {};
+  const expected: EditableNoteExpectedFields = {};
+  for (const fieldName of Object.keys(patch) as Array<keyof EditableNotePatch>) {
+    (expected as Record<string, unknown>)[fieldName] = cloneEditableNoteSnapshot(baseline)[fieldName];
+  }
+  return expected;
 };
 
 export const applyEditableNoteSnapshot = (note: NoteNode, snapshot: EditableNoteSnapshot) => ({

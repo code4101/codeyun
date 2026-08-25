@@ -85,3 +85,21 @@ def test_chunked_pdf_upload_rejects_wrong_offset(tmp_path, monkeypatch):
             current_user=owner,
         ))
     assert error.value.status_code == 409
+
+
+def test_hosted_copy_accepts_completed_chunk_file_with_part_suffix(tmp_path, monkeypatch):
+    hosted_root = tmp_path / "hosted"
+    hosted_root.mkdir()
+    monkeypatch.setattr(pdf_documents, "_hosted_pdf_root", lambda _user_id: hosted_root)
+    owner = User(id=7, username="owner", hashed_password="test")
+    content_path = tmp_path / "completed-upload.part"
+    content_path.write_bytes(b"%PDF-1.7\nchunked upload")
+
+    hosted_path, size_bytes, content_hash = pdf_documents._copy_pdf_to_hosted_storage(
+        content_path,
+        owner,
+    )
+
+    assert hosted_path.endswith(f"{content_hash}.pdf")
+    assert size_bytes == content_path.stat().st_size
+    assert pdf_documents.Path(hosted_path).read_bytes() == content_path.read_bytes()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import PureWindowsPath
+import re
 
 from sqlmodel import Session, select
 
@@ -11,6 +13,11 @@ from backend.models import DeviceFile
 
 MATCH_STATUS_MATCHED = "matched"
 MATCH_STATUS_DANGLING = "dangling"
+
+TIERED_MEDIA_DIRECTORY_RE = re.compile(
+    r"^(?:(?:[123]、)|_+)?(pixiv|pixi|pinterest|video)$",
+    re.IGNORECASE,
+)
 
 
 def get_device_file_public_id(record: DeviceFile) -> int | None:
@@ -703,3 +710,111 @@ def update_device_file_weight(
     session.commit()
     session.refresh(record)
     return record
+
+
+def canonicalize_tiered_media_path(absolute_path: str | None) -> str | None:
+    """将 m2510mn 新旧层级路径归并为稳定的媒体逻辑键。"""
+
+    raw_path = (absolute_path or "").strip()
+    if not raw_path:
+        return None
+
+    parts = list(PureWindowsPath(raw_path).parts)
+    source_index: int | None = None
+    source_family: str | None = None
+    for index, part in enumerate(parts):
+        match = TIERED_MEDIA_DIRECTORY_RE.fullmatch(part)
+        if match is None:
+            continue
+        source_index = index
+        source_family = match.group(1).casefold()
+
+    if source_index is None or source_family is None or source_index + 1 >= len(parts):
+        return None
+
+    if source_family == "pixi":
+        source_family = "pixiv"
+    tail = parts[source_index + 1 :]
+    if source_family == "pixiv" and tail:
+        # 历史 Pixiv 作者目录曾带 068_ / 072_ 一类排序前缀。
+        tail[0] = re.sub(r"^\d+_", "", tail[0])
+    if not tail or tail[0] == "_state":
+        return None
+    return f"{source_family}:{PureWindowsPath(*tail)}".casefold()
+
+
+def reconcile_tiered_media_weight_aliases(
+    session: Session,
+    device_id: str,
+    *,
+    root_dir: str,
+) -> dict[str, int]:
+    """把旧根目录、1/2/3 层目录及 pixiv/pixi 别名的人工权重合并到当前文件。"""
+
+    normalized_root = str(PureWindowsPath(root_dir)).rstrip("\\/").casefold()
+    records = session.exec(select(DeviceFile).where(DeviceFile.device_id == device_id)).all()
+    by_hash: dict[str, list[DeviceFile]] = {}
+    by_path_key: dict[str, list[DeviceFile]] = {}
+    for record in records:
+        reference_path = (record.absolute_path or record.last_known_path or "").strip()
+        path_key = canonicalize_tiered_media_path(reference_path)
+        if path_key:
+            by_path_key.setdefault(path_key, []).append(record)
+        content_hash = (record.content_hash or "").strip().casefold()
+        if content_hash:
+            by_hash.setdefault(content_hash, []).append(record)
+
+    checked_count = 0
+    restored_count = 0
+    restored_positive_count = 0
+    restored_negative_count = 0
+    now = time.time()
+    for target in records:
+        active_path = (target.absolute_path or "").strip()
+        normalized_path = str(PureWindowsPath(active_path)).casefold() if active_path else ""
+        if not normalized_path or not (
+            normalized_path == normalized_root or normalized_path.startswith(normalized_root + "\\")
+        ):
+            continue
+
+        path_key = canonicalize_tiered_media_path(active_path)
+        if path_key is None:
+            continue
+        checked_count += 1
+        candidates: dict[int, DeviceFile] = {}
+        for candidate in by_path_key.get(path_key, []):
+            if candidate.id is not None:
+                candidates[candidate.id] = candidate
+        content_hash = (target.content_hash or "").strip().casefold()
+        if content_hash:
+            for candidate in by_hash.get(content_hash, []):
+                if candidate.id is not None:
+                    candidates[candidate.id] = candidate
+
+        current_weight = int(target.weight or 0)
+        if current_weight < 0:
+            continue
+        candidate_weights = [int(candidate.weight or 0) for candidate in candidates.values()]
+        positive_weight = max((weight for weight in candidate_weights if weight > 0), default=0)
+        restored_weight = positive_weight
+        if restored_weight == 0 and current_weight == 0 and any(weight < 0 for weight in candidate_weights):
+            restored_weight = -1
+        if restored_weight == current_weight or (restored_weight >= 0 and restored_weight < current_weight):
+            continue
+
+        target.weight = restored_weight
+        target.updated_at = now
+        session.add(target)
+        restored_count += 1
+        if restored_weight > 0:
+            restored_positive_count += 1
+        else:
+            restored_negative_count += 1
+
+    session.commit()
+    return {
+        "checked_count": checked_count,
+        "restored_count": restored_count,
+        "restored_positive_count": restored_positive_count,
+        "restored_negative_count": restored_negative_count,
+    }

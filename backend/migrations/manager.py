@@ -5453,6 +5453,524 @@ def v91_add_user_admin_note(session: Session):
     print("  Added user.admin_note column.")
 
 
+def v92_add_pdf_bookshelf_view_settings(session: Session):
+    """Migration V92: Persist each user's display settings for each bookshelf."""
+    print("Running System Upgrade V92: Add PDF bookshelf view settings...")
+    session.exec(text(
+        """
+        CREATE TABLE IF NOT EXISTS pdfbookshelfviewsetting (
+            id VARCHAR NOT NULL PRIMARY KEY,
+            bookshelf_id VARCHAR NOT NULL,
+            user_id INTEGER NOT NULL,
+            thickness_scale FLOAT NOT NULL DEFAULT 1.0,
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_pdfbookshelfviewsetting_bookshelf_user UNIQUE (bookshelf_id, user_id),
+            FOREIGN KEY(bookshelf_id) REFERENCES pdflibrarybookshelf (id),
+            FOREIGN KEY(user_id) REFERENCES user (id)
+        )
+        """
+    ))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfviewsetting_bookshelf_id ON pdfbookshelfviewsetting (bookshelf_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfbookshelfviewsetting_user_id ON pdfbookshelfviewsetting (user_id)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added PDF bookshelf view settings.")
+
+
+def v93_add_library_folders(session: Session):
+    """Migration V93: Add physical library folders and folder membership."""
+    print("Running System Upgrade V93: Add library folders...")
+    session.exec(text(
+        """
+        CREATE TABLE IF NOT EXISTS libraryfolder (
+            id VARCHAR NOT NULL PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL,
+            bookshelf_id VARCHAR NOT NULL,
+            name VARCHAR NOT NULL DEFAULT '资料夹',
+            color_override VARCHAR,
+            min_thickness_mm FLOAT,
+            fixed_thickness_mm FLOAT,
+            shelf_index INTEGER NOT NULL DEFAULT 0,
+            position_index INTEGER NOT NULL DEFAULT 0,
+            orientation VARCHAR NOT NULL DEFAULT 'spine_vertical',
+            metadata_json JSON NOT NULL DEFAULT '{}',
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_libraryfolder_shelf_owner_name UNIQUE (bookshelf_id, owner_user_id, name),
+            FOREIGN KEY(owner_user_id) REFERENCES user (id),
+            FOREIGN KEY(bookshelf_id) REFERENCES pdflibrarybookshelf (id)
+        )
+        """
+    ))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_libraryfolder_owner_user_id ON libraryfolder (owner_user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_libraryfolder_bookshelf_id ON libraryfolder (bookshelf_id)",
+        "CREATE INDEX IF NOT EXISTS ix_libraryfolder_shelf_index ON libraryfolder (shelf_index)",
+        "CREATE INDEX IF NOT EXISTS ix_libraryfolder_position_index ON libraryfolder (position_index)",
+    ):
+        session.exec(text(statement))
+    for table_name in ("pdfbookshelfplacement", "librarybookplacement"):
+        if not _table_exists(session, table_name):
+            continue
+        columns = _get_table_columns(session, table_name)
+        if "folder_id" not in columns:
+            session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN folder_id VARCHAR"))
+        session.exec(text(
+            f"CREATE INDEX IF NOT EXISTS ix_{table_name}_folder_id ON {table_name} (folder_id)"
+        ))
+    session.commit()
+    print("  Added library folders and memberships.")
+
+
+def v96_restore_historical_library_thickness_settings(session: Session):
+    """Undo the removed V94/V95 rewrites without touching newly created values."""
+    print("Running System Upgrade V96: Restore historical library thickness settings...")
+    applied_versions = {
+        int(row[0]): float(row[1])
+        for row in session.exec(text(
+            "SELECT version, applied_at FROM system_version WHERE version IN (94, 95)"
+        )).all()
+    }
+
+    v94_applied_at = applied_versions.get(94)
+    restored_bookshelf_count = 0
+    if v94_applied_at is not None and _table_exists(session, "pdfbookshelfviewsetting"):
+        result = session.exec(
+            text(
+                "UPDATE pdfbookshelfviewsetting "
+                "SET thickness_scale = ROUND(thickness_scale * 2.0, 2) "
+                "WHERE created_at <= :v94_applied_at"
+            ),
+            params={"v94_applied_at": v94_applied_at},
+        )
+        restored_bookshelf_count = max(0, int(result.rowcount or 0))
+
+    v95_applied_at = applied_versions.get(95)
+    restored_book_count = 0
+    if v95_applied_at is not None and _table_exists(session, "pdfdocument"):
+        rows = session.exec(text(
+            "SELECT id, updated_at, metadata_json FROM pdfdocument WHERE updated_at <= :v95_applied_at"
+        ), params={"v95_applied_at": v95_applied_at}).all()
+        for document_id, _updated_at, raw_metadata in rows:
+            metadata = _load_json_value(raw_metadata, {})
+            if not isinstance(metadata, dict):
+                continue
+            appearance = metadata.get("library_appearance")
+            if not isinstance(appearance, dict):
+                continue
+            multiplier = appearance.get("thickness_multiplier")
+            if multiplier is None or "thickness_mm_override" in appearance:
+                continue
+            try:
+                page_count = max(1, int(metadata.get("page_count") or 400))
+                appearance["thickness_mm_override"] = round(
+                    float(multiplier) * page_count * 0.1,
+                    4,
+                )
+            except (TypeError, ValueError):
+                continue
+            appearance.pop("thickness_multiplier", None)
+            metadata["library_appearance"] = appearance
+            session.exec(
+                text("UPDATE pdfdocument SET metadata_json = :metadata_json WHERE id = :id"),
+                params={"metadata_json": _dump_json_value(metadata), "id": document_id},
+            )
+            restored_book_count += 1
+
+    session.commit()
+    print(
+        "  Restored "
+        f"{restored_bookshelf_count} bookshelf setting(s) and "
+        f"{restored_book_count} book setting(s)."
+    )
+
+
+def v97_add_library_annotations(session: Session):
+    """Migration V97: Add user-owned library highlights and comments."""
+    print("Running System Upgrade V97: Add library annotations...")
+    session.exec(text(
+        """
+        CREATE TABLE IF NOT EXISTS libraryannotation (
+            id VARCHAR NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            resource_type VARCHAR(40) NOT NULL DEFAULT 'rich-text',
+            resource_id VARCHAR(160) NOT NULL,
+            chapter_id VARCHAR(512) NOT NULL DEFAULT '',
+            kind VARCHAR(24) NOT NULL DEFAULT 'highlight',
+            color VARCHAR(32) NOT NULL DEFAULT 'yellow',
+            quote_text TEXT NOT NULL DEFAULT '',
+            prefix_text TEXT NOT NULL DEFAULT '',
+            suffix_text TEXT NOT NULL DEFAULT '',
+            start_offset INTEGER NOT NULL DEFAULT 0,
+            end_offset INTEGER NOT NULL DEFAULT 0,
+            source_revision VARCHAR(128) NOT NULL DEFAULT '',
+            comment_text TEXT NOT NULL DEFAULT '',
+            position_json JSON NOT NULL DEFAULT '{}',
+            created_at FLOAT NOT NULL,
+            updated_at FLOAT NOT NULL,
+            CONSTRAINT uq_libraryannotation_user_resource_id
+                UNIQUE (user_id, resource_type, resource_id, chapter_id, id),
+            FOREIGN KEY(user_id) REFERENCES user (id)
+        )
+        """
+    ))
+    for column_name in ("user_id", "resource_type", "resource_id", "chapter_id", "kind"):
+        session.exec(text(
+            f"CREATE INDEX IF NOT EXISTS ix_libraryannotation_{column_name} "
+            f"ON libraryannotation ({column_name})"
+        ))
+    session.commit()
+    print("  Added library annotations.")
+
+
+def v98_add_bookshelf_logical_page_target_characters(session: Session):
+    """Migration V98: Add the logical-page target length to each bookshelf."""
+    print("Running System Upgrade V98: Add bookshelf logical-page target length...")
+    if not _table_exists(session, "pdflibrarybookshelf"):
+        print("  PDF library bookshelf table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "pdflibrarybookshelf")
+    if "logical_page_target_characters" not in columns:
+        session.exec(text(
+            "ALTER TABLE pdflibrarybookshelf "
+            "ADD COLUMN logical_page_target_characters INTEGER NOT NULL DEFAULT 1600"
+        ))
+    session.exec(text(
+        "UPDATE pdflibrarybookshelf "
+        "SET logical_page_target_characters = 1600 "
+        "WHERE logical_page_target_characters IS NULL "
+        "OR logical_page_target_characters < 500 "
+        "OR logical_page_target_characters > 5000"
+    ))
+    session.commit()
+    print("  Added bookshelf logical-page target length.")
+
+
+def v99_add_fanxiu_choice_knowledge(session: Session):
+    """Create shared choice knowledge and migrate legacy Lingquan answers."""
+
+    from backend.core.fanxiu.choice_knowledge.store import (
+        DOMAIN_LINGQUAN,
+        INTERACTION_TEXT_INPUT,
+        normalize_choice_text,
+        normalize_option,
+    )
+    from backend.models import FanxiuChoiceKnowledge
+
+    FanxiuChoiceKnowledge.__table__.create(session.get_bind(), checkfirst=True)
+    if not _table_exists(session, "fanxiulingquanquestion"):
+        return
+
+    rows = session.execute(text(
+        "SELECT id, group_name, question, answer, order_index, source, "
+        "created_at, updated_at FROM fanxiulingquanquestion"
+    )).all()
+    for row in rows:
+        row_id = str(row[0] or uuid.uuid4().hex)
+        normalized_prompt = normalize_choice_text(row[2])
+        existing = session.exec(
+            select(FanxiuChoiceKnowledge).where(
+                FanxiuChoiceKnowledge.domain == DOMAIN_LINGQUAN,
+                FanxiuChoiceKnowledge.group_name == str(row[1] or ""),
+                FanxiuChoiceKnowledge.normalized_prompt == normalized_prompt,
+            )
+        ).first()
+        if existing is not None:
+            continue
+        session.add(FanxiuChoiceKnowledge(
+            id=row_id,
+            domain=DOMAIN_LINGQUAN,
+            group_name=str(row[1] or ""),
+            prompt=str(row[2] or ""),
+            normalized_prompt=normalized_prompt,
+            interaction_mode=INTERACTION_TEXT_INPUT,
+            options=[
+                normalize_option({
+                    "text": str(row[3] or ""),
+                    "status": 1,
+                    "source": str(row[5] or "legacy_migration"),
+                })
+            ],
+            options_complete=False,
+            order_index=int(row[4] or 0),
+            source=str(row[5] or "legacy_migration"),
+            created_at=float(row[6] or time.time()),
+            updated_at=float(row[7] or time.time()),
+        ))
+    session.commit()
+
+
+def v100_add_fanxiu_choice_knowledge_contexts(session: Session):
+    """Separate shared quiz knowledge from its concrete interaction contexts."""
+
+    print("Running System Upgrade V100: Add Fanxiu choice contexts...")
+    table_name = "fanxiuchoiceknowledge"
+    if not _table_exists(session, table_name):
+        print("  Fanxiu choice knowledge table missing, skipping.")
+        return
+    columns = _get_table_columns(session, table_name)
+    if "contexts" not in columns:
+        session.exec(text(
+            "ALTER TABLE fanxiuchoiceknowledge "
+            "ADD COLUMN contexts JSON NOT NULL DEFAULT '[]'"
+        ))
+
+    rows = session.execute(text(
+        "SELECT id, domain, group_name, interaction_mode, contexts "
+        "FROM fanxiuchoiceknowledge"
+    )).all()
+    for row in rows:
+        knowledge_id = str(row[0])
+        old_domain = str(row[1] or "")
+        contexts = _load_json_value(row[4], [])
+        if not isinstance(contexts, list):
+            contexts = []
+        context_key = "lingquan" if old_domain == "lingquan" else old_domain
+        if context_key and not any(
+            isinstance(item, dict) and str(item.get("key") or "") == context_key
+            for item in contexts
+        ):
+            contexts.append({
+                "key": context_key,
+                "interaction_mode": str(row[3] or "choice_click"),
+                "group_name": str(row[2] or ""),
+                "options_order_fixed": False,
+            })
+        canonical_domain = "quiz" if old_domain == "lingquan" else old_domain
+        session.execute(
+            text(
+                "UPDATE fanxiuchoiceknowledge "
+                "SET domain = :domain, contexts = :contexts "
+                "WHERE id = :knowledge_id"
+            ),
+            {
+                "domain": canonical_domain,
+                "contexts": json.dumps(contexts, ensure_ascii=False),
+                "knowledge_id": knowledge_id,
+            },
+        )
+    session.commit()
+    print("  Added Fanxiu choice contexts and canonicalized quiz knowledge.")
+
+
+def v101_add_yunmeng_trial_shop_item_lock(session: Session):
+    """Persist the user's locked state for Yunmeng Trial shop items."""
+
+    print("Running System Upgrade V101: Add Yunmeng shop item lock...")
+    table_name = "fanxiuyunmengtrialshopitem"
+    if not _table_exists(session, table_name):
+        print("  Yunmeng Trial shop item table missing, skipping.")
+        return
+    columns = _get_table_columns(session, table_name)
+    if "locked" not in columns:
+        session.exec(text(
+            "ALTER TABLE fanxiuyunmengtrialshopitem "
+            "ADD COLUMN locked BOOLEAN NOT NULL DEFAULT 0"
+        ))
+    session.exec(text(
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuyunmengtrialshopitem_locked "
+        "ON fanxiuyunmengtrialshopitem (locked)"
+    ))
+    session.commit()
+
+
+def v102_add_yunmeng_trial_measurements(session: Session):
+    """Add immutable exact score/currency observations and backfill known baselines."""
+
+    print("Running System Upgrade V102: Add Yunmeng Trial measurements...")
+    session.exec(text(
+        "CREATE TABLE IF NOT EXISTS fanxiuyunmengtrialmeasurement ("
+        "id VARCHAR NOT NULL PRIMARY KEY, "
+        "activity_id VARCHAR NOT NULL, "
+        "captured_at VARCHAR NOT NULL, "
+        "score INTEGER NOT NULL DEFAULT 0, "
+        "exchange_currency INTEGER NOT NULL DEFAULT 0, "
+        "rank INTEGER, "
+        "challenge_count_delta INTEGER, "
+        "note TEXT NOT NULL DEFAULT '', "
+        "source_kind VARCHAR NOT NULL DEFAULT 'runtime_memory', "
+        "evidence JSON NOT NULL DEFAULT '{}', "
+        "created_at FLOAT NOT NULL, "
+        "FOREIGN KEY(activity_id) REFERENCES fanxiuyunmengtrialactivity (id)"
+        ")"
+    ))
+    for column in ("activity_id", "captured_at", "source_kind", "created_at"):
+        session.exec(text(
+            "CREATE INDEX IF NOT EXISTS "
+            f"ix_fanxiuyunmengtrialmeasurement_{column} "
+            f"ON fanxiuyunmengtrialmeasurement ({column})"
+        ))
+    if _table_exists(session, "fanxiuyunmengtrialactivity") and _table_exists(
+        session, "fanxiuyunmengtrialranking"
+    ):
+        session.exec(text(
+            "INSERT INTO fanxiuyunmengtrialmeasurement ("
+            "id, activity_id, captured_at, score, exchange_currency, rank, "
+            "challenge_count_delta, note, source_kind, evidence, created_at"
+            ") "
+            "SELECT lower(hex(randomblob(16))), a.id, a.captured_at, r.score, "
+            "a.current_currency, r.rank, 0, '历史活动快照回填基线', "
+            "'backfilled_activity_snapshot', '{}', a.updated_at "
+            "FROM fanxiuyunmengtrialactivity a "
+            "JOIN fanxiuyunmengtrialranking r "
+            "ON r.activity_id = a.id AND r.is_self = 1 "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM fanxiuyunmengtrialmeasurement m "
+            "WHERE m.activity_id = a.id"
+            ")"
+        ))
+    session.commit()
+
+
+def v103_migrate_magic_treasure_hall_to_database(session: Session):
+    """Seed the durable magic-treasure snapshot from the legacy inventory JSON."""
+
+    print("Running System Upgrade V103: Migrate magic treasure hall to database...")
+    if not _table_exists(session, "fanxiupacketbusinessrecord"):
+        print("  Fanxiu packet business table missing, skipping.")
+        return
+    existing = session.exec(text(
+        "SELECT id FROM fanxiupacketbusinessrecord "
+        "WHERE domain = 'inventory_hall_snapshot' "
+        "AND record_key = 'magic_treasure_hall' LIMIT 1"
+    )).first()
+    if existing:
+        print("  Magic treasure database snapshot already exists, skipping.")
+        return
+
+    from backend.core.fanxiu.catalog.inventory import load_magic_treasure_hall
+
+    legacy = load_magic_treasure_hall()
+    item_count = sum(
+        len(legacy.get(section) or [])
+        for section in ("fabao", "xiantiangubao", "houtiangubao")
+    )
+    if item_count <= 0:
+        print("  Legacy magic treasure hall is empty, skipping.")
+        return
+    payload = {
+        **legacy,
+        "runtime_source": "legacy_json_migration",
+        "runtime_complete": False,
+        "runtime_error": "尚未从游戏实时更新",
+        "runtime_updated_at": 0,
+        "runtime_item_count": item_count,
+        "runtime_debug": {},
+    }
+    now = time.time()
+    captured_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+    session.exec(
+        text(
+            "INSERT INTO fanxiupacketbusinessrecord ("
+            "id, domain, record_key, protocol, packet_id, source_kind, entity_id, "
+            "entity_name, captured_at, captured_date, payload, evidence, created_at, updated_at"
+            ") VALUES ("
+            ":id, 'inventory_hall_snapshot', 'magic_treasure_hall', '', '', "
+            "'legacy_json_migration', '', '法宝殿', :captured_at, :captured_date, "
+            ":payload, '{}', :created_at, :updated_at"
+            ")"
+        ),
+        params={
+            "id": uuid.uuid4().hex,
+            "captured_at": captured_at,
+            "captured_date": captured_at[:10],
+            "payload": _dump_json_value(payload),
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    session.commit()
+
+
+def v104_add_library_article_reading_modes(session: Session):
+    """Add bookshelf defaults and optional per-book overrides for HTML reading."""
+
+    print("Running System Upgrade V104: Add library article reading modes...")
+    bookshelf_columns = _get_table_columns(session, "pdflibrarybookshelf")
+    if bookshelf_columns and "article_reading_mode" not in bookshelf_columns:
+        session.exec(text(
+            "ALTER TABLE pdflibrarybookshelf "
+            "ADD COLUMN article_reading_mode VARCHAR(16) NOT NULL DEFAULT 'scroll'"
+        ))
+    placement_columns = _get_table_columns(session, "librarybookplacement")
+    if placement_columns and "article_reading_mode" not in placement_columns:
+        session.exec(text(
+            "ALTER TABLE librarybookplacement "
+            "ADD COLUMN article_reading_mode VARCHAR(16)"
+        ))
+    session.commit()
+
+
+def v105_add_fanxiu_storage_bag_item_note(session: Session):
+    """Add user-authored usage notes to storage-bag atlas settings."""
+
+    print("Running System Upgrade V105: Add Fanxiu storage-bag item notes...")
+    columns = _get_table_columns(session, "fanxiustoragebagitemsetting")
+    if columns and "note" not in columns:
+        session.exec(text(
+            "ALTER TABLE fanxiustoragebagitemsetting "
+            "ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+        ))
+    session.commit()
+
+
+def v106_add_fanxiu_storage_bag_usage_ledger(session: Session):
+    """Persist one-time item analysis and verified cumulative opening yields."""
+
+    print("Running System Upgrade V106: Add Fanxiu storage-bag usage ledger...")
+    columns = _get_table_columns(session, "fanxiustoragebagitemsetting")
+    additions = {
+        "operation_template": "VARCHAR NOT NULL DEFAULT ''",
+        "yield_mode": "VARCHAR NOT NULL DEFAULT ''",
+        "analysis_status": "VARCHAR NOT NULL DEFAULT 'pending'",
+        "analysis_fingerprint": "VARCHAR NOT NULL DEFAULT ''",
+        "analysis_reason": "TEXT NOT NULL DEFAULT ''",
+        "analyzed_at": "FLOAT",
+    }
+    for name, definition in additions.items():
+        if columns and name not in columns:
+            session.exec(text(
+                f"ALTER TABLE fanxiustoragebagitemsetting ADD COLUMN {name} {definition}"
+            ))
+    # SQLModel owns the exact JSON/table declarations.  Creating all metadata
+    # here is idempotent and avoids duplicating SQLite JSON DDL by hand.
+    from backend.models import FanxiuStorageBagOpenEvent, FanxiuStorageBagYieldAggregate
+    bind = session.get_bind()
+    FanxiuStorageBagOpenEvent.__table__.create(bind, checkfirst=True)
+    FanxiuStorageBagYieldAggregate.__table__.create(bind, checkfirst=True)
+    session.commit()
+
+
+def v107_add_fanxiu_player_profile_battle_observations(session: Session):
+    """Make player battle observations primary and add independent Xianlv power facts."""
+
+    print("Running System Upgrade V107: Add Fanxiu player battle observations...")
+    columns = _get_table_columns(session, "fanxiuplayerprofilerecord")
+    additions = {
+        "xianlv_team_fight_score_max": "FLOAT",
+        "xianlv_team_fight_score_text": "VARCHAR NOT NULL DEFAULT ''",
+        "xianlv_team_slot": "INTEGER",
+        "xianlv_team_observed_at": "VARCHAR NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if columns and name not in columns:
+            session.exec(text(
+                f"ALTER TABLE fanxiuplayerprofilerecord ADD COLUMN {name} {definition}"
+            ))
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_role_date_battle "
+        "ON fanxiuplayerprofilerecord (role_id_text, captured_date, battle_score)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_role_xianlv_time_score "
+        "ON fanxiuplayerprofilerecord "
+        "(role_id_text, xianlv_team_observed_at, xianlv_team_fight_score_max)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5547,6 +6065,20 @@ MIGRATIONS = [
     (89, "Add PDF bookshelf orientation", v89_add_pdf_bookshelf_orientation),
     (90, "Add PDF library bookshelves", v90_add_pdf_library_bookshelves),
     (91, "Add administrator-only user note", v91_add_user_admin_note),
+    (92, "Add per-user PDF bookshelf view settings", v92_add_pdf_bookshelf_view_settings),
+    (93, "Add physical library folders", v93_add_library_folders),
+    (96, "Restore historical library thickness settings", v96_restore_historical_library_thickness_settings),
+    (97, "Add library text annotations", v97_add_library_annotations),
+    (98, "Add bookshelf logical-page target length", v98_add_bookshelf_logical_page_target_characters),
+    (99, "Add shared Fanxiu choice knowledge", v99_add_fanxiu_choice_knowledge),
+    (100, "Add Fanxiu choice knowledge contexts", v100_add_fanxiu_choice_knowledge_contexts),
+    (101, "Add Yunmeng Trial shop item lock", v101_add_yunmeng_trial_shop_item_lock),
+    (102, "Add Yunmeng Trial measurements", v102_add_yunmeng_trial_measurements),
+    (103, "Migrate magic treasure hall to database", v103_migrate_magic_treasure_hall_to_database),
+    (104, "Add library article reading modes", v104_add_library_article_reading_modes),
+    (105, "Add Fanxiu storage-bag item notes", v105_add_fanxiu_storage_bag_item_note),
+    (106, "Add Fanxiu storage-bag usage ledger", v106_add_fanxiu_storage_bag_usage_ledger),
+    (107, "Add Fanxiu player battle observations", v107_add_fanxiu_player_profile_battle_observations),
 ]
 
 def get_current_version(session: Session) -> int:

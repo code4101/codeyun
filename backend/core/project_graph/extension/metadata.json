@@ -1,0 +1,10 @@
+{
+  "version": "2.6.0",
+  "extension": {
+    "id": "codeyun.runtime-reader",
+    "name": "CodeYun Runtime Reader",
+    "description": "Read-only Project Graph runtime snapshot bridge for CodeYun.",
+    "version": "0.1.0",
+    "author": "CodeYun"
+  }
+}

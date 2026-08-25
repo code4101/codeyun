@@ -25,30 +25,6 @@ from backend.core.attendance.nianzhu_course_sheets import (
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 
 
-@pytest.fixture(autouse=True)
-def _disable_legacy_queries(monkeypatch) -> None:
-    monkeypatch.setattr(
-        nianzhu_course_sheets,
-        "_query_legacy_lesson_rows",
-        lambda course_name: ([], "测试默认不连接 lesson_table"),
-    )
-    monkeypatch.setattr(
-        nianzhu_course_sheets,
-        "_query_legacy_lesson_data_rows",
-        lambda legacy_lesson_ids: ([], "测试默认不连接 lesson_data_table"),
-    )
-    monkeypatch.setattr(
-        nianzhu_course_sheets,
-        "_query_legacy_clockin_rows",
-        lambda course_name: ([], "测试默认不连接 clockin_table"),
-    )
-    monkeypatch.setattr(
-        nianzhu_course_sheets,
-        "_query_legacy_clockin_data_rows",
-        lambda legacy_clockin_ids: ([], "测试默认不连接 clockin_data_table"),
-    )
-
-
 def _sheet_document(columns: list[str], rows: list[list[object]]) -> dict:
     return {
         "schema_version": 1,
@@ -74,6 +50,23 @@ def test_video_rule_system_boundaries_are_explicit() -> None:
         course_name="d260601第47届觉观",
         lesson_name="第01课",
     ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR
+
+
+def test_clockin_output_fields_strip_course_prefix_but_keep_storage_key() -> None:
+    course_name = "d260712禅宗13期一阶"
+    config = _sheet_document(
+        ["clockin_id", "name"],
+        [[1, f"{course_name}-共学打卡"], [2, f"{course_name}-共修打卡-忏悔门"]],
+    )
+
+    assert nianzhu_course_sheets._clockin_output_fields(
+        config,
+        ["共学打卡", "共修打卡-忏悔门"],
+        course_name=course_name,
+    ) == [
+        (f"{course_name}-共学打卡", "共学打卡", 0),
+        (f"{course_name}-共修打卡-忏悔门", "共修打卡-忏悔门", 1),
+    ]
     assert nianzhu_course_sheets._resolve_video_rule_system(
         course_name="修道班7期5阶",
         lesson_name="第2届答疑",
@@ -290,6 +283,93 @@ def test_zen_stage_header_layout_repairs_fixed_groups_and_prefixed_course_names(
         video_config,
         video_column_indexes,
     )
+    assert stable_repaired == 0
+    assert stable_document == next_document
+
+
+def test_attendance_fixed_header_extends_user_group_through_hidden_identity_columns() -> None:
+    columns = [
+        "分组", "学号", "姓名", "昵称", "用户ID", "禅客",
+        "完成视频数", "视频应返款",
+    ]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [
+            ["用户信息", "", "", "", "", "", "返款总计", ""],
+            columns,
+            ["", "", "", "", "", "", "", ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "header_groups": [[
+            {"label": value, "colspan": 1}
+            for value in ["用户信息", "", "", "", "", "", "返款总计", ""]
+        ]],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 4},
+        ],
+        "cell_meta": {},
+    }
+
+    next_document, repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        document,
+        [],
+        {},
+    )
+
+    assert repaired > 0
+    assert {"row": 0, "col": 0, "rowspan": 1, "colspan": 6} in next_document["merged_cells"]
+    assert {"row": 0, "col": 0, "rowspan": 1, "colspan": 4} not in next_document["merged_cells"]
+    assert next_document["cell_meta"]["0:4"]["style"]["background_color"] == "#5B8FC9"
+    assert next_document["cell_meta"]["0:5"]["style"]["background_color"] == "#5B8FC9"
+    assert next_document["cell_meta"]["1:4"]["style"]["background_color"] == "#D9EAF7"
+    assert next_document["cell_meta"]["1:5"]["style"]["background_color"] == "#D9EAF7"
+
+    stable_document, stable_repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        next_document,
+        [],
+        {},
+    )
+    assert stable_repaired == 0
+    assert stable_document == next_document
+
+
+def test_attendance_fixed_header_groups_plain_shared_practice_clockin_column() -> None:
+    columns = ["分组", "学号", "姓名", "昵称", "共学打卡", "共修打卡", "佛教史1"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [
+            ["用户信息", "", "", "", "打卡数据", "", "第1周"],
+            columns,
+            ["", "", "", "", "累计共学打卡次数", "累计共修打卡周数", ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "header_groups": [],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 4},
+            {"row": 0, "col": 4, "rowspan": 1, "colspan": 1},
+        ],
+        "cell_meta": {},
+    }
+
+    next_document, repaired = nianzhu_course_sheets._sync_zen_stage_fixed_header_layout(document)
+
+    assert repaired > 0
+    assert {"row": 0, "col": 4, "rowspan": 1, "colspan": 2} in next_document["merged_cells"]
+    assert {"row": 0, "col": 4, "rowspan": 1, "colspan": 1} not in next_document["merged_cells"]
+    assert next_document["grid_rows"][0][4] == "打卡数据"
+    assert next_document["grid_rows"][0][5] == ""
+    assert next_document["cell_meta"]["0:4"]["style"] == nianzhu_course_sheets.ZEN_STAGE_CLOCKIN_GROUP_STYLE
+    assert next_document["cell_meta"]["0:5"]["style"] == nianzhu_course_sheets.ZEN_STAGE_CLOCKIN_GROUP_STYLE
+    assert next_document["cell_meta"]["1:4"]["style"] == nianzhu_course_sheets.ZEN_STAGE_CLOCKIN_FIELD_STYLE
+    assert next_document["cell_meta"]["1:5"]["style"] == nianzhu_course_sheets.ZEN_STAGE_CLOCKIN_FIELD_STYLE
+
+    stable_document, stable_repaired = nianzhu_course_sheets._sync_zen_stage_fixed_header_layout(next_document)
     assert stable_repaired == 0
     assert stable_document == next_document
 
@@ -572,7 +652,7 @@ def test_video_aggregation_matches_legacy_zen_course_semantics() -> None:
                     "lesson_data_id": 3,
                     "user_id2": "u2",
                     "cum_seconds": 600,
-                    "progress": 50,
+                    "progress": 18.94,
                     "update_time": "2026-05-02 08:00:00",
                     "lesson_id": 1,
                 },
@@ -586,14 +666,104 @@ def test_video_aggregation_matches_legacy_zen_course_semantics() -> None:
         video_config,
     )
 
-    assert video_data[("user:u1", "1")] == "延1周完成"
-    assert video_data[("user:u2", "1")] == "进度50%"
+    assert video_data[("user:u1", "1")] == "进度50%"
+    assert video_data[("user:u2", "1")] == "进度19%"
     assert summary["video_data_rows_before"] == 3
     assert summary["video_data_rows_after"] == 2
     rows = [dict(zip(VIDEO_DATA_COLUMNS, row)) for row in compacted_document["rows"]]
-    assert [row["lesson_data_id"] for row in rows] == [2, 3]
-    assert rows[0]["progress"] == 20
-    assert rows[0]["cum_seconds"] == 1800
+    assert [row["lesson_data_id"] for row in rows] == [1, 3]
+    assert rows[0]["progress"] == 50
+    assert rows[0]["cum_seconds"] == 600
+
+    # 观看满 30 分钟仍然只是局部进度，压缩后不能被误判为完成。
+    compacted_video_data = nianzhu_course_sheets._load_video_data(compacted_document, video_config)
+    assert compacted_video_data[("user:u1", "1")] == "进度50%"
+
+
+def test_zen_video_completion_uses_optimistic_download_interval_lower_bound() -> None:
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "start_date": "2026-05-01 00:00:00",
+                    "lesson_name": "禅宗第01课",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+    video_data_document = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            # 第一次下载时已经完成：即使第 4 天才下载，也按开课时完成。
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "first_complete",
+                    "cum_seconds": 1800,
+                    "progress": 100,
+                    "update_time": "2026-05-04 12:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            # 上次下载已超过截止线且尚未完成：之后完成仍应判延期。
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "late_transition",
+                    "cum_seconds": 600,
+                    "progress": 50,
+                    "update_time": "2026-05-10 12:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 3,
+                    "user_id2": "late_transition",
+                    "cum_seconds": 1800,
+                    "progress": 100,
+                    "update_time": "2026-05-18 12:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            # 平台有明确完成时间时，明确证据优先于下载区间推定。
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 4,
+                    "user_id2": "exact_finish",
+                    "cum_seconds": 1800,
+                    "progress": 100,
+                    "update_time": "2026-05-20 12:00:00",
+                    "finish_time": "2026-05-03 09:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+
+    video_data = nianzhu_course_sheets._load_video_data(video_data_document, video_config)
+    compacted_document, _summary = nianzhu_course_sheets._compact_nianzhu_video_data_document(
+        video_data_document,
+        video_config,
+    )
+
+    assert video_data[("user:first_complete", "1")] == "准时完成"
+    assert video_data[("user:late_transition", "1")] == "延1周完成"
+    assert video_data[("user:exact_finish", "1")] == "准时完成"
+    rows = [dict(zip(VIDEO_DATA_COLUMNS, row)) for row in compacted_document["rows"]]
+    rows_by_user = {row["user_id2"]: row for row in rows}
+    assert rows_by_user["first_complete"]["finish_time"] == "2026-05-01 00:00:00"
+    assert rows_by_user["late_transition"]["finish_time"] == "2026-05-10 12:00:00"
+    assert rows_by_user["exact_finish"]["finish_time"] == "2026-05-03 09:00:00"
 
 
 def test_nianzhu_step2_compacts_video_data_source_rows(session: Session) -> None:
@@ -878,6 +1048,8 @@ def test_nianzhu_stage_clockin_title_allowlist_matches_legacy_positive_titles() 
     assert "念住学修日志-01" in titles
     assert "念住学修日志-21" in titles
     assert "第41届念住学修日志-01" in titles
+    assert "第01天" in titles
+    assert "第24天" in titles
     assert "学写学修日志" not in titles
     assert "立下学修目标" not in titles
     assert nianzhu_course_sheets._clockin_title_allowlist_for_course("d250106念住闯关") is None
@@ -903,18 +1075,39 @@ def test_nianzhu_stage_clockin_aggregation_keeps_only_positive_course_titles() -
             "clockin_data_id": 3,
             "user_id2": "u1",
             "clockin_name": "打卡数",
+            "task_date": "2026-06-03",
+            "update_title": "第01天：身念处-分部位循身观",
+        },
+        {
+            "clockin_data_id": 4,
+            "user_id2": "u1",
+            "clockin_name": "打卡数",
+            "task_date": "2026-06-04",
+            "update_title": "第24天:总结",
+        },
+        {
+            "clockin_data_id": 5,
+            "user_id2": "u1",
+            "clockin_name": "打卡数",
             "task_date": "2026-06-01",
             "update_title": "学写学修日志",
         },
         {
-            "clockin_data_id": 4,
+            "clockin_data_id": 6,
             "user_id2": "u1",
             "clockin_name": "打卡数",
             "task_date": "2026-06-01",
             "update_title": "立下学修目标",
         },
         {
-            "clockin_data_id": 5,
+            "clockin_data_id": 7,
+            "user_id2": "u1",
+            "clockin_name": "打卡数",
+            "task_date": "2026-06-01",
+            "update_title": "第25天：超出课程范围",
+        },
+        {
+            "clockin_data_id": 8,
             "user_id2": "u2",
             "clockin_name": "打卡数",
             "task_date": "2026-06-01",
@@ -933,7 +1126,7 @@ def test_nianzhu_stage_clockin_aggregation_keeps_only_positive_course_titles() -
         for key, clockin_keys in grouped_keys.items()
     }
 
-    assert clockin_data[("user:u1", "打卡数")] == 1
+    assert clockin_data[("user:u1", "打卡数")] == 3
     assert clockin_data[("user:u2", "打卡数")] == 1
 
 
@@ -1808,9 +2001,23 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert row[rebuilt_columns.index("当前应返款")] == "=IF(L4>0,J4-K4,0)"
 
 
-def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Session) -> None:
+def test_rebuild_nianzhu_attendance_keeps_partial_zen_progress_unstyled_and_unpaid(session: Session) -> None:
     _create_nianzhu_workbook(session)
     materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance_document = copy.deepcopy(attendance.document_json)
+    attendance_document["columns"].append("共学打卡")
+    for row in attendance_document["rows"]:
+        row.append("")
+    for row in attendance_document["grid_rows"]:
+        row.append("")
+    refund_column = attendance_document["columns"].index("视频应返款")
+    clockin_column = attendance_document["columns"].index("共学打卡")
+    config_row = attendance_document["data_start_row"] - 1
+    attendance_document["grid_rows"][config_row][refund_column] = "1课×20元=20元"
+    attendance_document["grid_rows"][config_row][clockin_column] = "1次×每次10元=10元"
+    attendance.document_json = attendance_document
 
     video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
     video_config.document_json = _sheet_document(
@@ -1838,7 +2045,7 @@ def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Sess
                     "lesson_data_id": 1,
                     "user_id2": "u1",
                     "cum_seconds": 1800,
-                    "progress": 20,
+                    "progress": 18.94,
                     "update_time": "2026-05-03 08:00:00",
                     "lesson_id": 1,
                 },
@@ -1847,22 +2054,24 @@ def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Sess
     )
     session.add(video_config)
     session.add(video_data)
+    session.add(attendance)
     session.commit()
 
     summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
     session.commit()
 
-    assert summary["updated_rows"] == 1
+    assert summary["updated_rows"] >= 1
     attendance = _find_sheet(session, "attendance")
     document = attendance.document_json
     columns = document["columns"]
     row = document["rows"][0]
     lesson_column = columns.index("第01课")
-    assert row[lesson_column] == "准时完成"
+    assert row[lesson_column] == "进度19%"
     assert row[columns.index("完成视频数")] == '=COUNTIF(I2,"*完成*")+COUNTIF(I2,"*回放*")'
-    assert row[columns.index("视频应返款")] == 20
+    assert row[columns.index("视频应返款")] == 0
     document_row = document["data_start_row"]
-    assert document["cell_meta"][f"{document_row}:{lesson_column}"]["style"]["background_color"]
+    style = document.get("cell_meta", {}).get(f"{document_row}:{lesson_column}", {}).get("style", {})
+    assert not style.get("background_color")
 
 
 def test_rebuild_nianzhu_attendance_counts_zen_stage_title_videos_as_refundable(session: Session) -> None:
@@ -1872,8 +2081,18 @@ def test_rebuild_nianzhu_attendance_counts_zen_stage_title_videos_as_refundable(
     attendance = _find_sheet(session, "attendance")
     attendance_document = copy.deepcopy(attendance.document_json)
     columns = attendance_document["columns"]
+    columns.append("共学打卡")
+    for row in attendance_document["rows"]:
+        row.append("")
+    for row in attendance_document["grid_rows"]:
+        row.append("")
     columns[8] = "佛教史1"
     attendance_document["rows"][0][8] = ""
+    refund_column = columns.index("视频应返款")
+    clockin_column = columns.index("共学打卡")
+    config_row = attendance_document["data_start_row"] - 1
+    attendance_document["grid_rows"][config_row][refund_column] = "1课×20元=20元"
+    attendance_document["grid_rows"][config_row][clockin_column] = "1次×每次10元=10元"
     attendance.document_json = attendance_document
 
     video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
@@ -1902,7 +2121,7 @@ def test_rebuild_nianzhu_attendance_counts_zen_stage_title_videos_as_refundable(
                     "lesson_data_id": 1,
                     "user_id2": "u1",
                     "cum_seconds": 1800,
-                    "progress": 20,
+                    "progress": 100,
                     "update_time": "2026-05-03 08:00:00",
                     "lesson_id": 1,
                 },
@@ -2314,54 +2533,6 @@ def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: S
     assert row[columns.index("当前应返款")] == -50
 
 
-def test_materialize_video_config_preserves_legacy_lesson_table_fields(
-    session: Session,
-    monkeypatch,
-) -> None:
-    _create_nianzhu_workbook(session)
-
-    def fake_query_legacy_lesson_rows(course_name: str):
-        assert course_name == "d250106念住闯关"
-        return [
-            {
-                "lesson_id": 11037,
-                "start_date": "2025-01-01 00:00:00",
-                "end_date": None,
-                "next_update": "2026-05-21 00:00:00",
-                "lesson_id2": "https://admin.xiaoe-tech.com/t/course-1",
-                "shop_id": 1,
-                "lesson_name": "d250106念住闯关-第01课 测试课程",
-                "video_duration": 6271,
-            }
-        ], None
-
-    monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_rows", fake_query_legacy_lesson_rows)
-
-    summary = materialize_nianzhu_course_sheets(session, replace=False)
-    session.commit()
-
-    assert summary["legacy_lesson_rows"] == 1
-    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
-    config_columns = video_config.document_json["columns"]
-    assert config_columns == VIDEO_CONFIG_COLUMNS
-    config_rows = [dict(zip(config_columns, row)) for row in video_config.document_json["rows"]]
-    lesson_config = next(row for row in config_rows if row["lesson_id"] == 1)
-    assert lesson_config["shop_id"] == 1
-    assert lesson_config["lesson_name"] == "第01课 测试课程"
-    assert lesson_config["lesson_id2"] == "https://admin.xiaoe-tech.com/t/course-1"
-    assert lesson_config["start_date"] == "2025-01-01 00:00:00"
-    assert lesson_config["end_date"] == ""
-    assert lesson_config["next_update"] == "2026-05-21 00:00:00"
-    assert lesson_config["video_duration"] == 6271
-
-    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
-    data_columns = video_data.document_json["columns"]
-    assert data_columns == VIDEO_DATA_COLUMNS
-    data_rows = [dict(zip(data_columns, row)) for row in video_data.document_json["rows"]]
-    first_lesson_data = next(row for row in data_rows if row["user_id2"] == "u1" and row["lesson_id"] == 1)
-    assert first_lesson_data["lesson_id"] == 1
-
-
 def test_ensure_video_progress_columns_matches_prefixed_lesson_name_by_course_key() -> None:
     document = _sheet_document(
         ["姓名", "05:20~06:18 第01课"],
@@ -2388,42 +2559,6 @@ def test_ensure_video_progress_columns_matches_prefixed_lesson_name_by_course_ke
     assert next_document["columns"] == ["姓名", "05:20~06:18 第01课"]
     assert inserted_headers == []
     assert nianzhu_course_sheets._lesson_header_from_video_item(item) == "第01课"
-
-
-def test_materialize_zen_stage_video_config_sets_first_update_after_week_end(
-    session: Session,
-    monkeypatch,
-) -> None:
-    _create_nianzhu_workbook(session)
-
-    monkeypatch.setattr(
-        nianzhu_course_sheets,
-        "_query_legacy_lesson_rows",
-        lambda course_name: (
-            [
-                {
-                    "lesson_id": 11037,
-                    "start_date": "2026-06-21 00:00:00",
-                    "end_date": "2026-10-18 00:00:00",
-                    "next_update": "2026-06-21 00:00:00",
-                    "lesson_id2": "https://admin.xiaoe-tech.com/t/course-1",
-                    "shop_id": 1,
-                    "lesson_name": "修道班7期5阶-第6周=测试课程",
-                    "video_duration": 3600,
-                },
-            ],
-            None,
-        ),
-    )
-
-    materialize_nianzhu_course_sheets(session, course_name="修道班7期5阶", replace=False)
-    session.commit()
-
-    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
-    config_rows = [dict(zip(VIDEO_CONFIG_COLUMNS, row)) for row in video_config.document_json["rows"]]
-    lesson_config = next(row for row in config_rows if row["lesson_id"] == 1)
-    assert lesson_config["start_date"] == "2026-06-21 00:00:00"
-    assert lesson_config["next_update"] == "2026-06-28 00:00:00"
 
 
 def test_compute_zen_stage_next_update_does_not_collect_at_week_start() -> None:
@@ -2461,6 +2596,7 @@ def test_refund_period_config_cell_uses_week_for_zen_stage_course() -> None:
     assert next_document["grid_rows"][1][1] == '="第"&返款周期&"周"'
 
 
+@pytest.mark.skip(reason="旧PG课程数据导入已从当前CodeYun课程创建链路退役")
 def test_materialize_imports_legacy_video_and_clockin_pg_table_shapes(
     session: Session,
     monkeypatch,

@@ -1,4 +1,4 @@
-from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 from pyxllib.autogui import ShapeMatchPlanner
 
 
@@ -57,7 +57,7 @@ def test_shape_match_planner_uses_auto_for_jitter_and_forced_ocr():
 
 
 def test_runner_shape_match_flags_delegate_to_planner():
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     shape = {
         "floating": True,
         "imageMatchRole": "off",

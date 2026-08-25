@@ -13,8 +13,10 @@ from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import Shape, View, image_number as _runtime_image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import runtime_runner as _runtime_runner
-from backend.core.fanxiu.data_annotation.runtime_runner import (
+from backend.core.fanxiu.data_annotation import behavior_tree_runtime as _behavior_tree_runtime
+from backend.core.fanxiu.data_annotation.job_times import next_business_time
+from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
     FULLWIDTH_DIGIT_TRANSLATION,
     _now,
     _parse_daily_boss_cd_seconds,
@@ -28,7 +30,46 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS,
 )
 
+
+_DAILY_ASSISTANT_LILIAN_TRIGGER_FACT = "daily_assistant_lilian_event_trigger"
+
+
+def _daily_assistant_business_date(now: datetime) -> str | None:
+    """Return the calendar day after its 05:00 daily boundary."""
+
+    boundary = now.replace(hour=5, minute=0, second=0, microsecond=0)
+    if now < boundary:
+        return None
+    return now.date().isoformat()
+
+
 class DailyChallengeTaskMixin:
+    def _schedule_lilian_event_after_daily_assistant_success(self, now: datetime) -> str | None:
+        """Schedule Lilian once after the first successful assistant run after 05:00."""
+
+        business_date = _daily_assistant_business_date(now)
+        if business_date is None:
+            return None
+
+        facts = _behavior_tree_runtime._read_data_annotation_world_facts()
+        discoveries = facts.setdefault("discoveries", {})
+        if not isinstance(discoveries, dict):
+            discoveries = {}
+            facts["discoveries"] = discoveries
+        previous = discoveries.get(_DAILY_ASSISTANT_LILIAN_TRIGGER_FACT)
+        if isinstance(previous, dict) and previous.get("business_date") == business_date:
+            return None
+
+        next_time = (now + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        self._persist_scheduler_task_next_time("lilian-event", next_time)
+        discoveries[_DAILY_ASSISTANT_LILIAN_TRIGGER_FACT] = {
+            "business_date": business_date,
+            "assistant_succeeded_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "lilian_next_time": next_time,
+        }
+        _behavior_tree_runtime._write_data_annotation_world_facts(facts)
+        return next_time
+
     def _execute_daily_dungeon_task(
         self,
         ctx: dict[str, Any],
@@ -170,12 +211,9 @@ class DailyChallengeTaskMixin:
 
     def _record_daily_dungeon_done(self, payload: dict[str, Any], *, message: str) -> str:
         next_time = self._next_daily_boss_reset_time_text()
-        self._record_scheduler_task_discovered_next_time(
+        self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-dungeon"),
             next_time,
-            task_type="daily_dungeon",
-            label="日常_每日副本",
-            last_result="success",
         )
         self._log("success", f"日常_每日副本：{message}，下次 {next_time}")
         return next_time
@@ -377,22 +415,16 @@ class DailyChallengeTaskMixin:
         if challenge_count is not None:
             current, total = challenge_count
             return current >= 6 and total >= 6
-        return (
-            "次6/6" in compact
-            or "6/6已完成" in compact
-        )
+        fraction = parse_ocr_values(compact, expected_count=2, allow_extra_numbers=True)
+        return fraction == (6, 6) and "完成" in compact
 
     def _daily_dungeon_challenge_count(self, compact_text: str) -> tuple[int, int] | None:
-        normalized = compact_text.translate(FULLWIDTH_DIGIT_TRANSLATION)
-        match = re.search(r"(?:今日可挑战次数|可挑战次数|挑战次数)[:：]?([0-9Oo]+)/([0-9Oo]+)", normalized)
+        normalized = compact_text.translate(FULLWIDTH_DIGIT_TRANSLATION).replace("O", "0").replace("o", "0")
+        match = re.search(r"(?:今日可挑战次数|可挑战次数|挑战次数)[:：]?(.*)", normalized)
         if not match:
             return None
-        try:
-            current = int(match.group(1).replace("O", "0").replace("o", "0"))
-            total = int(match.group(2).replace("O", "0").replace("o", "0"))
-        except ValueError:
-            return None
-        return current, total
+        values = parse_ocr_values(match.group(1), expected_count=2, allow_extra_numbers=True)
+        return (values[0], values[1]) if values is not None else None
 
     def _finish_daily_dungeon_completed(
         self,
@@ -458,7 +490,7 @@ class DailyChallengeTaskMixin:
             if self._daily_dungeon_text_is_completed(text):
                 return (yield from self._finish_daily_dungeon_completed(ctx, stop_event, payload, text=text, task_label=task_label))
             scene_id, _score, _frame = runtime.current_scene([227, 223, 34], update=False)
-            if scene_id == 34 and self._daily_lingta_text_is_world_like(text):
+            if scene_id == 34:
                 raise RuntimeError(f"{task_label}：扫荡后直接回到世界，但未识别 #227 奖励结果或 #223 次数归零，禁止按完成处理")
             if time.monotonic() - start >= timeout:
                 raise RuntimeError(f"{task_label}：等待 #227 扫荡结果超时，OCR={last_text[:120]}")
@@ -503,7 +535,7 @@ class DailyChallengeTaskMixin:
             scene_id, score, frame = runtime.current_scene([223, 34], update=True)
             text = runtime.ocr_text(frame)
             last_text = text or last_text
-            if scene_id == 34 and self._daily_lingta_text_is_world_like(text) and not self._daily_dungeon_text_is_entry(text):
+            if scene_id == 34 and not self._daily_dungeon_text_is_entry(text):
                 return
             if time.monotonic() - start >= timeout:
                 raise RuntimeError(f"{task_label}：等待世界 #34 超时，最后 #{scene_id or 'unknown'} {score:.0f}% OCR={last_text[:120]}")
@@ -700,28 +732,24 @@ class DailyChallengeTaskMixin:
         image221 = images.get(221)
 
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([216, 215, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([221, 219, 218, 217, 216, 215, 69, 34], update=True)
         text = runtime.ocr_text(frame)
-        if self._daily_shuangxiu_text_is_complete(text):
+        if scene_id == 221:
             return (yield from self._click_daily_shuangxiu_continue(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_remaining_zero(text):
-            return (yield from self._finish_daily_shuangxiu_after_continue(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_is_training_ready(text):
+        if scene_id == 219:
+            if self._daily_shuangxiu_text_remaining_zero(text):
+                return (yield from self._finish_daily_shuangxiu_after_continue(ctx, stop_event, payload))
             return (yield from self._click_daily_shuangxiu_start_training(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_is_xianyuan_invite_list(text):
+        if scene_id == 218:
             return (yield from self._click_daily_shuangxiu_first_partner(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_is_invite(text):
+        if scene_id == 217:
             return (yield from self._click_daily_shuangxiu_xianyuan_tab(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_is_detail(text):
-            return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
         if scene_id == 216:
             return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
-        if self._daily_shuangxiu_text_is_book_list(text):
-            return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
         if scene_id == 215:
             return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
         if scene_id != 69:
-            if scene_id != 34 and not self._daily_lingta_text_is_world_like(text):
+            if scene_id != 34:
                 raise RuntimeError("日常_双修：当前不在可识别的世界、日常页或双修秘术页，无法开始")
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_双修")):
                 scene_id, _score, frame = runtime.current_scene([215, 69, 34], update=True)
@@ -765,24 +793,12 @@ class DailyChallengeTaskMixin:
             )
             return "skipped"
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
-        wait_result = yield from runtime.wait_any(
-            {
-                "scene": runtime.view_visible(215),
-                "book_list": runtime.ocr_matches(
-                    self._daily_shuangxiu_text_is_book_list,
-                    label="日常_双修：双修秘术书列表 OCR",
-                    preview_chars=120,
-                ),
-            },
+        yield from runtime.wait_scene(
+            215,
             timeout=float(payload.get("secret_timeout") or payload.get("post_click_timeout") or 12.0),
             label="日常_双修：等待双修秘术页 #215",
         )
-        if wait_result in {"scene", "book_list"}:
-            return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload))
-        frame = runtime.cur_frame(update=True)
-        if self._daily_shuangxiu_text_is_book_list(runtime.ocr_text(frame)):
-            return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
-        raise RuntimeError("日常_双修：已点击日常入口，但未进入 #215 双修秘术页")
+        return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload))
 
     def _click_daily_shuangxiu_first_book(
         self,
@@ -820,24 +836,6 @@ class DailyChallengeTaskMixin:
         yield from self._wait_daily_shuangxiu_detail(ctx, stop_event, payload)
         return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
 
-    def _daily_shuangxiu_text_is_detail(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return "痴情咒" in compact and (
-            "邀请道友" in compact
-            or "双人神通" in compact
-            or "双人互动" in compact
-        )
-
-    def _daily_shuangxiu_text_is_book_list(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return (
-            "秘术" in compact
-            and "双人" in compact
-            and ("自创功法书" in compact or "合欢" in compact or "痴情咒" in compact)
-        )
-
     def _wait_daily_shuangxiu_detail(
         self,
         ctx: dict[str, Any],
@@ -846,14 +844,9 @@ class DailyChallengeTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from runtime.wait_any(
-            {
-                "detail": runtime.ocr_matches(
-                    self._daily_shuangxiu_text_is_detail,
-                    label="痴情咒详情",
-                    preview_chars=120,
-                )
-            },
+        yield from runtime.wait_scene(
+            216,
+            timeout=float(payload.get("detail_timeout") or 12.0),
             label="日常_双修：等待痴情咒详情",
         )
         with self._lock:
@@ -897,44 +890,26 @@ class DailyChallengeTaskMixin:
         yield from self._wait_daily_shuangxiu_invite(ctx, stop_event, payload)
         return (yield from self._click_daily_shuangxiu_xianyuan_tab(ctx, stop_event, payload))
 
-    def _daily_shuangxiu_text_is_invite(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return "邀请" in compact and "仙缘" in compact and ("好友" in compact or "灵界" in compact or "次数不足" in compact)
-
-    def _daily_shuangxiu_text_is_xianyuan_invite_list(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return "邀请" in compact and "仙缘" in compact and "好感度" in compact
-
-    def _daily_shuangxiu_text_is_training_ready(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return "前往修炼" in compact and ("今日剩余修炼次数" in compact or "双人修炼规则" in compact or "修炼场景" in compact)
-
     def _daily_shuangxiu_text_remaining_zero(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         compact = re.sub(r"\s+", "", normalized).replace("O", "0").replace("o", "0")
         return "今日剩余修炼次数" in compact and bool(re.search(r"今日剩余修炼次数[:：]?0(?:\D|$)", compact))
 
-    def _daily_shuangxiu_text_is_complete(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        compact = re.sub(r"\s+", "", normalized)
-        return "修炼完成" in compact and ("点击屏幕继续" in compact or "获得修为" in compact)
-
     def _daily_free_challenge_remaining_zero(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        normalized = re.sub(r"\s+", "", normalized)
-        return bool(re.search(r"剩余奖励次数[:：]?(?:0|O)(?:/\d{1,3})?", normalized, re.IGNORECASE))
+        return self._daily_free_challenge_remaining_count(text) == 0
 
     def _daily_free_challenge_remaining_count(self, text: str) -> int | None:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        normalized = re.sub(r"\s+", "", normalized)
-        match = re.search(r"剩余奖励次数[:：]?(\d{1,3}|O)(?:/\d{1,3})?", normalized, re.IGNORECASE)
+        normalized = re.sub(r"\s+", "", normalized).replace("O", "0").replace("o", "0")
+        match = re.search(r"剩余奖励次数[:：]?(.*)", normalized, re.IGNORECASE)
         if not match:
             return None
-        value = match.group(1).replace("O", "0")
-        return int(value)
+        tail = match.group(1)
+        fraction = parse_ocr_values(tail, expected_count=2, allow_extra_numbers=True)
+        if fraction is not None:
+            return fraction[0]
+        single = parse_ocr_values(tail, expected_count=1)
+        return single[0] if single is not None else None
 
     def _daily_free_challenge_text_is_selection(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -1000,11 +975,9 @@ class DailyChallengeTaskMixin:
         message: str,
     ) -> str:
         next_time = self._next_daily_boss_reset_time_text()
-        self._record_scheduler_task_discovered_next_time(
+        self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or task_id),
             next_time,
-            task_type=task_type,
-            label=task_label,
         )
         self._log("success", f"{task_label}：{message}，下次 {next_time}")
         return next_time
@@ -1277,7 +1250,7 @@ class DailyChallengeTaskMixin:
         title_pattern: str,
         exclude_pattern: str | None = None,
     ) -> str:
-        payload = {"max_scrolls": 30, "reverse_scrolls": 30, **dict(payload or {})}
+        payload = {"max_scrolls": 30, **dict(payload or {})}
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError(f"缺少{task_label}资产树路径，无法执行作业")
@@ -1514,8 +1487,7 @@ class DailyChallengeTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_scrolls = int(payload.get("assistant_max_scrolls") or payload.get("max_scrolls") or 8)
-        reverse_scrolls = int(payload.get("assistant_reverse_scrolls") or payload.get("reverse_scrolls") or 8)
-        for direction, scroll_count in [("down", max_scrolls), ("up", reverse_scrolls)]:
+        for direction, scroll_count in (("down", max_scrolls),):
             for scroll_index in range(scroll_count + 1):
                 self._raise_if_stopped(stop_event)
                 with self._lock:
@@ -1569,8 +1541,6 @@ class DailyChallengeTaskMixin:
             last_text = text or last_text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
                 return 204, 100.0
-            if scene_id in {69, 34}:
-                return int(scene_id), float(score)
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -1826,11 +1796,28 @@ class DailyChallengeTaskMixin:
         payload: dict[str, Any],
         image204: dict[str, Any],
     ) -> str:
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        with runtime.expect_views(276, 277, 275, 237):
+            return (yield from self._run_daily_assistant_one_key_claimed(
+                ctx,
+                stop_event,
+                payload,
+                image204,
+                runtime,
+            ))
+
+    def _run_daily_assistant_one_key_claimed(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        image204: dict[str, Any],
+        runtime: Any,
+    ) -> str:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image275 = images.get(275)
         image276 = images.get(276)
-        asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -1960,13 +1947,21 @@ class DailyChallengeTaskMixin:
         payload: dict[str, Any],
         runtime: Any,
     ):
-        timeout = float(payload.get("assistant_one_key_progress_timeout") or 180.0)
+        # 一键执行是服务器侧长事务，真实运行从 #277 到 #275 可超过 15 分钟。
+        # 观察窗过短会释放全局运行权，让后续 Job 与仍在执行的助手事务交叉。
+        timeout = float(payload.get("assistant_one_key_progress_timeout") or 1200.0)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
+            if time.monotonic() - start >= timeout:
+                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
+                raise TimeoutError(
+                    "日常_助手：等待 #277 进度或 #275 结果超时，"
+                    f"最后 {scene_text} {last_score:.0f}%，OCR={last_text[:160]}"
+                )
             scene_id, score, frame = runtime.current_scene([277, 275, 204, 69, 34], update=True)
             text = runtime.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
@@ -1992,12 +1987,6 @@ class DailyChallengeTaskMixin:
                     self._log_locked("detail", message)
                 yield from runtime.wait_action_settle(wait_seconds)
                 continue
-            if time.monotonic() - start >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise TimeoutError(
-                    "日常_助手：确认一键执行后未检测到 #277 进度或 #275 结果，"
-                    f"最后 {scene_text} {last_score:.0f}%，OCR={last_text[:160]}"
-                )
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -2152,23 +2141,30 @@ class DailyChallengeTaskMixin:
 
         daily_status = yield from self._open_daily_assistant_from_daily(ctx, stop_event, payload)
         if daily_status == "not_found":
-            self._record_scheduler_task_discovered_next_time(
+            self._persist_scheduler_task_next_time(
                 str(payload.get("__scheduler_task_id") or "legacy-daily-assistant"),
-                (_runtime_runner._now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
-                task_type="daily_assistant",
-                label="日常_助手",
+                (_behavior_tree_runtime._now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
             )
             raise RuntimeError("日常_助手：未找到小助手入口，已记录 30 分钟后重试")
         scene_id, _score = yield from self._wait_daily_assistant_after_entry(ctx, stop_event, payload)
         if scene_id == 204:
-            return (yield from self._run_daily_assistant_from_list(ctx, stop_event, payload))
+            result = yield from self._run_daily_assistant_from_list(ctx, stop_event, payload)
+            scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-assistant")
+            completed_at = _behavior_tree_runtime._now()
+            lilian_next_time = self._schedule_lilian_event_after_daily_assistant_success(completed_at)
+            next_time = next_business_time(("00:00", "05:00", "12:00", "18:00"))
+            self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+            if lilian_next_time:
+                self._log("success", f"日常_助手：今日 05:00 后首次成功，历练_事件已安排至 {lilian_next_time}")
+            self._log("success", f"日常_助手：本轮完成，下次 {next_time}")
+            return result
         raise RuntimeError(f"日常_助手：入口点击后回到 #{scene_id or 'unknown'}，尚未进入新版小助手总览，不能按完成处理")
 
     def _leave_mail_scene_to_world(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
-        runtime: FanxiuRuntime,
+        runtime: BehaviorTreeRuntime,
         scene_id: int,
         *,
         label: str,
@@ -2185,17 +2181,14 @@ class DailyChallengeTaskMixin:
             else:
                 self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
         def close_mail_list_to_world():
-            for attempt in range(3):
-                runtime.click_frame_point(121, 1, 1)
-                yield from runtime.wait_action_settle(1.0)
-                current_scene, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [34, 121, 58], update=True)
-                compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-                still_mail = any(token in compact for token in ("邮件", "已阅", "一键领取", "一键删除"))
-                if current_scene == 34 and not still_mail:
-                    self._log("success", f"{label}：已关闭邮件页回到 #34 {score:.0f}%")
-                    return
-                self._log("info", f"{label}：第 {attempt + 1} 次关闭后仍像邮件页，继续点击外侧空白")
-            raise RuntimeError(f"{label}：点击外侧空白后仍未关闭 #121 邮件页")
+            yield from runtime.wait_click_then_view(
+                121,
+                "空白-返回",
+                34,
+                timeout=25.0,
+                label=f"{label}：关闭邮件列表并等待世界 #34",
+            )
+            self._log("success", f"{label}：已关闭邮件页回到 #34")
         if scene_id == 121:
             yield from close_mail_list_to_world()
         else:
@@ -2225,10 +2218,8 @@ class DailyChallengeTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_scrolls = int(payload.get("max_scrolls") or payload.get("xianyuan_max_scrolls") or 14)
-        reverse_scrolls = int(payload.get("reverse_scrolls") or payload.get("xianyuan_reverse_scrolls") or 18)
-        passes: list[tuple[str, int]] = [("down", max_scrolls), ("up", reverse_scrolls)]
         fallback_seen = 0
-        for direction, scroll_count in passes:
+        for direction, scroll_count in (("down", max_scrolls),):
             for scroll_index in range(scroll_count + 1):
                 self._raise_if_stopped(stop_event)
                 with self._lock:
@@ -2278,9 +2269,6 @@ class DailyChallengeTaskMixin:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return bool("仙缘" in compact and ("可送礼" in compact or "隐藏已无物品的仙缘" in compact))
 
-    def _daily_xianyuan_text_is_daily_list(self, text: str) -> bool:
-        return self._daily_text_is_daily_list(text)
-
     def _wait_daily_xianyuan_after_entry(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         timeout = float(payload.get("post_click_timeout") or 30.0)
         asset_tree_path = ctx.get("asset_tree_path")
@@ -2296,8 +2284,6 @@ class DailyChallengeTaskMixin:
             text = runtime.ocr_text(frame)
             last_scene_id, last_score = scene_id, score
             if scene_id == 197 and not self._daily_xianyuan_text_is_people_list(text):
-                if self._daily_xianyuan_text_is_daily_list(text):
-                    return 69, float(score)
                 scene_id = None
             if scene_id in {199, 198, 197, 69, 34}:
                 return int(scene_id), float(score)
@@ -2435,7 +2421,6 @@ class DailyChallengeTaskMixin:
                 raise RuntimeError("日常_挑战仙缘：当前仍在日常列表，#197 场景身份误判，不能查找仙缘人物")
             raise RuntimeError(f"日常_挑战仙缘：当前不是仙缘人物列表，OCR={text[:120]}")
         max_scrolls = int(payload.get("people_max_scrolls") or payload.get("xianyuan_people_max_scrolls") or 8)
-        passes: list[tuple[str, int]] = [("down", max_scrolls), ("up", max_scrolls)]
         hide_empty_toggled = False
         for search_round in range(2):
             if search_round == 1:
@@ -2454,7 +2439,7 @@ class DailyChallengeTaskMixin:
                 hide_empty_toggled = True
                 yield from runtime.wait_action_settle(float(payload.get("xianyuan_toggle_settle_seconds") or 2.0))
 
-            for direction, scroll_count in passes:
+            for direction, scroll_count in (("down", max_scrolls),):
                 for scroll_index in range(scroll_count + 1):
                     self._raise_if_stopped(stop_event)
                     frame = runtime.cur_frame(update=True)
@@ -2563,7 +2548,10 @@ class DailyChallengeTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("日常_挑战仙缘：缺少资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        timeout = float(payload.get("detail_go_timeout") or 35.0)
+        # “前往”会先短暂回到世界 #34，再经过较长的自动寻路才抵达人物
+        # 对话页。实机高峰期可超过 35 秒；#34 只是中转态，不能据此提前
+        # 判定流程未实现。
+        timeout = float(payload.get("detail_go_timeout") or 75.0)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -2657,7 +2645,11 @@ class DailyChallengeTaskMixin:
     def _daily_xianyuan_challenge_count_empty(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         normalized = normalized.replace("O", "0").replace("o", "0")
-        return bool(re.search(r"(?:今日)?可挑战次数[:：]?[0零]/[1-9]\d*", normalized))
+        match = re.search(r"(?:今日)?可挑战次数[:：]?(.*)", normalized)
+        if match is None:
+            return False
+        fraction = parse_ocr_values(match.group(1), expected_count=2, allow_extra_numbers=True)
+        return bool(fraction is not None and fraction[0] == 0 and fraction[1] > 0)
 
     def _daily_xianyuan_text_button_matches(
         self,
@@ -2763,7 +2755,7 @@ class DailyChallengeTaskMixin:
                 observer.click_frame_point(View(ref_image), x, y)
                 yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
                 break
-            if self._daily_assistant_text_is_world_like(text) and (yield from self._leave_world_side_scene_if_present(
+            if scene_id == 34 and (yield from self._leave_world_side_scene_if_present(
                 ctx,
                 stop_event,
                 frame,
@@ -2871,11 +2863,6 @@ class DailyChallengeTaskMixin:
             lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             last_text = text or last_text
-            if self._daily_lingta_text_is_world_like(text):
-                with self._lock:
-                    self._status.update({"current_scene": 34, "updated_at": time.time()})
-                    self._log_locked("success", "日常_挑战仙缘：已回到世界")
-                return "success"
             confirm_matches = self._daily_xianyuan_text_button_matches(
                 lines,
                 r"确认|确定",
@@ -2950,12 +2937,6 @@ class DailyChallengeTaskMixin:
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
             return "success"
-        text = observer.ocr_text(frame)
-        if self._daily_lingta_text_is_world_like(text):
-            with self._lock:
-                self._status.update({"current_scene": 34, "updated_at": time.time()})
-                self._log_locked("success", "日常_挑战仙缘：已回到世界")
-            return "success"
         if scene_id == 69:
             return (yield from self._return_daily_xianyuan_to_world(ctx, stop_event))
         if scene_id in {197, 198}:
@@ -2983,12 +2964,6 @@ class DailyChallengeTaskMixin:
                 return "success"
             if next_scene_id == 69:
                 return (yield from self._return_daily_xianyuan_to_world(ctx, stop_event))
-            text = observer.ocr_text(frame)
-            if self._daily_lingta_text_is_world_like(text):
-                with self._lock:
-                    self._status.update({"current_scene": 34, "updated_at": time.time()})
-                    self._log_locked("success", "日常_挑战仙缘：已回到世界")
-                return "success"
             raise RuntimeError(f"日常_挑战仙缘：点击 #{scene_id}「返回」后未回到 #69/#34，当前 #{next_scene_id or 'unknown'} {next_score:.0f}%")
         raise RuntimeError(
             f"日常_挑战仙缘：当前 #{scene_id or 'unknown'} 显示次数已空，但缺少该页返回世界标注，不能按完成处理"
@@ -3001,11 +2976,6 @@ class DailyChallengeTaskMixin:
         observer = self._fanxiu_observer(ctx, stop_event)
         scene_id, _score, frame = observer.current_scene([69, 34], update=True)
         if scene_id == 34:
-            return "success"
-        text = observer.ocr_text(frame)
-        if scene_id != 69 and self._daily_lingta_text_is_world_like(text):
-            with self._lock:
-                self._status.update({"current_scene": 34, "updated_at": time.time()})
             return "success"
         if scene_id != 69:
             raise RuntimeError("日常_挑战仙缘：当前不在 #69 或 #34，缺少后续页面标注，无法安全返回")
@@ -3033,11 +3003,6 @@ class DailyChallengeTaskMixin:
                 return "success"
             text = observer.ocr_text(frame)
             last_text = text or last_text
-            if self._daily_lingta_text_is_world_like(text):
-                with self._lock:
-                    self._status.update({"current_scene": 34, "updated_at": time.time()})
-                    self._log_locked("success", "日常_挑战仙缘：已回到世界")
-                return "success"
             if time.monotonic() - start >= 18.0:
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 raise TimeoutError(f"日常_挑战仙缘：等待世界超时，最后 {scene_text} {last_score:.0f}% OCR={last_text[:120]}")
@@ -3053,7 +3018,7 @@ class DailyChallengeTaskMixin:
     def _run_daily_lingzu_challenge(
         self,
         ctx: dict[str, Any],
-        runtime: FanxiuRuntime,
+        runtime: BehaviorTreeRuntime,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -3156,7 +3121,7 @@ class DailyChallengeTaskMixin:
                 self._record_daily_lingzu_done(payload, message="圣雷龙妖祖页显示挑战次数已消耗")
                 yield from self._safe_return_daily_lingzu_to_world_after_done(ctx, stop_event)
                 return "success"
-            if scene_id == 34 or ("日常" in text and ("储物袋" in text or "战斗" in text)):
+            if scene_id == 34:
                 self._record_daily_lingzu_done(payload, message="挑战后已回到世界")
                 yield from self._safe_return_daily_lingzu_to_world_after_done(ctx, stop_event)
                 return "success"

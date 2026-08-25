@@ -4,6 +4,7 @@ from backend.models import SheetDocument
 
 def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
     columns = [
+        "报名日期",
         "姓名",
         "用户ID",
         "优秀学员评分",
@@ -20,6 +21,7 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
     ]
     rows = [
         [
+            "2099-01-01",
             "学员A",
             "u1",
             "old",
@@ -35,6 +37,7 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
             schedule.CURRENT_RULE,
         ],
         [
+            "2020-01-01",
             "学员B",
             "u2",
             0,
@@ -82,17 +85,18 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
     assert summary["video_refund_total"] == 40
     assert summary["score_total"] == 2
     assert summary["skipped_rows"] == 1
+    assert summary["tracking_lifecycle_repaired_rows"] > 0
     session.refresh(document)
     next_rows = document.document_json["rows"]
-    assert next_rows[0][2:4] == [2, 40]
-    assert next_rows[1][2:4] == [0, 0]
+    assert next_rows[0][3:5] == [2, 40]
+    assert next_rows[1][3:5] == [0, 0]
 
     cell_meta = document.document_json["cell_meta"]
-    assert cell_meta["3:5"]["style"]["background_color"] != "#FFFFFF"
-    assert "3:6" not in cell_meta
-    assert "3:8" in cell_meta
-    assert "4:5" not in cell_meta
-    assert "4:8" not in cell_meta
+    assert cell_meta["3:6"]["style"]["background_color"] != "#FFFFFF"
+    assert "3:7" not in cell_meta
+    assert "3:9" in cell_meta
+    assert cell_meta["4:6"]["style"] == {"background_color": "#F2F2F2", "text_color": "#6B7280"}
+    assert cell_meta["4:9"]["style"] == {"background_color": "#F2F2F2", "text_color": "#6B7280"}
 
 
 def test_run_nianzhu_step3_endpoint_rebuilds_from_course_sheets(client, test_device, monkeypatch):

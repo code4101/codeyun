@@ -42,6 +42,46 @@ def generate_token() -> str:
     """Generate a secure random token"""
     return secrets.token_urlsafe(32)
 
+
+def _validate_local_device_entry_token(final_token: str, local_id: str):
+    """Accept the token from the active local user device entry.
+
+    Device tokens are now stored on user-owned device entries. Some deployments no
+    longer duplicate that token into CODEYUN_DEVICE_TOKEN, but device-control
+    requests still need to authenticate against the local node's registered
+    token.
+    """
+    try:
+        from sqlmodel import Session, select
+
+        from backend.db import engine
+        from backend.models import UserDevice
+        from backend.core.devices.device import LocalDevice
+    except Exception:
+        return None
+
+    try:
+        with Session(engine) as session:
+            entries = session.exec(
+                select(UserDevice).where(
+                    UserDevice.device_id == local_id,
+                    UserDevice.is_active == True,  # noqa: E712
+                )
+            ).all()
+            for entry in entries:
+                entry_token = entry.token or ""
+                if entry_token and secrets.compare_digest(final_token, entry_token):
+                    return LocalDevice(
+                        local_id,
+                        entry.name or local_id,
+                        None,
+                        api_token=entry_token,
+                        order_index=entry.order_index,
+                    )
+    except Exception:
+        return None
+    return None
+
 def extract_api_token(
     *,
     authorization: Optional[str] = None,
@@ -73,14 +113,18 @@ def validate_api_token_value(final_token: Optional[str]):
     local_id = get_device_id()
     local_dev = device_manager.get_device(local_id)
 
+    if local_dev and local_dev.api_token and secrets.compare_digest(final_token, local_dev.api_token):
+        return local_dev
+
+    entry_dev = _validate_local_device_entry_token(final_token, local_id)
+    if entry_dev is not None:
+        return entry_dev
+
     if not local_dev or not local_dev.api_token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Device control is disabled on this node",
         )
-
-    if final_token == local_dev.api_token:
-        return local_dev
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -113,7 +157,7 @@ async def verify_api_token(
         )
     )
 
-async def get_current_user_from_token(
+def get_current_user_from_token(
     token: str = Depends(oauth2_scheme), 
     session: Session = Depends(get_session)
 ):
@@ -141,23 +185,31 @@ async def get_current_user_from_token(
     return user
 
 
-async def get_optional_current_user_from_token(
+def get_optional_current_user_from_token(
     token: Optional[str] = Depends(oauth2_scheme_optional),
     session: Session = Depends(get_session),
 ):
     if not token:
         return None
 
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
-            return None
+            raise credentials_exception
     except JWTError:
-        return None
+        raise credentials_exception
 
     statement = select(User).where(User.username == username)
     user = session.exec(statement).first()
+    if user is None:
+        raise credentials_exception
     return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user_from_token)):

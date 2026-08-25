@@ -118,8 +118,9 @@ import {
   noteKey,
   useNoteStore,
 } from '@/api/notes'
-import type { EditableNotePatch } from '@/utils/noteAutoSave'
+import type { EditableNoteExpectedFields, EditableNotePatch } from '@/utils/noteAutoSave'
 import { putJsonKeepalive } from '@/utils/keepaliveRequest'
+import { createSaveMutationId, getSaveClientInstanceId } from '@/utils/saveMutationIdentity'
 import DocOutline from './DocOutline.vue'
 
 interface DocOutlineItem {
@@ -277,9 +278,9 @@ function connectDocResourceSocket(noteRef: string, options: { reconnect?: boolea
     const remoteVersion = Number(message.version || 0)
     if (!Number.isFinite(remoteVersion) || remoteVersion <= Number(currentNote.value?.version || 1)) return
     if (docSaveInFlight) return
+    if (message.client_instance_id === getSaveClientInstanceId()) return
     if (docLocalDirty) {
-      docRemoteConflictActive = true
-      ElMessage.warning('文档已被其他人更新，已保留本地草稿')
+      ElMessage.info('文档数据有新版本，本次编辑将在保存时自动合并')
       return
     }
     void loadNote(socketNoteRef)
@@ -378,15 +379,22 @@ function handleEditorChange(note: NoteNode) {
   scheduleOutlineRefresh()
 }
 
-async function handleDocSave(note: NoteNode, patch: EditableNotePatch = {}) {
+async function handleDocSave(
+  note: NoteNode,
+  patch: EditableNotePatch = {},
+  expectedFields: EditableNoteExpectedFields = {},
+) {
   if (docRemoteConflictActive) {
     docLocalDirty = true
-    ElMessage.warning('文档已被其他人更新，已保留本地草稿，请刷新后合并')
-    throw new Error('文档已被其他人更新')
+    ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿，请刷新后合并')
+    throw new Error('文档同一字段已发生变化')
   }
   const payload = {
     ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
     base_version: Number(note.version || currentNote.value?.version || 1),
+    expected_fields: expectedFields,
+    mutation_id: createSaveMutationId(),
+    client_instance_id: getSaveClientInstanceId(),
   }
   docSaveInFlight = true
   try {
@@ -404,7 +412,7 @@ async function handleDocSave(note: NoteNode, patch: EditableNotePatch = {}) {
     if (axios.isAxiosError(error) && error.response?.status === 409) {
       docRemoteConflictActive = true
       docLocalDirty = true
-      ElMessage.warning('文档已被其他人更新，已保留本地草稿')
+      ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿')
     }
     throw error
   } finally {
@@ -412,13 +420,20 @@ async function handleDocSave(note: NoteNode, patch: EditableNotePatch = {}) {
   }
 }
 
-function handleDocSaveKeepalive(note: NoteNode, patch: EditableNotePatch = {}) {
+function handleDocSaveKeepalive(
+  note: NoteNode,
+  patch: EditableNotePatch = {},
+  expectedFields: EditableNoteExpectedFields = {},
+) {
   if (docRemoteConflictActive) {
     return
   }
   const payload = {
     ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
     base_version: Number(note.version || currentNote.value?.version || 1),
+    expected_fields: expectedFields,
+    mutation_id: createSaveMutationId(),
+    client_instance_id: getSaveClientInstanceId(),
   }
   putJsonKeepalive(`/api/note-docs/${encodeURIComponent(noteKey(note.id))}`, toDocApiPatch(payload))
 }

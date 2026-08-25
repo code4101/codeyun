@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 @dataclass(frozen=True)
@@ -11,12 +12,15 @@ class DataAnnotationTaskCellDefinition:
     handler: Callable[[Any, dict[str, Any], dict[str, Any], threading.Event], Any]
     scheduler_supported: bool = False
     interruptible: bool = True
-    stable_start_scene_id: int | None = None
+    admission: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    standard_job: bool = False
+    standard_job_id: str = ""
+    standard_job_description: str = "手动"
+    standard_job_payload: dict[str, Any] = field(default_factory=dict)
 
 
 _DATA_ANNOTATION_TASK_CELL_REGISTRY: dict[str, DataAnnotationTaskCellDefinition] = {}
-_DEFAULT_STABLE_START_SCENE = object()
 _DEPRECATED_DATA_ANNOTATION_JOB_TYPES = {
     "daily_yihuo",
 }
@@ -44,8 +48,12 @@ def register_fanxiu_data_annotation_task_cell(
     *,
     scheduler_supported: bool = False,
     interruptible: bool = True,
-    stable_start_scene_id: int | None | object = _DEFAULT_STABLE_START_SCENE,
+    admission: Callable[[Any, dict[str, Any]], dict[str, Any] | None] | None = None,
     normalize_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    standard_job: bool = False,
+    standard_job_id: str = "",
+    standard_job_description: str = "手动",
+    standard_job_payload: dict[str, Any] | None = None,
 ):
     """Register a task callable by ``run_task`` inside the Jupyter kernel."""
     task_type = str(task_type or "").strip()
@@ -61,13 +69,12 @@ def register_fanxiu_data_annotation_task_cell(
             handler=handler,
             scheduler_supported=bool(scheduler_supported),
             interruptible=bool(interruptible),
-            stable_start_scene_id=(
-                34 if stable_start_scene_id is _DEFAULT_STABLE_START_SCENE and scheduler_supported
-                else None if stable_start_scene_id is _DEFAULT_STABLE_START_SCENE
-                else int(stable_start_scene_id) if stable_start_scene_id is not None
-                else None
-            ),
+            admission=admission,
             normalize_payload=normalize_payload,
+            standard_job=bool(standard_job),
+            standard_job_id=str(standard_job_id or "").strip(),
+            standard_job_description=str(standard_job_description or "手动").strip() or "手动",
+            standard_job_payload=deepcopy(standard_job_payload or {}),
         )
         return handler
 

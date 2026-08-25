@@ -76,8 +76,33 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
+    path: '/tools/hardware-temperature',
+    redirect: '/cluster/hardware-temperature',
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
     path: '/fanxiu/xianzhou-race',
     redirect: '/fanxiu/activity-list/xianzhou-marathon',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/fanxiu/activity-list/yunmeng-trial',
+    redirect: to => ({
+      path: '/fanxiu/activity-list/top-activity',
+      query: { ...to.query, activity: 'yunmeng-trial' },
+    }),
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/fanxiu/activity-list/xutian-palace',
+    redirect: to => ({
+      path: '/fanxiu/activity-list/top-activity',
+      query: { ...to.query, activity: 'xutian-palace' },
+    }),
     skipFeatureAccess: true,
   },
   {

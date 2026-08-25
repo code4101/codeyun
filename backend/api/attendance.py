@@ -6,6 +6,7 @@ import re
 import csv
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -109,6 +110,7 @@ LOCAL_FEEDBACK_SOURCE_DETAIL = "CodeYun反馈表"
 LOCAL_FEEDBACK_SEQ_START = 645
 ATTENDANCE_WJX_SUBMITTED_AT_DISPLAY_FORMAT = 'case(is_current_year, "mm/dd hh:mm", "yyyy/mm/dd hh:mm")'
 ATTENDANCE_WJX_DATA_WORKBOOK_ID = 2
+ATTENDANCE_WJX_DATA_SHEET_ID = 5
 ATTENDANCE_WJX_DATA_SHEET_TITLE = "问卷数据"
 ATTENDANCE_WJX_DATA_OWNER_TYPE = "attendance_questionnaire"
 ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
@@ -153,32 +155,84 @@ FEEDBACK_COURSE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_owner": ("考勤负责人", 3),
     "completed_date": ("考勤实际完成结点", 10),
 }
+
+
+def _independent_attendance_wjx_sheet_ref() -> SimpleNamespace:
+    return SimpleNamespace(
+        sheet_id=ATTENDANCE_WJX_DATA_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
+
+
+def _load_independent_attendance_sheet(
+    sheet_id: int,
+    *,
+    workbook_id: int | None = None,
+) -> SimpleNamespace:
+    """Load one worksheet from the attendance-owned sole database."""
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        payload = LocalAttendanceSheetClient().get_document(SimpleNamespace(
+            sheet_id=int(sheet_id),
+            workbook_id=workbook_id,
+        ))
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=503, detail=f"独立考勤工作表不可用：{exc}") from exc
+    return SimpleNamespace(
+        numeric_id=int(payload.get("id") or sheet_id),
+        document_json=dict(payload.get("document_json") or {}),
+        version=max(int(payload.get("version") or 1), 1),
+        updated_at=float(payload.get("updated_at") or 0.0),
+    )
+
+
+def _load_independent_attendance_wjx_sheet() -> SimpleNamespace:
+    return _load_independent_attendance_sheet(
+        ATTENDANCE_WJX_DATA_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
+
+
+def _mutate_independent_attendance_wjx_sheet(mutator) -> SimpleNamespace:
+    """Optimistically mutate sheet 5 without creating a CodeYun-side copy."""
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import (
+        AttendanceVersionConflict,
+        LocalAttendanceSheetClient,
+    )
+
+    client = LocalAttendanceSheetClient()
+    sheet_ref = _independent_attendance_wjx_sheet_ref()
+    for _attempt in range(5):
+        current = _load_independent_attendance_wjx_sheet()
+        next_document, changed = mutator(dict(current.document_json or {}))
+        if not changed:
+            return current
+        try:
+            payload = client.replace_document(
+                sheet_ref,
+                next_document,
+                expected_version=current.version,
+            )
+        except AttendanceVersionConflict:
+            continue
+        return SimpleNamespace(
+            numeric_id=int(payload.get("id") or ATTENDANCE_WJX_DATA_SHEET_ID),
+            document_json=dict(payload.get("document_json") or {}),
+            version=max(int(payload.get("version") or 1), 1),
+            updated_at=float(payload.get("updated_at") or 0.0),
+        )
+    raise HTTPException(status_code=409, detail="问卷数据刚被其他操作更新，请重试")
 ORDER_HISTORY_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\s+"
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
 )
-ATTENDANCE_HEADER_TOOL_ZEN_LESSON_RE = re.compile(
-    r"^第\s*(?P<week>\d+)\s*周\s*[=＝:：-]\s*(?P<title>.+)$"
-)
-ATTENDANCE_HEADER_TOOL_COURSE_DATE_PREFIX_RE = re.compile(
-    r"^(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?P<rest>.*)$"
-)
-ATTENDANCE_HEADER_TOOL_LESSON_ADMIN_URL = (
-    "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id={lesson_id2}&tabName=UserManage"
-)
-ATTENDANCE_HEADER_TOOL_CLOCKIN_GROUP_COLORS = ("#5B8FC9", "#A7C8E8")
-ATTENDANCE_HEADER_TOOL_WEEK_COLORS = (
-    ("#ED7D31", "#F5B183"),
-    ("#3B82C4", "#A8C7E8"),
-    ("#46A66A", "#B2D9BE"),
-    ("#9B6BC8", "#D2B8EB"),
-    ("#D85B5B", "#EFB0B0"),
-    ("#2A9D9D", "#9FD9D7"),
-    ("#B58A2A", "#E2CC88"),
-    ("#6B7C93", "#C0CBD8"),
-)
-
-
 class AttendanceConfigUpdateRequest(BaseModel):
     current_wjx_account_id: Optional[str] = None
     execution_device_entry_id: Optional[str] = None
@@ -468,42 +522,6 @@ class AttendanceSheetDocumentUpsertRequest(BaseModel):
     document_json: dict[str, Any] = Field(default_factory=dict)
 
 
-class AttendanceHeaderToolRequest(BaseModel):
-    course_name: str
-
-
-class AttendanceHeaderToolGroup(BaseModel):
-    label: str
-    kind: Literal["clockin", "week"]
-    start_column: int
-    colspan: int
-    background_color: str
-    child_background_color: str
-    week_index: Optional[int] = None
-
-
-class AttendanceHeaderToolCell(BaseModel):
-    label: str
-    url: str = ""
-    kind: Literal["clockin", "lesson"]
-    column_index: int
-    group_label: str
-    background_color: str
-    source_id: Optional[int] = None
-    lesson_id2: str = ""
-    week_index: Optional[int] = None
-
-
-class AttendanceHeaderToolResponse(BaseModel):
-    course_name: str
-    course_type: str
-    groups: list[AttendanceHeaderToolGroup] = Field(default_factory=list)
-    cells: list[AttendanceHeaderToolCell] = Field(default_factory=list)
-    rows: list[list[str]] = Field(default_factory=list)
-    plain_text: str = ""
-    document_json: dict[str, Any] = Field(default_factory=dict)
-
-
 def _normalize_optional_id(value: Optional[str]) -> str | None:
     normalized = (value or "").strip()
     return normalized or None
@@ -524,257 +542,6 @@ def _normalize_sheet_numeric_id(value: str) -> int:
     if numeric_id <= 0:
         raise HTTPException(status_code=400, detail="sheet_id 非法")
     return numeric_id
-
-
-def _normalize_attendance_header_text(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _normalize_attendance_header_course_name(value: Any) -> str:
-    text = _normalize_attendance_header_text(value)
-    match = ATTENDANCE_HEADER_TOOL_COURSE_DATE_PREFIX_RE.match(text)
-    if not match:
-        return text
-
-    return f"d{match.group('year')[-2:]}{match.group('month')}{match.group('day')}{match.group('rest').lstrip()}"
-
-
-def _load_attendance_header_kqdb():
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-
-        return get_kqdb()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"无法加载考勤数据库：{exc}") from exc
-
-
-def _strip_attendance_header_course_prefix(course_name: str, value: Any) -> str:
-    text = _normalize_attendance_header_text(value)
-    prefix = f"{course_name}-"
-    if text.startswith(prefix):
-        return text[len(prefix):].strip()
-    return text
-
-
-def _normalize_attendance_header_url(value: Any) -> str:
-    text = _normalize_attendance_header_text(value)
-    if not text:
-        return ""
-    if text.startswith(("http://", "https://")):
-        return text
-    return ATTENDANCE_HEADER_TOOL_LESSON_ADMIN_URL.format(lesson_id2=text)
-
-
-def _parse_zen_attendance_lesson(course_name: str, lesson_name: Any) -> tuple[int, str, str]:
-    short_name = _strip_attendance_header_course_prefix(course_name, lesson_name)
-    match = ATTENDANCE_HEADER_TOOL_ZEN_LESSON_RE.match(short_name)
-    if not match:
-        raise HTTPException(
-            status_code=400,
-            detail=f"禅宗课次必须包含“第几周=课次”：{_normalize_attendance_header_text(lesson_name)}",
-        )
-
-    week_index = int(match.group("week"))
-    title = match.group("title").strip()
-    if not title:
-        raise HTTPException(
-            status_code=400,
-            detail=f"禅宗课次缺少课次名称：{_normalize_attendance_header_text(lesson_name)}",
-        )
-    return week_index, f"第{week_index}周", title
-
-
-def _query_attendance_header_clockins(course_name: str) -> list[dict[str, Any]]:
-    xldb = _load_attendance_header_kqdb()
-    try:
-        records = xldb.exec2dict(
-            "SELECT clockin_id, name, url FROM clockin_table WHERE name LIKE %s ORDER BY clockin_id",
-            [f"{course_name}-%"],
-        )
-        return [dict(row) for row in (records or [])]
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"查询打卡链接失败：{exc}") from exc
-
-
-def _query_attendance_header_lessons(course_name: str) -> list[dict[str, Any]]:
-    xldb = _load_attendance_header_kqdb()
-    try:
-        records = xldb.exec2dict(
-            "SELECT lesson_id, lesson_name, lesson_id2 FROM lesson_table "
-            "WHERE lesson_name LIKE %s ORDER BY lesson_id",
-            [f"{course_name}-%"],
-        )
-        return [dict(row) for row in (records or [])]
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"查询课次链接失败：{exc}") from exc
-
-
-def _build_attendance_header_document(
-    groups: list[AttendanceHeaderToolGroup],
-    cells: list[AttendanceHeaderToolCell],
-) -> dict[str, Any]:
-    columns = [cell.label or f"列{cell.column_index + 1}" for cell in cells]
-    top_row = [""] * len(cells)
-    second_row = [cell.label for cell in cells]
-    cell_meta: dict[str, Any] = {}
-    merged_cells: list[dict[str, int]] = []
-
-    for group in groups:
-        if 0 <= group.start_column < len(top_row):
-            top_row[group.start_column] = group.label
-        if group.colspan > 1:
-            merged_cells.append({
-                "row": 0,
-                "col": group.start_column,
-                "rowspan": 1,
-                "colspan": group.colspan,
-            })
-        for column in range(group.start_column, min(group.start_column + group.colspan, len(cells))):
-            cell_meta[f"0:{column}"] = {
-                "style": {
-                    "background_color": group.background_color,
-                    "text_color": "#111827",
-                },
-            }
-
-    for cell in cells:
-        entry: dict[str, Any] = {
-            "style": {
-                "background_color": cell.background_color,
-                "text_color": "#0645AD" if cell.url else "#111827",
-            },
-        }
-        if cell.url:
-            second_row[cell.column_index] = note_sheet_inline_links.with_inline_cell_link(
-                second_row[cell.column_index],
-                {"url": cell.url},
-            )
-        cell_meta[f"1:{cell.column_index}"] = entry
-
-    return {
-        "schema_version": 1,
-        "columns": columns,
-        "rows": [],
-        "grid_rows": [top_row, second_row],
-        "data_start_row": 2,
-        "field_row_index": 1,
-        "merged_cells": merged_cells,
-        "formula_reference_origin": "sheet_v2",
-        "cell_meta": cell_meta,
-        "column_widths": [max(96, min(180, len(label) * 18 + 36)) for label in columns],
-        "view_settings": {
-            "show_row_numbers": False,
-            "row_marker_numbering": "global",
-            "row_marker_origin": "sheet",
-            "show_column_markers": True,
-            "column_marker_style": "letters",
-            "frozen_column_count": 0,
-            "pagination": {
-                "enabled": False,
-                "page_size": 100,
-            },
-        },
-    }
-
-
-def _build_attendance_header_tool_response(course_name_source: Any) -> AttendanceHeaderToolResponse:
-    course_name = _normalize_attendance_header_course_name(course_name_source)
-    if not course_name:
-        raise HTTPException(status_code=400, detail="请输入课程前缀")
-    if "禅宗" not in course_name:
-        raise HTTPException(status_code=400, detail="暂不支持的类型：目前仅支持禅宗")
-
-    clockins = _query_attendance_header_clockins(course_name)
-    lessons = _query_attendance_header_lessons(course_name)
-    if not lessons:
-        raise HTTPException(status_code=404, detail="没有找到匹配的课次数据")
-
-    groups: list[AttendanceHeaderToolGroup] = []
-    cells: list[AttendanceHeaderToolCell] = []
-
-    if clockins:
-        group_color, child_color = ATTENDANCE_HEADER_TOOL_CLOCKIN_GROUP_COLORS
-        groups.append(AttendanceHeaderToolGroup(
-            label="打卡数据",
-            kind="clockin",
-            start_column=0,
-            colspan=len(clockins),
-            background_color=group_color,
-            child_background_color=child_color,
-        ))
-        for row in clockins:
-            column_index = len(cells)
-            cells.append(AttendanceHeaderToolCell(
-                label=_strip_attendance_header_course_prefix(course_name, row.get("name")),
-                url=_normalize_attendance_header_text(row.get("url")),
-                kind="clockin",
-                column_index=column_index,
-                group_label="打卡数据",
-                background_color=child_color,
-                source_id=int(row.get("clockin_id") or 0) or None,
-            ))
-
-    current_week_index: int | None = None
-    current_group: AttendanceHeaderToolGroup | None = None
-
-    for row in lessons:
-        week_index, week_label, lesson_title = _parse_zen_attendance_lesson(course_name, row.get("lesson_name"))
-        if current_week_index != week_index:
-            group_color, child_color = ATTENDANCE_HEADER_TOOL_WEEK_COLORS[
-                (len([group for group in groups if group.kind == "week"])) % len(ATTENDANCE_HEADER_TOOL_WEEK_COLORS)
-            ]
-            current_group = AttendanceHeaderToolGroup(
-                label=week_label,
-                kind="week",
-                start_column=len(cells),
-                colspan=0,
-                background_color=group_color,
-                child_background_color=child_color,
-                week_index=week_index,
-            )
-            groups.append(current_group)
-            current_week_index = week_index
-
-        if current_group is None:
-            raise HTTPException(status_code=500, detail="生成周分组失败")
-
-        current_group.colspan += 1
-        column_index = len(cells)
-        lesson_id2 = _normalize_attendance_header_text(row.get("lesson_id2"))
-        cells.append(AttendanceHeaderToolCell(
-            label=lesson_title,
-            url=_normalize_attendance_header_url(lesson_id2),
-            kind="lesson",
-            column_index=column_index,
-            group_label=current_group.label,
-            background_color=current_group.child_background_color,
-            source_id=int(row.get("lesson_id") or 0) or None,
-            lesson_id2=lesson_id2,
-            week_index=week_index,
-        ))
-
-    if not cells:
-        raise HTTPException(status_code=404, detail="没有找到可生成的表头数据")
-
-    document_json = _build_attendance_header_document(groups, cells)
-    rows = [
-        [_extract_inline_cell_text(cell) for cell in row]
-        for row in list(document_json["grid_rows"])
-        if isinstance(row, list)
-    ]
-    return AttendanceHeaderToolResponse(
-        course_name=course_name,
-        course_type="禅宗",
-        groups=groups,
-        cells=cells,
-        rows=rows,
-        plain_text="\n".join("\t".join(row) for row in rows),
-        document_json=document_json,
-    )
 
 
 def _get_next_sheet_numeric_id(session: Session, legacy_pk: str) -> int:
@@ -2104,17 +1871,12 @@ def _build_attendance_wjx_sheet_data_page(
     items.sort(key=lambda item: int(item["seq"]), reverse=True)
     total = len(items)
     paged_items = items[offset : offset + normalized_page_size]
-    state = session.get(AttendanceWjxDataSyncState, str(template["activity_id"]))
     return AttendanceWjxDataPage(
         items=[AttendanceWjxDataItem.model_validate(item) for item in paged_items],
         total=total,
         page=normalized_page,
         page_size=normalized_page_size,
-        sync_state=(
-            AttendanceWjxDataSyncStateItem.model_validate(serialize_attendance_wjx_data_sync_state(state))
-            if state is not None
-            else None
-        ),
+        sync_state=None,
         template=template,
     )
 
@@ -2339,11 +2101,10 @@ def _extract_feedback_course_owner_map_from_sheet(document_json: dict[str, Any])
 def _get_feedback_course_maps_from_summary_sheet(
     session: Session,
 ) -> tuple[dict[str, str] | None, dict[str, str] | None]:
-    source_sheet = session.exec(
-        select(SheetDocument).where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
-    ).first()
-    if source_sheet is None:
-        return None, None
+    source_sheet = _load_independent_attendance_sheet(
+        FEEDBACK_COURSE_SOURCE_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
     document_json = dict(source_sheet.document_json or {})
     return (
         _extract_feedback_course_link_map_from_sheet(document_json),
@@ -2554,12 +2315,17 @@ def _load_submitted_refund_amounts_from_csv(attendance_document: SheetDocument |
     for refund_root in dict.fromkeys(roots):
         if not refund_root.exists():
             continue
-        search_roots = [refund_root / name for name in month_names if (refund_root / name).exists()]
-        if not search_roots:
+        if month_names:
+            search_roots = [refund_root / name for name in month_names if (refund_root / name).exists()]
+            if not search_roots:
+                continue
+        else:
             search_roots = [refund_root]
         for search_root in search_roots:
             files = search_root.glob("*.csv") if search_root != refund_root else refund_root.rglob("*.csv")
             for file in files:
+                if not _has_submitted_refund_csv_marker(file):
+                    continue
                 try:
                     with file.open(encoding="utf-8-sig", newline="") as handle:
                         reader = csv.reader(handle)
@@ -2574,6 +2340,22 @@ def _load_submitted_refund_amounts_from_csv(attendance_document: SheetDocument |
                 except Exception:
                     continue
     return result
+
+
+def _has_submitted_refund_csv_marker(file: Path) -> bool:
+    marker = file.parent / f"{file.stem}.submitted.json"
+    if not marker.is_file():
+        return False
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    marker_file_name = str(data.get("file_name") or "").strip()
+    if marker_file_name and marker_file_name != file.name:
+        return False
+    return True
 
 
 def _merge_refunded_check_submitted_csv_results(
@@ -3208,6 +2990,21 @@ def _is_generic_feedback_course_name(value: Any) -> bool:
     return normalized in {"考勤表", "问卷数据"}
 
 
+def _select_feedback_course_name(
+    submitted_course_name: str,
+    resolved_course: AttendanceFeedbackResolvedCourse,
+) -> tuple[str, str]:
+    """Keep an explicitly selected course authoritative over page context.
+
+    Workbook/sheet context is only a fallback for generic shell titles.  A
+    stale or mismatched page context must never silently move a questionnaire
+    submission into another course.
+    """
+    if _is_generic_feedback_course_name(submitted_course_name):
+        return resolved_course.name, resolved_course.link_url
+    return submitted_course_name, ""
+
+
 def _normalize_feedback_workbook_course_title(value: Any) -> str:
     text = _normalize_wjx_data_text(value).strip()
     if not text or _is_generic_feedback_course_name(text):
@@ -3385,14 +3182,7 @@ def _persist_attendance_feedback_submission(
     resolved_course = AttendanceFeedbackResolvedCourse()
     if _is_generic_feedback_course_name(course_name) or payload.workbook_id is not None or payload.sheet_id is not None:
         resolved_course = _resolve_feedback_course_from_context(session, payload)
-    has_conflicting_strong_context = (
-        resolved_course.strong_context
-        and resolved_course.name
-        and _normalize_feedback_history_match_text(course_name) != _normalize_feedback_history_match_text(resolved_course.name)
-    )
-    if _is_generic_feedback_course_name(course_name) or has_conflicting_strong_context:
-        course_name = resolved_course.name
-        course_link_url = resolved_course.link_url
+    course_name, course_link_url = _select_feedback_course_name(course_name, resolved_course)
     if not course_name:
         raise HTTPException(status_code=400, detail="所属课程不能是考勤表，请从课程或工作簿名称提交")
     student_id_text = _normalize_required_feedback_text(payload.student_id_text, field_name="学号")
@@ -3401,14 +3191,39 @@ def _persist_attendance_feedback_submission(
     extra_note = _normalize_wjx_data_text(payload.extra_note)
 
     now = time.time()
-    seq = _get_next_local_feedback_seq(session)
-    state = _remember_wjx_data_seq_history(
-        session,
-        activity_id=LOCAL_FEEDBACK_ACTIVITY_ID,
-        seq=seq,
-    )
     submitted_at_text = _format_feedback_submitted_at(now)
     source_ip = _resolve_feedback_client_ip(request)
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
+    if course_link_url and course_name:
+        course_link_map = dict(course_link_map or {})
+        course_link_map[_normalize_attendance_wjx_sheet_cell(course_name)] = course_link_url
+    written_seq = 0
+
+    def append_submission(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        nonlocal written_seq
+        written_seq = _get_next_attendance_wjx_sheet_seq(document_json)
+        next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+            document_json,
+            {
+                "序号": written_seq,
+                "提交时间": submitted_at_text,
+                "来源": LOCAL_FEEDBACK_SOURCE,
+                "课程": course_name,
+                "学号": student_id_text,
+                "姓名": student_name,
+                "修正需求": correction_request,
+                "补充说明": extra_note,
+                "处理状态": "",
+                ATTENDANCE_WJX_AI_COLUMN: "",
+            },
+            preserve_process_status=False,
+            course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
+        )
+        return next_document, changed
+
+    _mutate_independent_attendance_wjx_sheet(append_submission)
+    seq = written_seq
     raw_row = {
         "序号": seq,
         "提交答卷时间": submitted_at_text,
@@ -3423,46 +3238,25 @@ def _persist_attendance_feedback_submission(
         "5、其他补充说明": extra_note,
     }
 
-    entry = session.exec(
-        select(AttendanceWjxDataEntry)
-        .where(AttendanceWjxDataEntry.activity_id == LOCAL_FEEDBACK_ACTIVITY_ID)
-        .where(AttendanceWjxDataEntry.seq == seq)
-    ).first()
-    if entry is None:
-        entry = AttendanceWjxDataEntry(
-            activity_id=LOCAL_FEEDBACK_ACTIVITY_ID,
-            seq=seq,
-            created_at=now,
-        )
-    entry.submitted_at_text = submitted_at_text
-    entry.duration_text = ""
-    entry.source = LOCAL_FEEDBACK_SOURCE
-    entry.source_detail = LOCAL_FEEDBACK_SOURCE_DETAIL
-    entry.source_ip = source_ip
-    entry.course_name = course_name
-    entry.student_id_text = student_id_text
-    entry.student_name = student_name
-    entry.correction_request = correction_request
-    entry.extra_note = extra_note
-    entry.raw_row_json = raw_row
-    entry.synced_at = now
-    entry.updated_at = now
-    session.add(entry)
-    state.stored_count = _count_attendance_wjx_data_entries(
-        session,
+    return AttendanceWjxDataEntry(
+        id=seq,
         activity_id=LOCAL_FEEDBACK_ACTIVITY_ID,
-    ) + 1
-    state.updated_at = now
-    session.add(state)
-    session.commit()
-    session.refresh(entry)
-    _upsert_attendance_wjx_sheet_entry(
-        session,
-        entry,
-        preserve_process_status=False,
-        course_link_url=course_link_url,
+        seq=seq,
+        submitted_at_text=submitted_at_text,
+        duration_text="",
+        source=LOCAL_FEEDBACK_SOURCE,
+        source_detail=LOCAL_FEEDBACK_SOURCE_DETAIL,
+        source_ip=source_ip,
+        course_name=course_name,
+        student_id_text=student_id_text,
+        student_name=student_name,
+        correction_request=correction_request,
+        extra_note=extra_note,
+        raw_row_json=raw_row,
+        synced_at=now,
+        created_at=now,
+        updated_at=now,
     )
-    return entry
 
 
 def _get_attendance_wjx_data_state(
@@ -3488,77 +3282,15 @@ def _build_attendance_wjx_data_page(
     process_status: str | None = None,
     keyword: str | None = None,
 ) -> AttendanceWjxDataPage:
-    activity_id = str(template["activity_id"])
-    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
-    if sheet_document is not None:
-        return _build_attendance_wjx_sheet_data_page(
-            session,
-            document=sheet_document,
-            template=template,
-            page=page,
-            page_size=page_size,
-            process_status=process_status,
-            keyword=keyword,
-        )
-
-    activity_ids = _list_attendance_wjx_data_activity_ids(template)
-    normalized_page = max(1, int(page or 1))
-    normalized_page_size = min(max(1, int(page_size or 20)), 100)
-    offset = (normalized_page - 1) * normalized_page_size
-
-    conditions = [AttendanceWjxDataEntry.activity_id.in_(activity_ids)]
-
-    normalized_status = (process_status or "").strip()
-    if normalized_status == "__empty__":
-        conditions.append(AttendanceWjxDataEntry.process_status == "")
-    elif normalized_status:
-        conditions.append(AttendanceWjxDataEntry.process_status == normalized_status)
-
-    normalized_keyword = (keyword or "").strip()
-    if normalized_keyword:
-        conditions.append(
-            or_(
-                AttendanceWjxDataEntry.course_name.contains(normalized_keyword),
-                AttendanceWjxDataEntry.student_id_text.contains(normalized_keyword),
-                AttendanceWjxDataEntry.student_name.contains(normalized_keyword),
-                AttendanceWjxDataEntry.correction_request.contains(normalized_keyword),
-                AttendanceWjxDataEntry.extra_note.contains(normalized_keyword),
-                AttendanceWjxDataEntry.process_note.contains(normalized_keyword),
-            )
-        )
-
-    total = int(
-        session.exec(
-            select(func.count())
-            .select_from(AttendanceWjxDataEntry)
-            .where(*conditions)
-        ).one()
-        or 0
-    )
-    statement = (
-        select(AttendanceWjxDataEntry)
-        .where(*conditions)
-        .order_by(
-            AttendanceWjxDataEntry.seq.desc(),
-            AttendanceWjxDataEntry.synced_at.desc(),
-            AttendanceWjxDataEntry.id.desc(),
-        )
-        .offset(offset)
-        .limit(normalized_page_size)
-    )
-    items = [serialize_attendance_wjx_data_entry(row) for row in session.exec(statement).all()]
-    state = session.get(AttendanceWjxDataSyncState, activity_id)
-    return AttendanceWjxDataPage(
-        items=[AttendanceWjxDataItem.model_validate(item) for item in items],
-        total=total,
-        page=normalized_page,
-        page_size=normalized_page_size,
-        sync_state=(
-            AttendanceWjxDataSyncStateItem.model_validate(serialize_attendance_wjx_data_sync_state(state))
-            if state is not None
-            else None
-        ),
+    sheet_document = _load_independent_attendance_wjx_sheet()
+    return _build_attendance_wjx_sheet_data_page(
+        session,
+        document=sheet_document,
         template=template,
+        page=page,
+        page_size=page_size,
+        process_status=process_status,
+        keyword=keyword,
     )
 
 
@@ -3567,35 +3299,21 @@ def _normalize_feedback_history_match_text(value: Any) -> str:
 
 
 def _collect_attendance_feedback_history_source_items(session: Session) -> list[dict[str, Any]]:
-    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
-    if sheet_document is not None:
-        document_json = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
-        columns = list(document_json["columns"])
-        return [
-            item
-            for row in document_json["rows"]
-            if (
-                item := _serialize_attendance_wjx_sheet_row(
-                    row,
-                    columns,
-                    updated_at=float(sheet_document.updated_at or 0.0),
-                )
+    sheet_document = _load_independent_attendance_wjx_sheet()
+    document_json = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
+    columns = list(document_json["columns"])
+    return [
+        item
+        for row in document_json["rows"]
+        if (
+            item := _serialize_attendance_wjx_sheet_row(
+                row,
+                columns,
+                updated_at=float(sheet_document.updated_at or 0.0),
             )
-            is not None
-        ]
-
-    template = _get_fixed_wjx_template_payload()
-    activity_ids = _list_attendance_wjx_data_activity_ids(template)
-    statement = (
-        select(AttendanceWjxDataEntry)
-        .where(AttendanceWjxDataEntry.activity_id.in_(activity_ids))
-        .order_by(
-            AttendanceWjxDataEntry.seq.desc(),
-            AttendanceWjxDataEntry.synced_at.desc(),
-            AttendanceWjxDataEntry.id.desc(),
         )
-    )
-    return [serialize_attendance_wjx_data_entry(row) for row in session.exec(statement).all()]
+        is not None
+    ]
 
 
 def _build_attendance_feedback_history(
@@ -3671,17 +3389,15 @@ def _resolve_wjx_template_payload(template_id: Optional[str]) -> dict[str, str]:
 
 
 def _build_attendance_feedback_form_meta(session: Session) -> AttendanceFeedbackFormMeta:
-    source_sheet = session.exec(
-        select(SheetDocument).where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
-    ).first()
-    course_options: list[AttendanceFeedbackCourseOption] = []
-    updated_at: float | None = None
-    if source_sheet is not None:
-        course_options = _extract_feedback_course_options_from_sheet(dict(source_sheet.document_json or {}))
-        updated_at = source_sheet.updated_at
+    source_sheet = _load_independent_attendance_sheet(
+        FEEDBACK_COURSE_SOURCE_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
+    course_options = _extract_feedback_course_options_from_sheet(dict(source_sheet.document_json or {}))
+    updated_at: float | None = source_sheet.updated_at
 
-    data_sheet = _ensure_attendance_wjx_sheet_document(session, create=True)
-    data_sheet_url = _ensure_note_sheet_anonymous_viewer(session, data_sheet)
+    _load_independent_attendance_wjx_sheet()
+    data_sheet_url = f"/sheet/{ATTENDANCE_WJX_DATA_SHEET_ID}?view=lookup"
     return AttendanceFeedbackFormMeta(
         course_names=[item.name for item in course_options],
         course_options=course_options,
@@ -3780,9 +3496,9 @@ def _normalize_step_device_entry_ids_for_update(value: dict[str, Optional[str]])
         try:
             step_number = int(raw_step)
         except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step1-step6") from exc
-        if step_number < 1 or step_number > 6:
-            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step1-step6")
+            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step0-step6") from exc
+        if step_number < 0 or step_number > 6:
+            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step0-step6")
         entry_id = _normalize_optional_id(raw_entry_id)
         if entry_id:
             result[str(step_number)] = entry_id
@@ -4040,15 +3756,74 @@ def get_attendance_sheet_document_by_id(
     return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
 
 
-@router.post("/header-tool/generate", response_model=AttendanceHeaderToolResponse)
-def generate_attendance_header_tool(
-    payload: AttendanceHeaderToolRequest,
+@public_router.get("/independent/sheets/{sheet_id}")
+def get_independent_attendance_sheet_document_by_id(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+):
+    """Read one public attendance table without exposing its private sibling sheets."""
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        document = LocalAttendanceSheetClient().get_document(
+            SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+        )
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if str(document.get("title") or "").strip() != "考勤表":
+        raise HTTPException(status_code=404, detail="考勤表不存在")
+    return document
+
+
+def _get_independent_attendance_workbook_document(workbook_id: int) -> dict[str, Any]:
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        return LocalAttendanceSheetClient().get_workbook_document(workbook_id)
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@public_router.get("/independent/workbooks/{workbook_id}")
+def get_independent_attendance_workbook_document_by_id(
+    workbook_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.header-tool")),
+    _: User | None = Depends(require_feature_access_dependency("notes.sheets")),
 ):
+    """Return the private workbook shell for an authorised attendance operator."""
     ensure_can_use_attendance_service(current_user, session)
-    return _build_attendance_header_tool_response(payload.course_name)
+    return _get_independent_attendance_workbook_document(workbook_id)
+
+
+@public_router.get("/independent/workbooks/{workbook_id}/sheets/{sheet_id}")
+def get_independent_attendance_workbook_sheet_document_by_id(
+    workbook_id: int,
+    sheet_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("notes.sheets")),
+):
+    """Read a private workbook sheet only after proving its workbook membership."""
+    ensure_can_use_attendance_service(current_user, session)
+    workbook = _get_independent_attendance_workbook_document(workbook_id)
+    if sheet_id not in {int(item.get("id") or 0) for item in workbook.get("sheets", [])}:
+        raise HTTPException(status_code=404, detail="工作簿中不存在该表格")
+
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        return LocalAttendanceSheetClient().get_document(
+            SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+        )
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/config")
@@ -4334,11 +4109,7 @@ def get_attendance_wjx_data_sheet_location(
     _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
 ):
     ensure_can_use_attendance_service(current_user, session)
-    document = _find_existing_attendance_wjx_sheet_location_document(session)
-    if document is None:
-        document = _ensure_attendance_wjx_sheet_document(session, create=True)
-    if document is None or document.numeric_id is None:
-        raise HTTPException(status_code=404, detail="没有找到工作簿 2，无法创建问卷数据表")
+    document = _load_independent_attendance_wjx_sheet()
     sheet_id = int(document.numeric_id)
     return AttendanceWjxDataSheetLocation(
         workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
@@ -4376,91 +4147,71 @@ def update_attendance_wjx_data(
     _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
 ):
     ensure_can_use_attendance_service(current_user, session)
-    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
-    if sheet_document is not None:
-        current_document = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
-        if _find_attendance_wjx_sheet_row_index(current_document, entry_id) is not None:
-            next_status = (
-                payload.process_status
-                if payload.process_status is not None
-                else payload.process_note
-            )
-            if next_status is not None:
-                next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
-                    current_document,
-                    {
-                        "序号": entry_id,
-                        "处理状态": (next_status or "").strip(),
-                    },
-                    preserve_process_status=False,
-                )
-                if changed:
-                    _persist_attendance_wjx_sheet_document(
-                        session,
-                        sheet_document,
-                        next_document,
-                        actor=current_user,
-                    )
-                    current_document = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
-
-            legacy_entries = session.exec(
-                select(AttendanceWjxDataEntry)
-                .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
-                .where(AttendanceWjxDataEntry.seq == entry_id)
-            ).all()
-            if legacy_entries:
-                now = time.time()
-                for legacy_entry in legacy_entries:
-                    if next_status is not None:
-                        legacy_entry.process_status = (next_status or "").strip()
-                        legacy_entry.process_note = (next_status or "").strip()
-                    if payload.match_result is not None:
-                        legacy_entry.match_result_json = dict(payload.match_result)
-                    if payload.revision_result is not None:
-                        legacy_entry.revision_result_json = dict(payload.revision_result)
-                    legacy_entry.updated_at = now
-                    session.add(legacy_entry)
-                session.commit()
-
-            row_index = _find_attendance_wjx_sheet_row_index(current_document, entry_id)
-            if row_index is not None:
-                columns = list(current_document["columns"])
-                item = _serialize_attendance_wjx_sheet_row(
-                    current_document["rows"][row_index],
-                    columns,
-                    updated_at=float(sheet_document.updated_at or 0.0),
-                )
-                if item is not None:
-                    return AttendanceWjxDataItem.model_validate(item)
-
-    entry = get_attendance_wjx_data_entry_or_404(session, entry_id)
-
-    if payload.process_status is not None:
-        entry.process_status = (payload.process_status or "").strip()
-    if payload.process_note is not None:
-        entry.process_note = (payload.process_note or "").strip()
-    if payload.match_result is not None:
-        entry.match_result_json = dict(payload.match_result)
+    next_status = payload.process_status if payload.process_status is not None else payload.process_note
+    ai_report: str | None = None
     if payload.revision_result is not None:
-        entry.revision_result_json = dict(payload.revision_result)
+        ai_precheck = payload.revision_result.get("ai_precheck")
+        if isinstance(ai_precheck, dict):
+            ai_report = str(ai_precheck.get("report") or ai_precheck.get("summary") or "")
 
-    entry.updated_at = time.time()
-    session.add(entry)
-    session.commit()
-    session.refresh(entry)
-    return AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry))
+    def update_row(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        document = _normalize_attendance_wjx_sheet_document(document_json)
+        if _find_attendance_wjx_sheet_row_index(document, entry_id) is None:
+            raise HTTPException(status_code=404, detail="问卷数据不存在")
+        values: dict[str, Any] = {"序号": entry_id}
+        if next_status is not None:
+            values["处理状态"] = (next_status or "").strip()
+        if ai_report is not None:
+            values[ATTENDANCE_WJX_AI_COLUMN] = ai_report
+        next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+            document,
+            values,
+            preserve_process_status=next_status is None,
+        )
+        return next_document, changed
+
+    sheet_document = _mutate_independent_attendance_wjx_sheet(update_row)
+    document = _normalize_attendance_wjx_sheet_document(sheet_document.document_json)
+    row_index = _find_attendance_wjx_sheet_row_index(document, entry_id)
+    columns = list(document["columns"])
+    item = _serialize_attendance_wjx_sheet_row(
+        document["rows"][int(row_index)],
+        columns,
+        updated_at=float(sheet_document.updated_at or 0.0),
+    )
+    return AttendanceWjxDataItem.model_validate(item)
 
 
 def _resolve_attendance_wjx_precheck_entry(session: Session, entry_id: int) -> AttendanceWjxDataEntry:
-    entry = session.exec(
-        select(AttendanceWjxDataEntry)
-        .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
-        .where(AttendanceWjxDataEntry.seq == entry_id)
-        .order_by(AttendanceWjxDataEntry.id.desc())
-    ).first()
-    if entry is not None:
-        return entry
-    return get_attendance_wjx_data_entry_or_404(session, entry_id)
+    sheet_document = _load_independent_attendance_wjx_sheet()
+    document = _normalize_attendance_wjx_sheet_document(sheet_document.document_json)
+    row_index = _find_attendance_wjx_sheet_row_index(document, entry_id)
+    if row_index is None:
+        raise HTTPException(status_code=404, detail="问卷数据不存在")
+    item = _serialize_attendance_wjx_sheet_row(
+        document["rows"][row_index],
+        list(document["columns"]),
+        updated_at=float(sheet_document.updated_at or 0.0),
+    )
+    assert item is not None
+    return AttendanceWjxDataEntry(
+        id=entry_id,
+        activity_id=str(item["activity_id"]),
+        seq=entry_id,
+        submitted_at_text=str(item["submitted_at_text"]),
+        source=str(item["source"]),
+        course_name=str(item["course_name"]),
+        student_id_text=str(item["student_id_text"]),
+        student_name=str(item["student_name"]),
+        correction_request=str(item["correction_request"]),
+        extra_note=str(item["extra_note"]),
+        process_status=str(item["process_status"]),
+        process_note=str(item["process_note"]),
+        revision_result_json=dict(item["revision_result"]),
+        synced_at=float(item["synced_at"]),
+        created_at=float(item["created_at"]),
+        updated_at=float(item["updated_at"]),
+    )
 
 
 def _attendance_wjx_parse_workbook_sheet_url(url: Any) -> tuple[int | None, int | None]:
@@ -4790,9 +4541,7 @@ def _attendance_wjx_lookup_user_candidate(
         return result
 
     try:
-        get_kqdb = note_sheets_api._load_attendance_kqdb_provider()
         lookup_user = note_sheets_api._load_attendance_user_lookup_provider()
-        kqdb = get_kqdb()
         user_id, weight = lookup_user(
             names,
             phones,
@@ -4800,7 +4549,7 @@ def _attendance_wjx_lookup_user_candidate(
             course_product_name="",
             shop_id=shop_id,
             return_mode=1,
-            kqdb=kqdb,
+            session=session,
         )
         local_user_id = _normalize_attendance_wjx_sheet_cell(user_id)
         local_score = _attendance_wjx_number_value(weight)
@@ -4820,7 +4569,7 @@ def _attendance_wjx_lookup_user_candidate(
     )
     if needs_remote:
         try:
-            remote_results = note_sheets_api._lookup_registration_users_with_remote_browser(
+            remote_results = note_sheets_api._lookup_registration_users_with_attendance_browser(
                 session,
                 current_user,
                 course_name=entry.course_name,
@@ -4831,10 +4580,10 @@ def _attendance_wjx_lookup_user_candidate(
             remote_user_id = _normalize_attendance_wjx_sheet_cell(remote.get("user_id"))
             result["remote"] = dict(remote)
             if remote_user_id and remote_user_id != result.get("user_id"):
-                result.update({"user_id": remote_user_id, "score": 95, "source": "mi15_browser"})
+                result.update({"user_id": remote_user_id, "score": 95, "source": "mf_browser"})
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) else exc
-            result["warnings"].append(f"mi15 用户回查失败：{detail}")
+            result["warnings"].append(f"codepc_mf 用户回查失败：{detail}")
 
     return result
 
@@ -4865,7 +4614,7 @@ def _attendance_wjx_codex_repair_decision(context: dict[str, Any]) -> dict[str, 
         "只有同时满足这些条件才 decision=apply：\n"
         "1. 学员反馈指向视频/打卡/作业等考勤数据为空或缺失；\n"
         "2. 当前考勤行的关键统计确实接近空数据；\n"
-        "3. 候选用户ID来自本地用户库高分命中或 mi15 浏览器回查；\n"
+        "3. 候选用户ID来自本地用户库高分命中或 codepc_mf 浏览器回查；\n"
         "4. 候选用户ID与当前表内ID不同，且课程、姓名、学号上下文一致。\n"
         "否则 decision=skip 或 needs_review。\n"
         "输出格式：{\"decision\":\"apply|skip|needs_review\","
@@ -5203,7 +4952,7 @@ def _append_auto_repair_to_precheck_report(precheck: dict[str, Any], repair: dic
     if repair.get("applied"):
         rebuild = repair.get("rebuild") if isinstance(repair.get("rebuild"), dict) else {}
         if rebuild.get("attempted") and not rebuild.get("error"):
-            details.append("已触发本地重算；如果仍为空，需要再由 mi15 采集原始视频/打卡数据。")
+            details.append("已触发本地重算；如果仍为空，需要再由 codepc_mf 采集原始视频/打卡数据。")
         elif rebuild.get("error"):
             details.append(f"本地重算失败：{rebuild.get('error')}。")
     else:
@@ -5254,41 +5003,23 @@ def run_attendance_wjx_data_ai_precheck(
         )
 
     now = time.time()
-    legacy_entries = session.exec(
-        select(AttendanceWjxDataEntry)
-        .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
-        .where(AttendanceWjxDataEntry.seq == entry.seq)
-    ).all()
-    if not legacy_entries:
-        legacy_entries = [entry]
 
-    for legacy_entry in legacy_entries:
-        revision_result = dict(legacy_entry.revision_result_json or {})
-        revision_result["ai_precheck"] = precheck
-        legacy_entry.revision_result_json = revision_result
-        legacy_entry.updated_at = now
-        session.add(legacy_entry)
-    session.commit()
-
-    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=True)
-    if sheet_document is not None:
+    def persist_precheck(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
-            dict(sheet_document.document_json or {}),
+            document_json,
             {
                 "序号": entry.seq,
                 ATTENDANCE_WJX_AI_COLUMN: precheck.get("report") or precheck.get("summary", ""),
             },
             preserve_process_status=True,
         )
-        if changed:
-            _persist_attendance_wjx_sheet_document(
-                session,
-                sheet_document,
-                next_document,
-                actor=current_user,
-            )
+        return next_document, changed
 
-    session.refresh(entry)
+    _mutate_independent_attendance_wjx_sheet(persist_precheck)
+    revision_result = dict(entry.revision_result_json or {})
+    revision_result["ai_precheck"] = precheck
+    entry.revision_result_json = revision_result
+    entry.updated_at = now
     return AttendanceWjxAiPrecheckResponse(
         item=AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry)),
         precheck=precheck,
@@ -5305,58 +5036,21 @@ def delete_attendance_wjx_data(
     ensure_can_use_attendance_service(current_user, session)
     if not current_user.is_superuser:
         raise HTTPException(status_code=403, detail="只有超级管理员可以删除问卷数据")
-    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
-    if sheet_document is not None:
+
+    def remove_row(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         next_document, removed = _remove_attendance_wjx_sheet_row(
-            dict(sheet_document.document_json or {}),
+            document_json,
             seq=entry_id,
         )
-        if removed:
-            _persist_attendance_wjx_sheet_document(
-                session,
-                sheet_document,
-                next_document,
-                actor=current_user,
-            )
-            legacy_entries = session.exec(
-                select(AttendanceWjxDataEntry)
-                .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
-                .where(AttendanceWjxDataEntry.seq == entry_id)
-            ).all()
-            for legacy_entry in legacy_entries:
-                session.delete(legacy_entry)
-            if legacy_entries:
-                session.commit()
-            return {
-                "deleted": True,
-                "entry_id": entry_id,
-                "seq": entry_id,
-            }
+        if not removed:
+            raise HTTPException(status_code=404, detail="问卷数据不存在")
+        return next_document, True
 
-    entry = get_attendance_wjx_data_entry_or_404(session, entry_id)
-    activity_id = str(entry.activity_id)
-    seq = int(entry.seq)
-    now = time.time()
-
-    state = _remember_wjx_data_seq_history(
-        session,
-        activity_id=activity_id,
-        seq=seq,
-        actor=current_user,
-    )
-    session.delete(entry)
-    session.flush()
-    state.stored_count = _count_attendance_wjx_data_entries(session, activity_id=activity_id)
-    state.updated_at = now
-    state.updated_by_user_id = current_user.id
-    session.add(state)
-    session.commit()
-
+    _mutate_independent_attendance_wjx_sheet(remove_row)
     return {
         "deleted": True,
         "entry_id": entry_id,
-        "activity_id": activity_id,
-        "seq": seq,
+        "seq": entry_id,
     }
 
 

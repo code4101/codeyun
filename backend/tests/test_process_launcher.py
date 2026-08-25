@@ -41,6 +41,21 @@ def test_run_quiet_tree_safe_delegates_to_tree_safe_runner(monkeypatch):
     assert calls == [(["tool"], {"timeout": 3})]
 
 
+def test_run_quiet_inherited_console_tree_safe_delegates(monkeypatch):
+    calls = []
+
+    def fake_run_hidden_console_tree_safe(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(process_launcher, "run_hidden_console_tree_safe", fake_run_hidden_console_tree_safe)
+
+    result = process_launcher.run_quiet_inherited_console_tree_safe(["tool"], timeout=3)
+
+    assert result.stdout == "ok"
+    assert calls == [(["tool"], {"timeout": 3})]
+
+
 def test_tree_safe_timeout_terminates_descendants(tmp_path):
     child_pid_path = tmp_path / "child.pid"
     script = (

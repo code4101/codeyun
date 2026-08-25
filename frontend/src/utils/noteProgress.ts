@@ -141,6 +141,11 @@ export const evaluateCompletionProgressExpr = (value: unknown) => {
   }
 };
 
+export const isDefaultFullCompletionProgressExpr = (value: unknown) => {
+  const text = normalizeCompletionProgressExpr(value).replace(/\s+/g, '');
+  return /^(?:1(?:\.0+)?|100(?:\.0+)?%)$/.test(text);
+};
+
 const toCustomFieldTuples = (customFields: unknown): GenericCustomFieldTuple[] => {
   if (Array.isArray(customFields)) {
     return customFields.flatMap(item => {

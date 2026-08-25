@@ -1,5 +1,4 @@
 import time
-from types import SimpleNamespace
 
 from backend.api import device_entries as device_entries_api
 from backend.api import runtime_management as runtime_management_api
@@ -423,7 +422,7 @@ def test_runtime_queue_uses_runtime_titles_and_preserves_duplicate_records(sessi
     ]
 
 
-def test_builtin_runtime_logs_use_runtime_title_and_queue_records(session, monkeypatch):
+def test_builtin_behavior_tree_logs_use_runtime_title_and_queue_records(session, monkeypatch):
     queue = {
         "running": None,
         "pending": [],
@@ -503,50 +502,6 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
     assert item["actions"] == ["trigger", "stop", "logs", "configure"]
     assert "空闲10分释放" in item["description"]
     assert "独立进程" in item["description"]
-
-
-def test_fanxiu_capture_runtime_item_trims_packet_worker_raw_payload():
-    item = runtime_core._serialize_fanxiu_capture_runtime_service_item({
-        "running": True,
-        "state": "running",
-        "state_label": "运行中",
-        "module": "backend.services.fanxiu_packet_daemon",
-        "cwd": "D:/home/chenkunze/slns/codeyun",
-        "log_path": "D:/tmp/fanxiu.log",
-        "state_path": "D:/tmp/fanxiu.json",
-        "process_count": 1,
-        "pids": [1234],
-        "updated_at": "2026-06-29 14:00:00",
-        "capture_runtime": {
-            "running": True,
-            "game_running": True,
-            "adb_connected": True,
-            "root_ready": True,
-            "tcpdump_ready": True,
-            "active_reasons": ["watchdog"],
-            "current_pcap_path": "D:/tmp/demo.pcap",
-            "current_pcap_size": 2048,
-            "started_at": "2026-06-29 13:58:00",
-        },
-        "packet_worker": {
-            "updated_at": "2026-06-29 14:00:00",
-            "realtime_running": True,
-            "maintenance_running": False,
-            "skip_reason": "",
-            "huge_rows": [{"id": index, "payload": "x" * 128} for index in range(32)],
-        },
-    })
-
-    assert item["status"]["realtime_running"] is True
-    assert item["status"]["maintenance_running"] is False
-    assert item["raw"]["packet_worker"] == {
-        "updated_at": "2026-06-29 14:00:00",
-        "realtime_running": True,
-        "maintenance_running": False,
-        "skipped": False,
-        "skip_reason": "",
-    }
-    assert "huge_rows" not in item["raw"]["packet_worker"]
 
 
 def test_trigger_builtin_ocr_runtime_item_starts_external_service(session, monkeypatch):
@@ -761,7 +716,7 @@ def test_builtin_attendance_behavior_tree_logs_use_service_log_builder(session, 
     assert payload["logs"] == ["考勤行为树日志"]
 
 
-def test_attendance_behavior_tree_builtin_service_is_mi15_scoped(monkeypatch):
+def test_attendance_behavior_tree_builtin_service_is_execution_host_scoped(monkeypatch):
     monkeypatch.setattr(runtime_core, "get_ocr_service_status", lambda: {"title": "OCR"})
     monkeypatch.setattr(runtime_core, "_serialize_ocr_service_item", lambda _status: {"key": "ocr"})
     monkeypatch.setattr(runtime_core, "_serialize_codeyun_watchdog_service_item", lambda: {"key": "codeyun-watchdog"})
@@ -808,7 +763,7 @@ def test_disabled_attendance_behavior_tree_runtime_item_cannot_start_on_non_exec
         runtime_core.trigger_builtin_runtime_item("attendance-behavior-tree", session)
     except runtime_core.HTTPException as exc:
         assert exc.status_code == 404
-        assert "mi15" in exc.detail
+        assert "codepc_mf" in exc.detail
     else:
         raise AssertionError("expected HTTPException")
     assert captured == {}
@@ -966,96 +921,4 @@ def test_runtime_action_endpoint_runs_builtin_fanxiu_restart_action(client, test
         "action_key": "restart",
         "status": "ok",
     }
-
-
-
-
-def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
-
-    monkeypatch.setenv("FX_CODEYUN_OCR_HOST", "http://192.168.31.15:8000")
-
-    result = fanxiu_service._resolve_codeyun_ocr_host(
-        SimpleNamespace(backend_host="127.0.0.1", backend_port=8000)
-    )
-
-    assert result == "http://192.168.31.15:8000"
-
-
-def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
-
-    monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_HOST", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_PORT", raising=False)
-
-    result = fanxiu_service._resolve_codeyun_ocr_host(
-        SimpleNamespace(backend_host="192.168.31.15", backend_port=8000)
-    )
-
-    assert result == "http://127.0.0.1:8765"
-
-
-def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
-
-    monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_HOST", raising=False)
-    monkeypatch.delenv("CODEYUN_OCR_SERVICE_PORT", raising=False)
-    monkeypatch.setattr(fanxiu_service, "_get_primary_lan_address", lambda: "192.168.31.15")
-
-    result = fanxiu_service._resolve_codeyun_ocr_host(
-        SimpleNamespace(backend_host="0.0.0.0", backend_port=8000)
-    )
-
-    assert result == "http://127.0.0.1:8765"
-
-
-def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
-
-    monkeypatch.delenv("CODEYUN_OCR_DEVICE", raising=False)
-    monkeypatch.delenv("FX_CODEYUN_OCR_DEVICE", raising=False)
-
-    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="gpu")) == "gpu"
-
-    monkeypatch.setenv("FX_CODEYUN_OCR_DEVICE", "cpu")
-
-    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="gpu")) == "cpu"
-
-    monkeypatch.setenv("CODEYUN_OCR_DEVICE", "gpu")
-
-    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="cpu")) == "gpu"
-
-
-def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
-
-    class FakeSocket:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def connect(self, _target):
-            return None
-
-        def getsockname(self):
-            return ("198.18.0.1", 53210)
-
-    monkeypatch.setattr(fanxiu_service.socket, "socket", lambda *_args, **_kwargs: FakeSocket())
-    monkeypatch.setattr(fanxiu_service.socket, "gethostname", lambda: "codepc-mi15")
-    monkeypatch.setattr(
-        fanxiu_service.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [
-            (fanxiu_service.socket.AF_INET, 0, 0, "", ("198.18.0.2", 0)),
-            (fanxiu_service.socket.AF_INET, 0, 0, "", ("192.168.31.15", 0)),
-        ],
-    )
-
-    assert fanxiu_service._get_primary_lan_address() == "192.168.31.15"
 

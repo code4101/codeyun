@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Download, Refresh, Search } from '@element-plus/icons-vue'
+import { ArrowLeft, Download, Reading, Refresh, Search } from '@element-plus/icons-vue'
 import StandardPagination from '@/components/StandardPagination.vue'
 
 import {
   downloadWeChatDbMedia,
+  fetchWeChatChatBookStatus,
+  fetchWeChatChatBookTask,
   fetchWeChatDbChats,
   fetchWeChatDbDevices,
   fetchWeChatDbMessageCount,
@@ -14,6 +16,9 @@ import {
   fetchWeChatDbMessages,
   fetchWeChatDbStatus,
   syncWeChatDbFromLive,
+  startWeChatChatBook,
+  type WeChatChatBookSnapshot,
+  type WeChatChatBookTask,
   type WeChatDbChat,
   type WeChatDbDevice,
   type WeChatDbLiveSyncResult,
@@ -27,6 +32,7 @@ const DEFAULT_SELF_USERNAMES = new Set(['wxid_m1cd4f5aahut22'])
 const CHAT_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const MESSAGE_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const route = useRoute()
+const router = useRouter()
 
 const status = ref<WeChatDbStatus | null>(null)
 const devices = ref<WeChatDbDevice[]>([])
@@ -56,10 +62,16 @@ const messageStreamRef = ref<HTMLElement | null>(null)
 const previewImage = ref<WeChatDbResourceExport | null>(null)
 const mediaObjectUrls = ref<Record<string, string>>({})
 const foldedListOpen = ref(false)
+const bookDialogVisible = ref(false)
+const bookLoading = ref(false)
+const bookTitle = ref('')
+const bookTask = ref<WeChatChatBookTask | null>(null)
+const bookSnapshot = ref<WeChatChatBookSnapshot | null>(null)
 const suppressMessagePageChange = ref(false)
 let messageRequestSerial = 0
 let resourceRequestSerial = 0
 let resourceSlowTimer: number | undefined
+let bookPollTimer: number | undefined
 let suppressTypeFilterChange = false
 const mediaObjectUrlLoading = new Set<string>()
 
@@ -497,6 +509,105 @@ function getErrorMessage(error: unknown) {
   return candidate.response?.data?.detail || candidate.message || '读取失败'
 }
 
+function defaultBookTitle() {
+  const name = selectedChat.value?.name || '微信群聊'
+  return name === '未来社微信分部' ? '未来社微信分部群志' : `${name}群志`
+}
+
+const bookProgressText = computed(() => {
+  if (bookTask.value?.running) return bookTask.value.message || '正在后台整理'
+  if (bookTask.value?.status === 'failed') return bookTask.value.error || '整理失败'
+  if (bookSnapshot.value?.status === 'error') return bookSnapshot.value.error || '整理失败'
+  if (bookSnapshot.value?.status === 'done') {
+    const book = bookSnapshot.value.book
+    return book
+      ? `已整理 ${book.month_count ?? book.chapter_count} 个月，约 ${book.estimated_page_count} 页`
+      : '已存入图书馆'
+  }
+  return '系统会过滤低信息内容，按“年份 → 月份”收集署名语录，并做去口语、精简和连贯化编辑。'
+})
+
+function stopBookPolling() {
+  window.clearTimeout(bookPollTimer)
+  bookPollTimer = undefined
+}
+
+async function pollBookTask(taskId: string) {
+  stopBookPolling()
+  try {
+    const task = await fetchWeChatChatBookTask(taskId)
+    bookTask.value = task
+    if (task.running) {
+      bookPollTimer = window.setTimeout(() => void pollBookTask(taskId), 2000)
+      return
+    }
+    if (task.status === 'completed') {
+      const status = await fetchWeChatChatBookStatus({
+        device_id: activeDeviceId.value || undefined,
+        chat_username: selectedUsername.value,
+      })
+      bookSnapshot.value = status.snapshot
+      ElMessage.success(`《${task.result?.title || bookTitle.value}》已存入图书馆`)
+    } else if (task.status === 'failed') {
+      ElMessage.error(task.error || '群聊语录成书失败')
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  }
+}
+
+async function openBookDialog() {
+  if (!selectedChat.value || selectedChat.value.chat_type !== 'chatroom') return
+  bookTitle.value = defaultBookTitle()
+  bookDialogVisible.value = true
+  bookLoading.value = true
+  stopBookPolling()
+  try {
+    const status = await fetchWeChatChatBookStatus({
+      device_id: activeDeviceId.value || undefined,
+      chat_username: selectedChat.value.username,
+    })
+    bookSnapshot.value = status.snapshot
+    bookTask.value = status.task
+    if (status.snapshot?.title) bookTitle.value = status.snapshot.title
+    if (status.task?.running) void pollBookTask(status.task.task_id)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    bookLoading.value = false
+  }
+}
+
+async function generateBook(force = false) {
+  if (!selectedChat.value) return
+  bookLoading.value = true
+  try {
+    const response = await startWeChatChatBook({
+      device_id: activeDeviceId.value || undefined,
+      chat_username: selectedChat.value.username,
+      title: bookTitle.value.trim() || defaultBookTitle(),
+      force,
+    })
+    bookSnapshot.value = response.snapshot
+    bookTask.value = response.task
+    if (response.cached) {
+      ElMessage.success('已有最新书稿，可直接到图书馆阅读')
+    } else if (response.task) {
+      ElMessage.success('已开始后台整理，关闭窗口也不会中断')
+      void pollBookTask(response.task.task_id)
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    bookLoading.value = false
+  }
+}
+
+function openLibrary() {
+  bookDialogVisible.value = false
+  void router.push(bookSnapshot.value?.library_path || '/notes/library')
+}
+
 function clearMediaObjectUrls() {
   Object.values(mediaObjectUrls.value).forEach((url) => URL.revokeObjectURL(url))
   mediaObjectUrls.value = {}
@@ -910,6 +1021,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(resourceSlowTimer)
+  stopBookPolling()
   window.removeEventListener('keydown', handlePreviewKeydown)
 })
 </script>
@@ -1038,6 +1150,15 @@ onBeforeUnmount(() => {
           </el-select>
           <el-button :icon="Search" size="small" plain @click="reloadMessages">查询</el-button>
           <el-button
+            v-if="!isQqPage && selectedChat?.chat_type === 'chatroom'"
+            :icon="Reading"
+            size="small"
+            plain
+            @click="openBookDialog"
+          >
+            语录成书
+          </el-button>
+          <el-button
             :icon="Refresh"
             :loading="liveSyncLoading"
             :title="liveSyncTitle()"
@@ -1146,6 +1267,57 @@ onBeforeUnmount(() => {
       </footer>
     </section>
 
+    <el-dialog
+      v-model="bookDialogVisible"
+      title="群聊语录成书"
+      width="520px"
+      destroy-on-close
+      @closed="stopBookPolling"
+    >
+      <div v-loading="bookLoading" class="book-dialog">
+        <p class="book-source">
+          {{ selectedChat?.name }} · {{ formatNumber(selectedChat?.message_count) }} 条消息
+        </p>
+        <el-input v-model="bookTitle" maxlength="240" show-word-limit placeholder="书名" />
+        <p class="book-progress">{{ bookProgressText }}</p>
+        <el-progress
+          v-if="bookTask?.running && bookTask.progress_total"
+          :percentage="Math.min(100, Math.round(((bookTask.progress_current || 0) / bookTask.progress_total) * 100))"
+        />
+        <dl v-if="bookSnapshot?.statistics" class="book-statistics">
+          <div><dt>扫描</dt><dd>{{ formatNumber(bookSnapshot.statistics.scanned_message_count) }}</dd></div>
+          <div><dt>入选</dt><dd>{{ formatNumber(bookSnapshot.statistics.kept_message_count) }}</dd></div>
+          <div><dt>过滤</dt><dd>{{ formatNumber(bookSnapshot.statistics.discarded_message_count) }}</dd></div>
+        </dl>
+      </div>
+      <template #footer>
+        <el-button @click="bookDialogVisible = false">关闭</el-button>
+        <el-button
+          v-if="bookSnapshot?.status === 'done'"
+          :loading="bookLoading"
+          @click="generateBook(true)"
+        >
+          重新整理
+        </el-button>
+        <el-button
+          v-if="bookSnapshot?.status === 'done'"
+          type="primary"
+          @click="openLibrary"
+        >
+          打开图书馆
+        </el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="bookLoading || Boolean(bookTask?.running)"
+          :disabled="Boolean(bookTask?.running)"
+          @click="generateBook(false)"
+        >
+          开始整理
+        </el-button>
+      </template>
+    </el-dialog>
+
     <div v-if="previewImage && previewImageUrl" class="image-preview" @click.self="closeImagePreview">
       <button type="button" class="image-preview-close" aria-label="关闭预览" @click="closeImagePreview">×</button>
       <img :src="previewImageUrl" :alt="previewImage.file_name" />
@@ -1163,6 +1335,42 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: #ededed;
   color: #1f2937;
+}
+
+.book-dialog {
+  display: grid;
+  gap: 16px;
+}
+
+.book-source,
+.book-progress {
+  margin: 0;
+  color: #667085;
+  line-height: 1.6;
+}
+
+.book-statistics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  padding: 12px 0;
+  border-top: 1px solid #eaecf0;
+  border-bottom: 1px solid #eaecf0;
+}
+
+.book-statistics div {
+  text-align: center;
+}
+
+.book-statistics dt {
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.book-statistics dd {
+  margin: 4px 0 0;
+  color: #344054;
+  font-weight: 600;
 }
 
 .conversation-sidebar {

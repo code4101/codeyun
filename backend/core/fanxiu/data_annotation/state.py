@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, time as dt_time, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
 from pyxllib.prog import (
     append_fact_event,
     append_status_log,
     append_status_log_once,
     ensure_mapping_bucket,
     fact_key,
-    next_daily_time,
     normalize_guard_items,
     normalize_job_record,
     normalize_scheduled_task_record,
@@ -21,10 +21,12 @@ from pyxllib.prog import (
     read_json_state,
     read_json_state_dict,
     scheduled_task_state,
-    schedule_task_due,
     status_live_empty,
     trim_fact_events,
     write_json_state,
+)
+from backend.core.fanxiu.data_annotation.scheduler_time import (
+    normalize_time_sequence,
 )
 
 _RUNTIME_PHASE_LABELS = {
@@ -36,12 +38,12 @@ _RUNTIME_PHASE_LABELS = {
 }
 
 
-def data_annotation_runtime_phase_label(phase: Any) -> str:
+def behavior_tree_runtime_phase_label(phase: Any) -> str:
     key = str(phase or "").strip()
     return _RUNTIME_PHASE_LABELS.get(key, key)
 
 
-def data_annotation_runtime_display_message(message: Any) -> str:
+def behavior_tree_runtime_display_message(message: Any) -> str:
     text = str(message or "")
     if not text:
         return text
@@ -50,28 +52,50 @@ def data_annotation_runtime_display_message(message: Any) -> str:
     return text
 
 
-def normalize_data_annotation_runtime_display(status: dict[str, Any]) -> None:
-    status["message"] = data_annotation_runtime_display_message(status.get("message") or "")
+def normalize_behavior_tree_runtime_display(status: dict[str, Any]) -> None:
+    status["message"] = behavior_tree_runtime_display_message(status.get("message") or "")
     logs = status.get("logs")
     if isinstance(logs, list):
-        status["logs"] = normalize_data_annotation_runtime_logs_for_display([item for item in logs if isinstance(item, dict)])
+        status["logs"] = normalize_behavior_tree_runtime_logs_for_display([item for item in logs if isinstance(item, dict)])
     status.pop("framework_status", None)
     status.pop("engine_status", None)
     status.pop("framework_tick", None)
     status.pop("engine_tick", None)
 
 
+def select_behavior_tree_runtime_status(
+    live_status: dict[str, Any],
+    persisted_status: dict[str, Any],
+) -> dict[str, Any]:
+    """Select the freshest snapshot shared by the backend and resident Kernel."""
+    live = dict(live_status or {})
+    persisted = dict(persisted_status or {})
+    if not persisted:
+        return live
+    if is_behavior_tree_runtime_live_empty(live):
+        return persisted
+    try:
+        live_updated_at = float(live.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        live_updated_at = 0.0
+    try:
+        persisted_updated_at = float(persisted.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        persisted_updated_at = 0.0
+    return persisted if persisted_updated_at > live_updated_at else live
 
 
 
 
-def normalize_data_annotation_runtime_logs_for_display(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+
+def normalize_behavior_tree_runtime_logs_for_display(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in logs:
         if not isinstance(item, dict):
             continue
         next_item = dict(item)
-        next_item["message"] = data_annotation_runtime_display_message(next_item.get("message") or "")
+        next_item["message"] = behavior_tree_runtime_display_message(next_item.get("message") or "")
         normalized.append(next_item)
     return normalized
 
@@ -107,6 +131,18 @@ def initial_data_annotation_world_facts() -> dict[str, Any]:
             "last_event": {},
             "updated_at": None,
         },
+        "availability": {
+            "game": {
+                "active": False,
+                "state": "available",
+                "reason": "",
+                "scene_id": None,
+                "opened_at": None,
+                "last_observed_at": None,
+                "resolved_at": None,
+                "evidence": {},
+            },
+        },
         "discoveries": {
             "scene": {},
             "popup": {},
@@ -123,7 +159,7 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return facts
     for key, value in raw.items():
-        if key in {"runtime", "guard", "discoveries"} and isinstance(value, dict):
+        if key in {"runtime", "guard", "availability", "discoveries"} and isinstance(value, dict):
             target = facts[key]
             if isinstance(target, dict):
                 for sub_key, sub_value in value.items():
@@ -165,8 +201,6 @@ def _merge_existing_scheduler_task_facts(path: Path, facts: dict[str, Any]) -> N
     existing = read_data_annotation_world_facts(path)
     existing_discoveries = existing.get("discoveries") if isinstance(existing.get("discoveries"), dict) else {}
     existing_tasks = existing_discoveries.get("task") if isinstance(existing_discoveries.get("task"), dict) else {}
-    if not existing_tasks:
-        return
     task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
     for task_id, existing_fact in existing_tasks.items():
         if not isinstance(existing_fact, dict):
@@ -178,19 +212,43 @@ def _merge_existing_scheduler_task_facts(path: Path, facts: dict[str, Any]) -> N
         ):
             task_facts[task_id] = dict(existing_fact)
 
+    # Bubble lifecycle is a transaction token, not disposable Runtime
+    # telemetry. Preserve the newer side when a stale Runtime snapshot is
+    # persisted after a restart/claim/hide fact.
+    existing_bubble = existing_discoveries.get("bubble_lifecycle")
+    incoming_bubble = (
+        facts.get("discoveries", {}).get("bubble_lifecycle")
+        if isinstance(facts.get("discoveries"), dict)
+        else None
+    )
+    if isinstance(existing_bubble, dict) and (
+        not isinstance(incoming_bubble, dict)
+        or _task_fact_updated_at(existing_bubble) > _task_fact_updated_at(incoming_bubble)
+    ):
+        ensure_mapping_bucket(facts, "discoveries")["bubble_lifecycle"] = dict(existing_bubble)
+
 
 def write_data_annotation_world_facts(
     path: Path,
     facts: dict[str, Any],
     *,
     preserve_existing_task_facts: bool = True,
+    _lock_already_held: bool = False,
 ) -> None:
-    if preserve_existing_task_facts:
-        _merge_existing_scheduler_task_facts(path, facts)
-    facts["version"] = 1
-    facts["updated_at"] = time.time()
-    trim_fact_events(facts)
-    write_data_annotation_json(path, facts)
+    def _write() -> None:
+        if preserve_existing_task_facts:
+            _merge_existing_scheduler_task_facts(path, facts)
+        facts["version"] = 1
+        facts["updated_at"] = time.time()
+        trim_fact_events(facts)
+        write_data_annotation_json(path, facts)
+
+    if _lock_already_held:
+        _write()
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30):
+        _write()
 
 
 def data_annotation_fact_key(prefix: str, *parts: Any) -> str:
@@ -214,24 +272,17 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
         "task_type": str(task.get("task_type") or ""),
         "label": str(task.get("label") or task_id),
         "source": str(task.get("source") or ""),
-        "schedule_kind": str(task.get("schedule_kind") or ""),
+        "trigger_description": str(task.get("trigger_description") or ""),
         "last_result": result,
         "last_run_at": task.get("last_run_at") if task.get("last_run_at") else None,
         "last_message": task.get("last_message") if task.get("last_message") else None,
-        "next_time": task.get("next_time") if task.get("next_time") else None,
-        "retry_after": task.get("retry_after") if task.get("retry_after") else None,
+        "finished_at": task.get("finished_at") if task.get("finished_at") else None,
         "updated_at": time.time(),
     }
-    if result == "success":
-        fact.pop("discovered_retry_after", None)
-        fact["retry_after"] = None
-        if task.get("next_time"):
-            fact["discovered_next_time"] = task.get("next_time")
-    elif result in {"error", "stopped", "skipped", "unsupported", "preempted"}:
-        fact.pop("discovered_next_time", None)
-        fact["next_time"] = None
-        if task.get("retry_after"):
-            fact["discovered_retry_after"] = task.get("retry_after")
+    # World facts describe what was observed during a run.  The Job-owned
+    # trigger belongs only to scheduler_tasks.json; also remove legacy mirrors
+    # when this fact is refreshed so the two sources cannot drift again.
+    fact.pop("next_time", None)
     task_facts[task_id] = fact
     append_data_annotation_world_fact_event(
         facts,
@@ -245,7 +296,7 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
     write_data_annotation_world_facts(path, facts)
 
 
-def persist_data_annotation_runtime_status(
+def persist_behavior_tree_runtime_status(
     runtime_state_path: Path,
     world_facts_path: Path,
     status: dict[str, Any],
@@ -269,6 +320,8 @@ def persist_data_annotation_runtime_status(
 
     guard = ensure_mapping_bucket(facts, "guard")
     last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
+    previous_guard_event = guard.get("last_event") if isinstance(guard.get("last_event"), dict) else {}
+    guard_event_changed = bool(last_guard_event) and last_guard_event != previous_guard_event
     guard.update({
         "group_enabled": bool(status.get("guard_group_enabled", True)),
         "enabled": bool(status.get("guard_enabled")),
@@ -303,32 +356,23 @@ def persist_data_annotation_runtime_status(
             **last_guard_event,
             "updated_at": now,
         }
-        append_data_annotation_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
+        if guard_event_changed:
+            append_data_annotation_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
     write_data_annotation_world_facts(world_facts_path, facts)
 
 
-def read_data_annotation_runtime_status(path: Path) -> dict[str, Any]:
+def read_behavior_tree_runtime_status(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return read_json_state_dict(path)
 
 
-CLOSE_POPUPS_GUARD_CONFIG_VERSION = 2
-
-
-def close_popups_guard_enabled_from_status(status: dict[str, Any]) -> bool:
-    if int(status.get("close_popups_guard_config_version") or 0) >= CLOSE_POPUPS_GUARD_CONFIG_VERSION:
-        return bool(status.get("guard_enabled", True))
-    return True
-
-
-def initial_data_annotation_runtime_status() -> dict[str, Any]:
+def initial_behavior_tree_runtime_status() -> dict[str, Any]:
     return {
         "ok": True,
         "running": False,
         "guard_group_enabled": True,
-        "guard_enabled": True,
-        "close_popups_guard_config_version": CLOSE_POPUPS_GUARD_CONFIG_VERSION,
+        "guard_enabled": False,
         "guard_running": False,
         "guard_entry_id": "",
         "guard_interval_seconds": 2.0,
@@ -356,11 +400,11 @@ def initial_data_annotation_runtime_status() -> dict[str, Any]:
     }
 
 
-def is_data_annotation_runtime_live_empty(status: dict[str, Any]) -> bool:
+def is_behavior_tree_runtime_live_empty(status: dict[str, Any]) -> bool:
     return status_live_empty(status)
 
 
-def append_data_annotation_runtime_status_log(
+def append_behavior_tree_runtime_status_log(
     status: dict[str, Any],
     kind: str,
     message: str,
@@ -385,7 +429,7 @@ def append_data_annotation_runtime_status_log(
     return item
 
 
-def append_data_annotation_runtime_log_once(
+def append_behavior_tree_runtime_log_once(
     status: dict[str, Any],
     kind: str,
     message: str,
@@ -395,15 +439,13 @@ def append_data_annotation_runtime_log_once(
     append_status_log_once(status, kind, message, time_text=time_text)
 
 
-def normalize_data_annotation_runtime_guard_items(
+def normalize_behavior_tree_runtime_guard_items(
     status: dict[str, Any],
     guard_definitions: dict[str, dict[str, Any]],
 ) -> None:
     raw_guard_items = status.get("guard_items")
     guard_items = dict(raw_guard_items) if isinstance(raw_guard_items, dict) else {}
     for guard_id, definition in guard_definitions.items():
-        if guard_id == "close_popups":
-            continue
         default_enabled = bool(definition.get("default_enabled", definition.get("enabled", False)))
         raw_item = guard_items.get(guard_id)
         if not isinstance(raw_item, dict):
@@ -412,79 +454,92 @@ def normalize_data_annotation_runtime_guard_items(
         if "enabled" not in raw_item or (not bool(raw_item.get("enabled")) and not float(raw_item.get("updated_at") or 0)):
             guard_items[guard_id] = {**raw_item, "enabled": default_enabled}
 
-    close_popups_enabled = close_popups_guard_enabled_from_status(status)
-    status["guard_enabled"] = close_popups_enabled
-    status["close_popups_guard_config_version"] = CLOSE_POPUPS_GUARD_CONFIG_VERSION
-    close_popups_override: dict[str, Any] = {
-        "enabled": close_popups_enabled,
-        "running": bool(status.get("guard_group_enabled", True) and status.get("guard_running")),
-        "entry_id": str(status.get("guard_entry_id") or ""),
-    }
-    last_guard_event = status.get("last_guard_event")
-    if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
-        close_popups_override["message"] = str(last_guard_event.get("title") or "")
-    status["guard_items"] = normalize_guard_items(
-        guard_definitions,
-        guard_items,
-        overrides={"close_popups": close_popups_override},
-    )
+    status["guard_enabled"] = False
+    status.pop("close_popups_guard_config_version", None)
+    guard_items.pop("close_popups", None)
+    status["guard_items"] = normalize_guard_items(guard_definitions, guard_items)
 
 
 def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None:
-    task = normalize_scheduled_task_record(item, default_source="data_annotation_runtime", default_schedule_kind="manual")
-    if task is None:
+    if not isinstance(item, dict):
         return None
-    if isinstance(item, dict) and item.get("last_message"):
-        task["last_message"] = str(item["last_message"])
-    if isinstance(item, dict):
-        try:
-            dispatch_level = int(item.get("dispatch_level") or 0)
-        except (TypeError, ValueError):
-            dispatch_level = 0
-        task["dispatch_level"] = min(5, max(0, dispatch_level))
-        try:
-            dispatch_order = int(item.get("dispatch_order") or 0)
-        except (TypeError, ValueError):
-            dispatch_order = 0
-        task["dispatch_order"] = min(9999, max(0, dispatch_order))
-        retry_policy = str(item.get("retry_policy") or "standard").strip().lower()
-        task["retry_policy"] = retry_policy if retry_policy in {"standard", "immediate"} else "standard"
-        scheduler_meta = item.get("scheduler_meta")
-        if not isinstance(scheduler_meta, dict) and isinstance(item.get("checkpoint"), dict):
-            scheduler_meta = item.get("checkpoint")
-        if isinstance(scheduler_meta, dict):
-            task["scheduler_meta"] = dict(scheduler_meta)
-        else:
-            task.pop("scheduler_meta", None)
-        for key in ("attempt_id", "attempt_kernel_generation", "attempt_kernel_idle_since", "started_at", "finished_at"):
-            task[key] = item.get(key)
-    task.pop("checkpoint", None)
-    template_id = str(task.get("template_id") or task.get("task_type") or "").strip()
-    template_label = str(task.get("template_label") or task.get("label") or template_id).strip()
-    source = str(task.get("source") or "").strip()
-    template_source = str(task.get("template_source") or "").strip()
-    if not template_source:
-        template_source = "custom" if source in {"ai", "custom", "debug_eval"} else "preset"
-    task["template_id"] = template_id
-    task["template_label"] = template_label
-    task["template_source"] = template_source
-    task["trigger_kind"] = str(task.get("trigger_kind") or task.get("schedule_kind") or "manual").strip() or "manual"
-    weekdays = item.get("weekdays") if isinstance(item, dict) else None
-    parsed_weekdays: list[int] = []
-    if isinstance(weekdays, list):
-        for value in weekdays:
-            try:
-                weekday = int(value)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= weekday <= 6 and weekday not in parsed_weekdays:
-                parsed_weekdays.append(weekday)
-    task["weekdays"] = parsed_weekdays
+    task_id = str(item.get("id") or "").strip()
+    task_type = str(item.get("task_type") or "").strip()
+    if not task_id or not task_type:
+        return None
+    try:
+        dispatch_level = min(5, max(0, int(item.get("dispatch_level") or 0)))
+    except (TypeError, ValueError):
+        dispatch_level = 0
+    try:
+        dispatch_order = min(9999, max(0, int(item.get("dispatch_order") or 0)))
+    except (TypeError, ValueError):
+        dispatch_order = 0
+    try:
+        raw_retry_delay = item.get("error_retry_delay_seconds")
+        retry_delay = max(
+            0,
+            int(600 if raw_retry_delay in {None, ""} else raw_retry_delay),
+        )
+    except (TypeError, ValueError):
+        retry_delay = 600
+    label = str(item.get("label") or task_id)
+    # Keep the historical serialized source value readable across upgrades;
+    # the owning subsystem is named Behavior Tree Runtime in current code.
+    source = str(item.get("source") or "data_annotation_runtime")
+    scheduler_meta = (
+        dict(item["scheduler_meta"])
+        if isinstance(item.get("scheduler_meta"), dict)
+        else None
+    )
+    if scheduler_meta is not None:
+        # Legacy patrol implementations transported Job business facts through
+        # Scheduler state.  Facts now stay in their owning Job domain; keep
+        # normalization as the one-way migration that removes the old payload.
+        scheduler_meta.pop("state_inspection", None)
+        if not scheduler_meta:
+            scheduler_meta = None
+    task = {
+        "id": task_id,
+        "task_type": task_type,
+        "label": label,
+        "template_id": str(item.get("template_id") or task_type),
+        "template_label": str(item.get("template_label") or label),
+        "template_source": str(
+            item.get("template_source")
+            or ("custom" if source in {"ai", "custom", "debug_eval"} else "preset")
+        ),
+        "trigger_description": str(item.get("trigger_description") or ""),
+        "source": source,
+        "legacy_name": str(item.get("legacy_name") or label),
+        "interruptible": bool(item.get("interruptible", True)),
+        "dispatch_level": dispatch_level,
+        "dispatch_order": dispatch_order,
+        "next_time": str(item["next_time"]) if item.get("next_time") else None,
+        "last_run_at": item.get("last_run_at"),
+        "last_result": str(item.get("last_result") or ""),
+        "last_message": str(item.get("last_message") or ""),
+        "error_retry_delay_seconds": retry_delay,
+        "payload": dict(item.get("payload") or {}) if isinstance(item.get("payload"), dict) else {},
+        "scheduler_meta": scheduler_meta,
+        "attempt_id": item.get("attempt_id"),
+        "attempt_kernel_generation": item.get("attempt_kernel_generation"),
+        "attempt_kernel_idle_since": item.get("attempt_kernel_idle_since"),
+        "started_at": item.get("started_at"),
+        "finished_at": item.get("finished_at"),
+    }
+    if item.get("system_task"):
+        task["system_task"] = True
+    # Absence is meaningful for attempts started by an older process: callers
+    # can then fall back to the current next_time.  A present ``None`` means a
+    # new attempt intentionally started without a trigger and must restore it.
+    if "attempt_original_trigger" in item:
+        task["attempt_original_trigger"] = item.get("attempt_original_trigger")
     return task
 
 
 def data_annotation_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
-    return scheduled_task_state(task)
+    return normalize_data_annotation_scheduler_task(task) or {}
 
 
 def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
@@ -492,6 +547,7 @@ def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
     return {
         "job_group_enabled": bool(source.get("job_group_enabled", True)),
         "behavior_tree_enabled": bool(source.get("behavior_tree_enabled", True)),
+        "time_sequence": normalize_time_sequence(source.get("time_sequence")),
         "updated_at": float(source.get("updated_at") or 0),
     }
 
@@ -504,46 +560,6 @@ def parse_data_annotation_daily_clock(value: Any) -> dt_time | None:
     return parse_daily_clock(value)
 
 
-def next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
-    schedule_kind = str(task.get("schedule_kind") or "")
-    if schedule_kind == "daily":
-        return next_daily_time(task.get("schedule_times", []), base_time=now)
-    if schedule_kind == "weekly":
-        return next_weekly_time(task.get("weekdays", []), task.get("schedule_times", []), base_time=now)
-    return None
-
-
-def next_weekly_time(weekdays: Any, times: Any, *, base_time: datetime | None = None) -> str | None:
-    parsed_weekdays = []
-    if isinstance(weekdays, list):
-        for value in weekdays:
-            try:
-                weekday = int(value)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= weekday <= 6:
-                parsed_weekdays.append(weekday)
-    clocks = [clock for value in (times if isinstance(times, list) else []) if (clock := parse_daily_clock(value)) is not None]
-    if not parsed_weekdays or not clocks:
-        return None
-    base = base_time or datetime.now()
-    candidates: list[datetime] = []
-    for day_offset in range(8):
-        current_date = base.date() + timedelta(days=day_offset)
-        if current_date.weekday() not in parsed_weekdays:
-            continue
-        for clock in clocks:
-            candidate = datetime.combine(current_date, clock)
-            if candidate > base:
-                candidates.append(candidate)
-    if not candidates:
-        return None
-    return min(candidates).strftime("%Y-%m-%d %H:%M:%S")
-
-
 def data_annotation_task_due(task: dict[str, Any]) -> bool:
-    if str(task.get("last_result") or "") == "success":
-        next_ts = parse_schedule_time(task.get("next_time"))
-        if next_ts is not None and next_ts > time.time():
-            return False
-    return schedule_task_due(task, now=time.time())
+    next_ts = parse_schedule_time(task.get("next_time"))
+    return bool(next_ts is not None and next_ts <= time.time())

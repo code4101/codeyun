@@ -1,38 +1,25 @@
 <template>
   <ClusterFileBrowserPage
     fixed-device-id="codepc_mf"
-    fixed-root-path="D:\home\chenkunze\data\m2510mn"
+    fixed-root-path="E:\data\m2510mn"
   >
     <template #directory-after="{ selectedPath, canBrowse, reloadDirectory }">
-      <div v-if="isLocalCandidatePool(selectedPath)" class="mn-media-sync-actions">
-        <MediaSyncStatusProbe
-          :selected-path="selectedPath"
-          :active="isLocalCandidatePool(selectedPath)"
-          @load="loadCacheStatus"
-        />
-        <span
-          class="mn-media-cache-count"
-          title="提前缓存的 remote id、详情页 URL 和原图 URL，不是已下载图片。"
-        >
-          URL缓存 <strong>{{ candidateCacheCountText(selectedPath) }}</strong>
-        </span>
-        <el-button
-          size="small"
-          plain
-          :loading="isStartingAction(selectedPath, 'collect')"
-          :disabled="!canBrowse || isStarting(selectedPath) || isLocalTaskRunning(selectedPath)"
-          @click="startPlatformAction('collect', selectedPath, reloadDirectory)"
-        >
-          补充缓存
-        </el-button>
+      <div
+        v-if="isInventoryContext(selectedPath)"
+        :key="normalizePath(selectedPath)"
+        class="mn-media-sync-actions"
+        @vue:mounted="loadInventoryContext(selectedPath, reloadDirectory)"
+      >
         <el-button
           type="primary"
           size="small"
           :loading="isStartingAction(selectedPath, 'download')"
           :disabled="!canBrowse || isStarting(selectedPath) || isLocalTaskRunning(selectedPath)"
-          @click="startPlatformAction('download', selectedPath, reloadDirectory)"
+          @click="inferPlatformFromPath(selectedPath) === 'video'
+            ? openVideoDownloadDialog(selectedPath, reloadDirectory)
+            : startPlatformAction('download', selectedPath, reloadDirectory)"
         >
-          下载
+          补满 {{ targetCount(inferPlatformFromPath(selectedPath)) }}/{{ inventoryCount(inferPlatformFromPath(selectedPath)) }}
         </el-button>
         <el-button
           size="small"
@@ -42,77 +29,88 @@
           :disabled="!canBrowse || isStarting(selectedPath) || isLocalTaskRunning(selectedPath)"
           @click="startPlatformAction('clean', selectedPath, reloadDirectory)"
         >
-          清理
+          清理并换批
         </el-button>
-        <span v-if="statusMessage(selectedPath)" class="mn-media-sync-status">{{ statusMessage(selectedPath) }}</span>
+      </div>
+      <div
+        v-if="isVideoReservoirContext(selectedPath)"
+        class="mn-media-sync-actions"
+      >
+        <el-button type="primary" size="small" @click="openVideoDownloadDialog(selectedPath, reloadDirectory)">
+          下载 Bilibili 视频
+        </el-button>
+        <span class="mn-media-sync-status">仅处理明确粘贴的链接，最高可用品质，重复 BVID 自动复用</span>
       </div>
     </template>
   </ClusterFileBrowserPage>
+
+  <el-dialog v-model="videoDownloadDialogVisible" title="下载 Bilibili 视频" width="520px">
+    <el-input
+      v-model="videoUrlText"
+      type="textarea"
+      :rows="7"
+      maxlength="4000"
+      show-word-limit
+      placeholder="每行一个 bilibili.com/video/BV... 链接"
+    />
+    <p class="mn-keyword-help">只下载当前浏览器登录态能够正常播放的最高品质，不绕过会员、付费或 DRM。</p>
+    <template #footer>
+      <el-button @click="videoDownloadDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="startingVideoDownload" @click="startVideoDownload">开始下载</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import axios from 'axios';
-import { defineComponent, onBeforeUnmount, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { onBeforeUnmount, ref } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import ClusterFileBrowserPage from '@/standard/cluster/files/page.vue';
 import {
-  fetchMediaSyncCandidateCacheStatus,
+  fetchMediaSyncInventoryStatus,
   fetchMediaSyncStatus,
   openMediaSyncCandidateLoginPage,
   startMediaSyncPlatformClean,
-  startMediaSyncPlatformCollect,
   startMediaSyncPlatformDownload,
   type MediaSyncStatus,
+  type MediaSyncInventoryStatus,
 } from '@/plugins/modules/media-sync/api';
 
-const MN_ROOT_DIR = 'D:\\home\\chenkunze\\data\\m2510mn';
+const MN_ROOT_DIR = 'E:\\data\\m2510mn';
 const MEDIA_SYNC_TARGET_COUNT = 200;
-const CACHE_STATUS_TTL_MS = 10_000;
+const VIDEO_SYNC_TARGET_COUNT = 20;
 
-type MediaSyncAction = 'collect' | 'download' | 'clean';
-type MediaSyncPlatform = 'pixiv' | 'pinterest';
+type MediaSyncAction = 'download' | 'clean';
+type MediaSyncPlatform = 'pixiv' | 'pinterest' | 'video';
 
 const statusByPath = ref<Record<string, MediaSyncStatus>>({});
 const startingActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
 const runningActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
-const statusLoadedAtByPath = ref<Record<string, number>>({});
-const statusLoadErrorByPath = ref<Record<string, boolean>>({});
-const candidateCacheCountByPath = ref<Record<string, number>>({});
-const loadingStatusPaths = new Set<string>();
+const inventoryByPlatform = ref<Partial<Record<MediaSyncPlatform, MediaSyncInventoryStatus>>>({});
+const videoUrlText = ref('');
+const videoDownloadDialogVisible = ref(false);
+const startingVideoDownload = ref(false);
+const videoActionPath = ref(`${MN_ROOT_DIR}\\2、video`);
+let videoReloadDirectory: (() => Promise<void>) | undefined;
+const deliveredBatchReadyAtByPath = new Map<string, number>();
 const pollTimers = new Map<string, number>();
 let isUnmounted = false;
 
-const MediaSyncStatusProbe = defineComponent({
-  name: 'MediaSyncStatusProbe',
-  props: {
-    selectedPath: { type: String, required: true },
-    active: { type: Boolean, required: true },
-  },
-  emits: ['load'],
-  setup(props, { emit }) {
-    watch(
-      () => [props.selectedPath, props.active] as const,
-      ([selectedPath, active]) => {
-        if (active && selectedPath) {
-          emit('load', selectedPath);
-        }
-      },
-      { immediate: true },
-    );
-    return () => null;
-  },
-});
-
 function isLocalTaskRunning(path: string) {
   const key = normalizePath(path);
-  return Boolean(statusByPath.value[key]?.running || runningActionByPath.value[key]);
+  const status = statusByPath.value[key];
+  return Boolean(
+    runningActionByPath.value[key]
+    || (status?.running && !isBackgroundCollection(status) && !isReadyBatch(status)),
+  );
 }
 
-function statusMessage(path: string) {
-  if (!isLocalTaskRunning(path)) return '';
-  const status = statusByPath.value[normalizePath(path)];
-  const message = String(status?.message || '').trim();
-  return status?.running ? message : '';
+function isBackgroundCollection(status?: MediaSyncStatus) {
+  return status?.stage === 'pixiv-collect-ids' || status?.stage === 'pinterest-collect-ids';
+}
+
+function isReadyBatch(status?: MediaSyncStatus) {
+  return status?.stage === 'pixiv-batch-ready' || status?.stage === 'pinterest-batch-ready';
 }
 
 function isStarting(path: string) {
@@ -126,51 +124,94 @@ function isStartingAction(path: string, action: MediaSyncAction) {
 function inferPlatformFromPath(path: string): MediaSyncPlatform | '' {
   const segments = normalizePath(path).split('/').filter(Boolean);
   const name = segments[segments.length - 1] || '';
-  if (name === '_pixiv') return 'pixiv';
-  if (name === '_pinterest') return 'pinterest';
+  if (name === '2、pixiv') return 'pixiv';
+  if (name === '2、pinterest') return 'pinterest';
+  if (name === '2、video') return 'video';
   return '';
 }
 
-function candidateCacheCountText(path: string) {
-  const key = normalizePath(path);
-  if (!inferPlatformFromPath(path)) return '';
-  const count = candidateCacheCountByPath.value[key];
-  if (typeof count === 'number') return String(count);
-  return statusLoadErrorByPath.value[key] ? '取数失败' : '加载中';
+function isLocalCandidatePool(path: string) {
+  return Boolean(inferPlatformFromPath(path));
 }
 
-function isLocalCandidatePool(path: string) {
+function isInventoryContext(path: string) {
+  return isLocalCandidatePool(path);
+}
+
+function isVideoReservoirContext(path: string) {
   const segments = normalizePath(path).split('/').filter(Boolean);
-  const name = segments[segments.length - 1] || '';
-  return name.startsWith('_') && name.length > 1;
+  return segments[segments.length - 1] === '3、video';
+}
+
+function openVideoDownloadDialog(_selectedPath: string, reloadDirectory?: () => Promise<void>) {
+  videoActionPath.value = `${MN_ROOT_DIR}\\2、video`;
+  videoReloadDirectory = reloadDirectory;
+  videoDownloadDialogVisible.value = true;
+}
+
+async function startVideoDownload() {
+  const urls = videoUrlText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  if (!urls.length) {
+    ElMessage.warning('请至少粘贴一个 Bilibili 视频链接');
+    return;
+  }
+  startingVideoDownload.value = true;
+  try {
+    const nextStatus = await startMediaSyncPlatformDownload({
+      root_dir: MN_ROOT_DIR,
+      path: videoActionPath.value,
+      target_new_count: VIDEO_SYNC_TARGET_COUNT,
+      urls,
+    });
+    const key = normalizePath(videoActionPath.value);
+    statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
+    runningActionByPath.value = { ...runningActionByPath.value, [key]: 'download' };
+    videoDownloadDialogVisible.value = false;
+    videoUrlText.value = '';
+    pollStatus(videoActionPath.value, videoReloadDirectory);
+    ElMessage.success('视频下载已启动');
+  } catch (error) {
+    console.error('Failed to start Bilibili download', error);
+    const detail = axios.isAxiosError(error) ? String(error.response?.data?.detail || '') : '';
+    ElMessage.error(detail || '启动视频下载失败');
+  } finally {
+    startingVideoDownload.value = false;
+  }
+}
+
+function inventoryCount(platform: MediaSyncPlatform | '') {
+  if (!platform) return '—';
+  return inventoryByPlatform.value[platform]?.inventory_count ?? '—';
+}
+
+function targetCount(platform: MediaSyncPlatform | '') {
+  return platform === 'video' ? VIDEO_SYNC_TARGET_COUNT : MEDIA_SYNC_TARGET_COUNT;
+}
+
+async function loadInventoryStatus(platform: MediaSyncPlatform) {
+  try {
+    const directoryStem = platform;
+    const nextStatus = await fetchMediaSyncInventoryStatus({
+      root_dir: MN_ROOT_DIR,
+      path: `${MN_ROOT_DIR}\\2、${directoryStem}`,
+    });
+    if (isUnmounted) return;
+    inventoryByPlatform.value = { ...inventoryByPlatform.value, [platform]: nextStatus };
+  } catch (error) {
+    console.error(`Failed to load ${platform} local inventory`, error);
+  }
+}
+
+function loadInventoryContext(path: string, reloadDirectory?: () => Promise<void>) {
+  const platform = inferPlatformFromPath(path);
+  if (!platform) return;
+  void loadInventoryStatus(platform);
+  // 独立 Worker 不随页面或后端生命周期结束；重新进入目录时必须主动接回状态与轮询。
+  void syncRunningStatus(path, reloadDirectory);
 }
 
 function normalizePath(path: string) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
-}
-
-async function loadCacheStatus(selectedPath: string, options: { force?: boolean } = {}) {
-  const key = normalizePath(selectedPath);
-  if (!isLocalCandidatePool(selectedPath) || loadingStatusPaths.has(key)) return;
-  const loadedAt = statusLoadedAtByPath.value[key] || 0;
-  if (!options.force && statusByPath.value[key] && Date.now() - loadedAt < CACHE_STATUS_TTL_MS) return;
-
-  loadingStatusPaths.add(key);
-  statusLoadErrorByPath.value = { ...statusLoadErrorByPath.value, [key]: false };
-  try {
-    const nextStatus = await fetchMediaSyncCandidateCacheStatus({ path: selectedPath });
-    if (isUnmounted) return;
-    candidateCacheCountByPath.value = {
-      ...candidateCacheCountByPath.value,
-      [key]: nextStatus.pending_count,
-    };
-    statusLoadedAtByPath.value = { ...statusLoadedAtByPath.value, [key]: Date.now() };
-  } catch (error) {
-    statusLoadErrorByPath.value = { ...statusLoadErrorByPath.value, [key]: true };
-    console.error('Failed to load local media cache status', error);
-  } finally {
-    loadingStatusPaths.delete(key);
-  }
 }
 
 async function startPlatformAction(
@@ -188,18 +229,10 @@ async function startPlatformAction(
       ? await startMediaSyncPlatformDownload({
           root_dir: MN_ROOT_DIR,
           path: selectedPath,
-          target_new_count: MEDIA_SYNC_TARGET_COUNT,
+          target_new_count: targetCount(inferPlatformFromPath(selectedPath)),
         })
-      : action === 'collect'
-        ? await startMediaSyncPlatformCollect({
-            root_dir: MN_ROOT_DIR,
-            path: selectedPath,
-            target_new_count: MEDIA_SYNC_TARGET_COUNT,
-          })
-        : await startMediaSyncPlatformClean({
-          root_dir: MN_ROOT_DIR,
-          path: selectedPath,
-        });
+      : await startPlatformCleanWithConfirmation(selectedPath);
+    if (!nextStatus) return;
     if (isUnmounted) return;
     statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
     pollStatus(selectedPath, reloadDirectory);
@@ -225,7 +258,7 @@ async function syncRunningStatus(selectedPath: string, reloadDirectory?: () => P
     const nextStatus = await fetchMediaSyncStatus({ path: selectedPath, include_sources: false });
     if (isUnmounted) return;
     statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
-    if (nextStatus.running) {
+    if (nextStatus.running && !isBackgroundCollection(nextStatus)) {
       pollStatus(selectedPath, reloadDirectory);
     }
   } catch (error) {
@@ -245,6 +278,7 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
       const nextStatus = await fetchMediaSyncStatus({ path: selectedPath, include_sources: false });
       if (isUnmounted) return;
       statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
+      await deliverReadyBatch(selectedPath, nextStatus, reloadDirectory);
       if (!nextStatus.running) {
         clearPollTimer(key);
         const finishedAction = runningActionByPath.value[key];
@@ -254,17 +288,18 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
             ElMessage.warning(nextStatus.action_hint || '需要先完成登录，然后重新点击下载');
             void openLoginWindow(selectedPath);
           } else {
-            ElMessage.error(nextStatus.error);
+            ElMessage.error(
+              nextStatus.error,
+            );
           }
           return;
         }
-        if (finishedAction) {
+        if (finishedAction && !deliveredBatchReadyAtByPath.has(key)) {
           ElMessage.success(actionSuccessMessage(finishedAction));
         }
-        if (finishedAction !== 'collect') {
-          void reloadDirectory?.();
-        }
-        void loadCacheStatus(selectedPath, { force: true });
+        const platform = inferPlatformFromPath(selectedPath);
+        if (platform) void loadInventoryStatus(platform);
+        void reloadDirectory?.();
       }
     } catch (error) {
       if (isUnmounted) return;
@@ -277,13 +312,55 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
 }
 
 function actionStartErrorMessage(action: MediaSyncAction) {
-  if (action === 'collect') return '启动补充缓存失败';
-  return action === 'download' ? '启动下载失败' : '启动清理失败';
+  return action === 'download' ? '启动补货失败' : '启动清理换批失败';
+}
+
+async function startPlatformCleanWithConfirmation(selectedPath: string) {
+  const payload = { root_dir: MN_ROOT_DIR, path: selectedPath };
+  try {
+    return await startMediaSyncPlatformClean(payload);
+  } catch (error) {
+    const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+    if (detail?.code !== 'unweighted_batch_confirmation_required') throw error;
+    try {
+      await ElMessageBox.confirm(
+        `当前 ${Number(detail.review_count || 0)} 张图片没有任何权重标记，继续会删除整批并换入下一批。`,
+        '确认清理未标记批次？',
+        {
+          type: 'warning',
+          confirmButtonText: '仍然清理',
+          cancelButtonText: '返回检查',
+          distinguishCancelAndClose: true,
+        },
+      );
+    } catch {
+      return null;
+    }
+    return startMediaSyncPlatformClean({ ...payload, confirm_unweighted_batch: true });
+  }
+}
+
+async function deliverReadyBatch(
+  selectedPath: string,
+  status: MediaSyncStatus,
+  reloadDirectory?: () => Promise<void>,
+) {
+  const key = normalizePath(selectedPath);
+  const batchReady = status.summary?.batch_ready;
+  if (!batchReady || typeof batchReady !== 'object') return;
+  const readyAt = Number((batchReady as Record<string, unknown>).ready_at || 0);
+  if (!Number.isFinite(readyAt) || readyAt <= 0 || deliveredBatchReadyAtByPath.get(key) === readyAt) return;
+
+  deliveredBatchReadyAtByPath.set(key, readyAt);
+  runningActionByPath.value = { ...runningActionByPath.value, [key]: '' };
+  const platform = inferPlatformFromPath(selectedPath);
+  if (platform) await loadInventoryStatus(platform);
+  await reloadDirectory?.();
+  ElMessage.success('清理换批完成');
 }
 
 function actionSuccessMessage(action: MediaSyncAction) {
-  if (action === 'collect') return '缓存补充完成';
-  return action === 'download' ? '下载完成' : '清理完成';
+  return action === 'download' ? '待整理区已补满' : '清理换批完成';
 }
 
 async function openLoginWindow(selectedPath: string) {
@@ -330,4 +407,11 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.mn-keyword-help {
+  margin: 8px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 </style>

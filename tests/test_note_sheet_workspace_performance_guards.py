@@ -65,6 +65,17 @@ def test_note_sheet_workspace_data_refresh_uses_load_data_instead_of_update_sett
     assert "updateSettings({\n      data: sheetHotGridRows.value" not in source
 
 
+def test_hidden_columns_do_not_fall_back_to_handsontable_default_width():
+    source = _workspace_source()
+
+    assert "const hotHiddenColumnIndexSet = computed(" in source
+    assert "hotHiddenColumnIndexSet.value.has(hotColumn) ? 0.1 : width" in source
+    assert "hot.addHook('modifyColWidth', handleModifyColWidth, 3)" in source
+    assert ':after-init="handleAfterHotInit"' in source
+    assert "if (hiddenColumnIndexSet.value.has(column))" in source
+    assert "TD.classList.add('sheet-hidden-column-cell')" in source
+
+
 def test_note_sheet_workspace_uses_filtered_query_on_first_filtered_page_load():
     source = _workspace_source()
     start = source.index("async function fetchNoteSheetForCurrentView(")
@@ -327,6 +338,46 @@ def test_note_sheet_workspace_accepts_page_scoped_row_ids():
     assert "const rowIdsArePaged = sourceRowIds.length === normalizedRows.length" in source
     assert "const sourceRowIdIndex = rowIdsArePaged ? localIndex : getDocumentRowIndex(localIndex)" in source
     assert "normalizeSheetEntityId(sourceRowIds[sourceRowIdIndex])" in source
+
+
+def test_note_sheet_cell_saves_rebase_system_updates_and_share_one_local_write_lane():
+    workspace_source = _workspace_source()
+    api_source = _note_sheets_api_source()
+    ts_api_source = _note_sheets_ts_api_source()
+
+    assert "expected_value?: unknown" in ts_api_source
+    assert "expected_meta?: Record<string, unknown>" in ts_api_source
+    assert "expected_value: normalizeCellInputValueForColumn(record.previousValue" in workspace_source
+    assert "expected_meta: result.expectedMeta ? { ...result.expectedMeta } : {}" in workspace_source
+    assert "expected_value: normalizeCellInputValueForColumn(currentValue, cell.column)" in workspace_source
+    assert "expected_value: previousValue" in workspace_source
+    assert "row_id: rowId" in workspace_source
+    assert "column_id: columnId" in workspace_source
+    assert "function ensureDocumentRowEntityId(documentRow: number)" in workspace_source
+    assert "nextIds[localDataIndex] = rowId" in workspace_source
+    assert "const rowId = ensureDocumentRowEntityId(documentRow)" in workspace_source
+    assert "const pendingDocumentSave = saveInFlightPromise?.catch" in workspace_source
+    assert "const pendingCellPatches = cellPatchQueue" in workspace_source
+    assert "await pendingCellPatches.catch" in workspace_source
+    assert "mutation_id: createSaveMutationId()" in workspace_source
+    assert "client_instance_id: getSaveClientInstanceId()" in workspace_source
+    assert "message.client_instance_id === getSaveClientInstanceId()" in workspace_source
+    socket_start = workspace_source.index("function connectSheetResourceSocket(")
+    socket_end = workspace_source.index("\nfunction waitForRemoteSaveIdle", socket_start)
+    socket_body = workspace_source[socket_start:socket_end]
+    assert "sheetRemoteConflictActive = true" not in socket_body
+    assert "工作表已被其他人更新" not in workspace_source
+
+    assert "def _rebase_stale_cell_patch_ops(" in api_source
+    assert 'operation.op not in {"set-cell-value", "set-cell-meta"}' in api_source
+    assert '"expected_value" not in operation.model_fields_set' in api_source
+    assert '"expected_meta" not in operation.model_fields_set' in api_source
+    assert "if current_value == desired_value:" in api_source
+    assert "if current_meta == desired_meta:" in api_source
+    assert "operations = _rebase_stale_cell_patch_ops(normalized, operations)" in api_source
+    assert ".where(SheetDocument.version == current_version)" in api_source
+    assert "if int(result.rowcount or 0) == 1:" in api_source
+    assert "for _attempt in range(4):" in api_source
 
 
 def test_note_sheet_workspace_frame_gap_monitor_ignores_background_throttling():

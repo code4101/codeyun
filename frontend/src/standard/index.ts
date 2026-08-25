@@ -25,7 +25,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
-    routeName: 'FanxiuDataAnnotationRuntime',
+    routeName: 'FanxiuBehaviorTreeRuntime',
     canonicalPath: '/fanxiu/data-annotation/runtime',
     component: () => import('./fanxiu/data-annotation-runtime/page.vue'),
     permissionKey: 'fanxiu.behavior-tree',
@@ -33,7 +33,7 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
-    routeName: 'FanxiuDataAnnotationRuntimeLogs',
+    routeName: 'FanxiuBehaviorTreeRuntimeLogs',
     canonicalPath: '/fanxiu/data-annotation/runtime/logs',
     component: () => import('./fanxiu/data-annotation-runtime-logs/page.vue'),
     permissionKey: 'fanxiu.behavior-tree',
@@ -51,14 +51,14 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./fanxiu/kunlun-secret/page.vue'),
   },
   {
-    routeName: 'FanxiuModaoInvasion',
-    canonicalPath: '/fanxiu/activity-list/modao-invasion',
-    component: () => import('./fanxiu/modao-invasion/page.vue'),
+    routeName: 'FanxiuTopActivity',
+    canonicalPath: '/fanxiu/activity-list/top-activity',
+    component: () => import('./fanxiu/top-activity/page.vue'),
   },
   {
-    routeName: 'FanxiuShouyuanExploration',
-    canonicalPath: '/fanxiu/activity-list/shouyuan-exploration',
-    component: () => import('./fanxiu/shouyuan-exploration/page.vue'),
+    routeName: 'FanxiuResourceRanking',
+    canonicalPath: '/fanxiu/activity-list/resource-ranking',
+    component: () => import('./fanxiu/resource-ranking/page.vue'),
   },
   {
     routeName: 'FanxiuDivineResource',
@@ -105,6 +105,11 @@ export const standardPageRegistry: AppPageDefinition[] = [
     routeName: 'BeastSoulCalculator',
     canonicalPath: '/fanxiu/calculator',
     component: () => import('./fanxiu/calculator/page.vue'),
+  },
+  {
+    routeName: 'FanxiuXianqiaoMechanics',
+    canonicalPath: '/fanxiu/xianqiao',
+    component: () => import('./fanxiu/xianqiao/page.vue'),
   },
   {
     routeName: 'DrawCalculator',
@@ -177,6 +182,21 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./zaohua/pasture/page.vue'),
   },
   {
+    routeName: 'GuigubahuangGuide',
+    canonicalPath: '/guigubahuang/guide',
+    component: () => import('./guigubahuang/guide/page.vue'),
+  },
+  {
+    routeName: 'FanxiuGongfaAtlas',
+    canonicalPath: '/fanxiu/inventory/gongfa-atlas',
+    component: () => import('./fanxiu/gongfa-atlas/page.vue'),
+  },
+  {
+    routeName: 'ZaohuaGradeReference',
+    canonicalPath: '/zaohua/grades',
+    component: () => import('./zaohua/grades/page.vue'),
+  },
+  {
     routeName: 'PokemonTcgCatalog',
     canonicalPath: '/pokemon-tcg/catalog',
     component: () => import('./pokemon-tcg/page.vue'),
@@ -193,13 +213,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     menuPath: '/notes/star-map',
   },
   {
-    routeName: 'NotesTaskSystem',
-    canonicalPath: '/notes/task-system',
-    component: () => import('./notes/task-system/page.vue'),
-    permissionKey: 'notes.task-system',
-    requiresAuth: true,
-  },
-  {
     routeName: 'NotesChatData',
     canonicalPath: '/notes/chat-data',
     component: () => import('./notes/chat-data/page.vue'),
@@ -213,13 +226,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
-    routeName: 'NotesCommonSites',
-    canonicalPath: '/notes/common-sites',
-    component: () => import('./notes/common-sites/page.vue'),
-    permissionKey: 'notes.common-sites',
-    requiresAuth: true,
-  },
-  {
     routeName: 'Eastmoney',
     canonicalPath: '/notes/eastmoney',
     component: () => import('./notes/eastmoney/redirect.vue'),
@@ -230,6 +236,13 @@ export const standardPageRegistry: AppPageDefinition[] = [
     routeName: 'EastmoneyTrade',
     canonicalPath: '/notes/eastmoney/trade',
     component: () => import('./notes/eastmoney/trade/page.vue'),
+    permissionKey: 'notes.eastmoney',
+    requiresAuth: true,
+  },
+  {
+    routeName: 'EastmoneyHistory',
+    canonicalPath: '/notes/eastmoney/history',
+    component: () => import('./notes/eastmoney/history/page.vue'),
     permissionKey: 'notes.eastmoney',
     requiresAuth: true,
   },
@@ -352,6 +365,12 @@ export const standardPageRegistry: AppPageDefinition[] = [
     requiresAuth: true,
   },
   {
+    routeName: 'HardwareTemperature',
+    canonicalPath: '/cluster/hardware-temperature',
+    component: () => import('./cluster/hardware-temperature/page.vue'),
+    requiresAuth: true,
+  },
+  {
     routeName: 'DeviceFileBrowser',
     canonicalPath: '/cluster/files',
     component: () => import('./cluster/files/page.vue'),
@@ -421,6 +440,11 @@ export const standardPageRegistry: AppPageDefinition[] = [
     component: () => import('./tools/open-score-study/page.vue'),
   },
   {
+    routeName: 'WebOutline',
+    canonicalPath: '/tools/web-outline',
+    component: () => import('./tools/web-outline/page.vue'),
+  },
+  {
     routeName: 'AiConfig',
     canonicalPath: '/tools/ai-config',
     component: () => import('./tools/ai-config/page.vue'),
@@ -451,13 +475,6 @@ export const standardPageRegistry: AppPageDefinition[] = [
     routeName: 'AttendanceConfigs',
     canonicalPath: '/attendance/configs',
     component: () => import('./attendance/configs/page.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'AttendanceHeaderTool',
-    canonicalPath: '/attendance/header-tool',
-    component: () => import('./attendance/header-tool/page.vue'),
-    permissionKey: 'attendance.header-tool',
     requiresAuth: true,
   },
   {

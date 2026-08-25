@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -12,6 +13,10 @@ from backend.migrations.manager import (
     v88_add_pdf_bookshelf_placements,
     v89_add_pdf_bookshelf_orientation,
     v90_add_pdf_library_bookshelves,
+    v92_add_pdf_bookshelf_view_settings,
+    v93_add_library_folders,
+    v94_normalize_pdf_bookshelf_thickness_scale,
+    v95_normalize_pdf_book_thickness_multiplier,
 )
 from backend.api import pdf_documents as pdf_documents_api
 
@@ -145,6 +150,89 @@ def test_pdf_library_bookshelf_migration_adds_group_and_membership_column():
         }
     assert table is not None
     assert "bookshelf_id" in columns
+
+
+def test_library_folder_migration_adds_folder_and_membership_columns():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text("CREATE TABLE user (id INTEGER PRIMARY KEY)"))
+        migration_session.commit()
+        v88_add_pdf_bookshelf_placements(migration_session)
+        v89_add_pdf_bookshelf_orientation(migration_session)
+        v90_add_pdf_library_bookshelves(migration_session)
+        migration_session.exec(text(
+            "CREATE TABLE librarybookplacement (id VARCHAR PRIMARY KEY)"
+        ))
+        migration_session.commit()
+        v93_add_library_folders(migration_session)
+        folder_table = migration_session.exec(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='libraryfolder'"
+        )).first()
+        pdf_columns = {
+            str(row[1])
+            for row in migration_session.exec(text("PRAGMA table_info(pdfbookshelfplacement)")).all()
+        }
+        dynamic_columns = {
+            str(row[1])
+            for row in migration_session.exec(text("PRAGMA table_info(librarybookplacement)")).all()
+        }
+    assert folder_table is not None
+    assert "folder_id" in pdf_columns
+    assert "folder_id" in dynamic_columns
+
+
+def test_pdf_bookshelf_thickness_migration_uses_one_as_neutral_multiplier():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text("CREATE TABLE user (id INTEGER PRIMARY KEY)"))
+        migration_session.commit()
+        v90_add_pdf_library_bookshelves(migration_session)
+        v92_add_pdf_bookshelf_view_settings(migration_session)
+        migration_session.exec(text(
+            "INSERT INTO pdflibrarybookshelf "
+            "(id, user_id, name, sort_index, created_at, updated_at) "
+            "VALUES ('shelf', 1, '1', 0, 0, 0)"
+        ))
+        migration_session.exec(text(
+            "INSERT INTO pdfbookshelfviewsetting "
+            "(id, bookshelf_id, user_id, thickness_scale, created_at, updated_at) "
+            "VALUES ('setting', 'shelf', 1, 2.0, 0, 0)"
+        ))
+        migration_session.commit()
+
+        v94_normalize_pdf_bookshelf_thickness_scale(migration_session)
+
+        normalized = migration_session.exec(text(
+            "SELECT thickness_scale FROM pdfbookshelfviewsetting WHERE id = 'setting'"
+        )).one()
+
+    assert float(normalized[0]) == 1.0
+
+
+def test_pdf_book_thickness_migration_converts_millimeters_to_multiplier():
+    engine = create_engine("sqlite://")
+    with Session(engine) as migration_session:
+        migration_session.exec(text(
+            "CREATE TABLE pdfdocument (id INTEGER PRIMARY KEY, metadata_json JSON)"
+        ))
+        migration_session.exec(text(
+            "INSERT INTO pdfdocument (id, metadata_json) VALUES "
+            "(1, '{\"page_count\": 200, \"library_appearance\": "
+            "{\"cover_color_override\": \"#123456\", \"thickness_mm_override\": 30}}')"
+        ))
+        migration_session.commit()
+
+        v95_normalize_pdf_book_thickness_multiplier(migration_session)
+
+        raw_metadata = migration_session.exec(text(
+            "SELECT metadata_json FROM pdfdocument WHERE id = 1"
+        )).one()[0]
+        metadata = json.loads(raw_metadata)
+
+    assert metadata["library_appearance"] == {
+        "cover_color_override": "#123456",
+        "thickness_multiplier": 1.5,
+    }
 
 
 def test_pdf_document_from_device_file_is_idempotent(client: TestClient, session: Session, tmp_path: Path):
@@ -425,12 +513,14 @@ def test_pdf_bookshelf_layout_is_saved_per_user(client: TestClient, session: Ses
         "shelf_index": 2,
         "position_index": 1,
         "orientation": "cover_front",
+        "folder_id": None,
     }
     assert owner_positions[second["id"]] == {
         "pdf_id": second["id"],
         "shelf_index": 0,
         "position_index": 0,
         "orientation": "spine_vertical",
+        "folder_id": None,
     }
 
     _override_user(viewer)
@@ -449,6 +539,7 @@ def test_pdf_bookshelf_layout_is_saved_per_user(client: TestClient, session: Ses
         "shelf_index": 0,
         "position_index": 0,
         "orientation": "spine_vertical",
+        "folder_id": None,
     }
     assert viewer_layout.status_code == 200, viewer_layout.text
     placements = session.exec(select(PdfBookshelfPlacement)).all()
@@ -485,10 +576,11 @@ def test_pdf_library_bookshelves_group_and_lazy_load_documents(
             json={"name": "哲学"},
         )
         assert created_shelf.status_code == 200, created_shelf.text
+        assert created_shelf.json()["logical_page_target_characters"] == 1600
         shelf_id = created_shelf.json()["id"]
         renamed_shelf = client.put(
             f"/api/pdf-documents/bookshelves/{shelf_id}",
-            json={"name": "理论"},
+            json={"name": "理论", "logical_page_target_characters": 2400},
         )
         moved = client.put(
             f"/api/pdf-documents/{first['id']}/bookshelf",
@@ -508,6 +600,7 @@ def test_pdf_library_bookshelves_group_and_lazy_load_documents(
 
     assert renamed_shelf.status_code == 200, renamed_shelf.text
     assert renamed_shelf.json()["name"] == "理论"
+    assert renamed_shelf.json()["logical_page_target_characters"] == 2400
     assert moved.status_code == 200, moved.text
     assert [item["id"] for item in default_documents.json()] == [second["id"]]
     assert [item["id"] for item in theory_documents.json()] == [first["id"]]
@@ -784,3 +877,148 @@ def test_pdf_document_rejects_non_pdf_file(client: TestClient, session: Session,
         _clear_user_override()
 
     assert response.status_code == 400
+
+
+def test_library_folder_groups_books_and_can_only_be_deleted_when_empty(
+    client: TestClient, session: Session, tmp_path: Path
+):
+    owner = _create_user(session, "pdf-folder-owner")
+    entry = _create_local_entry(session, owner)
+    pdf_path = _write_valid_pdf(tmp_path / "folder-book.pdf")
+    _override_user(owner)
+    try:
+        document = _create_pdf_document(client, entry, pdf_path)
+        bookshelf = client.get("/api/pdf-documents/bookshelves").json()[0]
+        folder_response = client.post(
+            f"/api/pdf-documents/bookshelves/{bookshelf['id']}/folders",
+            json={"name": "薄文件", "shelf_index": 2},
+        )
+        assert folder_response.status_code == 200, folder_response.text
+        folder = folder_response.json()
+        move_response = client.put(
+            f"/api/pdf-documents/{document['id']}/folder",
+            json={"folder_id": folder["id"], "shelf_index": 2},
+        )
+        assert move_response.status_code == 200, move_response.text
+        assert move_response.json()["folder_id"] == folder["id"]
+        assert client.delete(f"/api/pdf-documents/folders/{folder['id']}").status_code == 409
+        take_out = client.put(
+            f"/api/pdf-documents/{document['id']}/folder",
+            json={"folder_id": None, "shelf_index": 2},
+        )
+        assert take_out.status_code == 200, take_out.text
+        assert client.delete(f"/api/pdf-documents/folders/{folder['id']}").status_code == 204
+    finally:
+        _clear_user_override()
+
+
+def test_pdf_metadata_editor_preserves_import_name_and_supports_appearance_reset(
+    client: TestClient, session: Session, tmp_path: Path
+):
+    owner = _create_user(session, "pdf-rich-metadata-owner")
+    entry = _create_local_entry(session, owner)
+    original_name = "冗长原始文件名 (z-library).pdf"
+    _override_user(owner)
+    try:
+        document = _create_pdf_document(client, entry, _write_valid_pdf(tmp_path / original_name))
+        updated = client.put(
+            f"/api/pdf-documents/{document['id']}/metadata",
+            json={
+                "display_title": "精炼书名",
+                "display_author": "作者",
+                "display_subtitle": "副标题",
+                "display_translator": "译者",
+                "display_edition": "第 3 版",
+                "display_volume": "上册",
+                "source_display_name": "用户显示文件名.pdf",
+                "description": "简介",
+                "tags": ["技术", "技术", "教材"],
+                "cover_color_override": "#123456",
+                "thickness_multiplier": 25,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        body = updated.json()
+        assert body["title"] == "用户显示文件名.pdf"
+        assert body["imported_filename"] == original_name
+        assert body["display_edition"] == "第 3 版"
+        assert body["tags"] == ["技术", "教材"]
+        assert body["appearance"] == {
+            "cover_color_override": "#123456",
+            "thickness_multiplier": 25,
+        }
+        reset = client.put(
+            f"/api/pdf-documents/{document['id']}/metadata",
+            json={
+                "display_title": "精炼书名",
+                "display_author": "作者",
+                "cover_color_override": None,
+                "thickness_multiplier": 1.0,
+            },
+        )
+        assert reset.json()["appearance"] == {
+            "cover_color_override": None,
+            "thickness_multiplier": 1.0,
+        }
+        assert reset.json()["imported_filename"] == original_name
+    finally:
+        _clear_user_override()
+
+
+def test_shared_pdf_copy_is_independent_and_notes_are_a_snapshot(
+    client: TestClient, session: Session, tmp_path: Path
+):
+    owner = _create_user(session, "pdf-copy-owner")
+    viewer = _create_user(session, "pdf-copy-viewer")
+    entry = _create_local_entry(session, owner, entry_id="copy-source-entry")
+    pdf_path = _write_valid_pdf(tmp_path / "copy-source.pdf")
+    _override_user(owner)
+    try:
+        source = _create_pdf_document(client, entry, pdf_path)
+        assert client.put(
+            f"/api/pdf-documents/{source['id']}/page-notes/2",
+            json={"content_html": "<p>原书笔记</p>"},
+        ).status_code == 200
+        assert client.put(
+            f"/api/pdf-documents/{source['id']}/access",
+            json={"grants": [{"subject_type": "user", "subject_user_id": viewer.id, "role": "viewer"}]},
+        ).status_code == 200
+    finally:
+        _clear_user_override()
+
+    _override_user(viewer)
+    try:
+        target_bookshelf = client.get("/api/pdf-documents/bookshelves").json()[0]
+        copy_response = client.post(
+            f"/api/pdf-documents/{source['id']}/copy-to-library",
+            json={
+                "target_bookshelf_id": target_bookshelf["id"],
+                "shelf_index": 1,
+                "include_notes": True,
+                "include_reading_progress": False,
+            },
+        )
+        assert copy_response.status_code == 200, copy_response.text
+        copied = copy_response.json()
+        assert copied["owner_user_id"] == viewer.id
+        copied_note = client.get(f"/api/pdf-documents/{copied['id']}/page-notes/2")
+        assert copied_note.json()["content_html"] == "<p>原书笔记</p>"
+        clear_response = client.delete(f"/api/pdf-documents/{copied['id']}/my-page-notes")
+        assert clear_response.status_code == 200
+        assert clear_response.json()["deleted_count"] == 1
+    finally:
+        _clear_user_override()
+
+    _override_user(owner)
+    try:
+        assert client.put(
+            f"/api/pdf-documents/{source['id']}/access", json={"grants": []}
+        ).status_code == 200
+    finally:
+        _clear_user_override()
+    _override_user(viewer)
+    try:
+        assert client.get(f"/api/pdf-documents/{source['id']}").status_code == 403
+        assert client.get(f"/api/pdf-documents/{copied['id']}").status_code == 200
+    finally:
+        _clear_user_override()

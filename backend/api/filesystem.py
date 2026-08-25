@@ -29,8 +29,9 @@ import psutil
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
 from pydantic import BaseModel, Field as PydanticField
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, not_, or_
 from sqlmodel import Session, select
 
 from backend.core.devices.device import get_device_id
@@ -47,22 +48,23 @@ from backend.core.ocr.preview import (
 )
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.services.launcher import popen_service, python_service_command, run_quiet
-from backend.core.runtime.long_tasks import (
-    LongTaskContext,
-    LongTaskManager,
-    LongTaskNotFoundError,
-    make_long_task_progress_heartbeat,
-)
+from backend.core.jobs.local_runtime import get_local_job_run, serialize_local_job_run, submit_local_job
+from backend.core.jobs.result_store import read_local_job_result_snapshot, write_local_job_result_snapshot
 from backend.db import engine, get_session
 from backend.models import DeviceFile
 
 router = APIRouter()
+
+# Pillow does not decode HEIC/HEIF by itself. Register the libheif-backed
+# opener once so every thumbnail path still emits a browser-native JPEG/PNG.
+register_heif_opener()
 
 IMAGE_EXTENSIONS = {
     ".avif",
     ".bmp",
     ".gif",
     ".heic",
+    ".heif",
     ".jpeg",
     ".jpg",
     ".png",
@@ -237,7 +239,6 @@ _duplicate_analysis_tasks: OrderedDict[str, DuplicateAnalysisTask] = OrderedDict
 _duplicate_analysis_task_lock = RLock()
 _duplicate_analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="duplicate-analysis")
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
-_media_list_task_manager = LongTaskManager("fs-media-list", max_workers=2, max_records=64)
 _filesystem_recursive_stats_cache_lock = RLock()
 _filesystem_recursive_stats_cache: OrderedDict[str, tuple[float, dict[str, dict[str, int | None]]]] = OrderedDict()
 _FILESYSTEM_RECURSIVE_STATS_CACHE_TTL_SECONDS = 15.0
@@ -322,7 +323,7 @@ DirectorySortField = Literal[
     "max_weight",
     "weighted_file_count",
 ]
-DirectoryRecursiveStatsSource = Literal["indexed", "filesystem"]
+DirectoryRecursiveStatsSource = Literal["indexed", "filesystem", "auto"]
 
 
 class DirectorySortRule(BaseModel):
@@ -353,6 +354,7 @@ class MediaListRequest(RootScopedRequest):
     layout_column_width: int = 0
     layout_gap: int = 0
     layout_column_heights: List[float] = PydanticField(default_factory=list)
+    excluded_directory_names: List[str] = PydanticField(default_factory=list)
 
 
 class DuplicatePathFilterRule(BaseModel):
@@ -2575,7 +2577,11 @@ def list_directory_items(
             everything_stats_by_name,
             override_keys={"recursive_total_bytes"},
         )
-        if recursive_stats_source == "filesystem":
+        should_scan_filesystem = (
+            recursive_stats_source == "filesystem"
+            or (recursive_stats_source == "auto" and not everything_stats_by_name)
+        )
+        if should_scan_filesystem:
             filesystem_stats_by_name = _build_filesystem_recursive_directory_stats_by_name(
                 target_path=target_path,
                 directory_items=directory_items,
@@ -3995,6 +4001,7 @@ def _build_media_listing_query_signature(
     scan_limit: int,
     allowed_kinds: set[str],
     normalized_rules: list[GallerySortRule],
+    excluded_directory_names: set[str],
 ) -> str:
     payload = {
         "device_id": device_id,
@@ -4005,6 +4012,7 @@ def _build_media_listing_query_signature(
         "scan_limit": scan_limit,
         "allowed_kinds": sorted(allowed_kinds),
         "sort_program": {"rules": [rule.model_dump() for rule in normalized_rules]},
+        "excluded_directory_names": sorted(excluded_directory_names),
     }
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
@@ -4021,10 +4029,12 @@ def _iter_scanned_media_files(
     *,
     recursive: bool,
     scan_limit: int,
+    excluded_directory_names: set[str] | None = None,
 ) -> Iterator[Path]:
     normalized_scan_limit = _normalize_media_scan_limit(scan_limit)
     scanned_files = 0
     pending_dirs = [target_path]
+    excluded_names = excluded_directory_names or set()
 
     while pending_dirs and scanned_files < normalized_scan_limit:
         current_dir = pending_dirs.pop()
@@ -4034,7 +4044,7 @@ def _iter_scanned_media_files(
                 for entry in current_entries:
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            if recursive:
+                            if recursive and entry.name.lower() not in excluded_names:
                                 child_dirs.append(Path(entry.path))
                             continue
                     except OSError:
@@ -4300,6 +4310,7 @@ def _build_database_media_page(
     layout_column_width: int,
     layout_gap: int,
     layout_column_heights: list[float],
+    excluded_directory_names: set[str],
 ) -> dict | None:
     if session is None or not device_id:
         return None
@@ -4317,9 +4328,33 @@ def _build_database_media_page(
         DeviceFile.device_id == device_id,
         DeviceFile.absolute_path.is_not(None),
         DeviceFile.match_status == "matched",
-        DeviceFile.absolute_path.startswith(scope_prefix),
-        or_(DeviceFile.media_kind.in_(sorted(allowed_kinds)), DeviceFile.media_kind.is_(None)),
+        or_(
+            DeviceFile.absolute_path == scope_prefix,
+            DeviceFile.absolute_path.startswith(f"{scope_prefix}\\"),
+            DeviceFile.absolute_path.startswith(f"{scope_prefix}/"),
+        ),
+        or_(
+            DeviceFile.media_kind.in_(sorted(allowed_kinds)),
+            and_(
+                DeviceFile.media_kind.is_(None),
+                or_(
+                    *(
+                        DeviceFile.mime_type.startswith(f"{kind}/")
+                        for kind in sorted(allowed_kinds)
+                    )
+                ),
+            ),
+        ),
     ]
+    for directory_name in excluded_directory_names:
+        base_filters.append(
+            not_(
+                or_(
+                    DeviceFile.absolute_path.contains(f"\\{directory_name}\\"),
+                    DeviceFile.absolute_path.contains(f"/{directory_name}/"),
+                )
+            )
+        )
     aggregate_row = session.exec(
         select(
             func.count(),
@@ -4439,10 +4474,16 @@ def _list_supported_entries(
     layout_gap: int = 0,
     layout_column_heights: list[float] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    excluded_directory_names: Iterable[str] | None = None,
 ) -> dict:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
     include_visual_hash = _media_sort_rules_use_duplicate_cluster(normalized_rules)
     normalized_scan_limit = _normalize_media_scan_limit(scan_limit)
+    excluded_names = {
+        str(name or "").strip().lower()
+        for name in (excluded_directory_names or [])
+        if str(name or "").strip() and "/" not in str(name) and "\\" not in str(name)
+    }
     if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
         return {
             "root": None,
@@ -4486,6 +4527,7 @@ def _list_supported_entries(
         scan_limit=normalized_scan_limit,
         allowed_kinds=allowed_kinds,
         normalized_rules=normalized_rules,
+        excluded_directory_names=excluded_names,
     )
     cached_snapshot = _get_media_listing_snapshot(snapshot_id, query_signature)
     if cached_snapshot is not None:
@@ -4535,6 +4577,7 @@ def _list_supported_entries(
             layout_column_width=layout_column_width,
             layout_gap=layout_gap,
             layout_column_heights=layout_column_heights or [],
+            excluded_directory_names=excluded_names,
         )
         if database_page is not None:
             return database_page
@@ -4564,6 +4607,7 @@ def _list_supported_entries(
         target_path,
         recursive=recursive,
         scan_limit=normalized_scan_limit,
+        excluded_directory_names=excluded_names,
     ):
         scanned_count += 1
         _append_supported_file(file_path)
@@ -4680,6 +4724,7 @@ def list_media_entries(
     layout_gap: int = 0,
     layout_column_heights: list[float] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    excluded_directory_names: Iterable[str] | None = None,
 ) -> dict:
     return _list_supported_entries(
         root_key,
@@ -4701,6 +4746,7 @@ def list_media_entries(
         layout_gap=layout_gap,
         layout_column_heights=layout_column_heights,
         progress_callback=progress_callback,
+        excluded_directory_names=excluded_directory_names,
     )
 
 
@@ -6164,11 +6210,18 @@ def list_media(req: MediaListRequest, session: Session = Depends(get_session)):
         layout_column_width=req.layout_column_width,
         layout_gap=req.layout_gap,
         layout_column_heights=req.layout_column_heights,
+        excluded_directory_names=req.excluded_directory_names,
     )
 
 
-def _run_media_list_task(req: MediaListRequest, context: LongTaskContext) -> dict:
-    heartbeat = make_long_task_progress_heartbeat(context)
+def _run_media_list_task(req: MediaListRequest, context) -> dict:
+    def heartbeat(progress: dict[str, Any]) -> None:
+        context.heartbeat(
+            stage=str(progress.get("stage") or "running"),
+            message=str(progress.get("message") or "运行中"),
+            progress_current=progress.get("progress_current"),
+            progress_total=progress.get("progress_total"),
+        )
 
     with Session(engine) as task_session:
         return list_media_entries(
@@ -6189,31 +6242,65 @@ def _run_media_list_task(req: MediaListRequest, context: LongTaskContext) -> dic
             layout_gap=req.layout_gap,
             layout_column_heights=req.layout_column_heights,
             progress_callback=heartbeat,
+            excluded_directory_names=req.excluded_directory_names,
         )
+
+
+def run_filesystem_media_list_local_job(context, payload: dict[str, Any]) -> dict[str, Any]:
+    request_payload = payload.get("request")
+    if not isinstance(request_payload, dict):
+        raise ValueError("媒体列表任务缺少请求参数。")
+    result = _run_media_list_task(MediaListRequest.model_validate(request_payload), context)
+    write_local_job_result_snapshot(context.run_id, result)
+    return {
+        "result_snapshot_id": context.run_id,
+        "media_count": len(result.get("media") or []),
+        "snapshot_id": result.get("snapshot_id"),
+    }
+
+
+def _serialize_filesystem_media_list_local_run(run) -> dict[str, Any]:
+    payload = serialize_local_job_run(run)
+    status_map = {"succeeded": "completed", "interrupted": "failed"}
+    result = {
+        **payload,
+        "task_id": run.id,
+        "kind": "fs-media-list",
+        "status": status_map.get(run.status, run.status),
+        "running": run.status in {"queued", "running"},
+        "created_at": run.queued_at,
+        "metadata": dict((run.input_json or {}).get("metadata") or {}),
+        "elapsed_ms": int(round(((run.finished_at or time.time()) - run.queued_at) * 1000)),
+    }
+    if run.status == "succeeded":
+        large_result = read_local_job_result_snapshot(run.id)
+        if large_result is not None:
+            result["result"] = large_result
+    return result
 
 
 @router.post("/media/list/tasks")
 def start_media_list_task(req: MediaListRequest):
-    return _media_list_task_manager.start(
-        lambda context: _run_media_list_task(req, context),
-        stage="queued",
-        message="媒体列表任务已排队",
-        metadata={
+    metadata = {
             "root": req.root,
             "path": req.path,
             "absolute_path": req.absolute_path,
             "recursive": req.recursive,
             "scan_limit": req.scan_limit,
-        },
+        }
+    local_run = submit_local_job(
+        job_type="filesystem.media-list",
+        payload={"request": req.model_dump(mode="json"), "metadata": metadata},
     )
+    return _serialize_filesystem_media_list_local_run(local_run)
 
 
 @router.get("/media/list/tasks/{task_id}")
 def get_media_list_task(task_id: str):
-    try:
-        return _media_list_task_manager.serialize_task(task_id)
-    except LongTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Media list task not found") from exc
+    run = get_local_job_run(task_id)
+    if run is None or run.job_type != "filesystem.media-list":
+        raise HTTPException(status_code=404, detail="Media list task not found")
+    return _serialize_filesystem_media_list_local_run(run)
 
 
 @router.post("/duplicates")

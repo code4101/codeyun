@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -27,6 +28,7 @@ from backend.core.freebill.core import (
     upsert_freebill_record_overrides,
 )
 from backend.core.freebill.sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
+from backend.core.freebill.wechat_local_db import sync_wechat_local_db_to_freebill
 from backend.db import get_session
 from backend.models import User
 
@@ -369,6 +371,14 @@ def refresh_freebill_sheet_file(
     )
 
 
+@router.post("/sources/wechat-local/sync")
+def sync_wechat_local_source():
+    try:
+        return sync_wechat_local_db_to_freebill()
+    except (FileNotFoundError, ValueError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/import/{source}")
 async def import_files(
     source: Literal["alipay", "wechat", "ccb"],
@@ -399,6 +409,7 @@ async def import_files(
                     "filename": filename,
                     "processed": 0,
                     "inserted": 0,
+                    "updated": 0,
                     "skipped": 0,
                     "error": str(exc),
                 }
@@ -411,6 +422,7 @@ async def import_files(
         "results": results,
         "processed": sum(int(item.get("processed") or 0) for item in results),
         "inserted": sum(int(item.get("inserted") or 0) for item in results),
+        "updated": sum(int(item.get("updated") or 0) for item in results),
         "skipped": sum(int(item.get("skipped") or 0) for item in results),
         "error_count": sum(1 for item in results if item.get("status") == "error"),
     }

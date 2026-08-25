@@ -50,6 +50,24 @@ def test_device_id_reuses_machine_identity_file(monkeypatch, tmp_path):
     assert second_id == first_id
 
 
+def test_device_id_reuses_process_cache_without_reloading_identity(monkeypatch, tmp_path):
+    _patch_identity_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        device_module,
+        "_machine_identity_seed",
+        lambda: ("windows_machine_guid", "machine-guid-cached"),
+    )
+
+    first_id = device_module.get_device_id()
+    monkeypatch.setattr(
+        device_module,
+        "_load_machine_identity",
+        lambda: (_ for _ in ()).throw(AssertionError("cached identity should not hit disk")),
+    )
+
+    assert device_module.get_device_id() == first_id
+
+
 def test_device_id_marks_stale_legacy_config_when_machine_identity_exists(monkeypatch, tmp_path):
     _patch_identity_paths(monkeypatch, tmp_path)
     new_id = device_module._stable_device_id_from_seed(

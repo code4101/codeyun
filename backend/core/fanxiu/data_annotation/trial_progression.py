@@ -16,13 +16,15 @@
   不是回 #356。单步 AI 调试只有在用户明确要求时才执行这项收尾动作。
 
 本模块本身不截图、不点击，只保存上述状态模型并解析 #357 的剩余次数；
-具体场景响应和短暂画面等待位于 ``FanxiuRuntime``。
+具体场景响应和短暂画面等待位于 ``BehaviorTreeRuntime``。
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９／：", "0123456789/:")
 
@@ -55,15 +57,24 @@ def parse_xianqiao_trial_attempts(text: str) -> ObservedTrialAttempts:
     normalized = str(text or "").translate(_FULLWIDTH_DIGITS)
     compact = re.sub(r"\s+", "", normalized)
     match = re.search(
-        r"(?:今日)?剩余.{0,8}?(?:奖励)?次数\D{0,4}(\d+)(?:/(\d+))?",
+        r"(?:今日)?剩余.{0,8}?(?:奖励)?次数(.*)",
         compact,
     )
     if match is None:
-        match = re.search(r"次数\D{0,4}(\d+)(?:/(\d+))?", compact)
+        match = re.search(r"次数(.*)", compact)
     if match is None:
         raise ValueError(f"无法解析仙窍试炼剩余次数：{normalized!r}")
+    tail = match.group(1)
+    fraction = parse_ocr_values(tail, expected_count=2, allow_extra_numbers=True)
+    if fraction is not None:
+        remaining, capacity = fraction
+    else:
+        single = parse_ocr_values(tail, expected_count=1)
+        if single is None:
+            raise ValueError(f"无法解析仙窍试炼剩余次数：{normalized!r}")
+        remaining, capacity = single[0], None
     return ObservedTrialAttempts(
-        remaining=int(match.group(1)),
-        capacity=int(match.group(2)) if match.group(2) is not None else None,
+        remaining=remaining,
+        capacity=capacity,
         text=normalized,
     )

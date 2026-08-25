@@ -79,8 +79,9 @@ def test_admin_background_task_catalog_includes_optional_note_sheet_snapshot_bac
     assert item["added"] is False
 
 
-def test_admin_background_tasks_can_trigger_storage_job(client):
+def test_admin_background_tasks_can_trigger_storage_job(client, monkeypatch):
     app.dependency_overrides[get_current_active_superuser] = _admin_user
+    monkeypatch.setattr("backend.api.admin.enqueue_storage_analysis_job", lambda: "storage-local-1")
     try:
         response = client.post("/api/admin/background-tasks/storage_analysis/trigger")
     finally:
@@ -90,7 +91,7 @@ def test_admin_background_tasks_can_trigger_storage_job(client):
     payload = response.json()
     assert payload["task_key"] == "storage_analysis"
     assert payload["queued"] is True
-    assert payload["queue_task_id"]
+    assert payload["queue_task_id"] == "storage-local-1"
 
 
 def test_admin_background_tasks_can_trigger_codex_diary_job(client, monkeypatch):

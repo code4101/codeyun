@@ -13,8 +13,6 @@ namespace Code4101.Zaohua.Tiandao
         internal int DayMultiplierBonus;
         internal int FreeRateBonus;
 
-        internal int Score => QualityBonus * 1_000_000 + CountBonus * 10_000 +
-                              FreeRateBonus * 100 - DayBonus * 10 - DayMultiplierBonus;
     }
 
     internal static class AlchemyRuleEvaluator
@@ -151,6 +149,15 @@ namespace Code4101.Zaohua.Tiandao
             return current;
         }
 
+        internal static int CountAreaCells(MyVector2Int size, string areaExpression)
+        {
+            var board = new Dictionary<MyVector2Int, Piece>();
+            for (var x = (1 - size.x) / 2; x <= size.x / 2; x++)
+            for (var y = (1 - size.y) / 2; y <= size.y / 2; y++)
+                board[new MyVector2Int(x, y)] = null;
+            return SelectArea(board, areaExpression).Count;
+        }
+
         private static int Manhattan(MyVector2Int left, MyVector2Int right) =>
             Math.Abs(left.x - right.x) + Math.Abs(left.y - right.y);
 
@@ -258,6 +265,18 @@ namespace Code4101.Zaohua.Tiandao
                 5 => threshold == 0 ? 0 : value / threshold,
                 _ => 0,
             };
+        }
+
+        internal static void ApplyMeasuredState(
+            AlchemyRuleOutcome outcome,
+            TbDrugRecipeStateCfg state,
+            int measured)
+        {
+            if (outcome == null || state == null) return;
+            var multiplier = Calculate(measured, state.calculateType);
+            if (multiplier == 0 || string.IsNullOrEmpty(state.baseEff)) return;
+            outcome.TriggerCount += multiplier;
+            ApplyEffect(outcome, state.baseEff, multiplier);
         }
 
         private static void ApplyEffect(AlchemyRuleOutcome outcome, string effectText, int multiplier)

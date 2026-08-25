@@ -8,7 +8,7 @@ from backend.core.fanxiu.data_annotation.trial_purchase import (
     normalize_xianqiao_trial_purchase_target,
     purchases_completed_before_price,
 )
-from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 
 
 def _finish(generator):
@@ -20,7 +20,7 @@ def _finish(generator):
 
 
 def _runtime():
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     images = {
         357: {
             "id": 357,

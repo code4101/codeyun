@@ -1,4 +1,4 @@
-from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
 
 
 def _drain(action):
@@ -33,7 +33,7 @@ def test_lingmai_clear_checks_unchecked_image_before_clicking_one_click_explore(
             self.calls.append(("wait_click_then_view", scene, shape, target))
             yield
 
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
 
     def continue_amount(_runtime, _payload, *, task_label):
@@ -74,7 +74,7 @@ def test_lingmai_clear_drags_annotated_scrollbar_then_confirms():
             return 285
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
 
     result = _drain(runner._continue_daily_lingmai_clear_from_amount(runtime, {}, task_label="灵脉_清体力"))
@@ -114,7 +114,7 @@ def test_lingmai_clear_clicks_transient_315_when_observed():
             return View() if scene == 314 else 285
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
 
     result = _drain(runner._continue_daily_lingmai_clear_from_amount(runtime, {}, task_label="灵脉_清体力"))
@@ -141,7 +141,7 @@ def test_lingmai_clear_fails_when_confirm_returns_to_313():
             yield
             return 313
 
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
 
     try:
@@ -168,7 +168,7 @@ def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
             return 285
 
     runtime = Runtime()
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runner._log = lambda *_args, **_kwargs: None
 
     result = _drain(runner._continue_daily_lingmai_clear_from_transient(runtime, {}, task_label="灵脉_清体力"))

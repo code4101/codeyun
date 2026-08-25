@@ -428,6 +428,24 @@ def test_list_media_entries_includes_pdf_documents(tmp_path):
     assert entry["height"] is None
 
 
+def test_recursive_media_listing_excludes_hidden_reservoir_directories(tmp_path):
+    visible_dir = tmp_path / "album"
+    reservoir_dir = tmp_path / "3、pixiv"
+    visible_dir.mkdir()
+    reservoir_dir.mkdir()
+    Image.new("RGB", (8, 8), color=(20, 40, 60)).save(visible_dir / "visible.png")
+    Image.new("RGB", (8, 8), color=(60, 40, 20)).save(reservoir_dir / "hidden.png")
+
+    result = filesystem_api.list_media_entries(
+        absolute_path=str(tmp_path),
+        recursive=True,
+        excluded_directory_names=["3、pixiv", "3、pinterest", "3、video"],
+    )
+
+    assert result["total_count"] == 1
+    assert [entry["name"] for entry in result["media"]] == ["visible.png"]
+
+
 def test_list_supported_entries_prewarms_visual_hash_when_duplicate_cluster_rule_active(tmp_path, monkeypatch):
     engine = create_engine(
         "sqlite://",

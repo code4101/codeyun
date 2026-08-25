@@ -3,6 +3,13 @@
 本文档记录用户确认过的每日总结分类边界。每条经验需要同步沉淀到
 `tests/fixtures/codex_diary_category_cases.jsonl`，作为分类回归测试样本。
 
+## 分类修正后的聚合不变量
+
+Codex 日记的活跃节点以“日期 × 主分类”唯一：同一天同一主分类只能有一条。
+修改日记分类不是只改 `primary_category` 等分类字段；修改后必须立即按新的分组键
+重新聚合，合并正文、工时、轮次、来源线程和设备，并将被吸收节点软删除留痕。
+因此“分类正确但同日凡修仍拆成多条”仍然属于未修复完成。
+
 ## 样本口径
 
 分类测试样本必须使用每日总结背后的原始对话数据：原始线程标题、用户请求、
@@ -18,10 +25,15 @@ GUI 自动化和业务条目维护。只要工作对象是凡修手游或凡修�
 强信号包括：
 
 - 明确出现“凡修”。
-- 游戏业务词：洞天、福地、洞天福地、祈愿、炼丹、淬体、灵兽、妖王、仙花、仙府、宗城、法宝、道具、仙舟、衣橱等。
+- 凡修正式 Job 注册表中的身份：`task_type`、用户可见 `label`、`standard_job_id`。这些是业务归属的权威来源；例如 `activity_quiz / 活动_答题 / activity-quiz`、`lilian_event / 历练_事件`、`xianqiao_trial / 仙窍_试炼`。分类器应动态读取注册表，新增作业后自动获得凡修归属，不能继续靠逐个补关键词。
+- 凡修行为树的通用 Job 模型：作业状态设计、作业执行模型、作业返回值，以及与之配套的 `run_status`、`job_status`、`next_time`、`success/error`、Scheduler、错误重试和触发机制。即使没有出现某个具体作业名称，仍属于凡修；“文档归一”只是输出形态，不属于 CodeYun/笔记。
+- 游戏业务词：洞天、福地、洞天福地、论道、祈愿、炼丹、淬体、灵兽、妖王、仙花、仙府、宗城、法宝、道具、仙舟、衣橱等。
 - 自动化与运行语境：`daily_foundation.py`、`mail.py`、日常基础、日常任务、领取、返回闭环、稳定回归锚点、场景编号、目标场景、世界步骤、抓包巡检、`packet_worker`、`pcap`。
+- 动态插桩链路：动态插桩、游戏实例缓存、运行态主槽、灵器实例、`cleanseId`、Frida/Lua 运行态读取及其数据库快照、API 和前端投影。
+- 论道链路：论道座位、抢座、落座、三清、大罗及论道场景识别；围绕这些对象处理 OCR、GPU/CUDA、端口争抢或性能优化时仍归凡修。
 - VIP/日常链路：`daily_vip`、`日常_vip`、每日限购、免费、`#34`、`#291`、`#292`、固定标注路径、真实 Runtime 闭环。
 - 用户反馈确认：凡修手游里的洞天任务，以及围绕该任务的功能开发，都属于凡修。
+- 云梦活动链路：云梦、云梦试剑、云梦论剑、`Yunmeng/YunmengPK`、兑币/累计兑币、挑战记录、个人榜/位面榜、丹均积分和目标预测。接口、算法、数据库、知识库或页面只是实现载体，不能改判为 CodeYun/笔记或综合。
 
 不要因为以下因素改判为 CodeYun/综合：
 
@@ -33,6 +45,29 @@ GUI 自动化和业务条目维护。只要工作对象是凡修手游或凡修�
 
 - `fanxiu-dongtian-return-loop-20260628`：洞天福地返回闭环，误分为 CodeYun/综合，标准分类为凡修。
 - `fanxiu-daily-vip-runtime-loop-20260628`：日常_vip行为链路闭环，误分为 pyxllib，标准分类为凡修。
+- `fanxiu-dynamic-instrumentation-spiritware-20260801`：动态插桩读取灵器实例并写回前端表格，误分为 CodeYun/笔记，标准分类为凡修。
+- `fanxiu-lundao-ocr-gpu-20260801`：论道 OCR 切回 GPU 并优化识别性能，误分为 CodeYun/集群，标准分类为凡修。
+- `fanxiu-lundao-dynamic-seating-20260720`：论道动态抢座策略，误分为 CodeYun/笔记，标准分类为凡修。
+- `fanxiu-lundao-status-vocabulary-20260718`：论道状态词汇与场景映射，误分为考勤，标准分类为凡修。
+- `fanxiu-activity-quiz-standard-job-20260731`：活动_答题标准作业、共享题库、奖励钩子与极速点击链路，误分为 CodeYun/笔记，标准分类为凡修。
+- `fanxiu-job-status-model-20260730`：凡修行为树的作业状态、`success/error`、`next_time` 与 Scheduler 职责边界规划，误分为 CodeYun/笔记，标准分类为凡修。
+- `fanxiu-yunmeng-trial-20260802`：云梦试剑累计兑币、挑战记录、榜单与目标预测，误分为 CodeYun/笔记，标准分类为凡修。
+
+## CodeYun/笔记
+
+CodeYun/笔记既覆盖星图笔记、图书馆、PDF、阅读器、文档视图等笔记产品能力，也覆盖
+用户与 Codex 进行的知识解释、原理讨论和可沉淀阅读内容。后者不要求实际修改笔记系统代码。
+
+典型内容包括计算理论、数学物理、医学科普、哲学启发、文章摘录和阅读整理。例如图灵机
+停机问题、量子计算原理、重症肌无力科普均属于 CodeYun/笔记。即使同一日或同一批导入
+记录里还出现修道班、返款或课程配置，也必须先按最小问答事务拆分，不能把这些独立知识
+话题染成考勤。
+
+已确认样本：
+
+- `codeyun-note-halting-problem-20260725`：停机问题与可计算性解释，误分为考勤，标准分类为 CodeYun/笔记。
+- `codeyun-note-quantum-computing-20260725`：量子计算与概率振幅原理，误分为考勤，标准分类为 CodeYun/笔记。
+- `codeyun-note-medical-explanation-20260725`：重症肌无力医学科普，误分为考勤，标准分类为 CodeYun/笔记。
 
 ## CodeYun/综合
 
@@ -79,6 +114,9 @@ CodeYun/综合覆盖 CodeYun 自身的系统级治理、跨模块根因修复、
 ## pyxllib
 
 pyxllib 只覆盖 pyxllib 这个 Python 通用库自身的工具层、编程层、跨项目基础设施和库内能力演进。
+它通常是实现层或承载层，不是业务归属。若同一项工作同时涉及考勤、凡修、造化仙缘等
+明确业务，即使确实修改、迁移或归档了 pyxllib 代码，也应优先归入具体业务；只有工作主体
+就是 pyxllib 通用库本身、且没有更具体业务对象时，才单独归为 pyxllib。
 
 不要因为以下因素把 CodeYun 工作误判为 pyxllib：
 
@@ -87,6 +125,10 @@ pyxllib 只覆盖 pyxllib 这个 Python 通用库自身的工具层、编程层�
 - 前端任务里出现通用工程词、统计词或工具库名。
 
 Vue3、`.vue`、`frontend/src/**`、CodeYun 页面首屏/热路径/组件渲染/前端设计巡检，默认不属于 pyxllib。
+
+已确认样本：
+
+- `attendance-over-pyxllib-architecture-convergence-20260731`：考勤系统退役 WPS/JSA、收敛为 CodeYun 单一架构，并把历史能力归档到 pyxllib 博物馆；pyxllib 是归档与实现位置，标准分类为考勤。
 
 ## CodeYun/集群
 

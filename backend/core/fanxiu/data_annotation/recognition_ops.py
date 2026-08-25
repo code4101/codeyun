@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
+from backend.core.fanxiu.data_annotation.recognition_candidates import has_scene_identity
 from backend.core.fanxiu.data_annotation.recognition_graph import normalize_match_edge
 
 
 RECOGNITION_OPS_CATEGORIES: tuple[dict[str, str], ...] = (
+    {"id": "navigation_stall", "label": "运行停滞"},
     {"id": "mutual_match", "label": "互相匹配"},
     {"id": "multi_source", "label": "多入边匹配"},
     {"id": "cycle_group", "label": "循环匹配组"},
@@ -121,7 +123,11 @@ def _strongly_connected_components(nodes: Iterable[int], outgoing: Mapping[int, 
     return result
 
 
-def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any, Any]) -> dict[str, Any]:
+def build_recognition_ops_report(
+    matrix: Mapping[str, Any],
+    images: Mapping[Any, Any],
+    navigation_incidents: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     normalized_images = _normalize_images(images)
     scene_ids = [
         int(item)
@@ -129,7 +135,11 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
         if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
     ]
     if not scene_ids:
-        scene_ids = sorted(normalized_images)
+        scene_ids = sorted(
+            scene_id
+            for scene_id, image in normalized_images.items()
+            if has_scene_identity(dict(image))
+        )
 
     edges, self_loop_count = _matrix_edges(matrix)
     edge_set = {(int(edge["source_id"]), int(edge["target_id"])) for edge in edges}
@@ -144,6 +154,81 @@ def build_recognition_ops_report(matrix: Mapping[str, Any], images: Mapping[Any,
         edge_by_pair[(source_id, target_id)] = edge
 
     issues: list[dict[str, Any]] = []
+
+    status_labels = {
+        "recovering": "恢复中断",
+        "recovered_with_fallback": "#424 已恢复",
+        "recovered_after_stall": "重规划已恢复",
+        "unrecovered": "未恢复",
+    }
+    for incident in navigation_incidents or []:
+        incident_id = str(incident.get("id") or "").strip()
+        if not incident_id:
+            continue
+        timeline = incident.get("timeline") if isinstance(incident.get("timeline"), list) else []
+        node_ids: list[int] = []
+        for value in (
+            incident.get("current_scene_id"),
+            incident.get("target_scene_id"),
+            ((incident.get("resolution") or {}).get("scene_id") if isinstance(incident.get("resolution"), Mapping) else None),
+        ):
+            try:
+                scene_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if scene_id > 0 and scene_id not in node_ids:
+                node_ids.append(scene_id)
+        incident_edges: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[int, int]] = set()
+        for item in timeline:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                source_id = int(item.get("source_scene_id"))
+                target_id = int(item.get("landing_scene_id"))
+            except (TypeError, ValueError):
+                continue
+            for scene_id in (source_id, target_id):
+                if scene_id > 0 and scene_id not in node_ids:
+                    node_ids.append(scene_id)
+            pair = (source_id, target_id)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            incident_edges.append({
+                "source_id": source_id,
+                "target_id": target_id,
+                "score": item.get("landing_score"),
+                "threshold": None,
+                "matched": True,
+            })
+        status = str(incident.get("status") or "recovering")
+        created_at = str(incident.get("created_at") or "")
+        target_scene_id = incident.get("target_scene_id")
+        target_label = f"#{target_scene_id}" if target_scene_id is not None else "未知目标"
+        issues.append({
+            "id": f"navigation:{incident_id}",
+            "category": "navigation_stall",
+            "severity": "error" if status in {"unrecovered", "recovering"} else "warning",
+            "label": f"{created_at.replace('T', ' ')} {target_label} · {status_labels.get(status, status)}".strip(),
+            "node_ids": node_ids,
+            "edges": incident_edges,
+            "incident": {
+                "id": incident_id,
+                "status": status,
+                "review_status": incident.get("review_status"),
+                "created_at": incident.get("created_at"),
+                "updated_at": incident.get("updated_at"),
+                "elapsed_seconds": incident.get("elapsed_seconds"),
+                "target_scene_id": incident.get("target_scene_id"),
+                "current_scene_id": incident.get("current_scene_id"),
+                "fallback_used": bool(incident.get("fallback_used")),
+                "trigger": incident.get("trigger") if isinstance(incident.get("trigger"), Mapping) else {},
+                "runtime": incident.get("runtime") if isinstance(incident.get("runtime"), Mapping) else {},
+                "resolution": incident.get("resolution") if isinstance(incident.get("resolution"), Mapping) else None,
+                "timeline_count": len(timeline),
+            },
+        })
 
     for source_id, target_id in sorted(edge_set):
         if source_id > target_id or (target_id, source_id) not in edge_set:

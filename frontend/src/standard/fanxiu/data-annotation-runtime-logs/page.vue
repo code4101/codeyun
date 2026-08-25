@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getFanxiuDataAnnotationRuntimeLogs, type FanxiuDataAnnotationRuntimeLogEntry } from '@/api/fanxiu';
+import { getFanxiuBehaviorTreeRuntimeLogs, type FanxiuBehaviorTreeRuntimeLogEntry } from '@/api/fanxiu';
 
 const route = useRoute();
 const router = useRouter();
@@ -10,7 +10,7 @@ const entryId = computed(() => String(route.query.entry_id || ''));
 const scope = computed(() => String(route.query.scope || ''));
 const itemId = computed(() => String(route.query.item_id || ''));
 const title = computed(() => String(route.query.title || itemId.value || '日志'));
-type RuntimeLogRow = FanxiuDataAnnotationRuntimeLogEntry & { _uiKey: string };
+type RuntimeLogRow = FanxiuBehaviorTreeRuntimeLogEntry & { _uiKey: string };
 const LOG_LIMIT = 1000;
 const logs = ref<RuntimeLogRow[]>([]);
 const loading = ref(false);
@@ -23,14 +23,14 @@ const scopeText = computed(() => {
   return '运行';
 });
 
-const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
+const logSourceText = (entry: FanxiuBehaviorTreeRuntimeLogEntry) => {
   const file = String(entry.source_file || '').trim();
   const line = entry.source_line ? `:${entry.source_line}` : '';
   const expr = String(entry.source_expr || '').trim();
   return file && expr ? `${file}${line}  ${expr}` : '';
 };
 
-const logSignature = (entry: FanxiuDataAnnotationRuntimeLogEntry) => [
+const logSignature = (entry: FanxiuBehaviorTreeRuntimeLogEntry) => [
   entry.time,
   entry.kind,
   entry.scope || '',
@@ -42,7 +42,7 @@ const logSignature = (entry: FanxiuDataAnnotationRuntimeLogEntry) => [
   entry.source_expr || '',
 ].join('\u001f');
 
-const buildLogRows = (entries: FanxiuDataAnnotationRuntimeLogEntry[]) => {
+const buildLogRows = (entries: FanxiuBehaviorTreeRuntimeLogEntry[]) => {
   const seen = new Map<string, number>();
   return entries.map((entry) => {
     const signature = logSignature(entry);
@@ -68,7 +68,7 @@ const refreshLogs = async (options: { silent?: boolean } = {}) => {
     loading.value = true;
   }
   try {
-    const response = await getFanxiuDataAnnotationRuntimeLogs(LOG_LIMIT, scope.value, itemId.value);
+    const response = await getFanxiuBehaviorTreeRuntimeLogs(LOG_LIMIT, scope.value, itemId.value);
     mergeLogRows(buildLogRows(response.entries || []));
   } finally {
     loaded.value = true;

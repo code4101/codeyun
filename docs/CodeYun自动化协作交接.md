@@ -29,6 +29,20 @@
 
 ## 待代码健康优化接手
 
+### UI-HANDOFF-20260722-001
+
+- 状态：needs-human-decision
+- 来源自动化：CodeYun 前端设计巡检
+- 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-07-22-frontend-design-28201e60/report.md`
+- 触发范围：`6421d1833078e750a83b41939e85f9cac7700594..28201e6061fb1f25e33646d1b9ae84d4c9d98099` / `/tools/web-outline`
+- 表层症状：网页大纲页面默认勾选“语义重建”，匿名用户可以直接提交任意公开网页并触发 AI 目录重建。
+- 非前端根因判断：`tools.web-outline` 当前 `default_anonymous_allow=true`、`api_scopes=[]`，而 `/api/web-outline/extract` 只读取可选登录用户；“页面可见权限、抓取能力、模型额度”没有形成同一个可审计的访问边界，单纯隐藏 checkbox 或改文案不能解决。
+- 涉及对象：`frontend/src/features/access/permissionRegistry.json`、`frontend/src/standard/tools/web-outline/page.vue`、`backend/api/web_outline.py`、AI app runtime 配置与访问审计。
+- 已做前端止血：无。页面功能和三视口布局已验证正常，但是否公开属于产品与权限语义，不自动收紧。
+- 建议接手动作：先做只读权限/成本模型审计，明确“原始标题提取”和“语义重建”是否应采用不同权限；给出三选一建议：整体需登录、只允许匿名规则提取、或匿名 AI 调用具备明确限流/配额与审计。
+- 验证建议：补匿名/登录/禁用权限三类 API 测试，确认页面路由与 `/api/web-outline/extract` 同步拒绝；生产入口复验 shell 挂载、错误反馈和资源边界。
+- 风险和停手条件：不要仅把 `default_anonymous_allow` 改成 false 或只在前端取消默认勾选；必须同时明确 API 权限和已有公开使用意图，避免产生“页面隐藏但接口仍开放”或无意关闭公共工具。
+
 ### UI-HANDOFF-20260721-001
 
 - 状态：open
@@ -80,7 +94,7 @@
 - 表层症状：`作业` 表的一级 `下次触发` 列仍出现 `动态作业未记录下次时间` 这类解释型文案，把时间事实和规则/缺数说明揉进同一单元格。
 - 非前端根因判断：行为树调度接口缺少面向一级状态表的稳定投影。前端当前只能把“没有有效下次时间 / 需要先求值”的后端缺口翻译成解释句，而不是渲染纯状态事实。
 - 涉及对象：`backend/api/fanxiu.py`、`backend/core/fanxiu/data_annotation/*`、`frontend/src/standard/fanxiu/data-annotation-runtime/page.vue`
-- 已做前端止血：无。本轮只在 `task-system` 健康条做了减法收敛，未继续扩散到需要调度语义判断的作业表。
+- 已做前端止血：无。未继续扩散到需要调度语义判断的作业表。
 - 建议接手动作：只读模型审计，判断是否应新增稳定状态投影，例如“有效下次时间 / 是否待求值 / 阻塞原因”，再由前端恢复一级列表的纯时间语义。
 - 验证建议：`uv run pytest tests/test_fanxiu_data_annotation_scheduler.py tests/backend/test_fanxiu_runtime_view_model.py`，并打开 `http://127.0.0.1:5173/fanxiu/data-annotation/runtime` 复核动态作业行是否回到稳定状态表。
 - 风险和停手条件：如果 `动态作业未记录下次时间` 背后其实承载多个不同业务阶段，不能只换文案或前端硬编码；需要先由人工或后端明确“缺时间”和“应执行”的正式状态边界。
@@ -106,7 +120,7 @@
 ## 已接手记录
 
 - `UI-HANDOFF-20260623-002`：已完成 Runtime 通用动作接口残留只读审计，归因为 Runtime action model / 业务节点投影债务；当前通用 helper 已覆盖 `wait_click_then_view`、`scroll_shape_content`、`nudge_shape_content_for_box`、`ocr_words_in_shapes`、`drag_shape_to_shape`，但业务层仍有 `shape.click(runtime)` 21 处、`click_shape_center` 31 处、`scroll_shape_content` 5 处。结论是不要批量替换普通 `wait_click`，下一步只处理明确小切片，例如 `xianfu.py` 的重复直接点击导航或 `daily_foundation.py` 的滚动查找候选，并且涉及真实点击前必须另走真实 Runtime 验收。报告：`%TEMP%\codeyun\idle-maintenance\20260624-000512-runtime_action_helper_residue_audit.json`；验证：`uv run pytest backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_runtime_drag_shape_to_shape_uses_runtime_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_uses_half_page_slow_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_can_limit_signature_to_recognition_shape tests/test_fanxiu_data_annotation_scheduler.py::test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_debug_eval_context_exposes_wait_click_then_view -q --durations=10`，结果 `5 passed, 1 warning in 2.51s`。
-- `UI-HANDOFF-20260623-001`：已完成只读模型审计，归因为 API/DTO 投影债务；现有后端动态作业 `next_time` 同步链路验证通过，下一步应补一级状态表可用的稳定 `next_trigger` 投影，而不是继续让前端用空 `next_time` + `schedule_kind` 推导解释文案。报告：`%TEMP%\codeyun\idle-maintenance\20260623-234942-runtime_next_trigger_projection_audit.json`；验证：`uv run pytest tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_syncs_dynamic_next_time_from_world_facts tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_syncs_retry_after_from_world_facts tests/test_fanxiu_data_annotation_scheduler.py::test_data_annotation_scheduler_sync_ignores_manual_pending_fact_next_time -q --durations=10`，结果 `3 passed, 1 warning in 2.31s`。
+- `UI-HANDOFF-20260623-001`：该历史投影债务已由统一触发模型收口。页面和后端都直接读取唯一的 `next_time`；`schedule_kind` 只描述时间生成规则，不再参与前端推导另一套触发事实。
 
 ## 维护规则
 

@@ -44,8 +44,49 @@ def _clean_text(value: Any) -> str:
     return "".join(str(value or "").split())
 
 
+def _geometry_reading_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order OCR boxes by visual rows, then left-to-right within each row."""
+
+    candidates = [item for item in items if _coerce_float(item.get("w")) > 0 and _coerce_float(item.get("h")) > 0]
+    candidates.sort(
+        key=lambda item: (
+            _coerce_float(item.get("y")) + _coerce_float(item.get("h")) / 2,
+            _coerce_float(item.get("x")),
+        )
+    )
+    rows: list[list[dict[str, Any]]] = []
+    for item in candidates:
+        center_y = _coerce_float(item.get("y")) + _coerce_float(item.get("h")) / 2
+        height = max(1.0, _coerce_float(item.get("h"), 1.0))
+        best_row: list[dict[str, Any]] | None = None
+        best_distance = float("inf")
+        for row in rows:
+            row_center_y = sum(
+                _coerce_float(member.get("y")) + _coerce_float(member.get("h")) / 2
+                for member in row
+            ) / len(row)
+            row_height = max(_coerce_float(member.get("h"), 1.0) for member in row)
+            distance = abs(center_y - row_center_y)
+            if distance <= max(height, row_height) * 0.5 and distance < best_distance:
+                best_row = row
+                best_distance = distance
+        if best_row is None:
+            rows.append([item])
+        else:
+            best_row.append(item)
+    for row in rows:
+        row.sort(key=lambda item: (_coerce_float(item.get("x")), _coerce_float(item.get("y"))))
+    rows.sort(
+        key=lambda row: (
+            min(_coerce_float(item.get("y")) for item in row),
+            min(_coerce_float(item.get("x")) for item in row),
+        )
+    )
+    return [item for row in rows for item in row]
+
+
 def extract_ocr_lines(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract Paddle's detector/recognizer text boxes in native order."""
+    """Extract Paddle text boxes in geometric reading order."""
 
     texts = payload.get("rec_texts") or []
     scores = payload.get("rec_scores") or []
@@ -72,6 +113,9 @@ def extract_ocr_lines(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if index < len(scores):
             line["score"] = _coerce_float(scores[index])
         lines.append(line)
+    lines = _geometry_reading_order(lines)
+    for order, line in enumerate(lines):
+        line["order"] = order
     return lines
 
 
@@ -120,7 +164,16 @@ def extract_ocr_tokens(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def extract_ocr_spatial_document(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """Return both authoritative first-level lines and linked second-level tokens."""
 
+    lines = extract_ocr_lines(payload)
+    tokens = extract_ocr_tokens(payload)
+    line_order = {str(line.get("line_id")): int(line.get("order") or 0) for line in lines}
+    for token in tokens:
+        token["line_order"] = line_order.get(
+            str(token.get("parent_line_id")),
+            int(token.get("line_order") or 0),
+        )
+    tokens.sort(key=lambda token: (int(token.get("line_order") or 0), int(token.get("order") or 0)))
     return {
-        "lines": extract_ocr_lines(payload),
-        "tokens": extract_ocr_tokens(payload),
+        "lines": lines,
+        "tokens": tokens,
     }

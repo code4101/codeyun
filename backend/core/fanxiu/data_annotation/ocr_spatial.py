@@ -1,10 +1,59 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable
+import unicodedata
+from dataclasses import dataclass
+from typing import Any, Iterable, Literal
+
+from rapidfuzz import fuzz
 
 
 MIN_TOKEN_SHAPE_OVERLAP_RATIO = 0.30
+DEFAULT_TEXT_TOKEN_GAP_HEIGHT_RATIO = 0.75
+
+
+class OcrTextMatchAmbiguousError(ValueError):
+    """Raised when a click-safe OCR lookup has more than one candidate."""
+
+
+@dataclass(frozen=True)
+class OcrTextMatch:
+    """A click-safe text match backed by the OCR tokens that produced its box."""
+
+    target: str
+    text: str
+    x: float
+    y: float
+    w: float
+    h: float
+    tokens: tuple[dict[str, Any], ...]
+    score: float = 100.0
+
+    @property
+    def box(self) -> dict[str, float]:
+        return {"x": self.x, "y": self.y, "w": self.w, "h": self.h}
+
+    def point(
+        self,
+        *,
+        anchor: Literal["center", "top_left", "top_center", "bottom_center"] = "center",
+        offset: tuple[float, float] = (0.0, 0.0),
+        offset_unit: Literal["pixel", "height"] = "pixel",
+    ) -> tuple[float, float]:
+        """Resolve a click point without mixing text matching with business offset."""
+
+        anchor_x = self.x if anchor == "top_left" else self.x + self.w / 2
+        anchor_y = {
+            "center": self.y + self.h / 2,
+            "top_left": self.y,
+            "top_center": self.y,
+            "bottom_center": self.y + self.h,
+        }[anchor]
+        scale = self.h if offset_unit == "height" else 1.0
+        return (
+            anchor_x + float(offset[0]) * scale,
+            anchor_y + float(offset[1]) * scale,
+        )
 
 
 def _box(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
@@ -88,14 +137,6 @@ def _group_token_rows(tokens: Iterable[dict[str, Any]]) -> list[list[dict[str, A
 
 def order_ocr_tokens(tokens: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates = [token for token in tokens if isinstance(token, dict) and _box(token) is not None]
-    if candidates and all(token.get("parent_line_id") is not None for token in candidates):
-        return sorted(
-            candidates,
-            key=lambda item: (
-                int(item.get("line_order") or 0),
-                int(item.get("order") or 0),
-            ),
-        )
     return [token for row in _group_token_rows(candidates) for token in row]
 
 
@@ -181,6 +222,290 @@ def query_spatial_ocr(tokens: list[dict[str, Any]], query: dict[str, Any]) -> di
         "fragments": fragments,
         "tokens": ordered,
     }
+
+
+def _token_streams(tokens: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Build visual reading streams without treating a Paddle line as one word."""
+
+    candidates = [token for token in tokens if isinstance(token, dict) and _box(token) is not None]
+    linked: dict[str, list[dict[str, Any]]] = {}
+    unlinked: list[dict[str, Any]] = []
+    for token in candidates:
+        parent_id = token.get("parent_line_id")
+        if parent_id is None:
+            unlinked.append(token)
+        else:
+            linked.setdefault(str(parent_id), []).append(token)
+
+    streams = [
+        sorted(
+            group,
+            key=lambda item: (
+                float(item.get("x") or 0),
+                int(item.get("order") or 0),
+            ),
+        )
+        for group in linked.values()
+    ]
+    streams.extend(_group_token_rows(unlinked))
+    streams.sort(
+        key=lambda group: (
+            min(float(item.get("y") or 0) for item in group),
+            min(float(item.get("x") or 0) for item in group),
+        )
+    )
+    return streams
+
+
+def _split_stream_by_geometry(
+    stream: list[dict[str, Any]],
+    *,
+    max_gap_height_ratio: float,
+) -> list[list[dict[str, Any]]]:
+    segments: list[list[dict[str, Any]]] = []
+    for token in stream:
+        token_box = _box(token)
+        if token_box is None:
+            continue
+        if not segments:
+            segments.append([token])
+            continue
+        previous = segments[-1][-1]
+        previous_box = _box(previous)
+        if previous_box is None:
+            segments.append([token])
+            continue
+        previous_height = previous_box[3] - previous_box[1]
+        token_height = token_box[3] - token_box[1]
+        vertical_overlap = max(
+            0.0,
+            min(previous_box[3], token_box[3]) - max(previous_box[1], token_box[1]),
+        )
+        aligned = vertical_overlap / max(1.0, min(previous_height, token_height)) >= 0.5
+        gap = token_box[0] - previous_box[2]
+        adjacent = (
+            token_box[0] >= previous_box[0]
+            and gap <= max(previous_height, token_height) * max_gap_height_ratio
+        )
+        if not aligned or not adjacent:
+            segments.append([token])
+        else:
+            segments[-1].append(token)
+    return segments
+
+
+def segment_ocr_tokens(
+    tokens: Iterable[dict[str, Any]],
+    *,
+    max_gap_height_ratio: float = DEFAULT_TEXT_TOKEN_GAP_HEIGHT_RATIO,
+) -> list[list[dict[str, Any]]]:
+    """Split OCR tokens into contiguous visual text groups.
+
+    The result is geometric rather than linguistic: Paddle line identity keeps
+    rows separate, while horizontal gaps split nearby controls into reusable
+    token groups.
+    """
+
+    ratio = max(0.0, float(max_gap_height_ratio))
+    return [
+        segment
+        for stream in _token_streams(tokens)
+        for segment in _split_stream_by_geometry(
+            stream,
+            max_gap_height_ratio=ratio,
+        )
+    ]
+
+
+def find_text_matches(
+    tokens: Iterable[dict[str, Any]],
+    target: str,
+    *,
+    max_gap_height_ratio: float = DEFAULT_TEXT_TOKEN_GAP_HEIGHT_RATIO,
+) -> list[OcrTextMatch]:
+    """Find every exact, click-safe target occurrence from real OCR token boxes.
+
+    A match may span consecutive tokens, but never crosses a Paddle line or a
+    geometric gap. Partial use of a multi-character token is rejected because
+    its character box would otherwise have to be guessed.
+    """
+
+    normalized_target = str(target or "")
+    if not normalized_target:
+        return []
+    matches: list[OcrTextMatch] = []
+    for segment in segment_ocr_tokens(
+        tokens,
+        max_gap_height_ratio=max_gap_height_ratio,
+    ):
+        segment_text = "".join(str(token.get("text") or "") for token in segment)
+        token_ranges: list[tuple[int, int, dict[str, Any]]] = []
+        cursor = 0
+        for token in segment:
+            token_text = str(token.get("text") or "")
+            token_ranges.append((cursor, cursor + len(token_text), token))
+            cursor += len(token_text)
+        search_from = 0
+        while (start := segment_text.find(normalized_target, search_from)) >= 0:
+            end = start + len(normalized_target)
+            selected = [
+                token
+                for token_start, token_end, token in token_ranges
+                if token_end > start and token_start < end
+            ]
+            boundaries = {
+                boundary
+                for token_start, token_end, _token in token_ranges
+                for boundary in (token_start, token_end)
+            }
+            if start in boundaries and end in boundaries:
+                box = _union_boxes(selected)
+                if box is not None:
+                    matches.append(
+                        OcrTextMatch(
+                            target=normalized_target,
+                            text=segment_text[start:end],
+                            tokens=tuple(selected),
+                            **box,
+                        )
+                    )
+            search_from = start + 1
+    return matches
+
+
+def _normalize_fuzzy_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def find_fuzzy_text_matches(
+    tokens: Iterable[dict[str, Any]],
+    target: str,
+    *,
+    min_score: float = 70.0,
+    min_length_ratio: float = 0.60,
+    max_length_ratio: float = 1.50,
+    max_gap_height_ratio: float = DEFAULT_TEXT_TOKEN_GAP_HEIGHT_RATIO,
+) -> list[OcrTextMatch]:
+    """Find bounded fuzzy candidates while retaining their real token boxes.
+
+    Candidate windows never cross a Paddle line or a geometric gap.  Only
+    whole OCR tokens are used, so a fuzzy result never invents a character box
+    inside a multi-character token.  Per visual segment only the best-scoring
+    window(s) survive; this prevents overlapping near-matches around one label
+    from being mistaken for several independent controls.
+    """
+
+    normalized_target = _normalize_fuzzy_text(target)
+    if not normalized_target:
+        return []
+    target_length = len(normalized_target)
+    minimum_length = max(1, math.ceil(target_length * max(0.0, float(min_length_ratio))))
+    maximum_length = max(
+        minimum_length,
+        math.ceil(target_length * max(float(min_length_ratio), float(max_length_ratio))),
+    )
+    threshold = max(0.0, min(100.0, float(min_score)))
+    matches: list[OcrTextMatch] = []
+    for segment in segment_ocr_tokens(
+        tokens,
+        max_gap_height_ratio=max_gap_height_ratio,
+    ):
+        segment_matches: list[OcrTextMatch] = []
+        for start in range(len(segment)):
+            selected: list[dict[str, Any]] = []
+            for end in range(start, len(segment)):
+                selected.append(segment[end])
+                candidate_text = "".join(str(token.get("text") or "") for token in selected)
+                normalized_candidate = _normalize_fuzzy_text(candidate_text)
+                candidate_length = len(normalized_candidate)
+                if candidate_length > maximum_length:
+                    break
+                if candidate_length < minimum_length:
+                    continue
+                score = float(fuzz.ratio(normalized_candidate, normalized_target))
+                if score < threshold:
+                    continue
+                box = _union_boxes(selected)
+                if box is None:
+                    continue
+                segment_matches.append(
+                    OcrTextMatch(
+                        target=str(target or ""),
+                        text=candidate_text,
+                        tokens=tuple(selected),
+                        score=score,
+                        **box,
+                    )
+                )
+        if segment_matches:
+            best_score = max(match.score for match in segment_matches)
+            matches.extend(
+                match for match in segment_matches
+                if math.isclose(match.score, best_score, abs_tol=1e-6)
+            )
+    return matches
+
+
+def select_text_match(
+    matches: Iterable[OcrTextMatch],
+    target: str,
+    *,
+    occurrence: int | None = None,
+) -> OcrTextMatch | None:
+    """Select one match explicitly; ambiguity is an error, not a first-hit rule."""
+
+    candidates = list(matches)
+    if occurrence is not None:
+        index = int(occurrence)
+        if index < 0 or index >= len(candidates):
+            return None
+        return candidates[index]
+    if len(candidates) > 1:
+        boxes = ", ".join(
+            f"({match.x:.0f},{match.y:.0f},{match.w:.0f},{match.h:.0f})"
+            for match in candidates
+        )
+        raise OcrTextMatchAmbiguousError(
+            f"OCR 文本「{target}」存在 {len(candidates)} 个命中：{boxes}；"
+            "请传 occurrence 或先缩小 shape/ROI"
+        )
+    return candidates[0] if candidates else None
+
+
+def select_fuzzy_text_match(
+    matches: Iterable[OcrTextMatch],
+    target: str,
+    *,
+    occurrence: int | None = None,
+    ambiguity_margin: float = 5.0,
+) -> OcrTextMatch | None:
+    """Select the best fuzzy candidate and reject materially tied controls."""
+
+    candidates = list(matches)
+    if occurrence is not None:
+        index = int(occurrence)
+        if index < 0 or index >= len(candidates):
+            return None
+        return candidates[index]
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda match: match.score, reverse=True)
+    best = ranked[0]
+    tied = [
+        match for match in ranked[1:]
+        if best.score - match.score <= max(0.0, float(ambiguity_margin))
+    ]
+    if tied:
+        details = ", ".join(
+            f"{match.text!r}@({match.x:.0f},{match.y:.0f})={match.score:.1f}"
+            for match in [best, *tied]
+        )
+        raise OcrTextMatchAmbiguousError(
+            f"OCR 文本「{target}」存在多个近似候选：{details}；"
+            "请缩小 shape/ROI、提高阈值或传 occurrence"
+        )
+    return best
 
 
 def locate_text_box(tokens: list[dict[str, Any]], target: str) -> dict[str, float] | None:

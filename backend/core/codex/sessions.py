@@ -792,6 +792,7 @@ def _assign_thread_summary_to_cache_row(
     summary: dict[str, Any],
     *,
     now: float,
+    touch_unchanged: bool = True,
 ) -> bool:
     changed = False
     field_pairs = {
@@ -811,8 +812,9 @@ def _assign_thread_summary_to_cache_row(
         if getattr(row, field_name) != value:
             setattr(row, field_name, value)
             changed = True
-    row.refreshed_at = now
-    row.updated_at = now
+    if changed or touch_unchanged:
+        row.refreshed_at = now
+        row.updated_at = now
     return changed
 
 
@@ -1238,12 +1240,15 @@ def _ensure_codex_text_cache(
                         )
                         dirty_thread_ids.add(summary["id"])
                         _assign_thread_summary_to_cache_row(thread_row, summary, now=now)
-                    elif _assign_thread_summary_to_cache_row(thread_row, summary, now=now):
+                        session.add(thread_row)
+                    elif _assign_thread_summary_to_cache_row(
+                        thread_row,
+                        summary,
+                        now=now,
+                        touch_unchanged=False,
+                    ):
                         dirty_thread_ids.add(summary["id"])
-                    else:
-                        thread_row.refreshed_at = now
-                        thread_row.updated_at = now
-                    session.add(thread_row)
+                        session.add(thread_row)
                     seen_thread_ids.add(summary["id"])
 
                 removed_thread_ids = set(existing_rows) - seen_thread_ids
@@ -1287,7 +1292,6 @@ def _ensure_codex_text_cache(
                 root_row.refreshed_at = now
                 root_row.updated_at = now
                 session.add(root_row)
-                session.commit()
 
             rollout_refreshed = False
             now = time.time()

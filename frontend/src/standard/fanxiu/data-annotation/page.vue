@@ -109,9 +109,6 @@
                 <span class="connection-status" :class="{ 'is-ready': connectionReady, 'is-loading': connectionButtonLoading }">
                   {{ connectionButtonText }}
                 </span>
-                <button type="button" class="capture-runtime-link" @click="router.push('/cluster/runtime')">
-                  {{ captureRuntimeText }}
-                </button>
                 <el-button
                   size="small"
                   :type="gameMacroRecording ? 'primary' : 'default'"
@@ -133,7 +130,7 @@
                   plain
                   @click="router.push({ path: '/fanxiu/data-annotation/runtime', query: { ...route.query, entry_id: selectedEntryId || route.query.entry_id } })"
                 >
-                  行为树
+                  行为树 Runtime
                 </el-button>
               </div>
             </div>
@@ -221,9 +218,19 @@
                     @click="collapseAssetTree"
                   />
                   <el-button
+                    v-if="assetTreeViewMode !== 'recognitionOps'"
+                    size="small"
+                    :icon="Aim"
+                    title="对齐凡修信息窗当前场景"
+                    aria-label="对齐凡修信息窗当前场景"
+                    :loading="alignCurrentSceneLoading"
+                    :disabled="!selectedEntryId"
+                    @click="alignAssetTreeToCurrentScene"
+                  />
+                  <el-button
                     v-if="assetTreeViewMode === 'business'"
                     size="small"
-                    :icon="Plus"
+                    :icon="FolderAdd"
                     title="新建分组"
                     aria-label="新建分组"
                     @click="addAssetFolder"
@@ -307,10 +314,13 @@
                 <div v-else class="recognition-ops-panel">
                   <div v-if="recognitionOpsError" class="recognition-ops-error">{{ recognitionOpsError }}</div>
                   <div v-else-if="recognitionOpsLoading && !recognitionOpsReport" class="recognition-ops-empty">计算中</div>
-                  <div v-else-if="recognitionOpsCacheMissing" class="recognition-ops-empty">
+                  <div v-else-if="recognitionOpsCacheMissing && !recognitionOpsReport?.summary.issue_count" class="recognition-ops-empty">
                     全量匹配矩阵未生成，当前无法判断 match 异常
                   </div>
                   <template v-else>
+                    <div v-if="recognitionOpsCacheMissing" class="recognition-ops-cache-note">
+                      识别矩阵未生成；下方仍显示运行中已留存的问题
+                    </div>
                     <div class="recognition-ops-tree-wrap">
                       <el-tree
                         class="recognition-ops-tree"
@@ -360,7 +370,17 @@
           <section class="annotation-workbench">
             <div class="annotation-workbench-head">
               <div class="annotation-title-tools">
-                <span>{{ selectedImageTitleText }}</span>
+                <span>{{ selectedRecognitionOpsIssue?.label || selectedImageTitleText }}</span>
+                <div v-if="selectedImageNode" class="shape-jump-field scene-parent-field">
+                  <span>继承</span>
+                  <el-input
+                    v-model="selectedSceneParentIds"
+                    size="small"
+                    placeholder="424, 34"
+                    title="逗号分隔多个要继承的场景编号"
+                    @blur="normalizeSelectedSceneParentIds"
+                  />
+                </div>
                 <el-checkbox v-if="selectedImageNode" v-model="globalOcclusionMaskEnabled" size="small">
                   遮挡
                 </el-checkbox>
@@ -387,60 +407,92 @@
               </div>
             </div>
 
-            <section
-              v-if="selectedSceneRelationGraphVisible"
-              class="scene-relation-graph"
-              :class="{ 'is-resizing': sceneRelationGraphResizing }"
-              :style="{ height: `${sceneRelationGraphHeight}px`, minHeight: `${sceneRelationGraphHeight}px` }"
-            >
-              <div class="scene-relation-tabs" role="tablist" aria-label="图结构类型">
-                <button
-                  v-for="tab in sceneRelationGraphTabs"
-                  :key="tab.value"
-                  type="button"
-                  class="scene-relation-tab"
-                  :class="{ 'is-active': activeSceneRelationGraphTab === tab.value }"
-                  role="tab"
-                  :aria-selected="activeSceneRelationGraphTab === tab.value"
-                  @click="activeSceneRelationGraphTab = tab.value"
-                >
-                  {{ tab.label }}
-                </button>
-              </div>
-              <VueFlow
-                :key="selectedSceneGraphKey"
-                class="scene-relation-flow"
-                :nodes="selectedSceneGraphNodes"
-                :edges="selectedSceneGraphEdges"
-                :edge-types="sceneRelationGraphEdgeTypes"
-                :nodes-draggable="false"
-                :nodes-connectable="false"
-                :elements-selectable="false"
-                :zoom-on-scroll="false"
-                :pan-on-scroll="false"
-                :pan-on-drag="false"
-                :prevent-scrolling="false"
-                fit-view-on-init
-                :min-zoom="0.45"
-                :max-zoom="1.25"
-                @node-click="handleSceneGraphNodeClick"
-                @edge-click="handleSceneGraphEdgeClick"
-              >
-                <Controls :show-interactive="false" />
-              </VueFlow>
-              <div v-if="!selectedSceneGraphEdges.length" class="scene-relation-empty">
-                {{ selectedSceneGraphEmptyText }}
-              </div>
-            </section>
-            <div
-              v-if="selectedSceneRelationGraphVisible"
-              class="scene-relation-resizer"
-              :class="{ 'is-resizing': sceneRelationGraphResizing }"
-              title="拖拽调整图结构高度"
-              @mousedown.prevent="startSceneRelationGraphResizing"
-            />
+            <div v-if="selectedRecognitionOpsIssue?.incident" class="navigation-incident-detail">
+              <div v-if="navigationIncidentLoading" class="annotation-empty">加载复盘证据</div>
+              <div v-else-if="navigationIncidentError" class="recognition-ops-error">{{ navigationIncidentError }}</div>
+              <template v-else-if="selectedNavigationIncident">
+                <div class="navigation-incident-facts">
+                  <span>{{ navigationIncidentStatusLabel(selectedNavigationIncident.status) }}</span>
+                  <span>目标 #{{ selectedNavigationIncident.target_scene_id ?? '?' }}</span>
+                  <span>{{ selectedNavigationIncident.elapsed_seconds ?? 0 }} 秒</span>
+                  <span v-if="selectedNavigationIncident.runtime?.task">{{ selectedNavigationIncident.runtime.task }}</span>
+                  <span v-if="selectedNavigationIncident.runtime?.cell_id">
+                    {{ selectedNavigationIncident.runtime.cell_id }}
+                  </span>
+                  <span v-if="selectedNavigationIncident.runtime?.kernel_generation !== null && selectedNavigationIncident.runtime?.kernel_generation !== undefined">
+                    Kernel {{ selectedNavigationIncident.runtime.kernel_generation }}
+                  </span>
+                </div>
+                <div class="navigation-incident-trigger">
+                  {{ navigationIncidentRecordText(selectedNavigationIncident.trigger, 'label') || '导航停滞' }}
+                </div>
+                <div class="navigation-incident-timeline-wrap">
+                  <table class="navigation-incident-timeline">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>识别</th>
+                        <th>动作</th>
+                        <th>真实落点</th>
+                        <th>画面变化</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="item in selectedNavigationIncident.timeline"
+                        :key="item.index"
+                        :class="{ 'is-selected': item.index === selectedNavigationTimelineIndex }"
+                        @click="selectedNavigationTimelineIndex = item.index"
+                      >
+                        <td>{{ item.index }}</td>
+                        <td>{{ navigationIncidentSceneText(item.recognized_scene_id, item.recognized_score) }}</td>
+                        <td>{{ item.kind === 'fallback' ? '#424[返回]' : `#${item.source_scene_id ?? '?'}[${item.shape_title || '?'}]` }}</td>
+                        <td>{{ navigationIncidentSceneText(item.landing_scene_id, item.landing_score) }}</td>
+                        <td>{{ item.frame_similarity === null || item.frame_similarity === undefined ? '--' : `${item.frame_similarity}%` }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-if="selectedNavigationTimelineItem" class="navigation-incident-frame-pair">
+                  <figure>
+                    <figcaption>动作前真实帧</figcaption>
+                    <img
+                      v-if="navigationIncidentFrameUrl(selectedNavigationTimelineItem.before_frame)"
+                      :src="navigationIncidentFrameUrl(selectedNavigationTimelineItem.before_frame)"
+                      alt="动作前真实帧"
+                    />
+                    <div v-else class="navigation-incident-frame-empty">未保存</div>
+                  </figure>
+                  <figure>
+                    <figcaption>动作后真实帧</figcaption>
+                    <img
+                      v-if="navigationIncidentFrameUrl(selectedNavigationTimelineItem.after_frame)"
+                      :src="navigationIncidentFrameUrl(selectedNavigationTimelineItem.after_frame)"
+                      alt="动作后真实帧"
+                    />
+                    <div v-else class="navigation-incident-frame-empty">未保存</div>
+                  </figure>
+                  <div class="navigation-incident-step-detail">
+                    <span v-if="selectedNavigationTimelineItem.point">
+                      点击 ({{ selectedNavigationTimelineItem.point[0] }}, {{ selectedNavigationTimelineItem.point[1] }})；
+                    </span>
+                    {{ selectedNavigationTimelineItem.reason || '无动作选择说明' }}
+                  </div>
+                </div>
+                <details v-if="selectedNavigationIncident.diagnostic" class="navigation-incident-diagnostic">
+                  <summary>识别候选与 OCR 证据</summary>
+                  <div v-if="navigationIncidentIdentityCrops.length" class="navigation-incident-crops">
+                    <figure v-for="crop in navigationIncidentIdentityCrops" :key="crop.path">
+                      <img :src="navigationIncidentFrameUrl(crop.path)" :alt="crop.shape_title || '场景身份裁剪'" />
+                      <figcaption>#{{ crop.scene_id ?? '?' }} {{ crop.shape_title || '场景身份' }}</figcaption>
+                    </figure>
+                  </div>
+                  <pre>{{ navigationIncidentDiagnosticText }}</pre>
+                </details>
+              </template>
+            </div>
 
-            <div v-if="selectedImageNode" class="annotation-editor">
+            <div v-else-if="selectedImageNode" class="annotation-editor">
               <div class="annotation-main-row">
                 <div
                   ref="screenshotViewportRef"
@@ -464,12 +516,13 @@
                         :style="annotationCanvasStyle"
                         :alt="selectedImageNode.title"
                         draggable="false"
-                        @error="markSelectedImagePreviewMissing"
+                        @error="recoverSelectedImagePreview"
                       />
                       <div
                         v-else
                         class="empty-image-surface"
                         :class="{ 'is-missing': selectedImagePreviewMissing }"
+                        @click.stop="retrySelectedImagePreview"
                       >
                         <span>{{ selectedImagePlaceholderText }}</span>
                       </div>
@@ -601,10 +654,48 @@
                     />
                   </div>
                   <div class="shape-jump-field">
-                    <span>窗口加载方向</span>
-                    <button type="button" class="shape-inline-help" title="查看窗口加载方向说明" aria-label="查看窗口加载方向说明" @click="showShapeLoadDirectionHelp">
-                      ?
-                    </button>
+                    <el-popover placement="bottom-start" :width="310" trigger="click">
+                      <template #reference>
+                        <button type="button" class="shape-load-config-label">
+                          窗口加载方向
+                        </button>
+                      </template>
+                      <div class="shape-load-config">
+                        <div class="shape-load-config-row">
+                          <span>步进</span>
+                          <el-segmented
+                            v-model="selectedShapeLoadMode"
+                            :options="[
+                              { label: '连续', value: 'continuous' },
+                              { label: '整页（卡片）', value: 'paged' },
+                            ]"
+                            size="small"
+                          />
+                        </div>
+                        <div class="shape-load-config-row">
+                          <span>边界</span>
+                          <el-segmented
+                            v-model="selectedShapeLoadBoundary"
+                            :options="[
+                              { label: '有限', value: 'bounded' },
+                              { label: '循环', value: 'cyclic' },
+                            ]"
+                            size="small"
+                          />
+                        </div>
+                        <div class="shape-load-config-row">
+                          <span>初始位置</span>
+                          <el-segmented
+                            v-model="selectedShapeLoadInitialPosition"
+                            :options="[
+                              { label: '起始端', value: 'start' },
+                              { label: '未知', value: 'unknown' },
+                            ]"
+                            size="small"
+                          />
+                        </div>
+                      </div>
+                    </el-popover>
                     <el-select v-model="selectedShape.loadDirection" class="shape-direction-select" size="small">
                       <el-option label="无" value="none" />
                       <el-option label="↑" value="up" />
@@ -761,6 +852,59 @@
             </div>
 
             <div v-else class="annotation-empty">选择一个图片节点后编辑标注</div>
+
+            <section
+              v-if="selectedSceneRelationGraphVisible"
+              class="scene-relation-graph"
+              :class="{ 'is-resizing': sceneRelationGraphResizing }"
+              :style="{ height: `${sceneRelationGraphHeight}px`, minHeight: `${sceneRelationGraphHeight}px` }"
+            >
+              <div class="scene-relation-tabs" role="tablist" aria-label="图结构类型">
+                <button
+                  v-for="tab in sceneRelationGraphTabs"
+                  :key="tab.value"
+                  type="button"
+                  class="scene-relation-tab"
+                  :class="{ 'is-active': activeSceneRelationGraphTab === tab.value }"
+                  role="tab"
+                  :aria-selected="activeSceneRelationGraphTab === tab.value"
+                  @click="activeSceneRelationGraphTab = tab.value"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+              <VueFlow
+                :key="selectedSceneGraphKey"
+                class="scene-relation-flow"
+                :nodes="selectedSceneGraphNodes"
+                :edges="selectedSceneGraphEdges"
+                :edge-types="sceneRelationGraphEdgeTypes"
+                :nodes-draggable="false"
+                :nodes-connectable="false"
+                :elements-selectable="false"
+                :zoom-on-scroll="false"
+                :pan-on-scroll="false"
+                :pan-on-drag="false"
+                :prevent-scrolling="false"
+                fit-view-on-init
+                :min-zoom="0.45"
+                :max-zoom="1.25"
+                @node-click="handleSceneGraphNodeClick"
+                @edge-click="handleSceneGraphEdgeClick"
+              >
+                <Controls :show-interactive="false" />
+              </VueFlow>
+              <div v-if="!selectedSceneGraphEdges.length" class="scene-relation-empty">
+                {{ selectedSceneGraphEmptyText }}
+              </div>
+            </section>
+            <div
+              v-if="selectedSceneRelationGraphVisible"
+              class="scene-relation-resizer"
+              :class="{ 'is-resizing': sceneRelationGraphResizing }"
+              title="拖拽调整图结构高度"
+              @mousedown.prevent="startSceneRelationGraphResizing"
+            />
           </section>
 
 
@@ -907,10 +1051,6 @@
             :step="2"
             :controls="false"
           />
-        </label>
-        <label class="game-macro-config-row">
-          <span>首个 shape 标记场景</span>
-          <el-checkbox v-model="gameMacroConfig.markFirstShapeAsSceneIdentity" />
         </label>
         <label class="game-macro-config-row">
           <span>拖拽耗时模式</span>
@@ -1322,10 +1462,11 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { Edge, Node } from '@vue-flow/core';
 import {
+  Aim,
   Fold,
   Folder,
+  FolderAdd,
   Picture,
-  Plus,
   Search,
   Setting,
   VideoPause,
@@ -1336,7 +1477,7 @@ import StandardPagination from '@/components/StandardPagination.vue';
 import {
   annotateFanxiuDataAnnotationMacroShape,
   clearFanxiuGameWindow2BurstFrames,
-  clearFanxiuDataAnnotationRuntimeLogs,
+  clearFanxiuBehaviorTreeRuntimeLogs,
   clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
@@ -1345,13 +1486,16 @@ import {
   deleteFanxiuGameWindow2Screenshot,
   dragFanxiuGameWindow2,
   getFanxiuGameWindow2BurstFrameImage,
+  getFanxiuGameWindow2FrameStatus,
   getFanxiuGameWindow2ServiceStatus,
   getFanxiuDataAnnotationImage,
   getFanxiuDataAnnotationAssetTree,
+  getFanxiuDataAnnotationNavigationIncident,
   getFanxiuDataAnnotationRecognitionOps,
-  getFanxiuDataAnnotationRuntimeStatus,
-  getFanxiuDataAnnotationRuntimeLogs,
+  getFanxiuBehaviorTreeRuntimeStatus,
+  getFanxiuBehaviorTreeRuntimeLogs,
   getFanxiuDataAnnotationWorldFacts,
+  getFanxiuInfoWindowStatus,
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
   getFanxiuGameWindow2MatchImage,
@@ -1374,10 +1518,9 @@ import {
   runDueFanxiuDataAnnotationSchedulerTasks,
   runNowFanxiuDataAnnotationSchedulerTask,
   screencapFanxiuGameWindow2,
-  setFanxiuDataAnnotationRuntimeGuard,
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
-  stopFanxiuDataAnnotationRuntimeCurrentTask,
+  stopFanxiuBehaviorTreeRuntimeCurrentTask,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
@@ -1386,17 +1529,21 @@ import {
   type FanxiuGameWindow2MatchDebug,
   type FanxiuGameWindow2MatchPayload,
   type FanxiuGameWindow2MatchResponse,
+  type FanxiuGameWindow2FrameStatus,
   type FanxiuGameWindow2ServiceStatus,
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
-  type FanxiuDataAnnotationRuntimeStatus,
+  type FanxiuBehaviorTreeRuntimeStatus,
+  type FanxiuDataAnnotationNavigationIncident,
+  type FanxiuDataAnnotationSaveFrameResponse,
+  type FanxiuDataAnnotationNavigationIncidentTimelineItem,
   type FanxiuDataAnnotationRecognitionOpsIssue,
   type FanxiuDataAnnotationRecognitionOpsResponse,
   type FanxiuDataAnnotationMacroAnnotateResponse,
   type FanxiuDataAnnotationOcrFrameToken,
   type FanxiuDataAnnotationSchedulerTaskItem,
-  type FanxiuDataAnnotationRuntimeLogEntry,
+  type FanxiuBehaviorTreeRuntimeLogEntry,
   type FanxiuPseudoCodeCard,
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
@@ -1647,7 +1794,6 @@ type AssetTreeViewMode = 'business' | 'scene' | 'recognitionOps';
 type GameMacroConfig = {
   version: number;
   defaultShapeSize: number;
-  markFirstShapeAsSceneIdentity: boolean;
   dragDurationMode: GameMacroDragDurationMode;
   defaultDragDurationMs: number;
   annotationMode: GameMacroAnnotationMode;
@@ -1793,7 +1939,7 @@ const fps = ref(12);
 const quality = ref(82);
 const mumuChannel = ref<MumuChannel>('adb');
 const autoDismissPopup = ref(false);
-const streamEnabled = ref(true);
+const streamEnabled = ref(false);
 const streamNonce = ref(Date.now());
 const streamError = ref('');
 const streamToken = ref('');
@@ -1801,8 +1947,9 @@ const streamTokenExpiresAt = ref(0);
 const adbFrameUrl = ref('');
 const streamTokenLoading = ref(false);
 const actualFps = ref(0);
+const frameHeartbeatReady = ref(false);
 const layerVisible = ref(true);
-const windowViewMode = ref<WindowViewMode>('live');
+const windowViewMode = ref<WindowViewMode>('off');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
 const burstCaptureRunning = ref(false);
@@ -1826,7 +1973,6 @@ const gameMacroPendingJump = ref<GameMacroPendingJump | null>(null);
 const gameMacroConfig = ref<GameMacroConfig>({
   version: GAME_MACRO_CONFIG_VERSION,
   defaultShapeSize: 50,
-  markFirstShapeAsSceneIdentity: true,
   dragDurationMode: 'real',
   defaultDragDurationMs: GAME_MACRO_DEFAULT_DRAG_DURATION_MS,
   annotationMode: 'simple',
@@ -1930,14 +2076,15 @@ let pollTimer: number | null = null;
 let serviceStatusRequestInFlight = false;
 let serviceStatusLastLoadedAt = 0;
 let adbFrameTimer: number | null = null;
-let actualFpsResetTimer: number | null = null;
-let actualFpsSamplerTimer: number | null = null;
-let liveImageLoadWaiters: Array<(loaded: boolean) => void> = [];
-const liveFrameTimestamps: number[] = [];
-let lastLiveFrameSample = '';
+let frameStatusTimer: number | null = null;
+let frameStatusRequestInFlight = false;
+let lastFrameSequence = 0;
+let lastFrameSequenceObservedAt = 0;
+let frameUnhealthyObservedAt = 0;
+let streamReconnectTimer: number | null = null;
+let streamReconnectAttempt = 0;
 let lastLiveFrameDataUrl = '';
 let lastLiveFrameCapturedAt = 0;
-let suppressStreamErrorDuringCaptureRefresh = false;
 let burstCaptureTimer: number | null = null;
 let burstCaptureToken = 0;
 let screenshotSaveTimer: number | null = null;
@@ -1952,6 +2099,7 @@ const codeCardListRef = ref<HTMLElement | null>(null);
 const visualInstructionSetListRefs = new Map<string, HTMLElement>();
 const visualInstructionSetSortables = new Map<string, Sortable>();
 const SERVICE_STATUS_SILENT_POLL_INTERVAL_MS = 120_000;
+const FRAME_UNHEALTHY_GRACE_MS = 9_000;
 
 const selectedDevice = computed<Device | null>(() => (
   devices.value.find((device) => device.id === selectedEntryId.value) ?? null
@@ -2392,7 +2540,6 @@ const normalizeGameMacroConfig = (value: unknown): GameMacroConfig => {
   return {
     version: GAME_MACRO_CONFIG_VERSION,
     defaultShapeSize: Number.isFinite(defaultShapeSize) ? clamp(defaultShapeSize, 8, 240) : 50,
-    markFirstShapeAsSceneIdentity: item.markFirstShapeAsSceneIdentity !== false,
     dragDurationMode,
     defaultDragDurationMs,
     annotationMode,
@@ -3772,22 +3919,21 @@ const actualFpsText = computed(() => (streamEnabled.value && windowViewMode.valu
 const burstPageCount = computed(() => Math.max(1, Math.ceil(burstTotal.value / burstPageSize)));
 const connectionReady = computed(() => Boolean(
   selectedEntryId.value
-  && serviceActive.value
   && streamEnabled.value
   && liveImageUrl.value
   && naturalWidth.value
   && naturalHeight.value
+  && frameHeartbeatReady.value
   && !streamError.value
 ));
 const connectionButtonLoading = computed(() => connectionLoading.value || streamTokenLoading.value);
 const connectionButtonText = computed(() => {
   if (windowViewMode.value === 'off') return '已关闭';
   if (connectionReady.value) return '运行中';
+  if (streamError.value) return '恢复中';
   if (connectionButtonLoading.value || (streamEnabled.value && (streamToken.value || shouldCaptureWithAdb('frontend')) && !streamError.value)) return '连接中';
   return '连接';
 });
-const captureRuntimeText = computed(() => '抓包状态');
-
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const isDefaultScreenshotBoxName = (name: string, index = 0) => {
   const trimmed = name.trim();
@@ -4024,6 +4170,16 @@ const loadServiceStatus = async (silent = false, options: { force?: boolean } = 
 };
 
 const handleEntryChange = async () => {
+  const nextEntryId = selectedEntryId.value;
+  if (assetTreeDirty && assetTreeLoadedEntryId) {
+    const persisted = await saveAssetTreeNow();
+    if (!persisted) {
+      selectedEntryId.value = assetTreeLoadedEntryId;
+      return;
+    }
+  }
+  selectedEntryId.value = nextEntryId;
+  releaseAssetImagePreviewUrls();
   controlEnabled.value = false;
   controlClickState.value = null;
   naturalWidth.value = 0;
@@ -4688,13 +4844,15 @@ const drawMatchOverlay = () => {
 };
 
 const resetActualFps = () => {
-  liveFrameTimestamps.length = 0;
   actualFps.value = 0;
-  lastLiveFrameSample = '';
-  if (actualFpsResetTimer) {
-    window.clearTimeout(actualFpsResetTimer);
-    actualFpsResetTimer = null;
-  }
+  frameHeartbeatReady.value = false;
+};
+
+const resetFrameStatusTracking = () => {
+  resetActualFps();
+  lastFrameSequence = 0;
+  lastFrameSequenceObservedAt = 0;
+  frameUnhealthyObservedAt = 0;
 };
 
 const clearLastLiveFrameCache = () => {
@@ -4714,73 +4872,95 @@ const recentLiveFrameDataUrl = (maxAgeMs = 8000) => {
   return lastLiveFrameDataUrl;
 };
 
-const recordLiveFrameArrival = () => {
-  const now = performance.now();
-  liveFrameTimestamps.push(now);
-  const windowMs = 3000;
-  while (liveFrameTimestamps.length && now - liveFrameTimestamps[0] > windowMs) {
-    liveFrameTimestamps.shift();
-  }
-  if (liveFrameTimestamps.length >= 2) {
-    const elapsedSeconds = (liveFrameTimestamps[liveFrameTimestamps.length - 1] - liveFrameTimestamps[0]) / 1000;
-    actualFps.value = elapsedSeconds > 0 ? (liveFrameTimestamps.length - 1) / elapsedSeconds : 0;
-  } else {
-    actualFps.value = 0;
-  }
-  if (actualFpsResetTimer) window.clearTimeout(actualFpsResetTimer);
-  actualFpsResetTimer = window.setTimeout(() => {
-    resetActualFps();
-  }, 2000);
+const clearStreamReconnectTimer = () => {
+  if (!streamReconnectTimer) return;
+  window.clearTimeout(streamReconnectTimer);
+  streamReconnectTimer = null;
 };
 
-const sampleLiveFrameSignature = () => {
-  const image = streamImageRef.value;
-  if (!image || !image.naturalWidth || !image.naturalHeight) return '';
-  const canvas = document.createElement('canvas');
-  const width = 12;
-  const height = 12;
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return '';
-  try {
-    context.drawImage(image, 0, 0, width, height);
-    const data = context.getImageData(0, 0, width, height).data;
-    let hash = 2166136261;
-    for (let index = 0; index < data.length; index += 4) {
-      hash ^= data[index];
-      hash = Math.imul(hash, 16777619);
-      hash ^= data[index + 1];
-      hash = Math.imul(hash, 16777619);
-      hash ^= data[index + 2];
-      hash = Math.imul(hash, 16777619);
+const scheduleStreamReconnect = () => {
+  if (streamReconnectTimer || windowViewMode.value === 'off' || !selectedEntryId.value) return;
+  const delay = Math.min(8000, 800 * (2 ** Math.min(streamReconnectAttempt, 4)));
+  streamReconnectAttempt += 1;
+  streamReconnectTimer = window.setTimeout(() => {
+    streamReconnectTimer = null;
+    void restartStream({ automatic: true });
+  }, delay);
+};
+
+const applyFrameStatus = (status: FanxiuGameWindow2FrameStatus) => {
+  const now = Date.now();
+  const sequence = Number(status.sequence) || 0;
+  if (sequence > lastFrameSequence) {
+    if (lastFrameSequence && lastFrameSequenceObservedAt) {
+      const seconds = Math.max(0.001, (now - lastFrameSequenceObservedAt) / 1000);
+      actualFps.value = (sequence - lastFrameSequence) / seconds;
     }
-    return String(hash >>> 0);
+    lastFrameSequence = sequence;
+    lastFrameSequenceObservedAt = now;
+    frameUnhealthyObservedAt = 0;
+    frameHeartbeatReady.value = true;
+    streamReconnectAttempt = 0;
+    clearStreamReconnectTimer();
+    if (streamError.value) streamError.value = '';
+    return;
+  }
+
+  // A failed ADB capture can still return a fresh cached frame. The backend's
+  // `ready` value already accounts for frame age, so a non-zero failure count
+  // alone is not a stream interruption. Only surface recovery after the
+  // backend has remained unhealthy for a full grace period.
+  if (status.ready) {
+    frameUnhealthyObservedAt = 0;
+    frameHeartbeatReady.value = true;
+    streamReconnectAttempt = 0;
+    clearStreamReconnectTimer();
+    if (streamError.value) streamError.value = '';
+    return;
+  }
+  if (!lastFrameSequence) return;
+  if (!frameUnhealthyObservedAt) {
+    frameUnhealthyObservedAt = now;
+    return;
+  }
+  if (now - frameUnhealthyObservedAt < FRAME_UNHEALTHY_GRACE_MS) return;
+  frameHeartbeatReady.value = false;
+  actualFps.value = 0;
+  streamError.value = '画面帧长时间未更新，正在重新连接…';
+  scheduleStreamReconnect();
+};
+
+const pollFrameStatus = async () => {
+  if (frameStatusRequestInFlight || windowViewMode.value === 'off' || !selectedEntryId.value) return;
+  frameStatusRequestInFlight = true;
+  try {
+    applyFrameStatus(await getFanxiuGameWindow2FrameStatus(selectedEntryId.value));
   } catch {
-    return '';
+    if (!lastFrameSequence) return;
+    const now = Date.now();
+    if (!frameUnhealthyObservedAt) frameUnhealthyObservedAt = now;
+    if (now - frameUnhealthyObservedAt >= FRAME_UNHEALTHY_GRACE_MS) {
+      frameHeartbeatReady.value = false;
+      actualFps.value = 0;
+      streamError.value = '画面状态长时间不可用，正在重新连接…';
+      scheduleStreamReconnect();
+    }
+  } finally {
+    frameStatusRequestInFlight = false;
   }
 };
 
-const pollActualFps = () => {
-  if (!streamEnabled.value || windowViewMode.value === 'off') return;
-  const signature = sampleLiveFrameSignature();
-  if (!signature) return;
-  if (lastLiveFrameSample && signature !== lastLiveFrameSample) {
-    recordLiveFrameArrival();
-  }
-  lastLiveFrameSample = signature;
-};
-
-const stopActualFpsSampler = () => {
-  if (actualFpsSamplerTimer) {
-    window.clearInterval(actualFpsSamplerTimer);
-    actualFpsSamplerTimer = null;
+const stopFrameStatusPolling = () => {
+  if (frameStatusTimer) {
+    window.clearInterval(frameStatusTimer);
+    frameStatusTimer = null;
   }
 };
 
-const startActualFpsSampler = () => {
-  stopActualFpsSampler();
-  actualFpsSamplerTimer = window.setInterval(pollActualFps, 80);
+const startFrameStatusPolling = () => {
+  stopFrameStatusPolling();
+  void pollFrameStatus();
+  frameStatusTimer = window.setInterval(() => void pollFrameStatus(), 1500);
 };
 
 const syncMatchCanvas = () => {
@@ -4793,34 +4973,16 @@ const syncMatchCanvas = () => {
   drawMatchOverlay();
 };
 
-const resolveLiveImageLoadWaiters = (loaded: boolean) => {
-  const waiters = liveImageLoadWaiters;
-  liveImageLoadWaiters = [];
-  waiters.forEach(resolve => resolve(loaded));
-};
-
-const waitForNextLiveImageLoad = async (timeoutMs = 4000) => new Promise<boolean>((resolve) => {
-  let done: (loaded: boolean) => void;
-  const timeout = window.setTimeout(() => {
-    liveImageLoadWaiters = liveImageLoadWaiters.filter(item => item !== done);
-    resolve(false);
-  }, timeoutMs);
-  done = (loaded: boolean) => {
-    window.clearTimeout(timeout);
-    resolve(loaded);
-  };
-  liveImageLoadWaiters.push(done);
-});
-
 const handleImageLoad = () => {
   const image = streamImageRef.value;
   if (!image) return;
   streamError.value = '';
+  streamReconnectAttempt = 0;
+  clearStreamReconnectTimer();
   naturalWidth.value = image.naturalWidth;
   naturalHeight.value = image.naturalHeight;
   const frame = captureCurrentLiveFrameDataUrl();
   if (frame) cacheLiveFrameDataUrl(frame);
-  resolveLiveImageLoadWaiters(Boolean(frame));
   void nextTick(syncCanvas);
 };
 
@@ -4961,8 +5123,9 @@ const setWindowViewModeOff = async () => {
   windowViewMode.value = 'off';
   stopAdbFramePolling();
   stopBurstCapture();
-  stopActualFpsSampler();
-  resetActualFps();
+  stopFrameStatusPolling();
+  clearStreamReconnectTimer();
+  resetFrameStatusTracking();
   clearLastLiveFrameCache();
   gameMacroRecording.value = false;
   gameMacroCapturePending.value = false;
@@ -4978,28 +5141,20 @@ const setWindowViewModeOff = async () => {
 
 const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
-  if (suppressStreamErrorDuringCaptureRefresh) return;
-  const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
-  streamError.value = message;
-  streamEnabled.value = false;
-  resolveLiveImageLoadWaiters(false);
-  stopAdbFramePolling();
-  stopActualFpsSampler();
+  streamError.value = '画面连接中断，正在自动恢复…';
+  frameHeartbeatReady.value = false;
   resetActualFps();
-  revokeAdbFrameUrl();
-  if (streamImageRef.value) streamImageRef.value.src = '';
   void nextTick(syncCanvas);
-  ElMessage.error(message);
+  scheduleStreamReconnect();
 };
 
-const restartStream = async () => {
+const restartStream = async (_options: { automatic?: boolean } = {}) => {
   if (selectedWindowKey.value === 'mumu' && mumuChannel.value !== 'adb') {
     mumuChannel.value = 'adb';
   }
   streamError.value = '';
   shapeDetectLiveBoxes.value = [];
   stopAdbFramePolling();
-  stopActualFpsSampler();
   resetActualFps();
   if (windowViewMode.value === 'off') {
     await setWindowViewModeOff();
@@ -5010,26 +5165,8 @@ const restartStream = async () => {
   revokeAdbFrameUrl();
   await ensureStreamToken();
   streamNonce.value = Date.now();
-  startActualFpsSampler();
+  startFrameStatusPolling();
   void nextTick(syncCanvas);
-};
-
-const ensureLiveStreamReadyForCapture = async (timeoutMs = 4000) => {
-  if (!selectedEntryId.value || windowViewMode.value === 'off') return '';
-  clearLastLiveFrameCache();
-  streamError.value = '';
-  naturalWidth.value = 0;
-  naturalHeight.value = 0;
-  suppressStreamErrorDuringCaptureRefresh = true;
-  try {
-    const loadPromise = waitForNextLiveImageLoad(timeoutMs);
-    await restartStream();
-    const loaded = await loadPromise;
-    if (!loaded) return '';
-    return waitForCurrentLiveFrameDataUrl(1000);
-  } finally {
-    suppressStreamErrorDuringCaptureRefresh = false;
-  }
 };
 
 const connectWindow = async (options: { allowStartService?: boolean } = {}) => {
@@ -5059,31 +5196,29 @@ const saveCurrentFrame = async () => {
   if (!selectedEntryId.value) return;
   saveFrameLoading.value = true;
   try {
-    const liveFrameDataUrl = await ensureLiveStreamReadyForCapture();
-    const currentFrameDataUrl = liveFrameDataUrl || await captureCurrentFrameDataUrl('save', {
-      preferLiveFrame: true,
-      liveFrameWaitMs: 1200,
-    });
-    if (!currentFrameDataUrl) throw new Error('当前画面为空，无法保存到资产树');
+    const pendingPersisted = assetTreeDirty ? await saveAssetTreeNow() : await assetTreeSaveChain;
+    if (!pendingPersisted) return;
+    const node = createAssetImageNode('');
+    const insertTarget = savedFrameInsertTarget();
+    const localVersion = assetTreeLocalVersion;
     const result = await saveFanxiuDataAnnotationFrame({
       entry_id: selectedEntryId.value,
-      current_frame_data_url: currentFrameDataUrl,
+      fresh_capture: true,
+      asset_node: node,
+      parent_id: insertTarget.parentId || undefined,
+      after_node_id: insertTarget.afterNodeId || undefined,
+      base_revision: assetTreeBackendRevision.value,
     });
-    const node = createAssetImageNode(result.filename, {
-      filename: result.filename,
-      width: result.width,
-      height: result.height,
-    });
-    setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
-    addSavedFrameToAssetTree(node);
-    const persisted = await flushAssetTreeToBackend(selectedEntryId.value, cloneAssetTree(assetTree.value));
-    if (persisted) ElMessage.success(`已保存到资产树：${result.filename}`);
+    await applySavedFrameTransaction(result, node, localVersion);
+    const savedFrameDataUrl = await blobToDataUrl(
+      await getFanxiuDataAnnotationImage(selectedEntryId.value, result.filename, Date.now()),
+    );
+    setAssetImagePreviewUrl(assetImagePreviewKey(node), savedFrameDataUrl);
+    await restartStream({ automatic: true });
+    ElMessage.success(`已保存到资产树：${result.filename}`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
-    if (selectedEntryId.value && windowViewMode.value !== 'off' && (!streamEnabled.value || !liveImageUrl.value)) {
-      await restartStream();
-    }
     saveFrameLoading.value = false;
   }
 };
@@ -5154,7 +5289,7 @@ const importSelectedBurstFrames = async () => {
   try {
     const response = await importFanxiuGameWindow2BurstFrames(selectedEntryId.value, selectedBurstFilenames.value);
     await loadScreenshotList();
-    const importedNodes = response.imported.map((item) => createAssetImageNode(item.filename, {
+    const importedNodes = response.imported.map((item) => createAssetImageNode('', {
       filename: item.filename,
       width: item.width,
       height: item.height,
@@ -5255,19 +5390,21 @@ const clearBurstFrames = async () => {
 
 const resetAssetFrame = async (node: DataAnnotationAssetNode) => {
   if (!selectedEntryId.value || node.type !== 'image' || !node.filename) return;
-  const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
-  if (!currentFrameDataUrl) throw new Error('当前画面为空，无法重置帧');
   const result = await saveFanxiuDataAnnotationFrame({
     entry_id: selectedEntryId.value,
-    current_frame_data_url: currentFrameDataUrl,
     filename: node.filename,
+    fresh_capture: true,
   });
+  const savedFrameDataUrl = await blobToDataUrl(
+    await getFanxiuDataAnnotationImage(selectedEntryId.value, result.filename, Date.now()),
+  );
   node.filename = result.filename;
   node.width = result.width;
   node.height = result.height;
   delete node.imageDataUrl;
-  setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
-  await flushAssetTreeToBackend(selectedEntryId.value, cloneAssetTree(assetTree.value));
+  setAssetImagePreviewUrl(assetImagePreviewKey(node), savedFrameDataUrl);
+  await restartStream({ automatic: true });
+  await saveAssetTreeNow();
   if (selectedAssetId.value === node.id) {
     await nextTick();
     void ensureSelectedImagePreview();
@@ -6843,6 +6980,9 @@ onMounted(async () => {
   window.addEventListener('keyup', handleKeyup);
   window.addEventListener('blur', handleWindowBlur);
   window.addEventListener('resize', handleWindowResize);
+  window.addEventListener('online', recoverSelectedImagePreviewWhenAvailable);
+  document.addEventListener('visibilitychange', recoverSelectedImagePreviewWhenAvailable);
+  document.addEventListener('visibilitychange', flushAssetTreeWhenHidden);
   window.addEventListener('click', closeAssetContextMenu);
   window.addEventListener('click', closeShapeContextMenu);
   resizeObserver = new ResizeObserver(syncCanvas);
@@ -6870,15 +7010,20 @@ onBeforeUnmount(() => {
     window.clearTimeout(assetTreeSaveTimer);
     assetTreeSaveTimer = null;
   }
+  if (assetTreeDirty) void enqueueAssetTreeSave();
   stopPolling();
   stopAdbFramePolling();
-  stopActualFpsSampler();
+  stopFrameStatusPolling();
+  clearStreamReconnectTimer();
   stopBurstCapture();
-  resetActualFps();
+  resetFrameStatusTracking();
   window.removeEventListener('keydown', handleKeydown);
   window.removeEventListener('keyup', handleKeyup);
   window.removeEventListener('blur', handleWindowBlur);
   window.removeEventListener('resize', handleWindowResize);
+  window.removeEventListener('online', recoverSelectedImagePreviewWhenAvailable);
+  document.removeEventListener('visibilitychange', recoverSelectedImagePreviewWhenAvailable);
+  document.removeEventListener('visibilitychange', flushAssetTreeWhenHidden);
   window.removeEventListener('click', closeAssetContextMenu);
   window.removeEventListener('click', closeShapeContextMenu);
   stopLivePan();
@@ -6894,7 +7039,6 @@ onBeforeUnmount(() => {
   revokeAdbFrameUrl();
   releaseAssetImagePreviewUrls();
   releaseBurstPreviewUrls();
-  resolveLiveImageLoadWaiters(false);
   if (streamImageRef.value) streamImageRef.value.src = '';
   revokeScreenshotImageUrl();
   clearMatchResults();
@@ -6910,6 +7054,7 @@ type DataAnnotationAssetNode = {
   width?: number;
   height?: number;
   layer?: FrameLayer;
+  parentSceneIds?: string;
   shapes?: DataAnnotationShape[];
 };
 
@@ -6926,6 +7071,9 @@ type DataAnnotationShape = {
   sceneIdentityRole?: ShapeMatchRole;
   sceneJumpTarget?: string;
   loadDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
+  loadMode?: 'continuous' | 'paged';
+  loadBoundary?: 'bounded' | 'cyclic';
+  loadInitialPosition?: 'start' | 'unknown';
   imageMatchRole?: ShapeMatchRole;
   pixelTolerance?: number;
   ocrMatchRole?: ShapeMatchRole;
@@ -6973,7 +7121,7 @@ type SceneJumpEntry = {
 
 type RuntimeLogKind = 'start' | 'wait' | 'action' | 'success' | 'stop' | 'error' | 'detail';
 
-type RuntimeLogEntry = FanxiuDataAnnotationRuntimeLogEntry & {
+type RuntimeLogEntry = FanxiuBehaviorTreeRuntimeLogEntry & {
   id: string;
   time: string;
   kind: RuntimeLogKind | string;
@@ -7093,6 +7241,7 @@ const selectedShapeIds = ref<string[]>([]);
 const shapeSelectionAnchorId = ref<string | null>(null);
 const assetTreeViewMode = ref<AssetTreeViewMode>('business');
 const assetFrameSearchText = ref('');
+const alignCurrentSceneLoading = ref(false);
 const globalOcclusionMaskEnabled = ref(false);
 const copiedShapes = ref<DataAnnotationShape[]>([]);
 const expandedAssetNodeIds = ref<string[]>([]);
@@ -7101,6 +7250,9 @@ const deletedShapeIds = ref<Set<string>>(new Set());
 const assetImagePreviewUrls = ref<Record<string, string>>({});
 const assetImagePreviewLoadingIds = ref<Record<string, boolean>>({});
 const assetImagePreviewMissingIds = ref<Record<string, boolean>>({});
+const assetImagePreviewRequests = new Map<string, Promise<string>>();
+const assetImagePreviewRenderRecoveryKeys = new Set<string>();
+let assetImagePreviewEpoch = 0;
 const imageCompareDialogVisible = ref(false);
 const imageCompareLoading = ref(false);
 const imageCompareError = ref('');
@@ -7121,6 +7273,10 @@ const recognitionOpsLoading = ref(false);
 const recognitionOpsReport = ref<FanxiuDataAnnotationRecognitionOpsResponse | null>(null);
 const recognitionOpsError = ref('');
 const selectedRecognitionOpsIssueId = ref<string | null>(null);
+const selectedNavigationIncident = ref<FanxiuDataAnnotationNavigationIncident | null>(null);
+const navigationIncidentLoading = ref(false);
+const navigationIncidentError = ref('');
+const selectedNavigationTimelineIndex = ref<number | null>(null);
 let recognitionOpsPollTimer: number | null = null;
 const imageCompareCanvasSizeOf = (image: HTMLImageElement | null) => {
   const fallbackImage = imageCompareSavedImage.value || imageCompareLiveImage.value;
@@ -7168,7 +7324,7 @@ const runtimeLogKindLabel = (kind: RuntimeLogKind | string) => {
   };
   return labels[kind] || kind || '日志';
 };
-const runtimeTaskStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
+const runtimeTaskStatus = ref<FanxiuBehaviorTreeRuntimeStatus | null>(null);
 const runtimeFactsDialogVisible = ref(false);
 const runtimeFactsLoading = ref(false);
 const runtimeFactsJson = ref('{}');
@@ -7177,14 +7333,12 @@ const runtimePlanDialogVisible = ref(false);
 const runtimePlanLoading = ref(false);
 const runtimePlanJson = ref('{}');
 const runtimePlanPath = ref('');
-const runtimeGuardSwitching = ref(false);
 const runtimeSchedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const runtimeSchedulerLoading = ref(false);
 const selectedRuntimeTaskType = ref('');
 const selectedRuntimeTaskId = ref('');
 const runtimeGiftCodesText = ref('');
 let runtimeTaskPollTimer: number | null = null;
-const runtimeGuardEnabled = computed(() => Boolean(runtimeTaskStatus.value?.guard_enabled));
 const runtimeStateKind = computed(() => {
   const status = runtimeTaskStatus.value;
   if (!status) return 'idle';
@@ -7207,6 +7361,7 @@ const runtimePhaseText = computed(() => runtimeTaskStatus.value?.phase || '');
 const runtimeTaskTypeLabel = (taskType: string) => {
   const labels: Record<string, string> = {
     gift_code_redeem: '兑换礼包码',
+    weekly_gift_code: '每周_礼包码',
     go_scene: '到场景',
     hide_floating_window: '隐藏浮动窗',
     daily_signup: '日常_报名',
@@ -7217,13 +7372,7 @@ const runtimeTaskTypeLabel = (taskType: string) => {
   return labels[taskType] || taskType || '任务';
 };
 const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  const triggerLabels: Record<string, string> = {
-    daily: '每日',
-    weekly: '每周',
-    dynamic: '动态',
-    manual: '手动',
-  };
-  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '手动';
+  return task.trigger_description || '';
 };
 const formatRuntimeScheduleTime = (value: string) => {
   const text = String(value || '').trim();
@@ -7271,7 +7420,6 @@ const selectedRuntimeTaskConfigText = computed(() => {
   const parts = [
     runtimeTaskSourceLabel(task),
     task.schedule_times?.length ? `时间 ${task.schedule_times.join('/')}` : '',
-    task.window?.length ? `窗口 ${task.window.join('-')}` : '',
     task.next_time ? `下次 ${formatRuntimeScheduleTime(task.next_time)}` : '',
     `P${task.priority}`,
     task.interruptible ? '可中断' : '不可中断',
@@ -7468,6 +7616,18 @@ const normalizeShapeLoadDirection = (value: unknown): DataAnnotationShape['loadD
   右: 'right',
 }[String(value ?? '').trim().toLowerCase()] as DataAnnotationShape['loadDirection'] | undefined) ?? 'none';
 
+const normalizeShapeLoadMode = (value: unknown): NonNullable<DataAnnotationShape['loadMode']> => (
+  value === 'paged' ? 'paged' : 'continuous'
+);
+
+const normalizeShapeLoadBoundary = (value: unknown): NonNullable<DataAnnotationShape['loadBoundary']> => (
+  value === 'cyclic' ? 'cyclic' : 'bounded'
+);
+
+const normalizeShapeLoadInitialPosition = (value: unknown): NonNullable<DataAnnotationShape['loadInitialPosition']> => (
+  value === 'unknown' ? 'unknown' : 'start'
+);
+
 const normalizeShapePixelTolerance = (value: unknown) => {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 0, 255) : DEFAULT_SHAPE_PIXEL_TOLERANCE;
@@ -7563,6 +7723,23 @@ const normalizeSceneJumpTargetText = (value: string | number | null | undefined)
   return serializeSceneJumpEntries(parseSceneJumpEntries(value));
 };
 
+const normalizeSceneParentIdsText = (
+  value: string | number | null | undefined,
+  currentSceneId?: number | null,
+) => {
+  const seen = new Set<number>();
+  const parentIds: number[] = [];
+  for (const token of String(value ?? '').replace(/，/g, ',').split(',')) {
+    const text = token.trim().replace(/^#/, '');
+    if (!/^\d+$/.test(text)) continue;
+    const sceneId = Number(text);
+    if (!Number.isSafeInteger(sceneId) || sceneId <= 0 || sceneId === currentSceneId || seen.has(sceneId)) continue;
+    seen.add(sceneId);
+    parentIds.push(sceneId);
+  }
+  return parentIds.join(',');
+};
+
 const DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION = '日常滚动窗口内的单个任务块模板。它本身是普通 shape，同时作为字段子树的父节点；运行时由任务块模板整体浮动，子字段只按父 shape 相对位置读取状态、次数和活跃度。';
 
 const isDailyTaskBlockTemplateShape = (shape: DataAnnotationShape) => (
@@ -7625,6 +7802,11 @@ const normalizeShapes = (
       ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
       : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
     loadDirection: normalizedLoadDirection,
+    ...(normalizeShapeLoadMode(shape.loadMode ?? shapeRecord.load_mode) === 'paged' ? { loadMode: 'paged' as const } : {}),
+    ...(normalizeShapeLoadBoundary(shape.loadBoundary ?? shapeRecord.load_boundary) === 'cyclic' ? { loadBoundary: 'cyclic' as const } : {}),
+    ...(normalizeShapeLoadInitialPosition(shape.loadInitialPosition ?? shapeRecord.load_initial_position) === 'unknown'
+      ? { loadInitialPosition: 'unknown' as const }
+      : {}),
     imageMatchRole: normalizedImageMatchRole,
     pixelTolerance: normalizeShapePixelTolerance(shape.pixelTolerance),
     ocrMatchRole: normalizedOcrMatchRole,
@@ -7679,6 +7861,14 @@ const normalizeAssetGroupTitle = (title: unknown) => {
   return typeof title === 'string' ? title : normalized;
 };
 
+const normalizeAssetImageTitle = (title: unknown, filename: unknown) => {
+  const normalizedTitle = typeof title === 'string' ? title.trim() : '';
+  const normalizedFilename = typeof filename === 'string' ? filename.trim() : '';
+  return normalizedFilename && normalizedTitle.toLowerCase() === normalizedFilename.toLowerCase()
+    ? ''
+    : normalizedTitle;
+};
+
 const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.map((node) => {
   if (node.type === 'folder') {
     return {
@@ -7692,11 +7882,13 @@ const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAss
   const normalizedShapes = normalizeShapes(node.shapes ?? []);
   return {
     ...normalizedNode,
+    title: normalizeAssetImageTitle(node.title, node.filename),
     filename: typeof node.filename === 'string' ? node.filename : undefined,
     imageDataUrl: typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
     layer: node.layer === 1 ? 1 : undefined,
+    parentSceneIds: normalizeSceneParentIdsText(node.parentSceneIds) || undefined,
     shapes: normalizedShapes,
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -7736,8 +7928,13 @@ globalOcclusionMaskEnabled.value = loadGlobalOcclusionMaskEnabled();
 const assetTree = ref<DataAnnotationAssetNode[]>([]);
 const assetTreeBackendHydrating = ref(false);
 const assetTreeBackendUpdatedAt = ref(0);
+const assetTreeBackendRevision = ref('');
 let assetTreeLocalVersion = 0;
+let assetTreeLoadedEntryId = '';
 let assetTreeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let assetTreeSaveChain: Promise<boolean> = Promise.resolve(true);
+let assetTreeDirty = false;
+let assetTreeConflictNotified = false;
 
 const cloneAssetTree = (nodes: DataAnnotationAssetNode[]) => (
   JSON.parse(JSON.stringify(nodes)) as DataAnnotationAssetNode[]
@@ -7836,6 +8033,9 @@ const mergeDuplicateAssetNode = (target: DataAnnotationAssetNode, source: DataAn
   if (!target.imageDataUrl && source.imageDataUrl) target.imageDataUrl = source.imageDataUrl;
   if (!target.width && source.width) target.width = source.width;
   if (!target.height && source.height) target.height = source.height;
+  if (source.type === 'image' && typeof source.parentSceneIds === 'string') {
+    target.parentSceneIds = source.parentSceneIds;
+  }
   if (target.type === 'folder' && source.type === 'folder') {
     target.children = mergeAssetTreeNodes(target.children ?? [], source.children ?? []);
   }
@@ -7916,127 +8116,90 @@ const mergeAssetTreeNodes = (baseNodes: DataAnnotationAssetNode[], extraNodes: D
   return compactDuplicateAssetNodes(merged);
 };
 
-const mergeEntryAssetTrees = (localTree: DataAnnotationAssetNode[], backendTree: DataAnnotationAssetNode[]) => {
-  const mergedTree = mergeAssetTreeNodes(
-    filterDeletedShapesFromAssetTree(backendTree),
-    filterDeletedShapesFromAssetTree(localTree),
-  );
-  return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
-};
-
 const assetTreesEqual = (left: DataAnnotationAssetNode[], right: DataAnnotationAssetNode[]) => (
   JSON.stringify(left) === JSON.stringify(right)
 );
-
-const reloadAssetTreeFromBackendTruth = async (entryId: string) => {
-  const response = await getFanxiuDataAnnotationAssetTree(entryId);
-  if (selectedEntryId.value !== entryId) return;
-  assetTreeBackendHydrating.value = true;
-  try {
-    if (response.exists && Array.isArray(response.tree) && response.tree.length) {
-      const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-      assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
-      assetTreeBackendUpdatedAt.value = Number(response.updated_at) || 0;
-    } else {
-      assetTree.value = [];
-      assetTreeBackendUpdatedAt.value = 0;
-    }
-  } finally {
-    assetTreeBackendHydrating.value = false;
-  }
-};
 
 const flushAssetTreeToBackend = async (
   entryId: string,
   tree: DataAnnotationAssetNode[],
   localVersion = assetTreeLocalVersion,
-  baseUpdatedAt = assetTreeBackendUpdatedAt.value,
+  baseRevision = assetTreeBackendRevision.value,
 ) => {
   try {
-    const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree, baseUpdatedAt);
-    if (Array.isArray(response.tree) && selectedEntryId.value === entryId) {
+    const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree, baseRevision);
+    if (Array.isArray(response.tree) && assetTreeLoadedEntryId === entryId) {
       if (localVersion === assetTreeLocalVersion) {
         const nextTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
         if (!assetTreesEqual(nextTree, assetTree.value)) {
           assetTreeBackendHydrating.value = true;
           try {
             assetTree.value = nextTree;
+            await nextTick();
           } finally {
             assetTreeBackendHydrating.value = false;
           }
         }
-      } else {
-        scheduleAssetTreeBackendSave();
       }
     }
-    if (selectedEntryId.value === entryId) {
+    if (assetTreeLoadedEntryId === entryId) {
       assetTreeBackendUpdatedAt.value = Number(response.updated_at) || assetTreeBackendUpdatedAt.value;
+      assetTreeBackendRevision.value = response.revision || assetTreeBackendRevision.value;
+      assetTreeConflictNotified = false;
     }
     return true;
   } catch (error) {
     if (getHttpStatus(error) === 409) {
-      try {
-        const latest = await getFanxiuDataAnnotationAssetTree(entryId);
-        const latestTree = Array.isArray(latest.tree)
-          ? normalizeAssetTree(latest.tree as DataAnnotationAssetNode[])
-          : [];
-        const latestUpdatedAt = Number(latest.updated_at) || 0;
-        const mergedTree = mergeAssetTreeNodes(tree, latestTree);
-        const response = await saveFanxiuDataAnnotationAssetTree(entryId, mergedTree, latestUpdatedAt || undefined);
-        if (Array.isArray(response.tree) && selectedEntryId.value === entryId) {
-          if (localVersion === assetTreeLocalVersion) {
-            const nextTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(normalizeAssetTree(response.tree as DataAnnotationAssetNode[])));
-            if (!assetTreesEqual(nextTree, assetTree.value)) {
-              assetTreeBackendHydrating.value = true;
-              try {
-                assetTree.value = nextTree;
-              } finally {
-                assetTreeBackendHydrating.value = false;
-              }
-            }
-          } else {
-            scheduleAssetTreeBackendSave();
-          }
-        }
-        if (selectedEntryId.value === entryId) {
-          assetTreeBackendUpdatedAt.value = Number(response.updated_at) || latestUpdatedAt || assetTreeBackendUpdatedAt.value;
-        }
-        ElMessage.info('资产树有并发更新，已合并并重新保存');
-        return true;
-      } catch (retryError) {
-        console.error(retryError);
-        try {
-          await reloadAssetTreeFromBackendTruth(entryId);
-          ElMessage.error(`${getErrorMessage(retryError)}；已回读服务端资产树`);
-        } catch (reloadError) {
-          console.error(reloadError);
-          ElMessage.error(getErrorMessage(retryError));
-        }
-        return false;
+      if (!assetTreeConflictNotified) {
+        assetTreeConflictNotified = true;
+        ElMessage.warning('另一页面刚刚更新了资产树；本页编辑已保留，请刷新页面后继续');
       }
+      return false;
     }
     console.error(error);
-    try {
-      await reloadAssetTreeFromBackendTruth(entryId);
-      ElMessage.error(`${getErrorMessage(error)}；已回读服务端资产树`);
-    } catch (reloadError) {
-      console.error(reloadError);
-      ElMessage.error(getErrorMessage(error));
-    }
+    ElMessage.error(getErrorMessage(error));
     return false;
   }
 };
 
+const enqueueAssetTreeSave = () => {
+  const entryId = assetTreeLoadedEntryId;
+  const localVersion = assetTreeLocalVersion;
+  const tree = cloneAssetTree(assetTree.value);
+  const task = assetTreeSaveChain.then(async () => {
+    if (!assetTreeDirty || !entryId) return true;
+    const persisted = await flushAssetTreeToBackend(entryId, tree, localVersion, assetTreeBackendRevision.value);
+    if (persisted && entryId === assetTreeLoadedEntryId && localVersion === assetTreeLocalVersion) {
+      assetTreeDirty = false;
+    }
+    if (persisted && entryId === assetTreeLoadedEntryId && assetTreeDirty) scheduleAssetTreeBackendSave();
+    return persisted;
+  });
+  assetTreeSaveChain = task.catch(() => false);
+  return task;
+};
+
+const saveAssetTreeNow = async () => {
+  if (assetTreeSaveTimer) {
+    window.clearTimeout(assetTreeSaveTimer);
+    assetTreeSaveTimer = null;
+  }
+  await nextTick();
+  assetTreeDirty = true;
+  return enqueueAssetTreeSave();
+};
+
+const flushAssetTreeWhenHidden = () => {
+  if (document.visibilityState === 'hidden' && assetTreeDirty) void saveAssetTreeNow();
+};
+
 const scheduleAssetTreeBackendSave = () => {
   if (assetTreeBackendHydrating.value || !selectedEntryId.value) return;
-  const entryId = selectedEntryId.value;
-  const localVersion = assetTreeLocalVersion;
-  const baseUpdatedAt = assetTreeBackendUpdatedAt.value;
-  const tree = JSON.parse(JSON.stringify(assetTree.value)) as DataAnnotationAssetNode[];
+  assetTreeDirty = true;
   if (assetTreeSaveTimer) window.clearTimeout(assetTreeSaveTimer);
   assetTreeSaveTimer = window.setTimeout(() => {
     assetTreeSaveTimer = null;
-    void flushAssetTreeToBackend(entryId, tree, localVersion, baseUpdatedAt);
+    void enqueueAssetTreeSave();
   }, 400);
 };
 
@@ -8044,19 +8207,26 @@ const loadEntryAssetTree = async (entryId: string) => {
   if (!entryId) return;
   assetTreeBackendHydrating.value = true;
   assetTreeBackendUpdatedAt.value = 0;
+  assetTreeBackendRevision.value = '';
   try {
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
       assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
       assetTreeBackendUpdatedAt.value = Number(response.updated_at) || 0;
+      assetTreeBackendRevision.value = response.revision || '';
     } else {
       assetTree.value = [];
       assetTreeBackendUpdatedAt.value = 0;
+      assetTreeBackendRevision.value = response.revision || '';
     }
+    assetTreeLoadedEntryId = entryId;
     restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
     await focusImageFromRoute();
+    await nextTick();
+    assetTreeDirty = false;
+    assetTreeConflictNotified = false;
     void nextTick(syncCanvas);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -8066,24 +8236,25 @@ const loadEntryAssetTree = async (entryId: string) => {
 };
 
 const refreshEntryAssetTreeIfChanged = async () => {
-  if (!selectedEntryId.value || assetTreeBackendHydrating.value) return;
+  if (!selectedEntryId.value || assetTreeBackendHydrating.value || assetTreeDirty) return;
   const entryId = selectedEntryId.value;
   const selectedNode = selectedAssetNode.value;
   const selectedKey = selectedNode ? assetNodeMergeKey(selectedNode) : '';
   try {
     const response = await getFanxiuDataAnnotationAssetTree(entryId);
     const backendUpdatedAt = Number(response.updated_at) || 0;
-    if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
+    if (!response.exists || !Array.isArray(response.tree) || response.revision === assetTreeBackendRevision.value) return;
     assetTreeBackendHydrating.value = true;
     const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
-    const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
-    assetTree.value = mergedTree;
+    const latestTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
+    assetTree.value = latestTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
+    assetTreeBackendRevision.value = response.revision || '';
     expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
     await syncAssetTreeExpansionFromState();
-    if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
-    const restoredNode = selectedKey ? findAssetNodeByMergeKey(mergedTree, selectedKey) : null;
-    selectedAssetId.value = restoredNode?.id ?? findFirstImageNode(mergedTree)?.id ?? null;
+    if (selectedAssetId.value && findAssetNode(latestTree, selectedAssetId.value)) return;
+    const restoredNode = selectedKey ? findAssetNodeByMergeKey(latestTree, selectedKey) : null;
+    selectedAssetId.value = restoredNode?.id ?? findFirstImageNode(latestTree)?.id ?? null;
   } catch {
     // 切换节点时的后台刷新不应打断用户选择。
   } finally {
@@ -8274,6 +8445,62 @@ const selectedRecognitionOpsIssue = computed(() => (
   selectedRecognitionOpsIssueId.value ? recognitionOpsIssueById.value.get(selectedRecognitionOpsIssueId.value) ?? null : null
 ));
 
+const selectedNavigationTimelineItem = computed<FanxiuDataAnnotationNavigationIncidentTimelineItem | null>(() => {
+  const timeline = selectedNavigationIncident.value?.timeline ?? [];
+  if (!timeline.length) return null;
+  return timeline.find((item) => item.index === selectedNavigationTimelineIndex.value) ?? timeline[0] ?? null;
+});
+
+const navigationIncidentStatusLabel = (status: string) => ({
+  recovering: '恢复中断 · 待复盘',
+  recovered_with_fallback: '#424 已恢复 · 待复盘',
+  recovered_after_stall: '重规划已恢复 · 待复盘',
+  unrecovered: '未恢复 · 待复盘',
+}[status] || `${status || '未知'} · 待复盘`);
+
+const navigationIncidentRecordText = (record: object | undefined, key: string) => (
+  String((record as Record<string, unknown> | undefined)?.[key] ?? '')
+);
+
+const navigationIncidentSceneText = (sceneId: number | null | undefined, score: number | null | undefined) => {
+  const scene = sceneId === null || sceneId === undefined ? 'unknown' : `#${sceneId}`;
+  return score === null || score === undefined ? scene : `${scene} ${Math.trunc(Number(score) || 0)}%`;
+};
+
+const navigationIncidentFrameUrl = (path: string | null | undefined) => (
+  path ? selectedNavigationIncident.value?.frame_data_urls?.[path] || '' : ''
+);
+
+const navigationIncidentDiagnosticText = computed(() => {
+  const diagnostic = selectedNavigationIncident.value?.diagnostic;
+  if (!diagnostic) return '';
+  const candidates = Array.isArray(diagnostic.candidates) ? diagnostic.candidates : [];
+  const ocrTexts = Array.isArray(diagnostic.ocr_texts) ? diagnostic.ocr_texts : [];
+  const lines: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const item = candidate as Record<string, unknown>;
+    lines.push(`#${item.scene_id ?? '?'} ${item.title ?? ''}：场景 ${item.scene_score ?? '--'}%，全图 ${item.frame_similarity ?? '--'}%`);
+    const identities = Array.isArray(item.identity_scores) ? item.identity_scores : [];
+    for (const identity of identities) {
+      if (!identity || typeof identity !== 'object') continue;
+      const shape = identity as Record<string, unknown>;
+      lines.push(`  ${shape.title ?? 'shape'} ${shape.score ?? '--'}%`);
+    }
+  }
+  if (ocrTexts.length) {
+    lines.push(`OCR：${ocrTexts.map((item) => String(item)).join(' / ')}`);
+  }
+  const suggestion = String(diagnostic.suggestion ?? '');
+  if (suggestion) lines.push(`建议：${suggestion}`);
+  return lines.join('\n') || JSON.stringify(diagnostic, null, 2);
+});
+
+const navigationIncidentIdentityCrops = computed(() => (
+  (selectedNavigationIncident.value?.frames ?? [])
+    .filter((item) => item.role === 'identity_crop' && Boolean(navigationIncidentFrameUrl(item.path)))
+));
+
 const recognitionOpsCacheMissing = computed(() => Boolean(recognitionOpsReport.value?.matrix?.cache_missing));
 const recognitionOpsRecomputing = computed(() => Boolean(recognitionOpsReport.value?.recompute?.running));
 
@@ -8376,6 +8603,8 @@ const loadRecognitionOps = async (recompute = false, silent = false) => {
     syncRecognitionOpsPolling(response);
     if (selectedRecognitionOpsIssueId.value && !response.issues.some((issue) => issue.id === selectedRecognitionOpsIssueId.value)) {
       selectedRecognitionOpsIssueId.value = null;
+      selectedNavigationIncident.value = null;
+      selectedNavigationTimelineIndex.value = null;
     }
   } catch (error) {
     recognitionOpsError.value = getErrorMessage(error);
@@ -8389,8 +8618,33 @@ const handleRecognitionOpsNodeClick = (node: RecognitionOpsTreeNode) => {
   if (node.type !== 'issue' || !node.issueId) return;
   selectedRecognitionOpsIssueId.value = node.issueId;
   activeSceneRelationGraphTab.value = 'recognition';
-  const firstImageId = recognitionOpsIssueById.value.get(node.issueId)?.node_ids[0];
+  const issue = recognitionOpsIssueById.value.get(node.issueId);
+  if (issue?.incident?.id) {
+    void loadNavigationIncident(issue.incident.id);
+  } else {
+    selectedNavigationIncident.value = null;
+    navigationIncidentError.value = '';
+    selectedNavigationTimelineIndex.value = null;
+  }
+  const firstImageId = issue?.node_ids[0];
   if (firstImageId !== undefined) void focusRecognitionOpsImage(firstImageId);
+};
+
+const loadNavigationIncident = async (incidentId: string) => {
+  if (!selectedEntryId.value) return;
+  navigationIncidentLoading.value = true;
+  navigationIncidentError.value = '';
+  try {
+    const response = await getFanxiuDataAnnotationNavigationIncident(selectedEntryId.value, incidentId);
+    if (selectedRecognitionOpsIssue.value?.incident?.id !== incidentId) return;
+    selectedNavigationIncident.value = response.incident;
+    selectedNavigationTimelineIndex.value = response.incident.timeline[0]?.index ?? null;
+  } catch (error) {
+    selectedNavigationIncident.value = null;
+    navigationIncidentError.value = getErrorMessage(error);
+  } finally {
+    navigationIncidentLoading.value = false;
+  }
 };
 
 const focusRecognitionOpsImage = async (imageId: number) => {
@@ -8416,8 +8670,81 @@ const buildSceneRelationTooltip = (edge: Omit<SceneRelationEdge, 'tooltip'>) => 
   ].filter(Boolean).join('\n')
 );
 
+type EffectiveShapeEntry = {
+  shape: DataAnnotationShape;
+  sourceSceneId: number;
+  unitKey: string;
+};
+
+const effectiveSceneImages = (nodes: DataAnnotationAssetNode[]) => {
+  const rawImages = collectAssetImageRecords(nodes);
+  const imagesByNumber = new Map<number, DataAnnotationAssetNode>();
+  for (const image of rawImages) {
+    const sceneId = assetNumericImageId(image);
+    if (sceneId !== null) imagesByNumber.set(sceneId, image);
+  }
+  const resolvedEntries = new Map<number, EffectiveShapeEntry[]>();
+  const resolving: number[] = [];
+  const parseParents = (image: DataAnnotationAssetNode) => (
+    String(image.parentSceneIds ?? '')
+      .split(/[,，]/)
+      .map((item) => Number(item.trim().replace(/^#/, '')))
+      .filter((item, index, values) => Number.isInteger(item) && item > 0 && values.indexOf(item) === index)
+  );
+  const resolve = (sceneId: number): EffectiveShapeEntry[] => {
+    const cached = resolvedEntries.get(sceneId);
+    if (cached) return cached;
+    const image = imagesByNumber.get(sceneId);
+    if (!image) throw new Error(`场景 #${sceneId} 不存在`);
+    if (resolving.includes(sceneId)) {
+      const cycle = [...resolving.slice(resolving.indexOf(sceneId)), sceneId].map((id) => `#${id}`).join(' -> ');
+      throw new Error(`检测到循环继承 ${cycle}`);
+    }
+    resolving.push(sceneId);
+    const entries: EffectiveShapeEntry[] = [];
+    const seen = new Set<string>();
+    const append = (entry: EffectiveShapeEntry) => {
+      if (seen.has(entry.unitKey)) return;
+      seen.add(entry.unitKey);
+      entries.push(entry);
+    };
+    for (const parentId of parseParents(image)) {
+      if (!imagesByNumber.has(parentId)) throw new Error(`场景 #${sceneId} 引用了不存在的父场景 #${parentId}`);
+      resolve(parentId).forEach(append);
+    }
+    for (const shape of image.shapes ?? []) {
+      const signature = shape.id || [
+        shape.title,
+        shape.x,
+        shape.y,
+        shape.w,
+        shape.h,
+      ].join(':');
+      append({ shape, sourceSceneId: sceneId, unitKey: `${sceneId}:${signature}` });
+    }
+    resolving.pop();
+    resolvedEntries.set(sceneId, entries);
+    return entries;
+  };
+
+  const result = new Map<number, DataAnnotationAssetNode>();
+  for (const [sceneId, image] of imagesByNumber) {
+    try {
+      result.set(sceneId, { ...image, shapes: resolve(sceneId).map((entry) => entry.shape) });
+    } catch (error) {
+      console.warn(`Shape 继承解析失败：${getErrorMessage(error)}`);
+      result.set(sceneId, image);
+    }
+  }
+  return result;
+};
+
 const buildSceneRelationEdges = (nodes: DataAnnotationAssetNode[]) => {
-  const imageRecords = collectAssetImageRecords(nodes);
+  const effectiveImages = effectiveSceneImages(nodes);
+  const imageRecords = collectAssetImageRecords(nodes).map((image) => {
+    const imageId = assetNumericImageId(image);
+    return imageId === null ? image : (effectiveImages.get(imageId) ?? image);
+  });
   const images = imageRecords;
   const imagesByNumber = new Map<number, DataAnnotationAssetNode>();
   for (const image of images) {
@@ -8529,8 +8856,8 @@ const selectedSceneGraphEmptyText = computed(() => (
   selectedRecognitionOpsGraphActive.value
     ? '无匹配边'
     : activeSceneRelationGraphTab.value === 'recognition'
-      ? '无上游识别结构'
-      : '无上游跳转流转'
+      ? '无直接识别关系'
+      : '无直接跳转关系'
 ));
 
 const selectedSceneGraphKey = computed(() => (
@@ -8556,48 +8883,7 @@ const buildSelectedSceneGraphRelations = (
   const directEdges = allEdges.filter((edge) => (
     edge.sourceId === imageId || edge.targetId === imageId
   ));
-
-  const incomingByTarget = new Map<number, SceneRelationEdge[]>();
-  for (const edge of allEdges) {
-    if (edge.targetId === null) continue;
-    const list = incomingByTarget.get(edge.targetId) ?? [];
-    list.push(edge);
-    incomingByTarget.set(edge.targetId, list);
-  }
-
-  const included = new Set<number>([imageId]);
-  const queue = [imageId];
-  while (queue.length) {
-    const targetId = queue.shift();
-    if (targetId === undefined) continue;
-    for (const edge of incomingByTarget.get(targetId) ?? []) {
-      if (edge.sourceId === null || included.has(edge.sourceId)) continue;
-      included.add(edge.sourceId);
-      queue.push(edge.sourceId);
-    }
-  }
-
-  for (const edge of directEdges) {
-    if (edge.sourceId !== null) included.add(edge.sourceId);
-    if (edge.targetId !== null) included.add(edge.targetId);
-  }
-
-  const relationById = new Map<string, SceneRelationEdge>();
-  for (const edge of allEdges) {
-    if (
-      edge.sourceId !== null
-      && edge.targetId !== null
-      && included.has(edge.sourceId)
-      && included.has(edge.targetId)
-    ) {
-      relationById.set(edge.id, edge);
-    }
-  }
-  for (const edge of directEdges) {
-    relationById.set(edge.id, edge);
-  }
-
-  return [...relationById.values()];
+  return directEdges;
 };
 
 const selectedSceneGraphRelations = computed(() => {
@@ -9078,6 +9364,24 @@ const selectedImageNode = computed(() => {
   const node = selectedAssetNode.value;
   return node?.type === 'image' ? node : null;
 });
+const selectedSceneParentIds = computed({
+  get: () => selectedImageNode.value?.parentSceneIds ?? '',
+  set: (value: string) => {
+    const image = selectedImageNode.value;
+    if (!image) return;
+    image.parentSceneIds = value;
+  },
+});
+const normalizeSelectedSceneParentIds = () => {
+  const image = selectedImageNode.value;
+  if (!image) return;
+  const normalized = normalizeSceneParentIdsText(image.parentSceneIds, assetNumericImageId(image));
+  if (normalized) {
+    image.parentSceneIds = normalized;
+  } else {
+    delete image.parentSceneIds;
+  }
+};
 watch(
   [selectedSceneGraphBaseNodes, selectedSceneGraphBaseEdges],
   () => {
@@ -9087,32 +9391,36 @@ watch(
 );
 const selectedImageTitleText = computed(() => (
   selectedImageNode.value
-    ? `${assetImageIdMark(selectedImageNode.value)} ${selectedImageNode.value.title}`
+    ? [assetImageIdMark(selectedImageNode.value), selectedImageNode.value.title.trim()].filter(Boolean).join(' ')
     : '未选择图片'
 ));
 const selectedImageUsesJpegFrame = computed(() => {
   const filename = selectedImageNode.value?.filename?.trim().toLowerCase() || '';
   return filename.endsWith('.jpg') || filename.endsWith('.jpeg');
 });
+const assetImagePreviewKey = (image: DataAnnotationAssetNode, entryId = selectedEntryId.value) => (
+  `${entryId}\u0000${image.id}\u0000${image.filename || ''}`
+);
 const selectedImagePreviewUrl = computed(() => {
   const image = selectedImageNode.value;
   if (!image) return '';
-  if (assetImagePreviewMissingIds.value[image.id]) return '';
-  return assetImagePreviewUrls.value[image.id] || image.imageDataUrl || '';
+  const key = assetImagePreviewKey(image);
+  if (assetImagePreviewMissingIds.value[key]) return '';
+  return assetImagePreviewUrls.value[key] || image.imageDataUrl || '';
 });
 const selectedImagePreviewLoading = computed(() => {
   const image = selectedImageNode.value;
-  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewLoadingIds.value[image.id]);
+  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewLoadingIds.value[assetImagePreviewKey(image)]);
 });
 const selectedImagePreviewMissing = computed(() => {
   const image = selectedImageNode.value;
-  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewMissingIds.value[image.id]);
+  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewMissingIds.value[assetImagePreviewKey(image)]);
 });
 const selectedImagePlaceholderText = computed(() => {
   const image = selectedImageNode.value;
   if (!image) return '空图';
   if (selectedImagePreviewLoading.value) return '加载中';
-  if (selectedImagePreviewMissing.value) return '原图缺失，仅显示标注框';
+  if (selectedImagePreviewMissing.value) return '图片加载失败，点击重试';
   return image.filename ? '等待加载' : '空图';
 });
 const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
@@ -9340,11 +9648,20 @@ const scrollCurrentTreeNodeIntoView = (treeClass: string) => {
     ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 };
 
-const focusAssetImage = async (image: DataAnnotationAssetNode) => {
+const focusAssetImage = async (
+  image: DataAnnotationAssetNode,
+  options: { collapseOtherFolders?: boolean } = {},
+) => {
   const expandedIds = assetTreeViewMode.value === 'scene'
-    ? collectSceneExpandedNodeIds(image.id)
+    ? (
+        options.collapseOtherFolders
+          ? (findDisplayAssetAncestorIds(assetTreeDisplayData.value, image.id) ?? [])
+          : collectSceneExpandedNodeIds(image.id)
+      )
     : (findAssetAncestorFolderIds(assetTree.value, image.id) ?? []);
-  expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...expandedIds]));
+  expandedAssetNodeIds.value = options.collapseOtherFolders
+    ? expandedIds
+    : Array.from(new Set([...expandedAssetNodeIds.value, ...expandedIds]));
   selectedAssetId.value = image.id;
   assetTreeRef.value?.setCurrentKey?.(image.id);
   await syncAssetTreeExpansionFromState();
@@ -9358,6 +9675,31 @@ const focusAssetImage = async (image: DataAnnotationAssetNode) => {
   await syncShapeTreeExpansionFromState();
   await nextTick();
   scrollCurrentTreeNodeIntoView('shape-tree');
+};
+
+const alignAssetTreeToCurrentScene = async () => {
+  if (!selectedEntryId.value || alignCurrentSceneLoading.value) return;
+  alignCurrentSceneLoading.value = true;
+  try {
+    const status = await getFanxiuInfoWindowStatus(selectedEntryId.value);
+    const sceneId = Number(status.scene?.scene_id);
+    if (!Number.isInteger(sceneId) || sceneId <= 0) {
+      ElMessage.warning('凡修信息窗尚未识别到当前场景');
+      return;
+    }
+    const image = findAssetImageByNumericId(assetTree.value, sceneId);
+    if (!image) {
+      ElMessage.warning(`资产树中未找到场景 #${sceneId}`);
+      return;
+    }
+    assetFrameSearchText.value = '';
+    await nextTick();
+    await focusAssetImage(image, { collapseOtherFolders: true });
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    alignCurrentSceneLoading.value = false;
+  }
 };
 
 const normalizeAssetSearchText = (value: string) => value.trim().replace(/^#/, '').toLowerCase();
@@ -9516,6 +9858,30 @@ const occlusionOverlayShapes = computed(() => (
   globalOcclusionMaskEnabled.value ? occlusionMaskShapes.value : []
 ));
 const selectedShape = computed(() => findShapeById(selectedImageShapes.value, selectedShapeId.value));
+const selectedShapeLoadMode = computed<NonNullable<DataAnnotationShape['loadMode']>>({
+  get: () => normalizeShapeLoadMode(selectedShape.value?.loadMode),
+  set: (value) => {
+    if (!selectedShape.value) return;
+    if (value === 'paged') selectedShape.value.loadMode = 'paged';
+    else delete selectedShape.value.loadMode;
+  },
+});
+const selectedShapeLoadBoundary = computed<NonNullable<DataAnnotationShape['loadBoundary']>>({
+  get: () => normalizeShapeLoadBoundary(selectedShape.value?.loadBoundary),
+  set: (value) => {
+    if (!selectedShape.value) return;
+    if (value === 'cyclic') selectedShape.value.loadBoundary = 'cyclic';
+    else delete selectedShape.value.loadBoundary;
+  },
+});
+const selectedShapeLoadInitialPosition = computed<NonNullable<DataAnnotationShape['loadInitialPosition']>>({
+  get: () => normalizeShapeLoadInitialPosition(selectedShape.value?.loadInitialPosition),
+  set: (value) => {
+    if (!selectedShape.value) return;
+    if (value === 'unknown') selectedShape.value.loadInitialPosition = 'unknown';
+    else delete selectedShape.value.loadInitialPosition;
+  },
+});
 const selectedShapeCopyCount = computed(() => {
   if (selectedShapeIds.value.length) return selectedShapeIds.value.length;
   return selectedShape.value ? 1 : 0;
@@ -9552,11 +9918,12 @@ const cycleSelectedShapeSceneIdentityRole = () => {
   if (!shape || !isDrawableShape(shape)) return;
   const currentRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
   const nextRole = nextShapeMatchRole(currentRole);
+  if (nextRole !== 'off' && !shapePrimaryMatchKind(shape)) {
+    ElMessage.warning('请先选择图像或 OCR 识别方式，再标记场景');
+    return;
+  }
   shape.sceneIdentityRole = nextRole;
   shape.isSceneIdentity = nextRole !== 'off';
-  if (nextRole !== 'off' && !shapePrimaryMatchKind(shape)) {
-    shape.imageMatchRole = shape.sceneIdentityRole;
-  }
 };
 const canDetectSelectedShape = computed(() => Boolean(
   selectedEntryId.value
@@ -9634,7 +10001,7 @@ const imageHasSceneIdentity = (image: DataAnnotationAssetNode) => (
 );
 
 const inferredFrameLayer = (image: DataAnnotationAssetNode): FrameLayer => (
-  normalizeFrameLayer(image.layer, 3) === 1 ? 1 : (imageHasSceneIdentity(image) ? 2 : 3)
+  !imageHasSceneIdentity(image) ? 3 : (normalizeFrameLayer(image.layer, 3) === 1 ? 1 : 2)
 );
 
 const frameLayerTitle = (layer: FrameLayer) => ({
@@ -9654,6 +10021,7 @@ const isVirtualAssetTreeNode = (node: DataAnnotationAssetNode | null | undefined
 );
 
 const buildSceneLayerProjection = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => {
+  const effectiveImages = effectiveSceneImages(nodes);
   const rootsByLayer: Record<FrameLayer, DataAnnotationAssetNode[]> = {
     1: [],
     2: [],
@@ -9662,7 +10030,9 @@ const buildSceneLayerProjection = (nodes: DataAnnotationAssetNode[]): DataAnnota
   const visit = (items: DataAnnotationAssetNode[]) => {
     for (const node of items) {
       if (node.type === 'image') {
-        rootsByLayer[inferredFrameLayer(node)].push({ ...node, children: [] });
+        const sceneId = assetNumericImageId(node);
+        const effectiveNode = sceneId === null ? node : (effectiveImages.get(sceneId) ?? node);
+        rootsByLayer[inferredFrameLayer(effectiveNode)].push({ ...node, children: [] });
       }
       visit(node.children ?? []);
     }
@@ -10093,6 +10463,9 @@ watch(selectedEntryId, () => {
   recognitionOpsReport.value = null;
   recognitionOpsError.value = '';
   selectedRecognitionOpsIssueId.value = null;
+  selectedNavigationIncident.value = null;
+  navigationIncidentError.value = '';
+  selectedNavigationTimelineIndex.value = null;
   if (assetTreeViewMode.value === 'recognitionOps') void loadRecognitionOps(false);
 });
 
@@ -10247,60 +10620,133 @@ const revokeAssetImagePreviewUrl = (url: string | undefined) => {
   if (url && isObjectUrl(url)) URL.revokeObjectURL(url);
 };
 
-const setAssetImagePreviewUrl = (imageId: string, url: string) => {
-  const previous = assetImagePreviewUrls.value[imageId];
+const setAssetImagePreviewUrl = (key: string, url: string) => {
+  const previous = assetImagePreviewUrls.value[key];
   if (previous && previous !== url) revokeAssetImagePreviewUrl(previous);
   const missing = { ...assetImagePreviewMissingIds.value };
-  delete missing[imageId];
+  delete missing[key];
   assetImagePreviewMissingIds.value = missing;
   assetImagePreviewUrls.value = {
     ...assetImagePreviewUrls.value,
-    [imageId]: url,
+    [key]: url,
   };
 };
 
 const releaseAssetImagePreviewUrls = () => {
+  assetImagePreviewEpoch += 1;
   Object.values(assetImagePreviewUrls.value).forEach(revokeAssetImagePreviewUrl);
   assetImagePreviewUrls.value = {};
+  assetImagePreviewLoadingIds.value = {};
   assetImagePreviewMissingIds.value = {};
+  assetImagePreviewRequests.clear();
+  assetImagePreviewRenderRecoveryKeys.clear();
 };
 
 const blobToObjectUrl = (blob: Blob) => URL.createObjectURL(blob);
 
-const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
-  if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
-  if (image.imageDataUrl) return image.imageDataUrl;
-  if (assetImagePreviewMissingIds.value[image.id]) return '';
-  if (!selectedEntryId.value || !image.filename) return '';
+const validateAssetImageObjectUrl = (url: string) => new Promise<void>((resolve, reject) => {
+  const probe = new Image();
+  probe.onload = () => resolve();
+  probe.onerror = () => reject(new Error('标注图片内容无法解码'));
+  probe.src = url;
+});
+
+const waitForAssetImageRetry = (delayMs: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, delayMs);
+});
+
+const getAssetImageDataUrl = async (image: DataAnnotationAssetNode, options: { force?: boolean } = {}) => {
+  const entryId = selectedEntryId.value;
+  const key = assetImagePreviewKey(image, entryId);
+  if (options.force) {
+    const previous = assetImagePreviewUrls.value[key];
+    revokeAssetImagePreviewUrl(previous);
+    const urls = { ...assetImagePreviewUrls.value };
+    const missing = { ...assetImagePreviewMissingIds.value };
+    delete urls[key];
+    delete missing[key];
+    assetImagePreviewUrls.value = urls;
+    assetImagePreviewMissingIds.value = missing;
+  } else {
+    if (assetImagePreviewUrls.value[key]) return assetImagePreviewUrls.value[key];
+    if (image.imageDataUrl) return image.imageDataUrl;
+    if (assetImagePreviewMissingIds.value[key]) return '';
+    const pending = assetImagePreviewRequests.get(key);
+    if (pending) return pending;
+  }
+  if (!entryId || !image.filename) return '';
+  const requestEpoch = assetImagePreviewEpoch;
   assetImagePreviewLoadingIds.value = {
     ...assetImagePreviewLoadingIds.value,
-    [image.id]: true,
+    [key]: true,
   };
-  try {
-    const blob = await getFanxiuDataAnnotationImage(selectedEntryId.value, image.filename);
-    const previewUrl = blobToObjectUrl(blob);
-    setAssetImagePreviewUrl(image.id, previewUrl);
-    return previewUrl;
-  } catch (error) {
-    assetImagePreviewMissingIds.value = {
-      ...assetImagePreviewMissingIds.value,
-      [image.id]: true,
-    };
-    throw error;
-  } finally {
-    const next = { ...assetImagePreviewLoadingIds.value };
-    delete next[image.id];
-    assetImagePreviewLoadingIds.value = next;
-  }
+  let request!: Promise<string>;
+  request = (async () => {
+    let lastError: unknown = new Error('标注图片加载失败');
+    const retryDelays = [0, 300, 900];
+    try {
+      for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+        if (retryDelays[attempt]) await waitForAssetImageRetry(retryDelays[attempt]);
+        let previewUrl = '';
+        try {
+          const cacheBust = options.force || attempt > 0 ? Date.now() + attempt : undefined;
+          const blob = await getFanxiuDataAnnotationImage(
+            entryId,
+            image.filename!,
+            cacheBust,
+          );
+          if (!blob.size) throw new Error('标注图片响应为空');
+          previewUrl = blobToObjectUrl(blob);
+          await validateAssetImageObjectUrl(previewUrl);
+          if (requestEpoch !== assetImagePreviewEpoch || selectedEntryId.value !== entryId) {
+            revokeAssetImagePreviewUrl(previewUrl);
+            return '';
+          }
+          setAssetImagePreviewUrl(key, previewUrl);
+          return previewUrl;
+        } catch (error) {
+          revokeAssetImagePreviewUrl(previewUrl);
+          lastError = error;
+          if (getHttpStatus(error) === 404) break;
+        }
+      }
+      if (requestEpoch === assetImagePreviewEpoch && selectedEntryId.value === entryId) {
+        assetImagePreviewMissingIds.value = {
+          ...assetImagePreviewMissingIds.value,
+          [key]: true,
+        };
+      }
+      throw lastError;
+    } finally {
+      if (requestEpoch === assetImagePreviewEpoch) {
+        const next = { ...assetImagePreviewLoadingIds.value };
+        delete next[key];
+        assetImagePreviewLoadingIds.value = next;
+      }
+      if (assetImagePreviewRequests.get(key) === request) assetImagePreviewRequests.delete(key);
+    }
+  })();
+  assetImagePreviewRequests.set(key, request);
+  return request;
 };
 
-const markSelectedImagePreviewMissing = () => {
+const recoverSelectedImagePreview = () => {
   const image = selectedImageNode.value;
   if (!image) return;
+  const key = assetImagePreviewKey(image);
+  const previous = assetImagePreviewUrls.value[key];
+  revokeAssetImagePreviewUrl(previous);
+  const urls = { ...assetImagePreviewUrls.value };
+  delete urls[key];
+  assetImagePreviewUrls.value = urls;
   assetImagePreviewMissingIds.value = {
     ...assetImagePreviewMissingIds.value,
-    [image.id]: true,
+    [key]: true,
   };
+  if (image.filename && !assetImagePreviewRenderRecoveryKeys.has(key)) {
+    assetImagePreviewRenderRecoveryKeys.add(key);
+    void getAssetImageDataUrl(image, { force: true }).catch(() => undefined);
+  }
 };
 
 const ensureSelectedImagePreview = async () => {
@@ -10311,6 +10757,23 @@ const ensureSelectedImagePreview = async () => {
   } catch {
     // Preview loading is opportunistic; matching can still use the saved filename.
   }
+};
+
+const retrySelectedImagePreview = () => {
+  const image = selectedImageNode.value;
+  if (!image || selectedImagePreviewLoading.value) return;
+  const key = assetImagePreviewKey(image);
+  assetImagePreviewRenderRecoveryKeys.delete(key);
+  void getAssetImageDataUrl(image, { force: true }).catch(() => undefined);
+};
+
+const recoverSelectedImagePreviewWhenAvailable = () => {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  if (selectedImagePreviewMissing.value) {
+    retrySelectedImagePreview();
+    return;
+  }
+  void ensureSelectedImagePreview();
 };
 
 const imageSourceToDataUrl = async (source: string) => {
@@ -10618,30 +11081,59 @@ const addSavedFrameToAssetTree = (node: DataAnnotationAssetNode) => {
   insertSavedFrameNode(node);
 };
 
+const savedFrameInsertTarget = () => {
+  const selectedNode = selectedAssetNode.value;
+  if (selectedNode?.type === 'folder') {
+    return { parentId: selectedNode.id, afterNodeId: '' };
+  }
+  return { parentId: '', afterNodeId: selectedNode?.id || '' };
+};
+
+const applySavedFrameTransaction = async (
+  result: FanxiuDataAnnotationSaveFrameResponse,
+  requestedNode: DataAnnotationAssetNode,
+  localVersion: number,
+) => {
+  if (!Array.isArray(result.tree) || !result.revision) throw new Error('保存响应缺少资产树事务结果');
+  const backendTree = filterDeletedShapesFromAssetTree(
+    compactDuplicateAssetNodes(normalizeAssetTree(result.tree as DataAnnotationAssetNode[])),
+  );
+  assetTreeBackendHydrating.value = true;
+  try {
+    assetTree.value = localVersion === assetTreeLocalVersion
+      ? backendTree
+      : mergeAssetTreeNodes(backendTree, assetTree.value);
+    await nextTick();
+  } finally {
+    assetTreeBackendHydrating.value = false;
+  }
+  assetTreeBackendRevision.value = result.revision;
+  assetTreeBackendUpdatedAt.value = Number(result.updated_at) || assetTreeBackendUpdatedAt.value;
+  assetTreeDirty = localVersion !== assetTreeLocalVersion;
+  const savedNode = findAssetNode(assetTree.value, requestedNode.id);
+  if (!savedNode || savedNode.type !== 'image') throw new Error('资产树事务未返回新帧节点');
+  Object.assign(requestedNode, savedNode);
+  selectedAssetId.value = requestedNode.id;
+  if (assetTreeDirty) scheduleAssetTreeBackendSave();
+};
+
 const saveFrameDataUrlToAssetTree = async (currentFrameDataUrl: string) => {
   if (!selectedEntryId.value) return null;
-  const result = await saveFanxiuGameWindow2Frame({
+  const pendingPersisted = assetTreeDirty ? await saveAssetTreeNow() : await assetTreeSaveChain;
+  if (!pendingPersisted) throw new Error('资产树存在并发冲突，请刷新后重试');
+  const node = createAssetImageNode('');
+  const insertTarget = savedFrameInsertTarget();
+  const localVersion = assetTreeLocalVersion;
+  const result = await saveFanxiuDataAnnotationFrame({
     entry_id: selectedEntryId.value,
-    title: targetTitle.value.trim(),
-    title_match: titleMatch.value,
-    mode: 'screen',
-    area: captureArea.value,
-    crop: cropText.value.trim(),
-    trim_border: trimBorderText.value.trim(),
-    rotate: rotateDegrees.value,
-    fixed_width: fixedFrameWidth.value,
-    fixed_height: fixedFrameHeight.value,
-    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     current_frame_data_url: currentFrameDataUrl,
+    asset_node: node,
+    parent_id: insertTarget.parentId || undefined,
+    after_node_id: insertTarget.afterNodeId || undefined,
+    base_revision: assetTreeBackendRevision.value,
   });
-  const node = createAssetImageNode(result.filename, {
-    filename: result.filename,
-    imageDataUrl: currentFrameDataUrl,
-    width: result.width,
-    height: result.height,
-  });
-  setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
-  addSavedFrameToAssetTree(node);
+  await applySavedFrameTransaction(result, node, localVersion);
+  setAssetImagePreviewUrl(assetImagePreviewKey(node), currentFrameDataUrl);
   return node;
 };
 
@@ -10839,9 +11331,6 @@ const createRecordedGameShape = (
   annotation?: GameMacroShapeAnnotation,
 ) => {
   image.shapes ??= [];
-  const existingShapes = flattenShapes(image.shapes).filter(isDrawableShape);
-  const shouldMarkScene = gameMacroConfig.value.markFirstShapeAsSceneIdentity
-    && !existingShapes.some(isSceneIdentityShape);
   const box = annotation?.box ?? buildGameMacroFallbackBox(image, action, point, endPoint);
   const rect = boxToShapeRect(image, box);
   const shape: DataAnnotationShape = {
@@ -10853,11 +11342,11 @@ const createRecordedGameShape = (
     floating: false,
     jitterEnabled: false,
     jitterRadius: 4,
-    isSceneIdentity: shouldMarkScene,
-    sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
+    isSceneIdentity: false,
+    sceneIdentityRole: 'off',
     sceneJumpTarget: '',
     loadDirection: action === 'drag' && endPoint ? loadDirectionOfDrag(point, endPoint) : 'none',
-    imageMatchRole: shouldMarkScene ? 'required' : 'off',
+    imageMatchRole: 'off',
     pixelTolerance: DEFAULT_SHAPE_PIXEL_TOLERANCE,
     ocrMatchRole: 'off',
     ocrEnabled: false,
@@ -11160,19 +11649,19 @@ const renameAssetNode = async (node: DataAnnotationAssetNode) => {
   if (isVirtualAssetTreeNode(node)) return;
   selectedAssetId.value = node.id;
   closeAssetContextMenu();
-  const nodeKindText = node.type === 'folder' ? '分组' : '图片';
+  const nodeKindText = node.type === 'folder' ? '分组' : '图片昵称';
   try {
     const prompt = ElMessageBox.prompt(nodeKindText + '名称', '重命名' + nodeKindText, {
       inputValue: node.title,
-      inputPattern: /\S+/,
-      inputErrorMessage: '请输入' + nodeKindText + '名称',
+      inputPattern: node.type === 'folder' ? /\S+/ : undefined,
+      inputErrorMessage: node.type === 'folder' ? '请输入分组名称' : undefined,
       confirmButtonText: '保存',
       cancelButtonText: '取消',
     });
     void selectAssetRenameInputText();
     const result = await prompt;
     const nextTitle = String(result.value ?? '').trim();
-    if (nextTitle) node.title = nextTitle;
+    if (node.type === 'image' || nextTitle) node.title = nextTitle;
   } catch {
     // User cancelled.
   }
@@ -11307,15 +11796,10 @@ const deleteSelectedShape = () => {
   selectedShapeIds.value = [];
   selectedShapeId.value = flattenShapes(image.shapes)[0]?.id ?? null;
   shapeSelectionAnchorId.value = selectedShapeId.value;
-  if (assetTreeSaveTimer) {
-    window.clearTimeout(assetTreeSaveTimer);
-    assetTreeSaveTimer = null;
-  }
   if (selectedEntryId.value) {
-    const entryId = selectedEntryId.value;
     assetTree.value = filterDeletedShapesFromAssetTree(assetTree.value);
-    const tree = cloneAssetTree(assetTree.value);
-    void flushAssetTreeToBackend(entryId, tree).finally(() => {
+    void saveAssetTreeNow().then((persisted) => {
+      if (!persisted) return;
       for (const key of pendingDeleteKeys) deletedShapeIds.value.delete(key);
       persistDeletedShapeIds();
     });
@@ -11414,7 +11898,7 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 
 const loadRuntimeLogs = async () => {
   try {
-    const response = await getFanxiuDataAnnotationRuntimeLogs(RUNTIME_LOG_PREVIEW_LIMIT);
+    const response = await getFanxiuBehaviorTreeRuntimeLogs(RUNTIME_LOG_PREVIEW_LIMIT);
     runtimeLogs.value = [...response.entries].reverse();
     goRuntimeLogFirstPage();
   } catch {
@@ -11423,7 +11907,7 @@ const loadRuntimeLogs = async () => {
 };
 
 const clearRuntimeLogs = async () => {
-  const response = await clearFanxiuDataAnnotationRuntimeLogs();
+  const response = await clearFanxiuBehaviorTreeRuntimeLogs();
   runtimeLogs.value = [...response.entries].reverse();
   goRuntimeLogFirstPage();
 };
@@ -11468,7 +11952,7 @@ const setRuntimeRunStatus = (message: string, _kind: RuntimeLogKind | 'start' | 
   runtimeRunStatus.value = message;
 };
 
-const applyRuntimeTaskStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
+const applyRuntimeTaskStatus = (status: FanxiuBehaviorTreeRuntimeStatus) => {
   runtimeTaskStatus.value = status;
   runtimeRunStatus.value = status.message || status.status || '';
   if (status.logs?.length) {
@@ -11485,7 +11969,7 @@ const applyRuntimeTaskStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
 
 const refreshRuntimeTaskStatus = async () => {
   try {
-    const status = await getFanxiuDataAnnotationRuntimeStatus();
+    const status = await getFanxiuBehaviorTreeRuntimeStatus();
     applyRuntimeTaskStatus(status);
   } catch {
     // Runtime 调试状态不是页面主数据，静默等待下一次刷新或用户操作。
@@ -11525,7 +12009,7 @@ const stopRuntimeTaskPolling = () => {
 const pollRuntimeTask = async () => {
   stopRuntimeTaskPolling();
   try {
-    const status = await getFanxiuDataAnnotationRuntimeStatus();
+    const status = await getFanxiuBehaviorTreeRuntimeStatus();
     applyRuntimeTaskStatus(status);
     if (status.running || status.status === 'stopping') {
       runtimeTaskPollTimer = window.setTimeout(() => {
@@ -11544,20 +12028,6 @@ const pollRuntimeTask = async () => {
   }
 };
 
-const toggleRuntimeGuard = async () => {
-  if (!selectedEntryId.value || runtimeGuardSwitching.value) return;
-  runtimeGuardSwitching.value = true;
-  try {
-    const status = await setFanxiuDataAnnotationRuntimeGuard(selectedEntryId.value, !runtimeGuardEnabled.value, 2);
-    applyRuntimeTaskStatus(status);
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error));
-    await refreshRuntimeTaskStatus();
-  } finally {
-    runtimeGuardSwitching.value = false;
-  }
-};
-
 const runRuntimeTaskDefinition = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (!selectedEntryId.value) return;
   const payloadOverride = buildRuntimeTaskPayloadOverride(task);
@@ -11566,7 +12036,13 @@ const runRuntimeTaskDefinition = async (task: FanxiuDataAnnotationSchedulerTaskI
   runtimeLogs.value = [];
   setRuntimeRunStatus(`Scheduler 手动任务：${task.label}`, 'start');
   try {
-    const status = await runNowFanxiuDataAnnotationSchedulerTask(selectedEntryId.value, task.id, payloadOverride);
+    const status = await runNowFanxiuDataAnnotationSchedulerTask(
+      selectedEntryId.value,
+      task.id,
+      payloadOverride,
+      true,
+      'current',
+    );
     applyRuntimeTaskStatus(status);
     await pollRuntimeTask();
     void loadRuntimeSchedulerTasks();
@@ -11610,7 +12086,7 @@ const stopRuntimeTask = async () => {
   runtimeStopRequested.value = true;
   setRuntimeRunStatus('正在停止当前任务', 'stop');
   try {
-    const status = await stopFanxiuDataAnnotationRuntimeCurrentTask(selectedEntryId.value);
+    const status = await stopFanxiuBehaviorTreeRuntimeCurrentTask(selectedEntryId.value);
     applyRuntimeTaskStatus(status);
   } catch {
     // 停止失败时保留本地停止标记，下一轮轮询会同步真实状态。
@@ -13188,12 +13664,13 @@ const showShapeDiscriminatorHelp = () => {
 };
 
 const showShapeLoadDirectionHelp = () => {
-  showStructuredHelp('窗口加载方向说明', [
+  showStructuredHelp('窗口加载说明', [
     {
       title: '1. 含义',
       lines: [
         '表示这个窗口继续查看、加载新内容的方向。',
         '方向以窗口视野的前进方向为准，不表示手指、鼠标或底层拖拽方向。',
+        '方向只是规范遍历方向，不代表进入窗口时已经位于第一项。',
       ],
     },
     {
@@ -13204,7 +13681,14 @@ const showShapeLoadDirectionHelp = () => {
       ],
     },
     {
-      title: '3. 无',
+      title: '3. 高级配置',
+      lines: [
+        '连续适合普通滚动列表；整页（卡片）表示每次操作后等待完整页面吸附，再重新识别。',
+        '边界默认有限；循环只在业务事实明确时标注。初始位置默认起始端，特殊窗口可标为未知。',
+      ],
+    },
+    {
+      title: '4. 无',
       lines: ['选择“无”表示它不是可滚动加载的窗口，Shape.load() 不会执行滚动。'],
     },
   ]);
@@ -13272,7 +13756,7 @@ const showRuntimeHelp = () => {
     {
       title: '2. Scheduler',
       lines: [
-        '执行到期会交给后端 Scheduler 选择 enabled 且到期的任务。',
+        '执行到期会交给后端 Scheduler 选择已记录且到期的下次触发时间。',
         '手动运行单任务和执行到期任务都会提交 task cell 到同一个 Runtime kernel。',
       ],
     },
@@ -13280,7 +13764,7 @@ const showRuntimeHelp = () => {
       title: '3. 守护',
       lines: [
         '守护开关只控制对应高优先级节点是否参与 tick。',
-        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响 task cell 入队。',
+        '行为树 Runtime 保持常驻；关闭守护不会关闭行为树 Runtime，也不会影响 task cell 入队。',
       ],
     },
     {
@@ -14086,20 +14570,6 @@ const finishShapeDrag = () => {
 .connection-status.is-ready {
   color: #16a34a;
   font-weight: 600;
-}
-
-.capture-runtime-link {
-  border: 0;
-  background: transparent;
-  color: #5f6b7a;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0;
-  white-space: nowrap;
-}
-
-.capture-runtime-link:hover {
-  color: #1677ff;
 }
 
 .crop-input {
@@ -15727,6 +16197,12 @@ const finishShapeDrag = () => {
   overflow: auto;
 }
 
+.recognition-ops-cache-note {
+  padding: 6px 12px 0;
+  color: #909399;
+  font-size: 12px;
+}
+
 .recognition-ops-tree {
   min-width: max-content;
 }
@@ -15759,6 +16235,163 @@ const finishShapeDrag = () => {
 
 .recognition-ops-error {
   color: #c45656;
+}
+
+.navigation-incident-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: auto;
+}
+
+.navigation-incident-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: #606266;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.navigation-incident-facts > span:first-child {
+  color: #c45656;
+  font-weight: 600;
+}
+
+.navigation-incident-trigger {
+  margin-top: 8px;
+  color: #303133;
+  font-size: 13px;
+}
+
+.navigation-incident-timeline-wrap {
+  max-width: 100%;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.navigation-incident-timeline {
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  color: #303133;
+  font-size: 12px;
+}
+
+.navigation-incident-timeline th,
+.navigation-incident-timeline td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #ebeef5;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.navigation-incident-timeline th {
+  color: #606266;
+  font-weight: 600;
+  background: #f5f7fa;
+}
+
+.navigation-incident-timeline tbody tr {
+  cursor: pointer;
+}
+
+.navigation-incident-timeline tbody tr:hover,
+.navigation-incident-timeline tbody tr.is-selected {
+  background: #ecf5ff;
+}
+
+.navigation-incident-frame-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 360px));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.navigation-incident-frame-pair figure {
+  margin: 0;
+}
+
+.navigation-incident-frame-pair figcaption {
+  margin-bottom: 5px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.navigation-incident-frame-pair img,
+.navigation-incident-frame-empty {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  border: 1px solid #dcdfe6;
+  background: #f5f7fa;
+  object-fit: contain;
+}
+
+.navigation-incident-frame-empty {
+  display: grid;
+  place-items: center;
+  color: #909399;
+  font-size: 12px;
+}
+
+.navigation-incident-step-detail {
+  grid-column: 1 / -1;
+  color: #606266;
+  font-size: 12px;
+}
+
+.navigation-incident-diagnostic {
+  margin-top: 12px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.navigation-incident-diagnostic pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  color: #303133;
+  font-family: inherit;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  background: #f5f7fa;
+}
+
+.navigation-incident-crops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.navigation-incident-crops figure {
+  width: max-content;
+  max-width: 180px;
+  margin: 0;
+}
+
+.navigation-incident-crops img {
+  display: block;
+  max-width: 180px;
+  max-height: 120px;
+  border: 1px solid #dcdfe6;
+  object-fit: contain;
+}
+
+.navigation-incident-crops figcaption {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #606266;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .navigation-incident-frame-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .asset-tree-node {
@@ -16069,6 +16702,8 @@ const finishShapeDrag = () => {
 
 .empty-image-surface.is-missing {
   color: #b45309;
+  cursor: pointer;
+  pointer-events: auto;
   background:
     repeating-linear-gradient(
       45deg,
@@ -16369,6 +17004,46 @@ const finishShapeDrag = () => {
 
 .shape-jump-field .shape-direction-select {
   width: 44px;
+}
+
+.shape-load-config-label {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted var(--el-border-color);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.shape-load-config {
+  display: grid;
+  gap: 10px;
+}
+
+.shape-load-config-row {
+  display: grid;
+  grid-template-columns: 56px max-content;
+  align-items: center;
+  gap: 8px;
+}
+
+.shape-load-config-row > span {
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.shape-load-config p {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.scene-parent-field :deep(.el-input) {
+  width: 112px;
 }
 
 .shape-jump-field :deep(.el-input__wrapper) {

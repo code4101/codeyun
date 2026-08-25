@@ -1,4 +1,5 @@
 from backend.core.attendance.clockin_link_detector import (
+    _dismiss_xiaoe_clockin_onboarding,
     build_xiaoe_diary_list_url,
     choose_attendance_clockin_activities,
 )
@@ -67,3 +68,19 @@ def test_choose_attendance_clockin_activities_allows_single_unmarked_match() -> 
 
     assert [item["activity_id"] for item in result["selected"]] == ["ac_plain"]
     assert result["selection_reason"] == "matched_unmarked_activity"
+
+
+def test_dismiss_xiaoe_clockin_onboarding_uses_exact_visible_skip_button() -> None:
+    class FakeTab:
+        def __init__(self) -> None:
+            self.script = ""
+
+        def run_js(self, script: str) -> bool:
+            self.script = script
+            return True
+
+    tab = FakeTab()
+
+    assert _dismiss_xiaoe_clockin_onboarding(tab) is True
+    assert "=== '跳过'" in tab.script
+    assert "getBoundingClientRect" in tab.script

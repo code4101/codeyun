@@ -11,6 +11,7 @@ PROCESS_LAUNCHER = BACKEND / "core" / "services" / "launcher.py"
 ALLOWED_DIRECT_POPEN = {SUBPROCESS_UTILS, ROOT / "dev.py"}
 ALLOWED_DIRECT_RUN = {SUBPROCESS_UTILS}
 ALLOWED_SUBPROCESS_UTILS_IMPORTS = {PROCESS_LAUNCHER}
+PROCESS_SUPERVISOR_BOUNDARIES = {BACKEND / "core" / "jobs" / "local_runtime.py"}
 LOCAL_RUNTIME_SCRIPTS = [
     ROOT / "dev.py",
     ROOT / "scripts" / "codeyun_watchdog.py",
@@ -22,7 +23,6 @@ SERVICE_ENTRYPOINTS_REQUIRING_NO_WINDOW_DEFAULT = {
     BACKEND / "services" / "ocr_daemon.py",
     BACKEND / "services" / "game_window_daemon.py",
     BACKEND / "services" / "proxy_traffic_audit_daemon.py",
-    BACKEND / "services" / "fanxiu_packet_daemon.py",
 }
 
 
@@ -132,6 +132,8 @@ def test_job_runtime_has_no_process_lifecycle_dependencies():
     }
     violations: list[str] = []
     for path in jobs_root.rglob("*.py"):
+        if path in PROCESS_SUPERVISOR_BOUNDARIES:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:

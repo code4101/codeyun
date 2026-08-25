@@ -25,8 +25,8 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.lottery-model",
     "fanxiu.activity-list",
     "fanxiu.activity-list.kunlun-secret",
-    "fanxiu.activity-list.modao-invasion",
-    "fanxiu.activity-list.shouyuan-exploration",
+    "fanxiu.activity-list.yunmeng-trial",
+    "fanxiu.activity-list.resource-ranking",
     "fanxiu.activity-list.divine-resource",
     "fanxiu.activity-list.qiji-zhumo",
     "fanxiu.activity-list.xianzhou-marathon",
@@ -48,7 +48,6 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "notes.center",
     "notes.chat-data",
     "notes.infinite-canvas",
-    "notes.task-system",
 }
 
 

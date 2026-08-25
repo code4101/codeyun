@@ -16,6 +16,7 @@ type LinkedItem = {
   icon?: string | null
   small_icon?: string | null
   description?: string | null
+  quality_color?: string | null
 }
 
 const props = withDefaults(defineProps<{
@@ -43,6 +44,10 @@ const itemDescription = computed(() => cleanFanxiuDisplayText(props.item?.descri
 const itemHref = computed(() => itemId.value ? buildFanxiuResourceHref('item', itemId.value) : undefined)
 const itemIconUrl = computed(() => getFanxiuResourceIconUrl(props.item?.icon || props.item?.small_icon))
 const itemPreview = computed(() => encodeFanxiuDataText(itemDescription.value))
+const itemStyle = computed(() => {
+  const color = String(props.item?.quality_color || '').trim().replace(/^#/, '')
+  return /^[0-9a-fA-F]{6}$/.test(color) ? { '--linked-item-color': `#${color}` } : undefined
+})
 
 function hideBrokenIcon(event: Event) {
   if (event.target instanceof HTMLImageElement) {
@@ -63,6 +68,7 @@ function showLoadedIcon(event: Event) {
     class="linked-item clickable"
     :class="{ compact, muted }"
     :href="itemHref"
+    :style="itemStyle"
     :data-fanxiu-resource-link="disableHover ? undefined : '1'"
     :data-wiki-resource-link="disableHover ? undefined : '1'"
     data-wiki-tab="item"
@@ -89,6 +95,7 @@ function showLoadedIcon(event: Event) {
     v-else
     class="linked-item"
     :class="{ compact, muted }"
+    :style="itemStyle"
   >
     <span v-if="itemIconUrl" class="linked-item-icon">
       <img
@@ -110,7 +117,7 @@ function showLoadedIcon(event: Event) {
   align-items: center;
   gap: 7px;
   padding: 3px 9px 3px 4px;
-  color: #6f4d17;
+  color: var(--linked-item-color, #6f4d17);
   font: inherit;
   font-size: 13px;
   font-weight: 650;
@@ -126,7 +133,7 @@ function showLoadedIcon(event: Event) {
 }
 
 .linked-item.clickable:hover {
-  color: #4d340e;
+  color: var(--linked-item-color, #4d340e);
   background: rgba(255, 246, 205, 0.96);
   border-color: rgba(194, 130, 24, 0.78);
 }
@@ -137,7 +144,7 @@ function showLoadedIcon(event: Event) {
 
 .linked-item.compact {
   min-height: 28px;
-  color: #ead7a5;
+  color: var(--linked-item-color, #6f4d17);
   background: rgba(255, 248, 220, 0.08);
   border-color: rgba(255, 212, 95, 0.34);
 }

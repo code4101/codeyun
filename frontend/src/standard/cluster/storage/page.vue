@@ -1319,7 +1319,7 @@ async function fetchListing(request: DeviceFileSelector): Promise<DeviceDirector
   return fetchDeviceDirectoryItems(selectedEntryId.value, {
     ...request,
     sort_program: DIRECTORY_SORT_PROGRAM,
-    recursive_stats_source: 'filesystem',
+    recursive_stats_source: 'auto',
   });
 }
 

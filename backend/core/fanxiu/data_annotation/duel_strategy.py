@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from itertools import permutations, product
 import re
-from typing import Sequence
+from typing import Any, Sequence
 
 
 COMMON_CAREERS = ("体", "魔", "剑", "法")
@@ -14,6 +14,20 @@ BEATS = {
     "法": "剑",
 }
 BEATEN_BY = {target: source for source, target in BEATS.items()}
+
+# 取自当前游戏配置 PartnerArena_ConfigValue.CAREER_RESTRAIN：1,3,4,2,1。
+# 职业 ID 分别为 1=体、2=魔、3=法、4=剑。
+XIANYUAN_CAREER_BEATS = {1: 3, 3: 4, 4: 2, 2: 1}
+XIANYUAN_CAREER_LABELS = {1: "体", 2: "魔", 3: "法", 4: "剑"}
+
+# 取自 Partner_Partner.xianLvCareer。阵位事实只携带 partnerId，职业由静态游戏
+# 配置确定；遇到新伙伴 ID 时安全失败，避免退回 OCR 或图片相似匹配猜测。
+XIANYUAN_PARTNER_CAREERS = {
+    1: 1, 2: 3, 3: 3, 4: 4, 5: 2, 6: 4, 7: 2, 8: 1, 9: 4,
+    10: 3, 11: 2, 12: 1, 13: 2, 14: 1, 15: 2, 16: 2, 17: 2, 18: 4,
+    19: 1, 20: 2, 21: 3, 22: 1, 23: 4, 24: 1, 25: 3, 26: 4, 27: 2,
+    28: 2, 29: 3, 30: 2, 31: 2, 32: 4, 33: 4, 34: 1, 35: 3, 36: 2,
+}
 
 
 def parse_slot_value_title(title: str, prefix: str) -> tuple[int, str] | None:
@@ -120,7 +134,7 @@ def enumerate_enemy_orders(enemy_candidates: Sequence[Sequence[str]]) -> list[tu
     return sorted(set(product(*(tuple(candidates) for candidates in enemy_candidates))))
 
 
-def plan_swaps(current_order: Sequence[str], target_order: Sequence[str]) -> list[tuple[int, int]]:
+def plan_swaps(current_order: Sequence[Any], target_order: Sequence[Any]) -> list[tuple[int, int]]:
     current = list(current_order)
     target = list(target_order)
     swaps: list[tuple[int, int]] = []
@@ -142,6 +156,67 @@ def plan_swaps(current_order: Sequence[str], target_order: Sequence[str]) -> lis
         current[index], current[swap_index] = current[swap_index], current[index]
         swaps.append((index + 1, swap_index + 1))
     return swaps
+
+
+def xianyuan_partner_career(partner_id: int) -> int:
+    try:
+        return XIANYUAN_PARTNER_CAREERS[int(partner_id)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"未知仙侣 partnerId={partner_id}，无法确定职业") from exc
+
+
+def _xianyuan_relation(my_career: int, enemy_career: int) -> int:
+    if XIANYUAN_CAREER_BEATS.get(int(my_career)) == int(enemy_career):
+        return 1
+    if XIANYUAN_CAREER_BEATS.get(int(enemy_career)) == int(my_career):
+        return -1
+    return 0
+
+
+def best_xianyuan_partner_order(
+    my_partner_ids: Sequence[int],
+    enemy_partner_ids: Sequence[int],
+    *,
+    decay: float = 0.5,
+) -> dict[str, object]:
+    """Return the strongest five-slot order using authoritative partner careers."""
+
+    current = tuple(int(value) for value in my_partner_ids)
+    enemy = tuple(int(value) for value in enemy_partner_ids)
+    if len(current) != 5 or len(enemy) != 5:
+        raise ValueError("仙缘斗法敌我阵容都必须恰好包含 5 个位置")
+    if len(set(current)) != 5:
+        raise ValueError("我方仙缘斗法阵容含重复 partnerId，拒绝计算换位")
+    enemy_careers = tuple(xianyuan_partner_career(value) for value in enemy)
+    rows: list[dict[str, object]] = []
+    for partner_order in permutations(current):
+        careers = tuple(xianyuan_partner_career(value) for value in partner_order)
+        primary = sum(_xianyuan_relation(my, other) for my, other in zip(careers, enemy_careers))
+        secondary = sum(
+            _xianyuan_relation(my, other) * (float(decay) ** abs(i - j))
+            for i, my in enumerate(careers)
+            for j, other in enumerate(enemy_careers)
+        )
+        rows.append(
+            {
+                "partner_ids": list(partner_order),
+                "careers": list(careers),
+                "enemy_careers": list(enemy_careers),
+                "primary_score": primary,
+                "secondary_score": secondary,
+                "swap_count": len(plan_swaps(current, partner_order)),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            int(row["primary_score"]),
+            float(row["secondary_score"]),
+            -int(row["swap_count"]),
+            tuple(row["partner_ids"]),
+        ),
+        reverse=True,
+    )
+    return rows[0]
 
 
 def best_order_for_enemy_candidates(

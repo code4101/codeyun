@@ -5,6 +5,7 @@ const IMAGE_EXTENSIONS = new Set([
   'bmp',
   'gif',
   'heic',
+  'heif',
   'jpeg',
   'jpg',
   'png',

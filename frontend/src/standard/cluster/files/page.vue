@@ -5,7 +5,9 @@
       <h2>{{ emptyStateTitle }}</h2>
       <p>{{ emptyStateDescription }}</p>
       <div class="empty-actions">
-        <el-button type="primary" @click="router.push('/cluster/runtime')">去运行管理</el-button>
+        <el-button type="primary" :loading="isLoadingDevices" @click="handleEmptyAction">
+          {{ emptyActionLabel }}
+        </el-button>
       </div>
     </section>
 
@@ -85,7 +87,7 @@
                 </div>
 
                 <div class="directory-config-field directory-config-field-limit">
-                  <span class="directory-config-label">加载上限</span>
+                  <span class="directory-config-label">预加载上限</span>
                   <el-input-number
                     v-model="mediaScanLimitInput"
                     size="large"
@@ -392,7 +394,7 @@
               </div>
 
               <div class="directory-config-field directory-config-field-limit">
-                <span class="directory-config-label">加载上限</span>
+                <span class="directory-config-label">预加载上限</span>
                 <el-input-number
                   v-model="mediaScanLimitInput"
                   size="large"
@@ -661,9 +663,11 @@ import {
 const props = withDefaults(defineProps<{
   fixedDeviceId?: string;
   fixedRootPath?: string;
+  hiddenDirectoryNames?: string[];
 }>(), {
   fixedDeviceId: '',
   fixedRootPath: '',
+  hiddenDirectoryNames: () => [],
 });
 
 interface DeviceBrowserImage extends GalleryImage {
@@ -717,10 +721,6 @@ const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
 
 const DEFAULT_DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
   rules: [{ field: 'recursive_total_bytes', direction: 'desc', nulls: 'last' }],
-};
-
-const LEGACY_DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
-  rules: [{ field: 'name', direction: 'asc', nulls: 'last' }],
 };
 
 const isDirectorySortField = (value: unknown): value is DeviceDirectorySortField =>
@@ -887,11 +887,7 @@ const loadPersistedDirectorySortProgram = (storageKey: string): DeviceDirectoryS
       return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
     }
 
-    const normalizedProgram = normalizeDirectorySortProgram(JSON.parse(savedValue));
-    if (isSameDirectorySortProgram(normalizedProgram, LEGACY_DIRECTORY_SORT_PROGRAM)) {
-      return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
-    }
-    return normalizedProgram;
+    return normalizeDirectorySortProgram(JSON.parse(savedValue));
   } catch (error) {
     console.warn('Failed to load persisted directory sort program', error);
     return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
@@ -1111,19 +1107,47 @@ const shouldShowBrowserWorkspace = computed(() =>
 const isLockedDeviceMissing = computed(() =>
   isDeviceLocked.value && !lockedEntryId.value && devices.value.length > 0
 );
+const deviceFetchError = computed(() => taskStore.lastDeviceFetchError.trim());
 const showEmptyPanel = computed(() => !devices.value.length || isLockedDeviceMissing.value);
-const emptyStateTitle = computed(() =>
-  isLockedDeviceMissing.value ? `未找到设备 ${props.fixedDeviceId}` : '还没有可用设备'
-);
+const emptyStateTitle = computed(() => {
+  if (!devices.value.length && deviceFetchError.value) {
+    return '设备列表加载失败';
+  }
+  return isLockedDeviceMissing.value ? `未找到设备 ${props.fixedDeviceId}` : '还没有可用设备';
+});
 const emptyStateDescription = computed(() => {
+  if (!devices.value.length && deviceFetchError.value) {
+    return `CodeYun 后端暂时不可用：${deviceFetchError.value}`;
+  }
   if (isLockedDeviceMissing.value) {
     const targetPath = normalizedFixedRootPath.value || '固定目录';
     return `当前页面固定使用设备 ${props.fixedDeviceId}，但当前账号下没有找到对应入口。先到运行管理里添加或授权该设备，再回来浏览 ${targetPath}。`;
   }
   return '先到运行管理里添加本地或远程设备入口，再从设备上下文里浏览真实目录。';
 });
+const emptyActionLabel = computed(() =>
+  !devices.value.length && deviceFetchError.value ? '重新加载' : '去运行管理'
+);
+const handleEmptyAction = async () => {
+  if (!devices.value.length && deviceFetchError.value) {
+    isLoadingDevices.value = true;
+    try {
+      await taskStore.fetchDevices();
+    } finally {
+      isLoadingDevices.value = false;
+    }
+    return;
+  }
+  await router.push('/cluster/runtime');
+};
 const listingItems = computed(() => listing.value?.items ?? []);
-const fallbackFileEntries = computed(() => listingItems.value.filter((entry) => {
+const hiddenDirectoryNameSet = computed(() => new Set(
+  props.hiddenDirectoryNames.map((name) => String(name || '').trim().toLowerCase()).filter(Boolean)
+));
+const visibleListingItems = computed(() => listingItems.value.filter((entry) => (
+  !entry.is_dir || !hiddenDirectoryNameSet.value.has(String(entry.name || '').trim().toLowerCase())
+)));
+const fallbackFileEntries = computed(() => visibleListingItems.value.filter((entry) => {
   if (entry.is_dir) {
     return false;
   }
@@ -1167,7 +1191,7 @@ const canGoUp = computed(() => {
   return normalizeComparablePath(normalizedPathInput.value) !== normalizeComparablePath(normalizedFixedRootPath.value)
     && isPathWithinFixedRoot(parent);
 });
-const directoryEntries = computed(() => listingItems.value.filter((entry) => entry.is_dir));
+const directoryEntries = computed(() => visibleListingItems.value.filter((entry) => entry.is_dir));
 const directoryPageCount = computed(() =>
   Math.max(1, Math.ceil(directoryEntries.value.length / DEFAULT_DIRECTORY_PAGE_SIZE))
 );
@@ -1278,6 +1302,11 @@ restoreBackendSortProgram(galleryStorageKey.value);
 restoreDirectorySortProgram(galleryStorageKey.value);
 restoreMediaScanLimit(galleryStorageKey.value);
 restoreRecursiveDisplay(galleryStorageKey.value);
+// 初始恢复发生在 watch 注册之前，不会触发监听器；不要让抑制标记吞掉
+// 用户加载页面后的第一次真实修改。设备切换时仍由 restore* 设置并消费标记。
+suppressNextBackendSortProgramReload = false;
+suppressNextDirectorySortProgramReload = false;
+suppressNextRecursiveDisplayReload = false;
 
 const commitPathInput = async (options?: { load?: boolean }) => {
   const rawNormalizedPath = normalizePathInput(pathInputValue.value);
@@ -1328,6 +1357,9 @@ const buildImagePayload = (image: DeviceBrowserImage): DeviceFileSelector => {
   return { absolute_path: image.absolutePath };
 };
 
+const isBrowserIncompatibleImage = (image: DeviceBrowserImage) =>
+  /\.(?:heic|heif)$/i.test(image.name || image.absolutePath || '');
+
 const formatDirectoryFileSize = (item: DeviceDirectoryItem) =>
   typeof item.size === 'number' ? formatFileSize(item.size) : '--';
 
@@ -1337,17 +1369,26 @@ const formatDirectoryModifiedAt = (item: DeviceDirectoryItem) =>
 const getMediaPageOffset = (page = currentMediaPage.value) =>
   Math.max(0, (Math.max(1, page) - 1) * Math.max(1, mediaPageSize.value));
 
+const getMediaPageScanLimit = (offset: number) => {
+  const preloadLimit = Math.max(1, mediaScanLimit.value);
+  const requestedEnd = Math.max(0, offset) + Math.max(1, mediaPageSize.value);
+  return Math.max(preloadLimit, Math.ceil(requestedEnd / preloadLimit) * preloadLimit);
+};
+
 const buildMediaListPayload = (
   offset = getMediaPageOffset(),
   options?: { includeSnapshot?: boolean }
 ): DeviceMediaListRequest => ({
   absolute_path: normalizedPathInput.value,
   recursive: recursiveDisplay.value,
-  scan_limit: mediaScanLimit.value,
+  // “预加载上限”只控制每批预计算规模。翻到批次之外时按整批扩展扫描范围，
+  // 避免把首屏保护值误用成整个目录的结果上限。
+  scan_limit: getMediaPageScanLimit(offset),
   sort_program: cloneGallerySortProgram(backendSortProgram.value),
   snapshot_id: options?.includeSnapshot === false ? undefined : (mediaSnapshotId.value ?? undefined),
   offset,
   limit: mediaPageSize.value,
+  excluded_directory_names: props.hiddenDirectoryNames,
 });
 
 const resetMediaPagination = () => {
@@ -2062,9 +2103,10 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
         return;
       }
 
-      const blob = desiredVariant === 'thumbnail'
+      const useGeneratedImage = desiredVariant === 'thumbnail' || isBrowserIncompatibleImage(target);
+      const blob = useGeneratedImage
         ? await fetchDeviceThumbnailBlob(entryId, payload, {
-          max_edge: THUMBNAIL_MAX_EDGE,
+          max_edge: desiredVariant === 'full' ? 2048 : THUMBNAIL_MAX_EDGE,
           cache_key: target.thumbnailVersion ?? undefined,
         })
         : await fetchDeviceMediaBlob(entryId, payload);

@@ -14,7 +14,7 @@ import requests
 from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
-from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import submit_local_job_once
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_public_id
 from backend.core.notes.semantics import (
@@ -51,6 +51,7 @@ RUANYF_WEEKLY_PUBLISHED_AT_FIELD = "__ruanyf_weekly_published_at"
 RUANYF_WEEKLY_COMMIT_SHA_FIELD = "__ruanyf_weekly_commit_sha"
 
 RUANYF_WEEKLY_TASK_NAME = "ruanyf_weekly_note"
+RUANYF_WEEKLY_BOOK_TASK_NAME = "ruanyf_weekly_book"
 
 README_ISSUE_RE = re.compile(
     r"^\s*-\s*第\s*(?P<number>\d+)\s*期[:：]\s*"
@@ -432,10 +433,49 @@ def enqueue_ruanyf_weekly_note_job(*, now: datetime | None = None) -> str | None
     with Session(engine) as session:
         if ruanyf_weekly_note_completed_for_current_window(session, now=now):
             return None
-    return background_task_queue.enqueue(
-        RUANYF_WEEKLY_TASK_NAME,
-        run_ruanyf_weekly_note_job,
+    run, _created = submit_local_job_once(job_type="notes.ruanyf-weekly-note", payload={})
+    return run.id
+
+
+def run_ruanyf_weekly_book_job():
+    """Update the stable 401+ library book without creating a star-note entry."""
+    from backend.core.library.ruanyf_weekly_book import (
+        RuanyfWeeklyBookResult,
+        update_ruanyf_weekly_book,
     )
+    from backend.db import engine
+
+    current_time = datetime.now(RUANYF_WEEKLY_TIMEZONE)
+    with Session(engine) as session:
+        result = update_ruanyf_weekly_book(session)
+        if result.next_run_at is None and _ruanyf_weekly_book_should_retry(result.status):
+            next_run_at = _next_ruanyf_weekly_retry_at(current_time)
+            if next_run_at is not None:
+                result = RuanyfWeeklyBookResult(
+                    status=result.status,
+                    book_id=result.book_id,
+                    issue_number=result.issue_number,
+                    added_issue_numbers=result.added_issue_numbers,
+                    message=result.message,
+                    next_run_at=next_run_at.isoformat(),
+                )
+        print(
+            "Ruanyf weekly book job finished: "
+            f"status={result.status} issue={result.issue_number} "
+            f"book={result.book_id} added={list(result.added_issue_numbers)} "
+            f"next_run_at={result.next_run_at}"
+        )
+        return result
+
+
+def enqueue_ruanyf_weekly_book_job(*, now: datetime | None = None) -> str:
+    del now
+    run, _created = submit_local_job_once(job_type="library.ruanyf-weekly-book", payload={})
+    return run.id
+
+
+def _ruanyf_weekly_book_should_retry(status: str) -> bool:
+    return status not in {"created", "updated"}
 
 
 def _ruanyf_weekly_should_retry(status: str) -> bool:

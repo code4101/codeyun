@@ -127,7 +127,7 @@
 <script setup lang="ts">
 import '@wangeditor/editor/dist/css/style.css' // 引入 css
 import { computed, onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } from 'vue'
-import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
+import { Editor, Toolbar } from './WangEditorVueAdapter'
 import { type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
 import { ElMessage } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'

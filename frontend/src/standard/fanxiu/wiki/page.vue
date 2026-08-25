@@ -1,19 +1,9 @@
 <script setup lang="ts">
 import type { Directive } from 'vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { LineChart, type LineSeriesOption } from 'echarts/charts'
-import {
-  GridComponent,
-  TooltipComponent,
-  type GridComponentOption,
-  type TooltipComponentOption,
-} from 'echarts/components'
-import * as echarts from 'echarts/core'
-import type { ComposeOption, ECharts } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Close, Search, TopRight } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Close, QuestionFilled, Search, TopRight } from '@element-plus/icons-vue'
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { noteKey, type NoteNode, useNoteStore } from '@/api/notes'
@@ -40,13 +30,20 @@ import {
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
 import LingquanQuestionBank from './LingquanQuestionBank.vue'
+import XianyuanAtlas from './XianyuanAtlas.vue'
+import GuideVideoCatalog from './GuideVideoCatalog.vue'
+import {
+  attachLatestXianlvTeamObservations,
+  comparePlayerProfileBattleAsc,
+  comparePlayerProfileBattleDesc,
+  isPlayerProfileMetricFreshToday,
+  playerProfileBattleValue,
+  playerProfileTimestamp,
+  playerProfileUserKey,
+  selectDailyPlayerProfileRepresentatives,
+} from './playerProfile'
 import { formatChineseCompactNumber, formatFanxiuGameNumber } from '../numberFormat'
 import { stableHash32 } from '@/utils/stableVisualColor'
-import {
-  getHiddenFanxiuPacketProtocols,
-  isFanxiuPacketProtocolVisible,
-  setFanxiuPacketProtocolVisible,
-} from '../packetProtocolVisibility'
 import {
   getFanxiuActivityCard,
   getFanxiuDigitDoorCharacterCard,
@@ -66,8 +63,10 @@ import {
   getFanxiuMailRecords,
   getFanxiuPlayerProfiles,
   getFanxiuServerRelations,
-  getFanxiuPacketRuntimeInsights,
-  getFanxiuPacketStorageBag,
+  getFanxiuBusinessStorageBag,
+  deleteFanxiuStorageBagAtlasItem,
+  setFanxiuStorageBagAutoClaim,
+  setFanxiuStorageBagNote,
   getFanxiuProtocolSemantics,
   getFanxiuStaticAssetManifest,
   getFanxiuStaticAssetPreviewManifest,
@@ -76,7 +75,6 @@ import {
   getFanxiuWikiMediaUrl,
   getFanxiuWikiLinkTargets,
   getFanxiuWwiseMp3Manifest,
-  listFanxiuTcpBusinessEntries,
   searchFanxiuStaticVisualByImage,
   searchFanxiuActivityCards,
   searchFanxiuDigitDoorCharacterCards,
@@ -87,7 +85,7 @@ import {
   searchFanxiuGongfaCards,
   searchFanxiuItemCards,
   searchFanxiuLingjieFeatureCards,
-  updateFanxiuMailRecordStatus,
+  syncFanxiuMailRuntime,
   type FanxiuActivityCard,
   type FanxiuActivityChallengeLevel,
   type FanxiuActivityChallengeRarityStat,
@@ -190,34 +188,21 @@ import {
   type FanxiuStaticAssetPreviewItem,
   type FanxiuStaticVisualManifestResponse,
   type FanxiuStaticVisualManifestRow,
-  type FanxiuTcpBusinessEntry,
-  type FanxiuTcpBusinessCategorySummary,
-  type FanxiuTcpBusinessProtocolSample,
-  type FanxiuTcpBusinessProtocolSummary,
   type FanxiuTimelineHint,
   type FanxiuWwiseMp3ManifestResponse,
   type FanxiuWwiseMp3ManifestRow,
 } from '@/api/fanxiu'
 
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
-
-type StorageBagWorshipChartOption = ComposeOption<
-  GridComponentOption | TooltipComponentOption | LineSeriesOption
->
-
 type PlayerProfileSortKey =
-  | 'attack_desc'
-  | 'attack_asc'
+  | 'battle_desc'
+  | 'battle_asc'
   | 'server_asc'
   | 'name_asc'
   | 'cultivation_asc'
-  | 'time_asc'
 
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
 const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
-const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
-const STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY = 'fanxiu:wiki:storage-bag-worship-chart-planes'
-const PLAYER_PROFILE_PREF_STORAGE_KEY = 'fanxiu:wiki:player-profile-preferences'
+const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-runtime-filter:v1'
 const MAIL_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-status-filter'
 const MAIL_RECORD_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-record-status-filter'
 const MAIL_SUMMARY_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-summary-status-filter'
@@ -235,22 +220,7 @@ const MAIL_MIN_PAGE_SIZE = Math.min(...MAIL_PAGE_SIZE_OPTIONS)
 const DEFAULT_MAIL_PAGE_SIZE = 20
 const MAIL_REWARD_SLOT_WIDTH = 44
 const DEFAULT_PLAYER_PROFILE_PAGE_SIZE = 50
-const STORAGE_BAG_PREVIEW_LIMIT = 100
-const STORAGE_BAG_WORSHIP_CHART_WIDTH = 640
-const STORAGE_BAG_WORSHIP_CHART_HEIGHT = 260
-const STORAGE_BAG_WORSHIP_CHART_MARGIN = { top: 14, right: 18, bottom: 34, left: 58 }
-const STORAGE_BAG_WORSHIP_CHART_WINDOW_MS = 365 * 24 * 60 * 60 * 1000
-const STORAGE_BAG_WORSHIP_CHART_COLORS: Record<number, string> = {
-  1: '#111827',
-  2: '#16a34a',
-  4: '#2563eb',
-  8: '#7e22ce',
-  16: '#c2410c',
-  32: '#dc2626',
-  64: '#db2777',
-}
-const STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS = [1, 2, 4, 8, 16, 32, 64] as const
-const STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES = [1, 2, 4, 8]
+const STORAGE_BAG_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const STORAGE_BAG_MAIN_GROUPS = [
   { key: 'all', label: '全部' },
   { key: 'resource', label: '资源' },
@@ -272,18 +242,19 @@ const WIKI_TABS = [
   { key: 'audio', label: '音乐' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
+  { key: 'xianyuan', label: '仙缘' },
+  { key: 'guide_video', label: '攻略视频' },
   { key: 'lingjie', label: '灵界词条' },
   { key: 'digitdoor', label: '数字门角色' },
   { key: 'digitdoor_level', label: '数字门关卡' },
   { key: 'digitdoor_enhance', label: '数字门强化' },
   { key: 'doupotd', label: '斗破角色' },
   { key: 'doupotd_reward', label: '斗破奖励' },
-  { key: 'packet', label: '抓包' },
   { key: 'protocol', label: '协议' },
 ] as const
 
 type WikiTab = typeof WIKI_TABS[number]['key']
-const PACKET_BACKED_WIKI_TABS = new Set<WikiTab>(['storage_bag', 'mail', 'player_profile', 'packet'])
+const RUNTIME_OR_BUSINESS_WIKI_TABS = new Set<WikiTab>(['storage_bag', 'mail', 'player_profile'])
 
 const AUXILIARY_TOP_TAB_KEY = 'reverse'
 const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
@@ -306,8 +277,9 @@ const TOP_WIKI_TABS = [
   { key: 'item', label: '道具' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
+  { key: 'xianyuan', label: '仙缘' },
+  { key: 'guide_video', label: '攻略视频' },
   { key: 'lingjie', label: '灵界词条' },
-  { key: 'packet', label: '抓包' },
   { key: AUXILIARY_TOP_TAB_KEY, label: '逆向资料' },
 ] as const
 type TopWikiTab = typeof TOP_WIKI_TABS[number]['key']
@@ -323,7 +295,7 @@ type ActivityViewMode = 'list' | 'document' | 'period'
 type StaticAssetCatalogView = 'semantic'
 type MailSortKey = 'index' | 'title' | 'time' | 'status'
 type MailStatusFilter = typeof MAIL_STATUS_OPTIONS[number]['key']
-type MailDesiredStatus = '锁定' | '留存' | '可领'
+type MailDesiredStatus = '锁定' | '留存' | '已领'
 type MailSubTab = 'records' | 'summary'
 type SortOrder = 'asc' | 'desc'
 const ACTIVITY_VIEW_MODE_OPTIONS: Array<{ value: ActivityViewMode, label: string }> = [
@@ -339,10 +311,8 @@ const ACTIVITY_PERIOD_LANE_HEIGHT = 42
 const MAIL_STATUS_OPTIONS = [
   { key: 'locked', label: '锁定', status: '锁定' },
   { key: 'seen', label: '留存', status: '留存' },
-  { key: 'claimable', label: '可领', status: '可领' },
-  { key: 'processed', label: '已处理', status: '' },
+  { key: 'processed', label: '已领', status: '已领' },
 ] as const
-const MAIL_STATUS_CYCLE: MailStatusFilter[] = ['locked', 'seen', 'claimable']
 const MAIL_SUB_TABS: Array<{ key: MailSubTab, label: string }> = [
   { key: 'records', label: '邮件清单' },
   { key: 'summary', label: '标题汇总' },
@@ -473,13 +443,6 @@ type PageConfig = {
 
 type WikiLinkedItem = FanxiuGongfaLinkedItem | FanxiuLingjieFeatureItem
 type WikiLinkTarget = FanxiuResourceLinkTarget
-type PacketSampleTable = {
-  title: string
-  columns: Array<{ key: string; label: string }>
-  rows: Array<Record<string, string>>
-  fieldLabels?: Record<string, Record<string, string>>
-}
-
 type ActivityScheduleEntry = {
   id: string
   selectId: string
@@ -563,6 +526,8 @@ const searchHistory = ref<Record<WikiTab, string[]>>({
   audio: [],
   activity: [],
   gongfa: [],
+  xianyuan: [],
+  guide_video: [],
   lingjie: [],
   digitdoor: [],
   digitdoor_level: [],
@@ -570,7 +535,6 @@ const searchHistory = ref<Record<WikiTab, string[]>>({
   doupotd: [],
   doupotd_reward: [],
   protocol: [],
-  packet: [],
 })
 const searchHistoryVisible = ref(false)
 const gongfaQualityGradeFilter = ref('')
@@ -627,15 +591,12 @@ const digitDoorEnhanceStats = ref<FanxiuDigitDoorStats>({})
 const doupoTDStats = ref<FanxiuDoupoTDStats>({})
 const doupoTDRewardStats = ref<FanxiuDoupoTDRewardConfigStats>({})
 const protocolResponse = ref<FanxiuProtocolSemanticResponse | null>(null)
-const protocolBusinessCategories = ref<FanxiuTcpBusinessCategorySummary[]>([])
-const packetProtocolDetails = ref<FanxiuTcpBusinessProtocolSummary[]>([])
-const hiddenPacketProtocols = ref<string[]>(getHiddenFanxiuPacketProtocols())
-const expandedPacketProtocol = ref('')
-const packetProtocolSamples = ref<FanxiuTcpBusinessEntry[]>([])
-const packetProtocolSamplesLoading = ref(false)
-const packetRuntimeInsights = ref<Record<string, any> | null>(null)
-const packetRuntimeInsightsLoading = ref(false)
+const businessSnapshots = ref<Record<string, any> | null>(null)
+const storageBagRuntimeState = ref('')
+const storageBagRuntimeReason = ref('')
+const loadingStorageBagRuntime = ref(false)
 const mailRecords = ref<FanxiuMailRecord[]>([])
+const syncingMailRuntime = ref(false)
 const mailFilterStatusSnapshot = ref<Record<string, MailStatusFilter>>({})
 const mailRewardItemCardCache = ref<Record<string, FanxiuItemCard | null>>({})
 const mailRewardItemCardLoading = new Set<string>()
@@ -648,7 +609,6 @@ const mailPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const mailSummaryPage = ref(1)
 const mailSummaryPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const mailSubTab = ref<MailSubTab>('records')
-const updatingMailKeys = ref<string[]>([])
 const mailContentDialogVisible = ref(false)
 const selectedMailContentTitle = ref('')
 const selectedMailContentText = ref('')
@@ -707,14 +667,18 @@ const storageBagMainGroup = ref('all')
 const storageBagSubGroup = ref('')
 const storageBagSubGroupMemory = ref<Record<string, string>>({})
 const storageBagSubGroupAllSelected = ref(false)
-const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'spirit_stone_value'>('friendship')
-const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
-const playerProfileSortKey = ref<PlayerProfileSortKey>('attack_desc')
+type StorageBagSortKey = 'atlas_order' | 'base_id' | 'name' | 'num' | 'average_yield' | 'auto_claim' | 'type' | 'friendship'
+const storageBagSortKey = ref<StorageBagSortKey>('atlas_order')
+const storageBagSortOrder = ref<'asc' | 'desc'>('asc')
+const storageBagPage = ref(1)
+const storageBagPageSize = ref(50)
+const deletingStorageBagItemIds = ref<Set<number>>(new Set())
+const savingStorageBagAutoClaimIds = ref<Set<number>>(new Set())
+const savingStorageBagNoteIds = ref<Set<number>>(new Set())
+const savedStorageBagNotes = ref<Record<number, string>>({})
+const playerProfileSortKey = ref<PlayerProfileSortKey>('battle_desc')
 const playerProfilePage = ref(1)
 const playerServerRelationGroups = ref<FanxiuServerRelationGroup[]>([])
-const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
-const storageBagWorshipTableVisible = ref(false)
-const selectedPacketCategory = ref('')
 const catalogPath = ref('')
 const gongfaQualityGradeOptions = ref<FanxiuGongfaQualityPartOption[]>([])
 const gongfaQualityFamilyOptions = ref<FanxiuGongfaQualityPartOption[]>([])
@@ -818,7 +782,7 @@ let applyingRouteState = false
 let internalTabNavigation = false
 let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
 let storageBagRefreshTimer: ReturnType<typeof setInterval> | null = null
-let packetBackedRefreshTimer: ReturnType<typeof setInterval> | null = null
+let businessRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 function isAuxiliaryWikiTab(tab: WikiTab) {
   return AUXILIARY_WIKI_TAB_KEYS.has(tab)
@@ -827,7 +791,7 @@ function isAuxiliaryWikiTab(tab: WikiTab) {
 function normalizeWikiTab(value: unknown): WikiTab | null {
   const text = Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
   if (text === AUXILIARY_TOP_TAB_KEY) return selectedAuxiliaryTab.value
-  return WIKI_TABS.some(tab => tab.key === text) ? text as WikiTab : null
+  return text !== 'packet' && WIKI_TABS.some(tab => tab.key === text) ? text as WikiTab : null
 }
 
 function queryValue(value: unknown) {
@@ -1125,13 +1089,11 @@ function normalizeStorageBagSubGroup(mainGroup: string, value: unknown) {
   return ''
 }
 
-function normalizeStorageBagWorshipChartPlanes(value: unknown) {
-  const allowed = new Set<number>(STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS)
-  const values = Array.isArray(value) ? value : []
-  return Array.from(new Set(values
-    .map(item => Number(item))
-    .filter(item => allowed.has(item))))
-    .sort((a, b) => a - b)
+function normalizeStorageBagSortKey(value: unknown): StorageBagSortKey {
+  const text = String(value || '') as StorageBagSortKey
+  return ['atlas_order', 'base_id', 'name', 'num', 'average_yield', 'auto_claim', 'type', 'friendship'].includes(text)
+    ? text
+    : 'atlas_order'
 }
 
 function loadStorageBagFilterConfig() {
@@ -1143,6 +1105,9 @@ function loadStorageBagFilterConfig() {
       mainGroup?: unknown;
       subGroup?: unknown;
       subGroups?: Record<string, unknown>;
+      sortKey?: unknown;
+      sortOrder?: unknown;
+      pageSize?: unknown;
     }
     const mainGroup = normalizeStorageBagMainGroup(config.mainGroup)
     const subGroups: Record<string, string> = {}
@@ -1162,21 +1127,13 @@ function loadStorageBagFilterConfig() {
     storageBagSubGroupMemory.value = subGroups
     storageBagMainGroup.value = mainGroup
     storageBagSubGroup.value = resolveStorageBagSubGroup(mainGroup, subGroups[mainGroup] || legacySubGroup)
+    storageBagSortKey.value = normalizeStorageBagSortKey(config.sortKey)
+    storageBagSortOrder.value = config.sortOrder === 'desc' ? 'desc' : 'asc'
+    const configuredPageSize = Number(config.pageSize)
+    if (STORAGE_BAG_PAGE_SIZE_OPTIONS.includes(configuredPageSize)) storageBagPageSize.value = configuredPageSize
   } catch (error) {
     console.warn('Failed to load Fanxiu storage bag filter config:', error)
     window.localStorage.removeItem(STORAGE_BAG_FILTER_STORAGE_KEY)
-  }
-}
-
-function loadStorageBagWorshipChartPlaneConfig() {
-  if (!canUseLocalStorage()) return
-  try {
-    const raw = window.localStorage.getItem(STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY)
-    if (!raw) return
-    storageBagWorshipChartPlanes.value = normalizeStorageBagWorshipChartPlanes(JSON.parse(raw))
-  } catch (error) {
-    console.warn('Failed to load Fanxiu storage bag worship chart plane config:', error)
-    window.localStorage.removeItem(STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY)
   }
 }
 
@@ -1187,51 +1144,12 @@ function persistStorageBagFilterConfig() {
       mainGroup: storageBagMainGroup.value,
       subGroup: storageBagSubGroup.value,
       subGroups: storageBagSubGroupMemory.value,
+      sortKey: storageBagSortKey.value,
+      sortOrder: storageBagSortOrder.value,
+      pageSize: storageBagPageSize.value,
     }))
   } catch (error) {
     console.warn('Failed to persist Fanxiu storage bag filter config:', error)
-  }
-}
-
-function persistStorageBagWorshipChartPlaneConfig() {
-  if (!canUseLocalStorage()) return
-  try {
-    window.localStorage.setItem(
-      STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY,
-      JSON.stringify(normalizeStorageBagWorshipChartPlanes(storageBagWorshipChartPlanes.value)),
-    )
-  } catch (error) {
-    console.warn('Failed to persist Fanxiu storage bag worship chart plane config:', error)
-  }
-}
-
-function normalizePlayerProfileSortKey(_value: unknown): PlayerProfileSortKey {
-  return 'attack_desc'
-}
-
-function loadPlayerProfilePreferences() {
-  if (!canUseLocalStorage()) return
-  try {
-    const raw = window.localStorage.getItem(PLAYER_PROFILE_PREF_STORAGE_KEY)
-    if (!raw) return
-    const config = JSON.parse(raw) as {
-      sortKey?: unknown;
-    }
-    playerProfileSortKey.value = normalizePlayerProfileSortKey(config.sortKey)
-  } catch (error) {
-    console.warn('Failed to load Fanxiu player profile preferences:', error)
-    window.localStorage.removeItem(PLAYER_PROFILE_PREF_STORAGE_KEY)
-  }
-}
-
-function persistPlayerProfilePreferences() {
-  if (!canUseLocalStorage()) return
-  try {
-    window.localStorage.setItem(PLAYER_PROFILE_PREF_STORAGE_KEY, JSON.stringify({
-      sortKey: playerProfileSortKey.value,
-    }))
-  } catch (error) {
-    console.warn('Failed to persist Fanxiu player profile preferences:', error)
   }
 }
 
@@ -1240,8 +1158,8 @@ function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
   if (Array.isArray(value)) {
     const expanded = value.flatMap((item) => {
       if (item === 'seen') return ['seen']
-      if (item === 'deleted' || item === 'claimable') return ['claimable']
-      if (item === 'claimed' || item === 'missing' || item === 'pending') return ['claimable']
+      if (item === 'claimed') return ['processed']
+      if (item === 'deleted' || item === 'claimable' || item === 'missing' || item === 'pending') return ['seen']
       return [item]
     })
     const selected = expanded.filter((item): item is MailStatusFilter => valid.includes(item as MailStatusFilter))
@@ -1250,7 +1168,8 @@ function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
   const text = String(value ?? '').trim()
   if (!text || text === 'all') return valid
   if (text === 'seen') return ['seen']
-  if (text === 'deleted' || text === 'claimed' || text === 'missing' || text === 'pending' || text === 'claimable') return ['claimable']
+  if (text === 'claimed') return ['processed']
+  if (text === 'deleted' || text === 'missing' || text === 'pending' || text === 'claimable') return ['seen']
   if (valid.includes(text as MailStatusFilter)) return [text as MailStatusFilter]
   try {
     const parsed = JSON.parse(text)
@@ -1326,9 +1245,9 @@ function loadPageConfig() {
     page.value = normalizePage(config.page, 1)
     pageSize.value = normalizePageSize(config.pageSize, 50)
     mailPage.value = normalizePage(config.mailPage, 1)
-    mailPageSize.value = DEFAULT_MAIL_PAGE_SIZE
+    mailPageSize.value = normalizeMailPageSize(config.mailPageSize)
     mailSummaryPage.value = normalizePage(config.mailSummaryPage, 1)
-    mailSummaryPageSize.value = DEFAULT_MAIL_PAGE_SIZE
+    mailSummaryPageSize.value = normalizeMailPageSize(config.mailSummaryPageSize)
     selectedId.value = String(config.selectedId ?? '')
     expandedFacetRows.value = config.expandedFacetRows && typeof config.expandedFacetRows === 'object'
       ? { ...config.expandedFacetRows }
@@ -1373,7 +1292,9 @@ function persistPageConfig() {
       page: page.value,
       pageSize: pageSize.value,
       mailPage: mailPage.value,
+      mailPageSize: mailPageSize.value,
       mailSummaryPage: mailSummaryPage.value,
+      mailSummaryPageSize: mailSummaryPageSize.value,
       selectedId: selectedId.value,
       expandedFacetRows: expandedFacetRows.value,
     }))
@@ -1764,7 +1685,7 @@ const displayTotal = computed(() => {
 })
 
 const resultCountUnit = computed(() => {
-  if (activeTab.value === 'storage_bag') return '种物品'
+  if (activeTab.value === 'storage_bag') return '种道具'
   if (activeTab.value === 'mail') return '封邮件'
   if (activeTab.value === 'player_profile') return '条面板'
   return '个对象'
@@ -2795,7 +2716,6 @@ const searchPlaceholder = computed(() => {
   if (activeTab.value === 'doupotd') return '搜索斗破角色 / 技能 / 卡牌 / 强化'
   if (activeTab.value === 'doupotd_reward') return '搜索斗破奖励 / 关卡 / 物品 / ID'
   if (activeTab.value === 'protocol') return '搜索 packet / handler / 字段 / 语义'
-  if (activeTab.value === 'packet') return '搜索大类 / 业务包 / 含义'
   return '搜索功法 / 技能 / 效果 / 条件'
 })
 
@@ -2814,7 +2734,7 @@ const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() 
     || activeTab.value === 'doupotd'
     || activeTab.value === 'doupotd_reward'
     || activeTab.value === 'protocol'
-    || activeTab.value === 'packet'
+   
     || sortMode.value === 'default'
   ) return {}
   if (sortMode.value === 'time_desc') return { sort_by: 'time', sort_order: 'desc' }
@@ -2845,7 +2765,6 @@ const activeObjectLabel = computed(() => {
   if (activeTab.value === 'doupotd') return '斗破角色'
   if (activeTab.value === 'doupotd_reward') return '斗破奖励'
   if (activeTab.value === 'protocol') return '协议'
-  if (activeTab.value === 'packet') return '抓包'
   return '功法'
 })
 
@@ -2862,7 +2781,7 @@ const selectedProgressionSource = computed(() => {
     || activeTab.value === 'doupotd'
     || activeTab.value === 'doupotd_reward'
     || activeTab.value === 'protocol'
-    || activeTab.value === 'packet'
+   
   ) return {}
   return activeTab.value === 'item'
     ? selectedItem.value?.progression ?? {}
@@ -3100,18 +3019,6 @@ const protocolFeatures = computed(() => {
 const protocolRows = computed(() => protocolResponse.value?.items ?? [])
 const protocolEdges = computed(() => protocolResponse.value?.edges ?? [])
 const protocolCounts = computed(() => protocolResponse.value?.counts ?? null)
-const protocolBusinessCategoryCount = computed(() => protocolBusinessCategories.value.reduce((sum, item) => sum + item.count, 0))
-const isPacketWikiInitialLoading = computed(() => (
-  activeTab.value === 'packet'
-  && loadingList.value
-  && !protocolBusinessCategories.value.length
-))
-const selectedPacketCategoryRow = computed(() => (
-  protocolBusinessCategories.value.find(item => item.category === selectedPacketCategory.value)
-    ?? protocolBusinessCategories.value[0]
-    ?? null
-))
-
 const selectedProtocolRow = computed(() => {
   return protocolRows.value.find(item => item.packet === selectedId.value) ?? protocolRows.value[0] ?? null
 })
@@ -5361,45 +5268,10 @@ function getProtocolRowPreview(row: FanxiuProtocolSemanticRow) {
   return compactText(row.semantic_note || row.state_sinks || compactProtocolFields(row), 110)
 }
 
-function getProtocolBusinessNames(item: FanxiuTcpBusinessCategorySummary) {
-  return item.protocols.slice(0, 10).join('、')
-}
-
-function packetBusinessDisplaySegments(sample: FanxiuTcpBusinessProtocolSample) {
-  if (packetSampleTables(sample).length) {
-    const text = String(sample.display_text || '').split('：')[0] || '解析结果'
-    return [{ text, kind: 'text' }]
-  }
-  if (sample.display_segments?.length) return sample.display_segments
-  return [{ text: sample.display_text || JSON.stringify(sample.content), kind: 'text' }]
-}
-
-function packetEntryDisplaySegments(entry: FanxiuTcpBusinessEntry) {
-  if (entry.display_segments?.length) return entry.display_segments
-  return [{ text: entry.display_text || JSON.stringify(entry.content), kind: 'text' }]
-}
-
-function packetEntryJson(entry: FanxiuTcpBusinessEntry) {
-  return JSON.stringify(entry.content ?? {}, null, 2)
-}
-
-const packetInsightSnapshot = computed<Record<string, any>>(() => packetRuntimeInsights.value ?? {})
-const packetInsightObservations = computed(() => Array.isArray(packetInsightSnapshot.value.observations) ? packetInsightSnapshot.value.observations : [])
-const packetInsightAccount = computed(() => packetInsightSnapshot.value.account?.latest_identity || packetInsightSnapshot.value.account?.latest_login || null)
-const packetInsightWalletResources = computed(() => Array.isArray(packetInsightSnapshot.value.wallet?.resources) ? packetInsightSnapshot.value.wallet.resources : [])
-const packetInsightBagItems = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.notable_items) ? packetInsightSnapshot.value.bag.notable_items : [])
-const packetInsightBagSections = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.section_summary) ? packetInsightSnapshot.value.bag.section_summary : [])
-const packetInsightPersonalRanks = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.personal_records) ? packetInsightSnapshot.value.activity_ranks.personal_records : [])
-const packetInsightRankRecords = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.records) ? packetInsightSnapshot.value.activity_ranks.records : [])
+const businessSnapshot = computed<Record<string, any>>(() => businessSnapshots.value ?? {})
 function mailStatusKey(row: FanxiuMailRecord) {
-  const status = String(row.status || '').trim()
-  if (status === '锁定') return 'locked'
-  if (status === '留存') return 'seen'
-  if (status === '可领') return 'claimable'
   if (row.locked) return 'locked'
-  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list') return 'processed'
-  if (status === 'claim_requested' || status === 'delete_requested') return 'claimable'
-  if (String(row.action_policy || '').trim() === 'claim' || String(row.action_policy || '').trim() === 'delete') return 'claimable'
+  if (row.runtime_status === 'claimed' || row.runtime_status === 'claimed_absent' || row.reward_getted === true || row.status === '已领') return 'processed'
   return 'seen'
 }
 
@@ -5427,7 +5299,7 @@ function mailStatusLabel(value: string) {
 
 function mailDesiredStatus(row: FanxiuMailRecord): MailDesiredStatus {
   const status = MAIL_STATUS_OPTIONS.find(option => option.key === mailStatusKey(row))?.status
-  return status === '锁定' || status === '留存' || status === '可领' ? status : '留存'
+  return status === '锁定' || status === '留存' || status === '已领' ? status : '留存'
 }
 
 function mailStatusRank(status: MailDesiredStatus) {
@@ -5437,17 +5309,7 @@ function mailStatusRank(status: MailDesiredStatus) {
 }
 
 function mailInitialStatus(row: FanxiuMailRecord): MailDesiredStatus {
-  if (mailRewardsUnknown(row)) return '留存'
-  const items = mailRewardItems(row)
-  if (!items.length) return '可领'
-  for (const item of items) {
-    const name = mailRewardName(item)
-    if (!name || name.startsWith('未知道具')) return '留存'
-    if (name.includes('法则')) return '锁定'
-  }
-  if (items.some(item => mailRewardName(item).includes('潜修心得'))) return '可领'
-  if (items.some(item => mailProtectedResourceCategory(mailRewardName(item)))) return '留存'
-  return '可领'
+  return mailDesiredStatus(row)
 }
 
 function mailProtectedResourceCategory(name: string) {
@@ -5459,65 +5321,9 @@ function mailProtectedResourceCategory(name: string) {
   return ''
 }
 
-function isMailStatusUpdating(row: FanxiuMailRecord) {
-  const key = String(row.mail_key || '').trim()
-  return Boolean(key && updatingMailKeys.value.includes(key))
-}
-
-function withMailStatus(row: FanxiuMailRecord, status: MailDesiredStatus): FanxiuMailRecord {
-  return {
-    ...row,
-    status,
-    locked: status === '锁定',
-  }
-}
-
-async function setMailStatus(row: FanxiuMailRecord, status: MailDesiredStatus) {
-  const mailKey = String(row.mail_key || '').trim()
-  if (!mailKey || isMailStatusUpdating(row) || mailDesiredStatus(row) === status) return
-  const index = mailRecords.value.findIndex(item => item.mail_key === mailKey)
-  const previousRecord = index >= 0 ? mailRecords.value[index] : row
-  updatingMailKeys.value = [...updatingMailKeys.value, mailKey]
-  if (index >= 0) {
-    mailRecords.value.splice(index, 1, withMailStatus(previousRecord, status))
-  }
-  try {
-    const response = await updateFanxiuMailRecordStatus(mailKey, status)
-    const latestIndex = mailRecords.value.findIndex(item => item.mail_key === mailKey)
-    if (latestIndex >= 0) {
-      mailRecords.value.splice(latestIndex, 1, response.record)
-    }
-  } catch (error: any) {
-    const latestIndex = mailRecords.value.findIndex(item => item.mail_key === mailKey)
-    if (latestIndex >= 0 && mailDesiredStatus(mailRecords.value[latestIndex]) === status) {
-      mailRecords.value.splice(latestIndex, 1, previousRecord)
-    }
-    ElMessage.error(error?.response?.data?.detail || error?.message || '更新邮件状态失败')
-  } finally {
-    updatingMailKeys.value = updatingMailKeys.value.filter(key => key !== mailKey)
-  }
-}
-
-function cycleMailStatus(row: FanxiuMailRecord) {
-  const current = mailStatusKey(row)
-  const index = MAIL_STATUS_CYCLE.indexOf(current)
-  const nextKey = MAIL_STATUS_CYCLE[(index + 1) % MAIL_STATUS_CYCLE.length]
-  const option = MAIL_STATUS_OPTIONS.find(item => item.key === nextKey)
-  if (option) void setMailStatus(row, option.status)
-}
-
 const activeMailSelectedStatuses = computed(() => (
   mailSubTab.value === 'summary' ? mailSummarySelectedStatuses.value : mailRecordSelectedStatuses.value
 ))
-
-const activeMailAllStatusesSelected = computed(() => activeMailSelectedStatuses.value.length === MAIL_STATUS_OPTIONS.length)
-
-function selectAllMailStatusFilters() {
-  const target = mailSubTab.value === 'summary' ? mailSummarySelectedStatuses : mailRecordSelectedStatuses
-  target.value = MAIL_STATUS_OPTIONS.map(option => option.key)
-  resetMailFilterStatusSnapshot()
-  persistMailStatusFilterPreference(mailSubTab.value)
-}
 
 function toggleMailStatusFilter(value: MailStatusFilter) {
   const target = mailSubTab.value === 'summary' ? mailSummarySelectedStatuses : mailRecordSelectedStatuses
@@ -5637,12 +5443,8 @@ function mailSortLabel(key: MailSortKey, label: string) {
 
 function mailRewardItems(row: FanxiuMailRecord): Record<string, any>[] {
   const payload = row.payload || {}
-  const direct = Array.isArray(payload.mail_rewards) ? payload.mail_rewards : []
-  const packet = payload.packet && typeof payload.packet === 'object' && Array.isArray(payload.packet.mail_rewards)
-    ? payload.packet.mail_rewards
-    : []
-  const sourceItems = direct.length ? direct : packet
-  return sourceItems.filter(item => item && typeof item === 'object')
+  const items = Array.isArray(payload.mail_rewards) ? payload.mail_rewards : []
+  return items.filter(item => item && typeof item === 'object')
 }
 
 function mailRewardText(row: FanxiuMailRecord) {
@@ -5657,14 +5459,12 @@ function mailRewardsUnknown(row: FanxiuMailRecord) {
 }
 
 function mailRewardsEmptyText(row: FanxiuMailRecord) {
-  return mailRewardsUnknown(row) ? '有附件待补包' : '-'
+  return mailRewardsUnknown(row) ? '有附件，Runtime 明细待补齐' : '-'
 }
 
 function mailRewardsUnknownTitle(row: FanxiuMailRecord) {
   const evidence = row.evidence || {}
-  const pcapName = String(evidence.pcap_name || '').trim()
-  const reason = String(evidence.orphan_action_reason || '只捕获到读信动作，未捕获到 MailVo 附件字段；列表已证明有附件，但具体附件仍需补源包').trim()
-  return [reason, pcapName ? `证据：${pcapName}` : ''].filter(Boolean).join('\n')
+  return String(evidence.orphan_action_reason || '历史记录已证明有附件，但 Runtime 尚未提供具体附件字段').trim()
 }
 
 function mailRewardLabel(item: Record<string, any>) {
@@ -5855,7 +5655,7 @@ const mailTitleSummaries = computed(() => {
       group = {
         title: key,
         count: 0,
-        initialStatusCounts: { 锁定: 0, 留存: 0, 可领: 0 },
+        initialStatusCounts: { 锁定: 0, 留存: 0, 已领: 0 },
         rewards: new Map(),
       }
       groups.set(key, group)
@@ -5873,9 +5673,9 @@ const mailTitleSummaries = computed(() => {
   }
   return Array.from(groups.values())
     .map(group => {
-      const initialStatus = (['锁定', '留存', '可领'] as MailDesiredStatus[])
+      const initialStatus = (['锁定', '留存', '已领'] as MailDesiredStatus[])
         .filter(status => group.initialStatusCounts[status] > 0)
-        .sort((a, b) => mailStatusRank(b) - mailStatusRank(a))[0] || '可领'
+        .sort((a, b) => mailStatusRank(b) - mailStatusRank(a))[0] || '留存'
       return {
         ...group,
         initialStatus,
@@ -5908,7 +5708,7 @@ const activeMailRewardItemIds = computed(() => {
 })
 
 function mailStatusDistributionParts(counts: Record<MailDesiredStatus, number>) {
-  return (['锁定', '留存', '可领'] as MailDesiredStatus[])
+  return (['锁定', '留存', '已领'] as MailDesiredStatus[])
     .filter(status => counts[status] > 0)
     .map(status => ({ status, text: `${status}${counts[status]}` }))
 }
@@ -5950,7 +5750,7 @@ function handleMailSummaryPageSizeChange(nextPageSize: number) {
   mailSummaryPageSize.value = normalizeMailPageSize(nextPageSize)
   mailSummaryPage.value = 1
 }
-const playerProfileSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.player_profiles ?? {})
+const playerProfileSnapshot = computed<Record<string, any>>(() => businessSnapshot.value.player_profiles ?? {})
 const playerProfileRawRows = computed<Record<string, any>[]>(() => {
   const rows = playerProfileSnapshot.value.records
   return Array.isArray(rows) ? rows : []
@@ -5959,51 +5759,11 @@ const playerProfileSnapshotDailyRows = computed<Record<string, any>[]>(() => {
   const rows = playerProfileSnapshot.value.daily_records
   return Array.isArray(rows) ? rows : []
 })
-function playerProfileDateKey(row: Record<string, any>) {
-  return String(row?.captured_at || '').slice(0, 10)
-}
+const playerProfileXianlvTeamRows = computed<Record<string, any>[]>(() => {
+  const rows = playerProfileSnapshot.value.xianlv_team_records
+  return Array.isArray(rows) ? rows : []
+})
 
-function playerProfileUserKey(row: Record<string, any>) {
-  const roleId = String(row?.role_id_text || row?.role_id || '').trim()
-  return roleId ? `id:${roleId}` : `name:${String(row?.name || '').trim()}`
-}
-
-function playerProfileMergeKey(row: Record<string, any>) {
-  return `${playerProfileUserKey(row)}::${playerProfileDateKey(row)}`
-}
-
-function playerProfileTimestamp(row: Record<string, any>) {
-  const parsed = Date.parse(String(row?.captured_at || '').replace(' ', 'T'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function playerProfileAttackAttr(row: Record<string, any>) {
-  const attrs = Array.isArray(row?.combat_attributes) ? row.combat_attributes : []
-  return attrs.find((item: Record<string, any>) => Number(item?.key) === 2001 && item?.value !== undefined && item?.value !== null && item?.value !== '')
-}
-
-function playerProfileAttackValue(row: Record<string, any>) {
-  const attack = playerProfileAttackAttr(row)
-  const value = Number(attack?.value)
-  return Number.isFinite(value) ? value : 0
-}
-
-const PLAYER_PROFILE_ATTACK_UNIT_ORDER = ['秭秭', '垓秭', '垓垓', '京垓', '京京', '兆京', '亿京', '万京', '京', '兆', '亿', '万', '无单位']
-const PLAYER_PROFILE_ATTACK_UNIT_COLORS: Record<string, string> = {
-  '秭秭': '#7f1d1d',
-  '垓秭': '#075985',
-  '垓垓': '#166534',
-  '京垓': '#6b21a8',
-  '京京': '#9a3412',
-  '兆京': '#0f766e',
-  '亿京': '#be123c',
-  '万京': '#1d4ed8',
-  '京': '#c2410c',
-  '兆': '#047857',
-  '亿': '#7e22ce',
-  '万': '#6a1b9a',
-  '无单位': '#475467',
-}
 const PLAYER_PROFILE_HASH_TEXT_COLORS = [
   '#b42318',
   '#b54708',
@@ -6019,13 +5779,6 @@ const PLAYER_PROFILE_HASH_TEXT_COLORS = [
   '#9f1239',
 ]
 
-function playerProfileAttackUnit(row: Record<string, any>) {
-  const attack = playerProfileAttackAttr(row)
-  const text = String(formatFanxiuGameNumber(attack?.value) || attack?.text || '').trim()
-  const unit = PLAYER_PROFILE_ATTACK_UNIT_ORDER.find(item => item !== '无单位' && text.endsWith(item))
-  return unit || '无单位'
-}
-
 function playerProfileHashTextStyle(seed: string, offset = 0) {
   const normalized = String(seed || '').trim()
   if (!normalized || normalized === '-') return {}
@@ -6035,14 +5788,6 @@ function playerProfileHashTextStyle(seed: string, offset = 0) {
 
 function playerProfileServerTextStyle(row: Record<string, any>) {
   return playerProfileHashTextStyle(`server:${playerProfileServerText(row) || row?.server || ''}`, 0)
-}
-
-function playerProfileAttackTextStyle(row: Record<string, any>) {
-  return { color: PLAYER_PROFILE_ATTACK_UNIT_COLORS[playerProfileAttackUnit(row)] || PLAYER_PROFILE_ATTACK_UNIT_COLORS['无单位'] }
-}
-
-function playerProfileAttackUnitOptionStyle(unit: string) {
-  return { '--player-profile-unit-color': PLAYER_PROFILE_ATTACK_UNIT_COLORS[unit] || PLAYER_PROFILE_ATTACK_UNIT_COLORS['无单位'] }
 }
 
 function playerProfileCultivationRealm(row: Record<string, any>) {
@@ -6067,31 +5812,27 @@ function playerProfileRegionOrderValue(row: Record<string, any>) {
 
 function comparePlayerProfileDefaultOrder(left: Record<string, any>, right: Record<string, any>) {
   return (
-    playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
+    comparePlayerProfileBattleDesc(left, right)
+    || playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
     || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
-    || playerProfileAttackValue(right) - playerProfileAttackValue(left)
     || playerProfileTimestamp(right) - playerProfileTimestamp(left)
     || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
   )
 }
 
-function comparePlayerProfileAttackDescOrder(left: Record<string, any>, right: Record<string, any>) {
+function comparePlayerProfileBattleDescOrder(left: Record<string, any>, right: Record<string, any>) {
   return (
-    playerProfileAttackValue(right) - playerProfileAttackValue(left)
+    comparePlayerProfileBattleDesc(left, right)
     || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
     || playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
-    || playerProfileTimestamp(right) - playerProfileTimestamp(left)
-    || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
   )
 }
 
-function comparePlayerProfileAttackAscOrder(left: Record<string, any>, right: Record<string, any>) {
+function comparePlayerProfileBattleAscOrder(left: Record<string, any>, right: Record<string, any>) {
   return (
-    playerProfileAttackValue(left) - playerProfileAttackValue(right)
+    comparePlayerProfileBattleAsc(left, right)
     || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
     || playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
-    || playerProfileTimestamp(right) - playerProfileTimestamp(left)
-    || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
   )
 }
 
@@ -6104,14 +5845,14 @@ function comparePlayerProfileServerAscOrder(left: Record<string, any>, right: Re
   return (
     playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
     || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
-    || comparePlayerProfileAttackDescOrder(left, right)
+    || comparePlayerProfileBattleDescOrder(left, right)
   )
 }
 
 function comparePlayerProfileNameAscOrder(left: Record<string, any>, right: Record<string, any>) {
   return (
     String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
-    || comparePlayerProfileAttackDescOrder(left, right)
+    || comparePlayerProfileBattleDescOrder(left, right)
   )
 }
 
@@ -6119,39 +5860,19 @@ function comparePlayerProfileCultivationAscOrder(left: Record<string, any>, righ
   return (
     playerProfileCultivationOrderValue(left) - playerProfileCultivationOrderValue(right)
     || String(playerProfileCultivationText(left)).localeCompare(String(playerProfileCultivationText(right)), 'zh-Hans-CN')
-    || comparePlayerProfileAttackDescOrder(left, right)
+    || comparePlayerProfileBattleDescOrder(left, right)
   )
 }
 
-function comparePlayerProfileTimeAscOrder(left: Record<string, any>, right: Record<string, any>) {
-  return (
-    playerProfileTimestamp(left) - playerProfileTimestamp(right)
-    || comparePlayerProfileAttackDescOrder(left, right)
-  )
-}
-
-function playerProfileHasAttack(row: Record<string, any>) {
-  return Boolean(playerProfileAttackAttr(row))
+function playerProfileHasBattle(row: Record<string, any>) {
+  return playerProfileBattleValue(row) !== null
 }
 
 const playerProfileDailyRows = computed<Record<string, any>[]>(() => {
-  if (playerProfileSnapshotDailyRows.value.length) return playerProfileSnapshotDailyRows.value.filter(playerProfileHasAttack)
-  const byKey = new Map<string, Record<string, any>>()
-  for (const row of playerProfileRawRows.value) {
-    if (!playerProfileHasAttack(row)) continue
-    const userKey = playerProfileUserKey(row)
-    const dateKey = playerProfileDateKey(row)
-    if (!userKey || !dateKey) continue
-    const key = playerProfileMergeKey(row)
-    const current = byKey.get(key)
-    if (!current || playerProfileTimestamp(row) >= playerProfileTimestamp(current)) {
-      byKey.set(key, row)
-    }
+  if (playerProfileSnapshotDailyRows.value.length) {
+    return playerProfileSnapshotDailyRows.value.filter(playerProfileHasBattle)
   }
-  return Array.from(byKey.values()).sort((a, b) => (
-    playerProfileTimestamp(b) - playerProfileTimestamp(a)
-    || String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN')
-  ))
+  return selectDailyPlayerProfileRepresentatives(playerProfileRawRows.value)
 })
 
 const playerProfileLatestRows = computed<Record<string, any>[]>(() => {
@@ -6164,7 +5885,10 @@ const playerProfileLatestRows = computed<Record<string, any>[]>(() => {
       byUser.set(userKey, row)
     }
   }
-  return Array.from(byUser.values()).sort(comparePlayerProfileDefaultOrder)
+  return attachLatestXianlvTeamObservations(
+    Array.from(byUser.values()),
+    playerProfileXianlvTeamRows.value,
+  ).sort(comparePlayerProfileDefaultOrder)
 })
 
 const playerProfileRowsWithDefaultIndex = computed<Record<string, any>[]>(() => (
@@ -6187,7 +5911,12 @@ function playerProfileSearchText(row: Record<string, any>) {
     row?.location,
     row?.level,
     row?.vip_level,
-    row?.captured_at,
+    row?.battle_score,
+    row?.battle_score_text,
+    row?.xianlv_team_fight_score_max,
+    row?.xianlv_team_fight_score_text,
+    row?.observed_at,
+    row?.xianlv_team_observed_at,
     ...(Array.isArray(row?.attributes) ? row.attributes.map((item: Record<string, any>) => `${item.name} ${item.text} ${item.value}`) : []),
   ].join(' ').toLowerCase()
 }
@@ -6202,45 +5931,31 @@ const searchFilteredPlayerProfileRows = computed(() => {
   })
 })
 
-const playerProfileAttackUnitOptions = computed(() => {
-  const counts = new Map<string, number>()
-  for (const row of searchFilteredPlayerProfileRows.value) {
-    const unit = playerProfileAttackUnit(row)
-    counts.set(unit, (counts.get(unit) || 0) + 1)
-  }
-  return PLAYER_PROFILE_ATTACK_UNIT_ORDER
-    .filter(unit => counts.has(unit))
-    .map(unit => ({ unit, count: counts.get(unit) || 0 }))
-})
-
 const filteredPlayerProfileRows = computed(() => {
   return searchFilteredPlayerProfileRows.value
 })
 
-const attackRankedPlayerProfileRows = computed(() => (
-  [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackDescOrder).map((row, index) => ({
+const battleRankedPlayerProfileRows = computed(() => (
+  [...filteredPlayerProfileRows.value].sort(comparePlayerProfileBattleDescOrder).map((row, index) => ({
     ...row,
     sort_index: index + 1,
   }))
 ))
 
 const sortedPlayerProfileRowsWithIndex = computed(() => {
-  if (playerProfileSortKey.value === 'attack_asc') {
-    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileAttackAscOrder)
+  if (playerProfileSortKey.value === 'battle_asc') {
+    return [...battleRankedPlayerProfileRows.value].sort(comparePlayerProfileBattleAscOrder)
   }
   if (playerProfileSortKey.value === 'server_asc') {
-    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileServerAscOrder)
+    return [...battleRankedPlayerProfileRows.value].sort(comparePlayerProfileServerAscOrder)
   }
   if (playerProfileSortKey.value === 'name_asc') {
-    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileNameAscOrder)
+    return [...battleRankedPlayerProfileRows.value].sort(comparePlayerProfileNameAscOrder)
   }
   if (playerProfileSortKey.value === 'cultivation_asc') {
-    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileCultivationAscOrder)
+    return [...battleRankedPlayerProfileRows.value].sort(comparePlayerProfileCultivationAscOrder)
   }
-  if (playerProfileSortKey.value === 'time_asc') {
-    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileTimeAscOrder)
-  }
-  return attackRankedPlayerProfileRows.value
+  return battleRankedPlayerProfileRows.value
 })
 
 const playerProfilePageCount = computed(() => Math.max(1, Math.ceil(sortedPlayerProfileRowsWithIndex.value.length / DEFAULT_PLAYER_PROFILE_PAGE_SIZE)))
@@ -6280,9 +5995,19 @@ const latestPlayerProfile = computed(() => (
     !latest || playerProfileTimestamp(row) > playerProfileTimestamp(latest) ? row : latest
   ), null)
 ))
-function playerProfileAttackText(row: Record<string, any>) {
-  const attack = playerProfileAttackAttr(row)
-  return attack ? (formatFanxiuGameNumber(attack.value) || attack.text || '') : ''
+function playerProfileBattleText(row: Record<string, any>) {
+  const value = playerProfileBattleValue(row)
+  return value === null ? '' : (formatFanxiuGameNumber(value) || String(row?.battle_score_text || ''))
+}
+
+function playerProfileXianlvTeamText(row: Record<string, any>) {
+  const value = Number(row?.xianlv_team_fight_score_max)
+  if (!Number.isFinite(value) || value <= 0) return ''
+  return formatFanxiuGameNumber(value) || String(row?.xianlv_team_fight_score_text || '')
+}
+
+function playerProfileXianlvTeamLabel(row: Record<string, any>) {
+  return playerProfileXianlvTeamText(row)
 }
 
 function playerProfileServerText(row: Record<string, any>) {
@@ -6312,90 +6037,15 @@ function formatPlayerProfileTime(value: string) {
   return `${match[1]}-${match[2]}-${match[3]}`
 }
 
-function isStorageBagOwnerSnapshot(row: Record<string, any> | null | undefined) {
-  if (!row) return false
-  const roleId = String(row.owner_role_id_text || row.owner_role_id || '').trim()
-  const name = String(row.owner_name || '').trim()
-  return roleId === '24082878061086206' || name.includes('羊驼')
-}
-
 const storageBagSnapshot = computed<Record<string, any> | null>(() => {
-  const row = packetInsightSnapshot.value.bag
-  return isStorageBagOwnerSnapshot(row) ? row : null
-})
-const storageBagWorshipSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.worship ?? {})
-const storageBagAllWorshipRecords = computed(() => {
-  const rows = storageBagWorshipSnapshot.value.records
-  return Array.isArray(rows) ? rows : []
-})
-const storageBagTargetWorshipRecords = computed(() => {
-  const targetLabel = storageBagWorshipTargetLabel.value
-  if (!targetLabel) return []
-  return storageBagAllWorshipRecords.value
-    .filter(row => worshipRecordTargetLabel(row) === targetLabel)
-})
-const storageBagWorshipRecords = computed(() => {
-  return [...storageBagTargetWorshipRecords.value]
-    .sort(compareStorageBagWorshipRecord)
-    .slice(0, 40)
-})
-const storageBagWorshipChartPlaneOptions = computed(() => {
-  const now = Date.now()
-  const minTime = now - STORAGE_BAG_WORSHIP_CHART_WINDOW_MS
-  const counts = new Map<number, number>()
-  for (const row of storageBagTargetWorshipRecords.value) {
-    const timestamp = worshipRecordTimestamp(row)
-    const score = worshipRecordScore(row)
-    const type = worshipRecordType(row)
-    if (
-      timestamp < minTime
-      || timestamp > now
-      || score <= 0
-      || String(type).includes('社团')
-    ) continue
-    const plane = storageBagWorshipPlaneNumber(worshipRecordPlane(row))
-    counts.set(plane, (counts.get(plane) || 0) + 1)
-  }
-  return STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS.map(plane => ({
-    plane,
-    label: storageBagWorshipPlaneLabel(plane),
-    count: counts.get(plane) || 0,
-    color: STORAGE_BAG_WORSHIP_CHART_COLORS[plane] || '#475467',
-    selected: isStorageBagWorshipChartPlaneSelected(plane),
-  }))
-})
-const storageBagWorshipPackets = computed(() => {
-  const rows = storageBagWorshipSnapshot.value.packets
-  return Array.isArray(rows) ? rows : []
+  const row = businessSnapshot.value.bag
+  return row && row.source === 'storage_bag_runtime_atlas' && row.complete === true ? row : null
 })
 const storageBagRawItems = computed(() => {
   const rows = storageBagSnapshot.value?.items
   if (Array.isArray(rows)) return rows
   return Array.isArray(storageBagSnapshot.value?.notable_items) ? storageBagSnapshot.value.notable_items : []
 })
-
-function storageBagAggregateKey(row: Record<string, any>) {
-  const item = row?.item || {}
-  return [
-    row?.base_id || item?.item_id || row?.item_id || '',
-    item?.name || row?.name || '',
-    item?.quality_name || '',
-    item?.type_name || '',
-  ].join('::')
-}
-
-function storageBagQualityRank(row: Record<string, any>) {
-  const quality = String(row?.item?.quality_name || '')
-  if (quality.includes('彩')) return 80
-  if (quality.includes('红')) return 70
-  if (quality.includes('橙')) return 65
-  if (quality.includes('黄') || quality.includes('金')) return 60
-  if (quality.includes('紫')) return 50
-  if (quality.includes('蓝')) return 40
-  if (quality.includes('绿')) return 30
-  if (quality.includes('白')) return 20
-  return 0
-}
 
 function storageBagQualityClass(row: Record<string, any>) {
   const quality = String(row?.item?.quality_name || '')
@@ -6411,31 +6061,7 @@ function storageBagQualityClass(row: Record<string, any>) {
 }
 
 const storageBagItems = computed(() => {
-  const merged = new Map<string, Record<string, any>>()
-  for (const row of storageBagRawItems.value) {
-    const key = storageBagAggregateKey(row)
-    const current = merged.get(key)
-    const num = Number(row?.num)
-    if (!current) {
-      merged.set(key, {
-        ...row,
-        num: Number.isFinite(num) ? num : row?.num,
-        stack_count: 1,
-      })
-      continue
-    }
-    current.stack_count = Number(current.stack_count || 0) + 1
-    if (Number.isFinite(num)) {
-      current.num = Number(current.num || 0) + num
-    }
-  }
-  return Array.from(merged.values()).sort((a, b) => {
-    const qualityDiff = storageBagQualityRank(b) - storageBagQualityRank(a)
-    if (qualityDiff) return qualityDiff
-    const countDiff = Number(b?.num || 0) - Number(a?.num || 0)
-    if (countDiff) return countDiff
-    return packetInsightItemName(a).localeCompare(packetInsightItemName(b), 'zh-Hans-CN')
-  })
+  return storageBagRawItems.value
 })
 function storageBagText(row: Record<string, any>) {
   const item = row?.item || {}
@@ -6449,6 +6075,8 @@ function storageBagText(row: Record<string, any>) {
     item?.description,
     item?.effect_description,
     item?.effect_detail_preview,
+    row?.average_yield,
+    row?.note,
   ].join(' ')
 }
 
@@ -6470,38 +6098,10 @@ function storageBagTotalFriendshipValue(row: Record<string, any>) {
   return friendship > 0 && Number.isFinite(count) ? friendship * count : 0
 }
 
-function storageBagSpiritStoneValue(row: Record<string, any>) {
-  const value = Number(row?.item?.stone_value)
-  return Number.isFinite(value) && value > 0 ? value : 0
-}
-
-function formatStorageBagSpiritStoneValue(row: Record<string, any>) {
-  const value = storageBagSpiritStoneValue(row)
-  return value > 0 ? formatPacketInsightValue(value) : ''
-}
-
 const showStorageBagFriendshipColumns = computed(() => (
   storageBagMainGroup.value === 'resource' && storageBagSubGroup.value === '仙花'
 ))
 
-const showStorageBagSpiritStoneValueColumn = computed(() => (
-  showStorageBagFriendshipColumns.value || filteredStorageBagItems.value.some(row => storageBagSpiritStoneValue(row) > 0)
-))
-
-const storageBagWorshipTargetConfig = computed(() => {
-  if (storageBagMainGroup.value !== 'resource') return null
-  if (storageBagSubGroup.value === '仙花') {
-    return { target: '天资', title: '拜谒-天资-历史榜单记录', scoreLabel: '友好度' }
-  }
-  if (storageBagSubGroup.value === '炼丹') {
-    return { target: '道丹', title: '拜谒-道丹-历史榜单记录', scoreLabel: '熟练度' }
-  }
-  return null
-})
-const storageBagWorshipTargetLabel = computed(() => storageBagWorshipTargetConfig.value?.target || '')
-const storageBagWorshipTitle = computed(() => storageBagWorshipTargetConfig.value?.title || '')
-const storageBagWorshipScoreLabel = computed(() => storageBagWorshipTargetConfig.value?.scoreLabel || '数值')
-const showStorageBagWorshipReference = computed(() => Boolean(storageBagWorshipTargetConfig.value))
 
 function classifyStorageBagItem(row: Record<string, any>) {
   const item = row?.item || {}
@@ -6578,387 +6178,42 @@ const filteredStorageBagItems = computed(() => {
   })
 })
 
-function storageBagSortValue(row: Record<string, any>) {
+function storageBagNumericSortValue(row: Record<string, any>) {
+  if (storageBagSortKey.value === 'atlas_order') return Number(row?.atlas_order) || 0
+  if (storageBagSortKey.value === 'base_id') return Number(row?.base_id) || 0
   if (storageBagSortKey.value === 'num') return Number(row?.num) || 0
+  if (storageBagSortKey.value === 'auto_claim') return row?.auto_claim === true ? 1 : 0
   if (storageBagSortKey.value === 'friendship') return storageBagFriendshipValue(row)
-  if (storageBagSortKey.value === 'spirit_stone_value') return storageBagSpiritStoneValue(row)
   return 0
 }
 
 const sortedStorageBagItems = computed(() => {
-  if (storageBagSortKey.value === 'default') return filteredStorageBagItems.value
   return [...filteredStorageBagItems.value].sort((a, b) => {
-    const diff = storageBagSortValue(b) - storageBagSortValue(a)
-    if (diff) return diff
-    const qualityDiff = storageBagQualityRank(b) - storageBagQualityRank(a)
-    if (qualityDiff) return qualityDiff
-    return packetInsightItemName(a).localeCompare(packetInsightItemName(b), 'zh-Hans-CN')
+    let diff = 0
+    if (storageBagSortKey.value === 'name') {
+      diff = storageBagItemName(a).localeCompare(storageBagItemName(b), 'zh-Hans-CN')
+    } else if (storageBagSortKey.value === 'average_yield') {
+      diff = String(a?.average_yield || '').localeCompare(String(b?.average_yield || ''), 'zh-Hans-CN')
+    } else if (storageBagSortKey.value === 'type') {
+      diff = String(a?.item?.type_name || '').localeCompare(String(b?.item?.type_name || ''), 'zh-Hans-CN')
+    } else {
+      diff = storageBagNumericSortValue(a) - storageBagNumericSortValue(b)
+    }
+    if (storageBagSortOrder.value === 'desc') diff *= -1
+    return diff || Number(a?.atlas_order || 0) - Number(b?.atlas_order || 0)
   })
 })
 
-const visibleStorageBagItems = computed(() => sortedStorageBagItems.value.slice(0, STORAGE_BAG_PREVIEW_LIMIT))
+const storageBagPageCount = computed(() => Math.max(1, Math.ceil(sortedStorageBagItems.value.length / storageBagPageSize.value)))
+const visibleStorageBagItems = computed(() => {
+  const start = (storageBagPage.value - 1) * storageBagPageSize.value
+  return sortedStorageBagItems.value.slice(start, start + storageBagPageSize.value)
+})
 
 const storageBagFriendshipTotal = computed(() => (
   filteredStorageBagItems.value.reduce((sum, row) => sum + storageBagTotalFriendshipValue(row), 0)
 ))
 
-function worshipRecordScore(row: Record<string, any>) {
-  const value = Number(row?.friendship ?? row?.score ?? row?.value)
-  return Number.isFinite(value) ? value : 0
-}
-
-function worshipRecordTimestamp(row: Record<string, any>) {
-  const raw = row?.date ?? row?.time ?? row?.captured_at
-  if (typeof raw === 'number') {
-    const timestamp = raw < 10_000_000_000 ? raw * 1000 : raw
-    return Number.isFinite(timestamp) ? timestamp : 0
-  }
-  const text = String(raw || '').trim()
-  if (!text) return 0
-  let normalized = text
-  const dotDate = text.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})(.*)$/)
-  if (dotDate) {
-    normalized = `${dotDate[1]}-${dotDate[2].padStart(2, '0')}-${dotDate[3].padStart(2, '0')}${dotDate[4] || ''}`
-  }
-  const parsed = Date.parse(normalized.replace(' ', 'T'))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function worshipRecordDate(row: Record<string, any>) {
-  return row?.date || (row?.captured_at ? formatTcpBusinessTime(row.captured_at) : '-')
-}
-
-function worshipRecordType(row: Record<string, any>) {
-  return row?.rank_type_label || row?.rank_type || '-'
-}
-
-function worshipRecordTargetLabel(row: Record<string, any>) {
-  const label = String(row?.target_label || row?.worship_target_label || '').trim()
-  if (label) return label
-  const activityId = Number(row?.activity_id || row?.rank_type)
-  if (Number.isFinite(activityId)) {
-    const base = activityId % 100000
-    if (Math.floor(base / 100) === 428 || Math.floor(base / 100) === 432) return '天资'
-    if (Math.floor(base / 100) === 431) return '道丹'
-  }
-  const fazeId = Number(row?.faze_id)
-  if (Number.isFinite(fazeId)) {
-    if (fazeId >= 10050 && fazeId <= 10055) return '天资'
-    if (fazeId >= 10070 && fazeId <= 10075) return '道丹'
-  }
-  return ''
-}
-
-function worshipRecordPlane(row: Record<string, any>) {
-  const raw = row?.plane_label || row?.plane || '-'
-  const text = String(raw || '-').trim()
-  if (text === '服内' || text === '1') return '1跨'
-  return text
-}
-
-function storageBagWorshipPlaneNumber(plane: string) {
-  const value = Number.parseInt(plane, 10)
-  return Number.isFinite(value) ? value : 0
-}
-
-function storageBagWorshipPlaneColor(plane: string) {
-  const planeNumber = storageBagWorshipPlaneNumber(plane)
-  return STORAGE_BAG_WORSHIP_CHART_COLORS[planeNumber] || '#475467'
-}
-
-function storageBagWorshipPlaneLabel(planeNumber: number) {
-  return `${planeNumber}跨`
-}
-
-function isStorageBagWorshipChartPlaneSelected(planeNumber: number) {
-  return storageBagWorshipChartPlanes.value.includes(planeNumber)
-}
-
-function toggleStorageBagWorshipChartPlane(planeNumber: number) {
-  const selected = new Set(storageBagWorshipChartPlanes.value)
-  if (selected.has(planeNumber)) {
-    selected.delete(planeNumber)
-  } else {
-    selected.add(planeNumber)
-  }
-  storageBagWorshipChartPlanes.value = normalizeStorageBagWorshipChartPlanes(Array.from(selected))
-}
-
-function storageBagWorshipTypeRank(row: Record<string, any>) {
-  const type = worshipRecordType(row)
-  if (String(type).includes('社团')) return 2
-  if (String(type).includes('个人')) return 1
-  return 0
-}
-
-function compareStorageBagWorshipRecord(a: Record<string, any>, b: Record<string, any>) {
-  const sortKey = storageBagWorshipSortKey.value
-  if (sortKey === 'time') {
-    const diff = worshipRecordTimestamp(b) - worshipRecordTimestamp(a)
-    if (diff) return diff
-  } else if (sortKey === 'plane') {
-    const diff = storageBagWorshipPlaneNumber(worshipRecordPlane(b)) - storageBagWorshipPlaneNumber(worshipRecordPlane(a))
-    if (diff) return diff
-  } else if (sortKey === 'type') {
-    const diff = storageBagWorshipTypeRank(b) - storageBagWorshipTypeRank(a)
-    if (diff) return diff
-  } else {
-    const diff = worshipRecordScore(b) - worshipRecordScore(a)
-    if (diff) return diff
-  }
-  return (
-    worshipRecordScore(b) - worshipRecordScore(a)
-    || worshipRecordTimestamp(b) - worshipRecordTimestamp(a)
-    || storageBagWorshipPlaneNumber(worshipRecordPlane(b)) - storageBagWorshipPlaneNumber(worshipRecordPlane(a))
-    || String(a?.role || '').localeCompare(String(b?.role || ''), 'zh-Hans-CN')
-  )
-}
-
-function sortStorageBagWorshipBy(key: 'friendship' | 'time' | 'plane' | 'type') {
-  storageBagWorshipSortKey.value = key
-}
-
-function formatStorageBagWorshipChartDate(timestamp: number) {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return '-'
-  return `${date.getMonth() + 1}/${date.getDate()}`
-}
-
-function formatStorageBagWorshipChartFullDate(timestamp: number) {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return '-'
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hour = String(date.getHours()).padStart(2, '0')
-  const minute = String(date.getMinutes()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hour}:${minute}`
-}
-
-function buildStorageBagWorshipYTicks(maxScore: number) {
-  if (!Number.isFinite(maxScore) || maxScore <= 0) return [0, 1]
-  const targetStep = maxScore / 4
-  const magnitude = 10 ** Math.floor(Math.log10(targetStep))
-  const factor = targetStep / magnitude
-  const niceFactor = factor <= 1 ? 1 : factor <= 2 ? 2 : factor <= 5 ? 5 : 10
-  const step = niceFactor * magnitude
-  const yMax = Math.ceil(maxScore / step) * step
-  const ticks: number[] = []
-  for (let value = 0; value <= yMax + step * 0.5; value += step) {
-    ticks.push(value)
-  }
-  return ticks
-}
-
-function buildStorageBagWorshipChartPanel(
-  chartRows: Array<{ row: Record<string, any>, timestamp: number, score: number, type: string }>,
-  minTime: number,
-) {
-  const maxScore = Math.max(...chartRows.map(point => point.score), 0)
-  const yTickValues = buildStorageBagWorshipYTicks(maxScore)
-  const yMax = Math.max(...yTickValues, 1)
-  const yInterval = yTickValues.length >= 2 ? yTickValues[1] - yTickValues[0] : undefined
-  const points = chartRows.map(point => ({
-    ...point,
-    plane: worshipRecordPlane(point.row),
-  }))
-  const planeOrder = Array.from(new Set(points.map(point => point.plane))).sort((a, b) => {
-    const aNum = storageBagWorshipPlaneNumber(a)
-    const bNum = storageBagWorshipPlaneNumber(b)
-    if (aNum && bNum && aNum !== bNum) return aNum - bNum
-    return a.localeCompare(b, 'zh-Hans-CN')
-  })
-  const groups = planeOrder.map((plane, index) => {
-    const groupPoints = points.filter(point => point.plane === plane).sort((a, b) => a.timestamp - b.timestamp)
-    const color = storageBagWorshipPlaneColor(plane)
-    return {
-      plane,
-      color,
-      points: groupPoints,
-    }
-  })
-  const option: StorageBagWorshipChartOption = {
-    animation: false,
-    color: groups.map(group => group.color),
-    grid: {
-      left: STORAGE_BAG_WORSHIP_CHART_MARGIN.left,
-      right: STORAGE_BAG_WORSHIP_CHART_MARGIN.right,
-      top: STORAGE_BAG_WORSHIP_CHART_MARGIN.top,
-      bottom: STORAGE_BAG_WORSHIP_CHART_MARGIN.bottom,
-    },
-    tooltip: {
-      trigger: 'item',
-      confine: true,
-      formatter(params: any) {
-        const data = params?.data || {}
-        const meta = data.meta || {}
-        const marker = params?.marker || ''
-        return [
-          escapeFanxiuHtml(meta.time || ''),
-          `${marker}${escapeFanxiuHtml(meta.plane || '-')}`,
-          `角色：${escapeFanxiuHtml(meta.role || '-')}`,
-          `榜单：${escapeFanxiuHtml(meta.type || '-')}`,
-          `友好度：${escapeFanxiuHtml(meta.scoreLabel || '-')}`,
-        ].filter(Boolean).join('<br/>')
-      },
-    },
-    xAxis: {
-      type: 'time',
-      min: minTime,
-      max: minTime + STORAGE_BAG_WORSHIP_CHART_WINDOW_MS,
-      axisLine: { lineStyle: { color: '#cbd5e1' } },
-      axisTick: { show: false },
-      axisLabel: {
-        color: '#667085',
-        fontSize: 12,
-        formatter(value: number) {
-          return formatStorageBagWorshipChartDate(value)
-        },
-      },
-      splitLine: { show: false },
-    },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: yMax,
-      interval: yInterval,
-      axisLine: { show: true, lineStyle: { color: '#cbd5e1' } },
-      axisTick: { show: false },
-      axisLabel: {
-        color: '#667085',
-        fontSize: 12,
-        formatter(value: number) {
-          return formatChineseCompactNumber(value)
-        },
-      },
-      splitLine: {
-        lineStyle: { color: '#eef2f6' },
-      },
-    },
-    series: groups.map(group => ({
-      name: group.plane,
-      type: 'line',
-      showSymbol: true,
-      symbol: 'circle',
-      symbolSize: 7,
-      lineStyle: {
-        width: 1.7,
-        color: group.color,
-      },
-      itemStyle: {
-        color: group.color,
-        borderColor: '#fff',
-        borderWidth: 1.5,
-      },
-      emphasis: {
-        scale: true,
-      },
-      data: group.points.map(point => ({
-        value: [point.timestamp, point.score],
-        meta: {
-          time: formatStorageBagWorshipChartFullDate(point.timestamp),
-          plane: point.plane,
-          role: point.row?.role || '-',
-          type: point.type || worshipRecordType(point.row),
-          scoreLabel: formatPacketInsightScoreValue(point.score),
-        },
-      })),
-    })),
-  }
-  return {
-    key: 'worship',
-    title: '近一年趋势',
-    points,
-    groups,
-    option,
-  }
-}
-
-const storageBagWorshipChart = computed(() => {
-  const width = STORAGE_BAG_WORSHIP_CHART_WIDTH
-  const height = STORAGE_BAG_WORSHIP_CHART_HEIGHT
-  const now = Date.now()
-  const minTime = now - STORAGE_BAG_WORSHIP_CHART_WINDOW_MS
-  const selectedPlanes = new Set(storageBagWorshipChartPlanes.value)
-  const chartRows = storageBagTargetWorshipRecords.value
-    .map(row => ({
-      row,
-      timestamp: worshipRecordTimestamp(row),
-      score: worshipRecordScore(row),
-      type: worshipRecordType(row),
-    }))
-    .filter(point => (
-      point.timestamp >= minTime
-      && point.timestamp <= now
-      && point.score > 0
-      && !String(point.type).includes('社团')
-      && selectedPlanes.has(storageBagWorshipPlaneNumber(worshipRecordPlane(point.row)))
-    ))
-    .sort((a, b) => a.timestamp - b.timestamp)
-  const panels = chartRows.length ? [buildStorageBagWorshipChartPanel(chartRows, minTime)] : []
-  return {
-    width,
-    height,
-    points: chartRows,
-    panels,
-  }
-})
-
-const storageBagWorshipChartRefs = ref<Record<string, HTMLElement | null>>({})
-const storageBagWorshipChartInstances = new Map<string, ECharts>()
-let storageBagWorshipChartResizeObserver: ResizeObserver | null = null
-
-function renderStorageBagWorshipCharts() {
-  const panels = storageBagWorshipChart.value.panels
-  const activeKeys = new Set(panels.map(panel => panel?.key).filter(Boolean))
-  Array.from(storageBagWorshipChartInstances.keys()).forEach(key => {
-    if (!activeKeys.has(key)) {
-      storageBagWorshipChartInstances.get(key)?.dispose()
-      storageBagWorshipChartInstances.delete(key)
-    }
-  })
-  panels.forEach(panel => {
-    if (!panel) return
-    const el = storageBagWorshipChartRefs.value[panel.key]
-    if (!el) return
-    let chart = storageBagWorshipChartInstances.get(panel.key)
-    if (!chart) {
-      chart = echarts.init(el)
-      storageBagWorshipChartInstances.set(panel.key, chart)
-    }
-    chart.setOption(panel.option, true)
-    chart.resize()
-  })
-}
-
-function scheduleStorageBagWorshipChartRender() {
-  void nextTick(() => {
-    renderStorageBagWorshipCharts()
-  })
-}
-
-function setStorageBagWorshipChartRef(key: string, el: Element | null) {
-  const previous = storageBagWorshipChartRefs.value[key]
-  if (previous && previous !== el) {
-    storageBagWorshipChartResizeObserver?.unobserve(previous)
-  }
-  if (el instanceof HTMLElement) {
-    storageBagWorshipChartRefs.value[key] = el
-    storageBagWorshipChartResizeObserver?.observe(el)
-    scheduleStorageBagWorshipChartRender()
-  } else {
-    storageBagWorshipChartRefs.value[key] = null
-    storageBagWorshipChartInstances.get(key)?.dispose()
-    storageBagWorshipChartInstances.delete(key)
-  }
-}
-
-function disposeStorageBagWorshipCharts() {
-  storageBagWorshipChartResizeObserver?.disconnect()
-  storageBagWorshipChartResizeObserver = null
-  storageBagWorshipChartInstances.forEach(chart => chart.dispose())
-  storageBagWorshipChartInstances.clear()
-}
 
 function formatPacketInsightValue(value: unknown) {
   if (value === null || value === undefined || value === '') return '-'
@@ -6967,28 +6222,12 @@ function formatPacketInsightValue(value: unknown) {
   return String(value)
 }
 
-function formatPacketInsightScoreValue(value: unknown) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric) || numeric <= 0) return '0'
-  const formatUnit = (unitValue: number) => (Math.floor(unitValue * 100) / 100).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
-  if (numeric >= 100000000) return `${formatUnit(numeric / 100000000)}亿`
-  if (numeric >= 10000) return `${formatUnit(numeric / 10000)}万`
-  return formatUnit(numeric)
-}
-
-function packetInsightItemName(row: Record<string, any>) {
+function storageBagItemName(row: Record<string, any>) {
   return row?.item?.name || row?.name || row?.base_id || row?.item_id || '-'
 }
 
 function storageBagItemId(row: Record<string, any>) {
   return row?.base_id || row?.item?.item_id || row?.item_id || ''
-}
-
-function packetInsightBagSectionName(row: Record<string, any>) {
-  if (row?.vo_type === 'ItemVO') return '道具'
-  if (row?.vo_type === 'GongFaItemVO') return '功法'
-  if (row?.vo_type === 'TalismanVo') return '法宝/符器'
-  return row?.vo_type || `分区 ${row?.index ?? '-'}`
 }
 
 function selectStorageBagMainGroup(group: string) {
@@ -7017,20 +6256,124 @@ function selectStorageBagAllSubGroups() {
   storageBagSubGroup.value = ''
 }
 
-function sortStorageBagBy(key: 'num' | 'friendship' | 'spirit_stone_value') {
-  storageBagSortKey.value = key
+function storageBagDefaultSortOrder(key: StorageBagSortKey): 'asc' | 'desc' {
+  return ['num', 'auto_claim', 'friendship'].includes(key) ? 'desc' : 'asc'
 }
 
-function sortPlayerProfileByAttack() {
-  if (playerProfileSortKey.value === 'attack_desc') {
-    playerProfileSortKey.value = 'attack_asc'
+async function updateStorageBagAutoClaim(row: Record<string, any>, nextValue: boolean) {
+  const baseId = Number(storageBagItemId(row))
+  if (!Number.isInteger(baseId) || baseId <= 0 || savingStorageBagAutoClaimIds.value.has(baseId)) return
+  const previousValue = row.auto_claim === true
+  row.auto_claim = nextValue
+  savingStorageBagAutoClaimIds.value = new Set([...savingStorageBagAutoClaimIds.value, baseId])
+  try {
+    const result = await setFanxiuStorageBagAutoClaim(baseId, nextValue)
+    row.auto_claim = result.auto_claim
+  } catch (error: any) {
+    row.auto_claim = previousValue
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存自动领取状态失败')
+  } finally {
+    const next = new Set(savingStorageBagAutoClaimIds.value)
+    next.delete(baseId)
+    savingStorageBagAutoClaimIds.value = next
+  }
+}
+
+async function updateStorageBagNote(row: Record<string, any>) {
+  const baseId = Number(storageBagItemId(row))
+  if (!Number.isInteger(baseId) || baseId <= 0 || savingStorageBagNoteIds.value.has(baseId)) return
+  const previousValue = savedStorageBagNotes.value[baseId] || ''
+  const nextValue = String(row.note || '').trim()
+  if (nextValue === previousValue) {
+    row.note = previousValue
+    return
+  }
+  row.note = nextValue
+  savingStorageBagNoteIds.value = new Set([...savingStorageBagNoteIds.value, baseId])
+  try {
+    const result = await setFanxiuStorageBagNote(baseId, nextValue)
+    row.note = result.note
+    savedStorageBagNotes.value = { ...savedStorageBagNotes.value, [baseId]: result.note }
+  } catch (error: any) {
+    row.note = previousValue
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存备注失败')
+  } finally {
+    const next = new Set(savingStorageBagNoteIds.value)
+    next.delete(baseId)
+    savingStorageBagNoteIds.value = next
+  }
+}
+
+function sortStorageBagBy(key: StorageBagSortKey) {
+  if (storageBagSortKey.value === key) {
+    storageBagSortOrder.value = storageBagSortOrder.value === 'asc' ? 'desc' : 'asc'
   } else {
-    playerProfileSortKey.value = 'attack_desc'
+    storageBagSortKey.value = key
+    storageBagSortOrder.value = storageBagDefaultSortOrder(key)
+  }
+  storageBagPage.value = 1
+}
+
+function storageBagSortButtonClass(key: StorageBagSortKey) {
+  return {
+    active: storageBagSortKey.value === key,
+    descending: storageBagSortKey.value === key && storageBagSortOrder.value === 'desc',
+  }
+}
+
+function handleStorageBagPageChange(nextPage: number) {
+  storageBagPage.value = Math.min(storageBagPageCount.value, Math.max(1, Number(nextPage) || 1))
+}
+
+function handleStorageBagPageSizeChange(nextPageSize: number) {
+  storageBagPageSize.value = Math.max(1, Number(nextPageSize) || 50)
+  storageBagPage.value = 1
+}
+
+async function deleteStorageBagAtlasRow(row: Record<string, any>) {
+  const baseId = Number(storageBagItemId(row))
+  if (!Number.isInteger(baseId) || baseId <= 0 || Number(row?.num || 0) > 0) return
+  const itemName = storageBagItemName(row)
+  try {
+    await ElMessageBox.confirm(
+      `从储物袋图鉴删除「${itemName}」(${baseId})？以后 Runtime 再次发现时会重新加入。`,
+      '删除图鉴条目',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  deletingStorageBagItemIds.value = new Set([...deletingStorageBagItemIds.value, baseId])
+  try {
+    await deleteFanxiuStorageBagAtlasItem(baseId)
+    const bag = storageBagSnapshot.value
+    if (bag) {
+      bag.items = storageBagRawItems.value.filter(item => Number(item?.base_id) !== baseId)
+      bag.atlas_count = bag.items.length
+      bag.zero_count = Math.max(0, Number(bag.zero_count || 0) - 1)
+      total.value = bag.items.length
+    }
+    handleStorageBagPageChange(storageBagPage.value)
+    ElMessage.success(`已从图鉴删除「${itemName}」`)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '删除图鉴条目失败')
+  } finally {
+    const next = new Set(deletingStorageBagItemIds.value)
+    next.delete(baseId)
+    deletingStorageBagItemIds.value = next
+  }
+}
+
+function sortPlayerProfileByBattle() {
+  if (playerProfileSortKey.value === 'battle_desc') {
+    playerProfileSortKey.value = 'battle_asc'
+  } else {
+    playerProfileSortKey.value = 'battle_desc'
   }
 }
 
 function sortPlayerProfileByDefault() {
-  playerProfileSortKey.value = 'attack_desc'
+  playerProfileSortKey.value = 'battle_desc'
 }
 
 function sortPlayerProfileByField(key: PlayerProfileSortKey) {
@@ -7040,32 +6383,6 @@ function sortPlayerProfileByField(key: PlayerProfileSortKey) {
 function playerProfileSortIndicator(key: PlayerProfileSortKey) {
   if (playerProfileSortKey.value !== key) return ''
   return key.endsWith('_desc') ? ' ↓' : ' ↑'
-}
-
-function packetInsightRankTitle(row: Record<string, any>) {
-  const personal = row.personal_item || {}
-  const activityId = row.activity_id || '-'
-  const name = personal.name || personal.subject || ''
-  const rank = personal.rank ? `第${personal.rank}名` : '未上榜'
-  return [activityId, name, rank].filter(Boolean).join(' · ')
-}
-
-async function loadPacketRuntimeInsights(options: { silent?: boolean } = {}) {
-  if (activeTab.value !== 'packet') return
-  const silent = Boolean(options.silent)
-  if (!silent) {
-    packetRuntimeInsightsLoading.value = true
-  }
-  try {
-    const response = await getFanxiuPacketRuntimeInsights({ auto_sync: false })
-    packetRuntimeInsights.value = response.snapshot ?? {}
-  } catch (error: any) {
-    console.warn('Failed to load Fanxiu packet runtime insights:', error)
-  } finally {
-    if (!silent) {
-      packetRuntimeInsightsLoading.value = false
-    }
-  }
 }
 
 async function loadPlayerProfileSnapshots(options: { silent?: boolean } = {}) {
@@ -7080,12 +6397,17 @@ async function loadPlayerProfileSnapshots(options: { silent?: boolean } = {}) {
       getFanxiuServerRelations(),
     ])
     playerServerRelationGroups.value = relationResponse.groups || []
-    packetRuntimeInsights.value = {
-      ...(packetRuntimeInsights.value ?? {}),
+    businessSnapshots.value = {
+      ...(businessSnapshots.value ?? {}),
       player_profiles: {
         count: response.count || 0,
         records: response.records || [],
-        daily_records: response.records || [],
+        daily_count: response.daily_count || 0,
+        daily_records: response.daily_records || [],
+        xianlv_team_count: response.xianlv_team_count || 0,
+        xianlv_team_records: response.xianlv_team_records || [],
+        xianlv_team_daily_count: response.xianlv_team_daily_count || 0,
+        xianlv_team_daily_records: response.xianlv_team_daily_records || [],
       },
     }
     total.value = playerProfileLatestRows.value.length
@@ -7115,7 +6437,7 @@ async function loadMailRecords(options: { silent?: boolean } = {}) {
     loadingDetail.value = false
   }
   try {
-    const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet_evidence' })
+    const response = await getFanxiuMailRecords({ limit: 5000, source: 'runtime_memory', include_absent: true })
     mailRecords.value = response.records || []
     resetMailFilterStatusSnapshot()
     total.value = mailRecords.value.length
@@ -7139,7 +6461,23 @@ async function loadMailRecords(options: { silent?: boolean } = {}) {
   }
 }
 
+async function syncMailFromRuntime() {
+  if (syncingMailRuntime.value) return
+  syncingMailRuntime.value = true
+  try {
+    const response = await syncFanxiuMailRuntime()
+    await loadMailRecords({ silent: true })
+    ElMessage.success(`已从游戏模型更新 ${response.record_count} 封邮件`)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '邮件动态快照更新失败')
+  } finally {
+    syncingMailRuntime.value = false
+  }
+}
+
 async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
+  if (loadingStorageBagRuntime.value) return
+  loadingStorageBagRuntime.value = true
   const requestSeq = ++listRequestSeq
   const silent = Boolean(options.silent)
   if (!silent) {
@@ -7147,9 +6485,14 @@ async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
     loadingDetail.value = false
   }
   try {
-    const response = await getFanxiuPacketStorageBag()
+    const response = await getFanxiuBusinessStorageBag()
     if (requestSeq !== listRequestSeq) return
-    packetRuntimeInsights.value = { ...(packetRuntimeInsights.value ?? {}), bag: response.bag ?? null, worship: response.worship ?? null }
+    storageBagRuntimeState.value = response.state || (response.ok ? 'complete' : 'runtime_unavailable')
+    storageBagRuntimeReason.value = response.reason || ''
+    businessSnapshots.value = { ...(businessSnapshots.value ?? {}), bag: response.bag ?? null }
+    savedStorageBagNotes.value = Object.fromEntries(
+      (response.bag?.items || []).map((row: Record<string, any>) => [Number(row.base_id), String(row.note || '')]),
+    )
     total.value = storageBagItems.value.length
     selectedId.value = ''
     selectedCard.value = null
@@ -7164,6 +6507,7 @@ async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取储物袋快照失败')
     }
   } finally {
+    loadingStorageBagRuntime.value = false
     if (!silent && requestSeq === listRequestSeq) {
       loadingList.value = false
     }
@@ -7181,14 +6525,14 @@ function startStorageBagAutoRefresh() {
   stopStorageBagAutoRefresh()
   if (activeTab.value !== 'storage_bag') return
   storageBagRefreshTimer = window.setInterval(() => {
-    if (activeTab.value === 'storage_bag' && !loadingList.value) {
+    if (activeTab.value === 'storage_bag' && !loadingList.value && !loadingStorageBagRuntime.value) {
       void loadStorageBagSnapshot({ silent: true })
     }
-  }, 15000)
+  }, 30000)
 }
 
-function refreshActivePacketBackedTab() {
-  if (activeTab.value === 'storage_bag' && !loadingList.value) {
+function refreshActiveBusinessTab() {
+  if (activeTab.value === 'storage_bag' && !loadingList.value && !loadingStorageBagRuntime.value) {
     void loadStorageBagSnapshot({ silent: true })
     return
   }
@@ -7200,25 +6544,22 @@ function refreshActivePacketBackedTab() {
     void loadPlayerProfileSnapshots({ silent: true })
     return
   }
-  if (activeTab.value === 'packet' && !packetRuntimeInsightsLoading.value) {
-    void loadPacketRuntimeInsights({ silent: true })
+}
+
+function stopBusinessAutoRefresh() {
+  if (businessRefreshTimer !== null) {
+    window.clearInterval(businessRefreshTimer)
+    businessRefreshTimer = null
   }
 }
 
-function stopPacketBackedAutoRefresh() {
-  if (packetBackedRefreshTimer !== null) {
-    window.clearInterval(packetBackedRefreshTimer)
-    packetBackedRefreshTimer = null
-  }
+function startBusinessAutoRefresh() {
+  stopBusinessAutoRefresh()
+  if (!RUNTIME_OR_BUSINESS_WIKI_TABS.has(activeTab.value)) return
+  businessRefreshTimer = window.setInterval(refreshActiveBusinessTab, 15000)
 }
 
-function startPacketBackedAutoRefresh() {
-  stopPacketBackedAutoRefresh()
-  if (!PACKET_BACKED_WIKI_TABS.has(activeTab.value)) return
-  packetBackedRefreshTimer = window.setInterval(refreshActivePacketBackedTab, 15000)
-}
-
-function formatTcpBusinessTime(value: string) {
+function formatBusinessSnapshotTime(value: string) {
   const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
   if (!match) return value || '-'
   const now = new Date()
@@ -7229,212 +6570,6 @@ function formatTcpBusinessTime(value: string) {
   if (year === now.getFullYear() && month === now.getMonth() + 1 && day === now.getDate()) return time
   if (year === now.getFullYear()) return `${match[2]}-${match[3]} ${time}`
   return `${match[1]}-${match[2]}-${match[3]} ${time}`
-}
-
-async function togglePacketProtocolSamples(item: FanxiuTcpBusinessProtocolSummary) {
-  if (expandedPacketProtocol.value === item.name) {
-    expandedPacketProtocol.value = ''
-    packetProtocolSamples.value = []
-    return
-  }
-  expandedPacketProtocol.value = item.name
-  packetProtocolSamples.value = []
-  packetProtocolSamplesLoading.value = true
-  try {
-    const response = await listFanxiuTcpBusinessEntries({
-      page: 1,
-      page_size: 200,
-      category: item.category,
-      protocol: item.name,
-    })
-    if (expandedPacketProtocol.value === item.name) {
-      packetProtocolSamples.value = response.items ?? []
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '读取协议样本失败')
-  } finally {
-    if (expandedPacketProtocol.value === item.name) {
-      packetProtocolSamplesLoading.value = false
-    }
-  }
-}
-
-const PACKET_TABLE_FIELD_LABELS: Record<string, string> = {
-  id: 'ID',
-  serverId: '区服',
-  name: '名称',
-  level: '等级',
-  memberNum: '成员',
-  leaderName: '盟主',
-  leaderSex: '性别',
-  leaderVipLevel: 'VIP',
-  roleId: '角色ID',
-  roleName: '角色名',
-  clubId: '宗门ID',
-  clubName: '宗门',
-  score: '积分',
-  rank: '排行',
-  value: '值',
-  amount: '数量',
-  code: '编号',
-  type: '类型',
-  avatar: '头像',
-  headFrame: '头像框',
-  post: '职位',
-  sex: '性别',
-  lastOnlineTime: '最后在线',
-  vipLevel: 'VIP',
-}
-
-const PACKET_TABLE_FIELD_ORDER = [
-  'name',
-  'roleName',
-  'id',
-  'roleId',
-  'serverId',
-  'clubName',
-  'clubId',
-  'level',
-  'memberNum',
-  'leaderName',
-  'leaderSex',
-  'leaderVipLevel',
-  'score',
-  'rank',
-  'amount',
-  'code',
-  'type',
-  'value',
-  'avatar',
-  'headFrame',
-  'post',
-  'sex',
-  'lastOnlineTime',
-  'vipLevel',
-]
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
-function formatPacketTableValue(value: unknown, key?: string) {
-  if (value === null || value === undefined || value === '') return ''
-  if (typeof value === 'boolean') return value ? '是' : '否'
-  if (typeof value === 'number') {
-    if (key && /time/i.test(key) && value > 1_000_000_000_000) {
-      const date = new Date(value)
-      if (!isNaN(date.getTime())) {
-        return date.toLocaleString('zh-CN', { hour12: false })
-      }
-    }
-    return String(value)
-  }
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return `${value.length} 项`
-  if (isRecordValue(value) && typeof value.name === 'string') return value.name
-  return JSON.stringify(value)
-}
-
-function translatePacketCellValue(rawText: string, fieldKey: string, fieldLabels?: Record<string, Record<string, string>>) {
-  if (!fieldLabels) return null
-  const labels = fieldLabels[fieldKey]
-  if (!labels) return null
-  const label = labels[rawText]
-  if (label) return label
-  if (rawText === '是') return labels['1'] || labels['true'] || null
-  if (rawText === '否') return labels['0'] || labels['false'] || null
-  return null
-}
-
-function packetTableTitle(path: string) {
-  const parts = path.split('.').filter(part => part !== 'items')
-  const key = parts[parts.length - 1] || '列表'
-  const labels: Record<string, string> = {
-    members: '成员列表',
-    items: '列表',
-    rewards: '奖励列表',
-    costs: '消耗列表',
-  }
-  return labels[key] || key
-}
-
-function flattenPacketTableRow(row: Record<string, unknown>) {
-  const output: Record<string, string> = {}
-  if (isRecordValue(row._super)) {
-    for (const [key, value] of Object.entries(row._super)) {
-      if (key !== '_class') output[key] = formatPacketTableValue(value, key)
-    }
-  }
-  for (const [key, value] of Object.entries(row)) {
-    if (key === '_class' || key === '_super') continue
-    output[key] = formatPacketTableValue(value, key)
-  }
-  return output
-}
-
-function findPacketTableSource(value: unknown, path = ''): { path: string; rows: Record<string, unknown>[] } | null {
-  if (!isRecordValue(value)) return null
-  const items = value.items
-  if (Array.isArray(items) && items.some(isRecordValue)) {
-    return { path: `${path}.items`.replace(/^\./, ''), rows: items.filter(isRecordValue) }
-  }
-  let best: { path: string; rows: Record<string, unknown>[] } | null = null
-  for (const [key, child] of Object.entries(value)) {
-    if (key === '_super') continue
-    if (Array.isArray(child) && child.some(isRecordValue)) {
-      const childPath = path ? `${path}.${key}` : key
-      const rows = child.filter(isRecordValue)
-      if (!best || rows.length > best.rows.length) best = { path: childPath, rows }
-      continue
-    }
-    const found = findPacketTableSource(child, path ? `${path}.${key}` : key)
-    if (found && (!best || found.rows.length > best.rows.length)) best = found
-  }
-  return best
-}
-
-function packetSampleTables(sample: FanxiuTcpBusinessProtocolSample | null | undefined): PacketSampleTable[] {
-  const found = findPacketTableSource(sample?.content)
-  if (!found) return []
-  const rows = found.rows.map(flattenPacketTableRow)
-  const fieldSet = new Set(rows.flatMap(row => Object.keys(row).filter(key => row[key])))
-  const keys = [...fieldSet].sort((left, right) => {
-    const leftIndex = PACKET_TABLE_FIELD_ORDER.indexOf(left)
-    const rightIndex = PACKET_TABLE_FIELD_ORDER.indexOf(right)
-    const leftOrder = leftIndex >= 0 ? leftIndex : 999
-    const rightOrder = rightIndex >= 0 ? rightIndex : 999
-    return leftOrder - rightOrder || left.localeCompare(right)
-  }).slice(0, 10)
-  if (!keys.length) return []
-  return [{
-    title: packetTableTitle(found.path),
-    columns: keys.map(key => ({ key, label: PACKET_TABLE_FIELD_LABELS[key] || key })),
-    rows,
-    fieldLabels: sample?.field_labels,
-  }]
-}
-
-function isPacketProtocolChecked(name: string) {
-  return !hiddenPacketProtocols.value.includes(name) && isFanxiuPacketProtocolVisible(name)
-}
-
-function togglePacketProtocolVisibility(name: string, visible: boolean) {
-  setFanxiuPacketProtocolVisible(name, visible)
-  hiddenPacketProtocols.value = getHiddenFanxiuPacketProtocols()
-}
-
-function sortPacketProtocolsByVisibility(items: FanxiuTcpBusinessProtocolSummary[]) {
-  const hidden = new Set(getHiddenFanxiuPacketProtocols())
-  return [...items].sort((left, right) => Number(hidden.has(left.name)) - Number(hidden.has(right.name)))
-}
-
-function packetDirectionLabel(value: string) {
-  return value === 'c2s' ? '上行' : '下行'
-}
-
-function packetProtocolSampleJson(sample: FanxiuTcpBusinessProtocolSample | null | undefined) {
-  if (!sample) return ''
-  return JSON.stringify(sample.content ?? {}, null, 2)
 }
 
 function getActivityRewardRowKey(section: FanxiuActivityRewardSection, row: FanxiuActivityRewardRow, index: number) {
@@ -11059,85 +10194,6 @@ async function loadProtocolSemantics(options: { keepSelection?: boolean } = {}) 
   }
 }
 
-async function loadPacketProtocolWiki() {
-  const requestSeq = ++listRequestSeq
-  loadingList.value = true
-  loadingDetail.value = false
-  void loadPacketRuntimeInsights()
-  try {
-    const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 1 })
-    if (requestSeq !== listRequestSeq) return
-    const needle = normalizeSearchQuery(query.value).toLowerCase()
-    const categories = response.category_summary ?? []
-    protocolBusinessCategories.value = needle
-      ? categories.filter(item => {
-          const haystack = `${item.category} ${item.meaning} ${item.protocols.join(' ')}`.toLowerCase()
-          return haystack.includes(needle)
-        })
-      : categories
-    selectedPacketCategory.value = protocolBusinessCategories.value.some(item => item.category === selectedPacketCategory.value)
-      ? selectedPacketCategory.value
-      : protocolBusinessCategories.value[0]?.category ?? ''
-    packetProtocolDetails.value = []
-    expandedPacketProtocol.value = ''
-    packetProtocolSamples.value = []
-    protocolResponse.value = null
-    catalogPath.value = ''
-    total.value = protocolBusinessCategories.value.length
-    gongfaItems.value = []
-    itemItems.value = []
-    activityItems.value = []
-    lingjieItems.value = []
-    doupoTDItems.value = []
-    doupoTDRewardItems.value = []
-    selectedCard.value = null
-    selectedItem.value = null
-    selectedActivity.value = null
-    selectedLingjieCard.value = null
-    selectedDoupoTDPartner.value = null
-    selectedDoupoTDReward.value = null
-    selectedId.value = ''
-    clearHomeMakeStaticDetail()
-    if (selectedPacketCategory.value) {
-      await loadPacketProtocolCategoryDetail(selectedPacketCategory.value, requestSeq)
-    }
-  } catch (error: any) {
-    if (requestSeq === listRequestSeq) {
-      ElMessage.error(error?.response?.data?.detail || error?.message || '读取抓包协议图鉴失败')
-    }
-  } finally {
-    if (requestSeq === listRequestSeq) {
-      loadingList.value = false
-    }
-  }
-}
-
-async function loadPacketProtocolCategoryDetail(category: string, requestSeq = listRequestSeq) {
-  const target = String(category || '').trim()
-  if (!target) {
-    packetProtocolDetails.value = []
-    expandedPacketProtocol.value = ''
-    packetProtocolSamples.value = []
-    return
-  }
-  loadingDetail.value = true
-  try {
-    const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 50, category: target })
-    if (requestSeq !== listRequestSeq || selectedPacketCategory.value !== target) return
-    packetProtocolDetails.value = sortPacketProtocolsByVisibility(response.protocol_summary ?? [])
-    expandedPacketProtocol.value = ''
-    packetProtocolSamples.value = []
-  } catch (error: any) {
-    if (requestSeq === listRequestSeq) {
-      ElMessage.error(error?.response?.data?.detail || error?.message || '读取抓包大类详情失败')
-    }
-  } finally {
-    if (requestSeq === listRequestSeq) {
-      loadingDetail.value = false
-    }
-  }
-}
-
 function collectVisibleWikiLinkTexts() {
   const root = objectDetailRef.value
   if (!root) return []
@@ -11188,6 +10244,9 @@ async function refreshVisibleWikiLinkTargets() {
 }
 
 function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
+  if (activeTab.value === 'lingquan_quiz' || activeTab.value === 'xianyuan' || activeTab.value === 'guide_video') {
+    return Promise.resolve()
+  }
   if (activeTab.value === 'storage_bag') {
     return loadStorageBagSnapshot()
   }
@@ -11232,9 +10291,6 @@ function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   }
   if (activeTab.value === 'protocol') {
     return loadProtocolSemantics(options)
-  }
-  if (activeTab.value === 'packet') {
-    return loadPacketProtocolWiki()
   }
   return loadGongfaCards(options)
 }
@@ -12063,7 +11119,7 @@ function handleTabChange() {
   }
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'mail' || activeTab.value === 'player_profile' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'mail' || activeTab.value === 'player_profile' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
@@ -12085,13 +11141,6 @@ function handleTopTabChange() {
 
 function selectProtocolRow(row: FanxiuProtocolSemanticRow) {
   selectedId.value = row.packet
-}
-
-function selectPacketCategory(row: FanxiuTcpBusinessCategorySummary) {
-  if (selectedPacketCategory.value === row.category) return
-  selectedPacketCategory.value = row.category
-  packetProtocolDetails.value = []
-  void loadPacketProtocolCategoryDetail(row.category)
 }
 
 function applyGongfaQualityGradeFilter(value: string) {
@@ -12265,7 +11314,7 @@ watch(storageBagSubGroupOptions, options => {
     storageBagSubGroupMemory.value[storageBagMainGroup.value] || storageBagSubGroup.value,
   )
 })
-watch([storageBagMainGroup, storageBagSubGroup], () => {
+watch([storageBagMainGroup, storageBagSubGroup, storageBagSortKey, storageBagSortOrder, storageBagPageSize], () => {
   if (storageBagMainGroup.value !== 'all' && storageBagSubGroup.value) {
     storageBagSubGroupMemory.value = {
       ...storageBagSubGroupMemory.value,
@@ -12274,8 +11323,12 @@ watch([storageBagMainGroup, storageBagSubGroup], () => {
   }
   persistStorageBagFilterConfig()
 })
-watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
-watch(playerProfileSortKey, persistPlayerProfilePreferences)
+watch([query, storageBagMainGroup, storageBagSubGroup], () => {
+  if (activeTab.value === 'storage_bag') storageBagPage.value = 1
+})
+watch(storageBagPageCount, () => {
+  if (storageBagPage.value > storageBagPageCount.value) storageBagPage.value = storageBagPageCount.value
+})
 watch([query, playerProfileSortKey], () => {
   if (activeTab.value === 'player_profile') playerProfilePage.value = 1
 })
@@ -12304,10 +11357,10 @@ watch(activeTab, tab => {
     selectedAuxiliaryTab.value = tab
   }
   stopStorageBagAutoRefresh()
-  if (PACKET_BACKED_WIKI_TABS.has(tab)) {
-    startPacketBackedAutoRefresh()
+  if (RUNTIME_OR_BUSINESS_WIKI_TABS.has(tab)) {
+    startBusinessAutoRefresh()
   } else {
-    stopPacketBackedAutoRefresh()
+    stopBusinessAutoRefresh()
   }
   if (tab !== 'asset') {
     staticAssetPreviewManifest.value = null
@@ -12393,7 +11446,6 @@ watch(
 watch(selectedStaticAsset, item => {
   void loadStaticAssetPreviewManifest(item)
 })
-watch(storageBagWorshipChart, scheduleStorageBagWorshipChartRender, { flush: 'post' })
 watch(
   () => [
     route.query.tab,
@@ -12427,28 +11479,21 @@ onMounted(() => {
   window.addEventListener('paste', handleVisualSimilarityPaste)
   window.addEventListener('scroll', closeContextMenu, true)
   window.addEventListener('resize', handleWindowResize)
-  storageBagWorshipChartResizeObserver = new ResizeObserver(() => {
-    storageBagWorshipChartInstances.forEach(chart => chart.resize())
-  })
   loadPageConfig()
   loadSearchHistory()
   loadStorageBagFilterConfig()
-  loadStorageBagWorshipChartPlaneConfig()
-  loadPlayerProfilePreferences()
   loadMailStatusFilterPreference()
   applyRouteState()
   if (!restoreActivityPeriodPaneHeight()) {
     updateActivityPeriodPaneHeight()
   }
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
-  startPacketBackedAutoRefresh()
-  scheduleStorageBagWorshipChartRender()
+  startBusinessAutoRefresh()
 })
 
 onBeforeUnmount(() => {
   stopStorageBagAutoRefresh()
-  stopPacketBackedAutoRefresh()
-  disposeStorageBagWorshipCharts()
+  stopBusinessAutoRefresh()
   stopActivityPeriodPaneResizing()
   cancelActivityPeriodResizeFrame()
   if (activityPeriodScrollTimer !== null) {
@@ -12465,7 +11510,7 @@ onBeforeUnmount(() => {
 
 <template>
   <FanxiuResourceHoverScope>
-  <div class="fanxiu-wiki-page" @click="closeContextMenu">
+  <div class="fanxiu-wiki-page" :class="{ 'xianyuan-mode': activeTab === 'xianyuan' }" @click="closeContextMenu">
     <header class="page-header">
       <div>
         <h2>凡修图鉴</h2>
@@ -12489,8 +11534,10 @@ onBeforeUnmount(() => {
     </div>
 
     <LingquanQuestionBank v-if="activeTab === 'lingquan_quiz'" />
+    <XianyuanAtlas v-else-if="activeTab === 'xianyuan'" />
+    <GuideVideoCatalog v-else-if="activeTab === 'guide_video'" />
 
-    <div v-if="activeTab !== 'lingquan_quiz'" class="toolbar">
+    <div v-if="activeTab !== 'lingquan_quiz' && activeTab !== 'xianyuan' && activeTab !== 'guide_video'" class="toolbar">
       <el-popover
         v-model:visible="searchHistoryVisible"
         trigger="manual"
@@ -12545,7 +11592,7 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-button
-        v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
+        v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -12632,7 +11679,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
+    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div v-if="activityViewMode === 'period'" class="facet-row">
           <span class="facet-label">品阶</span>
@@ -13200,26 +12247,21 @@ onBeforeUnmount(() => {
         <div>
           <h3>储物袋</h3>
           <span v-if="storageBagSnapshot">
-            {{ storageBagSnapshot.stack_count || 0 }} 个物品格 · 已解码 {{ storageBagSnapshot.decoded_stack_count || 0 }} 个
-            {{ storageBagSnapshot.owner_name ? ` · ${storageBagSnapshot.owner_name}` : '' }}
-            {{ storageBagSnapshot.captured_at ? ` · ${formatTcpBusinessTime(storageBagSnapshot.captured_at)}` : '' }}
-            {{ storageBagSnapshot.decoded_from_pcap ? ' · pcap全量复原' : '' }}
+            图鉴 {{ storageBagSnapshot.atlas_count || 0 }} 种 · 当前 {{ storageBagSnapshot.current_type_count || 0 }} 种
+            · 数量为 0 的 {{ storageBagSnapshot.zero_count || 0 }} 种
+            {{ storageBagRuntimeState === 'cached' ? ' · 上次完整同步' : ' · Runtime 已同步' }}
+            {{ storageBagSnapshot.captured_at ? ` · ${formatBusinessSnapshotTime(storageBagSnapshot.captured_at)}` : '' }}
           </span>
-          <span v-else>还没有解析到储物袋快照</span>
+          <span v-else-if="storageBagRuntimeState === 'runtime_unavailable'">
+            请先在游戏中打开储物袋{{ storageBagRuntimeReason ? ` · ${storageBagRuntimeReason}` : '' }}
+          </span>
+          <span v-else>正在读取游戏中的储物袋</span>
         </div>
       </section>
       <section v-if="storageBagSnapshot" class="storage-bag-facts">
-        <span
-          v-for="row in packetInsightBagSections.filter(item => item.decoded_count || item.declared_count)"
-          :key="`${row.index}-${row.vo_type}`"
-        >
-          {{ packetInsightBagSectionName(row) }}
-          <b>{{ row.decoded_count || 0 }}/{{ row.declared_count || 0 }}</b>
-        </span>
-        <span v-for="row in (storageBagSnapshot.type_summary || []).slice(0, 10)" :key="`type-${row.name}`">
-          {{ row.name || '未分类' }}
-          <b>{{ row.count }}</b>
-        </span>
+        <span>来源 <b>Runtime 增量图鉴</b></span>
+        <span>当前物品格 <b>{{ storageBagSnapshot.stack_count || 0 }}</b></span>
+        <span v-if="storageBagSnapshot.unresolved_catalog_count">缺少静态图鉴 <b>{{ storageBagSnapshot.unresolved_catalog_count }}</b></span>
       </section>
       <section v-if="storageBagSnapshot" class="storage-bag-groups">
         <div class="storage-bag-group-row">
@@ -13265,38 +12307,65 @@ onBeforeUnmount(() => {
         <table class="storage-bag-table">
           <thead>
             <tr>
-              <th class="numeric-head">#</th>
-              <th>物品</th>
               <th class="numeric-head">
                 <button
                   class="storage-bag-sort-button"
-                  :class="{ active: storageBagSortKey === 'num' }"
+                  :class="storageBagSortButtonClass('atlas_order')"
+                  type="button"
+                  @click="sortStorageBagBy('atlas_order')"
+                >#</button>
+              </th>
+              <th>
+                <button class="storage-bag-sort-button" :class="storageBagSortButtonClass('base_id')" type="button" @click="sortStorageBagBy('base_id')">ID</button>
+              </th>
+              <th>
+                <button class="storage-bag-sort-button" :class="storageBagSortButtonClass('name')" type="button" @click="sortStorageBagBy('name')">物品</button>
+              </th>
+              <th class="numeric-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="storageBagSortButtonClass('num')"
                   type="button"
                   @click="sortStorageBagBy('num')"
                 >数量</button>
               </th>
+              <th>
+                <button
+                  class="storage-bag-sort-button"
+                  :class="storageBagSortButtonClass('average_yield')"
+                  type="button"
+                  @click="sortStorageBagBy('average_yield')"
+                >平均收益</button>
+              </th>
+              <th class="storage-bag-auto-claim-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="storageBagSortButtonClass('auto_claim')"
+                  type="button"
+                  @click="sortStorageBagBy('auto_claim')"
+                >自动领取</button>
+              </th>
               <th v-if="showStorageBagFriendshipColumns" class="numeric-head">
                 <button
                   class="storage-bag-sort-button"
-                  :class="{ active: storageBagSortKey === 'friendship' }"
+                  :class="storageBagSortButtonClass('friendship')"
                   type="button"
                   @click="sortStorageBagBy('friendship')"
                 >友好度</button>
               </th>
-              <th v-if="showStorageBagSpiritStoneValueColumn" class="numeric-head">
-                <button
-                  class="storage-bag-sort-button"
-                  :class="{ active: storageBagSortKey === 'spirit_stone_value' }"
-                  type="button"
-                  @click="sortStorageBagBy('spirit_stone_value')"
-                >价值灵石</button>
+              <th>
+                <button class="storage-bag-sort-button" :class="storageBagSortButtonClass('type')" type="button" @click="sortStorageBagBy('type')">类型</button>
               </th>
-              <th>类型</th>
+              <th class="storage-bag-note-head">
+                备注
+              </th>
+              <th aria-label="操作"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, index) in visibleStorageBagItems" :key="`${row.instance_id}-${row.base_id}`">
-              <td class="storage-bag-index-cell">{{ index + 1 }}</td>
+            <tr v-for="row in visibleStorageBagItems" :key="row.base_id" :class="{ 'storage-bag-row-absent': Number(row.num || 0) === 0 }">
+              <td class="storage-bag-index-cell">{{ row.atlas_order }}</td>
+              <td class="storage-bag-id-cell">{{ storageBagItemId(row) || '-' }}</td>
               <td>
                 <a
                   v-if="storageBagItemId(row)"
@@ -13310,7 +12379,8 @@ onBeforeUnmount(() => {
                     :src="getFanxiuResourceIconUrl(row.item.icon)"
                     alt=""
                   >
-                  {{ packetInsightItemName(row) }}
+                  <span v-else class="storage-bag-item-icon-placeholder" aria-hidden="true" />
+                  {{ storageBagItemName(row) }}
                 </a>
                 <span v-else class="storage-bag-item-name" :class="storageBagQualityClass(row)">
                   <img
@@ -13318,130 +12388,74 @@ onBeforeUnmount(() => {
                     :src="getFanxiuResourceIconUrl(row.item.icon)"
                     alt=""
                   >
-                  {{ packetInsightItemName(row) }}
+                  <span v-else class="storage-bag-item-icon-placeholder" aria-hidden="true" />
+                  {{ storageBagItemName(row) }}
                 </span>
               </td>
               <td class="numeric-cell">{{ formatPacketInsightValue(row.num) }}</td>
+              <td>{{ row.average_yield || '—' }}</td>
+              <td class="storage-bag-auto-claim-cell">
+                <el-checkbox
+                  :model-value="row.auto_claim === true"
+                  :disabled="savingStorageBagAutoClaimIds.has(Number(row.base_id))"
+                  :title="`${storageBagItemName(row)}自动领取`"
+                  :aria-label="`${storageBagItemName(row)}自动领取`"
+                  @change="value => updateStorageBagAutoClaim(row, Boolean(value))"
+                />
+              </td>
               <td v-if="showStorageBagFriendshipColumns" class="numeric-cell">{{ formatPacketInsightValue(storageBagFriendshipValue(row)) }}</td>
-              <td v-if="showStorageBagSpiritStoneValueColumn" class="numeric-cell">{{ formatStorageBagSpiritStoneValue(row) }}</td>
               <td>{{ row.item?.type_name || '-' }}</td>
+              <td class="storage-bag-note-cell">
+                <el-input
+                  :model-value="String(row.note || '')"
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 8 }"
+                  resize="none"
+                  :disabled="savingStorageBagNoteIds.has(Number(row.base_id))"
+                  :maxlength="2000"
+                  :title="String(row.note || '')"
+                  @input="value => row.note = String(value ?? '')"
+                  @blur="updateStorageBagNote(row)"
+                />
+              </td>
+              <td class="storage-bag-action-cell">
+                <button
+                  v-if="Number(row.num || 0) === 0"
+                  class="storage-bag-delete-button"
+                  type="button"
+                  :disabled="deletingStorageBagItemIds.has(Number(row.base_id))"
+                  :title="`从图鉴删除 ${storageBagItemName(row)}`"
+                  :aria-label="`从图鉴删除 ${storageBagItemName(row)}`"
+                  @click="deleteStorageBagAtlasRow(row)"
+                >−</button>
+              </td>
             </tr>
           </tbody>
         </table>
-        <div v-if="filteredStorageBagItems.length > visibleStorageBagItems.length" class="storage-bag-limit">
-          已显示前 {{ visibleStorageBagItems.length }} 个，继续搜索可缩小结果
-        </div>
+        <StandardPagination
+          v-if="sortedStorageBagItems.length"
+          class="object-pagination storage-bag-pagination"
+          :page="storageBagPage"
+          :page-size="storageBagPageSize"
+          :total="sortedStorageBagItems.length"
+          :page-size-options="STORAGE_BAG_PAGE_SIZE_OPTIONS"
+          @page-change="handleStorageBagPageChange"
+          @page-size-change="handleStorageBagPageSizeChange"
+        />
         <div v-if="showStorageBagFriendshipColumns" class="storage-bag-extension">
           <span>总友好度</span>
           <b>{{ formatPacketInsightValue(storageBagFriendshipTotal) }}</b>
         </div>
-        <section v-if="showStorageBagWorshipReference" class="storage-bag-worship-reference">
-          <header>
-            <h4>{{ storageBagWorshipTitle }}</h4>
-            <button
-              v-if="storageBagWorshipRecords.length"
-              class="storage-bag-detail-toggle"
-              type="button"
-              @click="storageBagWorshipTableVisible = !storageBagWorshipTableVisible"
-            >
-              {{ storageBagWorshipTableVisible ? '隐藏明细' : `明细 ${storageBagWorshipRecords.length}` }}
-            </button>
-          </header>
-          <table v-if="storageBagWorshipRecords.length && storageBagWorshipTableVisible" class="storage-bag-reference-table">
-            <thead>
-              <tr>
-                <th class="numeric-head">#</th>
-                <th>
-                  <button
-                    class="storage-bag-sort-button"
-                    :class="{ active: storageBagWorshipSortKey === 'time' }"
-                    type="button"
-                    @click="sortStorageBagWorshipBy('time')"
-                  >时间</button>
-                </th>
-                <th>
-                  <button
-                    class="storage-bag-sort-button"
-                    :class="{ active: storageBagWorshipSortKey === 'plane' }"
-                    type="button"
-                    @click="sortStorageBagWorshipBy('plane')"
-                  >位面</button>
-                </th>
-                <th>角色</th>
-                <th>
-                  <button
-                    class="storage-bag-sort-button"
-                    :class="{ active: storageBagWorshipSortKey === 'type' }"
-                    type="button"
-                    @click="sortStorageBagWorshipBy('type')"
-                  >榜单</button>
-                </th>
-                <th class="numeric-head">
-                  <button
-                    class="storage-bag-sort-button"
-                    :class="{ active: storageBagWorshipSortKey === 'friendship' }"
-                    type="button"
-                    @click="sortStorageBagWorshipBy('friendship')"
-                  >{{ storageBagWorshipScoreLabel }}</button>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, index) in storageBagWorshipRecords" :key="`${row.protocol || 'packet'}-${row.captured_at || row.date}-${index}`">
-                <td class="storage-bag-index-cell">{{ index + 1 }}</td>
-                <td>{{ worshipRecordDate(row) }}</td>
-                <td>{{ worshipRecordPlane(row) }}</td>
-                <td>{{ row.role || '-' }}</td>
-                <td>{{ worshipRecordType(row) }}</td>
-                <td class="numeric-cell">{{ formatPacketInsightScoreValue(worshipRecordScore(row)) }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-if="storageBagWorshipRecords.length" class="storage-bag-worship-chart-controls" aria-label="图表位面筛选">
-            <button
-              v-for="option in storageBagWorshipChartPlaneOptions"
-              :key="option.plane"
-              class="storage-bag-worship-plane-button"
-              :class="{ active: option.selected }"
-              type="button"
-              :style="{ '--plane-color': option.color }"
-              @click="toggleStorageBagWorshipChartPlane(option.plane)"
-            >
-              <span>{{ option.label }}</span>
-              <small>{{ option.count }}</small>
-            </button>
-          </div>
-          <div v-if="storageBagWorshipChart.panels.length" class="storage-bag-worship-chart">
-            <section
-              v-for="panel in storageBagWorshipChart.panels"
-              :key="panel?.key"
-              class="storage-bag-worship-chart-panel"
-            >
-              <h5>{{ panel?.title }}</h5>
-              <div
-                v-if="panel"
-                :ref="el => setStorageBagWorshipChartRef(panel.key, el)"
-                class="storage-bag-worship-echart"
-                role="img"
-                :aria-label="`近一年${storageBagWorshipTitle}折线图：${panel.title}`"
-              ></div>
-            </section>
-          </div>
-          <div v-else-if="storageBagWorshipRecords.length" class="storage-bag-reference-empty">
-            当前选择位面没有近一年个人榜单记录。
-          </div>
-          <div v-if="!storageBagWorshipRecords.length && storageBagWorshipPackets.length" class="storage-bag-reference-empty">
-            数据库里已有拜谒请求，但还没有{{ storageBagWorshipTargetLabel }}历史记录的服务端下行事实；后台采集到增量后会同步到这里。
-          </div>
-          <div v-else-if="!storageBagWorshipRecords.length" class="storage-bag-reference-empty">
-            数据库里还没有{{ storageBagWorshipTargetLabel }}历史记录的服务端下行事实，后台采集到增量后会同步到这里。
-          </div>
-        </section>
         <div v-if="!filteredStorageBagItems.length" class="empty-state">没有匹配的储物袋物品</div>
       </section>
     </div>
 
     <div v-if="activeTab === 'mail'" class="mail-workspace" v-loading="loadingList">
+      <div class="mail-runtime-toolbar">
+        <button class="mail-sub-tab" type="button" :disabled="syncingMailRuntime" @click="syncMailFromRuntime">
+          {{ syncingMailRuntime ? '读取中…' : '从游戏更新' }}
+        </button>
+      </div>
       <div v-if="mailRecords.length" class="mail-sub-tabs" role="tablist" aria-label="邮件视图">
         <button
           v-for="tab in MAIL_SUB_TABS"
@@ -13458,16 +12472,54 @@ onBeforeUnmount(() => {
       </div>
       <section v-if="mailRecords.length" class="storage-bag-groups mail-groups">
         <div class="storage-bag-group-row">
-          <span class="facet-label">状态</span>
-          <button
-            class="facet-option mail-status-filter-all"
-            :class="{ active: activeMailAllStatusesSelected }"
-            type="button"
-            @click="selectAllMailStatusFilters"
-          >
-            <span class="facet-option-label">全部</span>
-            <small>{{ mailRecords.length }}</small>
-          </button>
+          <span class="mail-status-heading">
+            <span class="facet-label">状态</span>
+            <el-popover placement="bottom-start" :width="520" trigger="click">
+              <template #reference>
+                <el-button
+                  :icon="QuestionFilled"
+                  circle
+                  text
+                  class="mail-claim-rules-help"
+                  title="查看邮件领取规则"
+                  aria-label="查看邮件领取规则"
+                />
+              </template>
+              <div class="mail-claim-rules-doc">
+                <h4>自动领取规则</h4>
+                <ol>
+                  <li><strong>法则：</strong>任一附件名称或类别包含“法则”，锁定并禁止自动领取。</li>
+                  <li><strong>潜修心得：</strong>任一附件名称包含“潜修心得”，允许领取；但仍低于法则保护。</li>
+                  <li>
+                    <strong>祈愿价值：</strong>按邮件附件计算是否领取。
+                    <ul class="mail-protected-resource-list">
+                      <li>
+                        炼丹：炼丹灵草匣<span class="mail-protected-resource-value">50</span>、神品灵草匣<span
+                          class="mail-protected-resource-value"
+                        >500</span>、炼丹灵草宝匣<span class="mail-protected-resource-value">100</span>
+                      </li>
+                      <li>淬体：淬体精魄<span class="mail-protected-resource-value">10</span></li>
+                      <li>灵兽：珍品饲灵丸<span class="mail-protected-resource-value">100</span></li>
+                      <li>洗灵：洗灵奇石<span class="mail-protected-resource-value">10</span></li>
+                      <li>
+                        仙花：瑶池玉莲<span class="mail-protected-resource-value">100</span>、造化青莲<span
+                          class="mail-protected-resource-value"
+                        >0</span>
+                      </li>
+                    </ul>
+                    <p class="mail-protected-resource-value-note">
+                      忽略其他附件，按“数量 × 祈愿价值”分别累计。最大值为 0、最大值不超过 200，或最大价值类型正好是本周祈愿时允许领取；否则留存到对应祈愿周。并列时按仙花 &gt; 洗灵 &gt; 淬体 &gt; 灵兽 &gt; 炼丹确定保留目标。数值并非实际灵石价格。
+                    </p>
+                  </li>
+                  <li><strong>附件未知：</strong>无法解析明确道具名称时留存，不猜测。</li>
+                  <li><strong>其他附件：</strong>附件名称均已解析且未命中以上规则时，允许单封领取。</li>
+                </ol>
+                <div class="mail-claim-rules-boundary">
+                  无附件邮件只参与清理。自动化禁止“一键领取”，仅按邮件 ID 单封领取。标题包含“宗门灵泉活动收益”或“魔狱封阵奖励”的邮件在附件已解析且确认不含法则时，按白名单强制允许领取；法则锁定始终拥有最高优先级。
+                </div>
+              </div>
+            </el-popover>
+          </span>
           <button
             v-for="option in MAIL_STATUS_OPTIONS"
             :key="option.key"
@@ -13526,15 +12578,12 @@ onBeforeUnmount(() => {
             <tr v-for="(row, index) in visibleMailRecords" :key="row.mail_key || row.id">
               <td class="mail-index-status-cell">
                 <span class="storage-bag-index-cell">{{ mailRowNumber(index) }}</span>
-                <button
+                <span
                   class="mail-status-button"
-                  :class="[`status-${mailStatusKey(row)}`, { updating: isMailStatusUpdating(row) }]"
-                  type="button"
-                  :disabled="isMailStatusUpdating(row)"
-                  @click="cycleMailStatus(row)"
+                  :class="`status-${mailStatusKey(row)}`"
                 >
                   {{ mailStatusLabel(mailStatusKey(row)) }}
-                </button>
+                </span>
               </td>
               <td class="mail-title-time-cell">
                 <button
@@ -13708,7 +12757,7 @@ onBeforeUnmount(() => {
         />
         <div v-if="!mailTitleSummaries.length" class="empty-state">没有匹配的邮件汇总</div>
       </section>
-      <div v-if="!mailRecords.length" class="empty-state">还没有邮件记录；执行邮件检查后会写入这里。</div>
+      <div v-if="!mailRecords.length" class="empty-state">还没有当前邮件快照；点击“从游戏更新”读取动态模型。</div>
     </div>
 
     <el-dialog
@@ -13720,12 +12769,12 @@ onBeforeUnmount(() => {
       <pre class="mail-content-body">{{ selectedMailContentText }}</pre>
     </el-dialog>
 
-    <div v-if="activeTab === 'player_profile'" class="player-profile-workspace" v-loading="loadingList || packetRuntimeInsightsLoading">
+    <div v-if="activeTab === 'player_profile'" class="player-profile-workspace" v-loading="loadingList">
       <section class="storage-bag-summary">
         <div>
           <h3>玩家面板</h3>
           <span v-if="playerProfileSnapshot.count">
-            {{ latestPlayerProfile?.captured_at ? `最新更新 ${formatPlayerProfileTime(latestPlayerProfile.captured_at)}` : '还没有解析到有效玩家面板' }}
+            {{ latestPlayerProfile?.observed_at ? `最新更新 ${formatPlayerProfileTime(latestPlayerProfile.observed_at)}` : '还没有有效玩家面板记录' }}
           </span>
           <span v-else>还没有解析到玩家面板快照</span>
         </div>
@@ -13755,20 +12804,6 @@ onBeforeUnmount(() => {
           </ul>
         </div>
       </section>
-      <section v-if="playerProfileAttackUnitOptions.length" class="storage-bag-groups player-profile-unit-groups">
-        <div class="storage-bag-group-row">
-          <span class="facet-label">攻击单位</span>
-          <span
-            v-for="option in playerProfileAttackUnitOptions"
-            :key="option.unit"
-            class="facet-option read-only active"
-            :style="playerProfileAttackUnitOptionStyle(option.unit)"
-          >
-            <span class="facet-option-label">{{ option.unit }}</span>
-            <small>{{ option.count }}</small>
-          </span>
-        </div>
-      </section>
       <section v-if="playerProfileLatestRows.length" class="player-profile-region-list">
         <section v-for="group in visiblePlayerProfileRegionGroups" :key="group.key" class="player-profile-region-group">
           <header>
@@ -13782,7 +12817,7 @@ onBeforeUnmount(() => {
                   <th class="numeric-head">
                     <button
                       class="storage-bag-sort-button player-profile-sort-button"
-                      :class="{ active: playerProfileSortKey === 'attack_desc' }"
+                      :class="{ active: playerProfileSortKey === 'battle_desc' }"
                       type="button"
                       @click="sortPlayerProfileByDefault"
                     >#</button>
@@ -13814,31 +12849,30 @@ onBeforeUnmount(() => {
                   <th class="numeric-head">
                     <button
                       class="storage-bag-sort-button player-profile-sort-button"
-                      :class="{ active: playerProfileSortKey === 'attack_desc' || playerProfileSortKey === 'attack_asc' }"
+                      :class="{ active: playerProfileSortKey === 'battle_desc' || playerProfileSortKey === 'battle_asc' }"
                       type="button"
-                      @click="sortPlayerProfileByAttack"
-                    >攻击{{ playerProfileSortKey === 'attack_desc' ? ' ↓' : (playerProfileSortKey === 'attack_asc' ? ' ↑' : '') }}</button>
+                      @click="sortPlayerProfileByBattle"
+                    >战力{{ playerProfileSortKey === 'battle_desc' ? ' ↓' : (playerProfileSortKey === 'battle_asc' ? ' ↑' : '') }}</button>
                   </th>
-                  <th>
-                    <button
-                      class="storage-bag-sort-button player-profile-sort-button"
-                      :class="{ active: playerProfileSortKey === 'time_asc' }"
-                      type="button"
-                      @click="sortPlayerProfileByField('time_asc')"
-                    >更新时间{{ playerProfileSortIndicator('time_asc') }}</button>
-                  </th>
+                  <th class="numeric-head">仙侣战力</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row, index) in group.rows" :key="`${row.role_id || row.name}-${row.captured_at}`">
+                <tr v-for="(row, index) in group.rows" :key="`${row.role_id || row.name}-${row.observed_at}`">
                   <td class="storage-bag-index-cell">{{ row.sort_index || playerProfilePageStart + index + 1 }}</td>
                   <td :style="playerProfileServerTextStyle(row)">{{ playerProfileServerText(row) || '-' }}</td>
                   <td>
                     <span class="player-profile-name" :style="playerProfileServerTextStyle(row)">{{ row.name || '-' }}</span>
                   </td>
                   <td :style="playerProfileCultivationTextStyle(row)">{{ playerProfileCultivationText(row) || '-' }}</td>
-                  <td class="numeric-cell" :style="playerProfileAttackTextStyle(row)">{{ playerProfileAttackText(row) || '-' }}</td>
-                  <td>{{ formatPlayerProfileTime(row.captured_at || '') }}</td>
+                  <td
+                    class="numeric-cell"
+                    :class="{ 'is-stale': !isPlayerProfileMetricFreshToday(row, 'observed_at') }"
+                  >{{ playerProfileBattleText(row) || '-' }}</td>
+                  <td
+                    class="numeric-cell"
+                    :class="{ 'is-stale': !isPlayerProfileMetricFreshToday(row, 'xianlv_team_observed_at') }"
+                  >{{ playerProfileXianlvTeamLabel(row) || '-' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -13858,225 +12892,8 @@ onBeforeUnmount(() => {
       <div v-else class="empty-state">数据库里还没有解析出的玩家面板记录，后台采集到增量后会自动进入这里。</div>
     </div>
 
-    <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
-      <aside class="object-list" :style="activityPeriodListPaneStyle" v-loading="loadingList">
-        <div class="object-list-scroll">
-          <button
-            v-for="item in protocolBusinessCategories"
-            :key="item.category"
-            class="protocol-row"
-            :class="{ selected: item.category === selectedPacketCategory }"
-            type="button"
-            @click="selectPacketCategory(item)"
-          >
-            <span class="protocol-row-title">{{ item.category }}</span>
-            <span class="protocol-row-meta">{{ item.count }} 条样本</span>
-            <span class="protocol-row-preview">{{ item.meaning }}</span>
-          </button>
-          <div v-if="isPacketWikiInitialLoading" class="empty-state">加载中</div>
-          <div v-else-if="!protocolBusinessCategories.length" class="empty-state">还没有抓包样本</div>
-        </div>
-      </aside>
-
-      <main class="object-detail packet-wiki-detail" v-loading="loadingDetail">
-        <section class="packet-insight-panel" v-loading="packetRuntimeInsightsLoading">
-          <header>
-            <div>
-              <h3>运行态洞察</h3>
-              <span>{{ packetInsightSnapshot.source_summary?.entry_count || 0 }} 条历史业务包 · {{ packetInsightSnapshot.source_signature?.decoded_file_count || 0 }} 个解码文件</span>
-            </div>
-          </header>
-          <div class="packet-insight-metrics">
-            <span v-for="item in packetInsightObservations" :key="item.key">
-              <b>{{ item.title }}</b>
-              <small>{{ item.count }}{{ item.updated_at ? ` · ${formatTcpBusinessTime(item.updated_at)}` : '' }}</small>
-            </span>
-          </div>
-          <div class="packet-insight-grid">
-            <article>
-              <h4>账号</h4>
-              <p v-if="packetInsightAccount">
-                {{ packetInsightAccount.name || '-' }}
-                <small>{{ packetInsightAccount.account_id || packetInsightAccount.role_id || '' }}</small>
-              </p>
-              <dl v-if="packetInsightAccount">
-                <dt>区服</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.server) }}</dd>
-                <dt>等级</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.level) }}</dd>
-                <dt>宗门</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.club_name || packetInsightAccount.alliance_name) }}</dd>
-                <dt>战力</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.battle_score) }}</dd>
-              </dl>
-              <div v-else class="empty-state">未解析到账号快照</div>
-            </article>
-            <article>
-              <h4>钱包资源</h4>
-              <div v-if="packetInsightWalletResources.length" class="packet-insight-chip-list">
-                <span v-for="row in packetInsightWalletResources.slice(0, 18)" :key="`${row.type}-${row.code}`">
-                  {{ row.item?.name || row.name || `类型 ${row.type}` }}
-                  <b>{{ formatPacketInsightValue(row.amount) }}</b>
-                </span>
-              </div>
-              <div v-else class="empty-state">未解析到钱包资源</div>
-            </article>
-            <article>
-              <h4>背包摘要</h4>
-              <p v-if="packetInsightSnapshot.bag">
-                {{ packetInsightSnapshot.bag.stack_count || 0 }} 个物品格 · 已解码 {{ packetInsightSnapshot.bag.decoded_stack_count || 0 }} 个
-                <small>
-                  {{ formatTcpBusinessTime(packetInsightSnapshot.bag.captured_at || '') }}
-                  {{ packetInsightSnapshot.bag.decoded_from_pcap ? ' · pcap全量复原' : '' }}
-                  {{ packetInsightSnapshot.bag.is_truncated ? ' · 样本截断' : '' }}
-                </small>
-              </p>
-              <div v-if="packetInsightBagSections.length" class="packet-insight-chip-list">
-                <span
-                  v-for="row in packetInsightBagSections.filter(item => item.decoded_count || item.declared_count)"
-                  :key="`${row.index}-${row.vo_type}`"
-                >
-                  {{ packetInsightBagSectionName(row) }}
-                  <b>{{ row.decoded_count || 0 }}/{{ row.declared_count || 0 }}</b>
-                </span>
-              </div>
-              <div v-if="packetInsightBagItems.length" class="packet-insight-list">
-                <span v-for="row in packetInsightBagItems.slice(0, 20)" :key="`${row.instance_id}-${row.base_id}`">
-                  {{ packetInsightItemName(row) }}
-                  <b>x{{ formatPacketInsightValue(row.num) }}</b>
-                </span>
-              </div>
-              <div v-else class="empty-state">未解析到背包快照</div>
-            </article>
-            <article>
-              <h4>活动排行</h4>
-              <div v-if="packetInsightPersonalRanks.length" class="packet-insight-list">
-                <span v-for="row in packetInsightPersonalRanks.slice(0, 8)" :key="`${row.activity_id}-${row.group}`">
-                  {{ packetInsightRankTitle(row) }}
-                  <b>{{ row.personal_item?.progress || '' }}</b>
-                </span>
-              </div>
-              <div v-else-if="packetInsightRankRecords.length" class="packet-insight-list">
-                <span v-for="row in packetInsightRankRecords.slice(0, 8)" :key="`${row.activity_id}-${row.group}`">
-                  活动 {{ row.activity_id }}
-                  <b>{{ row.top_items?.length || 0 }} 条榜单</b>
-                </span>
-              </div>
-              <div v-else class="empty-state">未解析到活动排行</div>
-            </article>
-          </div>
-        </section>
-        <template v-if="selectedPacketCategoryRow">
-          <section class="packet-doc-head">
-            <h3>
-              {{ selectedPacketCategoryRow.category }}
-              <span class="packet-doc-sample-count">{{ selectedPacketCategoryRow.count }} 条样本 · {{ selectedPacketCategoryRow.protocols.length }} 个业务包</span>
-            </h3>
-            <p>{{ selectedPacketCategoryRow.meaning }}</p>
-          </section>
-          <section class="packet-doc-section">
-            <h4>业务包</h4>
-            <article
-              v-for="item in packetProtocolDetails"
-              :key="item.name"
-              class="packet-protocol-doc"
-            >
-              <header>
-                <el-checkbox
-                  :model-value="isPacketProtocolChecked(item.name)"
-                  @change="value => togglePacketProtocolVisibility(item.name, Boolean(value))"
-                />
-                <strong>{{ item.name }}</strong>
-                <span>{{ item.meaning }}</span>
-                <button class="packet-count-link" type="button" @click="togglePacketProtocolSamples(item)">
-                  {{ item.count }} 条
-                </button>
-              </header>
-              <div v-if="item.samples[0]" class="packet-protocol-example">
-                <div
-                  class="packet-translation-example"
-                  :class="{ upstream: item.samples[0].direction === 'c2s' }"
-                >
-                  <span class="packet-example-label">翻译结果</span>
-                  <span class="packet-sample-text">
-                    <template
-                      v-for="(segment, index) in packetBusinessDisplaySegments(item.samples[0])"
-                      :key="`${item.samples[0].id}-translation-${index}`"
-                    >
-                      <span :class="{ 'packet-business-param': segment.kind === 'param' }">{{ segment.text }}</span>
-                    </template>
-                  </span>
-                  <span class="packet-sample-meta">{{ packetDirectionLabel(item.samples[0].direction) }}</span>
-                </div>
-                <div
-                  v-for="table in packetSampleTables(item.samples[0])"
-                  :key="`${item.samples[0].id}-${table.title}`"
-                  class="packet-table-example"
-                >
-                  <span class="packet-example-label">{{ table.title }}</span>
-                  <div class="packet-sample-table-wrap">
-                    <table class="packet-sample-table">
-                      <thead>
-                        <tr>
-                          <th v-for="column in table.columns" :key="column.key">{{ column.label }}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
-                          <td v-for="column in table.columns" :key="column.key">
-                            <template v-if="row[column.key]">
-                              {{ row[column.key] }}<span
-                                v-if="translatePacketCellValue(row[column.key], column.key, table.fieldLabels)"
-                                class="packet-cell-meaning"
-                              >（{{ translatePacketCellValue(row[column.key], column.key, table.fieldLabels) }}）</span>
-                            </template>
-                            <template v-else>-</template>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                <div class="packet-json-example">
-                  <span class="packet-example-label">JSON 示例</span>
-                  <pre>{{ packetProtocolSampleJson(item.samples[0]) }}</pre>
-                </div>
-                <div
-                  v-if="expandedPacketProtocol === item.name"
-                  class="packet-all-samples"
-                  v-loading="packetProtocolSamplesLoading"
-                >
-                  <div
-                    v-for="entry in packetProtocolSamples"
-                    :key="entry.id"
-                    class="packet-sample-detail"
-                  >
-                    <div class="packet-sample-detail-head">
-                      <strong>{{ formatTcpBusinessTime(entry.decoded_at) }}</strong>
-                      <span>{{ packetDirectionLabel(entry.direction) }}</span>
-                    </div>
-                    <div class="packet-sample-detail-text">
-                      <template
-                        v-for="(segment, index) in packetEntryDisplaySegments(entry)"
-                        :key="`${entry.id}-all-${index}`"
-                      >
-                        <span :class="{ 'packet-business-param': segment.kind === 'param' }">{{ segment.text }}</span>
-                      </template>
-                    </div>
-                    <details>
-                      <summary>JSON</summary>
-                      <pre>{{ packetEntryJson(entry) }}</pre>
-                    </details>
-                  </div>
-                  <div v-if="!packetProtocolSamplesLoading && !packetProtocolSamples.length" class="empty-state">没有样本</div>
-                </div>
-              </div>
-            </article>
-          </section>
-        </template>
-        <div v-else-if="isPacketWikiInitialLoading" class="empty-state">加载中</div>
-        <div v-else class="empty-state">还没有抓包样本</div>
-      </main>
-    </div>
-
     <div
-      v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'lingquan_quiz' && activeTab !== 'packet'"
+      v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'lingquan_quiz' && activeTab !== 'xianyuan' && activeTab !== 'guide_video'"
       ref="activityWorkspaceRef"
       class="object-workspace"
       :class="{
@@ -17966,52 +16783,6 @@ onBeforeUnmount(() => {
   -webkit-box-orient: vertical;
 }
 
-.packet-wiki-workspace {
-  grid-template-columns: clamp(280px, 24%, 380px) minmax(0, 1fr);
-}
-
-.packet-wiki-detail {
-  background: #fff;
-}
-
-.packet-doc-head {
-  max-width: 1120px;
-  margin: 0 auto 18px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.packet-doc-head h3 {
-  margin: 0 0 8px;
-  color: #101828;
-  font-size: 26px;
-  line-height: 1.2;
-}
-
-.packet-doc-sample-count {
-  font-size: 13px;
-  font-weight: 400;
-  color: #667085;
-  margin-left: 12px;
-}
-
-.packet-doc-head p {
-  margin: 0;
-  color: #344054;
-  line-height: 1.7;
-}
-
-.packet-doc-section {
-  max-width: 1120px;
-  margin: 0 auto;
-}
-
-.packet-doc-section h4 {
-  margin: 0 0 10px;
-  color: #1f2937;
-  font-size: 16px;
-}
-
 .storage-bag-workspace {
   max-width: 1120px;
   display: grid;
@@ -18240,6 +17011,66 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.fanxiu-wiki-page.xianyuan-mode {
+  overflow: hidden;
+}
+
+.mail-status-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+}
+
+.mail-claim-rules-help {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.mail-claim-rules-doc h4 {
+  margin: 0 0 8px;
+}
+
+.mail-claim-rules-doc ol {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+
+.mail-claim-rules-doc ul {
+  margin: 3px 0 2px;
+  padding-left: 20px;
+}
+
+.mail-protected-resource-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mail-protected-resource-value {
+  margin-left: 2px;
+  color: var(--el-color-primary);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.mail-protected-resource-value-note {
+  margin: 5px 0 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mail-claim-rules-boundary {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-secondary);
+  line-height: 1.55;
+}
+
 .mail-groups .facet-option .facet-option-label,
 .mail-groups .facet-option small {
   color: var(--mail-status-color, #475467);
@@ -18280,11 +17111,6 @@ onBeforeUnmount(() => {
   --mail-status-color: #475467;
 }
 
-.mail-status-filter-all {
-  --mail-status-bg: #f2f4f7;
-  --mail-status-color: #344054;
-}
-
 .storage-bag-table-wrap {
   justify-self: start;
   width: max-content;
@@ -18314,7 +17140,6 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-table th.numeric-head,
-.storage-bag-reference-table th.numeric-head,
 .player-profile-table th.numeric-head {
   width: 1%;
   text-align: right;
@@ -18322,7 +17147,6 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-table th.numeric-head .storage-bag-sort-button,
-.storage-bag-reference-table th.numeric-head .storage-bag-sort-button,
 .player-profile-table th.numeric-head .storage-bag-sort-button {
   display: inline-flex;
   justify-content: flex-end;
@@ -18330,7 +17154,6 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-table td.storage-bag-index-cell,
-.storage-bag-reference-table td.storage-bag-index-cell,
 .player-profile-table td.storage-bag-index-cell {
   width: 1%;
   color: #667085;
@@ -18708,7 +17531,7 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-sort-button::after {
-  content: "↓";
+  content: "↑";
   margin-left: 4px;
   color: transparent;
 }
@@ -18720,6 +17543,85 @@ onBeforeUnmount(() => {
 
 .storage-bag-sort-button.active::after {
   color: currentColor;
+}
+
+.storage-bag-sort-button.active.descending::after {
+  content: "↓";
+}
+
+.storage-bag-row-absent td {
+  background: #fafafa;
+}
+
+.storage-bag-row-absent td.numeric-cell {
+  color: #98a2b3;
+}
+
+.storage-bag-action-cell {
+  width: 1%;
+  padding-left: 4px !important;
+}
+
+.storage-bag-auto-claim-head,
+.storage-bag-auto-claim-cell {
+  width: 1%;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.storage-bag-note-head,
+.storage-bag-note-cell {
+  min-width: 380px;
+}
+
+.storage-bag-note-cell {
+  white-space: normal !important;
+}
+
+.storage-bag-note-cell :deep(.el-textarea__inner) {
+  min-height: 30px !important;
+  padding: 5px 8px;
+  overflow-wrap: anywhere;
+  line-height: 20px;
+  border: 1px solid transparent;
+  box-shadow: none;
+  background: transparent;
+  resize: none;
+}
+
+.storage-bag-note-cell :deep(.el-textarea__inner:hover),
+.storage-bag-note-cell :deep(.el-textarea__inner:focus) {
+  border-color: #d0d5dd;
+  background: #fff;
+}
+
+.storage-bag-delete-button {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d92d20;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.storage-bag-delete-button:hover:not(:disabled) {
+  background: #fef3f2;
+}
+
+.storage-bag-delete-button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.storage-bag-pagination {
+  margin-top: 10px;
 }
 
 .player-profile-sort-button::after {
@@ -18742,72 +17644,6 @@ onBeforeUnmount(() => {
   color: #9a3412;
   font-size: 15px;
   font-weight: 700;
-}
-
-.storage-bag-extension small {
-  color: #667085;
-}
-
-.storage-bag-worship-reference {
-  display: grid;
-  justify-items: start;
-  gap: 8px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #e5e7eb;
-}
-
-.storage-bag-worship-reference header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  color: #667085;
-  font-size: 13px;
-}
-
-.storage-bag-worship-reference h4 {
-  margin: 0;
-  color: #101828;
-  font-size: 14px;
-}
-
-.storage-bag-detail-toggle {
-  appearance: none;
-  padding: 2px 7px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-  color: #667085;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.storage-bag-detail-toggle:hover {
-  border-color: #bcd7ff;
-  color: #1677ff;
-}
-
-.storage-bag-reference-table {
-  justify-self: start;
-  width: max-content;
-  max-width: 100%;
-  border-collapse: collapse;
-  table-layout: auto;
-  font-size: 13px;
-}
-
-.storage-bag-reference-table th,
-.storage-bag-reference-table td {
-  padding: 7px 10px;
-  border-bottom: 1px solid #e5e7eb;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.storage-bag-reference-table th {
-  color: #475467;
-  background: #f8fafc;
-  font-weight: 650;
 }
 
 .player-profile-table-wrap {
@@ -18879,76 +17715,6 @@ onBeforeUnmount(() => {
 .player-profile-table small {
   display: block;
   margin-top: 2px;
-  color: #667085;
-  font-size: 12px;
-}
-
-.storage-bag-reference-empty {
-  color: #667085;
-  font-size: 13px;
-}
-
-.storage-bag-worship-chart-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-self: start;
-}
-
-.storage-bag-worship-plane-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid #e5e7eb;
-  border-left: 3px solid #cbd5e1;
-  border-radius: 6px;
-  background: #f8fafc;
-  color: #475467;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.storage-bag-worship-plane-button.active {
-  border-color: var(--plane-color, #667085);
-  border-left-color: var(--plane-color, #667085);
-  background: #fff;
-  color: var(--plane-color, #101828);
-  font-weight: 650;
-}
-
-.storage-bag-worship-plane-button small {
-  color: #667085;
-  font-variant-numeric: tabular-nums;
-}
-
-.storage-bag-worship-plane-button.active small {
-  color: var(--plane-color, #667085);
-}
-
-.storage-bag-worship-chart {
-  display: grid;
-  justify-self: start;
-  gap: 14px;
-  width: max-content;
-  max-width: 100%;
-  overflow-x: auto;
-  padding-top: 4px;
-}
-
-.storage-bag-worship-chart-panel {
-  display: grid;
-  gap: 4px;
-}
-
-.storage-bag-worship-chart-panel h5 {
-  margin: 0 0 -4px 58px;
-  color: #344054;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.storage-bag-worship-echart {
   width: 640px;
   height: 260px;
 }
@@ -18959,6 +17725,13 @@ onBeforeUnmount(() => {
   gap: 8px;
   color: #101828;
   font-weight: 600;
+}
+
+.storage-bag-id-cell {
+  color: #475467;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .storage-bag-item-link {
@@ -19009,8 +17782,15 @@ onBeforeUnmount(() => {
   object-fit: contain;
 }
 
+.storage-bag-item-icon-placeholder {
+  width: 28px;
+  height: 28px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
 .storage-bag-table td.numeric-cell,
-.storage-bag-reference-table td.numeric-cell,
 .player-profile-table td.numeric-cell {
   width: 1%;
   text-align: right;
@@ -19019,344 +17799,9 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.packet-insight-panel {
-  max-width: 1120px;
-  display: grid;
-  gap: 12px;
-  margin: 0 auto 16px;
-  padding: 14px;
-  border: 1px solid #d8dee8;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.packet-insight-panel > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.packet-insight-panel h3,
-.packet-insight-panel h4,
-.packet-insight-panel p {
-  margin: 0;
-}
-
-.packet-insight-panel h3 {
-  color: #101828;
-  font-size: 18px;
-}
-
-.packet-insight-panel header span,
-.packet-insight-panel small,
-.packet-insight-panel dt {
-  color: #667085;
-}
-
-.packet-insight-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px;
-}
-
-.packet-insight-metrics > span {
-  display: grid;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.packet-insight-metrics b {
-  color: #1f2937;
-  font-weight: 650;
-}
-
-.packet-insight-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
-}
-
-.packet-insight-grid article {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  min-height: 120px;
-  padding: 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.packet-insight-grid h4 {
-  color: #344054;
-  font-size: 13px;
-}
-
-.packet-insight-grid p {
-  display: grid;
-  gap: 2px;
-  color: #101828;
-}
-
-.packet-insight-grid dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 10px;
-  margin: 0;
-  font-size: 12px;
-}
-
-.packet-insight-grid dd {
-  margin: 0;
-  color: #1f2937;
-}
-
-.packet-insight-chip-list,
-.packet-insight-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.packet-insight-chip-list span,
-.packet-insight-list span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 4px 7px;
-  border-radius: 6px;
-  background: #eef2f7;
-  color: #344054;
-  font-size: 12px;
-}
-
-.packet-insight-list span {
-  justify-content: space-between;
-  width: 100%;
-}
-
-.packet-insight-chip-list b,
-.packet-insight-list b {
-  color: #9a3412;
-  font-weight: 650;
-}
-
-.packet-protocol-doc {
-  margin-bottom: 10px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-}
-
-.packet-protocol-doc header {
-  display: grid;
-  grid-template-columns: 18px max-content minmax(0, 1fr) max-content;
-  gap: 8px;
-  align-items: baseline;
-  padding: 8px 10px;
-  border-bottom: 1px solid #edf0f5;
-}
-
-.packet-protocol-doc header :deep(.el-checkbox) {
-  height: 18px;
-}
-
-.packet-protocol-doc header strong {
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.packet-protocol-doc header span {
-  overflow: hidden;
-  color: #475569;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.packet-count-link {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #64748b;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.packet-count-link:hover {
-  color: #2563eb;
-  text-decoration: underline;
-}
-
-.packet-protocol-example {
-  display: grid;
-  gap: 0;
-}
-
-.packet-translation-example {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 10px;
-  align-items: start;
-  padding: 8px 10px;
-  border-bottom: 1px solid #f1f5f9;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.packet-translation-example.upstream {
-  background: #f5f6f8;
-}
-
-.packet-example-label {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.packet-sample-meta {
-  color: #64748b;
-  text-align: right;
-  line-height: 1.4;
-}
-
-.packet-sample-text {
-  grid-column: 1 / -1;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.packet-table-example {
-  display: grid;
-  gap: 6px;
-  align-items: start;
-  padding: 8px 10px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.packet-sample-table-wrap {
-  overflow: auto;
-}
-
-.packet-sample-table {
-  min-width: 520px;
-  border-collapse: collapse;
-  background: #fff;
-  font-size: 12px;
-}
-
-.packet-sample-table th,
-.packet-sample-table td {
-  padding: 5px 8px;
-  border: 1px solid #e5e7eb;
-  text-align: left;
-  vertical-align: top;
-  white-space: nowrap;
-}
-
-.packet-sample-table th {
-  background: #f8fafc;
-  color: #64748b;
-  font-weight: 650;
-}
-
-.packet-cell-meaning {
-  color: #059669;
-  font-weight: 500;
-}
-
-.packet-json-example {
-  display: grid;
-  gap: 6px;
-  align-items: start;
-  padding: 8px 10px 10px;
-}
-
-.packet-json-example pre {
-  max-height: 360px;
-  min-width: 0;
-  overflow: auto;
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid #e5e7eb;
-  background: #f8fafc;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre;
-}
-
-.packet-all-samples {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border-top: 1px solid #edf0f5;
-  background: #fcfcfd;
-}
-
-.packet-sample-detail {
-  border: 1px solid #e5e7eb;
-  background: #fff;
-}
-
-.packet-sample-detail-head {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 6px 9px;
-  border-bottom: 1px solid #f1f5f9;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.packet-sample-detail-head strong {
-  color: #334155;
-  font-size: 12px;
-}
-
-.packet-sample-detail-text {
-  padding: 8px 9px;
-  color: #1f2937;
-  font-size: 13px;
-  line-height: 1.7;
-  word-break: break-word;
-}
-
-.packet-sample-detail details {
-  border-top: 1px solid #f1f5f9;
-}
-
-.packet-sample-detail summary {
-  padding: 6px 9px;
-  color: #64748b;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.packet-sample-detail pre {
-  max-height: 280px;
-  overflow: auto;
-  margin: 0;
-  padding: 10px 12px;
-  background: #f8fafc;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre;
-}
-
-.packet-business-param {
-  display: inline-block;
-  margin: 0 1px;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: #fff7ed;
-  color: #b45309;
-  font-weight: 600;
+.player-profile-table td.numeric-cell.is-stale {
+  color: #98a2b3;
+  font-weight: 550;
 }
 
 .object-pagination {

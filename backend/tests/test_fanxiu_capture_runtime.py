@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from backend.core.fanxiu.runtime.capture_runtime import (
+from backend.core.fanxiu.history_museum.packet_capture.capture_runtime import (
     DEFAULT_FANXIU_DEVICE_ID,
     FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
     FanxiuCaptureRuntimeService,
@@ -13,26 +13,8 @@ from backend.core.fanxiu.runtime.capture_runtime import (
 )
 
 
-def test_capture_runtime_watchdog_enabled_by_default(monkeypatch):
-    from backend.app import _fanxiu_capture_runtime_service_enabled
-
-    monkeypatch.delenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED", raising=False)
-    monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
-
-    assert _fanxiu_capture_runtime_service_enabled() is True
-
-
 def test_hidden_process_kwargs_is_mapping():
     assert isinstance(_hidden_process_kwargs(), dict)
-
-
-def test_capture_runtime_watchdog_can_be_disabled(monkeypatch):
-    from backend.app import _fanxiu_capture_runtime_service_enabled
-
-    monkeypatch.setenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED", "0")
-    monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
-
-    assert _fanxiu_capture_runtime_service_enabled() is False
 
 
 def test_capture_runtime_watchdog_retries_and_recovers(monkeypatch):
@@ -78,7 +60,7 @@ def test_capture_runtime_watchdog_loop_checks_before_wait(monkeypatch):
 
 
 def test_capture_runtime_backstop_starts_watchdog_and_ensures_when_game_running(monkeypatch):
-    from backend.core.fanxiu.runtime import capture_runtime
+    from backend.core.fanxiu.history_museum.packet_capture import capture_runtime
 
     service = FanxiuCaptureRuntimeService()
     calls: list[str] = []
@@ -106,7 +88,7 @@ def test_capture_runtime_backstop_starts_watchdog_and_ensures_when_game_running(
 
 
 def test_capture_runtime_backstop_skips_when_game_not_running(monkeypatch):
-    from backend.core.fanxiu.runtime import capture_runtime
+    from backend.core.fanxiu.history_museum.packet_capture import capture_runtime
 
     service = FanxiuCaptureRuntimeService()
     calls: list[str] = []
@@ -185,6 +167,33 @@ def test_capture_runtime_env_device_has_priority(monkeypatch):
     assert calls[1] == ("connect", "10.0.0.8:5555")
 
 
+def test_capture_runtime_dynamically_selects_device_running_game(monkeypatch):
+    monkeypatch.delenv("FANXIU_CAPTURE_DEVICE_ID", raising=False)
+    monkeypatch.delenv("FANXIU_ADB_DEVICE_ID", raising=False)
+    service = FanxiuCaptureRuntimeService()
+
+    def fake_run_adb(args: list[str], timeout: float = 8) -> str:
+        del timeout
+        if args == ["devices"]:
+            return (
+                "List of devices attached\n"
+                "emulator-1\tdevice\n"
+                "192.168.31.181:5555\tdevice\n"
+            )
+        if args == ["-s", "emulator-1", "shell", "pidof", service.package_name]:
+            return ""
+        if args == ["-s", "192.168.31.181:5555", "shell", "pidof", service.package_name]:
+            return "2605"
+        if args == ["connect", "192.168.31.181:5555"]:
+            return "already connected"
+        raise AssertionError(f"unexpected adb args: {args}")
+
+    monkeypatch.setattr(service, "_run_adb", fake_run_adb)
+    service._connect_adb()
+
+    assert service.device_id == "192.168.31.181:5555"
+
+
 def test_capture_runtime_starts_local_stream_tcpdump_by_default(monkeypatch, tmp_path):
     service = FanxiuCaptureRuntimeService()
     service._capture_stream_to_local = True
@@ -200,18 +209,18 @@ def test_capture_runtime_starts_local_stream_tcpdump_by_default(monkeypatch, tmp
         def poll(self):
             return None
 
-    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.core.fanxiu.history_museum.packet_capture.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
     monkeypatch.setattr(service, "_adb_path", lambda: Path("adb.exe"))
     monkeypatch.setattr(service, "_cleanup_stale_codeyun_tcpdump_locked", lambda: None)
     monkeypatch.setattr(service, "_verify_local_stream_capture", lambda _path: None)
-    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr("backend.core.fanxiu.history_museum.packet_capture.capture_runtime.subprocess.Popen", FakeProcess)
 
     service._start_tcpdump_locked()
 
     assert service._capture_mode == "local-stream"
     assert service._current_remote_pcap_path == ""
     assert popen_calls
-    assert popen_calls[0][3:5] == ["shell", "-T"]
+    assert popen_calls[0][3:6] == ["exec-out", "sh", "-c"]
     assert "tcpdump -U -i wlan0 -s 0 -w -" in popen_calls[0][-1]
     assert f"host {service.server_host}" in popen_calls[0][-1]
     assert "2>/dev/null" in popen_calls[0][-1]
@@ -359,7 +368,7 @@ def test_capture_runtime_does_not_snapshot_running_pcap(monkeypatch, tmp_path):
     service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
     adb_calls: list[tuple[str, ...]] = []
 
-    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.core.fanxiu.history_museum.packet_capture.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
     monkeypatch.setattr(service, "_remote_capture_size", lambda remote_path: 4096)
 
     def fake_run_adb(args: list[str], timeout: float = 8) -> str:

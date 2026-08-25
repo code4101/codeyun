@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import re
+import unicodedata
 import uuid
 import anyio
 from math import ceil, floor, isfinite
@@ -24,7 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 from sqlalchemy.orm import attributes, load_only
 from sqlmodel import Session, delete, func, select
 
@@ -43,7 +44,7 @@ from backend.core.access.auth import (
 from backend.api.websocket_manager import manager as ws_manager
 from backend.core.attendance.service import (
     get_attendance_course_data_flow_config,
-    get_attendance_course_data_step_runner_device,
+    get_attendance_course_data_step_effective_device_entry_id,
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
 )
@@ -55,11 +56,11 @@ from backend.core.attendance.progress_style import (
     parse_compact_refund_rules,
     parse_threshold_refund_rules,
 )
-from backend.core.jobs.executor import background_task_queue
 from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.core.notes import sheet_inline_links as note_sheet_inline_links
 from backend.core.settings import get_settings
+from backend.core.jobs.local_runtime import request_local_job_cancel, submit_local_job
 from backend.db import engine, get_session
 from backend.models import (
     AppSetting,
@@ -118,6 +119,18 @@ NOTE_SHEET_ATTENDANCE_FEEDBACK_TEXT = "反馈问题"
 NOTE_SHEET_ATTENDANCE_FEEDBACK_URL = "/attendance-feedback"
 NOTE_SHEET_INLINE_LINK_STYLE = {"text_color": "#0000FF", "underline": True}
 NOTE_SHEET_ATTENDANCE_REFUND_FAQ_LINK_STYLE = {"text_color": "#FF0000", "underline": True}
+NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_UI_HIDDEN_META_KEY = "public_finance_ui_hidden"
+NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_COLUMNS = (
+    "视频应返款",
+    "打卡应返款",
+    "总应返款",
+    "已返款",
+    "订单金额",
+    "当前应返款",
+)
+NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_GROUP_TEXT = "学习完成情况"
+NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_NOTE = "完成视频数按各课视频完成标准累计。"
+NOTE_SHEET_ATTENDANCE_PUBLIC_CLOCKIN_NOTE = "按课程规则累计有效打卡次数。"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]
 NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS = ["已返款"]
@@ -200,7 +213,7 @@ NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS = {
 }
 NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_DEVICE_NAME",
-    "codepc_mi15",
+    "codepc_mf",
 )
 NOTE_SHEET_DOCUMENT_JSON_CACHE_TTL_SECONDS = 300
 NOTE_SHEET_DOCUMENT_JSON_CACHE_MAX_ITEMS = 3
@@ -683,7 +696,9 @@ class NoteSheetPatchOperation(BaseModel):
     after_column_id: str | None = None
     column: Any = None
     value: Any = None
+    expected_value: Any = None
     meta: dict[str, Any] | None = None
+    expected_meta: dict[str, Any] | None = None
     width: int | float | None = None
     hidden: bool | None = None
     config: dict[str, Any] | None = None
@@ -692,6 +707,8 @@ class NoteSheetPatchOperation(BaseModel):
 class NoteSheetPatchRequest(BaseModel):
     base_version: int = Field(ge=1)
     ops: list[NoteSheetPatchOperation] = Field(default_factory=list)
+    mutation_id: str | None = Field(default=None, max_length=128)
+    client_instance_id: str | None = Field(default=None, max_length=128)
 
 
 class NoteSheetPatchResponse(BaseModel):
@@ -921,7 +938,6 @@ class NoteSheetAttendanceLinkCountUpdateRequest(BaseModel):
     base_version: Optional[int] = Field(default=None, ge=1)
     field_key: Literal["lesson_links", "clockin_links"]
     row_index: Optional[int] = Field(default=None, ge=0)
-    repair_with_remote_browser: bool = True
 
 
 class NoteSheetAttendanceLinkCountUpdateItem(BaseModel):
@@ -931,8 +947,6 @@ class NoteSheetAttendanceLinkCountUpdateItem(BaseModel):
     value: str = ""
     total_count: int = 0
     linked_count: int = 0
-    remote_repair_attempted: bool = False
-    remote_repair_summary: dict[str, Any] | None = None
     reason: str = ""
 
 
@@ -1617,7 +1631,10 @@ def _is_attendance_zen_stage_context(text: str) -> bool:
 def _normalize_zen_stage_refund_name_formula(name: str, formula: str) -> str:
     normalized_name = name.lower()
     if normalized_name == NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME.lower():
-        return "=第几周"
+        # 修道班在每个完整周期结束后才触发该周返款。
+        # `第几周` 表示正在进行的自然周次，不能用作返款周期；
+        # 例如开课后第 10 天正在第 2 周，但只完成了 1 个返款周期。
+        return "=INT(第几天/7)"
     if normalized_name == "返款id后缀":
         return re.sub(r"_day", "_week", formula, flags=re.I)
     if normalized_name == "返款说明":
@@ -1659,7 +1676,7 @@ def _normalize_attendance_refund_defined_names_for_context(
             week_item = {
                 "name": "第几周",
                 "formula": "=INT((第几天-1)/7)+1",
-                "comment": "禅宗修道班按周返款",
+                "comment": "禅宗修道班当前自然周次",
             }
             if item.get("scope"):
                 week_item["scope"] = item.get("scope")
@@ -1671,7 +1688,7 @@ def _normalize_attendance_refund_defined_names_for_context(
         normalized.append({
             "name": "第几周",
             "formula": "=INT((第几天-1)/7)+1",
-            "comment": "禅宗修道班按周返款",
+            "comment": "禅宗修道班当前自然周次",
         })
     return normalized
 
@@ -2201,10 +2218,11 @@ def _sheet_patch_validate_data_cell(
     column_index: int,
     rows: list[Any],
     columns: list[str],
+    allow_trailing_row: bool = False,
 ) -> None:
     if column_index < 0 or column_index >= len(columns):
         raise HTTPException(status_code=400, detail="列号超出表格范围")
-    if row_index < 0 or row_index >= len(rows):
+    if row_index < 0 or row_index > len(rows) or (row_index == len(rows) and not allow_trailing_row):
         raise HTTPException(status_code=400, detail="行号超出表格范围")
 
 
@@ -2269,6 +2287,81 @@ def _normalize_sheet_merged_cells(source: Any, *, row_count: int, column_count: 
     return cells
 
 
+def _rebase_stale_cell_patch_ops(
+    document_json: dict[str, Any],
+    ops: list[NoteSheetPatchOperation],
+) -> list[NoteSheetPatchOperation]:
+    """Rebase identity-addressed cell edits when their exact targets are unchanged."""
+
+    normalized, _identity_changed = _ensure_sheet_document_identity(
+        deepcopy(_normalize_document_json(document_json))
+    )
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    row_ids = list(normalized.get("row_ids")) if isinstance(normalized.get("row_ids"), list) else []
+    column_ids = list(normalized.get("column_ids")) if isinstance(normalized.get("column_ids"), list) else []
+    cell_meta = _extract_document_cell_meta(normalized)
+    rebased: list[NoteSheetPatchOperation] = []
+
+    for operation in ops:
+        if operation.op not in {"set-cell-value", "set-cell-meta"}:
+            raise HTTPException(status_code=409, detail="工作表结构或设置已变化，请重新读取后再写入")
+        if not operation.row_id or not operation.column_id:
+            raise HTTPException(status_code=409, detail="工作表行列身份已变化，请重新读取后再写入")
+        try:
+            row_index = row_ids.index(operation.row_id)
+            column_index = column_ids.index(operation.column_id)
+        except ValueError:
+            raise HTTPException(status_code=409, detail="当前修改位置已被删除或移动，请刷新后重试") from None
+
+        _sheet_patch_validate_data_cell(
+            row_index=row_index,
+            column_index=column_index,
+            rows=rows,
+            columns=columns,
+        )
+        if operation.op == "set-cell-value":
+            current_cells = _normalize_sheet_row(rows[row_index], len(columns))
+            current_value = _normalize_restricted_cell_value(current_cells[column_index])
+            expected_value = _normalize_restricted_cell_value(operation.expected_value)
+            desired_value = _normalize_restricted_cell_value(operation.value)
+            # A request may be delivered again after its first response was lost, or
+            # the grid may emit the same effective edit through two UI paths.  Once
+            # the target already has the requested value this mutation is complete,
+            # not a conflict, even when its base version is stale.
+            if current_value == desired_value:
+                rebased.append(operation.model_copy(update={
+                    "row_index": row_index,
+                    "column_index": column_index,
+                }))
+                continue
+            if "expected_value" not in operation.model_fields_set:
+                raise HTTPException(status_code=409, detail="工作表版本已变化，请重新读取后再写入")
+            if current_value != expected_value:
+                raise HTTPException(status_code=409, detail="当前单元格已被系统任务或其他页面更新，请刷新后合并")
+        else:
+            meta_key = _sheet_patch_data_row_meta_key(normalized, row_index, column_index)
+            current_meta = cell_meta.get(meta_key) if isinstance(cell_meta.get(meta_key), dict) else {}
+            desired_meta = dict(operation.meta or {})
+            if current_meta == desired_meta:
+                rebased.append(operation.model_copy(update={
+                    "row_index": row_index,
+                    "column_index": column_index,
+                }))
+                continue
+            if "expected_meta" not in operation.model_fields_set:
+                raise HTTPException(status_code=409, detail="工作表版本已变化，请重新读取后再写入")
+            if current_meta != dict(operation.expected_meta or {}):
+                raise HTTPException(status_code=409, detail="当前单元格格式已被系统任务或其他页面更新，请刷新后合并")
+
+        rebased.append(operation.model_copy(update={
+            "row_index": row_index,
+            "column_index": column_index,
+        }))
+
+    return rebased
+
+
 def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteSheetPatchOperation]) -> tuple[dict[str, Any], int]:
     next_document, _identity_changed = _ensure_sheet_document_identity(deepcopy(_normalize_document_json(document_json)))
     columns = _normalize_document_columns(next_document)
@@ -2284,6 +2377,13 @@ def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteShe
         if operation.op == "set-cell-value":
             row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
             column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            if row_index == len(rows) and operation.row_id:
+                new_row_id = str(operation.row_id).strip()
+                if new_row_id and new_row_id not in row_ids:
+                    rows.append([""] * len(columns))
+                    row_ids.append(new_row_id)
+                    next_document["row_ids"] = row_ids
+                    next_document = _replace_document_data_rows(next_document, rows)
             _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
             current_row = rows[row_index]
             current_cells = _normalize_sheet_row(current_row, len(columns))
@@ -2299,6 +2399,13 @@ def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteShe
         if operation.op == "set-cell-meta":
             row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
             column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            if row_index == len(rows) and operation.row_id:
+                new_row_id = str(operation.row_id).strip()
+                if new_row_id and new_row_id not in row_ids:
+                    rows.append([""] * len(columns))
+                    row_ids.append(new_row_id)
+                    next_document["row_ids"] = row_ids
+                    next_document = _replace_document_data_rows(next_document, rows)
             _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
             cell_meta = _extract_document_cell_meta(next_document)
             key = _sheet_patch_data_row_meta_key(next_document, row_index, column_index)
@@ -2566,7 +2673,13 @@ def _validate_note_sheet_patch_access(
         if operation.op == "set-cell-value":
             row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
             column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
-            _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
+            _sheet_patch_validate_data_cell(
+                row_index=row_index,
+                column_index=column_index,
+                rows=rows,
+                columns=columns,
+                allow_trailing_row=bool(operation.row_id),
+            )
             if not can_edit_all_data and column_index not in editable_columns:
                 raise HTTPException(status_code=403, detail="游客只能编辑开放列")
             continue
@@ -2592,6 +2705,26 @@ def _get_normalized_document_pagination_settings(normalized: dict[str, Any]) -> 
     enabled = pagination.get("enabled") is True
     page_size = _normalize_page_size(pagination.get("page_size"))
     return enabled, page_size
+
+
+def _reject_paginated_document_truncation(
+    current_document: dict[str, Any],
+    incoming_document: dict[str, Any],
+) -> None:
+    """阻止把分页响应中的当前页误当作完整文档覆盖回数据库。"""
+    pagination_enabled, _page_size = _get_document_pagination_settings(current_document)
+    if not pagination_enabled:
+        return
+
+    current_row_count = len(_extract_document_rows(current_document))
+    incoming_row_count = len(_extract_document_rows(incoming_document))
+    if incoming_row_count >= current_row_count:
+        return
+
+    raise HTTPException(
+        status_code=409,
+        detail="分页工作表不能用局部文档覆盖整表，请携带 page_patch 保存当前页",
+    )
 
 
 def _is_attendance_questionnaire_data_sheet(document: SheetDocument) -> bool:
@@ -5360,7 +5493,11 @@ def _repair_attendance_group_column_configs(document_json: dict[str, Any]) -> di
 
 
 def _repair_attendance_note_row_style(document_json: dict[str, Any]) -> dict[str, Any]:
-    """Keep the attendance note row visually consistent with the sheet standard."""
+    """Keep the attendance note row visually consistent with the sheet standard.
+
+    Excel export is a workbook/sheet menu capability, so legacy in-cell export
+    buttons are removed while normal note-row links remain intact.
+    """
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     note_row_index = int(normalized.get("data_start_row") or 1) - 1
@@ -5377,7 +5514,12 @@ def _repair_attendance_note_row_style(document_json: dict[str, Any]) -> dict[str
         next_meta[key] = cell
     export_key = f"{note_row_index}:0"
     export_cell = dict(next_meta.get(export_key) or {})
-    export_cell["action"] = {"type": "attendance_export", "label": "导出excel"}
+    export_action = export_cell.get("action")
+    if isinstance(export_action, dict) and export_action.get("type") in {
+        NOTE_SHEET_CELL_ACTION_SHEET_EXPORT,
+        NOTE_SHEET_CELL_ACTION_ATTENDANCE_EXPORT,
+    }:
+        export_cell.pop("action", None)
     next_meta[export_key] = export_cell
     grid_rows = normalized.get("grid_rows")
     if isinstance(grid_rows, list) and note_row_index < len(grid_rows):
@@ -5385,7 +5527,8 @@ def _repair_attendance_note_row_style(document_json: dict[str, Any]) -> dict[str
         note_row = list(next_grid_rows[note_row_index])
         while len(note_row) < len(columns):
             note_row.append("")
-        note_row[0] = "导出excel"
+        if _normalize_sheet_text(note_row[0]).lower() == "导出excel":
+            note_row[0] = ""
         next_grid_rows[note_row_index] = note_row
         normalized["grid_rows"] = next_grid_rows
     # The merged FAQ anchor follows the legacy template's emphasized near-grey.
@@ -5460,20 +5603,19 @@ def _append_document_rows_for_excel_import(
 
 
 def _load_attendance_order_lookup_provider():
-    _load_attendance_kqdb_provider()
     try:
-        from kq5034.attendance_api import lookup_order  # type: ignore
+        from backend.core.attendance.master_data import lookup_payment_order
 
-        return lookup_order
+        return lookup_payment_order
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"无法加载订单匹配工具：{exc}") from exc
 
 
 def _load_attendance_user_lookup_provider():
     try:
-        from kq5034.attendance_api import lookup_registration_user_db  # type: ignore
+        from backend.core.attendance.master_data import lookup_registration_user
 
-        return lookup_registration_user_db
+        return lookup_registration_user
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"无法加载用户匹配工具：{exc}") from exc
 
@@ -5659,12 +5801,19 @@ def _build_remote_device_headers(entry: UserDevice) -> dict[str, str]:
     }
 
 
-def _resolve_registration_user_browser_device(
+def _resolve_registration_browser_device(
     session: Session,
     current_user: User,
 ) -> UserDevice:
     config = get_or_create_attendance_service_config(session)
-    configured_entry_id = _normalize_sheet_text(config.execution_device_entry_id)
+    data_flow_config = get_attendance_course_data_flow_config(session)
+    configured_entry_id = _normalize_sheet_text(
+        get_attendance_course_data_step_effective_device_entry_id(
+            config,
+            data_flow_config,
+            1,
+        )
+    )
     if configured_entry_id:
         entry = session.get(UserDevice, configured_entry_id)
         if entry is None:
@@ -5686,16 +5835,16 @@ def _resolve_registration_user_browser_device(
             None,
         )
         if entry is None:
-            raise HTTPException(status_code=400, detail=f"未找到可用的远程设备：{target_name}")
+            raise HTTPException(status_code=400, detail=f"未找到可用的考勤浏览器设备：{target_name}")
 
-    if entry.mode != "remote" or not _normalize_sheet_text(entry.server_url):
-        raise HTTPException(status_code=400, detail="小鹅通兜底回查必须使用远程执行设备，请在考勤配置页选择 codepc_mi15")
+    if entry.mode not in {"local", "remote"} or not _normalize_sheet_text(entry.server_url):
+        raise HTTPException(status_code=400, detail="考勤浏览器设备缺少可调用的 CodeYun 地址，请选择 codepc_mf")
     if not _normalize_sheet_text(entry.token):
-        raise HTTPException(status_code=400, detail="远程执行设备缺少访问令牌，请检查设备清单配置")
+        raise HTTPException(status_code=400, detail="考勤浏览器设备缺少访问令牌，请检查设备清单配置")
     return entry
 
 
-def _lookup_registration_users_with_remote_browser(
+def _lookup_registration_users_with_attendance_browser(
     session: Session,
     current_user: User,
     *,
@@ -5706,7 +5855,7 @@ def _lookup_registration_users_with_remote_browser(
     if not items:
         return {}
 
-    entry = _resolve_registration_user_browser_device(session, current_user)
+    entry = _resolve_registration_browser_device(session, current_user)
     server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
     payload = {
         "course_name": course_name,
@@ -5762,7 +5911,7 @@ def _lookup_registration_users_with_remote_browser(
     return result_map
 
 
-def _lookup_registration_orders_with_remote_browser(
+def _lookup_registration_orders_with_attendance_browser(
     session: Session,
     current_user: User,
     *,
@@ -5771,7 +5920,7 @@ def _lookup_registration_orders_with_remote_browser(
     if not order_ids:
         return []
 
-    entry = _resolve_registration_user_browser_device(session, current_user)
+    entry = _resolve_registration_browser_device(session, current_user)
     server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
     extra_config = get_attendance_service_extra_config(session)
     payload = {
@@ -5893,7 +6042,7 @@ def _extract_clockin_detection_targets(document_json: dict[str, Any]) -> list[di
     return result
 
 
-def _detect_clockin_links_with_remote_browser(
+def _detect_clockin_links_with_attendance_browser(
     session: Session,
     current_user: User,
     *,
@@ -5902,7 +6051,7 @@ def _detect_clockin_links_with_remote_browser(
     provider_id: str,
     model: str,
 ) -> dict[str, Any]:
-    entry = _resolve_registration_user_browser_device(session, current_user)
+    entry = _resolve_registration_browser_device(session, current_user)
     server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
     payload = {
         "root_url": root_url,
@@ -6122,20 +6271,53 @@ def _derive_registration_order_month(order_id: Any) -> str:
         month = int(merchant_timestamp_match.group(2))
         day = int(merchant_timestamp_match.group(3))
         if 1 <= month <= 12 and 1 <= day <= 31:
-            return f"{year:04d}{month:02d}"
-    for match in re.finditer(r"(\d{6})", normalized):
-        value = match.group(1)
-        year = int(value[:2])
-        month = int(value[2:4])
-        day = int(value[4:6])
-        if 20 <= year <= 39 and 1 <= month <= 12 and 1 <= day <= 31:
-            return f"20{year:02d}{month:02d}"
+            with contextlib.suppress(ValueError):
+                candidate = date(year, month, day)
+                if date(2010, 1, 1) <= candidate <= date.today() + timedelta(days=1):
+                    return candidate.strftime("%Y%m%d")
+
+    def parse_date_token(value: str) -> date | None:
+        with contextlib.suppress(ValueError):
+            candidate = date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+            if date(2010, 1, 1) <= candidate <= date.today() + timedelta(days=1):
+                return candidate
+        return None
+
+    # 微信支付交易单号的支付日期位于第 11–18 位。优先使用协议位置，
+    # 避免把前缀与流水号拼出的 20320920 一类“伪日期”识别为订单日期。
+    if normalized.isdigit() and len(normalized) >= 18:
+        protocol_date = parse_date_token(normalized[10:18])
+        if protocol_date is not None:
+            return protocol_date.strftime("%Y%m%d")
+
+    # 非标准/历史单号兜底时使用重叠匹配，并优先最后一个有效日期片段。
+    candidates = [
+        candidate
+        for match in re.finditer(r"(?=(20\d{6}))", normalized)
+        if (candidate := parse_date_token(match.group(1))) is not None
+    ]
+    if candidates:
+        return candidates[-1].strftime("%Y%m%d")
     return ""
 
 
 def _normalize_registration_order_month_value(value: Any, order_id: Any = "") -> str:
     current = _normalize_sheet_text(value)
+    derived = _derive_registration_order_month(order_id)
+    if re.fullmatch(r"20\d{6}", current):
+        with contextlib.suppress(ValueError):
+            current_date = date(int(current[:4]), int(current[4:6]), int(current[6:8]))
+            if date(2010, 1, 1) <= current_date <= date.today() + timedelta(days=1):
+                return current_date.strftime("%Y%m%d")
     if re.fullmatch(r"20\d{2}(0[1-9]|1[0-2])", current):
+        with contextlib.suppress(ValueError):
+            current_month = date(int(current[:4]), int(current[4:6]), 1)
+            future_limit = date.today().replace(day=1) + timedelta(days=32)
+            future_limit = future_limit.replace(day=1)
+            if current_month > future_limit and derived:
+                return derived
+            if derived.startswith(current):
+                return derived
         return current
 
     date_match = re.search(
@@ -6143,9 +6325,19 @@ def _normalize_registration_order_month_value(value: Any, order_id: Any = "") ->
         current,
     )
     if date_match:
-        return f"{int(date_match.group(1)):04d}{int(date_match.group(2)):02d}"
+        year = int(date_match.group(1))
+        month = int(date_match.group(2))
+        day_text = date_match.group(3)
+        if day_text:
+            with contextlib.suppress(ValueError):
+                candidate = date(year, month, int(day_text))
+                if date(2010, 1, 1) <= candidate <= date.today() + timedelta(days=1):
+                    return candidate.strftime("%Y%m%d")
+        if derived.startswith(f"{year:04d}{month:02d}"):
+            return derived
+        return f"{year:04d}{month:02d}"
 
-    return _derive_registration_order_month(order_id)
+    return derived
 
 
 def _normalize_registration_order_month_cell(row: list[Any], indexes: dict[str, int], order_id: Any = "") -> bool:
@@ -6313,6 +6505,25 @@ def _clear_registration_order_optional_refund_value(row: list[Any], indexes: dic
         row[refunded_index] = ""
 
 
+def _clear_registration_order_lookup_error_value(row: list[Any], indexes: dict[str, int]) -> bool:
+    amount_index = indexes.get("订单金额")
+    if amount_index is None or amount_index >= len(row):
+        return False
+    current = _normalize_sheet_text(row[amount_index])
+    if not current or not any(
+        token in current
+        for token in (
+            "调用 codepc_",
+            "实时查单失败",
+            "HTTPConnectionPool(",
+            "ConnectTimeoutError(",
+        )
+    ):
+        return False
+    row[amount_index] = ""
+    return True
+
+
 def _update_registration_order_match_document(
     document_json: dict[str, Any],
     *,
@@ -6340,9 +6551,7 @@ def _update_registration_order_match_document(
     if not rows:
         return normalized, _build_registration_match_summary()
 
-    get_kqdb = _load_attendance_kqdb_provider()
     lookup_order = _load_attendance_order_lookup_provider()
-    kqdb = get_kqdb()
     lookup_mode = _normalize_registration_order_lookup_mode()
 
     updated_count = 0
@@ -6407,12 +6616,12 @@ def _update_registration_order_match_document(
         try:
             order_info = lookup_order(
                 order_id,
-                kqdb=kqdb,
+                session=session,
                 lookup_mode=lookup_mode,
                 use_browser=lookup_mode != "db_only",
             )
-        except Exception as exc:
-            row[indexes["订单金额"]] = str(exc)
+        except Exception:
+            _clear_registration_order_lookup_error_value(row, indexes)
             _clear_registration_order_optional_refund_value(row, indexes)
             error_count += 1
             next_rows.append(row)
@@ -6421,6 +6630,7 @@ def _update_registration_order_match_document(
             continue
 
         if not order_info:
+            _clear_registration_order_lookup_error_value(row, indexes)
             if use_browser_fallback and session is not None and current_user is not None:
                 browser_candidates.append({
                     "row_position": len(next_rows),
@@ -6476,7 +6686,7 @@ def _update_registration_order_match_document(
 
     if browser_candidates:
         try:
-            browser_rows = _lookup_registration_orders_with_remote_browser(
+            browser_rows = _lookup_registration_orders_with_attendance_browser(
                 session,
                 current_user,
                 order_ids=[str(candidate["order_id"]) for candidate in browser_candidates],
@@ -6655,9 +6865,7 @@ def _update_registration_user_match_document(
     if not rows:
         return normalized, _build_registration_match_summary()
 
-    get_kqdb = _load_attendance_kqdb_provider()
     lookup_user = _load_attendance_user_lookup_provider()
-    kqdb = get_kqdb()
 
     updated_count = 0
     skipped_count = 0
@@ -6713,7 +6921,7 @@ def _update_registration_user_match_document(
                 course_product_name="",
                 shop_id=shop_id,
                 return_mode=1,
-                kqdb=kqdb,
+                session=session,
             )
         except Exception as exc:
             row[indexes["匹配得分"]] = str(exc)
@@ -6748,7 +6956,7 @@ def _update_registration_user_match_document(
 
     if use_browser_fallback and browser_candidates:
         try:
-            browser_results = _lookup_registration_users_with_remote_browser(
+            browser_results = _lookup_registration_users_with_attendance_browser(
                 session,
                 current_user,
                 course_name=course_name,
@@ -6885,6 +7093,23 @@ def _collect_registration_course_user_progress(
         user_id = _normalize_sheet_text(row.get("user_id2") or row.get("用户ID") or row.get("user_id"))
         if not user_id:
             continue
+        activity_fields = {
+            "study_state",
+            "state",
+            "progress",
+            "stay_seconds",
+            "cum_seconds",
+            "studio_seconds",
+            "playback_seconds",
+        }
+        has_activity_fields = bool(activity_fields.intersection(row))
+        state_text = _normalize_sheet_text(row.get("study_state") or row.get("state"))
+        numeric_activity = any(
+            (number := _coerce_formula_number(row.get(field))) is not None and number > 0
+            for field in ("progress", "stay_seconds", "cum_seconds", "studio_seconds", "playback_seconds")
+        )
+        if has_activity_fields and "完成" not in state_text and not numeric_activity:
+            continue
         item = ensure(user_id)
         item["video_count"] = int(item.get("video_count") or 0) + 1
         for key in ("remark_nm", "nickname", "用户昵称", "姓名", "微信昵称"):
@@ -6898,10 +7123,27 @@ def _collect_registration_course_user_progress(
             continue
         item = ensure(user_id)
         item["clockin_count"] = int(item.get("clockin_count") or 0) + 1
+        extra = row.get("extra")
+        if isinstance(extra, str) and extra.strip():
+            try:
+                extra = json.loads(extra)
+            except json.JSONDecodeError:
+                extra = {}
+        if not isinstance(extra, dict):
+            extra = {}
         for key in ("nickname", "remark_nm", "groupname", "extra_姓名", "extra_打卡昵称", "姓名", "微信昵称"):
             label = _normalize_sheet_text(row.get(key))
             if label:
                 item["labels"].add(label)
+        for key in ("姓名", "打卡昵称", "备注名"):
+            label = _normalize_sheet_text(extra.get(key))
+            if label:
+                item["labels"].add(label)
+        groups = item.setdefault("groups", set())
+        for value in (row.get("groupname"), extra.get("打卡分组")):
+            group = _normalize_sheet_text(value)
+            if group:
+                groups.add(group)
     return progress
 
 
@@ -6909,33 +7151,24 @@ def _query_registration_detection_user_ids_by_phone(phone: str) -> list[str]:
     if not phone:
         return []
     try:
-        kqdb = _load_attendance_kqdb_provider()()
-    except HTTPException:
-        raise
+        from backend.core.attendance.master_data import find_user_ids_by_phone
+
+        with Session(engine) as session:
+            return find_user_ids_by_phone(session, phone)
     except Exception:
         return []
 
-    sql = (
-        "SELECT user_id2, user_id, bind_phone, collect_phone "
-        "FROM user_table WHERE bind_phone = %s OR collect_phone = %s LIMIT 50"
-    )
-    records: list[dict[str, Any]]
+
+def _query_registration_detection_user_ids_by_names(names: list[str]) -> list[str]:
+    if not names:
+        return []
     try:
-        records = kqdb.exec2dict(sql, [phone, phone])
+        from backend.core.attendance.master_data import find_active_user_ids_by_names
+
+        with Session(engine) as session:
+            return find_active_user_ids_by_names(session, names)
     except Exception:
-        safe_phone = phone.replace("'", "''")
-        try:
-            records = kqdb.exec2dict(sql.replace("%s", f"'{safe_phone}'"))
-        except Exception:
-            return []
-    user_ids: list[str] = []
-    seen: set[str] = set()
-    for record in records or []:
-        user_id = _normalize_sheet_text(record.get("user_id2") or record.get("user_id"))
-        if user_id and user_id not in seen:
-            seen.add(user_id)
-            user_ids.append(user_id)
-    return user_ids
+        return []
 
 
 def _make_registration_detection_candidate(
@@ -7034,14 +7267,37 @@ def _build_registration_user_id_detection_candidates(
     }
     identity_labels.discard("")
     if identity_labels:
+        identity_values = list(
+            dict.fromkeys(
+                _normalize_sheet_text(row_map.get(field))
+                for field in ("姓名", "微信昵称", "昵称")
+                if _normalize_sheet_text(row_map.get(field))
+            )
+        )
+        for user_id in _query_registration_detection_user_ids_by_names(identity_values):
+            candidate = _make_registration_detection_candidate(
+                user_id,
+                progress,
+                evidence=["主数据姓名/昵称命中"],
+                confidence="high",
+            )
+            if candidate is not None:
+                candidates.append(candidate)
         for user_id, item in progress.items():
             labels = {_normalize_detection_label(label) for label in item.get("labels") or []}
             if labels.intersection(identity_labels):
+                registration_group = _normalize_detection_label(row_map.get("分组"))
+                candidate_groups = {
+                    _normalize_detection_label(group)
+                    for group in item.get("groups") or []
+                    if _normalize_detection_label(group)
+                }
+                group_match = bool(registration_group and registration_group in candidate_groups)
                 candidate = _make_registration_detection_candidate(
                     user_id,
                     progress,
-                    evidence=["课程数据姓名/昵称命中"],
-                    confidence="medium",
+                    evidence=["课程数据姓名/昵称命中", *(["课程数据分组命中"] if group_match else [])],
+                    confidence="high" if group_match else "medium",
                 )
                 if candidate is not None:
                     candidates.append(candidate)
@@ -7322,39 +7578,40 @@ def _order_attendance_rows_by_dynamic_expiration(
         key=lambda index: _attendance_dynamic_group_sort_key(rows[index], columns, index, now=now),
     )
     order_changed = ordered_source_indexes != list(range(len(rows)))
-    if not order_changed and tracking_changed_count <= 0:
-        return normalized, 0
-
-    row_index_map = {
-        source_index: target_index
-        for target_index, source_index in enumerate(ordered_source_indexes)
-    }
-    formula_row_offset = _get_formula_reference_row_offset(normalized)
-    next_rows = [
-        _remap_row_formula_cell_references(
-            rows[source_index],
-            columns=columns,
+    if order_changed or tracking_changed_count > 0:
+        row_index_map = {
+            source_index: target_index
+            for target_index, source_index in enumerate(ordered_source_indexes)
+        }
+        formula_row_offset = _get_formula_reference_row_offset(normalized)
+        next_rows = [
+            _remap_row_formula_cell_references(
+                rows[source_index],
+                columns=columns,
+                row_index_map=row_index_map,
+                row_index_offset=formula_row_offset,
+            )
+            for source_index in ordered_source_indexes
+        ]
+        next_document = _replace_document_data_rows({
+            **normalized,
+            "columns": columns,
+        }, next_rows)
+        if isinstance(normalized.get("cell_meta"), dict):
+            next_document["cell_meta"] = _remap_cell_meta_rows(
+                normalized.get("cell_meta"),
+                row_index_map,
+                row_offset=_normalize_document_data_start_row(normalized),
+            )
+        next_document = _remap_document_entity_data_rows(
+            next_document,
+            normalized,
             row_index_map=row_index_map,
-            row_index_offset=formula_row_offset,
+            data_row_count=len(rows),
         )
-        for source_index in ordered_source_indexes
-    ]
-    next_document = _replace_document_data_rows({
-        **normalized,
-        "columns": columns,
-    }, next_rows)
-    if isinstance(normalized.get("cell_meta"), dict):
-        next_document["cell_meta"] = _remap_cell_meta_rows(
-            normalized.get("cell_meta"),
-            row_index_map,
-            row_offset=_normalize_document_data_start_row(normalized),
-        )
-    next_document = _remap_document_entity_data_rows(
-        next_document,
-        normalized,
-        row_index_map=row_index_map,
-        data_row_count=len(rows),
-    )
+    else:
+        next_rows = rows
+        next_document = normalized
     next_document, style_repaired_count = _apply_attendance_archived_row_styles(
         next_document,
         next_rows,
@@ -7422,6 +7679,9 @@ def _order_attendance_rows_by_group_sequence(document_json: dict[str, Any]) -> t
         **normalized,
         "columns": columns,
     }, next_rows)
+    row_ids = normalized.get("row_ids")
+    if isinstance(row_ids, list) and len(row_ids) == len(rows):
+        next_document["row_ids"] = [row_ids[source_index] for source_index in ordered_source_indexes]
     if isinstance(normalized.get("cell_meta"), dict):
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
@@ -7686,11 +7946,30 @@ def _extract_attendance_clockin_refund_period_reference(formula: Any) -> str:
 
 
 def _build_attendance_dual_clockin_refund_formula(
+    document_json: dict[str, Any],
     columns: list[str],
     *,
     row_number: int,
     period_reference: str,
 ) -> str | None:
+    try:
+        from backend.core.attendance.nianzhu_course_sheets import (
+            _attendance_refund_period_count_expression,
+            _attendance_zen_clockin_refund_formula,
+        )
+
+        formula, _refund_limit = _attendance_zen_clockin_refund_formula(
+            document_json,
+            columns,
+            row_number=row_number,
+            colearn_period_reference=_attendance_refund_period_count_expression(document_json, columns),
+        )
+        return formula
+    except ValueError:
+        # Older dual-clock-in sheets may not yet have parseable row-3 rule notes.
+        # Keep their existing compatibility path until their configuration is migrated.
+        pass
+
     study_index = _get_column_index(columns, "共学打卡")
     practice_index = _get_column_index(columns, "共修打卡")
     if study_index < 0 or practice_index < 0:
@@ -7839,7 +8118,7 @@ def _build_attendance_current_refund_formula(columns: list[str], *, row_number: 
     total_ref = f"{_excel_column_label(total_index)}{row_number}"
     refunded_ref = f"{_excel_column_label(refunded_index)}{row_number}"
     order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
-    return f"=IF({order_ref}>0,{total_ref}-{refunded_ref},0)"
+    return f"=IF({order_ref}>0,MAX({total_ref}-{refunded_ref},0),0)"
 
 
 def _build_attendance_refund_config_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -8161,6 +8440,7 @@ def _normalize_attendance_dual_clockin_refund_formulas(
         current_formula = row[refund_index] if has_dual_clockin_refund else ""
         if has_dual_clockin_refund and _is_formula_expression(current_formula):
             next_formula = _build_attendance_dual_clockin_refund_formula(
+                normalized,
                 columns,
                 row_number=row_number,
                 period_reference=_extract_attendance_clockin_refund_period_reference(current_formula),
@@ -8960,11 +9240,11 @@ def _sync_registration_rows_to_attendance_document(
     attendance_document, formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(attendance_document)
     attendance_document, managed_formula_repaired_count = _normalize_attendance_managed_refund_formulas(attendance_document)
     formula_repaired_count += managed_formula_repaired_count
-    if formula_repaired_count:
-        attendance_rows = [
-            _normalize_sheet_row(row, len(attendance_columns))
-            for row in _extract_document_rows(attendance_document)
-        ]
+    attendance_document, tracking_repaired_count = _order_attendance_rows_by_dynamic_expiration(attendance_document)
+    attendance_rows = [
+        _normalize_sheet_row(row, len(attendance_columns))
+        for row in _extract_document_rows(attendance_document)
+    ]
     user_id_index = _get_column_index(attendance_columns, "用户ID")
     student_id_index = _get_column_index(attendance_columns, "学号")
     merchant_order_index = _get_column_index(attendance_columns, "商户订单号")
@@ -9071,15 +9351,6 @@ def _sync_registration_rows_to_attendance_document(
             existing_merchant_order_ids.add(merchant_order_id)
             existing_merchant_order_id_rows[merchant_order_id] = pending_row_index
 
-    tracking_repaired_count = 0
-    if pending_registration_rows:
-        attendance_document = _replace_document_data_rows(attendance_document, attendance_rows)
-        attendance_document, tracking_repaired_count = _order_attendance_rows_by_dynamic_expiration(attendance_document)
-        attendance_rows = [
-            _normalize_sheet_row(row, len(attendance_columns))
-            for row in _extract_document_rows(attendance_document)
-        ]
-
     insert_index = _get_attendance_append_insert_index(attendance_rows, attendance_columns)
     template_index = _find_attendance_row_template_index(attendance_rows, attendance_columns, insert_index)
     inserted_rows = [
@@ -9127,6 +9398,13 @@ def _sync_registration_rows_to_attendance_document(
     ]
     next_document = _replace_document_data_rows(attendance_document, next_rows)
     if inserted_rows:
+        existing_row_ids = attendance_document.get("row_ids")
+        if isinstance(existing_row_ids, list) and len(existing_row_ids) == len(attendance_rows):
+            next_document["row_ids"] = [
+                *existing_row_ids[:insert_index],
+                *[_new_sheet_row_id() for _ in inserted_rows],
+                *existing_row_ids[insert_index:],
+            ]
         next_document = _filter_entity_model_for_document_row_prefix(
             next_document,
             max_document_row=_normalize_document_data_start_row(next_document),
@@ -9231,6 +9509,11 @@ def _run_registration_match_action(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
 
@@ -9294,6 +9577,37 @@ _REGISTRATION_MATCH_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 _REGISTRATION_MATCH_ACTIVE_STATUSES = {"pending", "running"}
 
 
+def _note_sheet_run_state_path(kind: str, run_id: str) -> Path:
+    root = get_settings().data_dir / "local-jobs" / "business-state" / kind
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{run_id}.json"
+
+
+def _read_note_sheet_run_state(kind: str, run_id: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_note_sheet_run_state_path(kind, run_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_note_sheet_run_state(kind: str, run: dict[str, Any]) -> None:
+    path = _note_sheet_run_state_path(kind, str(run.get("run_id") or ""))
+    temporary = path.with_suffix(f".{os.getpid()}.{time.time_ns()}.tmp")
+    temporary.write_text(json.dumps(run, ensure_ascii=False, default=str), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _list_note_sheet_run_states(kind: str) -> list[dict[str, Any]]:
+    root = _note_sheet_run_state_path(kind, "placeholder").parent
+    runs = [
+        payload
+        for path in root.glob("*.json")
+        if (payload := _read_note_sheet_run_state(kind, path.stem)) is not None
+    ]
+    return sorted(runs, key=lambda item: float(item.get("queued_at") or 0), reverse=True)
+
+
 def _registration_match_run_key(sheet_id: int, action: str) -> tuple[int, str]:
     return int(sheet_id), str(action)
 
@@ -9345,51 +9659,47 @@ def _serialize_registration_match_run(
 
 def _get_registration_match_run_snapshot(run_id: str) -> dict[str, Any] | None:
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("registration-match", run_id) or _REGISTRATION_MATCH_RUNS.get(run_id)
         return dict(run) if run else None
 
 
 def _get_active_registration_match_run_snapshot(sheet_id: int, action: str | None = None) -> dict[str, Any] | None:
-    with _REGISTRATION_MATCH_RUN_LOCK:
-        actions = [action] if action else sorted(NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS)
-        for item in actions:
-            key = _registration_match_run_key(sheet_id, str(item))
-            run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
-            run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
-            if _is_registration_match_run_active(run):
-                return dict(run)
-            if run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
-                _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
-        return None
+    actions = {str(action)} if action else set(NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS)
+    return next(
+        (
+            dict(run)
+            for run in _list_note_sheet_run_states("registration-match")
+            if int(run.get("sheet_id") or 0) == int(sheet_id)
+            and str(run.get("action") or "") in actions
+            and _is_registration_match_run_active(run)
+        ),
+        None,
+    )
 
 
 def _get_conflicting_registration_match_runs(sheet_id: int) -> list[dict[str, Any]]:
-    runs: list[dict[str, Any]] = []
-    with _REGISTRATION_MATCH_RUN_LOCK:
-        for action in sorted(NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS):
-            key = _registration_match_run_key(sheet_id, action)
-            run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
-            run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
-            if _is_registration_match_run_active(run):
-                runs.append(dict(run))
-            elif run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
-                _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
-    return runs
+    return [
+        dict(run)
+        for run in _list_note_sheet_run_states("registration-match")
+        if int(run.get("sheet_id") or 0) == int(sheet_id) and _is_registration_match_run_active(run)
+    ]
 
 
 def _update_registration_match_run(run_id: str, **updates: Any) -> dict[str, Any] | None:
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("registration-match", run_id) or _REGISTRATION_MATCH_RUNS.get(run_id)
         if run is None:
             return None
         run.update(updates)
+        _REGISTRATION_MATCH_RUNS[run_id] = run
+        _write_note_sheet_run_state("registration-match", run)
         return dict(run)
 
 
 def _request_cancel_registration_match_run(run_id: str) -> None:
     now = time.time()
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("registration-match", run_id) or _REGISTRATION_MATCH_RUNS.get(run_id)
         if run is None or run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
             return
         run["cancel_requested"] = True
@@ -9399,21 +9709,27 @@ def _request_cancel_registration_match_run(run_id: str) -> None:
         key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
         if _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id:
             _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+        _REGISTRATION_MATCH_RUNS[run_id] = run
+        _write_note_sheet_run_state("registration-match", run)
+        if run.get("local_job_id"):
+            try:
+                request_local_job_cancel(str(run["local_job_id"]))
+            except (KeyError, RuntimeError):
+                pass
 
 
 def _is_registration_match_run_current(run_id: str) -> bool:
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("registration-match", run_id) or _REGISTRATION_MATCH_RUNS.get(run_id)
         if not run or run.get("cancel_requested"):
             return False
-        key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
-        return _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id
+        return run.get("status") in _REGISTRATION_MATCH_ACTIVE_STATUSES
 
 
 def _finish_registration_match_run(run_id: str, status: str, *, message: str = "", error_message: str | None = None) -> None:
     now = time.time()
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("registration-match", run_id) or _REGISTRATION_MATCH_RUNS.get(run_id)
         if run is None:
             return
         if run.get("status") == "cancelled" and status != "failed":
@@ -9427,6 +9743,8 @@ def _finish_registration_match_run(run_id: str, status: str, *, message: str = "
         key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
         if _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id:
             _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+        _REGISTRATION_MATCH_RUNS[run_id] = run
+        _write_note_sheet_run_state("registration-match", run)
 
 
 def _count_registration_user_match_targets(document_json: dict[str, Any]) -> int:
@@ -9625,9 +9943,7 @@ def _run_registration_user_match_background(
             total_count = _count_registration_user_match_targets(normalized)
             _update_registration_match_run(run_id, total_count=total_count)
 
-            get_kqdb = _load_attendance_kqdb_provider()
             lookup_user = _load_attendance_user_lookup_provider()
-            kqdb = get_kqdb()
 
             processed_count = 0
             skipped_count = 0
@@ -9675,7 +9991,7 @@ def _run_registration_user_match_background(
                         course_product_name="",
                         shop_id=registration_shop_id,
                         return_mode=1,
-                        kqdb=kqdb,
+                        session=session,
                     )
                     row[indexes["用户ID"]] = _format_registration_match_cell(user_id)
                     row[indexes["匹配得分"]] = _format_registration_match_cell(weight) if weight is not None else ""
@@ -9695,7 +10011,7 @@ def _run_registration_user_match_background(
                         mark_updated(row_position)
 
                     if not user_id and use_browser_fallback:
-                        result_map = _lookup_registration_users_with_remote_browser(
+                        result_map = _lookup_registration_users_with_attendance_browser(
                             session,
                             current_user,
                             course_name=course_name,
@@ -9996,33 +10312,35 @@ def _start_registration_match_run(
         }
         _REGISTRATION_MATCH_RUNS[run_id] = run
         _REGISTRATION_MATCH_ACTIVE_BY_KEY[_registration_match_run_key(sheet_id, action)] = run_id
+        _write_note_sheet_run_state("registration-match", run)
 
-    if action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
-        target = _run_registration_user_match_background
-    elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH:
-        target = _run_registration_order_match_background
-    elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE:
-        target = _run_registration_composite_update_background
-    else:
-        raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
-
-    thread = threading.Thread(
-        target=target,
-        kwargs={
-            "run_id": run_id,
-            "sheet_id": sheet_id,
-            "workbook_id": workbook_id,
-            "current_user_snapshot": {
-                "id": current_user.id,
-                "username": current_user.username,
-                "is_superuser": current_user.is_superuser,
+    try:
+        local_run = submit_local_job(
+            job_type="attendance.registration-match",
+            user_id=current_user.id,
+            resource_key=f"resource:note-sheet:{sheet_id}",
+            payload={
+                "run_id": run_id,
+                "action": action,
+                "sheet_id": sheet_id,
+                "workbook_id": workbook_id,
+                "current_user_snapshot": {
+                    "id": current_user.id,
+                    "username": current_user.username,
+                    "is_superuser": current_user.is_superuser,
+                },
+                "use_browser_fallback": use_browser_fallback,
             },
-            "use_browser_fallback": use_browser_fallback,
-        },
-        name=f"note-sheet-registration-match-{run_id[:8]}",
-        daemon=True,
-    )
-    thread.start()
+        )
+        _update_registration_match_run(run_id, local_job_id=local_run.id)
+    except Exception as exc:
+        _finish_registration_match_run(
+            run_id,
+            "failed",
+            message="无法启动综合更新任务",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="无法启动考勤表本地任务") from exc
     return _serialize_registration_match_run(_get_registration_match_run_snapshot(run_id))
 
 
@@ -10081,34 +10399,37 @@ def _serialize_clockin_link_detection_run(
 
 def _get_clockin_link_detection_run_snapshot(run_id: str) -> dict[str, Any] | None:
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("clockin-link-detection", run_id) or _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
         return dict(run) if run else None
 
 
 def _get_active_clockin_link_detection_run_snapshot(sheet_id: int) -> dict[str, Any] | None:
-    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run_id = _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(int(sheet_id))
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id or "")
-        if _is_clockin_link_detection_run_active(run):
-            return dict(run)
-        if run_id and run and run.get("status") in _CLOCKIN_LINK_DETECTION_TERMINAL_STATUSES:
-            _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(int(sheet_id), None)
-        return None
+    return next(
+        (
+            dict(run)
+            for run in _list_note_sheet_run_states("clockin-link-detection")
+            if int(run.get("sheet_id") or 0) == int(sheet_id)
+            and _is_clockin_link_detection_run_active(run)
+        ),
+        None,
+    )
 
 
 def _update_clockin_link_detection_run(run_id: str, **updates: Any) -> dict[str, Any] | None:
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("clockin-link-detection", run_id) or _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
         if run is None:
             return None
         run.update(updates)
+        _CLOCKIN_LINK_DETECTION_RUNS[run_id] = run
+        _write_note_sheet_run_state("clockin-link-detection", run)
         return dict(run)
 
 
 def _request_cancel_clockin_link_detection_run(run_id: str) -> None:
     now = time.time()
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("clockin-link-detection", run_id) or _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
         if run is None or run.get("status") in _CLOCKIN_LINK_DETECTION_TERMINAL_STATUSES:
             return
         run["cancel_requested"] = True
@@ -10118,15 +10439,21 @@ def _request_cancel_clockin_link_detection_run(run_id: str) -> None:
         sheet_id = int(run.get("sheet_id") or 0)
         if _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id:
             _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(sheet_id, None)
+        _CLOCKIN_LINK_DETECTION_RUNS[run_id] = run
+        _write_note_sheet_run_state("clockin-link-detection", run)
+        if run.get("local_job_id"):
+            try:
+                request_local_job_cancel(str(run["local_job_id"]))
+            except (KeyError, RuntimeError):
+                pass
 
 
 def _is_clockin_link_detection_run_current(run_id: str) -> bool:
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("clockin-link-detection", run_id) or _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
         if not run or run.get("cancel_requested"):
             return False
-        sheet_id = int(run.get("sheet_id") or 0)
-        return _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id
+        return run.get("status") in _CLOCKIN_LINK_DETECTION_ACTIVE_STATUSES
 
 
 def _finish_clockin_link_detection_run(
@@ -10138,7 +10465,7 @@ def _finish_clockin_link_detection_run(
 ) -> None:
     now = time.time()
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
-        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        run = _read_note_sheet_run_state("clockin-link-detection", run_id) or _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
         if run is None:
             return
         if run.get("status") == "cancelled" and status != "failed":
@@ -10152,6 +10479,8 @@ def _finish_clockin_link_detection_run(
         sheet_id = int(run.get("sheet_id") or 0)
         if _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id:
             _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(sheet_id, None)
+        _CLOCKIN_LINK_DETECTION_RUNS[run_id] = run
+        _write_note_sheet_run_state("clockin-link-detection", run)
 
 
 def _run_clockin_link_detection_background(
@@ -10202,14 +10531,14 @@ def _run_clockin_link_detection_background(
             _update_clockin_link_detection_run(
                 run_id,
                 total_count=len(targets),
-                phase="remote_detect",
-                message=f"正在调用 mi15 检测 {len(targets)} 个打卡链接",
+                phase="browser_detect",
+                message=f"正在调用 codepc_mf 检测 {len(targets)} 个打卡链接",
             )
             if not _is_clockin_link_detection_run_current(run_id):
                 _finish_clockin_link_detection_run(run_id, "cancelled", message="自动检测打卡链接已停止")
                 return
 
-            detection_result = _detect_clockin_links_with_remote_browser(
+            detection_result = _detect_clockin_links_with_attendance_browser(
                 session,
                 current_user,
                 root_url=root_url,
@@ -10309,25 +10638,35 @@ def _start_clockin_link_detection_run(
     with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
         _CLOCKIN_LINK_DETECTION_RUNS[run_id] = run
         _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET[int(sheet_id)] = run_id
+        _write_note_sheet_run_state("clockin-link-detection", run)
 
-    thread = threading.Thread(
-        target=_run_clockin_link_detection_background,
-        kwargs={
-            "run_id": run_id,
-            "sheet_id": sheet_id,
-            "workbook_id": workbook_id,
-            "current_user_snapshot": {
-                "id": current_user.id,
-                "username": current_user.username,
-                "is_superuser": current_user.is_superuser,
+    try:
+        local_run = submit_local_job(
+            job_type="attendance.clockin-link-detection",
+            user_id=current_user.id,
+            resource_key=f"resource:note-sheet:{sheet_id}",
+            payload={
+                "run_id": run_id,
+                "sheet_id": sheet_id,
+                "workbook_id": workbook_id,
+                "current_user_snapshot": {
+                    "id": current_user.id,
+                    "username": current_user.username,
+                    "is_superuser": current_user.is_superuser,
+                },
+                "provider_id": provider_id,
+                "model": model,
             },
-            "provider_id": provider_id,
-            "model": model,
-        },
-        name=f"note-sheet-clockin-links-{run_id[:8]}",
-        daemon=True,
-    )
-    thread.start()
+        )
+        _update_clockin_link_detection_run(run_id, local_job_id=local_run.id)
+    except Exception as exc:
+        _finish_clockin_link_detection_run(
+            run_id,
+            "failed",
+            message="无法启动打卡链接检测",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="无法启动考勤表本地任务") from exc
     return _serialize_clockin_link_detection_run(_get_clockin_link_detection_run_snapshot(run_id))
 
 
@@ -12012,6 +12351,14 @@ def _build_inserted_attendance_template_row(
         if column_index is not None:
             next_row[column_index] = value
 
+    # Monthly course rows may keep the expected resource counts, but runtime
+    # URLs must come from the target month's real Xiaoe resources.  Carrying an
+    # inline link here silently points a new course at the previous class.
+    for field_key in ("lesson_links", "clockin_links"):
+        column_index = _find_attendance_column_index(columns, field_key)
+        if column_index is not None:
+            next_row[column_index] = _cell_without_inline_link(next_row[column_index])
+
     clear_from_index = _find_attendance_column_index(columns, "registration_count")
     if clear_from_index is not None:
         for column_index in range(clear_from_index, len(columns)):
@@ -12263,11 +12610,10 @@ def init_attendance_summary_scheduler() -> None:
 
     if not attendance_summary_scheduler.running:
         attendance_summary_scheduler.start()
+    from backend.core.jobs.scheduler import _enqueue_attendance_summary
+
     attendance_summary_scheduler.add_job(
-        lambda: background_task_queue.enqueue(
-            "attendance_summary_monthly_templates",
-            run_attendance_summary_template_job,
-        ),
+        _enqueue_attendance_summary,
         CronTrigger.from_crontab("5 0 27 * *"),
         id="attendance_summary_monthly_templates",
         replace_existing=True,
@@ -13047,6 +13393,151 @@ def _normalize_course_template_refund_header_styles(document_json: dict[str, Any
     return next_document
 
 
+def _attendance_public_finance_ui_hidden(document_json: dict[str, Any]) -> bool:
+    source_meta = document_json.get("source_meta")
+    return isinstance(source_meta, dict) and bool(
+        source_meta.get(NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_UI_HIDDEN_META_KEY)
+    )
+
+
+def _course_attendance_public_finance_ui_hidden(
+    document_json: dict[str, Any],
+    *,
+    course_title: str = "",
+    owner_key: str = "",
+) -> bool:
+    """Hide public finance fields for explicitly hidden sheets and Fanbei courses."""
+    if _attendance_public_finance_ui_hidden(document_json):
+        return True
+
+    source_meta = document_json.get("source_meta")
+    source_meta = source_meta if isinstance(source_meta, dict) else {}
+    course_text = " ".join([
+        _normalize_sheet_text(course_title),
+        _normalize_sheet_text(owner_key),
+        _normalize_sheet_text(source_meta.get("course_name")),
+        _normalize_sheet_text(source_meta.get("workbook_title")),
+    ])
+    return "梵呗" in course_text or "fanbei" in course_text.lower()
+
+
+def _hide_attendance_public_finance_ui(document_json: dict[str, Any]) -> dict[str, Any]:
+    """Keep finance data intact while removing it from the public attendance view."""
+    next_document = deepcopy(_normalize_document_json(document_json))
+    columns = _normalize_document_columns(next_document)
+    if not columns:
+        return next_document
+
+    source_meta = dict(next_document.get("source_meta") or {})
+    source_meta[NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_UI_HIDDEN_META_KEY] = True
+    next_document["source_meta"] = source_meta
+
+    column_configs = deepcopy(dict(next_document.get("column_configs") or {}))
+    for header in NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_COLUMNS:
+        if header not in columns:
+            continue
+        config = dict(column_configs.get(header) or {})
+        config["hidden"] = True
+        column_configs[header] = config
+
+    student_id_config = dict(column_configs.get("学号") or {})
+    if "返款" in _normalize_sheet_text(student_id_config.get("note")):
+        student_id_config.pop("note", None)
+    if student_id_config:
+        column_configs["学号"] = student_id_config
+    elif "学号" in column_configs:
+        column_configs.pop("学号", None)
+
+    completed_video_config = dict(column_configs.get("完成视频数") or {})
+    completed_video_config["note"] = NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_NOTE
+    column_configs["完成视频数"] = completed_video_config
+    clockin_config = dict(column_configs.get("打卡数") or {})
+    clockin_config["note"] = NOTE_SHEET_ATTENDANCE_PUBLIC_CLOCKIN_NOTE
+    column_configs["打卡数"] = clockin_config
+    next_document["column_configs"] = column_configs
+
+    completed_video_index = _get_column_index(columns, "完成视频数")
+    clockin_index = _get_column_index(columns, "打卡数")
+    field_row_index = int(next_document.get("field_row_index") or 0)
+    note_row_index = max(_normalize_document_data_start_row(next_document) - 1, 0)
+    replacement_cells: dict[tuple[int, int], Any] = {}
+    if completed_video_index >= 0:
+        replacement_cells[(max(field_row_index - 1, 0), completed_video_index)] = (
+            NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_GROUP_TEXT
+        )
+        replacement_cells[(note_row_index, completed_video_index)] = (
+            NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_NOTE
+        )
+    if clockin_index >= 0:
+        replacement_cells[(note_row_index, clockin_index)] = (
+            NOTE_SHEET_ATTENDANCE_PUBLIC_CLOCKIN_NOTE
+        )
+
+    header_groups = deepcopy(list(next_document.get("header_groups") or []))
+    for group_row in header_groups:
+        if not isinstance(group_row, list):
+            continue
+        column_cursor = 0
+        for group_cell in group_row:
+            if not isinstance(group_cell, dict):
+                column_cursor += 1
+                continue
+            try:
+                colspan = max(int(group_cell.get("colspan") or 1), 1)
+            except (TypeError, ValueError):
+                colspan = 1
+            label = _normalize_sheet_text(group_cell.get("label"))
+            if "返款" in label or "促学金" in label or "累计返回" in label:
+                group_cell["label"] = (
+                    NOTE_SHEET_ATTENDANCE_PUBLIC_PROGRESS_GROUP_TEXT
+                    if column_cursor <= completed_video_index < column_cursor + colspan
+                    else ""
+                )
+            column_cursor += colspan
+    if header_groups:
+        next_document["header_groups"] = header_groups
+
+    grid_rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_grid_rows(next_document)
+    ]
+    for row_index in range(min(len(grid_rows), _normalize_document_data_start_row(next_document))):
+        if row_index == field_row_index:
+            continue
+        for column_index, cell in enumerate(grid_rows[row_index]):
+            text = _normalize_sheet_text(_extract_cell_value(cell))
+            if "返款" in text or "促学金" in text or "累计返回" in text:
+                replacement_cells.setdefault((row_index, column_index), "")
+
+    for (row_index, column_index), value in replacement_cells.items():
+        if row_index < 0 or row_index >= len(grid_rows):
+            continue
+        grid_rows[row_index][column_index] = value
+        next_document = _set_document_entity_cell_value(
+            next_document,
+            document_row=row_index,
+            column_index=column_index,
+            value=value,
+        )
+    next_document["grid_rows"] = grid_rows
+
+    obsolete_merge_starts = {
+        (max(field_row_index - 1, 0), completed_video_index),
+        (note_row_index, completed_video_index),
+        (note_row_index, 1),
+    }
+    next_document["merged_cells"] = [
+        merged
+        for merged in list(next_document.get("merged_cells") or [])
+        if (
+            int(merged.get("row") or 0),
+            int(merged.get("col") or 0),
+        )
+        not in obsolete_merge_starts
+    ]
+    return next_document
+
+
 def _set_header_grid_cell_inline_link(
     document_json: dict[str, Any],
     *,
@@ -13336,10 +13827,8 @@ def _maybe_materialize_zen_course_data_sheets(
     workbook: WorkbookDocument,
     attendance_sheet: SheetDocument,
     course_name: str,
-    allow_header_link_fallback: bool = True,
 ) -> None:
     normalized_course_name = _normalize_sheet_text(course_name)
-    is_zen_stage_course = "禅宗" in normalized_course_name or "修道班" in normalized_course_name
     if not any(
         keyword in normalized_course_name
         for keyword in ("念住", "觉观", "禅宗", "修道班")
@@ -13347,65 +13836,44 @@ def _maybe_materialize_zen_course_data_sheets(
         return
 
     from backend.core.attendance.nianzhu_course_sheets import (
-        CLOCKIN_CONFIG_SHEET_KEY,
-        VIDEO_CONFIG_SHEET_KEY,
-        _course_sheet_documents_from_attendance,
+        ensure_attendance_course_columns_visible,
         materialize_nianzhu_course_sheets,
     )
 
-    documents = _course_sheet_documents_from_attendance(
-        deepcopy(dict(attendance_sheet.document_json or {})),
-        course_name=normalized_course_name,
-    )
-    video_meta = dict(documents[VIDEO_CONFIG_SHEET_KEY].get("source_meta") or {})
-    clockin_meta = dict(documents[CLOCKIN_CONFIG_SHEET_KEY].get("source_meta") or {})
-    video_rows = _extract_document_rows(documents[VIDEO_CONFIG_SHEET_KEY])
-    clockin_rows = _extract_document_rows(documents[CLOCKIN_CONFIG_SHEET_KEY])
-    has_video_source = int(video_meta.get("legacy_lesson_rows") or 0) > 0 or (allow_header_link_fallback and any(
-        _normalize_sheet_text(row[4] if isinstance(row, list) and len(row) > 4 else "")
-        for row in video_rows
-    ))
-    has_clockin_source = int(clockin_meta.get("legacy_clockin_rows") or 0) > 0 or (allow_header_link_fallback and any(
-        _normalize_sheet_text(row[2] if isinstance(row, list) and len(row) > 2 else "")
-        for row in clockin_rows
-    ))
-    if not has_video_source and not is_zen_stage_course:
-        return
-    if not has_clockin_source and not is_zen_stage_course:
-        return
-
-    summary = materialize_nianzhu_course_sheets(
+    materialize_nianzhu_course_sheets(
         session,
         workbook_id=_require_workbook_numeric_id(workbook),
         attendance_sheet_id=_require_sheet_numeric_id(attendance_sheet),
         course_name=normalized_course_name,
         replace=True,
     )
-    if int(summary.get("legacy_lesson_rows") or 0) > 0 or has_video_source:
-        _prune_no_attendance_video_config_rows_for_course_template(
-            session,
-            attendance_sheet=attendance_sheet,
-            owner_key=_normalize_sheet_text(attendance_sheet.owner_key),
-        )
-        attendance_sheet.document_json = _remove_duplicate_plain_lesson_columns(
-            dict(attendance_sheet.document_json or {})
-        )
-        attendance_sheet.document_json = _strip_course_template_column_header_colors(
-            dict(attendance_sheet.document_json or {})
-        )
-        attendance_sheet.document_json = _normalize_course_template_refund_header_styles(
-            dict(attendance_sheet.document_json or {})
-        )
-        attendance_sheet.document_json = _normalize_attendance_feedback_link(
-            dict(attendance_sheet.document_json or {})
-        )
-        attendance_sheet.document_json = _normalize_attendance_refund_faq_link(
-            dict(attendance_sheet.document_json or {})
-        )
-        attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
-        attendance_sheet.updated_at = time.time()
-        session.add(attendance_sheet)
-        _normalize_no_attendance_color_boundary(session, attendance_sheet)
+    _prune_no_attendance_video_config_rows_for_course_template(
+        session,
+        attendance_sheet=attendance_sheet,
+        owner_key=_normalize_sheet_text(attendance_sheet.owner_key),
+    )
+    attendance_sheet.document_json = _remove_duplicate_plain_lesson_columns(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.document_json, _unhidden_course_columns = ensure_attendance_course_columns_visible(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.document_json = _strip_course_template_column_header_colors(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.document_json = _normalize_course_template_refund_header_styles(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.document_json = _normalize_attendance_feedback_link(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.document_json = _normalize_attendance_refund_faq_link(
+        dict(attendance_sheet.document_json or {})
+    )
+    attendance_sheet.version = max(int(attendance_sheet.version or 1), 1) + 1
+    attendance_sheet.updated_at = time.time()
+    session.add(attendance_sheet)
+    _normalize_no_attendance_color_boundary(session, attendance_sheet)
 
 
 def _no_attendance_video_column_names(attendance_sheet: SheetDocument) -> set[str]:
@@ -13516,6 +13984,114 @@ def _copy_entity_cell_style(
     next_entity_cells[target_row_id] = target_row_cells
     document["entity_cells"] = next_entity_cells
     return True
+
+
+def _sheet_header_visual_width(value: Any) -> int:
+    text = _normalize_sheet_text(_extract_cell_value(value)).strip() or "列"
+    units = sum(
+        2 if unicodedata.east_asian_width(character) in {"W", "F", "A"} else 1
+        for character in text
+    )
+    return min(max(int(units * 7 + 34), 88), 360)
+
+
+def _normalize_attendance_week_header_layout(
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebuild lesson header widths and colors from the current week spans.
+
+    Attendance templates may be reused across stages whose weekly lesson counts
+    differ. Values and merged cells can be replaced safely, but positional
+    widths and field-row colors from the old template then cross the new week
+    boundaries. The live week merges are the layout authority: expand every
+    lesson column for its current title and propagate the style at each new
+    group start across that group's current span.
+    """
+    document = _normalize_document_json(deepcopy(document_json))
+    columns = _normalize_document_columns(document)
+    grid_rows = _extract_document_grid_rows(document)
+    if not columns or not grid_rows:
+        return document, {"week_groups": 0, "lesson_columns": 0, "expanded_columns": 0}
+
+    field_row_index = int(document.get("field_row_index") or 0)
+    if field_row_index < 0 or field_row_index >= len(grid_rows):
+        return document, {"week_groups": 0, "lesson_columns": 0, "expanded_columns": 0}
+
+    week_spans: list[tuple[int, int]] = []
+    for merged in _normalize_sheet_merged_cells(
+        document.get("merged_cells"),
+        row_count=len(grid_rows),
+        column_count=len(columns),
+    ):
+        row_index = int(merged.get("row") or 0)
+        column_index = int(merged.get("col") or 0)
+        column_span = int(merged.get("colspan") or 1)
+        if row_index != 0 or column_span <= 0:
+            continue
+        label = _normalize_sheet_text(
+            _extract_cell_value(grid_rows[0][column_index] if column_index < len(grid_rows[0]) else "")
+        )
+        if re.fullmatch(r"第\s*\d+\s*周", label) is None:
+            continue
+        week_spans.append((column_index, min(column_span, len(columns) - column_index)))
+    week_spans.sort()
+    if not week_spans:
+        return document, {"week_groups": 0, "lesson_columns": 0, "expanded_columns": 0}
+
+    widths = list(document.get("column_widths") or [])
+    if len(widths) < len(columns):
+        widths.extend([88] * (len(columns) - len(widths)))
+    widths = widths[: len(columns)]
+    cell_meta = deepcopy(dict(document.get("cell_meta") or {}))
+    configs = deepcopy(dict(document.get("column_configs") or {}))
+    expanded_columns = 0
+
+    for start, span in week_spans:
+        for column_index in range(start, start + span):
+            measured_width = _sheet_header_visual_width(columns[column_index])
+            current_width = widths[column_index] if isinstance(widths[column_index], int | float) else 88
+            next_width = max(int(current_width), measured_width)
+            if next_width != current_width:
+                expanded_columns += 1
+            widths[column_index] = next_width
+
+            for row_index in (0, field_row_index):
+                _copy_cell_meta_style(
+                    cell_meta,
+                    source_row_index=row_index,
+                    source_column_index=start,
+                    target_row_index=row_index,
+                    target_column_index=column_index,
+                )
+                _copy_entity_cell_style(
+                    document,
+                    source_row_index=row_index,
+                    source_column_index=start,
+                    target_row_index=row_index,
+                    target_column_index=column_index,
+                )
+
+            field_meta = cell_meta.get(f"{field_row_index}:{column_index}")
+            field_style = field_meta.get("style") if isinstance(field_meta, dict) else None
+            config = dict(configs.get(columns[column_index]) or {})
+            if isinstance(field_style, dict):
+                background = _normalize_sheet_text(field_style.get("background_color"))
+                text_color = _normalize_sheet_text(field_style.get("text_color"))
+                if background:
+                    config["header_background_color"] = background
+                if text_color:
+                    config["header_text_color"] = text_color
+            if config:
+                configs[columns[column_index]] = config
+
+    document["column_widths"] = widths
+    document["cell_meta"] = cell_meta
+    document["column_configs"] = configs
+    return document, {
+        "week_groups": len(week_spans),
+        "lesson_columns": sum(span for _start, span in week_spans),
+        "expanded_columns": expanded_columns,
+    }
 
 
 def _normalize_no_attendance_color_boundary(session: Session, attendance_sheet: SheetDocument) -> None:
@@ -13697,6 +14273,15 @@ def _clone_attendance_course_template_workbook(
             cloned_document_json = _normalize_course_template_refund_header_styles(cloned_document_json)
             cloned_document_json = _normalize_attendance_feedback_link(cloned_document_json)
             cloned_document_json = _normalize_attendance_refund_faq_link(cloned_document_json)
+            cloned_document_json, _header_layout_summary = _normalize_attendance_week_header_layout(
+                cloned_document_json,
+            )
+            if _course_attendance_public_finance_ui_hidden(
+                cloned_document_json,
+                course_title=title,
+                owner_key=owner_key,
+            ):
+                cloned_document_json = _hide_attendance_public_finance_ui(cloned_document_json)
         elif _normalize_sheet_text(source_sheet.sheet_key) == "registration":
             cloned_document_json, _registration_protocol_changed = _normalize_registration_sheet_protocol_document(
                 cloned_document_json,
@@ -13753,7 +14338,6 @@ def _clone_attendance_course_template_workbook(
         workbook=workbook,
         attendance_sheet=attendance_sheet,
         course_name=title,
-        allow_header_link_fallback=False,
     )
     return workbook, attendance_sheet
 
@@ -14249,29 +14833,6 @@ def _build_attendance_course_script_status(
     return status
 
 
-def _load_attendance_course_link_provider():
-    for path in (ATTENDANCE_XLPROJECT_SRC_DIR, ATTENDANCE_KQ5034_REPO_DIR):
-        path_text = str(path)
-        if path.exists() and path_text not in sys.path:
-            sys.path.insert(0, path_text)
-
-    try:
-        from xlsln.kq5034.kqmain import 获取课程链接  # type: ignore
-
-        return 获取课程链接
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"无法加载考勤链接查询工具：{exc}") from exc
-
-
-def _load_attendance_kqdb_provider():
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-
-        return get_kqdb
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"无法加载考勤数据库配置：{exc}") from exc
-
-
 def _resolve_attendance_course_lookup_name(
     document_json: dict[str, Any],
     *,
@@ -14440,143 +15001,80 @@ def _preserve_attendance_summary_online_sheet_links(
     return _normalize_document_json(_replace_document_data_rows(normalized_incoming, next_rows)), preserved
 
 
-def _extract_attendance_link_item_url(item: Any) -> str:
-    if isinstance(item, dict):
-        return _normalize_sheet_text(item.get("url"))
-    if isinstance(item, (list, tuple)) and len(item) >= 2:
-        return _normalize_sheet_text(item[1])
-    return ""
-
-
 def _format_attendance_link_count_value(total_count: int, linked_count: int) -> str:
     if total_count <= 0:
         return "0"
     return str(total_count) if linked_count >= total_count else f"{linked_count}/{total_count}"
 
 
-def _query_attendance_link_count(
-    field_key: Literal["lesson_links", "clockin_links"],
-    lookup_name: str,
-) -> tuple[int, int]:
-    try:
-        xldb = _load_attendance_kqdb_provider()()
-        if field_key == "lesson_links":
-            records = xldb.exec2dict(
-                "SELECT lesson_id2 AS url FROM lesson_table WHERE lesson_name LIKE %s ORDER BY lesson_id",
-                [f"{lookup_name}-%"],
-            )
-        else:
-            records = xldb.exec2dict(
-                "SELECT url FROM clockin_table WHERE name LIKE %s ORDER BY clockin_id",
-                [f"{lookup_name}-%"],
-            )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"查询考勤链接失败：{exc}") from exc
-
-    items = list(records or [])
-    total_count = len(items)
-    linked_count = sum(1 for item in items if _extract_attendance_link_item_url(item))
-    return total_count, linked_count
-
-
-def _attendance_summary_course_type_for_row(row: list[Any], columns: list[Any]) -> str:
-    type_index = _find_attendance_column_index(columns, "course_type")
-    return _normalize_sheet_text(row[type_index]) if type_index is not None and type_index < len(row) else ""
-
-
-def _can_remote_repair_nianzhu_jueguan_links(course_type: str, lookup_name: str) -> bool:
-    normalized_type = _normalize_sheet_text(course_type)
-    normalized_name = _normalize_sheet_text(lookup_name)
-    return normalized_type in {"念住", "觉观"} or "念住" in normalized_name or "觉观" in normalized_name
-
-
-def _remote_device_error_detail(response: Any) -> str:
-    try:
-        detail = response.json().get("detail")
-    except Exception:
-        detail = getattr(response, "text", "").strip()
-    return str(detail or f"远程执行失败，HTTP {getattr(response, 'status_code', '')}").strip()
-
-
-def _post_remote_attendance_device_json(entry: UserDevice, *, path: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
-    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
-    token = _normalize_sheet_text(entry.token)
-    if not server_url or not token:
-        raise RuntimeError("远程课程数据浏览器设备缺少后端地址或访问令牌")
-    try:
-        import requests
-
-        with requests.Session() as request_session:
-            request_session.trust_env = False
-            response = request_session.post(
-                f"{server_url}{path}",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "X-Device-Token": token,
-                },
-                timeout=timeout,
-            )
-    except Exception as exc:
-        raise RuntimeError(f"调用远程课程数据浏览器设备失败：{exc}") from exc
-    if response.status_code >= 400:
-        raise RuntimeError(_remote_device_error_detail(response))
-    try:
-        data = response.json()
-    except Exception as exc:
-        raise RuntimeError("远程课程数据浏览器设备返回了无法解析的响应") from exc
-    return dict(data) if isinstance(data, dict) else {"result": data}
-
-
-def _repair_nianzhu_jueguan_links_with_remote_step1(
+def _attendance_summary_course_workbook(
     session: Session,
+    document_json: dict[str, Any],
     *,
-    course_type: str,
-    lookup_name: str,
+    row: list[Any],
+    row_index: int,
+    columns: list[Any],
+) -> WorkbookDocument:
+    online_sheet_index = _find_attendance_column_index(columns, "online_sheet")
+    if online_sheet_index is None:
+        raise HTTPException(status_code=400, detail="当前表缺少在线考勤表字段")
+
+    url = _get_document_cell_link_url(document_json, row_index, online_sheet_index)
+    if not url and online_sheet_index < len(row):
+        url = _inline_cell_link_url(row[online_sheet_index])
+    workbook_id, _sheet_id = _parse_local_workbook_sheet_url(url)
+    if workbook_id is None:
+        raise HTTPException(status_code=400, detail="在线考勤表必须关联 CodeYun 课程工作簿")
+    return _get_workbook_by_numeric_id_or_404(session, workbook_id)
+
+
+def _attendance_config_link_count(
+    session: Session,
+    document_json: dict[str, Any],
+    *,
+    row: list[Any],
+    row_index: int,
+    columns: list[Any],
     field_key: Literal["lesson_links", "clockin_links"],
-) -> dict[str, Any]:
-    if not _can_remote_repair_nianzhu_jueguan_links(course_type, lookup_name):
-        return {"attempted": False, "reason": "课程类型不需要念住/觉观远程补抓"}
-
-    config = get_or_create_attendance_service_config(session)
-    entry = get_attendance_course_data_step_runner_device(
+) -> tuple[int, int]:
+    workbook = _attendance_summary_course_workbook(
         session,
-        config,
-        step_number=1,
-        data_flow_config=get_attendance_course_data_flow_config(session),
+        document_json,
+        row=row,
+        row_index=row_index,
+        columns=columns,
     )
-    if entry is None:
-        return {"attempted": False, "reason": "课程数据 step1 未配置浏览器设备"}
-    if _normalize_sheet_text(entry.mode) != "remote":
-        return {
-            "attempted": False,
-            "reason": f"课程数据 step1 当前是本机设备 {entry.name or entry.device_id}，已跳过本机爬虫",
-        }
+    if field_key == "lesson_links":
+        sheet_key, title = "video_config", "视频配置"
+        identity_fields = ("lesson_name", "lesson_id", "lesson_id2")
+        url_field = "lesson_id2"
+    else:
+        sheet_key, title = "clockin_config", "打卡配置"
+        identity_fields = ("name", "clockin_id", "url")
+        url_field = "url"
 
-    payload = {
-        "course_name": lookup_name,
-        "shop_id": 1,
-        "update_lessons": field_key == "lesson_links",
-        "update_clockins": field_key == "clockin_links",
-        "clockin_pattern": "",
-        "dynamic_clockin_plugin": "",
-        "close_browser": True,
-    }
-    result = _post_remote_attendance_device_json(
-        entry,
-        path="/api/device-control/attendance/nianzhu/step1",
-        payload=payload,
-        timeout=1200,
+    config_sheet = _get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key=sheet_key,
+        title=title,
     )
-    return {
-        "attempted": True,
-        "device_entry_id": entry.entry_id,
-        "device_name": entry.name,
-        "device_id": entry.device_id,
-        "result": result,
-    }
+    if config_sheet is None:
+        raise HTTPException(status_code=404, detail=f"课程工作簿缺少{title}")
+
+    session.expire(config_sheet, ["document_json", "version", "updated_at"])
+    config_document = _normalize_document_json(dict(config_sheet.document_json or {}))
+    config_columns = _normalize_document_columns(config_document)
+    items: list[dict[str, Any]] = []
+    for source_row in _extract_document_rows(config_document):
+        values = _normalize_sheet_row(source_row, len(config_columns))
+        item = dict(zip(config_columns, values))
+        if any(_normalize_sheet_text(item.get(field)) for field in identity_fields):
+            items.append(item)
+
+    total_count = len(items)
+    linked_count = sum(1 for item in items if _normalize_sheet_text(item.get(url_field)))
+    return total_count, linked_count
 
 
 def _update_attendance_link_counts(
@@ -14585,7 +15083,6 @@ def _update_attendance_link_counts(
     *,
     field_key: Literal["lesson_links", "clockin_links"],
     row_index: int | None = None,
-    repair_with_remote_browser: bool = True,
 ) -> tuple[dict[str, Any], list[NoteSheetAttendanceLinkCountUpdateItem], list[NoteSheetAttendanceLinkCountUpdateItem]]:
     normalized = _ensure_attendance_link_count_columns(document_json)
     columns = _normalize_document_columns(normalized)
@@ -14614,7 +15111,6 @@ def _update_attendance_link_counts(
         )
         course_name_index = _find_attendance_column_index(columns, "course_name")
         course_name = _normalize_sheet_text(row[course_name_index]) if course_name_index is not None else ""
-        course_type = _attendance_summary_course_type_for_row(row, columns)
         item = NoteSheetAttendanceLinkCountUpdateItem(
             row_index=source_row_index,
             course_name=course_name,
@@ -14625,27 +15121,14 @@ def _update_attendance_link_counts(
             skipped.append(item)
             continue
 
-        total_count, linked_count = _query_attendance_link_count(field_key, lookup_name)
-        remote_repair_error = False
-        if repair_with_remote_browser and (total_count <= 0 or linked_count < total_count):
-            try:
-                repair_summary = _repair_nianzhu_jueguan_links_with_remote_step1(
-                    session,
-                    course_type=course_type,
-                    lookup_name=lookup_name,
-                    field_key=field_key,
-                )
-            except Exception as exc:
-                repair_summary = {"attempted": True, "error": str(exc)}
-            item.remote_repair_attempted = bool(repair_summary.get("attempted"))
-            item.remote_repair_summary = repair_summary
-            remote_repair_error = bool(repair_summary.get("attempted") and repair_summary.get("error"))
-            if repair_summary.get("attempted") and not remote_repair_error:
-                total_count, linked_count = _query_attendance_link_count(field_key, lookup_name)
-        if remote_repair_error:
-            item.reason = "远程补抓失败，已保留原链接数"
-            skipped.append(item)
-            continue
+        total_count, linked_count = _attendance_config_link_count(
+            session,
+            normalized,
+            row=row,
+            row_index=source_row_index,
+            columns=columns,
+            field_key=field_key,
+        )
         value = _format_attendance_link_count_value(total_count, linked_count)
         item.total_count = total_count
         item.linked_count = linked_count
@@ -15172,7 +15655,13 @@ def _sheet_resource_update_room(sheet_id: int) -> str:
     return f"resource:sheet:{sheet_id}"
 
 
-def _broadcast_sheet_resource_update(document: SheetDocument) -> None:
+def _broadcast_sheet_resource_update(
+    document: SheetDocument,
+    *,
+    mutation_id: str | None = None,
+    client_instance_id: str | None = None,
+    source_kind: str = "system",
+) -> None:
     message = {
         "type": "resource-updated",
         "resource_type": "sheet",
@@ -15180,6 +15669,9 @@ def _broadcast_sheet_resource_update(document: SheetDocument) -> None:
         "version": int(document.version or 1),
         "updated_at": float(document.updated_at or time.time()),
         "updated_by_user_id": document.updated_by_user_id,
+        "mutation_id": mutation_id,
+        "client_instance_id": client_instance_id,
+        "source_kind": source_kind,
     }
     try:
         anyio.from_thread.run(ws_manager.broadcast, _sheet_resource_update_room(_require_sheet_numeric_id(document)), message)
@@ -15190,7 +15682,7 @@ def _broadcast_sheet_resource_update(document: SheetDocument) -> None:
 
 def _check_sheet_base_version(document: SheetDocument, base_version: int | None) -> None:
     if base_version is not None and int(base_version) != int(document.version or 1):
-        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
+        raise HTTPException(status_code=409, detail="工作表数据已由其他页面或系统任务更新，请刷新后重试")
 
 
 def _active_workbook_condition():
@@ -17015,6 +17507,7 @@ def _attendance_export_rows(
 
 
 def _normalize_attendance_export_cell(value: Any) -> Any:
+    value = _extract_cell_value(value)
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -17114,8 +17607,9 @@ def _populate_sheet_export_worksheet(
                 value = ""
             cell = worksheet.cell(row=row_index, column=column_index, value=_normalize_attendance_export_cell(value))
             text_value = _normalize_sheet_text(value)
-            if text_value.startswith(("http://", "https://")):
-                cell.hyperlink = text_value
+            link_url = _inline_cell_link_url(value)
+            if link_url or text_value.startswith(("http://", "https://")):
+                cell.hyperlink = link_url or text_value
                 cell.style = "Hyperlink"
 
             style = meta.get("style")
@@ -18119,6 +18613,224 @@ def create_note_sheet(
     )
 
 
+def _bind_independent_attendance_document(
+    document: SheetDocument,
+    *,
+    sheet_id: int,
+    workbook_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Bind the one attendance-owned document after CodeYun access checks.
+
+    CodeYun owns the page, access policy and API shell. Attendance sheet data
+    itself lives only in ``attendance.sqlite3``; the legacy CodeYun copy must
+    never be served or mutated as a fallback once that database owns a sheet.
+    """
+    from types import SimpleNamespace
+
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    try:
+        payload = LocalAttendanceSheetClient().get_document(
+            SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id)
+        )
+    except AttendanceStorageError:
+        return None
+
+    attributes.set_committed_value(document, "title", payload["title"])
+    attributes.set_committed_value(document, "engine", payload["engine"])
+    attributes.set_committed_value(document, "version", payload["version"])
+    attributes.set_committed_value(document, "updated_at", payload["updated_at"])
+    attributes.set_committed_value(document, "document_json", payload["document_json"])
+    return payload
+
+
+def _build_independent_attendance_detail_payload(
+    session: Session,
+    document: SheetDocument,
+    source: dict[str, Any],
+    *,
+    access: NoteSheetResourceAccess,
+    workbook: WorkbookDocument | None,
+    current_user: User | None,
+    page: int = 1,
+    page_size: int | None = None,
+    paginate: bool | None = None,
+    include_workbook_context: bool = True,
+    column_filters: dict[str, Any] | None = None,
+    row_filter_programs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Serialize local attendance data without touching CodeYun sheet storage."""
+    workbook_items, parent_workbook_id = _get_sheet_workbook_context(
+        session,
+        document,
+        current_user,
+        workbook=workbook,
+        include_workbook_context=include_workbook_context,
+    )
+    full_document = _normalize_document_json(dict(source["document_json"]))
+    full_document, header_link_count = _apply_course_attendance_header_links_for_response(
+        session,
+        document,
+        full_document,
+    )
+    if header_link_count:
+        full_document = _normalize_document_json(full_document)
+
+    document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
+    effective_paginate = document_paginate_enabled if paginate is None else paginate
+    if effective_paginate:
+        if column_filters or row_filter_programs:
+            page_document, pagination = _build_filtered_paged_document(
+                full_document,
+                page=page,
+                page_size=page_size if page_size is not None else document_page_size,
+                column_filters=column_filters or {},
+                row_filter_programs=row_filter_programs or [],
+                assume_normalized=True,
+            )
+        else:
+            page_document, pagination = _build_paged_document(
+                full_document,
+                page=page,
+                page_size=page_size if page_size is not None else document_page_size,
+                assume_normalized=True,
+            )
+    else:
+        page_document = full_document
+        pagination = None
+
+    result = _serialize_sheet_detail(
+        document,
+        workbook_items=workbook_items,
+        parent_workbook_id=parent_workbook_id,
+        document_json=page_document,
+        pagination=pagination,
+        access=access,
+        defined_names_context=source.get("defined_names_context"),
+    )
+    # Workbook/access lookups use CodeYun's metadata session and may refresh
+    # the legacy shell row in SQLAlchemy's identity map. Restore authoritative
+    # attendance metadata in the serialized response instead of leaking the
+    # legacy copy's version/title/timestamp.
+    result["title"] = source["title"]
+    result["engine"] = source["engine"]
+    result["version"] = source["version"]
+    result["updated_at"] = source["updated_at"]
+    return result
+
+
+def _reject_independent_attendance_legacy_mutation(
+    document: SheetDocument,
+    *,
+    sheet_id: int,
+    workbook_id: int | None = None,
+) -> None:
+    if _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    ) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "该表由独立考勤数据库管理；此 CodeYun 旧写入入口已关闭，"
+                "请使用考勤独立表格 API"
+            ),
+        )
+
+
+def _patch_independent_attendance_document(
+    document: SheetDocument,
+    source: dict[str, Any],
+    payload: NoteSheetPatchRequest,
+    *,
+    sheet_id: int,
+    workbook_id: int | None,
+    access: NoteSheetResourceAccess,
+    current_user: User | None,
+) -> NoteSheetPatchResponse:
+    """Apply identity-addressed cell edits to the attendance-owned database."""
+
+    from types import SimpleNamespace
+
+    from xlsln.kq5034.engine.client import (
+        AttendanceVersionConflict,
+        LocalAttendanceSheetClient,
+    )
+
+    if any(operation.op not in {"set-cell-value", "set-cell-meta"} for operation in payload.ops):
+        raise HTTPException(
+            status_code=409,
+            detail="独立考勤表结构由考勤系统管理；当前页面只能保存单元格内容和格式",
+        )
+
+    reference = SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id)
+    client = LocalAttendanceSheetClient()
+    current_source = source
+    operations = list(payload.ops)
+
+    for _attempt in range(4):
+        current_version = max(int(current_source.get("version") or 1), 1)
+        normalized = _normalize_document_json(deepcopy(dict(current_source.get("document_json") or {})))
+        operations = list(payload.ops)
+        if int(payload.base_version) != current_version:
+            operations = _rebase_stale_cell_patch_ops(normalized, operations)
+
+        columns = _normalize_document_columns(normalized)
+        rows = _extract_document_rows(normalized)
+        _validate_note_sheet_patch_access(
+            access=access,
+            current_user=current_user,
+            operations=operations,
+            columns=columns,
+            rows=rows,
+        )
+
+        next_document, updated_cell_count = _apply_note_sheet_patch_ops(normalized, operations)
+        next_document = _strip_formula_cell_rich_text(next_document)
+        next_document = _remove_orphan_document_entity_cells(next_document)
+        next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+
+        if next_document == normalized:
+            return NoteSheetPatchResponse(
+                sheet_id=sheet_id,
+                version=current_version,
+                applied_op_count=len(operations),
+                updated_cell_count=updated_cell_count,
+            )
+
+        try:
+            result = client.replace_document(
+                reference,
+                next_document,
+                expected_version=current_version,
+            )
+        except AttendanceVersionConflict:
+            current_source = client.get_document(reference)
+            continue
+
+        attributes.set_committed_value(document, "document_json", result["document_json"])
+        attributes.set_committed_value(document, "version", int(result["version"]))
+        attributes.set_committed_value(document, "updated_at", float(result["updated_at"]))
+        _broadcast_sheet_resource_update(
+            document,
+            mutation_id=payload.mutation_id,
+            client_instance_id=payload.client_instance_id,
+            source_kind="user" if current_user is not None else "system",
+        )
+        return NoteSheetPatchResponse(
+            sheet_id=sheet_id,
+            version=int(result["version"]),
+            applied_op_count=len(operations),
+            updated_cell_count=updated_cell_count,
+        )
+
+    raise HTTPException(status_code=409, detail="工作表正在被频繁更新，请稍后重试")
+
+
 @router.get("/sheets/{sheet_id}", response_model=NoteSheetDetailResponse)
 def get_note_sheet(
     sheet_id: int,
@@ -18144,6 +18856,29 @@ def get_note_sheet(
         timings=timings,
     )
     checkpoint = _record_note_sheet_timing(timings, checkpoint, "resolve")
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
+    if independent_attendance is not None:
+        payload = _build_independent_attendance_detail_payload(
+            session,
+            document,
+            independent_attendance,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            page=page,
+            page_size=page_size,
+            paginate=paginate,
+            include_workbook_context=include_workbook_context,
+        )
+        result = NoteSheetDetailResponse.model_validate(payload)
+        _record_note_sheet_timing(timings, checkpoint, "payload_total")
+        if timings is not None:
+            response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
+        return result
     snapshot = _get_sheet_page_snapshot(
         session,
         document,
@@ -18216,6 +18951,26 @@ def query_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
+    if independent_attendance is not None:
+        return _build_independent_attendance_detail_payload(
+            session,
+            document,
+            independent_attendance,
+            access=access,
+            workbook=workbook,
+            current_user=current_user,
+            page=payload.page,
+            page_size=payload.page_size,
+            paginate=payload.paginate,
+            include_workbook_context=payload.include_workbook_context,
+            column_filters=payload.column_filters,
+            row_filter_programs=payload.row_filter_programs,
+        )
     _sync_attendance_questionnaire_sheet_document(session, document)
     full_document = _normalize_registration_sheet_header_persisted(session, document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(
@@ -18276,6 +19031,11 @@ def get_note_sheet_column_options(
         required_role="viewer",
         workbook_id=workbook_id,
     )
+    _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     _sync_attendance_questionnaire_sheet_document(session, document)
     return _build_note_sheet_column_options_response(document, column_index=column_index)
 
@@ -18298,6 +19058,19 @@ def get_note_sheet_table(
         required_role="viewer",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
+    if independent_attendance is not None:
+        from types import SimpleNamespace
+        from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+        return LocalAttendanceSheetClient().get_table(
+            SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+            include_grid=include_grid,
+        )
     return _build_note_sheet_table_response(
         document,
         workbook=workbook,
@@ -18323,13 +19096,29 @@ def export_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
-    table = _build_note_sheet_table_response(
+    independent_attendance = _bind_independent_attendance_document(
         document,
-        workbook=workbook,
-        include_grid=True,
-        value_mode="text",
-        defined_names=_defined_names_for_formula(session, document, workbook),
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
     )
+    if independent_attendance is not None:
+        from types import SimpleNamespace
+        from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+        table = NoteSheetTableResponse.model_validate(
+            LocalAttendanceSheetClient().get_table(
+                SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+                include_grid=True,
+            )
+        )
+    else:
+        table = _build_note_sheet_table_response(
+            document,
+            workbook=workbook,
+            include_grid=True,
+            value_mode="text",
+            defined_names=_defined_names_for_formula(session, document, workbook),
+        )
     raw_bytes = _build_sheet_export_workbook_bytes(
         table,
         document_json=dict(document.document_json or {}),
@@ -18418,6 +19207,11 @@ def update_note_sheet_attendance_course_data(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行表格动作的权限")
 
@@ -18484,10 +19278,54 @@ def patch_note_sheet_table(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if current_user is None and trusted_device is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if payload.expected_version is not None and int(document.version or 1) != payload.expected_version:
         raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
     if not payload.operations:
         raise HTTPException(status_code=400, detail="缺少表格操作")
+
+    if independent_attendance is not None:
+        from types import SimpleNamespace
+        from xlsln.kq5034.engine.client import AttendanceVersionConflict, LocalAttendanceSheetClient
+
+        try:
+            result = LocalAttendanceSheetClient().patch_table(
+                SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+                [operation.model_dump() for operation in payload.operations],
+                expected_version=payload.expected_version,
+            )
+        except AttendanceVersionConflict as exc:
+            raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入") from exc
+        _bind_independent_attendance_document(
+            document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+        )
+        workbook_items = _list_workbook_refs_for_sheet_ids(
+            session,
+            [document.id],
+            current_user,
+        ).get(document.id, [])
+        parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
+        sheet = NoteSheetDetailResponse.model_validate(
+            _serialize_sheet_detail(
+                document,
+                workbook_items=workbook_items,
+                parent_workbook_id=parent_workbook_id,
+                access=access,
+            )
+        )
+        _broadcast_sheet_resource_update(document)
+        return NoteSheetTablePatchResponse(
+            sheet=sheet,
+            table=NoteSheetTableResponse.model_validate(result["table"]),
+            updated_cell_count=int(result.get("updated_cell_count") or 0),
+            updated_row_count=int(result.get("updated_row_count") or 0),
+        )
 
     current_document = dict(document.document_json or {})
     next_document, updated_cell_count, updated_row_count = _apply_note_sheet_table_patch(
@@ -18560,6 +19398,11 @@ def patch_note_sheet_cells(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if access.capabilities.can_edit_data and current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
         raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
     if not payload.operations:
@@ -18577,6 +19420,7 @@ def patch_note_sheet_cells(
     can_edit_all_data = bool(access.capabilities.can_edit_data)
     next_rows = list(rows)
     updated_cell_count = 0
+    changed_cells: list[dict[str, Any]] = []
 
     for operation in payload.operations:
         row_index = int(operation.row_index)
@@ -18595,6 +19439,35 @@ def patch_note_sheet_cells(
             continue
         next_rows[row_index] = _set_row_cell_value(current_row, columns, column_index, next_value)
         updated_cell_count += 1
+        changed_cells.append({
+            "type": "set_cell",
+            "row_index": row_index,
+            "column": column_index,
+            "value": next_value,
+        })
+
+    if independent_attendance is not None:
+        if changed_cells:
+            from types import SimpleNamespace
+            from xlsln.kq5034.engine.client import AttendanceVersionConflict, LocalAttendanceSheetClient
+
+            try:
+                result = LocalAttendanceSheetClient().patch_table(
+                    SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+                    changed_cells,
+                    expected_version=payload.base_version,
+                )
+            except AttendanceVersionConflict as exc:
+                raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入") from exc
+            version = int(result["sheet"]["version"])
+        else:
+            version = int(document.version or 1)
+        _broadcast_sheet_resource_update(document)
+        return NoteSheetCellPatchResponse(
+            sheet_id=sheet_id,
+            version=version,
+            updated_cell_count=updated_cell_count,
+        )
 
     if updated_cell_count > 0:
         next_document = _replace_document_data_rows(normalized, next_rows)
@@ -18612,6 +19485,8 @@ def patch_note_sheet_cells(
         session.add(document)
         session.commit()
         session.refresh(document)
+        if _is_attendance_questionnaire_data_sheet(document):
+            _sync_attendance_questionnaire_entry_statuses(session, next_document)
         _prewarm_default_sheet_page_snapshot(
             session,
             document,
@@ -18647,40 +19522,94 @@ def patch_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
-    if int(payload.base_version) != int(document.version or 1):
-        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not payload.ops:
         raise HTTPException(status_code=400, detail="缺少表格操作")
+    if independent_attendance is not None:
+        return _patch_independent_attendance_document(
+            document,
+            independent_attendance,
+            payload,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            access=access,
+            current_user=current_user,
+        )
 
-    current_document = deepcopy(dict(document.document_json or {}))
-    normalized = _normalize_document_json(current_document)
-    columns = _normalize_document_columns(normalized)
-    rows = _extract_document_rows(normalized)
-    _validate_note_sheet_patch_access(
-        access=access,
-        current_user=current_user,
-        operations=payload.ops,
-        columns=columns,
-        rows=rows,
-    )
+    operations = list(payload.ops)
+    updated_cell_count = 0
+    next_document: dict[str, Any] | None = None
+    persisted = False
 
-    next_document, updated_cell_count = _apply_note_sheet_patch_ops(normalized, payload.ops)
-    next_document = _strip_formula_cell_rich_text(next_document)
-    next_document = _remove_orphan_document_entity_cells(next_document)
-    next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
-    if _is_registration_sheet(document):
-        next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
-    if _is_attendance_questionnaire_data_sheet(document):
-        next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+    # A normal ORM read-modify-write is not an optimistic lock: two sessions
+    # can both observe version N and silently overwrite each other.  Compare
+    # the version in the UPDATE itself, then rebase and retry when another
+    # writer wins the race between our read and commit.
+    for _attempt in range(4):
+        current_version = max(int(document.version or 1), 1)
+        normalized = _normalize_document_json(deepcopy(dict(document.document_json or {})))
+        operations = list(payload.ops)
+        if int(payload.base_version) != current_version:
+            operations = _rebase_stale_cell_patch_ops(normalized, operations)
+        columns = _normalize_document_columns(normalized)
+        rows = _extract_document_rows(normalized)
+        _validate_note_sheet_patch_access(
+            access=access,
+            current_user=current_user,
+            operations=operations,
+            columns=columns,
+            rows=rows,
+        )
 
-    if next_document != normalized:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id if current_user is not None else None
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
+        next_document, updated_cell_count = _apply_note_sheet_patch_ops(normalized, operations)
+        next_document = _strip_formula_cell_rich_text(next_document)
+        next_document = _remove_orphan_document_entity_cells(next_document)
+        next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+        if _is_registration_sheet(document):
+            next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
+        if _is_attendance_questionnaire_data_sheet(document):
+            next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+
+        if next_document == normalized:
+            break
+
+        result = session.exec(
+            update(SheetDocument)
+            .where(SheetDocument.id == document.id)
+            .where(SheetDocument.version == current_version)
+            .values(
+                document_json=next_document,
+                version=current_version + 1,
+                updated_by_user_id=current_user.id if current_user is not None else None,
+                updated_at=time.time(),
+            )
+        )
+        if int(result.rowcount or 0) == 1:
+            session.commit()
+            session.expire_all()
+            refreshed = session.get(SheetDocument, document.id)
+            if refreshed is None:
+                raise HTTPException(status_code=404, detail="工作表不存在")
+            document = refreshed
+            persisted = True
+            break
+
+        session.rollback()
+        session.expire_all()
+        refreshed = session.get(SheetDocument, document.id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="工作表不存在")
+        document = refreshed
+    else:
+        raise HTTPException(status_code=409, detail="工作表正在被频繁更新，请稍后重试")
+
+    if persisted and next_document is not None:
+        if _is_attendance_questionnaire_data_sheet(document):
+            _sync_attendance_questionnaire_entry_statuses(session, next_document)
         _prewarm_default_sheet_page_snapshot(
             session,
             document,
@@ -18689,7 +19618,12 @@ def patch_note_sheet(
             current_user=current_user,
             document_json=next_document,
         )
-        _broadcast_sheet_resource_update(document)
+        _broadcast_sheet_resource_update(
+            document,
+            mutation_id=payload.mutation_id,
+            client_instance_id=payload.client_instance_id,
+            source_kind="user" if current_user is not None else "system",
+        )
 
     if _is_attendance_questionnaire_data_sheet(document):
         _sync_attendance_questionnaire_entry_statuses(session, dict(document.document_json or {}))
@@ -18697,7 +19631,7 @@ def patch_note_sheet(
     return NoteSheetPatchResponse(
         sheet_id=_require_sheet_numeric_id(document),
         version=int(document.version or 1),
-        applied_op_count=len(payload.ops),
+        applied_op_count=len(operations),
         updated_cell_count=updated_cell_count,
     )
 
@@ -18745,6 +19679,15 @@ def get_sheet_defined_names_endpoint(
         required_role="viewer",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
+    if independent_attendance is not None and independent_attendance.get("defined_names_context"):
+        return NoteSheetDefinedNamesResponse.model_validate(
+            independent_attendance["defined_names_context"]
+        )
     workbook_names = _get_workbook_defined_names(session, workbook)
     worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
     return NoteSheetDefinedNamesResponse(
@@ -18776,6 +19719,11 @@ def update_sheet_defined_names_endpoint(
         current_user,
         sheet_id,
         required_role="editor",
+        workbook_id=workbook_id,
+    )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if not access.capabilities.can_edit_config:
@@ -18862,6 +19810,11 @@ def update_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     editable_columns = list(access.capabilities.editable_data_columns)
     if not access.capabilities.can_edit_data and not editable_columns:
         raise HTTPException(status_code=403, detail="没有该资源权限")
@@ -18880,6 +19833,8 @@ def update_note_sheet(
         next_document = current_document
     else:
         _reject_default_blank_overwrite(current_document, payload.document_json)
+        if payload.page_patch is None:
+            _reject_paginated_document_truncation(current_document, payload.document_json)
         if access.capabilities.can_edit_data:
             if payload.page_patch is None:
                 next_document = _normalize_document_json(payload.document_json)
@@ -18918,6 +19873,8 @@ def update_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+        if _is_attendance_questionnaire_data_sheet(document):
+            _sync_attendance_questionnaire_entry_statuses(session, next_document)
         _prewarm_default_sheet_page_snapshot(
             session,
             document,
@@ -18977,10 +19934,15 @@ async def import_note_sheet_excel_reset(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not access.capabilities.can_edit_data:
         raise HTTPException(status_code=403, detail="导入 Excel 需要完整编辑权限")
     if base_version is not None and int(base_version) != int(document.version or 1):
-        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
+        raise HTTPException(status_code=409, detail="表格数据已有新版本，请刷新后重试")
 
     filename = str(file.filename or "").strip()
     suffix = Path(filename).suffix.lower()
@@ -19111,6 +20073,11 @@ def start_note_sheet_clockin_link_detection_run(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行打卡链接检测的权限")
     if current_user.id is None:
@@ -19198,6 +20165,11 @@ def start_note_sheet_registration_match_run(
         current_user,
         sheet_id,
         required_role="editor",
+        workbook_id=workbook_id,
+    )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
@@ -19334,10 +20306,15 @@ def detect_note_sheet_registration_user_id(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
     if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
-        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
+        raise HTTPException(status_code=409, detail="表格数据已有新版本，请刷新后重试")
     if workbook is None:
         raise HTTPException(status_code=400, detail="检测用户ID需要在工作簿内执行")
 
@@ -19621,6 +20598,11 @@ def sort_note_sheet(
         current_user,
         sheet_id,
         required_role="editor",
+        workbook_id=workbook_id,
+    )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if current_user is None:
@@ -19973,7 +20955,6 @@ def update_attendance_summary_link_counts(
         current_document,
         field_key=payload.field_key,
         row_index=payload.row_index,
-        repair_with_remote_browser=payload.repair_with_remote_browser,
     )
 
     if current_document != next_document:
@@ -20076,6 +21057,11 @@ def revise_attendance_video_progress(
         current_user,
         sheet_id,
         required_role="editor",
+        workbook_id=workbook_id,
+    )
+    _reject_independent_attendance_legacy_mutation(
+        document,
+        sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if current_user is None:
@@ -20235,7 +21221,7 @@ def list_workbooks(
         for workbook, _access in workbook_access_items
         for ref in workbook_ref_aliases(workbook)
     }
-    linked_sheet_map = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    linked_sheet_map = _load_sheet_summaries_by_refs(session, [link.sheet_id for link in links])
     for link in links:
         workbook = workbook_ref_map.get(str(link.workbook_id))
         if workbook is None or linked_sheet_map.get(str(link.sheet_id)) is None:
@@ -20596,6 +21582,16 @@ def save_as_workbook(
     ).all()
     source_sheet_ids = [link.sheet_id for link in links]
     source_sheet_map = load_sheets_by_refs(session, source_sheet_ids)
+    target_owner_key = next(
+        (
+            _normalize_sheet_text(sheet.owner_key)
+            for sheet in source_sheet_map.values()
+            if sheet is not None
+            and _normalize_sheet_text(sheet.owner_type) == "course_workbook"
+            and _normalize_sheet_text(sheet.owner_key)
+        ),
+        "",
+    )
 
     now = time.time()
     workbook_identity = allocate_new_workbook_identity(session)
@@ -20619,7 +21615,7 @@ def save_as_workbook(
         _adapt_course_template_workbook_defined_names(
             _get_workbook_defined_names(session, source_workbook),
             target_title=workbook.title,
-            target_owner_key=owner_key,
+            target_owner_key=target_owner_key,
         ),
     )
 

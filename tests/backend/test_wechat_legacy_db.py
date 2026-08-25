@@ -208,6 +208,29 @@ def _insert_media_msg(path, local_id, local_type, content, bytes_extra=b""):
         conn.close()
 
 
+def _init_multi_search_chat_msg(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE SearchChatMsg (
+                localId INTEGER,
+                Talker TEXT,
+                Content TEXT,
+                CreateTime INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO SearchChatMsg VALUES (?, ?, ?, ?)",
+            (1, "room@chatroom", "2-2反馈了一下", 2000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_wechat_legacy_storage_maps_old_schema_to_wechat_db_shape(monkeypatch, tmp_path):
     root = tmp_path / "decrypted"
     _init_micro_msg(root / "Msg" / "MicroMsg.db")
@@ -239,6 +262,26 @@ def test_wechat_legacy_storage_maps_old_schema_to_wechat_db_shape(monkeypatch, t
     assert room_payload["items"][1]["sender_name"] == "Member"
     assert room_payload["items"][1]["sender_avatar_data_url"] == "https://example.test/member.jpg"
     assert storage.message_types(chat_username="friend") == [{"local_type": 1, "count": 2}]
+
+
+def test_wechat_legacy_storage_exposes_multi_search_chat_msg(tmp_path):
+    root = tmp_path / "decrypted"
+    _init_micro_msg(root / "Msg" / "MicroMsg.db")
+    _init_msg(root / "Msg" / "Multi" / "MSG0.db")
+    _init_multi_search_chat_msg(root / "Msg" / "MultiSearchChatMsg.db")
+
+    storage = WeChatLegacyDbStorage(root)
+
+    status = storage.status()
+    assert status["databases"]["multi_search_chat_msg"] is True
+
+    schema = storage.schema_overview()
+    search_db = next(item for item in schema if item["name"] == "multi_search_chat_msg")
+    assert "SearchChatMsg" in search_db["tables"]
+
+    rows = storage.browse_table("multi_search_chat_msg", "SearchChatMsg", q="2-2", limit=10)
+    assert rows["total"] == 1
+    assert rows["items"][0]["Content"] == "2-2反馈了一下"
 
 
 def test_wechat_legacy_storage_exports_image_and_emoji_resources(monkeypatch, tmp_path):
