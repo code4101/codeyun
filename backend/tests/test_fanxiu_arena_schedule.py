@@ -47,7 +47,7 @@ def test_scheduler_migration_removes_retired_daily_gongfeng_instance():
     assert [task["id"] for task in tasks] == ["legacy-daily-assistant"]
 
 
-def test_scheduler_migration_promotes_legacy_magic_job_without_losing_progress():
+def test_scheduler_migration_promotes_legacy_gameplay_job_without_child_state():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -68,13 +68,12 @@ def test_scheduler_migration_promotes_legacy_magic_job_without_losing_progress()
     assert task["id"] == "ranking-lifecycle"
     assert task["task_type"] == "ranking_lifecycle"
     assert task["next_time"] == "2026-08-22 00:30:00"
-    assert task["payload"] == {
-        "magic_invasion_progress": {"occurrence_id": "cross-8", "completed_batches": 1},
-        "max_runtime_seconds": 10800,
-    }
+    assert task["label"] == "玩法榜"
+    assert task["payload"] == {"max_runtime_seconds": 10800}
+    assert "last_result" not in task
 
 
-def test_scheduler_migration_merges_legacy_magic_into_existing_lifecycle_job():
+def test_scheduler_migration_moves_only_earliest_child_time_into_existing_lifecycle():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -86,7 +85,13 @@ def test_scheduler_migration_merges_legacy_magic_into_existing_lifecycle_job():
             "id": "ranking-lifecycle",
             "task_type": "ranking_lifecycle",
             "next_time": "2026-08-22 19:00:00",
-            "payload": {"max_runtime_seconds": 10800},
+            "payload": {"max_runtime_seconds": 10800, "owner": "parent"},
+        },
+        {
+            "id": "yunmeng-tail",
+            "task_type": "yunmeng_tail",
+            "next_time": "not-a-time",
+            "payload": {"gui_step": "exchange"},
         },
     ], now=datetime(2026, 8, 21, 23, 0, 0))
 
@@ -94,8 +99,108 @@ def test_scheduler_migration_merges_legacy_magic_into_existing_lifecycle_job():
     assert len(tasks) == 1
     task = tasks[0]
     assert task["id"] == "ranking-lifecycle"
-    assert task["next_time"] == "2026-08-22 00:30:00"
-    assert task["payload"]["magic_invasion_progress"] == {"completed_batches": 2}
+    assert task["next_time"] == "2026-08-22 10:01:00"
+    assert task["payload"] == {"max_runtime_seconds": 10800, "owner": "parent"}
+
+
+def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
+    retired = [
+        ("magic-invasion-explore", "magic_invasion_explore"),
+        ("xutian-palace-rankings", "xutian_palace_rankings"),
+        ("xutian-palace-native-auto", "xutian_palace_native_auto"),
+        ("yunmeng-trial-auto-challenge", "yunmeng_trial_auto_challenge"),
+        ("yunmeng-tail", "yunmeng_tail"),
+        ("legacy-daily-xianmeng", "daily_xianmeng"),
+    ]
+    raw = [
+        {
+            "id": task_id,
+            "task_type": task_type,
+            "next_time": f"2026-08-21 {22 + index:02d}:00:00",
+            "payload": {"child": task_type},
+            "last_result": "running",
+        }
+        for index, (task_id, task_type) in enumerate(retired)
+    ]
+
+    tasks, changed = consolidate_arena_scheduler_instances(
+        raw,
+        now=datetime(2026, 8, 21, 23, 0, 0),
+    )
+
+    assert changed is True
+    assert [task["id"] for task in tasks] == ["ranking-lifecycle"]
+    assert tasks[0]["next_time"] == "2026-08-21 22:00:00"
+    assert tasks[0]["payload"] == {"max_runtime_seconds": 10800}
+
+    rerun, rerun_changed = consolidate_arena_scheduler_instances(
+        tasks,
+        now=datetime(2026, 8, 21, 23, 0, 0),
+    )
+    assert rerun_changed is False
+    assert rerun == tasks
+
+
+def test_default_scheduler_exposes_exactly_two_ranking_family_jobs() -> None:
+    tasks = default_data_annotation_scheduler_tasks(now=datetime(2026, 8, 21, 23, 0, 0))
+    gameplay_types = {
+        "ranking_lifecycle",
+        "magic_invasion_explore",
+        "xutian_palace_rankings",
+        "xutian_palace_native_auto",
+        "yunmeng_trial_auto_challenge",
+        "yunmeng_tail",
+        "daily_xianmeng",
+        "resource_ranking",
+        "resource_rank_daily_free_gift",
+        "dandao_task_rewards",
+        "yuanding_sansheng_daily_gift",
+    }
+
+    visible = [task for task in tasks if task["task_type"] in gameplay_types]
+    assert [(task["id"], task["task_type"], task["label"]) for task in visible] == [
+        ("ranking-lifecycle", "ranking_lifecycle", "玩法榜"),
+        ("resource-ranking", "resource_ranking", "资源榜"),
+    ]
+
+
+def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated():
+    raw = [
+        {
+            "id": "ranking-lifecycle",
+            "task_type": "ranking_lifecycle",
+            "next_time": "2026-08-22 19:00:00",
+            "payload": {"max_runtime_seconds": 10800, "magic_invasion_progress": {"step": 3}},
+        },
+        {
+            "id": "legacy-daily-xianmeng",
+            "task_type": "daily_xianmeng",
+            "next_time": "2026-08-22 10:00:00",
+            "payload": {"gui_step": "battle"},
+        },
+        {
+            "id": "resource-rank-daily-free-gift",
+            "task_type": "resource_rank_daily_free_gift",
+            "next_time": "2026-08-22 05:10:00",
+            "payload": {"gui_step": "gift"},
+        },
+    ]
+    migrated, changed = consolidate_arena_scheduler_instances(
+        raw, now=datetime(2026, 8, 21, 23, 0, 0)
+    )
+    assert changed is True
+    by_id = {item["id"]: item for item in migrated}
+    assert set(by_id) == {"ranking-lifecycle", "resource-ranking"}
+    assert by_id["ranking-lifecycle"]["next_time"] == "2026-08-22 10:00:00"
+    assert by_id["resource-ranking"]["next_time"] == "2026-08-22 00:30:00"
+    assert by_id["ranking-lifecycle"]["payload"] == {"max_runtime_seconds": 10800}
+    assert by_id["resource-ranking"]["payload"] == {"max_runtime_seconds": 10800}
+
+    rerun, rerun_changed = consolidate_arena_scheduler_instances(
+        migrated, now=datetime(2026, 8, 21, 23, 0, 0)
+    )
+    assert rerun_changed is False
+    assert rerun == migrated
 
 
 def test_arena_next_time_switches_between_sunday_and_weekday_rules():

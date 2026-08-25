@@ -256,13 +256,27 @@ def inspect_redpacket_game_state() -> dict[str, Any]:
     facts = read_current_redpacket_state()
     chat = (facts.get("sources") or {}).get("chat") or {}
     pending_count = int(chat.get("pending_count") or 0)
+    items = [item for item in chat.get("items") or [] if isinstance(item, dict)]
+    receive_queue_count = int(chat.get("receive_queue_count") or 0)
+    nonterminal_items = [
+        item for item in items if not _is_rewarded_qmch_terminal(item)
+    ]
     # RedbagData is the authoritative passive chat fact for patrol.  Do not
     # suppress a non-empty chat set with MainUI's transient display queue: the
     # latter can be empty while the current UI still exposes claimable red
     # packets.  Patrol only advances next_time; the Job independently repeats
     # its #395/#332/#30 visual guards before any click, so false-positive
     # candidates remain safe while false-negative scheduling is avoided.
-    immediate_chat_pending = pending_count > 0
+    # A claimed 9033/5022 item remains in RedbagData until the activity expires.
+    # Keeping it in the structural projection is useful for the Job's idempotent
+    # postcondition, but it must not make the one-minute patrol advance the same
+    # Job forever.  Filter only the exact, fresh rewarded terminal.  Ordinary
+    # packets, a new QMCH UID, and a live receive queue still trigger normally.
+    immediate_chat_pending = bool(
+        receive_queue_count > 0
+        or nonterminal_items
+        or (pending_count > 0 and not items)
+    )
     return {
         "ok": bool(facts.get("ok")),
         "message": str(facts.get("reason") or ""),
@@ -277,3 +291,19 @@ def inspect_redpacket_game_state() -> dict[str, Any]:
         ),
         "recovery_required": bool(facts.get("recovery_required")),
     }
+
+
+def _is_rewarded_qmch_terminal(item: dict[str, Any]) -> bool:
+    """Return whether one exact QMCH UID is proven already rewarded."""
+
+    uid = str(item.get("uid") or "").strip()
+    reasons = {str(reason) for reason in item.get("exclusion_reasons") or []}
+    return bool(
+        uid
+        and item.get("id") == QMCH_REWARD_CONFIG_ID
+        and item.get("event_type") == QMCH_REWARD_EVENT_TYPE
+        and item.get("event_key") == QMCH_REWARD_EVENT_KEY
+        and item.get("channel") == QMCH_REWARD_CHANNEL
+        and item.get("detail_loaded") is True
+        and reasons.intersection({"server_rewarded", "detail_rewarded"})
+    )

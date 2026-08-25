@@ -198,20 +198,15 @@ def test_daily_xianmeng_fast_report_uses_stable_title_not_variable_reward_rows()
     assert (294, "总共获得奖励") not in runtime.queries
 
 
-def test_xianmeng_challenge_is_a_dynamic_standard_job():
-    task = next(
-        item
+def test_xianmeng_challenge_is_internal_under_gameplay_parent():
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition("daily_xianmeng")
+    assert definition is not None
+    assert definition.scheduler_supported is False
+    assert not any(
+        item["task_type"] == "daily_xianmeng"
         for item in default_data_annotation_scheduler_tasks()
-        if item["task_type"] == "daily_xianmeng"
     )
-
-    assert task["id"] == "legacy-daily-xianmeng"
-    assert task["label"] == "仙盟_挑战"
-    assert task["trigger_description"] == "动态"
-    assert task["next_time"] is None
-    assert task["payload"]["schedule_tail_from_daily_activity_list"] is True
-    assert task["payload"]["daily_end_time"] == "22:00"
-    assert task["payload"]["error_retry_after_daily_end"] == "none"
 
 
 def test_daily_xianmeng_admission_stops_late_cell_without_gameplay(monkeypatch):
@@ -322,7 +317,7 @@ def test_daily_xianmeng_does_not_force_world_navigation_from_scheduler_cell():
     definition = get_fanxiu_data_annotation_task_cell_definition("daily_xianmeng")
 
     assert definition is not None
-    assert definition.scheduler_supported is True
+    assert definition.scheduler_supported is False
     assert not hasattr(definition, "lifecycle")
 
 
@@ -370,7 +365,7 @@ def test_daily_xianmeng_retries_when_battlefield_entry_click_is_swallowed(monkey
         ("click", 475, "战场地图"),
     ]
     assert any("点击未生效" in message for _kind, message in harness.logs)
-    assert harness.next_times[0][1] == "2026-08-16 20:30:00"
+    assert harness.next_times == []
 
 
 def test_daily_xianmeng_retries_when_battlefield_entry_transition_is_temporarily_unknown():
@@ -624,8 +619,8 @@ def test_daily_xianmeng_immunity_schedules_dynamic_retry_and_returns_world(monke
         )
     )
 
-    assert harness.next_times[0][1] == "2026-08-16 20:10:00"
-    assert result == harness.next_times[0][1]
+    assert result == "2026-08-16 20:10:00"
+    assert harness.next_times == []
     assert runtime.actions[0] == ("goto", 34)
     assert runtime.actions[1][0:2] == ("wait", 34)
     assert any("动态免战 CD 剩余 600 秒" in message for _kind, message in harness.logs)
@@ -651,7 +646,7 @@ def test_daily_xianmeng_immunity_probe_failure_retries_in_five_minutes(monkeypat
         )
     )
 
-    assert harness.next_times[0][1] == "2026-08-16 20:05:00"
+    assert harness.next_times == []
     assert any("按 5 分钟安全复查" in message for _kind, message in harness.logs)
 
 
@@ -679,9 +674,12 @@ def test_daily_xianmeng_retry_has_no_hidden_time_buffer(monkeypatch):
     )
     harness = _XianmengHarness()
 
-    harness._schedule_daily_xianmeng_retry({}, seconds=0, message="立即复查")
+    payload = {}
+    result = harness._schedule_daily_xianmeng_retry(payload, seconds=0, message="立即复查")
 
-    assert harness.next_times[0][1] == "2026-08-16 20:00:00"
+    assert result == "2026-08-16 20:00:00"
+    assert payload["_xianmeng_next_time"] == result
+    assert harness.next_times == []
 
 
 def test_daily_xianmeng_business_retry_stops_at_activity_close(monkeypatch):
@@ -698,7 +696,7 @@ def test_daily_xianmeng_business_retry_stops_at_activity_close(monkeypatch):
     )
 
     assert next_time is None
-    assert harness.next_times == [("legacy-daily-xianmeng", None)]
+    assert harness.next_times == []
     assert any("活动结束，不再调度" in message for _kind, message in harness.logs)
 
 
@@ -772,8 +770,10 @@ def test_daily_xianmeng_low_average_score_waits_twenty_minutes(
     )
 
     assert result == "skipped"
-    assert harness.next_times[0][1] == (now + timedelta(minutes=20)).strftime(
-        "%Y-%m-%d %H:%M:%S"
+    assert harness.next_times == []
+    assert any(
+        (now + timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S") in message
+        for _kind, message in harness.logs
     )
     assert runtime.actions[0][0:2] == ("goto", 34)
     assert any("平均个人积分 150.0" in message for _kind, message in harness.logs)
@@ -852,7 +852,7 @@ def test_daily_xianmeng_high_stamina_low_score_continues_in_same_cell(monkeypatc
 
     assert result == "success"
     assert ("click", 293, "攻击") in runtime.actions
-    assert harness.next_times == [("legacy-daily-xianmeng", None)]
+    assert harness.next_times == []
     assert any("本 Cell 继续批量清扫" in message for _kind, message in harness.logs)
 
 
@@ -892,9 +892,8 @@ def test_daily_xianmeng_keeps_last_two_attempts_for_next_tail_sweep(
     )
 
     assert result == "skipped"
-    assert harness.next_times == [
-        ("legacy-daily-xianmeng", expected_next_time)
-    ]
+    assert harness.next_times == []
+    assert any(expected_next_time in message for _kind, message in harness.logs)
     assert runtime.actions[0][0:2] == ("goto", 34)
     assert not any(action[0] == "click" for action in runtime.actions)
 

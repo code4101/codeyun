@@ -14,22 +14,18 @@ from backend.core.fanxiu.data_annotation.tasks.xutian_palace_rankings import (
 )
 
 
-def test_xutian_rankings_is_a_manual_standard_job() -> None:
+def test_xutian_rankings_is_runtime_callable_but_not_a_scheduler_job() -> None:
     register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "xutian_palace_rankings"
     )
     assert definition is not None
-    assert definition.scheduler_supported is True
-    assert definition.standard_job is True
-
-    task = next(
-        item
+    assert definition.scheduler_supported is False
+    assert definition.standard_job is False
+    assert all(
+        item["id"] != "xutian-palace-rankings"
         for item in default_data_annotation_scheduler_tasks()
-        if item["id"] == "xutian-palace-rankings"
     )
-    assert task["trigger_description"] == "手动"
-    assert task["next_time"] is None
 
 
 def test_wait_one_of_does_not_treat_unknown_frame_as_success() -> None:

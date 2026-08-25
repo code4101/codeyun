@@ -22,9 +22,6 @@ XIANMENG_FORMAL_BASE_IDS = frozenset({28000, *XIANMENG_FORMAL_CHILD_BASE_IDS})
 XIANMENG_STAMINA_SWEEPS = ((21, 10), (21, 50))
 XIANMENG_TRIPLE_DISABLE_AT = (21, 30)
 XIANMENG_FINAL_SWEEP = (21, 50)
-YUNMENG_TAIL_TASK_ID = "yunmeng-tail"
-YUNMENG_TAIL_LABEL = "云梦_收尾"
-YUNMENG_ROOT_BASE_IDS = frozenset({210001})
 
 
 @dataclass(frozen=True)
@@ -40,25 +37,10 @@ class AuthorizedActivityJobBinding:
 
 # Every entry is a user-approved execution relationship. Do not infer or append
 # entries from Runtime names, page families, follow items, or similarity.
-AUTHORIZED_ACTIVITY_JOB_BINDINGS = (
-    AuthorizedActivityJobBinding(
-        binding_id="xianmeng-qualifying-or-final-starts-xianmeng-challenge",
-        child_base_ids=XIANMENG_FORMAL_BASE_IDS,
-        activity_types=frozenset({42, 43}),
-        task_id=XIANMENG_CHALLENGE_TASK_ID,
-        task_label=XIANMENG_CHALLENGE_LABEL,
-        day_relation="starts_or_final_today",
-    ),
-    AuthorizedActivityJobBinding(
-        binding_id="yunmeng-ending-phase-starts-yunmeng-tail",
-        child_base_ids=YUNMENG_ROOT_BASE_IDS,
-        activity_types=frozenset({21}),
-        task_id=YUNMENG_TAIL_TASK_ID,
-        task_label=YUNMENG_TAIL_LABEL,
-        day_relation="claim_grace_today",
-        trigger_mode="now_plus_five_minutes",
-    ),
-)
+# Activity-list synchronization no longer owns any ranking child Job.  Xianmeng
+# is discovered and checkpointed by the gameplay-ranking parent; this empty
+# tuple is intentional and prevents a second next_time owner from reappearing.
+AUTHORIZED_ACTIVITY_JOB_BINDINGS: tuple[AuthorizedActivityJobBinding, ...] = ()
 
 
 def _as_int(value: Any) -> int | None:
@@ -268,9 +250,6 @@ __all__ = [
     "XIANMENG_TRIPLE_DISABLE_AT",
     "XIANMENG_FORMAL_BASE_IDS",
     "XIANMENG_FORMAL_CHILD_BASE_IDS",
-    "YUNMENG_ROOT_BASE_IDS",
-    "YUNMENG_TAIL_LABEL",
-    "YUNMENG_TAIL_TASK_ID",
     "AuthorizedActivityJobBinding",
     "build_authorized_daily_activity_job_schedule",
     "next_xianmeng_challenge_tail_time",

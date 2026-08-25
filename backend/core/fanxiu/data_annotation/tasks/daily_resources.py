@@ -1626,10 +1626,7 @@ class DailyResourceTaskMixin:
                         next_time = self._daily_xianmeng_event_tail_next_time(payload)
                         if next_time:
                             yield from self._return_daily_xianmeng_to_world(runtime)
-                            scheduler_task_id = str(
-                                payload.get("__scheduler_task_id") or "legacy-daily-xianmeng"
-                            )
-                            self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+                            payload["_xianmeng_next_time"] = next_time
                             self._log(
                                 "success",
                                 f"日常_仙盟：剩余 {remaining_attack_count} 次不足三连，"
@@ -2225,10 +2222,7 @@ class DailyResourceTaskMixin:
             if now < close_at and retry_at < close_at
             else None
         )
-        scheduler_task_id = str(
-            payload.get("__scheduler_task_id") or "legacy-daily-xianmeng"
-        )
-        self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+        payload["_xianmeng_next_time"] = next_time
         if next_time is None:
             self._log(
                 "skip",
@@ -2720,9 +2714,8 @@ class DailyResourceTaskMixin:
         return False
 
     def _record_daily_xianmeng_done(self, payload: dict[str, Any], *, message: str) -> str | None:
-        scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianmeng")
         next_time = self._daily_xianmeng_event_tail_next_time(payload)
-        self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+        payload["_xianmeng_next_time"] = next_time
         suffix = f"，活动尾程下次 {next_time}" if next_time else "，未安排后续触发"
         self._log("success", f"日常_仙盟：{message}{suffix}")
         return next_time

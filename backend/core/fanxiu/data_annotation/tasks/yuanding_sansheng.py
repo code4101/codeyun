@@ -107,7 +107,7 @@ class YuandingSanshengTaskMixin:
         message: str,
     ) -> dict[str, Any]:
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "").strip()
-        if scheduler_task_id:
+        if scheduler_task_id and bool(payload.get("manage_schedule", False)):
             next_time = next_business_time(("05:00",))
             self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
             message = f"{message}，下次 {next_time}"

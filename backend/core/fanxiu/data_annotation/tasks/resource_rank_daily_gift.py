@@ -430,6 +430,7 @@ def run_resource_rank_daily_gift_flow(
     runtime: Any,
     *,
     now: datetime | None = None,
+    manage_schedule: bool = False,
 ) -> dict[str, Any]:
     """Claim every currently claimable zero-cost gift with Runtime readback."""
 
@@ -442,7 +443,8 @@ def run_resource_rank_daily_gift_flow(
         "%Y-%m-%d %H:%M:%S"
     )
     if not active:
-        runtime.set_next_time(next_time)
+        if manage_schedule:
+            runtime.set_next_time(next_time)
         return {
             "result": "success",
             "current_scene": 34,
@@ -469,7 +471,8 @@ def run_resource_rank_daily_gift_flow(
         # authoritative idempotency fact short-circuit all navigation and
         # visual interaction; the calendar entry can already be absent after
         # the activity was completed earlier today.
-        runtime.set_next_time(next_time)
+        if manage_schedule:
+            runtime.set_next_time(next_time)
         return {
             "result": "success",
             "current_scene": None,
@@ -565,7 +568,8 @@ def run_resource_rank_daily_gift_flow(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：免费领取达到安全上限但未见付费边界"
         )
 
-    runtime.set_next_time(next_time)
+    if manage_schedule:
+        runtime.set_next_time(next_time)
     try:
         result = runtime.go_scene(34)
         if hasattr(result, "send"):

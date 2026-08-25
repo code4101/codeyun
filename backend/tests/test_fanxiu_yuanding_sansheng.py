@@ -31,24 +31,23 @@ def _fragment(text: str, x: float, y: float, w: float = 80, h: float = 35):
     return {"text": text, "x": x, "y": y, "w": w, "h": h}
 
 
-def test_yuanding_sansheng_is_one_daily_standard_job() -> None:
+def test_yuanding_sansheng_is_internal_under_resource_parent() -> None:
     register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "yuanding_sansheng_daily_gift"
     )
     assert definition is not None
-    assert definition.scheduler_supported is True
+    assert definition.scheduler_supported is False
 
     tasks = [
         item
         for item in default_data_annotation_scheduler_tasks(datetime(2026, 8, 8, 18, 0, 0))
-        if item["task_type"] == "yuanding_sansheng_daily_gift"
+        if item["task_type"] in {"yuanding_sansheng_daily_gift", "resource_ranking"}
     ]
     assert len(tasks) == 1
-    assert tasks[0]["id"] == "yuanding-sansheng-daily-gift"
-    assert tasks[0]["label"] == "缘定三生_每日礼包"
-    assert tasks[0]["trigger_description"] == "每日"
-    assert tasks[0]["next_time"] == "2026-08-09 05:00:00"
+    assert tasks[0]["id"] == "resource-ranking"
+    assert tasks[0]["label"] == "资源榜"
+    assert tasks[0]["trigger_description"] == "动态"
     assert tasks[0]["error_retry_delay_seconds"] == 600
 
 
