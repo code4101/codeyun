@@ -123,7 +123,106 @@ class DailyRedpacketTaskMixin:
                 "日常_红包：fresh Runtime 无法唯一分流，拒绝进入旧普通红包流程："
                 f"{plan.get('reason') or 'unknown'}"
             )
+        terminal_items = self._daily_qmch_terminal_items(snapshot)
+        terminal_uids = {str(item["uid"]) for item in terminal_items}
+        if plan.get("route") == QMCH_REWARD_EVENT_KEY:
+            active_items = [
+                item
+                for item in plan.get("qmch_reward_items") or []
+                if str(item.get("uid") or "") not in terminal_uids
+            ]
+            if not active_items:
+                deferred_ordinary_uids = [
+                    str(uid)
+                    for uid in plan.get("deferred_ordinary_uids") or []
+                    if str(uid).strip()
+                ]
+                if deferred_ordinary_uids:
+                    return {
+                        **plan,
+                        "route": "ordinary_chat",
+                        "uids": deferred_ordinary_uids,
+                        "qmch_reward_items": [],
+                        "terminal_qmch_items": terminal_items,
+                        "deferred_ordinary_uids": [],
+                    }
+                return {
+                    **plan,
+                    "route": "qmch_reward_terminal",
+                    "uids": sorted(terminal_uids),
+                    "qmch_reward_items": terminal_items,
+                }
+            plan = {
+                **plan,
+                "uids": [str(item["uid"]) for item in active_items],
+                "qmch_reward_items": active_items,
+            }
+        elif plan.get("route") == "none" and terminal_items:
+            return {
+                **plan,
+                "route": "qmch_reward_terminal",
+                "uids": sorted(terminal_uids),
+                "qmch_reward_items": terminal_items,
+            }
         return plan
+
+    @staticmethod
+    def _daily_qmch_terminal_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return exact, fresh 9033 items whose claimed terminal is proven."""
+
+        chat = (snapshot.get("sources") or {}).get("chat") or {}
+        raw_items = [
+            *(chat.get("special_event_items") or []),
+            *(chat.get("items") or []),
+            *(snapshot.get("items") or []),
+        ]
+        terminals: dict[str, dict[str, Any]] = {}
+        for raw_item in raw_items:
+            item = dict(raw_item) if isinstance(raw_item, dict) else {}
+            uid = str(item.get("uid") or "").strip()
+            reasons = {str(reason) for reason in item.get("exclusion_reasons") or []}
+            if not (
+                uid
+                and item.get("id") == 5022
+                and item.get("event_type") == 9033
+                and item.get("event_key") == QMCH_REWARD_EVENT_KEY
+                and item.get("channel") == 101
+                and item.get("detail_loaded") is True
+                and reasons.intersection({"server_rewarded", "detail_rewarded"})
+            ):
+                continue
+            terminals[uid] = item
+        return list(terminals.values())
+
+    def _wait_daily_qmch_uid_terminal(
+        self,
+        runtime: Any,
+        uid: str,
+        *,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ):
+        """Require a fresh same-UID rewarded terminal after the one-shot open."""
+
+        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+        while time.monotonic() < deadline:
+            snapshot = self._daily_redpacket_runtime_candidates()
+            levels = snapshot.get("evidence_levels") or {}
+            if levels.get("structural") and levels.get("semantic"):
+                terminal = next(
+                    (
+                        item
+                        for item in self._daily_qmch_terminal_items(snapshot)
+                        if str(item.get("uid") or "") == uid
+                    ),
+                    None,
+                )
+                if terminal is not None:
+                    return terminal
+            yield from runtime.wait_action_settle(poll_seconds)
+        raise TimeoutError(
+            f"日常_红包：鸿运福签打开后 fresh Runtime 未出现同 UID rewarded 终态：{uid}"
+        )
 
     def _dispatch_daily_redpacket_runtime_route(
         self,
@@ -159,6 +258,7 @@ class DailyRedpacketTaskMixin:
         *,
         timeout_seconds: float,
         poll_seconds: float,
+        max_scrolls: int = 8,
     ):
         """Resolve the unique 鸿运福签 row from current #332 OCR evidence."""
 
@@ -169,6 +269,7 @@ class DailyRedpacketTaskMixin:
         window_box = self._box(window, image)
         deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         last_text = ""
+        scroll_count = 0
         while time.monotonic() < deadline:
             frame = runtime.cur_frame(update=True)
             cached = self._shared_spatial_ocr_result(ctx, frame)
@@ -181,6 +282,18 @@ class DailyRedpacketTaskMixin:
             )
             if match is not None:
                 return frame, match
+            if scroll_count >= max(0, int(max_scrolls)):
+                break
+            changed = yield from runtime.scroll_shape_content(
+                332,
+                "窗口",
+                direction="down",
+                ratio=0.5,
+                unchanged_confirmations=2,
+            )
+            scroll_count += 1
+            if not changed:
+                break
             yield from runtime.wait_action_settle(poll_seconds)
         raise TimeoutError(
             f"日常_红包：#332[窗口] 未唯一定位到鸿运福签，OCR={last_text[:200]}"
@@ -261,6 +374,10 @@ class DailyRedpacketTaskMixin:
         """Enter the exact 9033/5022 activity chat without using ordinary claims."""
 
         del stop_event
+        uids = [str(uid) for uid in route_plan.get("uids") or [] if str(uid)]
+        if len(uids) != 1:
+            raise RuntimeError(f"日常_红包：qmch_reward 要求唯一 fresh UID，实际={uids}")
+        uid = uids[0]
         channel = int(route_plan.get("channel") or 0)
         sub_id = int(route_plan.get("sub_id") or 0)
         if channel != 101 or sub_id <= 0:
@@ -299,36 +416,133 @@ class DailyRedpacketTaskMixin:
             )
         yield from runtime.click_shape_center_then_view(
             332,
-            "全部",
+            "活动",
             332,
             timeout=transition_timeout,
-            label="鸿运福签：幂等切到全部消息",
+            label="鸿运福签：幂等切到活动消息",
         )
-        _frame, row = yield from self._wait_daily_qmch_activity_row(
-            runtime,
-            ctx,
-            timeout_seconds=transition_timeout,
-            poll_seconds=poll_seconds,
-        )
+        try:
+            _frame, row = yield from self._wait_daily_qmch_activity_row(
+                runtime,
+                ctx,
+                timeout_seconds=transition_timeout,
+                poll_seconds=poll_seconds,
+            )
+        except TimeoutError:
+            # A never-visited activity can initially be exposed only in 全部;
+            # once visited, 活动 is the stable idempotent re-entry path.
+            yield from runtime.click_shape_center_then_view(
+                332,
+                "全部",
+                332,
+                timeout=transition_timeout,
+                label="鸿运福签：首次路径回退到全部消息",
+            )
+            _frame, row = yield from self._wait_daily_qmch_activity_row(
+                runtime,
+                ctx,
+                timeout_seconds=transition_timeout,
+                poll_seconds=poll_seconds,
+            )
         runtime.click_frame_point(332, float(row.x + row.w / 2), float(row.y + row.h / 2))
-        current = yield from runtime.wait_view(
+        yield from runtime.wait_view(
             30,
             timeout=transition_timeout,
             label="鸿运福签：等待活动聊天页",
+        )
+        yield from runtime.wait_shape(
+            673,
+            "鸿运福签",
+            timeout=transition_timeout,
+            label="鸿运福签：确认专用活动聊天身份",
         )
         self._log(
             "success",
             f"鸿运福签：已按 fresh route channel={channel}, sub_id={sub_id} 进入活动聊天 #30",
         )
-        if bool(payload.get("qmch_research_stop_after_entry")):
-            self._log(
-                "diagnostic",
-                "鸿运福签：research hold 已停在 #30；等待外部取证后显式 interrupt，不执行复制或发送",
+        yield from runtime.wait_shape(
+            673,
+            "输入框空态",
+            timeout=transition_timeout,
+            label="鸿运福签：复制前确认输入框为空",
+        )
+        yield from runtime.wait_click(673, "鸿运福签卡片/复制", timeout=transition_timeout)
+        yield from runtime.wait_action_settle(poll_seconds)
+        copied_frame = runtime.cur_frame(update=True)
+        copied_text = runtime.ocr_text_in_shapes(
+            673,
+            ("输入框空态",),
+            padding=0,
+            frame_data_url=copied_frame,
+            crop=True,
+        )
+        normalized_copy = re.sub(
+            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
+            "",
+            str(copied_text or ""),
+        )
+        if "吉签启鸿运佳奖落" not in normalized_copy:
+            raise RuntimeError(
+                "日常_红包：鸿运福签复制后输入框未命中固定祝贺语前缀，拒绝发送："
+                f"{normalized_copy[:80]}"
             )
-            while True:
-                yield from runtime.wait_action_settle(5.0)
-        raise RuntimeError(
-            "日常_红包：已安全进入鸿运福签活动聊天，但复制/全文验证/发送 handler 尚未验收；拒绝回落普通红包逻辑"
+        yield from runtime.wait_click_then_shape(
+            673,
+            "发送",
+            674,
+            "吉签鸿运佳奖落身",
+            timeout=transition_timeout,
+            max_clicks=1,
+            label="鸿运福签：发送一次并等待专用开包页",
+        )
+
+        # Sending can race with a claim performed elsewhere.  Re-check the
+        # passive same-UID fact before authorizing the irreversible open.
+        pre_open_snapshot = self._daily_redpacket_runtime_candidates()
+        already_terminal = next(
+            (
+                item
+                for item in self._daily_qmch_terminal_items(pre_open_snapshot)
+                if str(item.get("uid") or "") == uid
+            ),
+            None,
+        )
+        opened_count = 0
+        if already_terminal is None:
+            yield from runtime.wait_click(674, "开", timeout=transition_timeout)
+            opened_count = 1
+            yield from runtime.wait_action_settle(poll_seconds)
+            yield from self._wait_daily_qmch_uid_terminal(
+                runtime,
+                uid,
+                timeout_seconds=transition_timeout,
+                poll_seconds=poll_seconds,
+            )
+        runtime.click_shape_center(672, "弹窗外背景", x_ratio=0.1)
+        yield from runtime.wait_view(
+            30,
+            timeout=transition_timeout,
+            label="鸿运福签：关闭奖励详情回到活动聊天",
+        )
+        yield from runtime.click_shape_center_then_view(
+            30,
+            "返回",
+            332,
+            timeout=transition_timeout,
+            label="鸿运福签：从活动聊天返回聊天列表",
+        )
+        yield from runtime.click_shape_center_then_view(
+            332,
+            "返回",
+            34,
+            timeout=transition_timeout,
+            label="鸿运福签：从聊天列表安全返回世界",
+        )
+        return self._daily_redpacket_result(
+            payload,
+            f"鸿运福签 UID={uid} 已确认 rewarded 终态",
+            opened_count=opened_count,
+            current_scene=34,
         )
 
     def _daily_redpacket_verify_uid_postcondition(
@@ -942,6 +1156,14 @@ class DailyRedpacketTaskMixin:
         # The 9033 QMCH entry uses a dedicated ``福`` surface and must be
         # dispatched before #395/#332 or any ordinary group/card action.
         route_plan = self._daily_redpacket_runtime_route_plan()
+        if route_plan.get("route") == "qmch_reward_terminal":
+            terminal_uids = [str(uid) for uid in route_plan.get("uids") or []]
+            return self._daily_redpacket_result(
+                payload,
+                f"鸿运福签已是 rewarded 终态，幂等零动作跳过：{terminal_uids}",
+                opened_count=0,
+                current_scene=34,
+            )
         if route_plan.get("route") == QMCH_REWARD_EVENT_KEY:
             return (yield from self._dispatch_daily_redpacket_runtime_route(
                 runtime,

@@ -106,7 +106,9 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "xutian_palace_rankings",
     "xutian_palace_native_auto",
     "yunmeng_trial_auto_challenge",
+    "magic_invasion_explore",
     "ranking_lifecycle",
+    "yunmeng_tail",
 )
 
 
@@ -1966,11 +1968,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "xutian_palace_rankings",
         "虚天殿_榜单数据",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="xutian-palace-rankings",
-        standard_job_description="手动",
-        standard_job_payload={"max_runtime_seconds": 180},
+        scheduler_supported=False,
     )
     def _run_data_annotation_xutian_palace_rankings_task_cell(
         runner: Any,
@@ -1991,11 +1989,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "xutian_palace_native_auto",
         "虚天殿_自动挑战",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="xutian-palace-native-auto",
-        standard_job_description="手动",
-        standard_job_payload={"requested_challenges": 10, "max_runtime_seconds": 1800},
+        scheduler_supported=False,
     )
     def _run_data_annotation_xutian_palace_native_auto_task_cell(
         runner: Any,
@@ -2007,28 +2001,19 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             execute_xutian_native_auto_job,
         )
 
-        task_id = str(ctx.get("scheduler_task_id") or "xutian-palace-native-auto")
         return (
-            yield from _run_manual_standard_job(
+            yield from execute_xutian_native_auto_job(
                 runner,
-                task_id,
-                lambda: execute_xutian_native_auto_job(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                ),
+                ctx,
+                payload,
+                stop_event,
             )
         )
 
     @register_fanxiu_data_annotation_task_cell(
         "yunmeng_trial_auto_challenge",
         "云梦试剑_自动挑战",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="yunmeng-trial-auto-challenge",
-        standard_job_description="手动",
-        standard_job_payload={"target_stage": 9, "max_runtime_seconds": 1800},
+        scheduler_supported=False,
     )
     def _run_data_annotation_yunmeng_trial_auto_challenge_task_cell(
         runner: Any,
@@ -2036,23 +2021,18 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        """Run the verified native Yunmeng flow; keep the standard Job manual."""
+        """Run the verified native Yunmeng flow as an AI-callable subtask."""
 
         from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
             execute_yunmeng_native_auto_job,
         )
 
-        task_id = str(ctx.get("scheduler_task_id") or "yunmeng-trial-auto-challenge")
         return (
-            yield from _run_manual_standard_job(
+            yield from execute_yunmeng_native_auto_job(
                 runner,
-                task_id,
-                lambda: execute_yunmeng_native_auto_job(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                ),
+                ctx,
+                payload,
+                stop_event,
             )
         )
 
@@ -2082,7 +2062,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
 
     @register_fanxiu_data_annotation_task_cell(
         "ranking_lifecycle",
-        "日程_榜单系统更新",
+        "玩法榜",
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="ranking-lifecycle",
@@ -2111,11 +2091,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "yunmeng_tail",
         "云梦_收尾",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="yunmeng-tail",
-        standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 1800},
+        scheduler_supported=False,
     )
     def _run_data_annotation_yunmeng_tail_task_cell(
         runner: Any,
